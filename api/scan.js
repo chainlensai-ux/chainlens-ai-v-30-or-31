@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   let { url, body, method } = req.body || {};
   if (!url) return res.status(400).json({ error: 'No URL provided' });
 
-  const ESCAN = process.env.ETHERSCAN_KEY || '';
+  const ESCAN = process.env.ETHERSCAN_API_KEY || '';
   if (ESCAN) url = url.replace('apikey=ENV', `apikey=${ESCAN}`);
 
   const allowed = [
