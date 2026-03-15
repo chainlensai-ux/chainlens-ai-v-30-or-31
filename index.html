@@ -2670,12 +2670,14 @@ function updateNav() {
   const navAuth = document.getElementById('nav-auth');
   if (user) {
     const planColors = { free: 'var(--cl-text-3)', pro: 'var(--cl-cyan)', elite: 'var(--cl-elite)' };
-    const planLabel = user.plan.charAt(0).toUpperCase() + user.plan.slice(1);
+    const userPlan = user.plan || 'free';
+    const planLabel = userPlan.charAt(0).toUpperCase() + userPlan.slice(1);
+    const firstName = (user.name || 'Trader').split(' ')[0];
     navAuth.innerHTML = `
       <div class="cl-user-pill" onclick="toggleUserMenu()">
         <span class="cl-user-pill__gem">⬡</span>
-        <span style="font-size:13px;">${user.name.split(' ')[0]}</span>
-        <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(120,88,192,0.12);color:${planColors[user.plan]};">${planLabel}</span>
+        <span style="font-size:13px;">${firstName}</span>
+        <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(120,88,192,0.12);color:${planColors[userPlan]};">${planLabel}</span>
       </div>`;
   } else {
     navAuth.innerHTML = `
@@ -2730,7 +2732,7 @@ async function doAuth() {
     if (!res.success) { toast(res.error || 'Login failed', 'er'); btn.disabled = false; btn.textContent = 'Log In →'; return; }
     user = res.user;
     localStorage.setItem('cl_session', JSON.stringify(user));
-    toast(`Welcome back, ${user.name.split(' ')[0]}`);
+    toast(`Welcome back, ${(user.name || 'Trader').split(' ')[0]}`);
     closeAuth(); updateNav();
     syncAllDataDown();
   }
@@ -3543,6 +3545,7 @@ function gtTab(side) {
 
 function gtPct(pct) {
   if (!gtToken) return;
+  if (!gtToken.price) { toast('Token price unavailable', 'er'); return; }
   let amt;
   if (gtSide === 'buy') {
     amt = (gt.cash * pct / 100).toFixed(2);
@@ -3556,7 +3559,7 @@ function gtPct(pct) {
 }
 
 function gtCalcQty() {
-  if (!gtToken) return;
+  if (!gtToken || !gtToken.price) return;
   const amt = parseFloat(document.getElementById('gt-amount').value) || 0;
   const qty = amt / gtToken.price;
   const el = document.getElementById('gt-qty-preview');
@@ -4511,7 +4514,10 @@ function addAlert() {
   const dir = document.getElementById('alert-dir').value;
   const target = parseFloat(document.getElementById('alert-price').value);
   if (!target || isNaN(target)) { toast('Enter a target price', 'er'); return; }
-  const symbol = document.getElementById('alert-coin').selectedOptions[0].text.match(/\((.+)\)/)[1];
+  const selectedOption = document.getElementById('alert-coin').selectedOptions[0];
+  if (!selectedOption) { toast('Select a coin', 'er'); return; }
+  const symbolMatch = selectedOption.text.match(/\((.+)\)/);
+  const symbol = symbolMatch ? symbolMatch[1] : selectedOption.text || coin;
   priceAlerts.push({ coin, symbol, dir, target, fired: false, id: Date.now() });
   localStorage.setItem('cl_alerts', JSON.stringify(priceAlerts));
   if (user) sbData('save', 'price_alerts', { payload: priceAlerts.map(a => ({ coin_id: a.coin, coin_name: a.symbol, direction: a.dir, target_price: a.target, triggered: a.fired || false })) });
