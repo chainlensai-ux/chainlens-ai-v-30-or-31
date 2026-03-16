@@ -3589,71 +3589,7 @@ function gtCalcQty() {
   el.textContent = amt > 0 ? 'Qty: ' + (qty < 0.0001 ? qty.toExponential(4) : qty.toFixed(6)) + ' ' + gtToken.symbol : 'Qty: —';
 }
 
-async function updateGT(silent = false) {
-  const holdings = Object.entries(gt.h).filter(([, pos]) => pos.qty > 0.000001);
-  const ghd = document.getElementById('ghd');
-
-  // Fetch live prices — use pairAddress for direct O(1) lookup, parallel per chain
-  if (holdings.length) {
-    if (!silent) ghd.innerHTML = '<div style="text-align:center;padding:8px;color:var(--cl-text-3);font-size:11px;"><span class="cl-spinner"></span> Refreshing prices...</div>';
-    try {
-      const priceMap = {};
-      // Group by chain using pairAddress (direct lookup) — fall back to token endpoint
-      const byChain = {};
-      const tokenFallback = [];
-      for (const [addr, pos] of holdings) {
-        if (pos.pairAddress && pos.chain) {
-          if (!byChain[pos.chain]) byChain[pos.chain] = [];
-          byChain[pos.chain].push({ addr, pos });
-        } else {
-          tokenFallback.push([addr, pos]);
-        }
-      }
-      const fetches = Object.entries(byChain).map(async ([chain, items]) => {
-        const pairAddrs = items.map(i => i.pos.pairAddress).join(',');
-        try {
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 4000);
-          const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + pairAddrs, { signal: ctrl.signal });
-          clearTimeout(t);
-          if (r.ok) {
-            const d = await r.json();
-            const pairs = Array.isArray(d.pairs) ? d.pairs : (d.pair ? [d.pair] : []);
-            for (const pair of pairs) {
-              const tokenAddr = (pair.baseToken && pair.baseToken.address || '').toLowerCase();
-              if (tokenAddr && pair.priceUsd) priceMap[tokenAddr] = { price: parseFloat(pair.priceUsd), change24h: parseFloat(pair.priceChange && pair.priceChange.h24 || 0) };
-            }
-          }
-        } catch(e) {}
-      });
-      if (tokenFallback.length) {
-        fetches.push((async () => {
-          try {
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 4000);
-            const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + tokenFallback.map(([a]) => a).join(','), { signal: ctrl.signal });
-            clearTimeout(t);
-            if (r.ok) {
-              const d = await r.json();
-              for (const pair of (d.pairs || [])) {
-                const tokenAddr = (pair.baseToken && pair.baseToken.address || '').toLowerCase();
-                if (!tokenAddr || !pair.priceUsd) continue;
-                const liq = parseFloat(pair.liquidity && pair.liquidity.usd || 0);
-                if (!priceMap[tokenAddr] || liq > (priceMap[tokenAddr].liq || 0)) priceMap[tokenAddr] = { price: parseFloat(pair.priceUsd), change24h: parseFloat(pair.priceChange && pair.priceChange.h24 || 0), liq };
-              }
-            }
-          } catch(e) {}
-        })());
-      }
-      await Promise.all(fetches);
-      for (const [addr, pos] of holdings) {
-        const hit = priceMap[addr.toLowerCase()];
-        if (hit) { pos.price = hit.price; pos.change24h = hit.change24h; }
-      }
-      }
-    } catch(e) {}
-  }
-
+function _paintGT(holdings, ghd) {
   const hv = holdings.reduce((s, [, pos]) => s + (pos.price || pos.avg || 0) * pos.qty, 0);
   const total = gt.cash + hv;
   const pnl = total - gt.start;
@@ -3663,7 +3599,6 @@ async function updateGT(silent = false) {
   gcEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) + ' (' + pct + '%)';
   gcEl.style.color = pnl >= 0 ? '#00ffc8' : '#ef476f';
   document.getElementById('gca').textContent = '$' + gt.cash.toFixed(2);
-
   const hcEl = document.getElementById('gt-holdings-count');
   if (hcEl) hcEl.textContent = holdings.length ? holdings.length + ' position' + (holdings.length !== 1 ? 's' : '') : '';
   if (!holdings.length) { ghd.innerHTML = '<div style="text-align:center;padding:16px;color:var(--cl-text-3);font-size:12px;">No positions yet</div>'; return; }
@@ -3685,6 +3620,75 @@ async function updateGT(silent = false) {
       + '<div style="font-size:10px;color:var(--cl-text-3);">val $' + currentVal.toFixed(2) + '</div></div>'
       + '<button data-addr="'+addr+'" onclick="gtSellAll(this.dataset.addr)" style="margin-left:8px;padding:4px 8px;background:rgba(239,71,111,0.08);border:1px solid rgba(239,71,111,0.2);border-radius:6px;font-size:9px;color:#ef476f;cursor:pointer;">SELL ALL</button></div>';
   }).join('');
+}
+
+async function updateGT(silent = false) {
+  const holdings = Object.entries(gt.h).filter(([, pos]) => pos.qty > 0.000001);
+  const ghd = document.getElementById('ghd');
+
+  // Render immediately with cached prices — no delay
+  _paintGT(holdings, ghd);
+
+  // Fetch live prices in background, then re-render silently
+  if (holdings.length) {
+    try {
+      const priceMap = {};
+      const byChain = {};
+      const tokenFallback = [];
+      for (const [addr, pos] of holdings) {
+        if (pos.pairAddress && pos.chain) {
+          if (!byChain[pos.chain]) byChain[pos.chain] = [];
+          byChain[pos.chain].push({ addr, pos });
+        } else {
+          tokenFallback.push([addr, pos]);
+        }
+      }
+      const fetches = Object.entries(byChain).map(async ([chain, items]) => {
+        const pairAddrs = items.map(i => i.pos.pairAddress).join(',');
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 2000);
+          const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + pairAddrs, { signal: ctrl.signal });
+          clearTimeout(t);
+          if (r.ok) {
+            const d = await r.json();
+            const pairs = Array.isArray(d.pairs) ? d.pairs : (d.pair ? [d.pair] : []);
+            for (const pair of pairs) {
+              const tokenAddr = (pair.baseToken && pair.baseToken.address || '').toLowerCase();
+              if (tokenAddr && pair.priceUsd) priceMap[tokenAddr] = { price: parseFloat(pair.priceUsd), change24h: parseFloat(pair.priceChange && pair.priceChange.h24 || 0) };
+            }
+          }
+        } catch(e) {}
+      });
+      if (tokenFallback.length) {
+        fetches.push((async () => {
+          try {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), 2000);
+            const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + tokenFallback.map(([a]) => a).join(','), { signal: ctrl.signal });
+            clearTimeout(t);
+            if (r.ok) {
+              const d = await r.json();
+              for (const pair of (d.pairs || [])) {
+                const tokenAddr = (pair.baseToken && pair.baseToken.address || '').toLowerCase();
+                if (!tokenAddr || !pair.priceUsd) continue;
+                const liq = parseFloat(pair.liquidity && pair.liquidity.usd || 0);
+                if (!priceMap[tokenAddr] || liq > (priceMap[tokenAddr].liq || 0)) priceMap[tokenAddr] = { price: parseFloat(pair.priceUsd), change24h: parseFloat(pair.priceChange && pair.priceChange.h24 || 0), liq };
+              }
+            }
+          } catch(e) {}
+        })());
+      }
+      await Promise.all(fetches);
+      for (const [addr, pos] of holdings) {
+        const hit = priceMap[addr.toLowerCase()];
+        if (hit) { pos.price = hit.price; pos.change24h = hit.change24h; }
+      }
+      saveGTLocal();
+    } catch(e) {}
+    // Re-render with live prices
+    _paintGT(holdings, ghd);
+  }
 }
 
 function gtSellAll(addr) {
@@ -3731,9 +3735,11 @@ async function gtrade() {
     pos.qty = Math.max(0, pos.qty - qty);
     pos.price = price;
   }
-  const trade = { dir: gtSide, symbol: gtToken.symbol, name: gtToken.name, amt, price, chain: gtToken.chain, time: Date.now() };
+  const tradeUnits = amt / price;
+  const trade = { dir: gtSide, symbol: gtToken.symbol, name: gtToken.name, amt, price, units: tradeUnits, chain: gtToken.chain, time: Date.now() };
   gt.trades.unshift(trade);
   saveGT(); updateGT();
+  if (user) sbData('append', 'ghost_trades', { payload: { type: gtSide.toUpperCase(), symbol: gtToken.symbol, amount: amt, price, units: tradeUnits } });
   document.getElementById('gt-amount').value = '';
   document.getElementById('gt-qty-preview').textContent = 'Qty: —';
   const priceLabel = price < 0.001 ? price.toExponential(2) : price.toFixed(4);
@@ -4716,15 +4722,44 @@ document.getElementById('pwa-install-btn')?.addEventListener('click', async () =
 initAuth();
 loadPrices();
 setInterval(loadPrices, 60000);
-// Live PnL refresh every 3 seconds — direct pair lookup is fast; lock prevents stacking
-let _gtPollBusy = false;
-setInterval(async () => {
-  if (_gtPollBusy) return;
-  if (Object.keys(gt.h).some(k => gt.h[k].qty > 0.000001)) {
-    _gtPollBusy = true;
-    try { await updateGT(true); } finally { _gtPollBusy = false; }
+
+// Live PnL price refresh every 1.5 seconds
+async function gtRefreshPrices() {
+  const entries = Object.entries(gt.h).filter(([, p]) => p.qty > 0.000001);
+  if (!entries.length) return;
+  const priceMap = {};
+  // Try direct pair lookup first (fast, accurate)
+  const byChain = {};
+  const noAddr = [];
+  for (const [addr, pos] of entries) {
+    if (pos.pairAddress && pos.chain) (byChain[pos.chain] = byChain[pos.chain] || []).push({ addr, pos });
+    else noAddr.push(addr);
   }
-}, 3000);
+  const reqs = [];
+  for (const [chain, items] of Object.entries(byChain)) {
+    reqs.push(fetch('https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + items.map(i => i.pos.pairAddress).join(','))
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { for (const p of (d?.pairs || [])) { const a = (p.baseToken?.address || '').toLowerCase(); if (a && p.priceUsd) priceMap[a] = { price: +p.priceUsd, change24h: +(p.priceChange?.h24 || 0) }; } })
+      .catch(() => {}));
+  }
+  // Token address fallback for anything without a pairAddress
+  const fallbackAddrs = [...noAddr, ...entries.filter(([addr, pos]) => pos.pairAddress && pos.chain && !priceMap[addr.toLowerCase()]).map(([a]) => a)];
+  if (noAddr.length) {
+    reqs.push(fetch('https://api.dexscreener.com/latest/dex/tokens/' + noAddr.join(','))
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { for (const p of (d?.pairs || [])) { const a = (p.baseToken?.address || '').toLowerCase(); const liq = +(p.liquidity?.usd || 0); if (a && p.priceUsd && (!priceMap[a] || liq > (priceMap[a].liq || 0))) priceMap[a] = { price: +p.priceUsd, change24h: +(p.priceChange?.h24 || 0), liq }; } })
+      .catch(() => {}));
+  }
+  await Promise.all(reqs);
+  for (const [addr, pos] of entries) {
+    const hit = priceMap[addr.toLowerCase()];
+    if (hit) { pos.price = hit.price; pos.change24h = hit.change24h; }
+  }
+  saveGTLocal();
+  const ghd = document.getElementById('ghd');
+  if (ghd) _paintGT(entries, ghd);
+}
+setInterval(gtRefreshPrices, 1500);
 renderLB();
 renderVaults();
 renderJournal();

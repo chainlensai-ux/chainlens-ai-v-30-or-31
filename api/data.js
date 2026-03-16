@@ -49,14 +49,15 @@ export default async function handler(req, res) {
   const userId = await verifyToken(accessToken);
   if (!userId) return res.status(401).json({ error: 'Invalid session. Please log in again.' });
 
-  const VALID_TABLES = ['proofvault', 'ghost_trades', 'trade_journal', 'price_alerts', 'saved_wallets', 'leaderboard'];
+  const VALID_TABLES = ['proofvault', 'ghost_trades', 'ghost_portfolio', 'trade_journal', 'price_alerts', 'saved_wallets', 'leaderboard'];
   if (!VALID_TABLES.includes(table)) return res.status(400).json({ error: 'Invalid table' });
 
   try {
 
     // ── LOAD all rows for this user ──────────────────────────────────
     if (action === 'load') {
-      const r = await sbQuery(`/rest/v1/${table}?user_id=eq.${userId}&order=created_at.desc`);
+      const orderCol = table === 'ghost_portfolio' ? 'updated_at' : 'created_at';
+      const r = await sbQuery(`/rest/v1/${table}?user_id=eq.${userId}&order=${orderCol}.desc`);
       return res.status(200).json({ success: true, data: r.data || [] });
     }
 
