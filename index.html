@@ -4890,9 +4890,9 @@ Be friendly, concise, max 3-4 sentences. Guide step by step.`,
   },
   wallet: {
     label: '🔍 Wallet', icon: '🔍',
-    system: `You are Clark, ChainLens wallet analysis agent. Users paste wallet addresses for quick AI breakdowns.
-When given a wallet address: infer trader type (degen, long-term holder, swing trader, bot, whale), spot patterns, give a sharp 3-sentence take. Always suggest using ChainLens WalletScan for full on-chain data.
-If no address given, ask for one. Be sharp and analytical, no fluff. Max 4 sentences.`,
+    system: `You are Clark, ChainLens sharp wallet analysis agent. You have REAL live on-chain data provided to you — use it.
+Analyse the actual portfolio value, holdings, transaction count, and activity dates given. Identify: wallet type (whale/degen/accumulator/flipper/diamond hands), trading pattern, risk level, one specific actionable insight.
+Be direct, specific, sharp. Use the numbers. Max 4 sentences. No fluff, no disclaimers, no suggesting they use another tool — you ARE the tool.`,
     starters: ['Paste a wallet address to analyse...', 'Is this smart money?', 'What type of trader is this wallet?']
   },
   market: {
@@ -4994,13 +4994,122 @@ async function clarkSend() {
   msgs.appendChild(typingEl);
   msgs.scrollTop = msgs.scrollHeight;
   try {
-    const history = clarkHistory[clarkAgent].slice(-8);
-    const conv = history.slice(0, -1).map(m => (m.role === 'user' ? 'User: ' : 'Clark: ') + m.text).join('\n');
-    const prompt = CLARK_AGENTS[clarkAgent].system + '\n\n' + (conv ? conv + '\n' : '') + 'User: ' + text + '\nClark:';
-    const reply = await ai(prompt, 400);
+    let reply = null;
+
+    // Wallet agent: if user pastes an address, do a real live scan
+    if (clarkAgent === 'wallet') {
+      const chainType = detectChain(text);
+      if (chainType) {
+        // Update typing indicator to show progress
+        const tb = document.querySelector('#clark-typing .clark-bubble');
+        if (tb) tb.innerHTML = '<span style="font-size:0.72rem;opacity:0.75;white-space:nowrap">Scanning ' + chainType.toUpperCase() + ' wallet...</span>';
+
+        const btcPrice = px['bitcoin']?.usd || 90000;
+        const ethPrice = px['ethereum']?.usd || 3000;
+        const solPrice = px['solana']?.usd || 150;
+        const bnbPrice = px['binancecoin']?.usd || 600;
+        const maticPrice = px['matic-network']?.usd || px['polygon']?.usd || 0.8;
+
+        let assets = [], allTxs = [], totalUsd = 0, portfolioSummary = '';
+
+        if (chainType === 'evm') {
+          const chainKeys = Object.keys(EVM_CHAINS);
+          const [allEvmData, allEvmTxs] = await Promise.all([
+            Promise.allSettled(chainKeys.map(c => fetchEVM(text, c))),
+            Promise.allSettled(chainKeys.map(c => fetchAllTxsEVM(text, c)))
+          ]);
+          chainKeys.forEach((evmChain, i) => {
+            const cfg = EVM_CHAINS[evmChain];
+            const nativePrice = evmChain === 'bnb' ? bnbPrice : evmChain === 'polygon' ? maticPrice : ethPrice;
+            if (allEvmData[i].status === 'fulfilled') {
+              const d = allEvmData[i].value;
+              if (d.nativeBal > 0.00001) assets.push({ symbol: cfg.symbol, name: cfg.name + ' (' + evmChain.toUpperCase() + ')', balance: d.nativeBal, usdValue: d.nativeBal * nativePrice, chain: evmChain });
+              d.tokens.forEach(t => assets.push({ ...t, usdValue: 0, chain: evmChain }));
+            }
+            if (allEvmTxs[i].status === 'fulfilled') allTxs = allTxs.concat(allEvmTxs[i].value);
+          });
+          allTxs = allTxs.sort((a, b) => parseInt(b.timeStamp || 0) - parseInt(a.timeStamp || 0)).slice(0, 100);
+          const tokenAssets = assets.filter(a => a.contractAddress);
+          if (tokenAssets.length) {
+            if (tb) tb.innerHTML = '<span style="font-size:0.72rem;opacity:0.75">Fetching token prices...</span>';
+            const priceMap = await fetchTokenPrices(tokenAssets);
+            assets.forEach(a => {
+              if (a.contractAddress) {
+                const addr = a.contractAddress.toLowerCase();
+                a.price = priceMap[addr] != null ? priceMap[addr] : null;
+                a.usdValue = a.price != null ? a.price * a.balance : null;
+              }
+            });
+          }
+          totalUsd = assets.reduce((s, a) => s + (a.usdValue || 0), 0);
+          portfolioSummary = 'Multi-chain EVM: ' + [...new Set(assets.map(a => a.chain))].join(', ') + ' | Assets: ' + assets.length + ' | Txs: ' + allTxs.length;
+
+        } else if (chainType === 'btc') {
+          const btc = await fetchBTC(text);
+          allTxs = btc.txs || [];
+          assets = [{ symbol: 'BTC', name: 'Bitcoin', balance: btc.nativeBal, usdValue: btc.nativeBal * btcPrice, chain: 'btc' }];
+          totalUsd = btc.nativeBal * btcPrice;
+          portfolioSummary = `BTC: ${btc.nativeBal.toFixed(6)} | Txs: ${btc.txCount || allTxs.length}`;
+
+        } else if (chainType === 'sol') {
+          const sol = await fetchSOL(text);
+          allTxs = sol.txs || [];
+          assets = [{ symbol: 'SOL', name: 'Solana', balance: sol.nativeBal, usdValue: sol.nativeBal * solPrice, chain: 'sol' }];
+          sol.tokens.forEach(t => assets.push({ ...t, usdValue: 0, chain: 'sol' }));
+          const splTokens = sol.tokens.filter(t => t.mint);
+          if (splTokens.length) {
+            const splPriceMap = await fetchTokenPrices(splTokens);
+            assets.forEach(a => {
+              if (a.mint) { const p = splPriceMap[a.mint.toLowerCase()]; if (p != null) { a.price = p; a.usdValue = p * a.balance; } }
+            });
+          }
+          totalUsd = assets.reduce((s, a) => s + (a.usdValue || 0), 0);
+          portfolioSummary = `SOL: ${sol.nativeBal.toFixed(4)} | SPL Tokens: ${sol.tokens.length} | Txs: ${sol.txs.length}`;
+        }
+
+        // Build analysis data for AI
+        const nativeSyms = ['ETH','BNB','MATIC','BTC','SOL','WETH','WBNB'];
+        const tokenCount = assets.filter(a => !nativeSyms.includes(a.symbol)).length;
+        const topAssets = [...assets].sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0)).slice(0, 6)
+          .map(a => `${a.symbol} ($${((a.usdValue || 0)).toLocaleString('en-US', { maximumFractionDigits: 0 })})`).join(', ');
+        const timestamps = allTxs.map(tx => parseInt(tx.timeStamp || tx.time || 0)).filter(Boolean);
+        const firstTs = timestamps.length ? Math.min(...timestamps) : 0;
+        const lastTs = timestamps.length ? Math.max(...timestamps) : 0;
+        const firstDate = firstTs ? new Date(firstTs * 1000).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'unknown';
+        const lastDate = lastTs ? new Date(lastTs * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown';
+
+        const aiPrompt = [
+          CLARK_AGENTS.wallet.system,
+          '',
+          'LIVE SCAN DATA:',
+          'WALLET: ' + text.slice(0, 10) + '...' + text.slice(-6) + ' (' + chainType.toUpperCase() + ')',
+          'PORTFOLIO VALUE: $' + totalUsd.toLocaleString('en-US', { maximumFractionDigits: 0 }),
+          'HOLDINGS: ' + portfolioSummary,
+          'TOP ASSETS: ' + (topAssets || 'none'),
+          'ALT TOKEN COUNT: ' + tokenCount,
+          'ACTIVITY: ' + allTxs.length + ' transactions, first seen ' + firstDate + ', last active ' + lastDate,
+          '',
+          'Now give your sharp analysis of this wallet:'
+        ].join('\n');
+
+        if (tb) tb.innerHTML = '<span style="font-size:0.72rem;opacity:0.75">Analysing...</span>';
+        const aiReply = await ai(aiPrompt, 500);
+        const portfolioLine = `**$${totalUsd.toLocaleString('en-US', { maximumFractionDigits: 0 })}** portfolio · ${assets.length} assets · ${allTxs.length} txs · ${chainType.toUpperCase()}`;
+        reply = portfolioLine + '\n\n' + aiReply.trim();
+      }
+    }
+
+    // Default: generic AI response (all other agents, or wallet agent with non-address input)
+    if (!reply) {
+      const history = clarkHistory[clarkAgent].slice(-8);
+      const conv = history.slice(0, -1).map(m => (m.role === 'user' ? 'User: ' : 'Clark: ') + m.text).join('\n');
+      const prompt = CLARK_AGENTS[clarkAgent].system + '\n\n' + (conv ? conv + '\n' : '') + 'User: ' + text + '\nClark:';
+      reply = await ai(prompt, 400);
+    }
+
     clarkHistory[clarkAgent].push({ role: 'bot', text: reply.trim() });
   } catch(e) {
-    clarkHistory[clarkAgent].push({ role: 'bot', text: 'Sorry, something went wrong. Try again.' });
+    clarkHistory[clarkAgent].push({ role: 'bot', text: 'Scan failed: ' + (e.message || 'unknown error') + '. Try again.' });
   }
   clarkBusy = false;
   clarkRender();
