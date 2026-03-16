@@ -15,6 +15,7 @@ export default async function handler(req, res) {
     'api.polygonscan.com',
     'blockchain.info',
     'blockstream.info',
+    'mempool.space',
     'api.blockchair.com',
     'api.mainnet-beta.solana.com',
     'rpc.ankr.com',
@@ -22,7 +23,7 @@ export default async function handler(req, res) {
     'api.dexscreener.com',
     'token.jup.ag',
     'tokens.jup.ag',
-'api.alternative.me'
+    'api.alternative.me'
   ];
   if (!allowed.some(d => url.includes(d))) {
     return res.status(403).json({ error: 'Domain not allowed: ' + url });
@@ -35,10 +36,12 @@ export default async function handler(req, res) {
     if (body) fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
     const response = await fetch(url, fetchOptions);
     const text = await response.text();
+    // Pass upstream status through so callers can detect errors
+    const status = response.ok ? 200 : response.status;
     try {
-      return res.status(200).json(JSON.parse(text));
+      return res.status(status).json(JSON.parse(text));
     } catch {
-      return res.status(200).send(text);
+      return res.status(status).send(text);
     }
   } catch (err) {
     return res.status(500).json({ error: err.message });
