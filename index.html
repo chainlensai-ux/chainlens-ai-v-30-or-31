@@ -1192,6 +1192,51 @@ body::after {
 }
 .cl-saved-wallet:hover { border-color: var(--cl-border-strong); }
 
+
+/* ── CLARK BOT ── */
+#clark-fab{position:fixed;bottom:24px;right:24px;z-index:9000;width:58px;height:58px;border-radius:50%;background:linear-gradient(135deg,#7858c0,#00ffc8);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 24px rgba(120,88,192,0.5);transition:transform 0.2s,box-shadow 0.2s;}
+#clark-fab:hover{transform:scale(1.08);box-shadow:0 6px 32px rgba(120,88,192,0.7);}
+#clark-fab svg{width:26px;height:26px;fill:#fff;transition:transform 0.3s;}
+#clark-fab.open svg{transform:rotate(45deg);}
+#clark-badge{position:absolute;top:-2px;right:-2px;width:18px;height:18px;background:#00ffc8;border-radius:50%;font-size:9px;font-weight:800;color:#050407;display:flex;align-items:center;justify-content:center;border:2px solid #050407;}
+#clark-win{position:fixed;bottom:96px;right:24px;z-index:8999;width:360px;height:540px;background:var(--cl-surface-2);border:1px solid var(--cl-border-strong);border-radius:20px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 64px rgba(0,0,0,0.6);transform:scale(0.92) translateY(20px);opacity:0;pointer-events:none;transition:transform 0.25s cubic-bezier(.4,0,.2,1),opacity 0.25s ease;}
+#clark-win.open{transform:scale(1) translateY(0);opacity:1;pointer-events:all;}
+#clark-header{padding:14px 16px 0;flex-shrink:0;}
+#clark-title{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+#clark-avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#7858c0,#00ffc8);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
+#clark-name{font-size:13px;font-weight:800;color:var(--cl-text);}
+#clark-status{font-size:10px;color:#00ffc8;}
+#clark-agents{display:flex;gap:6px;overflow-x:auto;padding-bottom:12px;scrollbar-width:none;}
+#clark-agents::-webkit-scrollbar{display:none;}
+.clark-agent-btn{flex-shrink:0;padding:5px 11px;border-radius:20px;border:1px solid var(--cl-border);background:transparent;color:var(--cl-text-3);font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap;transition:all 0.15s;font-family:inherit;}
+.clark-agent-btn:hover{border-color:rgba(120,88,192,0.4);color:var(--cl-text-2);}
+.clark-agent-btn.active{background:rgba(120,88,192,0.15);border-color:rgba(120,88,192,0.5);color:var(--cl-violet-light);}
+#clark-msgs{flex:1;overflow-y:auto;padding:0 14px;display:flex;flex-direction:column;gap:10px;scrollbar-width:thin;scrollbar-color:rgba(120,88,192,0.2) transparent;}
+#clark-msgs::-webkit-scrollbar{width:3px;}
+#clark-msgs::-webkit-scrollbar-thumb{background:rgba(120,88,192,0.25);border-radius:3px;}
+.clark-msg{display:flex;gap:8px;align-items:flex-end;animation:clarkMsgIn 0.2s ease;}
+@keyframes clarkMsgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.clark-msg.user{flex-direction:row-reverse;}
+.clark-bubble{max-width:82%;padding:9px 12px;border-radius:14px;font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
+.clark-msg.bot .clark-bubble{background:rgba(120,88,192,0.1);border:1px solid rgba(120,88,192,0.2);color:var(--cl-text-2);border-bottom-left-radius:4px;}
+.clark-msg.user .clark-bubble{background:rgba(120,88,192,0.2);border:1px solid rgba(120,88,192,0.35);color:var(--cl-text);border-bottom-right-radius:4px;}
+.clark-dot{width:28px;height:28px;border-radius:50%;flex-shrink:0;}
+.clark-msg.bot .clark-dot{background:linear-gradient(135deg,#7858c0,#b090e8);display:flex;align-items:center;justify-content:center;font-size:13px;}
+.clark-msg.user .clark-dot{background:rgba(255,255,255,0.08);border:1px solid var(--cl-border);}
+.clark-typing span{display:inline-block;width:5px;height:5px;background:var(--cl-text-3);border-radius:50%;margin:0 1px;animation:clarkDot 1.2s infinite;}
+.clark-typing span:nth-child(2){animation-delay:0.2s;}
+.clark-typing span:nth-child(3){animation-delay:0.4s;}
+@keyframes clarkDot{0%,60%,100%{transform:translateY(0);opacity:0.4}30%{transform:translateY(-4px);opacity:1}}
+#clark-starters{padding:6px 14px;display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;}
+.clark-starter{padding:4px 10px;border-radius:16px;border:1px solid var(--cl-border);background:transparent;color:var(--cl-text-3);font-size:10px;cursor:pointer;white-space:nowrap;transition:all 0.15s;font-family:inherit;max-width:200px;overflow:hidden;text-overflow:ellipsis;}
+.clark-starter:hover{border-color:rgba(120,88,192,0.4);color:var(--cl-text-2);background:rgba(120,88,192,0.06);}
+#clark-foot{padding:10px 14px 14px;flex-shrink:0;display:flex;gap:8px;align-items:center;}
+#clark-input{flex:1;background:rgba(120,88,192,0.06);border:1px solid var(--cl-border);border-radius:20px;padding:9px 14px;font-size:12px;color:var(--cl-text);font-family:inherit;outline:none;resize:none;max-height:80px;line-height:1.4;}
+#clark-input:focus{border-color:rgba(120,88,192,0.4);}
+#clark-send{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#7858c0,#b090e8);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity 0.15s;}
+#clark-send:hover{opacity:0.85;}
+#clark-send svg{width:14px;height:14px;fill:#fff;}
+@media(max-width:420px){#clark-win{width:calc(100vw - 24px);right:12px;bottom:88px;height:500px;}}
 </style>
 
 </head>
@@ -4767,6 +4812,179 @@ initFxBtns();
 updateWLCount();
 if (priceAlerts.length) startAlertChecker();
 
+// ── CLARK BOT ──────────────────────────────────────────────────────────────
+const CLARK_AGENTS = {
+  onboarding: {
+    label: '🧭 Guide', icon: '🧭',
+    system: `You are Clark, ChainLens AI's onboarding guide. Help new users get started fast. ChainLens features:
+• GhostTrade — paper trade with $50k virtual portfolio, live P&L tracking
+• EdgeScan — AI-powered trade question answering with data-backed insights
+• BearProof — portfolio risk analysis and AI scoring
+• DipRadar — find tokens at support levels, AI tells you dip vs trap
+• ProofVault — make price predictions, track accuracy, climb leaderboard
+• PumpAlert — real-time pump detection with AI analysis
+• WalletScan — deep-dive any wallet: holdings, PnL, trade history
+• SmartWallets — follow top wallets, see what insiders buy/sell
+• Narrative Radar — track trending crypto narratives and meta plays
+• Sentiment — market sentiment analysis across tokens
+• Trade Coach — AI coaching for your trade decisions
+• TaxMate — crypto tax calculation tool
+• Token Unlocks — upcoming token unlock events calendar
+• Price Alerts — set alerts for any token price target
+Plans: Free (GhostTrade, WalletScan, ProofVault basics), Pro $30/mo (all tools), Elite $60/mo (everything + priority).
+Be friendly, concise, max 3-4 sentences. Guide step by step.`,
+    starters: ['How do I start?', 'What tools are free?', 'How does GhostTrade work?', 'Best tool for beginners?']
+  },
+  wallet: {
+    label: '🔍 Wallet', icon: '🔍',
+    system: `You are Clark, ChainLens wallet analysis agent. Users paste wallet addresses for quick AI breakdowns.
+When given a wallet address: infer trader type (degen, long-term holder, swing trader, bot, whale), spot patterns, give a sharp 3-sentence take. Always suggest using ChainLens WalletScan for full on-chain data.
+If no address given, ask for one. Be sharp and analytical, no fluff. Max 4 sentences.`,
+    starters: ['Paste a wallet address to analyse...', 'Is this smart money?', 'What type of trader is this wallet?']
+  },
+  market: {
+    label: '📡 Intel', icon: '📡',
+    system: `You are Clark, ChainLens market intelligence agent. Give sharp takes on tokens, narratives, and market conditions.
+For each query: quick directional take (bullish/bearish/neutral + one reason), top 2 ChainLens tools to dig deeper, one key risk or thing to watch.
+ChainLens tools: Narrative Radar (meta/narrative plays), DipRadar (buy opportunities), PumpAlert (momentum), SmartWallets (insider activity), Signals (technical), EdgeScan (deep analysis).
+Be direct, no financial advice disclaimers, max 4 sentences.`,
+    starters: ['What narrative is hot right now?', 'Is BTC bullish or bearish?', 'Best sector to watch?', 'AI token plays?']
+  },
+  support: {
+    label: '💬 Support', icon: '💬',
+    system: `You are Clark, ChainLens support agent. Answer questions about features, pricing, how things work.
+Plans: Free (GhostTrade, basic WalletScan, ProofVault, Trade Journal, Price Alerts) | Pro $30/mo (adds EdgeScan, BearProof, DipRadar, TradeCoach, TaxMate, Narrative, Sentiment, SmartWallets, Signals, PumpAlert, Token Unlocks) | Elite $60/mo (all Pro features + priority support + advanced).
+GhostTrade is fully free. WalletScan basic is free. Most AI tools require Pro.
+Be clear and helpful, max 3-4 sentences. If unsure, say to email support@chainlens.ai`,
+    starters: ["What's in Pro?", 'Is GhostTrade free?', 'How do I upgrade?', 'What does Elite include?']
+  },
+  alpha: {
+    label: '⚡ Alpha', icon: '⚡',
+    system: `You are Clark, ChainLens alpha validation agent. Users describe trade ideas, you tell them which ChainLens tools to use to validate.
+For each trade idea respond with: 1) Quick take (bullish/bearish/neutral + one sentence why), 2) Top 2 ChainLens tools to validate it, 3) One key thing to confirm before entering.
+Tools: DipRadar (dip buys/support plays), PumpAlert (momentum/breakout entries), Narrative Radar (meta plays), SmartWallets (smart money confirmation), EdgeScan (custom deep analysis), Signals (technical confirmation), BearProof (portfolio risk check).
+Be sharp, direct, no fluff. Max 4 sentences total.`,
+    starters: ['Validate my trade: ', 'I want to buy this dip...', 'Is this a good entry?', 'Should I take profits?']
+  }
+};
+
+let clarkOpen = false;
+let clarkAgent = 'onboarding';
+let clarkBusy = false;
+const clarkHistory = { onboarding: [], wallet: [], market: [], support: [], alpha: [] };
+
+function clarkToggle() {
+  clarkOpen = !clarkOpen;
+  document.getElementById('clark-win').classList.toggle('open', clarkOpen);
+  document.getElementById('clark-fab').classList.toggle('open', clarkOpen);
+  document.getElementById('clark-badge').style.display = clarkOpen ? 'none' : 'flex';
+  if (clarkOpen && !clarkHistory[clarkAgent].length) clarkGreet();
+}
+
+function clarkSwitch(agent, btn) {
+  clarkAgent = agent;
+  document.querySelectorAll('.clark-agent-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  clarkRender();
+  if (!clarkHistory[agent].length) clarkGreet();
+}
+
+function clarkGreet() {
+  const greetings = {
+    onboarding: "Hey! I'm Clark 👋 I'll help you get the most out of ChainLens. What would you like to explore first?",
+    wallet: "Hey, I'm Clark 🔍 Paste any wallet address and I'll give you a quick breakdown of what I see.",
+    market: "Clark here 📡 Ask me about any token, narrative, or market condition — I'll give you a sharp take.",
+    support: "Hey! I'm Clark 💬 Ask me anything about ChainLens features, pricing, or how things work.",
+    alpha: "Clark here ⚡ Drop your trade idea and I'll tell you exactly which ChainLens tools to use to validate it."
+  };
+  clarkHistory[clarkAgent].push({ role: 'bot', text: greetings[clarkAgent] });
+  clarkRender();
+}
+
+function clarkRender() {
+  const msgs = document.getElementById('clark-msgs');
+  const agent = CLARK_AGENTS[clarkAgent];
+  msgs.innerHTML = clarkHistory[clarkAgent].map(m => `
+    <div class="clark-msg ${m.role}">
+      <div class="clark-dot">${m.role === 'bot' ? agent.icon : ''}</div>
+      <div class="clark-bubble">${m.text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+    </div>`).join('');
+  msgs.scrollTop = msgs.scrollHeight;
+  // Starters only when conversation is fresh
+  const starters = document.getElementById('clark-starters');
+  starters.innerHTML = clarkHistory[clarkAgent].length <= 1
+    ? agent.starters.map(s => `<button class="clark-starter" onclick="clarkQuick(this.textContent)">${s}</button>`).join('')
+    : '';
+}
+
+function clarkQuick(text) {
+  document.getElementById('clark-input').value = text;
+  document.getElementById('clark-input').focus();
+}
+
+async function clarkSend() {
+  if (clarkBusy) return;
+  const inp = document.getElementById('clark-input');
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = '';
+  inp.style.height = 'auto';
+  clarkBusy = true;
+  clarkHistory[clarkAgent].push({ role: 'user', text });
+  clarkRender();
+  // Show typing indicator
+  const msgs = document.getElementById('clark-msgs');
+  const typingEl = document.createElement('div');
+  typingEl.className = 'clark-msg bot';
+  typingEl.id = 'clark-typing';
+  typingEl.innerHTML = `<div class="clark-dot">${CLARK_AGENTS[clarkAgent].icon}</div><div class="clark-bubble clark-typing"><span></span><span></span><span></span></div>`;
+  msgs.appendChild(typingEl);
+  msgs.scrollTop = msgs.scrollHeight;
+  try {
+    const history = clarkHistory[clarkAgent].slice(-8);
+    const conv = history.slice(0, -1).map(m => (m.role === 'user' ? 'User: ' : 'Clark: ') + m.text).join('\n');
+    const prompt = CLARK_AGENTS[clarkAgent].system + '\n\n' + (conv ? conv + '\n' : '') + 'User: ' + text + '\nClark:';
+    const reply = await ai(prompt, 400);
+    clarkHistory[clarkAgent].push({ role: 'bot', text: reply.trim() });
+  } catch(e) {
+    clarkHistory[clarkAgent].push({ role: 'bot', text: 'Sorry, something went wrong. Try again.' });
+  }
+  clarkBusy = false;
+  clarkRender();
+}
+
+// Init Clark
+clarkRender();
+setTimeout(() => { if (!clarkHistory[clarkAgent].length) clarkGreet(); }, 500);
+
 </script>
+
+<!-- ── CLARK BOT ── -->
+<button id="clark-fab" onclick="clarkToggle()" aria-label="Clark AI Assistant">
+  <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12c0 1.85.5 3.58 1.37 5.07L2 22l4.93-1.37A9.94 9.94 0 0012 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+  <span id="clark-badge">5</span>
+</button>
+<div id="clark-win" role="dialog" aria-label="Clark AI Assistant">
+  <div id="clark-header">
+    <div id="clark-title">
+      <div id="clark-avatar">🤖</div>
+      <div><div id="clark-name">Clark</div><div id="clark-status">● Online</div></div>
+    </div>
+    <div id="clark-agents">
+      <button class="clark-agent-btn active" onclick="clarkSwitch('onboarding',this)">🧭 Guide</button>
+      <button class="clark-agent-btn" onclick="clarkSwitch('wallet',this)">🔍 Wallet</button>
+      <button class="clark-agent-btn" onclick="clarkSwitch('market',this)">📡 Market Intel</button>
+      <button class="clark-agent-btn" onclick="clarkSwitch('support',this)">💬 Support</button>
+      <button class="clark-agent-btn" onclick="clarkSwitch('alpha',this)">⚡ Alpha</button>
+    </div>
+  </div>
+  <div id="clark-msgs"></div>
+  <div id="clark-starters"></div>
+  <div id="clark-foot">
+    <textarea id="clark-input" rows="1" placeholder="Ask Clark anything..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();clarkSend()}" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,80)+'px'"></textarea>
+    <button id="clark-send" onclick="clarkSend()"><svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
+  </div>
+</div>
+
 </body>
 </html>
