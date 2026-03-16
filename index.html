@@ -1134,212 +1134,399 @@ body::after {
 }
 
 /* ════════════════════════════════════════════
-   WALLETSCAN™  —  Nansen/Arkham terminal UI
+   WALLETSCAN™  —  Black · White · Mint
+   Surgical fintech terminal. Zero compromise.
 ════════════════════════════════════════════ */
+
+/* Scoped token overrides — wipe purple from all JS-rendered content */
+#pg-walletscan {
+  --cl-text:   #ffffff;
+  --cl-text-2: rgba(255,255,255,0.6);
+  --cl-text-3: rgba(255,255,255,0.28);
+  --cl-border: rgba(255,255,255,0.05);
+  --cl-violet: rgba(255,255,255,0.55);
+  --cl-cyan:   #00ffc8;
+  background: #000000;
+}
+
+/* ── Page header ─────────────────────────── */
+.ws-page-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 28px;
+  padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.ws-back-btn {
+  display: flex; align-items: center; gap: 6px;
+  background: transparent; border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px; padding: 6px 12px; cursor: pointer;
+  font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.4);
+  font-family: 'DM Sans', sans-serif; transition: all 0.2s; letter-spacing: 0.5px;
+}
+.ws-back-btn:hover { border-color: rgba(255,255,255,0.2); color: #ffffff; }
+.ws-page-title {
+  font-family: 'JetBrains Mono', monospace; font-size: 14px;
+  font-weight: 800; color: #ffffff; letter-spacing: 1px;
+}
+.ws-page-title sup {
+  font-size: 8px; color: rgba(0,255,200,0.6); vertical-align: super;
+  letter-spacing: 0; margin-left: 1px;
+}
+
+/* ── Scanner bar ─────────────────────────── */
 .ws-scanner-wrap { margin-bottom: 20px; }
 .ws-scanner-bar {
-  display: flex; align-items: center; gap: 10px;
-  background: rgba(255,255,255,0.025);
-  border: 1px solid rgba(0,255,200,0.12);
-  border-radius: 14px; padding: 8px 8px 8px 16px;
-  margin-bottom: 10px; transition: border-color 0.2s;
+  display: flex; align-items: center; gap: 0;
+  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px; overflow: hidden; margin-bottom: 10px;
+  transition: border-color 0.2s;
 }
-.ws-scanner-bar:focus-within { border-color: rgba(0,255,200,0.35); box-shadow: 0 0 0 3px rgba(0,255,200,0.05); }
-.ws-scan-icon { color: rgba(0,255,200,0.35); flex-shrink:0; display:flex; align-items:center; }
+.ws-scanner-bar:focus-within {
+  border-color: rgba(0,255,200,0.5);
+  box-shadow: 0 0 0 3px rgba(0,255,200,0.04);
+}
+.ws-scan-icon {
+  padding: 0 16px; height: 54px; flex-shrink: 0;
+  color: rgba(255,255,255,0.22); display: flex; align-items: center;
+  border-right: 1px solid rgba(255,255,255,0.07);
+}
 .ws-input {
-  flex:1; background:transparent; border:none; outline:none;
-  font-family:'JetBrains Mono',monospace; font-size:13px; color:#e2e2e2; min-width:0;
+  flex: 1; background: transparent; border: none; outline: none;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
+  color: #ffffff; min-width: 0; padding: 0 16px; height: 54px;
 }
 .ws-input::placeholder { color: rgba(255,255,255,0.18); }
-.ws-scan-btn {
-  padding: 10px 22px; background: #00ffc8; border: none; border-radius: 10px;
-  font-size: 11px; font-weight: 900; color: #020208; cursor: pointer;
-  letter-spacing: 2px; font-family: 'DM Sans', sans-serif;
-  transition: opacity 0.2s, transform 0.15s; flex-shrink: 0; white-space: nowrap;
-}
-.ws-scan-btn:hover { opacity: 0.85; transform: translateY(-1px); }
-.ws-scan-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
 .ws-save-btn {
-  padding: 10px 14px; background: transparent; border: 1px solid rgba(0,255,200,0.18);
-  border-radius: 10px; font-size: 10px; font-weight: 800; color: rgba(0,255,200,0.55);
-  cursor: pointer; flex-shrink: 0; letter-spacing: 1.5px; font-family: 'DM Sans', sans-serif;
-  transition: all 0.2s;
+  height: 54px; padding: 0 16px; background: transparent; border: none;
+  border-left: 1px solid rgba(255,255,255,0.07);
+  font-size: 10px; font-weight: 800; color: rgba(255,255,255,0.3);
+  cursor: pointer; letter-spacing: 1.5px; font-family: 'DM Sans', sans-serif;
+  transition: all 0.15s; white-space: nowrap; flex-shrink: 0;
 }
-.ws-save-btn:hover { border-color: rgba(0,255,200,0.4); color: #00ffc8; }
+.ws-save-btn:hover { background: rgba(0,255,200,0.04); color: #00ffc8; }
+.ws-scan-btn {
+  height: 54px; padding: 0 28px; background: #00ffc8; border: none;
+  font-size: 10px; font-weight: 900; color: #000000; cursor: pointer;
+  letter-spacing: 2.5px; font-family: 'DM Sans', sans-serif;
+  transition: background 0.2s; flex-shrink: 0; white-space: nowrap;
+  border-radius: 0 11px 11px 0;
+}
+.ws-scan-btn:hover { background: #00e6b4; }
+.ws-scan-btn:disabled { background: rgba(0,255,200,0.25); color: rgba(0,0,0,0.4); cursor: not-allowed; }
+
+/* ── Chain selector ──────────────────────── */
 .ws-chain-selector {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 10px 14px;
-  background: rgba(0,255,200,0.015); border: 1px solid rgba(0,255,200,0.07);
+  padding: 10px 14px; background: #0a0a0a;
+  border: 1px solid rgba(255,255,255,0.06);
   border-radius: 10px; margin-bottom: 10px;
 }
 .ws-chain-label {
-  font-size: 9px; font-weight: 800; letter-spacing: 2px; text-transform: uppercase;
-  color: rgba(0,255,200,0.4); font-family: 'DM Sans', sans-serif; white-space: nowrap;
+  font-size: 9px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+  color: rgba(255,255,255,0.28); font-family: 'DM Sans', sans-serif; white-space: nowrap;
 }
-.ws-chain-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.ws-chain-pills { display: flex; gap: 5px; flex-wrap: wrap; }
 .ws-chain-pill {
-  padding: 5px 13px; border-radius: 6px;
-  border: 1px solid rgba(0,255,200,0.12); background: transparent;
-  color: rgba(0,255,200,0.4); font-size: 9px; font-weight: 800; letter-spacing: 1.5px;
+  padding: 5px 12px; border-radius: 5px; background: #000000;
+  border: 1px solid rgba(255,255,255,0.08); color: rgba(255,255,255,0.35);
+  font-size: 9px; font-weight: 800; letter-spacing: 1.5px;
   cursor: pointer; font-family: 'JetBrains Mono', monospace; transition: all 0.15s;
 }
-.ws-chain-pill:hover { border-color: rgba(0,255,200,0.3); color: rgba(0,255,200,0.75); }
-.ws-multi-chain-note { font-size: 10px; color: rgba(255,255,255,0.15); font-family: 'DM Sans', sans-serif; margin-left: auto; }
-.ws-network-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ws-chain-pill:hover { border-color: rgba(255,255,255,0.22); color: rgba(255,255,255,0.7); }
+.ws-multi-chain-note { font-size: 10px; color: rgba(255,255,255,0.14); font-family: 'DM Sans', sans-serif; margin-left: auto; }
+
+/* ── Network badges ──────────────────────── */
+.ws-network-badges { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .ws-badge {
-  font-size: 9px; font-weight: 800; letter-spacing: 1.5px;
-  padding: 3px 9px; border-radius: 4px; font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; font-weight: 700; letter-spacing: 1px; padding: 3px 8px;
+  border-radius: 4px; font-family: 'JetBrains Mono', monospace;
+  background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.28);
+  border: 1px solid rgba(255,255,255,0.05);
 }
-.ws-badge--eth { background:rgba(120,88,192,0.1);  color:rgba(140,100,210,0.7); border:1px solid rgba(120,88,192,0.15); }
-.ws-badge--bnb { background:rgba(240,180,41,0.08); color:rgba(240,180,41,0.65); border:1px solid rgba(240,180,41,0.12); }
-.ws-badge--base{ background:rgba(80,130,220,0.08); color:rgba(100,150,230,0.65); border:1px solid rgba(80,130,220,0.12); }
-.ws-badge--sol { background:rgba(0,255,200,0.06);  color:rgba(0,255,200,0.55);  border:1px solid rgba(0,255,200,0.1);  }
-.ws-badge--btc { background:rgba(247,147,26,0.08); color:rgba(247,147,26,0.65); border:1px solid rgba(247,147,26,0.12); }
-.ws-badge-sep  { width:1px; height:14px; background:rgba(255,255,255,0.07); margin:0 2px; }
+.ws-badge--sol { color: rgba(0,255,200,0.55); border-color: rgba(0,255,200,0.1); background: rgba(0,255,200,0.04); }
+.ws-badge-sep { width: 1px; height: 12px; background: rgba(255,255,255,0.06); margin: 0 3px; }
+
+/* ── Empty state ─────────────────────────── */
 .ws-placeholder {
-  text-align:center; padding:100px 20px;
-  display:flex; flex-direction:column; align-items:center; gap:14px;
+  text-align: center; padding: 100px 20px;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
 }
 .ws-placeholder-graphic {
-  width:84px; height:84px; display:flex; align-items:center; justify-content:center;
-  border:1px solid rgba(0,255,200,0.1); border-radius:50%;
-  background:rgba(0,255,200,0.025); margin-bottom:4px;
+  width: 80px; height: 80px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(255,255,255,0.07); border-radius: 50%; background: #0a0a0a;
+  margin-bottom: 4px;
 }
-.ws-placeholder-title { font-size:15px; font-weight:600; color:rgba(255,255,255,0.3); font-family:'DM Sans',sans-serif; }
-.ws-placeholder-sub   { font-size:11px; color:rgba(255,255,255,0.15); font-family:'DM Sans',sans-serif; }
-@keyframes wsFadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
-.ws-fade-in { animation: wsFadeIn 0.4s ease forwards; }
-.ws-portfolio-header {
-  display:flex; align-items:flex-start; justify-content:space-between; gap:24px;
-  background:rgba(255,255,255,0.025); border:1px solid rgba(0,255,200,0.12);
-  border-radius:16px; padding:26px 28px; margin-bottom:12px;
-  position:relative; overflow:hidden;
+.ws-placeholder-title { font-size: 15px; font-weight: 500; color: rgba(255,255,255,0.3); font-family: 'DM Sans', sans-serif; }
+.ws-placeholder-sub   { font-size: 12px; color: rgba(255,255,255,0.15); font-family: 'DM Sans', sans-serif; }
+
+/* ── Results fade-in ─────────────────────── */
+@keyframes wsFadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.ws-fade-in { animation: wsFadeIn 0.3s ease forwards; }
+
+/* ── Metrics row ─────────────────────────── */
+.ws-metrics-row {
+  display: grid; grid-template-columns: 1fr auto;
+  gap: 10px; margin-bottom: 10px; align-items: start;
 }
-.ws-portfolio-header::before {
-  content:''; position:absolute; top:-50px; right:-50px;
-  width:220px; height:220px;
-  background:radial-gradient(circle,rgba(0,255,200,0.07) 0%,transparent 65%);
-  pointer-events:none;
+.ws-value-block {
+  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px; padding: 24px 26px; position: relative; overflow: hidden;
 }
-.ws-portfolio-left { flex:1; min-width:0; }
+.ws-value-block::after {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(0,255,200,0.4) 40%, transparent 100%);
+}
 .ws-portfolio-label {
-  font-size:9px; font-weight:800; letter-spacing:2.5px; text-transform:uppercase;
-  color:rgba(0,255,200,0.45); font-family:'DM Sans',sans-serif; margin-bottom:8px;
+  font-size: 9px; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase;
+  color: rgba(255,255,255,0.28); font-family: 'DM Sans', sans-serif; margin-bottom: 8px;
 }
 .ws-portfolio-value {
-  font-family:'JetBrains Mono',monospace; font-size:42px; font-weight:900;
-  color:#00ffc8; line-height:1; margin-bottom:8px;
+  font-family: 'JetBrains Mono', monospace; font-size: 46px; font-weight: 900;
+  color: #ffffff; line-height: 1; margin-bottom: 6px; letter-spacing: -2px;
 }
 .ws-portfolio-sub {
-  font-family:'JetBrains Mono',monospace; font-size:11px;
-  color:rgba(255,255,255,0.28); margin-bottom:16px; min-height:16px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: rgba(255,255,255,0.28); min-height: 16px; margin-bottom: 16px;
 }
-.ws-stat-chips { display:flex; gap:6px; flex-wrap:wrap; }
+.ws-stat-row { display: flex; gap: 6px; flex-wrap: wrap; }
 #ws-stat-pills > div {
-  padding: 4px 10px !important; border-radius: 5px !important;
-  font-size: 10px !important; font-weight: 700 !important;
+  display: inline-flex !important; align-items: center !important;
+  padding: 5px 12px !important;
+  background: rgba(255,255,255,0.04) !important;
+  border: 1px solid rgba(255,255,255,0.07) !important;
+  border-radius: 5px !important;
+  font-size: 11px !important; font-weight: 600 !important;
   font-family: 'JetBrains Mono', monospace !important;
-  background: rgba(0,255,200,0.05) !important;
-  border: 1px solid rgba(0,255,200,0.1) !important;
-  color: rgba(0,255,200,0.65) !important;
+  color: rgba(255,255,255,0.5) !important;
+  transition: background 0.15s !important; cursor: default !important;
 }
-.ws-degen-wrap { position:relative; flex-shrink:0; width:100px; height:100px; }
-.ws-degen-ring { width:100px; height:100px; display:block; }
-.ws-ring-track { fill:none; stroke:rgba(255,255,255,0.05); stroke-width:8; }
-.ws-ring-fill  {
-  fill:none; stroke:#00ffc8; stroke-width:8; stroke-linecap:round;
-  transform:rotate(-90deg); transform-origin:50px 50px;
-  transition:stroke-dashoffset 0.9s cubic-bezier(0.4,0,0.2,1), stroke 0.5s;
+#ws-stat-pills > div:hover { background: rgba(0,255,200,0.04) !important; border-color: rgba(0,255,200,0.12) !important; }
+
+/* ── Degen score card ────────────────────── */
+.ws-degen-card {
+  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px; padding: 22px 20px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; min-width: 128px; position: relative; overflow: hidden;
+}
+.ws-degen-card::after {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(0,255,200,0.4) 40%, transparent 100%);
+}
+.ws-degen-wrap { position: relative; width: 88px; height: 88px; flex-shrink: 0; }
+.ws-degen-ring { width: 88px; height: 88px; display: block; }
+.ws-ring-track { fill: none; stroke: rgba(255,255,255,0.05); stroke-width: 6; }
+.ws-ring-fill {
+  fill: none; stroke: #00ffc8; stroke-width: 6; stroke-linecap: round;
+  transform: rotate(-90deg); transform-origin: 50px 50px;
+  transition: stroke-dashoffset 0.9s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.5s;
 }
 .ws-degen-center {
-  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
-  text-align:center; pointer-events:none;
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  text-align: center; pointer-events: none;
 }
 .ws-degen-score {
-  font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:900;
-  color:#00ffc8; line-height:1;
+  font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 900;
+  color: #00ffc8; line-height: 1;
 }
 .ws-degen-label {
-  font-size:7px; font-weight:800; letter-spacing:2px; text-transform:uppercase;
-  color:rgba(255,255,255,0.25); font-family:'DM Sans',sans-serif; margin-top:3px;
+  font-size: 7px; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase;
+  color: rgba(255,255,255,0.22); font-family: 'DM Sans', sans-serif; margin-top: 2px;
 }
+.ws-degen-card-label {
+  font-size: 9px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+  color: rgba(255,255,255,0.22); font-family: 'DM Sans', sans-serif;
+}
+
+/* ── Section cards ───────────────────────── */
 .ws-section {
-  background:rgba(255,255,255,0.025); border:1px solid rgba(0,255,200,0.08);
-  border-radius:16px; padding:20px 20px 0; margin-bottom:12px; overflow:hidden;
+  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 14px; padding: 20px; margin-bottom: 10px;
 }
+.ws-section--ai { border-top: 2px solid #00ffc8; border-radius: 0 0 14px 14px; }
 .ws-section-header {
-  display:flex; align-items:center; gap:8px; margin-bottom:16px;
-  padding-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.04);
+  display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
+  padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.05);
 }
-.ws-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
-.ws-dot--mint { background:#00ffc8; box-shadow:0 0 7px rgba(0,255,200,0.6); }
-.ws-dot--dim  { background:rgba(255,255,255,0.2); }
+.ws-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+.ws-dot--mint { background: #00ffc8; box-shadow: 0 0 6px rgba(0,255,200,0.8); }
+.ws-dot--dim  { background: rgba(255,255,255,0.2); }
 .ws-section-title {
-  font-size:9px; font-weight:800; letter-spacing:2.5px; text-transform:uppercase;
-  color:rgba(255,255,255,0.45); font-family:'DM Sans',sans-serif;
+  font-size: 9px; font-weight: 800; letter-spacing: 2.5px; text-transform: uppercase;
+  color: rgba(255,255,255,0.38); font-family: 'DM Sans', sans-serif;
 }
 .ws-section-badge {
-  margin-left:auto; font-size:9px; padding:2px 8px; border-radius:4px; font-weight:700;
-  background:rgba(0,255,200,0.05); color:rgba(0,255,200,0.45);
-  border:1px solid rgba(0,255,200,0.08); font-family:'DM Sans',sans-serif; letter-spacing:0.5px;
+  margin-left: auto; font-size: 9px; padding: 2px 8px; border-radius: 4px;
+  background: rgba(0,255,200,0.06); color: rgba(0,255,200,0.45);
+  border: 1px solid rgba(0,255,200,0.1); font-family: 'DM Sans', sans-serif;
+  font-weight: 700; letter-spacing: 0.5px;
 }
-.ws-section-sub { margin-left:auto; font-size:10px; color:rgba(255,255,255,0.22); font-family:'DM Sans',sans-serif; }
-#ws-intel-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; padding-bottom:20px; }
-#ws-intel-grid > div { border-radius:10px !important; padding:12px !important; background:rgba(0,255,200,0.03) !important; border:1px solid rgba(0,255,200,0.07) !important; }
-#ws-intel-grid > div > div:first-child { font-size:8px !important; letter-spacing:1.5px !important; color:rgba(255,255,255,0.28) !important; margin-bottom:5px !important; }
-#ws-intel-grid > div > div:nth-child(2) { font-size:12px !important; font-family:'JetBrains Mono',monospace !important; font-weight:700 !important; }
+.ws-section-sub { margin-left: auto; font-size: 10px; color: rgba(255,255,255,0.2); font-family: 'DM Sans', sans-serif; }
+
+/* ── Intelligence grid ───────────────────── */
+#ws-intel-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 6px;
+}
+#ws-intel-grid > div {
+  border-radius: 8px !important; padding: 12px !important;
+  background: rgba(255,255,255,0.025) !important;
+  border: 1px solid rgba(255,255,255,0.06) !important;
+  transition: background 0.15s !important;
+}
+#ws-intel-grid > div:hover { background: rgba(0,255,200,0.03) !important; }
+#ws-intel-grid > div > div:first-child {
+  font-size: 8px !important; letter-spacing: 1.5px !important;
+  color: rgba(255,255,255,0.25) !important; margin-bottom: 5px !important;
+  font-family: 'DM Sans', sans-serif !important; text-transform: uppercase !important;
+}
+#ws-intel-grid > div > div:nth-child(2) {
+  font-size: 12px !important; font-family: 'JetBrains Mono', monospace !important;
+  font-weight: 700 !important; color: #ffffff !important;
+}
+#ws-intel-grid > div > div:nth-child(3) {
+  font-size: 9px !important; color: rgba(255,255,255,0.28) !important; margin-top: 3px !important;
+}
+
+/* ── AI terminal ─────────────────────────── */
 .ws-terminal {
-  font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.85;
-  color:rgba(255,255,255,0.6); padding-bottom:20px; min-height:40px;
-  white-space:pre-wrap; word-break:break-word;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.9;
+  color: rgba(255,255,255,0.72); min-height: 40px;
+  white-space: pre-wrap; word-break: break-word;
 }
 .ws-terminal--active::after {
-  content:'▋'; display:inline-block; color:#00ffc8; font-size:11px; margin-left:2px;
-  animation:termBlink 1s step-end infinite;
+  content: '▋'; display: inline-block; color: #00ffc8; font-size: 11px; margin-left: 2px;
+  animation: termBlink 0.9s step-end infinite;
 }
 @keyframes termBlink { 0%,100%{opacity:0} 50%{opacity:1} }
-.ws-assets-table-head {
-  display:grid; grid-template-columns:1fr auto auto; gap:12px;
-  padding:0 0 8px; border-bottom:1px solid rgba(255,255,255,0.04);
-  margin-bottom:2px; font-size:9px; font-weight:800; letter-spacing:1.5px;
-  text-transform:uppercase; color:rgba(255,255,255,0.18); font-family:'DM Sans',sans-serif;
+.cl-ai-disclaimer {
+  font-size: 10px !important; color: rgba(255,255,255,0.18) !important;
+  font-family: 'DM Sans', sans-serif !important; margin-top: 14px !important;
+  font-style: italic !important; font-weight: 400 !important; border: none !important;
 }
-#ws-all-assets { padding-bottom:8px; }
-#ws-all-assets > div > div { border-bottom-color:rgba(255,255,255,0.04) !important; }
+
+/* ── Holdings table ──────────────────────── */
+.ws-table-head {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 16px;
+  padding: 0 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.05);
+  font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+  color: rgba(255,255,255,0.2); font-family: 'DM Sans', sans-serif;
+}
+/* Asset row overrides */
+#ws-all-assets > div { gap: 0 !important; }
+#ws-all-assets > div > div {
+  border-bottom: 1px solid rgba(255,255,255,0.04) !important;
+  padding: 13px 4px !important; transition: background 0.15s;
+}
+#ws-all-assets > div > div:nth-child(even) { background: rgba(255,255,255,0.015) !important; }
+#ws-all-assets > div > div:hover { background: rgba(0,255,200,0.03) !important; }
+/* Token icon box — strip purple */
+#ws-all-assets > div > div > div:first-child {
+  background: rgba(255,255,255,0.06) !important; border: 1px solid rgba(255,255,255,0.08) !important;
+  color: rgba(255,255,255,0.8) !important; font-family: 'JetBrains Mono', monospace !important;
+  border-radius: 8px !important;
+}
+/* Chain label badge — strip purple */
+#ws-all-assets span[style*="border-radius:8px"] {
+  background: rgba(255,255,255,0.05) !important;
+  color: rgba(255,255,255,0.35) !important; border-color: rgba(255,255,255,0.07) !important;
+}
+/* USD value in assets — mono */
+#ws-all-assets > div > div > div:last-child > div:first-child {
+  font-family: 'JetBrains Mono', monospace !important; font-weight: 700 !important;
+}
+
+/* ── PnL section ─────────────────────────── */
+#ws-pnl > div { border-bottom: 1px solid rgba(255,255,255,0.04) !important; transition: background 0.15s; }
+#ws-pnl > div:hover { background: rgba(0,255,200,0.02) !important; }
+#ws-pnl > div > div:first-child > div:first-child {
+  background: rgba(255,255,255,0.06) !important; border: 1px solid rgba(255,255,255,0.08) !important;
+  color: rgba(255,255,255,0.7) !important; border-radius: 8px !important;
+}
+
+/* ── Transaction list ────────────────────── */
 .ws-tx-list {
-  max-height:380px; overflow-y:auto; padding-bottom:8px;
-  scrollbar-width:thin; scrollbar-color:rgba(0,255,200,0.12) transparent;
+  max-height: 400px; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.07) transparent;
 }
-.ws-tx-list::-webkit-scrollbar { width:3px; }
-.ws-tx-list::-webkit-scrollbar-thumb { background:rgba(0,255,200,0.12); border-radius:2px; }
+.ws-tx-list::-webkit-scrollbar { width: 3px; }
+.ws-tx-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.07); border-radius: 2px; }
+/* Direction-coded rows via data attribute */
+.ws-tx-list > div {
+  border-bottom: 1px solid rgba(255,255,255,0.04) !important;
+  transition: background 0.15s; margin-left: 2px;
+}
+.ws-tx-list > div[data-dir="in"]  { border-left: 2px solid #00ffc8 !important; padding-left: 12px; margin-left: 0; }
+.ws-tx-list > div[data-dir="out"] { border-left: 2px solid rgba(255,255,255,0.22) !important; padding-left: 12px; margin-left: 0; }
+.ws-tx-list > div:hover { background: rgba(0,255,200,0.02) !important; }
+/* IN badge */
+.ws-tx-list > div[data-dir="in"] > div:first-child {
+  background: rgba(0,255,200,0.08) !important; color: #00ffc8 !important;
+  border-color: rgba(0,255,200,0.15) !important;
+}
+/* OUT badge */
+.ws-tx-list > div[data-dir="out"] > div:first-child {
+  background: rgba(255,77,77,0.08) !important; color: #ff4d4d !important;
+  border-color: rgba(255,77,77,0.15) !important;
+}
+/* Tx value color — positive mint */
+.ws-tx-list > div[data-dir="in"]  > div:last-child > div:first-child { color: #00ffc8 !important; }
+.ws-tx-list > div[data-dir="out"] > div:last-child > div:first-child { color: #ff4d4d !important; }
+
+/* ── Saved wallets ───────────────────────── */
 .ws-saved-bar {
-  margin-top:14px; padding:14px 16px;
-  background:rgba(255,255,255,0.018); border:1px solid rgba(0,255,200,0.06); border-radius:12px;
+  margin-top: 14px; padding: 14px 16px;
+  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px;
 }
 .ws-saved-label {
-  font-size:9px; font-weight:800; letter-spacing:2px; text-transform:uppercase;
-  color:rgba(255,255,255,0.2); font-family:'DM Sans',sans-serif; margin-bottom:10px;
+  font-size: 9px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+  color: rgba(255,255,255,0.2); font-family: 'DM Sans', sans-serif; margin-bottom: 10px;
 }
-.ws-saved-pills { display:flex; gap:6px; flex-wrap:wrap; }
-#saved-wallets-list > div { background:rgba(0,255,200,0.03) !important; border:1px solid rgba(0,255,200,0.1) !important; border-radius:6px !important; padding:5px 10px !important; }
-#saved-wallets-list > div > span { font-size:11px !important; color:rgba(0,255,200,0.65) !important; font-family:'JetBrains Mono',monospace !important; }
-#saved-wallets-list > div > button { color:rgba(255,255,255,0.22) !important; font-size:10px !important; transition:color 0.15s; }
-#saved-wallets-list > div > button:hover { color:rgba(239,71,111,0.8) !important; }
-@keyframes wsSkeleton { 0%,100%{opacity:0.25} 50%{opacity:0.55} }
-.ws-skeleton { height:11px; background:rgba(255,255,255,0.06); border-radius:4px; animation:wsSkeleton 1.4s ease infinite; margin-bottom:8px; }
-.ws-skeleton:nth-child(2){width:70%;animation-delay:.15s}
-.ws-skeleton:nth-child(3){width:85%;animation-delay:.3s}
-@media(max-width:640px){
-  .ws-portfolio-header{flex-direction:column-reverse;align-items:flex-start;padding:18px;}
-  .ws-portfolio-value{font-size:30px;}
-  .ws-degen-wrap{width:80px;height:80px;align-self:flex-end;}
-  .ws-degen-ring{width:80px;height:80px;}
-  .ws-multi-chain-note{display:none;}
-  #ws-intel-grid{grid-template-columns:1fr 1fr;}
-  .ws-section{padding:16px 14px 0;}
-  .ws-scanner-bar{padding:6px 6px 6px 12px;}
+.ws-saved-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Pill chips with mint dot indicator */
+#saved-wallets-list > div {
+  background: #000000 !important; border: 1px solid rgba(255,255,255,0.08) !important;
+  border-radius: 6px !important; padding: 5px 10px !important;
+  display: flex !important; align-items: center !important; gap: 7px !important;
+  transition: border-color 0.15s !important;
 }
-/* ── end WalletScan ────────────────────────────── */
+#saved-wallets-list > div::before {
+  content: ''; display: inline-block; width: 5px; height: 5px;
+  border-radius: 50%; background: #00ffc8; flex-shrink: 0;
+}
+#saved-wallets-list > div:hover { border-color: rgba(0,255,200,0.2) !important; }
+#saved-wallets-list > div > span { font-size: 11px !important; color: rgba(255,255,255,0.55) !important; font-family: 'JetBrains Mono', monospace !important; cursor: pointer !important; }
+#saved-wallets-list > div > span:hover { color: #00ffc8 !important; }
+#saved-wallets-list > div > button { color: rgba(255,255,255,0.18) !important; font-size: 10px !important; transition: color 0.15s !important; }
+#saved-wallets-list > div > button:hover { color: #ff4d4d !important; }
+
+/* ── Skeleton + spinner ──────────────────── */
+@keyframes wsSkeleton {
+  0% { background-position: -300px 0; }
+  100% { background-position: calc(300px + 100%) 0; }
+}
+.ws-skel {
+  height: 12px; border-radius: 4px; margin-bottom: 8px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%);
+  background-size: 600px 100%; animation: wsSkeleton 1.4s ease infinite;
+}
+.ws-skel:nth-child(2) { width: 72%; animation-delay: 0.1s; }
+.ws-skel:nth-child(3) { width: 55%; animation-delay: 0.2s; }
+#pg-walletscan .cl-spinner { border-color: rgba(255,255,255,0.07); border-top-color: #00ffc8; }
+
+/* ── Responsive ──────────────────────────── */
+@media(max-width:640px) {
+  .ws-metrics-row { grid-template-columns: 1fr; }
+  .ws-degen-card { flex-direction: row; padding: 16px 20px; justify-content: flex-start; min-width: unset; }
+  .ws-portfolio-value { font-size: 34px; letter-spacing: -1px; }
+  .ws-multi-chain-note { display: none; }
+  #ws-intel-grid { grid-template-columns: 1fr 1fr; }
+  .ws-section { padding: 16px; }
+  .ws-scan-btn { padding: 0 18px; letter-spacing: 1.5px; }
+}
+@media(max-width:400px) {
+  .ws-portfolio-value { font-size: 28px; }
+  .ws-scan-btn { letter-spacing: 1px; padding: 0 14px; }
+  .ws-scan-icon { padding: 0 12px; }
+}
+/* ── end WalletScan ─────────────────────────── */
 
 /* Quick prompt pills */
 .cl-quick-pill {
@@ -2202,25 +2389,30 @@ body::after {
 <div class="cl-page" id="pg-walletscan">
   <div class="cl-container"><div class="cl-page-inner">
 
-    <!-- Back -->
-    <button class="cl-page-back" onclick="go('home')" style="margin-bottom:20px;">← Back</button>
+    <!-- Page header -->
+    <div class="ws-page-header">
+      <button class="ws-back-btn" onclick="go('home')">← Back</button>
+      <div class="ws-page-title">WalletScan<sup>TM</sup></div>
+    </div>
 
-    <!-- ── Scanner Bar ─────────────────────────── -->
+    <!-- ── Scanner bar ───────────────────────────── -->
     <div class="ws-scanner-wrap">
       <div class="ws-scanner-bar">
         <div class="ws-scan-icon">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
         </div>
-        <input class="ws-input" id="wsi" placeholder="Paste any wallet — ETH / BNB / BASE / SOL / BTC" onkeydown="if(event.key==='Enter')doWS()"/>
-        <button class="ws-scan-btn" id="wsb" onclick="doWS()">SCAN</button>
+        <input class="ws-input" id="wsi"
+          placeholder="ETH / BNB / BASE / SOL / BTC — paste any wallet address"
+          onkeydown="if(event.key==='Enter')doWS()"/>
         <button class="ws-save-btn" id="save-wallet-btn" onclick="saveCurrentWallet()" style="display:none;">SAVE</button>
+        <button class="ws-scan-btn" id="wsb" onclick="doWS()">SCAN</button>
       </div>
 
-      <!-- EVM chain selector — shown for 0x addresses -->
+      <!-- EVM chain toggle pills — visible only for 0x addresses -->
       <div class="ws-chain-selector" id="evm-chain-row" style="display:none;">
         <span class="ws-chain-label">Chain</span>
         <div class="ws-chain-pills">
-          <button onclick="setEvmChain('eth',this)"     class="ws-chain-pill evm-chain-btn" style="border-color:rgba(0,255,200,0.35);color:#00ffc8;background:rgba(0,255,200,0.08);">ETH</button>
+          <button onclick="setEvmChain('eth',this)"     class="ws-chain-pill evm-chain-btn" style="border-color:rgba(0,255,200,0.35);color:#00ffc8;">ETH</button>
           <button onclick="setEvmChain('bnb',this)"     class="ws-chain-pill evm-chain-btn">BNB</button>
           <button onclick="setEvmChain('base',this)"    class="ws-chain-pill evm-chain-btn">BASE</button>
           <button onclick="setEvmChain('polygon',this)" class="ws-chain-pill evm-chain-btn">MATIC</button>
@@ -2228,7 +2420,7 @@ body::after {
         <span class="ws-multi-chain-note">All EVM chains scanned simultaneously</span>
       </div>
 
-      <!-- Supported network badges + currency -->
+      <!-- Supported networks + currency -->
       <div class="ws-network-badges">
         <span class="ws-badge ws-badge--eth">ETH</span>
         <span class="ws-badge ws-badge--bnb">BNB</span>
@@ -2236,45 +2428,52 @@ body::after {
         <span class="ws-badge ws-badge--sol">SOL</span>
         <span class="ws-badge ws-badge--btc">BTC</span>
         <div class="ws-badge-sep"></div>
-        <div id="ws-fx-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;"></div>
+        <div id="ws-fx-btns" style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;"></div>
       </div>
     </div>
 
-    <!-- ── Empty state ──────────────────────────── -->
+    <!-- ── Empty state ───────────────────────────── -->
     <div class="ws-placeholder" id="ws-placeholder">
       <div class="ws-placeholder-graphic">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgba(0,255,200,0.35)" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v3l2 2"/></svg>
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v3l2 2" stroke-linecap="round"/></svg>
       </div>
       <div class="ws-placeholder-title">Paste a wallet address to begin</div>
-      <div class="ws-placeholder-sub">Supports Ethereum, BNB Chain, Base, Polygon, Solana, and Bitcoin</div>
+      <div class="ws-placeholder-sub">Ethereum · BNB Chain · Base · Polygon · Solana · Bitcoin</div>
     </div>
 
-    <!-- ══ RESULTS (shown after scan) ══════════════ -->
+    <!-- ══ RESULTS ════════════════════════════════ -->
     <div id="ws-results" style="display:none;" class="ws-fade-in">
 
-      <!-- Portfolio header -->
-      <div class="ws-portfolio-header">
-        <div class="ws-portfolio-left">
-          <div class="ws-portfolio-label">Total Portfolio Value</div>
-          <div class="ws-portfolio-value" id="ws-total-value">$0</div>
-          <div class="ws-portfolio-sub" id="ws-total-sub">Scanning...</div>
-          <!-- Stat chips (asset count, tx count, degen score, age) -->
-          <div class="ws-stat-chips" id="ws-stat-pills"></div>
-        </div>
-        <!-- Degen Score ring -->
-        <div class="ws-degen-wrap">
-          <svg class="ws-degen-ring" viewBox="0 0 100 100">
-            <circle class="ws-ring-track" cx="50" cy="50" r="40"/>
-            <circle class="ws-ring-fill" id="ws-degen-arc" cx="50" cy="50" r="40" stroke-dasharray="251.3" stroke-dashoffset="251.3"/>
-          </svg>
-          <div class="ws-degen-center">
-            <div class="ws-degen-score" id="ws-degen-score-val">—</div>
-            <div class="ws-degen-label">DEGEN</div>
-          </div>
-        </div>
-      </div>
+      <!-- Metrics row: portfolio value card + degen ring card -->
+      <div class="ws-metrics-row">
 
-      <!-- Hidden pie canvas (JS still draws to it for calculations) -->
+        <!-- Value block -->
+        <div class="ws-value-block">
+          <div class="ws-portfolio-label">Total Portfolio Value</div>
+          <div class="ws-portfolio-value" id="ws-total-value">—</div>
+          <div class="ws-portfolio-sub" id="ws-total-sub">—</div>
+          <div class="ws-stat-row" id="ws-stat-pills"></div>
+        </div>
+
+        <!-- Degen score ring -->
+        <div class="ws-degen-card">
+          <div class="ws-degen-wrap">
+            <svg class="ws-degen-ring" viewBox="0 0 100 100">
+              <circle class="ws-ring-track" cx="50" cy="50" r="40"/>
+              <circle class="ws-ring-fill" id="ws-degen-arc" cx="50" cy="50" r="40"
+                stroke-dasharray="251.3" stroke-dashoffset="251.3"/>
+            </svg>
+            <div class="ws-degen-center">
+              <div class="ws-degen-score" id="ws-degen-score-val">—</div>
+              <div class="ws-degen-label">DEGEN</div>
+            </div>
+          </div>
+          <div class="ws-degen-card-label">Risk Score</div>
+        </div>
+
+      </div><!-- /ws-metrics-row -->
+
+      <!-- Hidden pie canvas — JS draws to it internally -->
       <canvas id="ws-pie" width="0" height="0" style="display:none;"></canvas>
 
       <!-- Intelligence -->
@@ -2286,10 +2485,10 @@ body::after {
         <div id="ws-intel-grid"></div>
       </div>
 
-      <!-- AI Terminal -->
-      <div class="ws-section">
+      <!-- AI Terminal — mint top border accent -->
+      <div class="ws-section ws-section--ai">
         <div class="ws-section-header">
-          <div class="ws-dot ws-dot--dim"></div>
+          <div class="ws-dot ws-dot--mint"></div>
           <span class="ws-section-title">AI Analysis</span>
           <span class="ws-section-badge">WalletScan AI</span>
         </div>
@@ -2302,7 +2501,7 @@ body::after {
           <div class="ws-dot ws-dot--mint"></div>
           <span class="ws-section-title">Holdings</span>
         </div>
-        <div class="ws-assets-table-head">
+        <div class="ws-table-head">
           <span>Token</span>
           <span style="text-align:right;">Balance</span>
           <span style="text-align:right;">Value</span>
@@ -2310,14 +2509,14 @@ body::after {
         <div id="ws-all-assets"></div>
       </div>
 
-      <!-- Token PnL (shown async) -->
+      <!-- Token PnL (revealed async after scan) -->
       <div class="ws-section" id="ws-pnl-card" style="display:none;">
         <div class="ws-section-header">
           <div class="ws-dot ws-dot--mint"></div>
           <span class="ws-section-title">Token PnL</span>
           <span class="ws-section-sub">Realised + Unrealised</span>
         </div>
-        <div id="ws-pnl" style="padding-bottom:12px;"></div>
+        <div id="ws-pnl"></div>
       </div>
 
       <!-- Transactions -->
@@ -3797,17 +3996,17 @@ function renderAllTxs(txs, address, chain) {
   return txs.map(tx => {
     if (chain === 'btc') {
       const isOut = tx.dir === 'out';
-      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(120,88,192,0.08);">
-        <div style="width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;${isOut?'background:rgba(239,71,111,0.12);color:#ef476f;border:1px solid rgba(239,71,111,0.2);':'background:rgba(0,255,200,0.1);color:#00ffc8;border:1px solid rgba(0,255,200,0.2);'}">${isOut?'OUT':'IN'}</div>
+      return `<div data-dir="${isOut?'out':'in'}" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid;">${isOut?'OUT':'IN'}</div>
         <div style="flex:1;min-width:0;"><div style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--cl-text-2);">${String(tx.hash).slice(0,18)}...</div><div style="font-size:10px;color:var(--cl-text-3);">BTC · ${tx.time?fmtAge(tx.time):'—'}</div></div>
-        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};flex-shrink:0;">${tx.val} BTC</div>
+        <div style="font-size:12px;font-weight:700;flex-shrink:0;font-family:'JetBrains Mono',monospace;">${tx.val} BTC</div>
       </div>`;
     }
     if (chain === 'sol') {
-      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(120,88,192,0.08);">
-        <div style="width:28px;height:28px;border-radius:8px;background:rgba(0,255,200,0.1);border:1px solid rgba(0,255,200,0.2);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#00ffc8;flex-shrink:0;">TX</div>
+      return `<div data-dir="in" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+        <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid;">TX</div>
         <div style="flex:1;min-width:0;"><div style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--cl-text-2);">${String(tx.hash).slice(0,22)}...</div><div style="font-size:10px;color:var(--cl-text-3);">Solana · ${tx.time?fmtAge(tx.time):'recent'}</div></div>
-        <div style="font-size:9px;padding:2px 8px;background:rgba(0,255,200,0.08);color:#00ffc8;border:1px solid rgba(0,255,200,0.15);border-radius:6px;flex-shrink:0;">Confirmed</div>
+        <div style="font-size:9px;padding:2px 8px;background:rgba(0,255,200,0.08);color:#00ffc8;border:1px solid rgba(0,255,200,0.15);border-radius:5px;flex-shrink:0;font-family:'JetBrains Mono',monospace;">Confirmed</div>
       </div>`;
     }
     const isOut = tx.from?.toLowerCase() === address.toLowerCase();
@@ -3816,14 +4015,14 @@ function renderAllTxs(txs, address, chain) {
     const chainLabel = txChain.toUpperCase();
     const nativeSym = txChain === 'bnb' ? 'BNB' : txChain === 'polygon' ? 'MATIC' : 'ETH';
     const nativeUsdPrice = txChain === 'bnb' ? (px['binancecoin']?.usd || 600) : txChain === 'polygon' ? (px['matic-network']?.usd || px['polygon']?.usd || 0.8) : (px['ethereum']?.usd || 3000);
-    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(120,88,192,0.08);">
-      <div style="width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;${isOut?'background:rgba(239,71,111,0.12);color:#ef476f;border:1px solid rgba(239,71,111,0.2);':'background:rgba(0,255,200,0.1);color:#00ffc8;border:1px solid rgba(0,255,200,0.2);'}">${isOut?'OUT':'IN'}</div>
+    return `<div data-dir="${isOut?'out':'in'}" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+      <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid;">${isOut?'OUT':'IN'}</div>
       <div style="flex:1;min-width:0;">
-        <div style="font-size:11px;font-weight:600;color:var(--cl-text-2);">${isOut?'To: '+fmtAddr(tx.to):'From: '+fmtAddr(tx.from)}</div>
+        <div style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--cl-text-2);">${isOut?'To: '+fmtAddr(tx.to):'From: '+fmtAddr(tx.from)}</div>
         <div style="font-size:10px;color:var(--cl-text-3);">${chainLabel} · ${fmtAge(tx.timeStamp||tx.time||0)}</div>
       </div>
       <div style="text-align:right;flex-shrink:0;">
-        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};">${val>0?val.toFixed(4)+' '+nativeSym:'Contract'}</div>
+        <div style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;">${val>0?val.toFixed(4)+' '+nativeSym:'Contract'}</div>
         ${val>0?`<div style="font-size:10px;color:var(--cl-text-3);">${fmtFx(val*nativeUsdPrice)}</div>`:''}
       </div>
     </div>`;
