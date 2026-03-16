@@ -3284,20 +3284,25 @@ function renderPnL(pnlData) {
 
 async function fetchTokenPrices(tokens) {
   const priceMap = {};
-  const evmTokens = tokens.filter(t => t.contractAddress && t.chain !== 'sol');
-  if (!evmTokens.length) return priceMap;
+  // EVM tokens use contractAddress; Solana tokens use mint
+  const priceable = tokens.filter(t => t.contractAddress || t.mint);
+  if (!priceable.length) return priceMap;
   // Batch into chunks of 5 to avoid URL length limits
   const chunks = [];
-  for (let i = 0; i < evmTokens.length; i += 5) chunks.push(evmTokens.slice(i, i + 5));
+  for (let i = 0; i < priceable.length; i += 5) chunks.push(priceable.slice(i, i + 5));
   await Promise.allSettled(chunks.map(async chunk => {
     try {
-      const addrs = chunk.map(t => t.contractAddress).join(',');
+      const addrs = chunk.map(t => t.contractAddress || t.mint).join(',');
       const r = await pfetch('https://api.dexscreener.com/latest/dex/tokens/' + addrs);
       if (r.ok) {
         const d = await r.json();
         (d.pairs || []).forEach(pair => {
           const addr = (pair.baseToken?.address || '').toLowerCase();
-          if (!priceMap[addr] && pair.priceUsd) priceMap[addr] = parseFloat(pair.priceUsd);
+          if (addr && pair.priceUsd) {
+            const existing = priceMap[addr];
+            const liq = parseFloat(pair.liquidity?.usd || 0);
+            if (!existing || liq > (existing._liq || 0)) priceMap[addr] = parseFloat(pair.priceUsd);
+          }
         });
       }
     } catch(e) {}
@@ -3413,7 +3418,10 @@ function renderAllTxs(txs, address, chain) {
     }
     const isOut = tx.from?.toLowerCase() === address.toLowerCase();
     const val = parseFloat(fmtEth(tx.value || 0));
-    const chainLabel = (tx._chain || chain || 'eth').toUpperCase();
+    const txChain = (tx._chain || chain || 'eth').toLowerCase();
+    const chainLabel = txChain.toUpperCase();
+    const nativeSym = txChain === 'bnb' ? 'BNB' : txChain === 'polygon' ? 'MATIC' : 'ETH';
+    const nativeUsdPrice = txChain === 'bnb' ? (px['binancecoin']?.usd || 600) : txChain === 'polygon' ? (px['matic-network']?.usd || px['polygon']?.usd || 0.8) : (px['ethereum']?.usd || 3000);
     return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(120,88,192,0.08);">
       <div style="width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;${isOut?'background:rgba(239,71,111,0.12);color:#ef476f;border:1px solid rgba(239,71,111,0.2);':'background:rgba(0,255,200,0.1);color:#00ffc8;border:1px solid rgba(0,255,200,0.2);'}">${isOut?'OUT':'IN'}</div>
       <div style="flex:1;min-width:0;">
@@ -3421,8 +3429,8 @@ function renderAllTxs(txs, address, chain) {
         <div style="font-size:10px;color:var(--cl-text-3);">${chainLabel} · ${fmtAge(tx.timeStamp||tx.time||0)}</div>
       </div>
       <div style="text-align:right;flex-shrink:0;">
-        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};">${val>0?val.toFixed(4)+' ETH':'Contract'}</div>
-        ${val>0?`<div style="font-size:10px;color:var(--cl-text-3);">${fmtFx(val*(px['ethereum']?.usd||3000))}</div>`:''}
+        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};">${val>0?val.toFixed(4)+' '+nativeSym:'Contract'}</div>
+        ${val>0?`<div style="font-size:10px;color:var(--cl-text-3);">${fmtFx(val*nativeUsdPrice)}</div>`:''}
       </div>
     </div>`;
   }).join('');
@@ -4127,7 +4135,19 @@ async function doWS() {
       allTxs = sol.txs;
       assets = [{ symbol: 'SOL', name: 'Solana', balance: sol.nativeBal, usdValue: sol.nativeBal * solPrice, chain: 'sol' }];
       sol.tokens.forEach(t => assets.push({ ...t, usdValue: 0, chain: 'sol' }));
-      totalUsd = sol.nativeBal * solPrice;
+      // Fetch live prices for SPL tokens via DexScreener
+      const splTokens = sol.tokens.filter(t => t.mint);
+      if (splTokens.length) {
+        document.getElementById('ws-total-sub').textContent = 'Fetching SPL token prices...';
+        const splPriceMap = await fetchTokenPrices(splTokens);
+        assets.forEach(a => {
+          if (a.mint) {
+            const price = splPriceMap[a.mint.toLowerCase()];
+            if (price != null) { a.price = price; a.usdValue = price * a.balance; }
+          }
+        });
+      }
+      totalUsd = assets.reduce((s, a) => s + (a.usdValue || 0), 0);
       portfolioSummary = `SOL: ${sol.nativeBal.toFixed(4)}, SPL Tokens: ${sol.tokens.length}, Txs: ${sol.txs.length}`;
     }
 
