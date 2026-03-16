@@ -1728,6 +1728,40 @@ body::after {
   </div></div>
 </div>
 
+<!-- ─── GHOSTTRADE: Risk Score Modal ─────────────────────── -->
+<div id="gt-risk-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.75);backdrop-filter:blur(6px);align-items:center;justify-content:center;">
+  <div style="background:#0d0d18;border:1px solid var(--cl-border);border-radius:16px;padding:28px 24px;max-width:340px;width:90%;text-align:center;">
+    <div style="font-size:10px;letter-spacing:2px;color:var(--cl-text-3);text-transform:uppercase;margin-bottom:10px;">Pre-Trade Risk Score</div>
+    <div id="gt-risk-score-display" style="font-size:64px;font-weight:900;line-height:1;margin-bottom:4px;">—</div>
+    <div id="gt-risk-label" style="font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase;margin-bottom:14px;"></div>
+    <div id="gt-risk-breakdown" style="font-size:11px;color:var(--cl-text-3);line-height:1.7;margin-bottom:14px;text-align:left;padding:10px 12px;background:rgba(120,88,192,0.04);border-radius:8px;border:1px solid var(--cl-border);"></div>
+    <div id="gt-risk-warn" style="display:none;padding:10px 14px;background:rgba(239,71,111,0.08);border:1px solid rgba(239,71,111,0.2);border-radius:8px;font-size:11px;color:#ef476f;margin-bottom:14px;line-height:1.5;">⚠️ High risk detected. Low liquidity or extreme volatility. Only trade what you can afford to lose.</div>
+    <div style="display:flex;gap:8px;">
+      <button onclick="gtRiskCancel()" style="flex:1;padding:12px;background:rgba(120,88,192,0.06);border:1px solid var(--cl-border);border-radius:8px;font-size:12px;font-weight:700;color:var(--cl-text-3);cursor:pointer;">Cancel</button>
+      <button id="gt-risk-confirm" onclick="gtRiskConfirm()" style="flex:2;padding:12px;background:rgba(0,255,200,0.1);border:1px solid rgba(0,255,200,0.3);border-radius:8px;font-size:12px;font-weight:800;color:#00ffc8;cursor:pointer;letter-spacing:1px;">Execute Trade</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── GHOSTTRADE: Replay Modal ──────────────────────────── -->
+<div id="gt-replay-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.8);backdrop-filter:blur(6px);align-items:center;justify-content:center;">
+  <div style="background:#0d0d18;border:1px solid var(--cl-border);border-radius:16px;overflow:hidden;max-width:820px;width:95%;">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--cl-border);background:rgba(120,88,192,0.04);">
+      <div>
+        <div style="font-size:13px;font-weight:800;" id="gt-replay-title">Trade Replay</div>
+        <div style="font-size:10px;color:var(--cl-text-3);margin-top:2px;" id="gt-replay-meta">—</div>
+      </div>
+      <button onclick="gtReplayClose()" style="padding:4px 12px;background:rgba(239,71,111,0.08);border:1px solid rgba(239,71,111,0.2);border-radius:6px;font-size:11px;font-weight:700;color:#ef476f;cursor:pointer;">✕ Close</button>
+    </div>
+    <iframe id="gt-replay-iframe" src="" style="width:100%;height:460px;border:none;display:block;" loading="lazy"></iframe>
+    <div style="padding:12px 16px;border-top:1px solid var(--cl-border);display:flex;gap:20px;align-items:center;background:rgba(120,88,192,0.02);">
+      <div id="gt-replay-entry" style="font-size:11px;"></div>
+      <div id="gt-replay-exit" style="font-size:11px;"></div>
+      <div id="gt-replay-pnl" style="font-size:13px;font-weight:800;margin-left:auto;"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ═════════════════════════════════════
   PAGE: GHOSTTRADE
 ═════════════════════════════════════ -->
@@ -1742,7 +1776,7 @@ body::after {
     </div>
 
     <!-- Portfolio Metric Bar -->
-    <div style="display:grid;grid-template-columns:repeat(3,1fr) auto;gap:10px;margin-bottom:18px;align-items:center;">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr) auto;gap:10px;margin-bottom:18px;align-items:center;">
       <div style="background:rgba(0,255,200,0.04);border:1px solid rgba(0,255,200,0.12);border-radius:12px;padding:14px 16px;">
         <div style="font-size:10px;color:var(--cl-text-3);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;">Portfolio Value</div>
         <div class="cl-portfolio-value" id="gv" style="font-size:24px;margin:0;">$50,000.00</div>
@@ -1754,6 +1788,11 @@ body::after {
       <div style="background:rgba(120,88,192,0.04);border:1px solid rgba(120,88,192,0.15);border-radius:12px;padding:14px 16px;">
         <div style="font-size:10px;color:var(--cl-text-3);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;">Cash Available</div>
         <div style="font-size:20px;font-weight:800;" id="gca">$50,000.00</div>
+      </div>
+      <div style="background:rgba(120,88,192,0.04);border:1px solid rgba(120,88,192,0.15);border-radius:12px;padding:14px 16px;">
+        <div style="font-size:10px;color:var(--cl-text-3);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;">Streak</div>
+        <div id="gt-streak-val" style="font-size:20px;font-weight:800;color:var(--cl-text-3);">—</div>
+        <div id="gt-streak-best" style="font-size:9px;color:var(--cl-text-3);margin-top:2px;"></div>
       </div>
       <button onclick="gtReset()" style="padding:10px 16px;background:rgba(239,71,111,0.06);border:1px solid rgba(239,71,111,0.2);border-radius:12px;font-size:11px;font-weight:700;color:#ef476f;cursor:pointer;white-space:nowrap;">Reset</button>
     </div>
@@ -1845,11 +1884,22 @@ body::after {
           <div style="font-size:13px;color:var(--cl-text-3);">Select a token to see the live chart</div>
         </div>
 
-        <!-- Trade History -->
+        <!-- Trade Journal + Leaderboard Tabs -->
         <div class="cl-card" style="padding:16px;">
-          <div class="cl-label">Trade History & AI Coaching</div>
-          <div id="gtrades" style="max-height:400px;overflow-y:auto;">
-            <div style="padding:20px 0;text-align:center;color:var(--cl-text-3);font-size:12px;">Search a token and make your first trade.</div>
+          <div style="display:flex;gap:0;margin-bottom:14px;border-radius:8px;overflow:hidden;border:1px solid var(--cl-border);">
+            <button id="gt-tab-journal" onclick="gtRightTab('journal')" style="flex:1;padding:9px;font-size:11px;font-weight:700;cursor:pointer;background:rgba(0,255,200,0.08);color:#00ffc8;border:none;letter-spacing:1px;">📋 JOURNAL</button>
+            <button id="gt-tab-lb" onclick="gtRightTab('lb')" style="flex:1;padding:9px;font-size:11px;font-weight:700;cursor:pointer;background:transparent;color:var(--cl-text-3);border:none;letter-spacing:1px;">🏆 LEADERBOARD</button>
+          </div>
+          <!-- Journal content -->
+          <div id="gt-journal-content">
+            <div id="gtrades" style="max-height:400px;overflow-y:auto;">
+              <div style="padding:20px 0;text-align:center;color:var(--cl-text-3);font-size:12px;">Search a token and make your first trade.</div>
+            </div>
+          </div>
+          <!-- Leaderboard content -->
+          <div id="gt-lb-content" style="display:none;">
+            <div style="font-size:10px;color:var(--cl-text-3);letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">Top Ghost Traders · % Gain from $50k</div>
+            <div id="gt-lb-body" style="max-height:400px;overflow-y:auto;"></div>
           </div>
         </div>
 
@@ -2479,7 +2529,7 @@ function go(id) {
   }
 
   // Auto-init pages
-  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); } };
+  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); } };
   if (inits[id]) inits[id]();
   if (id === 'alerts') { renderAlerts(); startAlertChecker(); }
   if (id === 'leaderboard') renderLB();
@@ -2653,7 +2703,7 @@ async function syncAllDataDown() {
   } catch(e) { console.warn('syncAllDataDown error:', e.message); }
 }
 
-function saveGTLocal() { try { localStorage.setItem('cl_gt', JSON.stringify({ cash: gt.cash, h: gt.h, trades: gt.trades, start: gt.start })); } catch(e) {} }
+function saveGTLocal() { try { localStorage.setItem('cl_gt', JSON.stringify({ cash: gt.cash, h: gt.h, trades: gt.trades, start: gt.start, streak: gt.streak, milestones: gt.milestones })); } catch(e) {} }
 function saveGT() {
   saveGTLocal();
   if (user) sbData('save', 'ghost_portfolio', { payload: [{ cash: gt.cash, holdings: gt.h, start_value: gt.start }] });
@@ -2666,20 +2716,25 @@ function renderTrades() {
     gtrades.innerHTML = '<div style="padding:20px 0;text-align:center;color:var(--cl-text-3);font-size:12px;">Search a token and make your first trade.</div>';
     return;
   }
-  gtrades.innerHTML = gt.trades.slice(0, 30).map(t => {
+  gtrades.innerHTML = gt.trades.slice(0, 30).map((t, i) => {
     const side = t.dir || t.type || 'buy';
     const symbol = t.symbol || t.sym || '?';
     const amt = t.amt || t.amount || 0;
     const price = t.price || t.p || 0;
     const chain = t.chain || '';
-    const time = t.time || (t.createdAt ? new Date(t.createdAt).toLocaleTimeString() : '');
+    const time = t.time || (t.createdAt ? new Date(t.createdAt).getTime() : 0);
+    const timeStr = time ? new Date(time).toLocaleTimeString() : '';
     const priceLabel = price < 0.001 ? price.toExponential(2) : price.toFixed(4);
     const coach = t.coach || '';
+    const canReplay = !!(t.pairAddress || t.address);
     return '<div style="padding:12px 14px;border-radius:10px;margin-bottom:8px;background:' + (side === 'buy' ? 'rgba(0,255,200,0.06);border:1px solid rgba(0,255,200,0.15)' : 'rgba(239,71,111,0.06);border:1px solid rgba(239,71,111,0.15)') + ';">'
-      + '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">'
       + '<span style="color:' + (side === 'buy' ? '#00ffc8' : '#ef476f') + ';font-weight:700;font-size:12px;">' + side.toUpperCase() + ' ' + symbol + '</span>'
-      + '<span style="color:var(--cl-text-3);font-size:10px;">$' + parseFloat(amt).toFixed(2) + ' @ $' + priceLabel + '</span></div>'
-      + '<div style="font-size:10px;color:var(--cl-text-3);margin-bottom:' + (coach ? '6px' : '0') + ';">' + chain.toUpperCase() + (time ? ' · ' + time : '') + '</div>'
+      + '<div style="display:flex;align-items:center;gap:6px;">'
+      + '<span style="color:var(--cl-text-3);font-size:10px;">$' + parseFloat(amt).toFixed(2) + ' @ $' + priceLabel + '</span>'
+      + (canReplay ? '<button data-idx="' + i + '" onclick="gtReplay(+this.dataset.idx)" style="padding:2px 7px;background:rgba(120,88,192,0.1);border:1px solid rgba(120,88,192,0.25);border-radius:5px;font-size:9px;font-weight:700;color:var(--cl-violet);cursor:pointer;">▶ Replay</button>' : '')
+      + '</div></div>'
+      + '<div style="font-size:10px;color:var(--cl-text-3);margin-bottom:' + (coach ? '6px' : '0') + ';">' + chain.toUpperCase() + (timeStr ? ' · ' + timeStr : '') + '</div>'
       + (coach ? '<div style="font-size:11px;color:var(--cl-text-3);">AI: ' + coach + '</div>' : '')
       + '</div>';
   }).join('');
@@ -3544,8 +3599,8 @@ function renderAllTxs(txs, address, chain) {
 }
 
 // ══════════════════════════════════════════════
-let gt = { cash: 50000, h: {}, trades: [], start: 50000 };
-try { const s = localStorage.getItem('cl_gt'); if (s) gt = { ...gt, ...JSON.parse(s) }; } catch(e) {}
+let gt = { cash: 50000, h: {}, trades: [], start: 50000, streak: { cur: 0, best: 0, type: null }, milestones: {} };
+try { const s = localStorage.getItem('cl_gt'); if (s) { gt = { ...gt, ...JSON.parse(s) }; if (!gt.streak) gt.streak = { cur: 0, best: 0, type: null }; if (!gt.milestones) gt.milestones = {}; } } catch(e) {}
 let gtToken = null;
 let gtSide = 'buy';
 let gtChainFilter = 'all';
@@ -3804,16 +3859,23 @@ async function gtrade() {
   if (!gtToken) { toast('Select a token first', 'er'); return; }
   const amt = parseFloat(document.getElementById('gt-amount').value);
   if (!amt || amt <= 0) { toast('Enter amount', 'er'); return; }
+  // Show risk score modal — execution happens inside callback on confirm
+  await gtShowRisk(() => _executeGTrade(amt));
+}
+
+async function _executeGTrade(amt) {
+  // Fetch live execution price
   try {
     const ctrl2 = new AbortController();
     const t2 = setTimeout(() => ctrl2.abort(), 5000);
     const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + gtToken.address, { signal: ctrl2.signal });
     clearTimeout(t2);
-    if (r.ok) { const d = await r.json(); const pairs = d.pairs || []; const p = pairs.find(x => x.priceUsd) || pairs[0]; if (p && p.priceUsd) gtToken.price = parseFloat(p.priceUsd); }
+    if (r.ok) { const d = await r.json(); const pairs = d.pairs || []; const p = pairs.sort((a,b) => parseFloat(b.liquidity?.usd||0) - parseFloat(a.liquidity?.usd||0)).find(x => x.priceUsd); if (p && p.priceUsd) gtToken.price = parseFloat(p.priceUsd); }
   } catch(e) {}
   const price = gtToken.price;
   if (!price) { toast('Could not get live price', 'er'); return; }
   const addr = gtToken.address;
+  let streakWin = null;
   if (gtSide === 'buy') {
     if (amt > gt.cash) { toast('Not enough cash', 'er'); return; }
     gt.cash -= amt;
@@ -3824,47 +3886,61 @@ async function gtrade() {
     prev.avg = newQty > 0 ? (prev.avg * prev.qty + price * qty) / newQty : price;
     prev.qty = newQty;
     prev.price = price;
+    // Reset milestones for this position (new buy resets milestone tracking)
+    if (gt.milestones[addr]) gt.milestones[addr] = [];
   } else {
     const pos = gt.h[addr];
     if (!pos || pos.qty <= 0.000001) { toast('No position to sell', 'er'); return; }
     const qty = amt / price;
     if (qty > pos.qty + 0.000001) { toast('Insufficient holdings', 'er'); return; }
+    // Calculate P&L for streak
+    const sellPnl = (price - pos.avg) * Math.min(qty, pos.qty);
+    streakWin = sellPnl > 0;
     gt.cash += Math.min(qty, pos.qty) * price;
     pos.qty = Math.max(0, pos.qty - qty);
     pos.price = price;
+    // Clear milestones if fully closed
+    if (pos.qty < 0.000001 && gt.milestones[addr]) gt.milestones[addr] = [];
+  }
+  // Update streak
+  if (streakWin !== null) {
+    gtUpdateStreak(streakWin);
+    _paintStreak();
   }
   const tradeUnits = amt / price;
-  const trade = { dir: gtSide, symbol: gtToken.symbol, name: gtToken.name, amt, price, units: tradeUnits, chain: gtToken.chain, time: Date.now() };
+  const trade = { dir: gtSide, symbol: gtToken.symbol, name: gtToken.name, amt, price, units: tradeUnits, chain: gtToken.chain, time: Date.now(), address: addr, pairAddress: gtToken.pairAddress || '' };
   gt.trades.unshift(trade);
-  saveGT(); updateGT();
+  saveGT(); updateGT(); gtUpdateLeaderboard();
   if (user) sbData('append', 'ghost_trades', { payload: { type: gtSide.toUpperCase(), symbol: gtToken.symbol, amount: amt, price, units: tradeUnits } });
   document.getElementById('gt-amount').value = '';
   document.getElementById('gt-qty-preview').textContent = 'Qty: —';
   const priceLabel = price < 0.001 ? price.toExponential(2) : price.toFixed(4);
   toast(gtSide.toUpperCase() + ' ' + gtToken.symbol + ' executed at $' + priceLabel);
+  const side = gtSide;
   const coachId = 'gt-coach-' + Date.now();
   const div = document.createElement('div');
-  div.style.cssText = 'padding:12px 14px;border-radius:10px;margin-bottom:8px;background:' + (gtSide === 'buy' ? 'rgba(0,255,200,0.06);border:1px solid rgba(0,255,200,0.15)' : 'rgba(239,71,111,0.06);border:1px solid rgba(239,71,111,0.15)') + ';';
-  div.innerHTML = '<div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:' + (gtSide === 'buy' ? '#00ffc8' : '#ef476f') + ';font-weight:700;font-size:12px;">' + gtSide.toUpperCase() + ' ' + gtToken.symbol + '</span><span style="color:var(--cl-text-3);font-size:10px;">$' + amt.toFixed(2) + ' @ $' + priceLabel + '</span></div><div style="font-size:10px;color:var(--cl-text-3);margin-bottom:6px;">' + (gtToken.chain || '').toUpperCase() + ' · ' + new Date().toLocaleTimeString() + '</div><div style="font-size:11px;color:var(--cl-text-3);" id="' + coachId + '">Getting AI coaching...</div>';
+  div.style.cssText = 'padding:12px 14px;border-radius:10px;margin-bottom:8px;background:' + (side === 'buy' ? 'rgba(0,255,200,0.06);border:1px solid rgba(0,255,200,0.15)' : 'rgba(239,71,111,0.06);border:1px solid rgba(239,71,111,0.15)') + ';';
+  div.innerHTML = '<div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:' + (side === 'buy' ? '#00ffc8' : '#ef476f') + ';font-weight:700;font-size:12px;">' + side.toUpperCase() + ' ' + gtToken.symbol + '</span><span style="color:var(--cl-text-3);font-size:10px;">$' + amt.toFixed(2) + ' @ $' + priceLabel + '</span></div><div style="font-size:10px;color:var(--cl-text-3);margin-bottom:6px;">' + (gtToken.chain || '').toUpperCase() + ' · ' + new Date().toLocaleTimeString() + '</div><div style="font-size:11px;color:var(--cl-text-3);" id="' + coachId + '"><span class="cl-spinner"></span> Getting AI coaching...</div>';
   const gtrades = document.getElementById('gtrades');
   if (gtrades.querySelector('[style*="text-align:center"]')) gtrades.innerHTML = '';
   gtrades.prepend(div);
   try {
     const holdings = Object.entries(gt.h).filter(([,v]) => v.qty > 0.000001).map(([,v]) => v.symbol + ' ' + v.qty.toFixed(4)).join(', ');
-    const coaching = await ai('You are ChainLens AI GhostTrade coach. Give sharp 1-2 sentence coaching on this trade.\nTrade: ' + gtSide.toUpperCase() + ' ' + gtToken.symbol + ' (' + gtToken.chain + ') $' + amt + ' at $' + price + '\nPortfolio cash: $' + gt.cash.toFixed(0) + ', Holdings: ' + (holdings || 'none') + '\nBe specific and direct. No fluff.', 120);
-
-
-
+    const coaching = await ai('You are ChainLens AI GhostTrade coach. Give sharp 1-2 sentence coaching on this trade.\nTrade: ' + side.toUpperCase() + ' ' + gtToken.symbol + ' (' + gtToken.chain + ') $' + amt + ' at $' + price + '\nPortfolio cash: $' + gt.cash.toFixed(0) + ', Holdings: ' + (holdings || 'none') + '\nBe specific and direct. No fluff.', 120);
     const coachEl = document.getElementById(coachId);
     if (coachEl) coachEl.textContent = 'AI: ' + coaching;
+    // Save coaching note to trade record
+    if (gt.trades[0] && gt.trades[0].time === trade.time) gt.trades[0].coach = coaching;
+    saveGTLocal();
   } catch(e) { const coachEl = document.getElementById(coachId); if (coachEl) coachEl.textContent = ''; }
 }
 
 function gtReset() {
   if (!confirm('Reset your GhostTrade portfolio? This cannot be undone.')) return;
-  gt = { cash: 50000, h: {}, trades: [], start: 50000 };
+  gt = { cash: 50000, h: {}, trades: [], start: 50000, streak: { cur: 0, best: 0, type: null }, milestones: {} };
   gtToken = null;
-  saveGT(); updateGT();
+  try { localStorage.removeItem('cl_gt_lb'); } catch(e) {}
+  saveGT(); updateGT(); _paintStreak();
   document.getElementById('gtrades').innerHTML = '<div style="padding:20px 0;text-align:center;color:var(--cl-text-3);font-size:12px;">Portfolio reset. Search a token to start trading.</div>';
   document.getElementById('gt-trade-panel').style.display = 'none';
   document.getElementById('gt-search').value = '';
@@ -4853,6 +4929,7 @@ async function gtRefreshPrices() {
     const hit = priceMap[addr.toLowerCase()];
     if (hit) { pos.price = hit.price; pos.change24h = hit.change24h; }
   }
+  checkGTMilestones();
   saveGTLocal();
   const ghd = document.getElementById('ghd');
   if (ghd) _paintGT(entries, ghd);
@@ -4864,6 +4941,222 @@ renderJournal();
 initFxBtns();
 updateWLCount();
 if (priceAlerts.length) startAlertChecker();
+
+// ══════════════════════════════════════════════════════════════════
+// GHOSTTRADE FEATURE EXTENSIONS
+// ══════════════════════════════════════════════════════════════════
+
+// ── STREAK TRACKER ───────────────────────────────────────────────
+function gtUpdateStreak(win) {
+  if (!gt.streak) gt.streak = { cur: 0, best: 0, type: null };
+  const s = gt.streak;
+  if (win) {
+    if (s.type === 'win') s.cur++; else { s.type = 'win'; s.cur = 1; }
+    if (s.cur > s.best) s.best = s.cur;
+    if (s.cur >= 3) toast('🔥 ' + s.cur + '-trade win streak!');
+  } else {
+    if (s.type === 'loss') s.cur++; else { s.type = 'loss'; s.cur = 1; }
+  }
+}
+
+function _paintStreak() {
+  const el = document.getElementById('gt-streak-val');
+  const bestEl = document.getElementById('gt-streak-best');
+  if (!el) return;
+  const s = gt.streak || { cur: 0, best: 0, type: null };
+  if (!s.cur) {
+    el.textContent = '—'; el.style.color = 'var(--cl-text-3)';
+    if (bestEl) bestEl.textContent = '';
+    return;
+  }
+  const isWin = s.type === 'win';
+  el.textContent = (isWin ? '🔥 ' : '❄️ ') + s.cur + (isWin ? 'W' : 'L');
+  el.style.color = isWin ? '#00ffc8' : '#ef476f';
+  if (bestEl && s.best > 1) bestEl.textContent = 'Best: ' + s.best + 'W';
+}
+
+// ── LEADERBOARD ──────────────────────────────────────────────────
+const GT_LB_SEED = [
+  { name: 'CryptoWolf88',  val: 318450, pct: 536.9 },
+  { name: 'SatoshiGhost',  val: 247300, pct: 394.6 },
+  { name: 'DeFiPhantom',   val: 198600, pct: 297.2 },
+  { name: 'NightTrader',   val: 174200, pct: 248.4 },
+  { name: 'AlphaHunter',   val: 141750, pct: 183.5 },
+  { name: 'MoonChaser',    val: 128000, pct: 156.0 },
+  { name: 'BlockWizard',   val: 109300, pct: 118.6 },
+  { name: 'GasGhost',      val:  87450, pct:  74.9 },
+  { name: 'TokenSniper',   val:  72100, pct:  44.2 },
+];
+
+function getGTLeaderboard() {
+  try { const s = localStorage.getItem('cl_gt_lb'); if (s) return JSON.parse(s); } catch(e) {}
+  return [...GT_LB_SEED];
+}
+
+function gtUpdateLeaderboard() {
+  const lb = getGTLeaderboard().filter(e => !e.isMe);
+  const name = (user && (user.username || user.email?.split('@')[0])) || 'You';
+  const total = Object.entries(gt.h).filter(([,p]) => p.qty > 0.000001)
+    .reduce((s,[,p]) => s + (p.price || p.avg) * p.qty, gt.cash);
+  const pct = parseFloat(((total - gt.start) / gt.start * 100).toFixed(1));
+  lb.push({ name, val: Math.round(total), pct, isMe: true });
+  lb.sort((a, b) => b.pct - a.pct);
+  try { localStorage.setItem('cl_gt_lb', JSON.stringify(lb.slice(0, 20))); } catch(e) {}
+}
+
+function renderGTLeaderboard() {
+  const el = document.getElementById('gt-lb-body');
+  if (!el) return;
+  gtUpdateLeaderboard();
+  const lb = getGTLeaderboard();
+  const rankColors = ['#FFD700', '#C0C0C0', '#CD7F32'];
+  el.innerHTML = lb.slice(0, 10).map((e, i) => {
+    const up = e.pct >= 0;
+    const rc = i < 3 ? rankColors[i] : 'var(--cl-text-3)';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px ' + (e.isMe ? '10px' : '4px') + ';border-bottom:1px solid var(--cl-border);' + (e.isMe ? 'background:rgba(120,88,192,0.07);border-radius:7px;margin:0 -4px;' : '') + '">'
+      + '<div style="width:22px;text-align:center;font-size:12px;font-weight:900;color:' + rc + ';">' + (i + 1) + '</div>'
+      + '<div style="flex:1;font-size:12px;font-weight:' + (e.isMe ? '800' : '600') + ';color:' + (e.isMe ? 'var(--cl-cyan)' : 'var(--cl-text-1)') + ';">' + e.name + (e.isMe ? ' <span style="font-size:8px;padding:1px 5px;border-radius:10px;background:rgba(120,88,192,0.2);color:var(--cl-violet);">YOU</span>' : '') + '</div>'
+      + '<div style="font-size:10px;color:var(--cl-text-3);">$' + e.val.toLocaleString('en-US') + '</div>'
+      + '<div style="font-size:12px;font-weight:800;color:' + (up ? '#00ffc8' : '#ef476f') + ';min-width:58px;text-align:right;">' + (up ? '+' : '') + e.pct + '%</div>'
+      + '</div>';
+  }).join('');
+}
+
+function gtRightTab(tab) {
+  const jTab = document.getElementById('gt-tab-journal');
+  const lTab = document.getElementById('gt-tab-lb');
+  const jContent = document.getElementById('gt-journal-content');
+  const lContent = document.getElementById('gt-lb-content');
+  if (tab === 'journal') {
+    jTab.style.background = 'rgba(0,255,200,0.08)'; jTab.style.color = '#00ffc8';
+    lTab.style.background = 'transparent'; lTab.style.color = 'var(--cl-text-3)';
+    jContent.style.display = 'block'; lContent.style.display = 'none';
+  } else {
+    lTab.style.background = 'rgba(120,88,192,0.12)'; lTab.style.color = 'var(--cl-violet)';
+    jTab.style.background = 'transparent'; jTab.style.color = 'var(--cl-text-3)';
+    jContent.style.display = 'none'; lContent.style.display = 'block';
+    renderGTLeaderboard();
+  }
+}
+
+// ── PRE-TRADE RISK SCORE ─────────────────────────────────────────
+let gtPendingTrade = null;
+
+async function gtShowRisk(callback) {
+  const modal = document.getElementById('gt-risk-modal');
+  const scoreEl = document.getElementById('gt-risk-score-display');
+  scoreEl.textContent = '…'; scoreEl.style.color = 'var(--cl-text-3)';
+  document.getElementById('gt-risk-label').textContent = 'CALCULATING';
+  document.getElementById('gt-risk-breakdown').textContent = '';
+  document.getElementById('gt-risk-warn').style.display = 'none';
+  modal.style.display = 'flex';
+  // Fetch live data for risk calc
+  let change24h = gtToken?.change || 0;
+  let liq = 0;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + gtToken.address, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (r.ok) {
+      const d = await r.json();
+      const p = (d.pairs || []).sort((a, b) => parseFloat(b.liquidity?.usd || 0) - parseFloat(a.liquidity?.usd || 0))[0];
+      if (p) { change24h = parseFloat(p.priceChange?.h24 || change24h); liq = parseFloat(p.liquidity?.usd || 0); if (p.priceUsd) gtToken.price = parseFloat(p.priceUsd); }
+    }
+  } catch(e) {}
+  // Score: 1–10
+  let score = 1;
+  const absV = Math.abs(change24h);
+  if (absV > 50) score += 4; else if (absV > 30) score += 3; else if (absV > 15) score += 2; else if (absV > 5) score += 1;
+  if (liq > 0) { if (liq < 10000) score += 3; else if (liq < 50000) score += 2; else if (liq < 200000) score += 1; }
+  if (change24h < -20) score += 2; else if (change24h < -10) score += 1;
+  score = Math.min(10, Math.max(1, score));
+  const level = score <= 3 ? 'LOW' : score <= 6 ? 'MEDIUM' : score <= 8 ? 'HIGH' : 'EXTREME';
+  const scoreColor = score <= 3 ? '#00ffc8' : score <= 6 ? '#FFD700' : '#ef476f';
+  const liqLabel = liq >= 1e6 ? (liq/1e6).toFixed(1) + 'M' : liq >= 1e3 ? (liq/1e3).toFixed(0) + 'K' : liq > 0 ? '$' + liq.toFixed(0) : 'Unknown';
+  const breakdown = [
+    '24h move: ' + (change24h >= 0 ? '+' : '') + change24h.toFixed(1) + '%  →  ' + (absV > 50 ? '🔴 Extreme' : absV > 30 ? '🟠 Very High' : absV > 15 ? '🟡 High' : absV > 5 ? '🔵 Moderate' : '🟢 Low') + ' volatility',
+    liq > 0 ? 'Liquidity: ' + liqLabel + '  →  ' + (liq < 10000 ? '🔴 Very Low' : liq < 50000 ? '🟠 Low' : liq < 200000 ? '🟡 Moderate' : '🟢 Good') : 'Liquidity: Unknown',
+    'Risk score: ' + score + '/10',
+  ].join('\n');
+  scoreEl.textContent = score;
+  scoreEl.style.color = scoreColor;
+  document.getElementById('gt-risk-label').textContent = level + ' RISK';
+  document.getElementById('gt-risk-label').style.color = scoreColor;
+  document.getElementById('gt-risk-breakdown').style.whiteSpace = 'pre-line';
+  document.getElementById('gt-risk-breakdown').textContent = breakdown;
+  document.getElementById('gt-risk-warn').style.display = score > 7 ? 'block' : 'none';
+  const confirmBtn = document.getElementById('gt-risk-confirm');
+  if (score > 7) { confirmBtn.style.background = 'rgba(239,71,111,0.1)'; confirmBtn.style.borderColor = 'rgba(239,71,111,0.3)'; confirmBtn.style.color = '#ef476f'; }
+  else { confirmBtn.style.background = 'rgba(0,255,200,0.1)'; confirmBtn.style.borderColor = 'rgba(0,255,200,0.3)'; confirmBtn.style.color = '#00ffc8'; }
+  gtPendingTrade = callback;
+}
+
+function gtRiskConfirm() {
+  document.getElementById('gt-risk-modal').style.display = 'none';
+  if (gtPendingTrade) { const fn = gtPendingTrade; gtPendingTrade = null; fn(); }
+}
+
+function gtRiskCancel() {
+  document.getElementById('gt-risk-modal').style.display = 'none';
+  gtPendingTrade = null;
+}
+
+// ── MILESTONE NOTIFICATIONS ──────────────────────────────────────
+const GT_MILESTONES = [10, 25, 50, 100];
+
+function checkGTMilestones() {
+  if (!gt.milestones) gt.milestones = {};
+  for (const [addr, pos] of Object.entries(gt.h)) {
+    if (pos.qty <= 0.000001) continue;
+    const costBasis = pos.qty * pos.avg;
+    if (!costBasis) continue;
+    const pctGain = ((pos.qty * (pos.price || pos.avg)) - costBasis) / costBasis * 100;
+    if (!gt.milestones[addr]) gt.milestones[addr] = [];
+    for (const m of GT_MILESTONES) {
+      if (pctGain >= m && !gt.milestones[addr].includes(m)) {
+        gt.milestones[addr].push(m);
+        const emoji = m >= 100 ? '🚀' : m >= 50 ? '🔥' : '📈';
+        toast(emoji + ' ' + pos.symbol + ' hit +' + m + '%! GhostTrade milestone.');
+      }
+    }
+  }
+}
+
+// ── REPLAY MODE ──────────────────────────────────────────────────
+function gtReplay(tradeIdx) {
+  const t = gt.trades[tradeIdx];
+  if (!t) return;
+  const addr = t.pairAddress || t.address || '';
+  const chain = t.chain || 'ethereum';
+  if (!addr) { toast('No chart data for this trade', 'er'); return; }
+  document.getElementById('gt-replay-title').textContent = (t.dir || 'buy').toUpperCase() + ' ' + (t.symbol || '');
+  const d = new Date(t.time || Date.now());
+  document.getElementById('gt-replay-meta').textContent = chain.toUpperCase() + ' · ' + d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const p = t.price || 0;
+  const pLabel = p < 0.001 ? p.toExponential(2) : p.toFixed(4);
+  document.getElementById('gt-replay-entry').innerHTML = '<span style="color:var(--cl-text-3);">Entry</span> <span style="font-weight:700;color:var(--cl-cyan);">$' + pLabel + '</span>';
+  // Find a matching sell trade (same symbol, later time)
+  const exitTrade = gt.trades.slice(0, tradeIdx).find(x => x.symbol === t.symbol && (x.dir === 'sell' || x.type === 'sell') && (x.time || 0) > (t.time || 0));
+  if (exitTrade) {
+    const ep = exitTrade.price || 0;
+    const epLabel = ep < 0.001 ? ep.toExponential(2) : ep.toFixed(4);
+    const pnlPct = p > 0 ? ((ep - p) / p * 100).toFixed(2) : 0;
+    const up = parseFloat(pnlPct) >= 0;
+    document.getElementById('gt-replay-exit').innerHTML = '<span style="color:var(--cl-text-3);">Exit</span> <span style="font-weight:700;color:' + (up ? '#00ffc8' : '#ef476f') + ';">$' + epLabel + '</span>';
+    document.getElementById('gt-replay-pnl').innerHTML = '<span style="color:' + (up ? '#00ffc8' : '#ef476f') + ';font-size:15px;">' + (up ? '+' : '') + pnlPct + '%</span>';
+  } else {
+    document.getElementById('gt-replay-exit').innerHTML = '<span style="color:var(--cl-text-3);">Exit</span> <span style="color:var(--cl-text-3);">Still open</span>';
+    document.getElementById('gt-replay-pnl').textContent = '';
+  }
+  document.getElementById('gt-replay-iframe').src = 'https://dexscreener.com/' + chain + '/' + addr + '?embed=1&theme=dark&trades=0&info=0';
+  document.getElementById('gt-replay-modal').style.display = 'flex';
+}
+
+function gtReplayClose() {
+  document.getElementById('gt-replay-modal').style.display = 'none';
+  document.getElementById('gt-replay-iframe').src = '';
+}
 
 // ── CLARK BOT ──────────────────────────────────────────────────────────────
 const CLARK_BASE = `You are Clark, the AI analyst powering ChainLens AI — an affordable on-chain intelligence platform built for serious crypto traders and researchers.
