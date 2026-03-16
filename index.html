@@ -3607,16 +3607,18 @@ async function updateGT(silent = false) {
     const livePrice = pos.price || pos.avg;
     const currentVal = pos.qty * livePrice;
     const costBasis = pos.qty * pos.avg;
-    const posChange = ((currentVal - costBasis) / costBasis * 100).toFixed(1);
-    const up = currentVal >= costBasis;
+    const dollarPnl = currentVal - costBasis;
+    const posChange = costBasis > 0 ? ((dollarPnl / costBasis) * 100).toFixed(1) : '0.0';
+    const up = dollarPnl >= 0;
     const c24 = pos.change24h;
     const c24Html = c24 != null ? '<span style="font-size:9px;color:' + (c24 >= 0 ? '#00ffc8' : '#ef476f') + ';margin-left:4px;">' + (c24 >= 0 ? '+' : '') + c24.toFixed(1) + '% 24h</span>' : '';
     return '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--cl-border);">'
       + '<div><div style="font-size:12px;font-weight:700;">' + pos.symbol + c24Html + '</div>'
       + '<div style="font-size:10px;color:var(--cl-text-3);">' + pos.qty.toFixed(6) + ' @ avg $' + (pos.avg < 0.001 ? pos.avg.toExponential(2) : pos.avg.toFixed(4)) + '</div>'
       + '<div style="font-size:10px;color:var(--cl-text-3);">Live: $' + (livePrice < 0.001 ? livePrice.toExponential(4) : livePrice.toFixed(6)) + '</div></div>'
-      + '<div style="text-align:right;"><div style="font-size:12px;font-weight:700;">$' + currentVal.toFixed(2) + '</div>'
-      + '<div style="font-size:10px;font-weight:700;color:' + (up ? '#00ffc8' : '#ef476f') + ';">' + (up ? '+' : '') + posChange + '%</div></div>'
+      + '<div style="text-align:right;"><div style="font-size:12px;font-weight:700;color:' + (up ? '#00ffc8' : '#ef476f') + ';">' + (up ? '+' : '') + '$' + dollarPnl.toFixed(2) + '</div>'
+      + '<div style="font-size:10px;font-weight:700;color:' + (up ? '#00ffc8' : '#ef476f') + ';">' + (up ? '+' : '') + posChange + '%</div>'
+      + '<div style="font-size:10px;color:var(--cl-text-3);">val $' + currentVal.toFixed(2) + '</div></div>'
       + '<button data-addr="'+addr+'" onclick="gtSellAll(this.dataset.addr)" style="margin-left:8px;padding:4px 8px;background:rgba(239,71,111,0.08);border:1px solid rgba(239,71,111,0.2);border-radius:6px;font-size:9px;color:#ef476f;cursor:pointer;">SELL ALL</button></div>';
   }).join('');
 }
