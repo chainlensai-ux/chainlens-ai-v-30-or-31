@@ -4722,15 +4722,62 @@ document.getElementById('pwa-install-btn')?.addEventListener('click', async () =
 initAuth();
 loadPrices();
 setInterval(loadPrices, 60000);
-// Live PnL refresh every 1 second — direct pair lookup is fast; lock prevents stacking
-let _gtPollBusy = false;
-setInterval(async () => {
-  if (_gtPollBusy) return;
-  if (Object.keys(gt.h).some(k => gt.h[k].qty > 0.000001)) {
-    _gtPollBusy = true;
-    try { await updateGT(true); } finally { _gtPollBusy = false; }
+// Live PnL: loop every 1.5s — fetch completes, repaint, wait, repeat
+(async function gtLivePriceLoop() {
+  while (true) {
+    await new Promise(r => setTimeout(r, 1500));
+    const holdings = Object.entries(gt.h).filter(([, p]) => p.qty > 0.000001);
+    if (!holdings.length) continue;
+    try {
+      const priceMap = {};
+      const byChain = {};
+      const fallback = [];
+      for (const [addr, pos] of holdings) {
+        if (pos.pairAddress && pos.chain) {
+          (byChain[pos.chain] = byChain[pos.chain] || []).push({ addr, pos });
+        } else { fallback.push([addr, pos]); }
+      }
+      const reqs = Object.entries(byChain).map(async ([chain, items]) => {
+        try {
+          const ctrl = new AbortController();
+          setTimeout(() => ctrl.abort(), 1800);
+          const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + items.map(i => i.pos.pairAddress).join(','), { signal: ctrl.signal });
+          if (!r.ok) return;
+          const pairs = (await r.json()).pairs || [];
+          for (const p of pairs) {
+            const a = (p.baseToken?.address || '').toLowerCase();
+            if (a && p.priceUsd) priceMap[a] = { price: +p.priceUsd, change24h: +(p.priceChange?.h24 || 0) };
+          }
+        } catch(e) {}
+      });
+      if (fallback.length) reqs.push((async () => {
+        try {
+          const ctrl = new AbortController();
+          setTimeout(() => ctrl.abort(), 1800);
+          const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + fallback.map(([a]) => a).join(','), { signal: ctrl.signal });
+          if (!r.ok) return;
+          for (const p of (await r.json()).pairs || []) {
+            const a = (p.baseToken?.address || '').toLowerCase();
+            if (!a || !p.priceUsd) continue;
+            const liq = +(p.liquidity?.usd || 0);
+            if (!priceMap[a] || liq > (priceMap[a].liq || 0)) priceMap[a] = { price: +p.priceUsd, change24h: +(p.priceChange?.h24 || 0), liq };
+          }
+        } catch(e) {}
+      })());
+      await Promise.all(reqs);
+      let updated = false;
+      for (const [addr, pos] of holdings) {
+        const hit = priceMap[addr.toLowerCase()];
+        if (hit) { pos.price = hit.price; pos.change24h = hit.change24h; updated = true; }
+      }
+      if (updated) {
+        saveGTLocal();
+        const ghd = document.getElementById('ghd');
+        if (ghd) _paintGT(holdings, ghd);
+      }
+    } catch(e) {}
   }
-}, 1000);
+})();
 renderLB();
 renderVaults();
 renderJournal();
