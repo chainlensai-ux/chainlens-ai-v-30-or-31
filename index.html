@@ -1786,7 +1786,11 @@ body::after {
 
         <!-- DexScreener Chart -->
         <div id="gt-chart-card" style="display:none;border:1px solid var(--cl-border);border-radius:12px;overflow:hidden;background:#0a0a0f;">
-          <iframe id="gt-dex-iframe" src="" style="width:100%;height:450px;border:none;display:block;" loading="lazy"></iframe>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(120,88,192,0.06);border-bottom:1px solid var(--cl-border);">
+            <span style="font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--cl-text-3);text-transform:uppercase;" id="gt-chart-label">Live Chart</span>
+            <button onclick="gtCloseChart()" style="padding:3px 10px;background:rgba(239,71,111,0.08);border:1px solid rgba(239,71,111,0.2);border-radius:6px;font-size:10px;font-weight:700;color:#ef476f;cursor:pointer;">✕ Remove</button>
+          </div>
+          <iframe id="gt-dex-iframe" src="" style="width:100%;height:430px;border:none;display:block;" loading="lazy"></iframe>
         </div>
 
         <!-- Empty chart placeholder -->
@@ -2222,7 +2226,10 @@ body::after {
         </div>
         <button onclick="addAlert()" class="cl-btn cl-btn--primary cl-btn--full">+ Add Alert</button>
       </div>
-      <div class="cl-label">Active Alerts</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <div class="cl-label" style="margin:0;">Active Alerts</div>
+        <button onclick="clearFiredAlerts()" style="padding:4px 10px;background:rgba(239,71,111,0.06);border:1px solid rgba(239,71,111,0.18);border-radius:6px;font-size:10px;font-weight:700;color:#ef476f;cursor:pointer;">Clear Fired</button>
+      </div>
       <div id="alerts-list" style="display:flex;flex-direction:column;gap:10px;">
         <div style="color:var(--cl-text-3);font-size:13px;padding:20px;text-align:center;background:var(--cl-surface);border-radius:12px;border:1px solid var(--cl-border);">No alerts set. Add one above.</div>
       </div>
@@ -2670,12 +2677,14 @@ function updateNav() {
   const navAuth = document.getElementById('nav-auth');
   if (user) {
     const planColors = { free: 'var(--cl-text-3)', pro: 'var(--cl-cyan)', elite: 'var(--cl-elite)' };
-    const planLabel = user.plan.charAt(0).toUpperCase() + user.plan.slice(1);
+    const userPlan = user.plan || 'free';
+    const planLabel = userPlan.charAt(0).toUpperCase() + userPlan.slice(1);
+    const firstName = (user.name || 'Trader').split(' ')[0];
     navAuth.innerHTML = `
       <div class="cl-user-pill" onclick="toggleUserMenu()">
         <span class="cl-user-pill__gem">⬡</span>
-        <span style="font-size:13px;">${user.name.split(' ')[0]}</span>
-        <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(120,88,192,0.12);color:${planColors[user.plan]};">${planLabel}</span>
+        <span style="font-size:13px;">${firstName}</span>
+        <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;background:rgba(120,88,192,0.12);color:${planColors[userPlan]};">${planLabel}</span>
       </div>`;
   } else {
     navAuth.innerHTML = `
@@ -2730,7 +2739,7 @@ async function doAuth() {
     if (!res.success) { toast(res.error || 'Login failed', 'er'); btn.disabled = false; btn.textContent = 'Log In →'; return; }
     user = res.user;
     localStorage.setItem('cl_session', JSON.stringify(user));
-    toast(`Welcome back, ${user.name.split(' ')[0]}`);
+    toast(`Welcome back, ${(user.name || 'Trader').split(' ')[0]}`);
     closeAuth(); updateNav();
     syncAllDataDown();
   }
@@ -3282,20 +3291,27 @@ function renderPnL(pnlData) {
 
 async function fetchTokenPrices(tokens) {
   const priceMap = {};
-  const evmTokens = tokens.filter(t => t.contractAddress && t.chain !== 'sol');
-  if (!evmTokens.length) return priceMap;
+  // EVM tokens use contractAddress; Solana tokens use mint
+  const priceable = tokens.filter(t => t.contractAddress || t.mint);
+  if (!priceable.length) return priceMap;
   // Batch into chunks of 5 to avoid URL length limits
   const chunks = [];
-  for (let i = 0; i < evmTokens.length; i += 5) chunks.push(evmTokens.slice(i, i + 5));
+  for (let i = 0; i < priceable.length; i += 5) chunks.push(priceable.slice(i, i + 5));
   await Promise.allSettled(chunks.map(async chunk => {
     try {
-      const addrs = chunk.map(t => t.contractAddress).join(',');
-      const r = await pfetch('https://api.dexscreener.com/latest/dex/tokens/' + addrs);
+      const addrs = chunk.map(t => t.contractAddress || t.mint).join(',');
+      const _c = new AbortController(); const _t = setTimeout(() => _c.abort(), 5000);
+      const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + addrs, { signal: _c.signal });
+      clearTimeout(_t);
       if (r.ok) {
         const d = await r.json();
         (d.pairs || []).forEach(pair => {
           const addr = (pair.baseToken?.address || '').toLowerCase();
-          if (!priceMap[addr] && pair.priceUsd) priceMap[addr] = parseFloat(pair.priceUsd);
+          if (addr && pair.priceUsd) {
+            const existing = priceMap[addr];
+            const liq = parseFloat(pair.liquidity?.usd || 0);
+            if (!existing || liq > (existing._liq || 0)) priceMap[addr] = parseFloat(pair.priceUsd);
+          }
         });
       }
     } catch(e) {}
@@ -3411,7 +3427,10 @@ function renderAllTxs(txs, address, chain) {
     }
     const isOut = tx.from?.toLowerCase() === address.toLowerCase();
     const val = parseFloat(fmtEth(tx.value || 0));
-    const chainLabel = (tx._chain || chain || 'eth').toUpperCase();
+    const txChain = (tx._chain || chain || 'eth').toLowerCase();
+    const chainLabel = txChain.toUpperCase();
+    const nativeSym = txChain === 'bnb' ? 'BNB' : txChain === 'polygon' ? 'MATIC' : 'ETH';
+    const nativeUsdPrice = txChain === 'bnb' ? (px['binancecoin']?.usd || 600) : txChain === 'polygon' ? (px['matic-network']?.usd || px['polygon']?.usd || 0.8) : (px['ethereum']?.usd || 3000);
     return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(120,88,192,0.08);">
       <div style="width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;${isOut?'background:rgba(239,71,111,0.12);color:#ef476f;border:1px solid rgba(239,71,111,0.2);':'background:rgba(0,255,200,0.1);color:#00ffc8;border:1px solid rgba(0,255,200,0.2);'}">${isOut?'OUT':'IN'}</div>
       <div style="flex:1;min-width:0;">
@@ -3419,8 +3438,8 @@ function renderAllTxs(txs, address, chain) {
         <div style="font-size:10px;color:var(--cl-text-3);">${chainLabel} · ${fmtAge(tx.timeStamp||tx.time||0)}</div>
       </div>
       <div style="text-align:right;flex-shrink:0;">
-        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};">${val>0?val.toFixed(4)+' ETH':'Contract'}</div>
-        ${val>0?`<div style="font-size:10px;color:var(--cl-text-3);">${fmtFx(val*(px['ethereum']?.usd||3000))}</div>`:''}
+        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};">${val>0?val.toFixed(4)+' '+nativeSym:'Contract'}</div>
+        ${val>0?`<div style="font-size:10px;color:var(--cl-text-3);">${fmtFx(val*nativeUsdPrice)}</div>`:''}
       </div>
     </div>`;
   }).join('');
@@ -3524,6 +3543,12 @@ function loadGTChart(pairAddress, range) {
 
 function gtChartRange(r) {}
 
+function gtCloseChart() {
+  document.getElementById('gt-chart-card').style.display = 'none';
+  document.getElementById('gt-chart-placeholder').style.display = 'flex';
+  document.getElementById('gt-dex-iframe').src = '';
+}
+
 function gtTab(side) {
   gtSide = side;
   const buyTab = document.getElementById('gt-buy-tab');
@@ -3543,6 +3568,7 @@ function gtTab(side) {
 
 function gtPct(pct) {
   if (!gtToken) return;
+  if (!gtToken.price) { toast('Token price unavailable', 'er'); return; }
   let amt;
   if (gtSide === 'buy') {
     amt = (gt.cash * pct / 100).toFixed(2);
@@ -3556,7 +3582,7 @@ function gtPct(pct) {
 }
 
 function gtCalcQty() {
-  if (!gtToken) return;
+  if (!gtToken || !gtToken.price) return;
   const amt = parseFloat(document.getElementById('gt-amount').value) || 0;
   const qty = amt / gtToken.price;
   const el = document.getElementById('gt-qty-preview');
@@ -3567,25 +3593,64 @@ async function updateGT(silent = false) {
   const holdings = Object.entries(gt.h).filter(([, pos]) => pos.qty > 0.000001);
   const ghd = document.getElementById('ghd');
 
-  // Fetch live prices — direct browser calls in parallel (no proxy = fast)
+  // Fetch live prices — use pairAddress for direct O(1) lookup, parallel per chain
   if (holdings.length) {
     if (!silent) ghd.innerHTML = '<div style="text-align:center;padding:8px;color:var(--cl-text-3);font-size:11px;"><span class="cl-spinner"></span> Refreshing prices...</div>';
     try {
-      await Promise.allSettled(holdings.map(async ([addr, pos]) => {
+      const priceMap = {};
+      // Group by chain using pairAddress (direct lookup) — fall back to token endpoint
+      const byChain = {};
+      const tokenFallback = [];
+      for (const [addr, pos] of holdings) {
+        if (pos.pairAddress && pos.chain) {
+          if (!byChain[pos.chain]) byChain[pos.chain] = [];
+          byChain[pos.chain].push({ addr, pos });
+        } else {
+          tokenFallback.push([addr, pos]);
+        }
+      }
+      const fetches = Object.entries(byChain).map(async ([chain, items]) => {
+        const pairAddrs = items.map(i => i.pos.pairAddress).join(',');
         try {
-          const chain = pos.chain || 'ethereum';
-          const pairAddr = pos.pairAddress || addr;
-          const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + pairAddr, { signal: AbortSignal.timeout(4000) });
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 4000);
+          const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + pairAddrs, { signal: ctrl.signal });
+          clearTimeout(t);
           if (r.ok) {
             const d = await r.json();
-            const pair = d.pair || (d.pairs && d.pairs[0]);
-            if (pair && pair.priceUsd) {
-              pos.price = parseFloat(pair.priceUsd);
-              pos.change24h = parseFloat(pair.priceChange?.h24 || 0);
+            const pairs = Array.isArray(d.pairs) ? d.pairs : (d.pair ? [d.pair] : []);
+            for (const pair of pairs) {
+              const tokenAddr = (pair.baseToken && pair.baseToken.address || '').toLowerCase();
+              if (tokenAddr && pair.priceUsd) priceMap[tokenAddr] = { price: parseFloat(pair.priceUsd), change24h: parseFloat(pair.priceChange && pair.priceChange.h24 || 0) };
             }
           }
         } catch(e) {}
-      }));
+      });
+      if (tokenFallback.length) {
+        fetches.push((async () => {
+          try {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), 4000);
+            const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + tokenFallback.map(([a]) => a).join(','), { signal: ctrl.signal });
+            clearTimeout(t);
+            if (r.ok) {
+              const d = await r.json();
+              for (const pair of (d.pairs || [])) {
+                const tokenAddr = (pair.baseToken && pair.baseToken.address || '').toLowerCase();
+                if (!tokenAddr || !pair.priceUsd) continue;
+                const liq = parseFloat(pair.liquidity && pair.liquidity.usd || 0);
+                if (!priceMap[tokenAddr] || liq > (priceMap[tokenAddr].liq || 0)) priceMap[tokenAddr] = { price: parseFloat(pair.priceUsd), change24h: parseFloat(pair.priceChange && pair.priceChange.h24 || 0), liq };
+              }
+            }
+          } catch(e) {}
+        })());
+      }
+      await Promise.all(fetches);
+      for (const [addr, pos] of holdings) {
+        const hit = priceMap[addr.toLowerCase()];
+        if (hit) { pos.price = hit.price; pos.change24h = hit.change24h; }
+      }
+      }
     } catch(e) {}
   }
 
@@ -3599,21 +3664,25 @@ async function updateGT(silent = false) {
   gcEl.style.color = pnl >= 0 ? '#00ffc8' : '#ef476f';
   document.getElementById('gca').textContent = '$' + gt.cash.toFixed(2);
 
+  const hcEl = document.getElementById('gt-holdings-count');
+  if (hcEl) hcEl.textContent = holdings.length ? holdings.length + ' position' + (holdings.length !== 1 ? 's' : '') : '';
   if (!holdings.length) { ghd.innerHTML = '<div style="text-align:center;padding:16px;color:var(--cl-text-3);font-size:12px;">No positions yet</div>'; return; }
   ghd.innerHTML = holdings.map(([addr, pos]) => {
     const livePrice = pos.price || pos.avg;
     const currentVal = pos.qty * livePrice;
     const costBasis = pos.qty * pos.avg;
-    const posChange = ((currentVal - costBasis) / costBasis * 100).toFixed(1);
-    const up = currentVal >= costBasis;
+    const dollarPnl = currentVal - costBasis;
+    const posChange = costBasis > 0 ? ((dollarPnl / costBasis) * 100).toFixed(1) : '0.0';
+    const up = dollarPnl >= 0;
     const c24 = pos.change24h;
     const c24Html = c24 != null ? '<span style="font-size:9px;color:' + (c24 >= 0 ? '#00ffc8' : '#ef476f') + ';margin-left:4px;">' + (c24 >= 0 ? '+' : '') + c24.toFixed(1) + '% 24h</span>' : '';
     return '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--cl-border);">'
       + '<div><div style="font-size:12px;font-weight:700;">' + pos.symbol + c24Html + '</div>'
       + '<div style="font-size:10px;color:var(--cl-text-3);">' + pos.qty.toFixed(6) + ' @ avg $' + (pos.avg < 0.001 ? pos.avg.toExponential(2) : pos.avg.toFixed(4)) + '</div>'
       + '<div style="font-size:10px;color:var(--cl-text-3);">Live: $' + (livePrice < 0.001 ? livePrice.toExponential(4) : livePrice.toFixed(6)) + '</div></div>'
-      + '<div style="text-align:right;"><div style="font-size:12px;font-weight:700;">$' + currentVal.toFixed(2) + '</div>'
-      + '<div style="font-size:10px;font-weight:700;color:' + (up ? '#00ffc8' : '#ef476f') + ';">' + (up ? '+' : '') + posChange + '%</div></div>'
+      + '<div style="text-align:right;"><div style="font-size:12px;font-weight:700;color:' + (up ? '#00ffc8' : '#ef476f') + ';">' + (up ? '+' : '') + '$' + dollarPnl.toFixed(2) + '</div>'
+      + '<div style="font-size:10px;font-weight:700;color:' + (up ? '#00ffc8' : '#ef476f') + ';">' + (up ? '+' : '') + posChange + '%</div>'
+      + '<div style="font-size:10px;color:var(--cl-text-3);">val $' + currentVal.toFixed(2) + '</div></div>'
       + '<button data-addr="'+addr+'" onclick="gtSellAll(this.dataset.addr)" style="margin-left:8px;padding:4px 8px;background:rgba(239,71,111,0.08);border:1px solid rgba(239,71,111,0.2);border-radius:6px;font-size:9px;color:#ef476f;cursor:pointer;">SELL ALL</button></div>';
   }).join('');
 }
@@ -3634,8 +3703,11 @@ async function gtrade() {
   const amt = parseFloat(document.getElementById('gt-amount').value);
   if (!amt || amt <= 0) { toast('Enter amount', 'er'); return; }
   try {
-    const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/' + gtToken.chain + '/' + (gtToken.pairAddress || gtToken.address), { signal: AbortSignal.timeout(4000) });
-    if (r.ok) { const d = await r.json(); const p = d.pair || (d.pairs && d.pairs[0]); if (p && p.priceUsd) gtToken.price = parseFloat(p.priceUsd); }
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), 5000);
+    const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + gtToken.address, { signal: ctrl2.signal });
+    clearTimeout(t2);
+    if (r.ok) { const d = await r.json(); const pairs = d.pairs || []; const p = pairs.find(x => x.priceUsd) || pairs[0]; if (p && p.priceUsd) gtToken.price = parseFloat(p.priceUsd); }
   } catch(e) {}
   const price = gtToken.price;
   if (!price) { toast('Could not get live price', 'er'); return; }
@@ -3687,8 +3759,12 @@ async function gtrade() {
 function gtReset() {
   if (!confirm('Reset your GhostTrade portfolio? This cannot be undone.')) return;
   gt = { cash: 50000, h: {}, trades: [], start: 50000 };
+  gtToken = null;
   saveGT(); updateGT();
   document.getElementById('gtrades').innerHTML = '<div style="padding:20px 0;text-align:center;color:var(--cl-text-3);font-size:12px;">Portfolio reset. Search a token to start trading.</div>';
+  document.getElementById('gt-trade-panel').style.display = 'none';
+  document.getElementById('gt-search').value = '';
+  gtCloseChart();
   toast('Portfolio reset to $50,000');
 }
 
@@ -4117,7 +4193,19 @@ async function doWS() {
       allTxs = sol.txs;
       assets = [{ symbol: 'SOL', name: 'Solana', balance: sol.nativeBal, usdValue: sol.nativeBal * solPrice, chain: 'sol' }];
       sol.tokens.forEach(t => assets.push({ ...t, usdValue: 0, chain: 'sol' }));
-      totalUsd = sol.nativeBal * solPrice;
+      // Fetch live prices for SPL tokens via DexScreener
+      const splTokens = sol.tokens.filter(t => t.mint);
+      if (splTokens.length) {
+        document.getElementById('ws-total-sub').textContent = 'Fetching SPL token prices...';
+        const splPriceMap = await fetchTokenPrices(splTokens);
+        assets.forEach(a => {
+          if (a.mint) {
+            const price = splPriceMap[a.mint.toLowerCase()];
+            if (price != null) { a.price = price; a.usdValue = price * a.balance; }
+          }
+        });
+      }
+      totalUsd = assets.reduce((s, a) => s + (a.usdValue || 0), 0);
       portfolioSummary = `SOL: ${sol.nativeBal.toFixed(4)}, SPL Tokens: ${sol.tokens.length}, Txs: ${sol.txs.length}`;
     }
 
@@ -4270,40 +4358,49 @@ async function doWS() {
     if (chainType === 'evm') {
       document.getElementById('ws-pnl-card').style.display = 'block';
       document.getElementById('ws-pnl').innerHTML = '<div style="text-align:center;padding:12px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Calculating PnL...</div>';
+      const _pnlTimeout = new Promise(res => setTimeout(() => res('timeout'), 25000));
       (async () => {
         try {
-          const chainKeys2 = Object.keys(EVM_CHAINS);
-          const tokTxResults = await Promise.allSettled(
-            chainKeys2.map(c => {
-              const cfg2 = EVM_CHAINS[c];
-              return pfetch(cfg2.explorer + '?chainid=' + cfg2.chainId + '&module=account&action=tokentx&address=' + address + '&sort=asc&page=1&offset=500&apikey=' + ESCAN)
-                .then(r => r.json()).then(d => Array.isArray(d.result) ? d.result : []);
-            })
-          );
-          const allTokTxs = tokTxResults.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-          // Build price map — start with held assets then fetch any missing ones
-          const priceMap2 = {};
-          assets.forEach(a => { if (a.contractAddress && a.price) priceMap2[a.contractAddress.toLowerCase()] = a.price; });
-          // Find unique contract addresses in tx history that we don't have prices for
-          const missingAddrs = [...new Set(allTokTxs.map(tx => tx.contractAddress?.toLowerCase()).filter(a => a && !priceMap2[a]))];
-          if (missingAddrs.length) {
-            const missingChunks = [];
-            for (let i = 0; i < missingAddrs.length; i += 5) missingChunks.push(missingAddrs.slice(i, i + 5));
-            await Promise.allSettled(missingChunks.map(async chunk => {
-              try {
-                const r = await pfetch('https://api.dexscreener.com/latest/dex/tokens/' + chunk.join(','));
-                if (r.ok) {
-                  const d = await r.json();
-                  (d.pairs || []).forEach(pair => {
-                    const addr = (pair.baseToken?.address || '').toLowerCase();
-                    if (!priceMap2[addr] && pair.priceUsd) priceMap2[addr] = parseFloat(pair.priceUsd);
-                  });
-                }
-              } catch(e) {}
-            }));
+          const _pnlWork = (async () => {
+            const chainKeys2 = Object.keys(EVM_CHAINS);
+            const tokTxResults = await Promise.allSettled(
+              chainKeys2.map(c => {
+                const cfg2 = EVM_CHAINS[c];
+                return pfetch(cfg2.explorer + '?chainid=' + cfg2.chainId + '&module=account&action=tokentx&address=' + address + '&sort=asc&page=1&offset=500&apikey=' + ESCAN)
+                  .then(r => r.json()).then(d => Array.isArray(d.result) ? d.result : []);
+              })
+            );
+            const allTokTxs = tokTxResults.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+            const priceMap2 = {};
+            assets.forEach(a => { if (a.contractAddress && a.price) priceMap2[a.contractAddress.toLowerCase()] = a.price; });
+            const missingAddrs = [...new Set(allTokTxs.map(tx => tx.contractAddress?.toLowerCase()).filter(a => a && !priceMap2[a]))];
+            if (missingAddrs.length) {
+              const missingChunks = [];
+              for (let i = 0; i < missingAddrs.length; i += 5) missingChunks.push(missingAddrs.slice(i, i + 5));
+              await Promise.allSettled(missingChunks.map(async chunk => {
+                try {
+                  const _mc = new AbortController(); const _mt = setTimeout(() => _mc.abort(), 5000);
+                  const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + chunk.join(','), { signal: _mc.signal });
+                  clearTimeout(_mt);
+                  if (r.ok) {
+                    const d = await r.json();
+                    (d.pairs || []).forEach(pair => {
+                      const addr = (pair.baseToken?.address || '').toLowerCase();
+                      if (!priceMap2[addr] && pair.priceUsd) priceMap2[addr] = parseFloat(pair.priceUsd);
+                    });
+                  }
+                } catch(e) {}
+              }));
+            }
+            const pnlData = calculatePnL(allTokTxs, address, priceMap2);
+            return pnlData;
+          })();
+          const result = await Promise.race([_pnlWork, _pnlTimeout]);
+          if (result === 'timeout') {
+            document.getElementById('ws-pnl').innerHTML = '<div style="color:var(--cl-text-3);font-size:12px;padding:8px;">PnL timed out — network too slow.</div>';
+          } else {
+            document.getElementById('ws-pnl').innerHTML = result.length ? renderPnL(result) : '<div style="text-align:center;padding:16px;color:var(--cl-text-3);font-size:12px;">No token transactions found</div>';
           }
-          const pnlData = calculatePnL(allTokTxs, address, priceMap2);
-          document.getElementById('ws-pnl').innerHTML = pnlData.length ? renderPnL(pnlData) : '<div style="text-align:center;padding:16px;color:var(--cl-text-3);font-size:12px;">No token transactions found</div>';
         } catch(e) {
           document.getElementById('ws-pnl').innerHTML = '<div style="color:#ef476f;font-size:12px;padding:8px;">PnL calculation failed: ' + e.message + '</div>';
         }
@@ -4511,7 +4608,10 @@ function addAlert() {
   const dir = document.getElementById('alert-dir').value;
   const target = parseFloat(document.getElementById('alert-price').value);
   if (!target || isNaN(target)) { toast('Enter a target price', 'er'); return; }
-  const symbol = document.getElementById('alert-coin').selectedOptions[0].text.match(/\((.+)\)/)[1];
+  const selectedOption = document.getElementById('alert-coin').selectedOptions[0];
+  if (!selectedOption) { toast('Select a coin', 'er'); return; }
+  const symbolMatch = selectedOption.text.match(/\((.+)\)/);
+  const symbol = symbolMatch ? symbolMatch[1] : selectedOption.text || coin;
   priceAlerts.push({ coin, symbol, dir, target, fired: false, id: Date.now() });
   localStorage.setItem('cl_alerts', JSON.stringify(priceAlerts));
   if (user) sbData('save', 'price_alerts', { payload: priceAlerts.map(a => ({ coin_id: a.coin, coin_name: a.symbol, direction: a.dir, target_price: a.target, triggered: a.fired || false })) });
@@ -4523,6 +4623,7 @@ function addAlert() {
 }
 
 function deleteAlert(i) { priceAlerts.splice(i, 1); localStorage.setItem('cl_alerts', JSON.stringify(priceAlerts)); renderAlerts(); }
+function clearFiredAlerts() { priceAlerts = priceAlerts.filter(a => !a.fired); localStorage.setItem('cl_alerts', JSON.stringify(priceAlerts)); renderAlerts(); toast('Fired alerts cleared'); }
 
 function startAlertChecker() {
   if (alertInterval) return;
@@ -4615,12 +4716,15 @@ document.getElementById('pwa-install-btn')?.addEventListener('click', async () =
 initAuth();
 loadPrices();
 setInterval(loadPrices, 60000);
-// Live PnL refresh every 5 seconds — direct fetch is fast
+// Live PnL refresh every 3 seconds — direct pair lookup is fast; lock prevents stacking
+let _gtPollBusy = false;
 setInterval(async () => {
+  if (_gtPollBusy) return;
   if (Object.keys(gt.h).some(k => gt.h[k].qty > 0.000001)) {
-    await updateGT(true);
+    _gtPollBusy = true;
+    try { await updateGT(true); } finally { _gtPollBusy = false; }
   }
-}, 5000);
+}, 3000);
 renderLB();
 renderVaults();
 renderJournal();
