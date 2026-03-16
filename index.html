@@ -3109,6 +3109,18 @@ document.getElementById('wsi')?.addEventListener('input', function() {
   if (row) row.style.display = this.value.trim().startsWith('0x') ? 'block' : 'none';
 });
 
+const ANKR_RPC = { eth: 'https://rpc.ankr.com/eth', bnb: 'https://rpc.ankr.com/bsc', base: 'https://rpc.ankr.com/base', polygon: 'https://rpc.ankr.com/polygon' };
+
+async function fetchNativeBalRPC(address, chain) {
+  try {
+    const rpc = ANKR_RPC[chain];
+    if (!rpc) return 0;
+    const r = await pfetch(rpc, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [address, 'latest'] }) });
+    const d = await r.json();
+    return d.result ? parseInt(d.result, 16) / 1e18 : 0;
+  } catch(e) { return 0; }
+}
+
 async function fetchEVM(address, chain) {
   const cfg = EVM_CHAINS[chain] || EVM_CHAINS.eth;
   try {
@@ -3118,11 +3130,13 @@ async function fetchEVM(address, chain) {
     ]);
     const balData = await balRes.json();
     const tokData = await tokRes.json();
-    if (balData.status === '0' && balData.result?.toLowerCase().includes('rate limit')) throw new Error('Rate limit — wait 10 seconds and try again.');
-    if (balData.status === '0' && balData.result?.toLowerCase().includes('invalid')) throw new Error('API key invalid: ' + balData.result);
-    const nativeBal = balData.result && !isNaN(parseFloat(balData.result)) ? parseFloat(fmtEth(balData.result)) : 0;
+    const escanFailed = balData.status === '0' || balData.message === 'NOTOK' || !balData.result || typeof balData.result !== 'string' || isNaN(parseFloat(balData.result));
+    // Fallback to free Ankr RPC for native balance if Etherscan key missing/rate-limited
+    const nativeBal = escanFailed
+      ? await fetchNativeBalRPC(address, chain)
+      : parseFloat(fmtEth(balData.result));
     const tokenMeta = {};
-    if (tokData.result && Array.isArray(tokData.result)) {
+    if (!escanFailed && tokData.result && Array.isArray(tokData.result)) {
       tokData.result.forEach(tx => {
         if (!tokenMeta[tx.contractAddress]) tokenMeta[tx.contractAddress] = { symbol: tx.tokenSymbol, name: tx.tokenName, decimals: parseInt(tx.tokenDecimal) || 18, contractAddress: tx.contractAddress };
       });
@@ -3156,24 +3170,62 @@ async function fetchAllTxsEVM(address, chain) {
 }
 
 async function fetchBTC(address) {
-  try {
-    const [addrRes, txRes] = await Promise.all([
-      pfetch(`https://blockstream.info/api/address/${address}`),
-      pfetch(`https://blockstream.info/api/address/${address}/txs`)
-    ]);
-    if (!addrRes.ok) throw new Error('BTC fetch failed: ' + addrRes.status);
-    const addrData = await addrRes.json();
-    const txData = txRes.ok ? await txRes.json() : [];
-    const funded = addrData.chain_stats?.funded_txo_sum || 0;
-    const spent = addrData.chain_stats?.spent_txo_sum || 0;
-    const bal = (funded - spent) / 1e8;
-    const txs = (Array.isArray(txData) ? txData : []).slice(0, 50).map(tx => {
-      const received = (tx.vout || []).filter(o => o.scriptpubkey_address === address).reduce((s, o) => s + (o.value || 0), 0) / 1e8;
-      const sent = (tx.vin || []).filter(i => i.prevout?.scriptpubkey_address === address).reduce((s, i) => s + (i.prevout?.value || 0), 0) / 1e8;
-      return { dir: sent > received ? 'out' : 'in', val: (received || sent).toFixed(6), time: tx.status?.block_time || 0, hash: tx.txid };
-    });
-    return { nativeBal: bal, symbol: 'BTC', txCount: addrData.chain_stats?.tx_count || 0, tokens: [], txs, chain: 'btc' };
-  } catch(e) { throw new Error('Bitcoin scan failed: ' + e.message); }
+  // Try mempool.space first, then blockstream.info, then blockchain.info
+  const btcApis = [
+    `https://mempool.space/api/address/${address}`,
+    `https://blockstream.info/api/address/${address}`
+  ];
+  let addrData = null;
+  for (const apiUrl of btcApis) {
+    try {
+      const r = await pfetch(apiUrl);
+      const d = await r.json();
+      if (d && d.chain_stats) { addrData = d; break; }
+    } catch(e) {}
+  }
+
+  // blockchain.info fallback (different response format)
+  if (!addrData) {
+    try {
+      const r = await pfetch(`https://blockchain.info/rawaddr/${address}?limit=50`);
+      const d = await r.json();
+      if (d && d.final_balance !== undefined) {
+        const bal = d.final_balance / 1e8;
+        const txs = (d.txs || []).slice(0, 50).map(tx => {
+          const received = (tx.out || []).filter(o => o.addr === address).reduce((s, o) => s + (o.value || 0), 0) / 1e8;
+          const spent = (tx.inputs || []).filter(i => i.prev_out?.addr === address).reduce((s, i) => s + (i.prev_out?.value || 0), 0) / 1e8;
+          return { dir: spent > received ? 'out' : 'in', val: (received || spent).toFixed(6), time: tx.time || 0, hash: tx.hash };
+        });
+        return { nativeBal: bal, symbol: 'BTC', txCount: d.n_tx || 0, tokens: [], txs, chain: 'btc' };
+      }
+    } catch(e) {}
+    throw new Error('Could not reach Bitcoin APIs. Try again in a moment.');
+  }
+
+  const funded = (addrData.chain_stats?.funded_txo_sum || 0) + (addrData.mempool_stats?.funded_txo_sum || 0);
+  const spent = (addrData.chain_stats?.spent_txo_sum || 0) + (addrData.mempool_stats?.spent_txo_sum || 0);
+  const bal = (funded - spent) / 1e8;
+
+  const txApis = [
+    `https://mempool.space/api/address/${address}/txs`,
+    `https://blockstream.info/api/address/${address}/txs`
+  ];
+  let txs = [];
+  for (const txUrl of txApis) {
+    try {
+      const r = await pfetch(txUrl);
+      const d = await r.json();
+      if (Array.isArray(d)) {
+        txs = d.slice(0, 50).map(tx => {
+          const received = (tx.vout || []).filter(o => o.scriptpubkey_address === address).reduce((s, o) => s + (o.value || 0), 0) / 1e8;
+          const sent = (tx.vin || []).filter(i => i.prevout?.scriptpubkey_address === address).reduce((s, i) => s + (i.prevout?.value || 0), 0) / 1e8;
+          return { dir: sent > received ? 'out' : 'in', val: (received || sent).toFixed(6), time: tx.status?.block_time || 0, hash: tx.txid };
+        });
+        break;
+      }
+    } catch(e) {}
+  }
+  return { nativeBal: bal, symbol: 'BTC', txCount: addrData.chain_stats?.tx_count || txs.length, tokens: [], txs, chain: 'btc' };
 }
 
 async function fetchSOL(address) {
