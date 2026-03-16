@@ -1196,14 +1196,15 @@ body::after {
 /* ── CLARK BOT ── */
 #clark-fab{position:fixed;bottom:24px;right:24px;z-index:9000;width:58px;height:58px;border-radius:50%;background:linear-gradient(135deg,#7858c0,#00ffc8);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 24px rgba(120,88,192,0.5);transition:transform 0.2s,box-shadow 0.2s;}
 #clark-fab:hover{transform:scale(1.08);box-shadow:0 6px 32px rgba(120,88,192,0.7);}
-#clark-fab svg{width:26px;height:26px;fill:#fff;transition:transform 0.3s;}
-#clark-fab.open svg{transform:rotate(45deg);}
+#clark-fab svg{width:36px;height:36px;transition:transform 0.3s;}
+#clark-fab.open svg{transform:rotate(8deg) scale(0.9);}
+#clark-avatar{width:36px;height:36px;border-radius:50%;overflow:hidden;flex-shrink:0;}
 #clark-badge{position:absolute;top:-2px;right:-2px;width:18px;height:18px;background:#00ffc8;border-radius:50%;font-size:9px;font-weight:800;color:#050407;display:flex;align-items:center;justify-content:center;border:2px solid #050407;}
 #clark-win{position:fixed;bottom:96px;right:24px;z-index:8999;width:360px;height:540px;background:var(--cl-surface-2);border:1px solid var(--cl-border-strong);border-radius:20px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 64px rgba(0,0,0,0.6);transform:scale(0.92) translateY(20px);opacity:0;pointer-events:none;transition:transform 0.25s cubic-bezier(.4,0,.2,1),opacity 0.25s ease;}
 #clark-win.open{transform:scale(1) translateY(0);opacity:1;pointer-events:all;}
 #clark-header{padding:14px 16px 0;flex-shrink:0;}
 #clark-title{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
-#clark-avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#7858c0,#00ffc8);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
+#clark-avatar{width:36px;height:36px;border-radius:50%;overflow:hidden;flex-shrink:0;}
 #clark-name{font-size:13px;font-weight:800;color:var(--cl-text);}
 #clark-status{font-size:10px;color:#00ffc8;}
 #clark-agents{display:flex;gap:6px;overflow-x:auto;padding-bottom:12px;scrollbar-width:none;}
@@ -1221,7 +1222,7 @@ body::after {
 .clark-msg.bot .clark-bubble{background:rgba(120,88,192,0.1);border:1px solid rgba(120,88,192,0.2);color:var(--cl-text-2);border-bottom-left-radius:4px;}
 .clark-msg.user .clark-bubble{background:rgba(120,88,192,0.2);border:1px solid rgba(120,88,192,0.35);color:var(--cl-text);border-bottom-right-radius:4px;}
 .clark-dot{width:28px;height:28px;border-radius:50%;flex-shrink:0;}
-.clark-msg.bot .clark-dot{background:linear-gradient(135deg,#7858c0,#b090e8);display:flex;align-items:center;justify-content:center;font-size:13px;}
+.clark-msg.bot .clark-dot{background:transparent;overflow:hidden;border-radius:50%;}
 .clark-msg.user .clark-dot{background:rgba(255,255,255,0.08);border:1px solid var(--cl-border);}
 .clark-typing span{display:inline-block;width:5px;height:5px;background:var(--cl-text-3);border-radius:50%;margin:0 1px;animation:clarkDot 1.2s infinite;}
 .clark-typing span:nth-child(2){animation-delay:0.2s;}
@@ -4958,7 +4959,7 @@ function clarkRender() {
   const agent = CLARK_AGENTS[clarkAgent];
   msgs.innerHTML = clarkHistory[clarkAgent].map(m => `
     <div class="clark-msg ${m.role}">
-      <div class="clark-dot">${m.role === 'bot' ? agent.icon : ''}</div>
+      <div class="clark-dot">${m.role === 'bot' ? `<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg" style="image-rendering:pixelated;width:28px;height:28px"><defs><linearGradient id="cd-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7858c0"/><stop offset="100%" stop-color="#00bfa5"/></linearGradient><clipPath id="cd-c"><circle cx="14" cy="14" r="14"/></clipPath></defs><circle cx="14" cy="14" r="14" fill="url(#cd-g)"/><g clip-path="url(#cd-c)"><rect x="5" y="1" width="18" height="3" fill="#111"/><rect x="4" y="4" width="20" height="3" fill="#111"/><rect x="3" y="7" width="3" height="4" fill="#111"/><rect x="22" y="7" width="3" height="3" fill="#111"/><rect x="6" y="6" width="16" height="14" fill="#d4a274"/><rect x="3" y="9" width="7" height="3" fill="#111"/><rect x="18" y="9" width="7" height="3" fill="#111"/><rect x="10" y="10" width="8" height="1" fill="#2a2a2a"/><rect x="12" y="15" width="3" height="2" fill="#a07840"/><rect x="9" y="18" width="10" height="2" fill="#2a2a2a"/><rect x="4" y="21" width="20" height="8" fill="#b038b8"/><rect x="10" y="21" width="3" height="3" fill="#8c2a9a"/><rect x="15" y="21" width="3" height="3" fill="#8c2a9a"/></g></svg>` : ''}</div>
       <div class="clark-bubble">${m.text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
     </div>`).join('');
   msgs.scrollTop = msgs.scrollHeight;
@@ -4989,7 +4990,7 @@ async function clarkSend() {
   const typingEl = document.createElement('div');
   typingEl.className = 'clark-msg bot';
   typingEl.id = 'clark-typing';
-  typingEl.innerHTML = `<div class="clark-dot">${CLARK_AGENTS[clarkAgent].icon}</div><div class="clark-bubble clark-typing"><span></span><span></span><span></span></div>`;
+  typingEl.innerHTML = `<div class="clark-dot"><svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg" style="image-rendering:pixelated;width:28px;height:28px"><defs><linearGradient id="ct-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7858c0"/><stop offset="100%" stop-color="#00bfa5"/></linearGradient><clipPath id="ct-c"><circle cx="14" cy="14" r="14"/></clipPath></defs><circle cx="14" cy="14" r="14" fill="url(#ct-g)"/><g clip-path="url(#ct-c)"><rect x="5" y="1" width="18" height="3" fill="#111"/><rect x="4" y="4" width="20" height="3" fill="#111"/><rect x="3" y="7" width="3" height="4" fill="#111"/><rect x="22" y="7" width="3" height="3" fill="#111"/><rect x="6" y="6" width="16" height="14" fill="#d4a274"/><rect x="3" y="9" width="7" height="3" fill="#111"/><rect x="18" y="9" width="7" height="3" fill="#111"/><rect x="10" y="10" width="8" height="1" fill="#2a2a2a"/><rect x="12" y="15" width="3" height="2" fill="#a07840"/><rect x="9" y="18" width="10" height="2" fill="#2a2a2a"/><rect x="4" y="21" width="20" height="8" fill="#b038b8"/><rect x="10" y="21" width="3" height="3" fill="#8c2a9a"/><rect x="15" y="21" width="3" height="3" fill="#8c2a9a"/></g></svg></div><div class="clark-bubble clark-typing"><span></span><span></span><span></span></div>`;
   msgs.appendChild(typingEl);
   msgs.scrollTop = msgs.scrollHeight;
   try {
@@ -5013,13 +5014,58 @@ setTimeout(() => { if (!clarkHistory[clarkAgent].length) clarkGreet(); }, 500);
 
 <!-- ── CLARK BOT ── -->
 <button id="clark-fab" onclick="clarkToggle()" aria-label="Clark AI Assistant">
-  <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12c0 1.85.5 3.58 1.37 5.07L2 22l4.93-1.37A9.94 9.94 0 0012 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+  <svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg" style="image-rendering:pixelated">
+    <defs><clipPath id="cfab-clip"><circle cx="18" cy="18" r="18"/></clipPath></defs>
+    <circle cx="18" cy="18" r="18" fill="transparent"/>
+    <g clip-path="url(#cfab-clip)">
+      <!-- Hair -->
+      <rect x="7" y="2" width="22" height="3" fill="#111"/>
+      <rect x="5" y="5" width="26" height="4" fill="#111"/>
+      <rect x="4" y="9" width="4" height="5" fill="#111"/>
+      <rect x="28" y="9" width="4" height="4" fill="#111"/>
+      <!-- Face -->
+      <rect x="8" y="8" width="20" height="18" fill="#d4a274"/>
+      <!-- Sunglasses -->
+      <rect x="5" y="11" width="9" height="4" fill="#111"/>
+      <rect x="22" y="11" width="9" height="4" fill="#111"/>
+      <rect x="14" y="12" width="8" height="2" fill="#2a2a2a"/>
+      <!-- Nose -->
+      <rect x="16" y="19" width="3" height="3" fill="#a07840"/>
+      <!-- Mouth -->
+      <rect x="12" y="23" width="12" height="2" fill="#2a2a2a"/>
+      <!-- Shirt -->
+      <rect x="5" y="27" width="26" height="10" fill="#b038b8"/>
+      <rect x="13" y="27" width="4" height="4" fill="#8c2a9a"/>
+      <rect x="19" y="27" width="4" height="4" fill="#8c2a9a"/>
+    </g>
+  </svg>
   <span id="clark-badge">5</span>
 </button>
 <div id="clark-win" role="dialog" aria-label="Clark AI Assistant">
   <div id="clark-header">
     <div id="clark-title">
-      <div id="clark-avatar">🤖</div>
+      <div id="clark-avatar"><svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg" style="image-rendering:pixelated;width:36px;height:36px">
+        <defs>
+          <linearGradient id="cav-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7858c0"/><stop offset="100%" stop-color="#00bfa5"/></linearGradient>
+          <clipPath id="cav-clip"><circle cx="18" cy="18" r="18"/></clipPath>
+        </defs>
+        <circle cx="18" cy="18" r="18" fill="url(#cav-g)"/>
+        <g clip-path="url(#cav-clip)">
+          <rect x="7" y="2" width="22" height="3" fill="#111"/>
+          <rect x="5" y="5" width="26" height="4" fill="#111"/>
+          <rect x="4" y="9" width="4" height="5" fill="#111"/>
+          <rect x="28" y="9" width="4" height="4" fill="#111"/>
+          <rect x="8" y="8" width="20" height="18" fill="#d4a274"/>
+          <rect x="5" y="11" width="9" height="4" fill="#111"/>
+          <rect x="22" y="11" width="9" height="4" fill="#111"/>
+          <rect x="14" y="12" width="8" height="2" fill="#2a2a2a"/>
+          <rect x="16" y="19" width="3" height="3" fill="#a07840"/>
+          <rect x="12" y="23" width="12" height="2" fill="#2a2a2a"/>
+          <rect x="5" y="27" width="26" height="10" fill="#b038b8"/>
+          <rect x="13" y="27" width="4" height="4" fill="#8c2a9a"/>
+          <rect x="19" y="27" width="4" height="4" fill="#8c2a9a"/>
+        </g>
+      </svg></div>
       <div><div id="clark-name">Clark</div><div id="clark-status">● Online</div></div>
     </div>
     <div id="clark-agents">
