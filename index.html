@@ -1307,6 +1307,87 @@ body::after {
 .bp-scale-item:last-child  { border-radius: 0 8px 8px 0; border-right: 1px solid rgba(255,255,255,0.06); }
 .bp-scale-item span { font-size: 9px; font-weight: 400; color: var(--cl-text-4); }
 
+/* ── TRADECOACH ── */
+.tc-type-row {
+  display: flex; gap: 0; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--cl-border); margin-bottom: 14px;
+}
+.tc-type-btn {
+  flex: 1; padding: 10px; font-size: 12px; font-weight: 800;
+  cursor: pointer; border: none; background: transparent;
+  color: var(--cl-text-3); letter-spacing: 1px; transition: all 0.2s;
+}
+.tc-type-btn--active {
+  background: rgba(0,255,200,0.12); color: #00ffc8;
+}
+.tc-type-btn--short.tc-type-btn--active {
+  background: rgba(239,71,111,0.12); color: #ef476f;
+}
+.tc-type-btn--long.tc-type-btn--active {
+  background: rgba(0,255,200,0.12); color: #00ffc8;
+}
+.tc-field-row { display: flex; gap: 8px; }
+.tc-field { display: flex; flex-direction: column; flex: 1; }
+.tc-field-lbl { font-size: 10px; color: var(--cl-text-4); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px; }
+.tc-emotions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.tc-emotion {
+  padding: 5px 11px; border-radius: 20px; font-size: 10px; font-weight: 700;
+  cursor: pointer; border: 1px solid var(--cl-border);
+  background: rgba(255,255,255,0.02); color: var(--cl-text-4);
+  transition: all 0.2s;
+}
+.tc-emotion:hover { border-color: rgba(120,88,192,0.3); color: #a78bfa; }
+.tc-emotion--active { background: rgba(120,88,192,0.12); border-color: rgba(120,88,192,0.4); color: #a78bfa; }
+.tc-empty { text-align: center; padding: 28px 0; }
+.tc-entry {
+  padding: 12px 14px; background: rgba(120,88,192,0.03);
+  border: 1px solid var(--cl-border); border-radius: 10px; margin-bottom: 10px;
+}
+.tc-entry__head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 6px; }
+.tc-entry__badge { font-size: 9px; font-weight: 800; letter-spacing: 1px; padding: 2px 8px; border-radius: 4px; border: 1px solid; }
+.tc-entry__coin { font-size: 13px; font-weight: 700; }
+.tc-entry__meta { font-size: 10px; color: var(--cl-text-3); }
+.tc-entry__emotion {
+  font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 20px;
+  background: rgba(120,88,192,0.08); border: 1px solid rgba(120,88,192,0.2);
+  color: #a78bfa;
+}
+.tc-entry__date { font-size: 10px; color: var(--cl-text-4); margin-left: auto; }
+.tc-entry__reason { font-size: 11px; color: var(--cl-text-3); margin-bottom: 8px; font-style: italic; }
+.tc-entry__coaching {
+  font-size: 11px; line-height: 1.65; color: var(--cl-text-2);
+  padding: 8px 12px; border-radius: 7px;
+  border-left: 2px solid rgba(0,255,200,0.3);
+  background: rgba(0,255,200,0.03);
+}
+
+/* ── PROOFVAULT ── */
+.pv-card {
+  padding: 12px 14px; border-radius: 10px; margin-bottom: 10px;
+  background: rgba(120,88,192,0.03); border: 1px solid var(--cl-border);
+  transition: border-color 0.2s;
+}
+.pv-card:hover { border-color: rgba(120,88,192,0.25); }
+.pv-card__top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 6px; }
+.pv-card__dir {
+  font-size: 9px; font-weight: 800; letter-spacing: 1px; padding: 3px 8px;
+  border-radius: 4px; border: 1px solid; white-space: nowrap;
+}
+.pv-card__coin { font-size: 13px; font-weight: 700; }
+.pv-card__arrow { color: var(--cl-text-4); font-size: 11px; }
+.pv-card__target { font-size: 13px; font-weight: 700; }
+.pv-card__date { font-size: 10px; color: var(--cl-text-4); margin-left: auto; }
+.pv-card__bottom { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pv-card__hash {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px;
+  color: var(--cl-text-4); background: rgba(120,88,192,0.06);
+  padding: 3px 8px; border-radius: 4px; cursor: pointer;
+  border: 1px solid rgba(120,88,192,0.15); transition: all 0.2s;
+}
+.pv-card__hash:hover { color: #a78bfa; border-color: rgba(120,88,192,0.4); }
+.pv-card__deadline { font-size: 10px; color: var(--cl-text-4); }
+.pv-card__reason { font-size: 11px; color: var(--cl-text-3); margin-top: 7px; font-style: italic; line-height: 1.5; }
+
 /* ── TAXMATE ── */
 .tm-example-q {
   font-size: 11px; color: var(--cl-text-3); padding: 7px 12px;
@@ -4767,10 +4848,23 @@ body::after {
     </div>
     <div class="cl-card">
       <div class="cl-label">Analyse A Specific Dip</div>
-      <div class="cl-form-row" style="margin-bottom:10px;"><input class="cl-input" id="drc" placeholder="Coin (e.g. Bitcoin)"/><input class="cl-input" id="drd" placeholder="Drop % (e.g. 15)"/></div>
-      <textarea class="cl-input cl-textarea" id="drx" placeholder="Any context? (news, reason for drop)" rows="2" style="margin-bottom:10px;"></textarea>
+
+      <!-- Quick-fill examples -->
+      <div class="bp-presets" style="margin-bottom:12px;">
+        <span class="bp-preset-lbl">Examples:</span>
+        <button class="bp-preset" onclick="drFill('Bitcoin','15')">BTC −15%</button>
+        <button class="bp-preset" onclick="drFill('Ethereum','20')">ETH −20%</button>
+        <button class="bp-preset" onclick="drFill('Solana','30')">SOL −30%</button>
+        <button class="bp-preset" onclick="drFill('Dogecoin','40')">DOGE −40%</button>
+      </div>
+
+      <div class="cl-form-row" style="margin-bottom:10px;">
+        <input class="cl-input" id="drc" placeholder="Coin (e.g. Bitcoin)"/>
+        <input class="cl-input" id="drd" placeholder="Drop % (e.g. 15)" style="max-width:140px;"/>
+      </div>
+      <textarea class="cl-input cl-textarea" id="drx" placeholder="Any context? (news headline, macro event, reason for drop)" rows="2" style="margin-bottom:10px;"></textarea>
       <button class="cl-btn cl-btn--primary cl-btn--full" id="drb" onclick="doDR()">Analyse This Dip →</button>
-      <div class="cl-result" id="drr" style="margin-top:14px;">Enter a coin and drop % for AI analysis.</div>
+      <div class="cl-result" id="drr" style="margin-top:14px;">Enter a coin and drop % for AI dip analysis.</div>
     </div>
   </div></div>
 </div>
@@ -4988,17 +5082,67 @@ body::after {
     <div class="cl-two-col">
       <div class="cl-card">
         <div class="cl-label">Log A Trade</div>
-        <div style="display:flex;flex-direction:column;gap:9px;">
-          <div class="cl-form-row"><input class="cl-input" id="tcc" placeholder="Coin"/><select class="cl-select" id="tct"><option value="buy">Buy</option><option value="sell">Sell</option></select></div>
-          <div class="cl-form-row"><input class="cl-input" id="tca" placeholder="Amount USD"/><input class="cl-input" id="tcp" placeholder="Price at trade"/></div>
-          <textarea class="cl-input cl-textarea" id="tcr" placeholder="Why did you make this trade?" rows="3"></textarea>
-          <input class="cl-input" id="tce" placeholder="How were you feeling? (e.g. FOMO, confident)"/>
-          <button class="cl-btn cl-btn--primary cl-btn--full" id="tcb" onclick="doTC()">Log Trade + Get AI Coaching →</button>
+
+        <!-- BUY / SELL toggle -->
+        <div class="tc-type-row">
+          <button class="tc-type-btn tc-type-btn--active" id="tc-buy-btn" onclick="tcSetType('buy')">BUY</button>
+          <button class="tc-type-btn" id="tc-sell-btn" onclick="tcSetType('sell')">SELL</button>
         </div>
+        <input type="hidden" id="tct" value="buy"/>
+
+        <!-- Coin + Amount row -->
+        <div class="tc-field-row">
+          <div class="tc-field">
+            <div class="tc-field-lbl">Coin</div>
+            <input class="cl-input" id="tcc" placeholder="e.g. Bitcoin"/>
+          </div>
+          <div class="tc-field" style="max-width:130px;">
+            <div class="tc-field-lbl">Amount (USD)</div>
+            <input class="cl-input" id="tca" placeholder="e.g. 500" type="number"/>
+          </div>
+          <div class="tc-field" style="max-width:130px;">
+            <div class="tc-field-lbl">Entry Price</div>
+            <input class="cl-input" id="tcp" placeholder="optional"/>
+          </div>
+        </div>
+
+        <!-- Reason -->
+        <div style="margin-top:8px;">
+          <div class="tc-field-lbl">Why this trade?</div>
+          <textarea class="cl-input cl-textarea" id="tcr" placeholder="What made you pull the trigger? News, chart pattern, gut feeling..." rows="2"></textarea>
+        </div>
+
+        <!-- Emotion quick-pick -->
+        <div style="margin-top:8px;">
+          <div class="tc-field-lbl">How are you feeling?</div>
+          <div class="tc-emotions">
+            <button class="tc-emotion" onclick="tcSetEmotion(this)">FOMO</button>
+            <button class="tc-emotion" onclick="tcSetEmotion(this)">Confident</button>
+            <button class="tc-emotion" onclick="tcSetEmotion(this)">Fearful</button>
+            <button class="tc-emotion" onclick="tcSetEmotion(this)">Greedy</button>
+            <button class="tc-emotion" onclick="tcSetEmotion(this)">Unsure</button>
+            <button class="tc-emotion" onclick="tcSetEmotion(this)">Anxious</button>
+            <button class="tc-emotion" onclick="tcSetEmotion(this)">YOLO</button>
+            <button class="tc-emotion" onclick="tcSetEmotion(this)">Calm</button>
+          </div>
+          <input type="hidden" id="tce" value=""/>
+        </div>
+
+        <button class="cl-btn cl-btn--primary cl-btn--full" id="tcb" onclick="doTC()" style="margin-top:14px;">Log Trade + Get Coaching →</button>
       </div>
+
       <div class="cl-card">
-        <div class="cl-label">Journal & AI Insights</div>
-        <div id="tcj" style="max-height:500px;overflow-y:auto;"><div style="text-align:center;padding:28px;color:var(--cl-text-3);font-size:12px;">Log your first trade to start building your coaching history.</div></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <div class="cl-label" style="margin:0;">Journal & AI Insights</div>
+          <div id="tc-stats" style="font-size:10px;color:var(--cl-text-4);"></div>
+        </div>
+        <div id="tcj" style="max-height:520px;overflow-y:auto;">
+          <div class="tc-empty">
+            <div style="font-size:32px;margin-bottom:10px;opacity:0.2;">🧠</div>
+            <div style="font-size:13px;color:var(--cl-text-3);margin-bottom:6px;">No trades logged yet</div>
+            <div style="font-size:11px;color:var(--cl-text-4);">Every trade you log trains Clark to find your patterns.</div>
+          </div>
+        </div>
       </div>
     </div>
   </div></div>
@@ -5417,20 +5561,56 @@ body::after {
         </div>
       </div>
     </div>
-    <div class="cl-card" style="max-width:640px;">
-      <div class="cl-label">Create Proof</div>
-      <div style="display:flex;flex-direction:column;gap:10px;">
-        <input class="cl-input" id="pv-coin" placeholder="Coin (e.g. Bitcoin)"/>
-        <div class="cl-form-row">
-          <input class="cl-input" id="pv-target" placeholder="Target price (e.g. $100,000)" type="text"/>
-          <select class="cl-select" id="pv-dir"><option value="LONG">LONG — price goes up</option><option value="SHORT">SHORT — price goes down</option></select>
+    <div class="cl-two-col">
+
+      <!-- Form -->
+      <div class="cl-card">
+        <div class="cl-label">Mint a Prediction Proof</div>
+
+        <div class="tc-field-row" style="margin-bottom:10px;">
+          <div class="tc-field">
+            <div class="tc-field-lbl">Coin</div>
+            <input class="cl-input" id="pv-coin" placeholder="e.g. Bitcoin"/>
+          </div>
+          <div class="tc-field" style="max-width:160px;">
+            <div class="tc-field-lbl">Target Price</div>
+            <input class="cl-input" id="pv-target" placeholder="e.g. $200,000"/>
+          </div>
         </div>
-        <input class="cl-input" id="pv-deadline" placeholder="Deadline (e.g. End of 2025)" type="text"/>
-        <textarea class="cl-input cl-textarea" id="pv-reason" placeholder="Your reasoning (optional)" rows="2"></textarea>
-        <button class="cl-btn cl-btn--primary cl-btn--full" id="pvb" onclick="doPV()">Mint Proof →</button>
+
+        <!-- LONG / SHORT toggle -->
+        <div class="tc-field-lbl" style="margin-bottom:6px;">Direction</div>
+        <div class="tc-type-row" style="margin-bottom:10px;">
+          <button class="tc-type-btn tc-type-btn--active tc-type-btn--long" id="pv-long-btn" onclick="pvSetDir('LONG')">LONG ↑</button>
+          <button class="tc-type-btn tc-type-btn--short" id="pv-short-btn" onclick="pvSetDir('SHORT')">SHORT ↓</button>
+        </div>
+        <input type="hidden" id="pv-dir" value="LONG"/>
+
+        <div style="margin-bottom:10px;">
+          <div class="tc-field-lbl">Deadline</div>
+          <input class="cl-input" id="pv-deadline" placeholder="e.g. End of 2026, Q2 2026"/>
+        </div>
+        <div style="margin-bottom:14px;">
+          <div class="tc-field-lbl">Your Reasoning (optional)</div>
+          <textarea class="cl-input cl-textarea" id="pv-reason" placeholder="Why do you believe this? Halving cycle, technical breakout..." rows="2"></textarea>
+        </div>
+
+        <button class="cl-btn cl-btn--primary cl-btn--full" id="pvb" onclick="doPV()">🔐 Mint Proof →</button>
+        <div id="pvr" style="margin-top:14px;display:none;"></div>
       </div>
-      <div id="pvr" style="margin-top:14px;display:none;"></div>
-      <div id="pv-vault" style="margin-top:20px;"></div>
+
+      <!-- Vault -->
+      <div class="cl-card">
+        <div class="cl-label">Your Vault</div>
+        <div id="pv-vault">
+          <div class="tc-empty" style="padding:30px 0;">
+            <div style="font-size:36px;margin-bottom:10px;opacity:0.15;">🔐</div>
+            <div style="font-size:13px;color:var(--cl-text-3);margin-bottom:6px;">No proofs yet</div>
+            <div style="font-size:11px;color:var(--cl-text-4);line-height:1.5;">Mint a prediction proof and it appears here — timestamped, hashed, immutable.</div>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div></div>
 </div>
@@ -7383,16 +7563,61 @@ Provide: 1) What they did well 2) What to watch out for 3) Pattern (if any from 
   btn.disabled = false; btn.textContent = 'Log Trade + Get AI Coaching →';
 }
 
+function tcSetType(t) {
+  document.getElementById('tct').value = t;
+  const buyBtn = document.getElementById('tc-buy-btn');
+  const sellBtn = document.getElementById('tc-sell-btn');
+  if (t === 'buy') {
+    buyBtn.classList.add('tc-type-btn--active'); buyBtn.classList.remove('tc-type-btn--short');
+    sellBtn.classList.remove('tc-type-btn--active');
+  } else {
+    sellBtn.classList.add('tc-type-btn--active'); sellBtn.classList.add('tc-type-btn--short');
+    buyBtn.classList.remove('tc-type-btn--active');
+  }
+}
+function tcSetEmotion(btn) {
+  document.querySelectorAll('.tc-emotion').forEach(b => b.classList.remove('tc-emotion--active'));
+  btn.classList.add('tc-emotion--active');
+  document.getElementById('tce').value = btn.textContent.trim();
+}
+function pvSetDir(d) {
+  document.getElementById('pv-dir').value = d;
+  const l = document.getElementById('pv-long-btn'), s = document.getElementById('pv-short-btn');
+  if (d === 'LONG') {
+    l.classList.add('tc-type-btn--active'); l.classList.remove('tc-type-btn--short');
+    s.classList.remove('tc-type-btn--active');
+  } else {
+    s.classList.add('tc-type-btn--active'); s.classList.add('tc-type-btn--short');
+    l.classList.remove('tc-type-btn--active');
+  }
+}
+function drFill(coin, pct) {
+  document.getElementById('drc').value = coin;
+  document.getElementById('drd').value = pct;
+}
 function renderJournal() {
   const el = document.getElementById('tcj');
-  if (!journal.length) { el.innerHTML = '<div style="text-align:center;padding:28px;color:var(--cl-text-3);font-size:12px;">Log your first trade.</div>'; return; }
+  const statsEl = document.getElementById('tc-stats');
+  if (!journal.length) {
+    el.innerHTML = '<div class="tc-empty"><div style="font-size:32px;margin-bottom:10px;opacity:0.2;">🧠</div><div style="font-size:13px;color:var(--cl-text-3);margin-bottom:6px;">No trades logged yet</div><div style="font-size:11px;color:var(--cl-text-4);">Every trade you log trains Clark to find your patterns.</div></div>';
+    if (statsEl) statsEl.textContent = '';
+    return;
+  }
+  const buys = journal.filter(j => j.type === 'buy').length;
+  const sells = journal.length - buys;
+  if (statsEl) statsEl.innerHTML = `<span style="color:#00ffc8;">${buys}B</span> / <span style="color:#ef476f;">${sells}S</span> · ${journal.length} total`;
   el.innerHTML = journal.map(j => `
-    <div style="padding:12px;background:rgba(120,88,192,0.04);border:1px solid var(--cl-border);border-radius:10px;margin-bottom:10px;">
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-        <span style="font-weight:700;color:${j.type==='buy'?'#00ffc8':'#ef476f'};">${j.type.toUpperCase()} ${j.coin}</span>
-        <span style="font-size:10px;color:var(--cl-text-3);">${new Date(j.time).toLocaleDateString()}</span>
+    <div class="tc-entry">
+      <div class="tc-entry__head">
+        <span class="tc-entry__badge" style="background:${j.type==='buy'?'rgba(0,255,200,0.12)':'rgba(239,71,111,0.12)'};color:${j.type==='buy'?'#00ffc8':'#ef476f'};border-color:${j.type==='buy'?'rgba(0,255,200,0.25)':'rgba(239,71,111,0.25)'};">${j.type.toUpperCase()}</span>
+        <span class="tc-entry__coin">${j.coin}</span>
+        ${j.amt ? `<span class="tc-entry__meta">$${j.amt}</span>` : ''}
+        ${j.price ? `<span class="tc-entry__meta">@ ${j.price}</span>` : ''}
+        ${j.emotion ? `<span class="tc-entry__emotion">${j.emotion}</span>` : ''}
+        <span class="tc-entry__date">${new Date(j.time).toLocaleDateString()}</span>
       </div>
-      <div style="font-size:11px;color:var(--cl-text-3);line-height:1.6;">🤖 ${j.coaching}</div>
+      ${j.reason ? `<div class="tc-entry__reason">${j.reason}</div>` : ''}
+      <div class="tc-entry__coaching">🤖 ${j.coaching}</div>
     </div>`).join('');
 }
 
@@ -7721,10 +7946,21 @@ async function doPV() {
 function renderVaults() {
   const el = document.getElementById('pv-vault');
   if (!pvaults.length) return;
-  el.innerHTML = '<div class="cl-label" style="margin-bottom:10px;margin-top:16px;">Your Vault</div>' +
-    pvaults.slice(0, 5).map(p => `<div style="padding:10px 14px;background:rgba(120,88,192,0.04);border:1px solid var(--cl-border);border-radius:10px;margin-bottom:8px;">
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span style="font-size:12px;font-weight:700;">${p.dir==='LONG'?'🟢':'🔴'} ${p.coin.toUpperCase()} → ${p.target}</span><span style="font-size:10px;color:var(--cl-text-3);">${new Date(p.ts).toLocaleDateString()}</span></div>
-      <div style="font-size:10px;color:var(--cl-text-3);">Hash: ${p.id} · Deadline: ${p.deadline}</div>
+  const col = d => d === 'LONG' ? '#00ffc8' : '#ef476f';
+  el.innerHTML = pvaults.slice(0, 10).map(p => `
+    <div class="pv-card">
+      <div class="pv-card__top">
+        <span class="pv-card__dir" style="background:${col(p.dir)}18;color:${col(p.dir)};border-color:${col(p.dir)}33;">${p.dir === 'LONG' ? '↑ LONG' : '↓ SHORT'}</span>
+        <span class="pv-card__coin">${p.coin.toUpperCase()}</span>
+        <span class="pv-card__arrow">→</span>
+        <span class="pv-card__target" style="color:${col(p.dir)};">${p.target}</span>
+        <span class="pv-card__date">${new Date(p.ts).toLocaleDateString()}</span>
+      </div>
+      <div class="pv-card__bottom">
+        <span class="pv-card__hash" onclick="navigator.clipboard.writeText('${p.id}');toast('Hash copied!')" title="Click to copy">${p.id}</span>
+        <span class="pv-card__deadline">⏱ ${p.deadline}</span>
+      </div>
+      ${p.reason ? `<div class="pv-card__reason">${p.reason}</div>` : ''}
     </div>`).join('');
 }
 
