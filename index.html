@@ -928,10 +928,11 @@ body::after {
 .cl-tool-card--elite::before { background: linear-gradient(90deg, #e8d5ff, rgba(255,255,255,0.6), transparent); opacity: 0.7; }
 .cl-tool-card--elite:hover { border-color: rgba(232,213,255,0.35); box-shadow: 0 8px 40px rgba(176,144,232,0.16), 0 0 60px rgba(176,144,232,0.06); transform: translateY(-4px); }
 
-.cl-tool-card__dot { width: 6px; height: 6px; border-radius: 50%; margin-bottom: 12px; }
+.cl-tool-card__dot { width: 6px; height: 6px; border-radius: 50%; margin-bottom: 8px; }
 .cl-tool-card__dot--free { background: rgba(255,255,255,0.2); }
 .cl-tool-card__dot--pro { background: #00ffc8; box-shadow: 0 0 8px rgba(0,255,200,0.5); }
 .cl-tool-card__dot--elite { background: #e8d5ff; box-shadow: 0 0 8px rgba(232,213,255,0.4); }
+.cl-tool-card__icon { font-size: 22px; margin-bottom: 10px; line-height: 1; }
 .cl-tool-card__name { font-size: 12px; font-weight: 700; color: var(--cl-text); margin-bottom: 4px; }
 .cl-tool-card__desc { font-size: 10px; color: var(--cl-text-3); line-height: 1.6; margin-bottom: 12px; }
 
@@ -4159,12 +4160,14 @@ body::after {
         <!-- FREE -->
         <div class="cl-tool-card cl-tool-card--free cl-reveal" onclick="go('bearproof')">
           <div class="cl-tool-card__dot cl-tool-card__dot--free"></div>
+          <div class="cl-tool-card__icon">🛡️</div>
           <div class="cl-tool-card__name">BearProof Score™</div>
           <div class="cl-tool-card__desc">How resilient is your portfolio in a crash? Score out of 100.</div>
           <span class="cl-badge cl-badge--free">Free</span>
         </div>
         <div class="cl-tool-card cl-tool-card--free cl-reveal" onclick="go('leaderboard')">
           <div class="cl-tool-card__dot cl-tool-card__dot--free"></div>
+          <div class="cl-tool-card__icon">🏆</div>
           <div class="cl-tool-card__name">GlobalRank™</div>
           <div class="cl-tool-card__desc">Predict markets, earn rank. Global trader leaderboard.</div>
           <span class="cl-badge cl-badge--free">Free</span>
@@ -4172,48 +4175,56 @@ body::after {
         <!-- PRO -->
         <div class="cl-tool-card cl-tool-card--pro cl-reveal" onclick="go('edgescan')">
           <div class="cl-tool-card__dot cl-tool-card__dot--pro"></div>
+          <div class="cl-tool-card__icon">🔍</div>
           <div class="cl-tool-card__name">EdgeScan™ AI</div>
           <div class="cl-tool-card__desc">Ask anything about crypto. Live data-backed AI analysis.</div>
           <span class="cl-badge cl-badge--pro">Pro</span>
         </div>
         <div class="cl-tool-card cl-tool-card--pro cl-reveal" onclick="go('digradar')">
           <div class="cl-tool-card__dot cl-tool-card__dot--pro"></div>
+          <div class="cl-tool-card__icon">📡</div>
           <div class="cl-tool-card__name">DipRadar™</div>
           <div class="cl-tool-card__desc">AI scans for real-time dips. Opportunity or falling knife?</div>
           <span class="cl-badge cl-badge--pro">Pro</span>
         </div>
         <div class="cl-tool-card cl-tool-card--pro cl-reveal" onclick="go('ghosttrade')">
           <div class="cl-tool-card__dot cl-tool-card__dot--pro"></div>
+          <div class="cl-tool-card__icon">👻</div>
           <div class="cl-tool-card__name">GhostTrade™</div>
           <div class="cl-tool-card__desc">$50,000 virtual money. Real prices. AI coaching every trade.</div>
           <span class="cl-badge cl-badge--pro">Pro</span>
         </div>
         <div class="cl-tool-card cl-tool-card--pro cl-reveal" onclick="go('tradecoach')">
           <div class="cl-tool-card__dot cl-tool-card__dot--pro"></div>
+          <div class="cl-tool-card__icon">🧠</div>
           <div class="cl-tool-card__name">TradeCoach™</div>
           <div class="cl-tool-card__desc">Log real trades. AI finds your patterns over time.</div>
           <span class="cl-badge cl-badge--pro">Pro</span>
         </div>
         <div class="cl-tool-card cl-tool-card--pro cl-reveal" onclick="go('sentiment')">
           <div class="cl-tool-card__dot cl-tool-card__dot--pro"></div>
+          <div class="cl-tool-card__icon">💓</div>
           <div class="cl-tool-card__name">SentimentPulse™</div>
           <div class="cl-tool-card__desc">Live Fear & Greed Index with AI interpretation + history.</div>
           <span class="cl-badge cl-badge--pro">Pro</span>
         </div>
         <div class="cl-tool-card cl-tool-card--pro cl-reveal" onclick="go('taxmate')">
           <div class="cl-tool-card__dot cl-tool-card__dot--pro"></div>
+          <div class="cl-tool-card__icon">📋</div>
           <div class="cl-tool-card__name">TaxMate™</div>
           <div class="cl-tool-card__desc">Country-specific crypto tax guidance from AI.</div>
           <span class="cl-badge cl-badge--pro">Pro</span>
         </div>
         <div class="cl-tool-card cl-tool-card--pro cl-reveal" onclick="go('alerts')">
           <div class="cl-tool-card__dot cl-tool-card__dot--pro"></div>
+          <div class="cl-tool-card__icon">🔔</div>
           <div class="cl-tool-card__name">Price Alerts</div>
           <div class="cl-tool-card__desc">Set targets. Get notified instantly in-browser.</div>
           <span class="cl-badge cl-badge--pro">Pro</span>
         </div>
         <div class="cl-tool-card cl-tool-card--pro cl-reveal" onclick="go('tokenunlocks')">
           <div class="cl-tool-card__dot cl-tool-card__dot--pro"></div>
+          <div class="cl-tool-card__icon">🔓</div>
           <div class="cl-tool-card__name">Token Unlocks™</div>
           <div class="cl-tool-card__desc">Upcoming token unlock risk analysis + AI impact score.</div>
           <span class="cl-badge cl-badge--pro">Pro</span>
@@ -4221,36 +4232,42 @@ body::after {
         <!-- ELITE -->
         <div class="cl-tool-card cl-tool-card--elite cl-reveal" onclick="go('walletscan')">
           <div class="cl-tool-card__dot cl-tool-card__dot--elite"></div>
+          <div class="cl-tool-card__icon">🔎</div>
           <div class="cl-tool-card__name">WalletScan™</div>
           <div class="cl-tool-card__desc">Full multi-chain wallet intelligence. ETH, BTC, SOL, BNB.</div>
           <span class="cl-badge cl-badge--elite">Elite</span>
         </div>
         <div class="cl-tool-card cl-tool-card--elite cl-reveal" onclick="go('signals')">
           <div class="cl-tool-card__dot cl-tool-card__dot--elite"></div>
+          <div class="cl-tool-card__icon">⚡</div>
           <div class="cl-tool-card__name">SignalBreaker™</div>
           <div class="cl-tool-card__desc">AI buy/sell confidence signal scores for 150+ coins.</div>
           <span class="cl-badge cl-badge--elite">Elite</span>
         </div>
         <div class="cl-tool-card cl-tool-card--elite cl-reveal" onclick="go('pumpalert')">
           <div class="cl-tool-card__dot cl-tool-card__dot--elite"></div>
+          <div class="cl-tool-card__icon">🚨</div>
           <div class="cl-tool-card__name">PumpAlert™</div>
           <div class="cl-tool-card__desc">Early pump detection before the crowd notices.</div>
           <span class="cl-badge cl-badge--elite">Elite</span>
         </div>
         <div class="cl-tool-card cl-tool-card--elite cl-reveal" onclick="go('narrative')">
           <div class="cl-tool-card__dot cl-tool-card__dot--elite"></div>
+          <div class="cl-tool-card__icon">🌊</div>
           <div class="cl-tool-card__name">NarrativeRank™</div>
           <div class="cl-tool-card__desc">Which crypto sectors are gaining momentum right now?</div>
           <span class="cl-badge cl-badge--elite">Elite</span>
         </div>
         <div class="cl-tool-card cl-tool-card--elite cl-reveal" onclick="go('smartwallets')">
           <div class="cl-tool-card__dot cl-tool-card__dot--elite"></div>
+          <div class="cl-tool-card__icon">🐋</div>
           <div class="cl-tool-card__name">Smart Wallets™</div>
           <div class="cl-tool-card__desc">Track and follow elite on-chain wallets.</div>
           <span class="cl-badge cl-badge--elite">Elite</span>
         </div>
         <div class="cl-tool-card cl-tool-card--elite cl-reveal" onclick="go('proofvault')">
           <div class="cl-tool-card__dot cl-tool-card__dot--elite"></div>
+          <div class="cl-tool-card__icon">🔐</div>
           <div class="cl-tool-card__name">ProofVault™</div>
           <div class="cl-tool-card__desc">Sign & timestamp your predictions forever on-chain.</div>
           <span class="cl-badge cl-badge--elite">Elite</span>
@@ -4856,13 +4873,18 @@ body::after {
   <div class="cl-container"><div class="cl-page-inner">
 
     <!-- Header -->
-    <div class="bp-header">
+    <div class="pg-header">
       <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
-      <div class="bp-header__row">
-        <div class="bp-header__icon">🛡</div>
-        <div>
-          <div class="bp-title">BearProof Score™</div>
-          <div class="bp-sub">How resilient is your portfolio in a crash? Enter up to 4 holdings and get your score out of 100.</div>
+      <div class="pg-header__row">
+        <div class="pg-header__icon">🛡️</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">BearProof Score™</div>
+          <div class="pg-header__sub">How resilient is your portfolio in a crash? Enter up to 4 holdings and get your score out of 100.</div>
+        </div>
+        <div class="pg-header__tags">
+          <span class="pg-tag" style="color:#00ffc8;border-color:rgba(0,255,200,0.2);">AI scored</span>
+          <span class="pg-tag" style="color:#ef476f;border-color:rgba(239,71,111,0.2);">Crash risk</span>
+          <span class="pg-tag" style="color:#7858c0;border-color:rgba(120,88,192,0.2);">4 assets</span>
         </div>
       </div>
     </div>
@@ -4951,15 +4973,19 @@ body::after {
   <div class="cl-container" style="max-width:780px;"><div class="cl-page-inner">
 
     <!-- Header -->
-    <div class="es-header">
+    <div class="pg-header" style="margin-bottom:14px;">
       <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
-      <div class="es-title-row">
-        <div class="es-icon">🔍</div>
-        <div>
-          <div class="es-title">EdgeScan™ AI</div>
-          <div class="es-sub">Ask anything about the crypto market. Live data · Specific · Actionable.</div>
+      <div class="pg-header__row" style="align-items:center;">
+        <div class="pg-header__icon">🔍</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">EdgeScan™ AI</div>
+          <div class="pg-header__sub">Ask anything about the crypto market. Live data · Specific · Actionable.</div>
         </div>
-        <button class="es-clear-btn" onclick="esClearHistory()" id="es-clear-btn" style="display:none;">Clear history</button>
+        <div class="pg-header__tags" style="align-items:center;">
+          <span class="pg-tag" style="color:#00ffc8;border-color:rgba(0,255,200,0.2);">Live data</span>
+          <span class="pg-tag" style="color:#7858c0;border-color:rgba(120,88,192,0.2);">Clark AI</span>
+          <button class="es-clear-btn" onclick="esClearHistory()" id="es-clear-btn" style="display:none;margin-left:4px;">Clear history</button>
+        </div>
       </div>
     </div>
 
@@ -5145,7 +5171,7 @@ body::after {
             <button onclick="gtSetChain('solana',this)" class="gt-chain-btn" style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid rgba(120,88,192,0.15);background:rgba(120,88,192,0.04);color:var(--cl-text-3);">SOL</button>
             <button onclick="gtSetChain('polygon',this)" class="gt-chain-btn" style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid rgba(120,88,192,0.15);background:rgba(120,88,192,0.04);color:var(--cl-text-3);">MATIC</button>
           </div>
-          <div id="gt-results" style="display:none;max-height:220px;overflow-y:auto;margin-top:8px;display:flex;flex-direction:column;gap:6px;"></div>
+          <div id="gt-results" style="display:none;max-height:220px;overflow-y:auto;margin-top:8px;flex-direction:column;gap:6px;"></div>
         </div>
 
         <!-- Trade Panel -->
@@ -5187,7 +5213,7 @@ body::after {
             <div style="font-size:10px;color:var(--cl-text-3);" id="gt-holdings-count"></div>
           </div>
           <div id="ghd">
-            <div style="text-align:center;padding:20px;color:var(--cl-text-3);font-size:12px;">No positions yet</div>
+            <div style="text-align:center;padding:24px 12px;"><div style="font-size:28px;opacity:0.2;margin-bottom:8px;">👻</div><div style="font-size:12px;color:var(--cl-text-3);margin-bottom:4px;">No open positions</div><div style="font-size:10px;color:var(--cl-text-4);">Search a token above to start trading</div></div>
           </div>
         </div>
 
@@ -5220,7 +5246,7 @@ body::after {
           <!-- Journal content -->
           <div id="gt-journal-content">
             <div id="gtrades" style="max-height:400px;overflow-y:auto;">
-              <div style="padding:20px 0;text-align:center;color:var(--cl-text-3);font-size:12px;">Search a token and make your first trade.</div>
+              <div style="padding:28px 0;text-align:center;"><div style="font-size:28px;opacity:0.2;margin-bottom:8px;">📋</div><div style="font-size:12px;color:var(--cl-text-3);margin-bottom:4px;">No trades yet</div><div style="font-size:10px;color:var(--cl-text-4);">Search a token and place your first ghost trade.</div></div>
             </div>
           </div>
           <!-- Leaderboard content -->
@@ -5331,13 +5357,20 @@ body::after {
   <div class="cl-container"><div class="cl-page-inner">
 
     <!-- Header -->
-    <div class="nar-header">
-      <div>
-        <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
-        <div class="nar-title">NarrativeRank™</div>
-        <div class="nar-sub">Which sectors are gaining momentum before the crowd notices? AI-ranked in real time.</div>
+    <div class="pg-header" style="margin-bottom:14px;">
+      <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+      <div class="pg-header__row" style="align-items:center;">
+        <div class="pg-header__icon">🌊</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">NarrativeRank™</div>
+          <div class="pg-header__sub">Which sectors are gaining momentum before the crowd notices? AI-ranked in real time.</div>
+        </div>
+        <div class="pg-header__tags" style="align-items:center;">
+          <span class="pg-tag" style="color:#00ffc8;border-color:rgba(0,255,200,0.2);">Sector trends</span>
+          <span class="pg-tag" style="color:#7858c0;border-color:rgba(120,88,192,0.2);">AI ranked</span>
+          <button class="cl-btn cl-btn--primary cl-btn--sm" id="narb" onclick="doNarrative()" style="flex-shrink:0;margin-left:4px;">Rank Narratives →</button>
+        </div>
       </div>
-      <button class="cl-btn cl-btn--primary cl-btn--sm" id="narb" onclick="doNarrative()" style="flex-shrink:0;">Rank Narratives →</button>
     </div>
 
     <!-- Grid (filled by JS) -->
@@ -5445,9 +5478,20 @@ body::after {
   <div class="cl-container"><div class="cl-page-inner">
 
     <!-- Page header -->
-    <div class="ws-page-header">
-      <button class="ws-back-btn" onclick="go('home')">← Back</button>
-      <div class="ws-page-title">WalletScan<sup>TM</sup></div>
+    <div class="pg-header" style="margin-bottom:20px;">
+      <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+      <div class="pg-header__row">
+        <div class="pg-header__icon">🔎</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">WalletScan™</div>
+          <div class="pg-header__sub">Full on-chain portfolio analysis. Paste any ETH, BTC, or SOL address to see balance, tokens, PnL and AI insights.</div>
+        </div>
+        <div class="pg-header__tags">
+          <span class="pg-tag" style="color:#00ffc8;border-color:rgba(0,255,200,0.2);">ETH · BTC · SOL</span>
+          <span class="pg-tag" style="color:#7858c0;border-color:rgba(120,88,192,0.2);">AI analysis</span>
+          <span class="pg-tag" style="color:#f0b429;border-color:rgba(240,180,41,0.2);">PnL tracking</span>
+        </div>
+      </div>
     </div>
 
     <!-- ── Scanner bar ───────────────────────────── -->
@@ -5671,18 +5715,25 @@ body::after {
   <div class="cl-container"><div class="cl-page-inner">
 
     <!-- Header -->
-    <div class="sig-header">
-      <div>
-        <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
-        <div class="sig-title">SignalBreaker™</div>
-        <div class="sig-sub">AI buy/sell confidence scores · Live prices · Updated on demand</div>
+    <div class="pg-header" style="margin-bottom:14px;">
+      <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+      <div class="pg-header__row" style="align-items:center;">
+        <div class="pg-header__icon">⚡</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">SignalBreaker™</div>
+          <div class="pg-header__sub">AI buy/sell confidence scores · Live prices · Updated on demand</div>
+        </div>
+        <div class="pg-header__tags" style="align-items:center;">
+          <span class="pg-tag" style="color:#00ffc8;border-color:rgba(0,255,200,0.2);">Buy signals</span>
+          <span class="pg-tag" style="color:#ef476f;border-color:rgba(239,71,111,0.2);">Sell signals</span>
+          <button class="cl-btn cl-btn--primary cl-btn--sm" id="sigb" onclick="doSignals()" style="flex-shrink:0;margin-left:4px;">Generate Signals →</button>
+        </div>
       </div>
-      <div class="sig-legend">
-        <span class="sig-legend-item"><span class="sig-dot" style="background:#00ffc8;"></span>Buy</span>
-        <span class="sig-legend-item"><span class="sig-dot" style="background:#f0b429;"></span>Hold</span>
-        <span class="sig-legend-item"><span class="sig-dot" style="background:#ef476f;"></span>Sell</span>
-        <button class="cl-btn cl-btn--primary cl-btn--sm" id="sigb" onclick="doSignals()">Generate Signals →</button>
-      </div>
+    </div>
+    <div class="sig-legend" style="margin-bottom:12px;">
+      <span class="sig-legend-item"><span class="sig-dot" style="background:#00ffc8;"></span>Buy</span>
+      <span class="sig-legend-item"><span class="sig-dot" style="background:#f0b429;"></span>Hold</span>
+      <span class="sig-legend-item"><span class="sig-dot" style="background:#ef476f;"></span>Sell</span>
     </div>
 
     <!-- Summary bar (filled by JS) -->
@@ -7299,19 +7350,33 @@ function calculatePnL(tokTxs, address, currentPrices) {
 
 function renderPnL(pnlData) {
   if (!pnlData.length) return '<div style="text-align:center;padding:16px;color:var(--cl-text-3);font-size:12px;">No token history found</div>';
-  return pnlData.slice(0, 20).map(t => {
+  const withPrice = pnlData.filter(t => t.unrealisedUsd !== null && t.unrealisedUsd > 0);
+  const totalUnr = withPrice.reduce((s, t) => s + (t.unrealisedUsd || 0), 0);
+  const holdingCount = pnlData.filter(t => t.remainingQty > 0.000001).length;
+  const summary = totalUnr > 0
+    ? `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:rgba(0,255,200,0.05);border:1px solid rgba(0,255,200,0.15);border-radius:10px;margin-bottom:10px;">`
+      + `<div style="font-size:10px;color:var(--cl-text-3);">${pnlData.length} token${pnlData.length!==1?'s':''} traded · ${holdingCount} still open</div>`
+      + `<div style="font-size:13px;font-weight:800;color:#00ffc8;">~${fmtFx(totalUnr)} open value</div></div>`
+    : '';
+  return summary + pnlData.slice(0, 20).map(t => {
     const hasPrice = t.currentPrice !== null;
+    const isExited = t.remainingQty <= 0.000001;
     const unrPnl = t.unrealisedUsd;
-    const unrColor = !hasPrice ? 'var(--cl-text-3)' : unrPnl >= 0 ? '#00ffc8' : '#ef476f';
-    const unrLabel = !hasPrice ? 'No price data' : (unrPnl >= 0 ? '+' : '') + fmtFx(unrPnl) + ' unrealised';
-    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--cl-border);">'
+    const unrColor = isExited ? 'var(--cl-text-3)' : !hasPrice ? 'var(--cl-text-3)' : '#00ffc8';
+    const unrLabel = isExited ? '✓ Exited' : !hasPrice ? 'No price' : fmtFx(unrPnl);
+    const statusBadge = isExited
+      ? `<span style="font-size:8px;padding:1px 5px;border-radius:6px;background:rgba(255,255,255,0.04);color:var(--cl-text-3);border:1px solid rgba(255,255,255,0.06);">EXITED</span>`
+      : `<span style="font-size:8px;padding:1px 5px;border-radius:6px;background:rgba(0,255,200,0.08);color:#00ffc8;border:1px solid rgba(0,255,200,0.15);">HOLDING</span>`;
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);">'
       + '<div style="display:flex;align-items:center;gap:10px;">'
-      + '<div style="width:32px;height:32px;border-radius:8px;background:rgba(120,88,192,0.12);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:var(--cl-violet);">' + t.symbol.slice(0,3) + '</div>'
-      + '<div><div style="font-size:12px;font-weight:700;">' + t.symbol + '</div>'
-      + '<div style="font-size:10px;color:var(--cl-text-3);">' + t.totalBought.toFixed(2) + ' bought · ' + t.totalSold.toFixed(2) + ' sold</div></div></div>'
-      + '<div style="text-align:right;">'
-      + '<div style="font-size:12px;font-weight:700;color:' + unrColor + ';">' + unrLabel + '</div>'
-      + '<div style="font-size:10px;color:var(--cl-text-3);">' + (t.remainingQty > 0.000001 ? t.remainingQty.toFixed(4) + ' remaining' : 'Fully exited') + '</div>'
+      + `<div style="width:34px;height:34px;border-radius:9px;background:rgba(120,88,192,0.12);border:1px solid rgba(120,88,192,0.2);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:900;color:var(--cl-violet);font-family:'Syne',sans-serif;flex-shrink:0;">${t.symbol.slice(0,3)}</div>`
+      + '<div style="display:flex;flex-direction:column;gap:3px;">'
+      + `<div style="display:flex;align-items:center;gap:5px;"><span style="font-size:12px;font-weight:700;">${t.symbol}</span>${statusBadge}</div>`
+      + `<div style="font-size:10px;color:var(--cl-text-3);">${parseFloat(t.totalBought).toFixed(2)} bought · ${parseFloat(t.totalSold).toFixed(2)} sold</div>`
+      + '</div></div>'
+      + '<div style="text-align:right;flex-shrink:0;">'
+      + `<div style="font-size:13px;font-weight:800;color:${unrColor};">${unrLabel}</div>`
+      + (!isExited && t.remainingQty > 0.000001 ? `<div style="font-size:10px;color:var(--cl-text-3);">${t.remainingQty.toFixed(4)} remaining</div>` : '')
       + '</div></div>';
   }).join('');
 }
@@ -7505,7 +7570,9 @@ async function gtSearch() {
   resultsEl.style.display = 'flex';
   resultsEl.innerHTML = '<div style="padding:8px;color:var(--cl-text-3);font-size:11px;"><span class="cl-spinner"></span> Searching...</div>';
   try {
-    const r = await pfetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(q));
+    const _sc = new AbortController(); const _st = setTimeout(() => _sc.abort(), 6000);
+    const r = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(q), { signal: _sc.signal });
+    clearTimeout(_st);
     const d = await r.json();
     let pairs = (d.pairs || []);
     if (gtChainFilter !== 'all') pairs = pairs.filter(p => (p.chainId || '').toLowerCase() === gtChainFilter);
@@ -7629,7 +7696,7 @@ function _paintGT(holdings, ghd) {
   document.getElementById('gca').textContent = '$' + gt.cash.toFixed(2);
   const hcEl = document.getElementById('gt-holdings-count');
   if (hcEl) hcEl.textContent = holdings.length ? holdings.length + ' position' + (holdings.length !== 1 ? 's' : '') : '';
-  if (!holdings.length) { ghd.innerHTML = '<div style="text-align:center;padding:16px;color:var(--cl-text-3);font-size:12px;">No positions yet</div>'; return; }
+  if (!holdings.length) { ghd.innerHTML = '<div style="text-align:center;padding:24px 12px;"><div style="font-size:28px;opacity:0.2;margin-bottom:8px;">👻</div><div style="font-size:12px;color:var(--cl-text-3);margin-bottom:4px;">No open positions</div><div style="font-size:10px;color:var(--cl-text-4);">Search a token above to start trading</div></div>'; return; }
   ghd.innerHTML = holdings.map(([addr, pos]) => {
     const livePrice = pos.price || pos.avg;
     const currentVal = pos.qty * livePrice;
@@ -8634,10 +8701,12 @@ async function doWS() {
     })();
 
     // Stat pills
+    const _ds = degenScore.score;
+    const _dc = _ds >= 80 ? '#ef476f' : _ds >= 50 ? '#f0b429' : '#00ffc8';
     document.getElementById('ws-stat-pills').innerHTML = [
       `<div>${assets.length} Assets</div>`,
       `<div>${allTxs.length} Txs</div>`,
-      `<div>Degen ${degenScore.score}/100</div>`,
+      `<div style="color:${_dc}!important;border-color:rgba(${_dc==='#ef476f'?'239,71,111':_dc==='#f0b429'?'240,180,41':'0,255,200'},0.2)!important;">Degen ${_ds}/100</div>`,
       walletAge ? `<div>Age: ${walletAge}</div>` : '',
     ].join('');
     // Update degen score ring
