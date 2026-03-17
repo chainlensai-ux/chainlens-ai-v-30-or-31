@@ -1741,6 +1741,161 @@ body::after {
 .cl-pricing-card--featured.cl-reveal         { transform: scale(1.03) translateY(28px); }
 .cl-pricing-card--featured.is-visible        { transform: scale(1.03) translateY(0); }
 .cl-pricing-card--featured.is-visible:hover  { transform: scale(1.03) translateY(-6px); }
+
+/* ════════════════════════════════════════════════
+   HERO CLARK CHAT BOX — Step 3
+════════════════════════════════════════════════ */
+.cl-hero-chat {
+  position: relative;
+  max-width: 620px;
+  margin: 0 auto 32px;
+  background: rgba(11,9,16,0.78);
+  border: 1px solid rgba(120,88,192,0.38);
+  border-radius: 20px;
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  box-shadow: 0 0 0 1px rgba(120,88,192,0.08), 0 8px 40px rgba(0,0,0,0.45), 0 0 80px rgba(120,88,192,0.1);
+  overflow: hidden;
+  animation: cl-spring-up 0.75s var(--cl-spring) 0.50s both;
+}
+.cl-hero-chat::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(120,88,192,0.7), rgba(0,255,200,0.45), transparent);
+}
+
+/* Override CTAs/stats timing to account for chat box */
+.cl-hero__ctas    { animation: cl-spring-up 0.7s var(--cl-spring) 0.70s both; }
+.cl-stats-strip   { animation: cl-fade-up 0.65s var(--cl-ease-out) 0.84s both; }
+
+/* Messages area (shown only when there are messages) */
+.cl-hero-chat__msgs {
+  display: none;
+  flex-direction: column; gap: 8px;
+  padding: 16px 18px 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120,88,192,0.2) transparent;
+}
+.cl-hero-chat__msgs.has-msgs { display: flex; }
+
+/* Message bubbles */
+.hc-msg-bot, .hc-msg-user {
+  font-size: 13px; line-height: 1.65;
+  padding: 9px 13px;
+  border-radius: 12px;
+  animation: clarkMsgIn 0.22s ease;
+  max-width: 88%; word-break: break-word;
+}
+.hc-msg-bot {
+  background: rgba(120,88,192,0.1);
+  border: 1px solid rgba(120,88,192,0.22);
+  color: var(--cl-text-2);
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+}
+.hc-msg-user {
+  background: rgba(120,88,192,0.18);
+  border: 1px solid rgba(120,88,192,0.32);
+  color: var(--cl-text);
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+.hc-typing {
+  display: flex; gap: 3px; align-items: center;
+  padding: 10px 13px;
+  align-self: flex-start;
+  background: rgba(120,88,192,0.1);
+  border: 1px solid rgba(120,88,192,0.22);
+  border-radius: 12px; border-bottom-left-radius: 4px;
+}
+.hc-typing span {
+  display: inline-block; width: 5px; height: 5px;
+  background: var(--cl-violet-light); border-radius: 50%;
+  animation: clarkDot 1.2s infinite;
+}
+.hc-typing span:nth-child(2) { animation-delay: 0.2s; }
+.hc-typing span:nth-child(3) { animation-delay: 0.4s; }
+
+/* Prompt pills */
+.cl-hero-chat__pills {
+  display: flex; gap: 7px;
+  padding: 16px 18px 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.cl-hero-chat__pill {
+  padding: 6px 14px;
+  background: rgba(120,88,192,0.06);
+  border: 1px solid rgba(120,88,192,0.28);
+  border-radius: 20px;
+  font-family: 'Inter', sans-serif;
+  font-size: 11.5px; font-weight: 500;
+  color: var(--cl-text-2);
+  cursor: pointer;
+  transition: all 0.18s var(--cl-ease-out);
+  white-space: nowrap;
+}
+.cl-hero-chat__pill:hover {
+  background: rgba(120,88,192,0.14);
+  border-color: rgba(120,88,192,0.55);
+  color: var(--cl-text);
+  transform: translateY(-1px);
+}
+
+/* Input row */
+.cl-hero-chat__input-row {
+  display: flex; align-items: flex-end; gap: 10px;
+  padding: 10px 14px 10px;
+  border-top: 1px solid rgba(120,88,192,0.12);
+  margin-top: 12px;
+}
+.cl-hero-chat__input {
+  flex: 1;
+  background: transparent;
+  border: none; outline: none; resize: none;
+  font-family: 'Inter', sans-serif;
+  font-size: 14px; color: var(--cl-text);
+  line-height: 1.5; max-height: 100px;
+}
+.cl-hero-chat__input::placeholder { color: var(--cl-text-3); font-size: 13px; }
+
+/* Glowing send button */
+@keyframes cl-send-pulse {
+  0%,100% { box-shadow: 0 0 10px rgba(0,255,200,0.3), 0 0 20px rgba(120,88,192,0.2); }
+  50%     { box-shadow: 0 0 18px rgba(0,255,200,0.55), 0 0 36px rgba(120,88,192,0.35); }
+}
+.cl-hero-chat__send {
+  width: 38px; height: 38px; flex-shrink: 0;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7858c0, #00ffc8);
+  border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  animation: cl-send-pulse 2.8s ease-in-out infinite;
+  transition: transform 0.2s var(--cl-spring);
+}
+.cl-hero-chat__send:hover  { transform: scale(1.1); }
+.cl-hero-chat__send:active { transform: scale(0.94); }
+.cl-hero-chat__send svg { width: 15px; height: 15px; fill: #050407; }
+
+/* Footer bar */
+.cl-hero-chat__footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 18px 12px;
+}
+.cl-hero-chat__powered {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 2.5px; text-transform: uppercase;
+  background: var(--cl-grad-cta);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+  opacity: 0.8;
+}
+.cl-hero-chat__tier {
+  font-size: 10px; color: var(--cl-text-4);
+}
 </style>
 
 </head>
@@ -1871,18 +2026,42 @@ body::after {
     <div class="cl-container" style="position:relative;z-index:1;">
       <div class="cl-hero__eyebrow">
         <div class="cl-hero__dot"></div>
-        Live AI Intelligence
+        Powered by CORTEX ENGINE
       </div>
       <h1 class="cl-hero__title">
-        <span>Crypto Intelligence</span>
-        <span class="cl-grad-text">Built Different</span>
+        <span>Onchain intelligence for</span>
+        <span class="cl-grad-text">the traders who actually win</span>
       </h1>
       <p class="cl-hero__sub">
-        AI-powered tools that serious crypto traders actually use — wallet scanning, bear market scoring, paper trading, pump detection and more.
+        Ask Clark anything — scan wallets, find early pumps, track smart money, and get real-time onchain intelligence.
       </p>
+
+      <!-- Hero Clark chat box -->
+      <div class="cl-hero-chat" id="hc-box">
+        <div class="cl-hero-chat__msgs" id="hc-msgs"></div>
+        <div class="cl-hero-chat__pills" id="hc-pills">
+          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">Scan this wallet</button>
+          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">What's pumping on Base?</button>
+          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">Show me smart money moves</button>
+        </div>
+        <div class="cl-hero-chat__input-row">
+          <textarea id="hc-input" class="cl-hero-chat__input" rows="1"
+            placeholder="Ask Clark — scan a wallet, find early pumps, track smart money..."
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();heroClarkSend()}"
+            oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'"></textarea>
+          <button class="cl-hero-chat__send" id="hc-send" onclick="heroClarkSend()" aria-label="Send to Clark">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          </button>
+        </div>
+        <div class="cl-hero-chat__footer">
+          <span class="cl-hero-chat__powered">⬡ CORTEX</span>
+          <span class="cl-hero-chat__tier" id="hc-tier-label">Free — general questions only</span>
+        </div>
+      </div>
+
       <div class="cl-hero__ctas">
-        <button class="cl-btn cl-btn--primary cl-btn--lg" onclick="openAuth('signup')">Start Free Trial</button>
-        <button class="cl-btn cl-btn--secondary cl-btn--lg" onclick="go('bearproof')">Try BearProof™ Free</button>
+        <button class="cl-btn cl-btn--secondary cl-btn--lg" onclick="openAuth('signup')">Connect Wallet</button>
+        <button class="cl-btn cl-btn--primary cl-btn--lg" onclick="openAuth('signup')">Start Free</button>
       </div>
       <div class="cl-stats-strip">
         <div class="cl-stat"><span class="cl-stat__num">12+</span><div class="cl-stat__label">AI Tools</div></div>
@@ -3332,6 +3511,7 @@ function updateNav() {
       <button class="cl-btn cl-btn--ghost cl-btn--sm" onclick="openAuth('login')">Sign In</button>
       <button class="cl-btn cl-btn--primary cl-btn--sm" onclick="openAuth('signup')">Get Access</button>`;
   }
+  updateHeroTierLabel();
 }
 
 function toggleUserMenu() { document.getElementById('user-menu').classList.toggle('open'); }
@@ -6001,6 +6181,131 @@ async function clarkSend() {
 // Init Clark
 clarkRender();
 setTimeout(() => { if (!clarkHistory[clarkAgent].length) clarkGreet(); }, 500);
+
+// ══════════════════════════════════════════════
+// HERO CLARK CHAT — centered homepage chat box
+// ══════════════════════════════════════════════
+let hcBusy = false;
+
+function updateHeroTierLabel() {
+  const el = document.getElementById('hc-tier-label');
+  if (!el) return;
+  const plan = user ? (user.plan || 'free') : 'free';
+  if (plan === 'elite') el.textContent = 'Elite — full CORTEX intelligence';
+  else if (plan === 'pro') el.textContent = 'Pro — wallet scans, live data, pump alerts';
+  else el.textContent = 'Free — general crypto questions';
+}
+
+function heroClarkPill(btn) {
+  const inp = document.getElementById('hc-input');
+  if (!inp) return;
+  inp.value = btn.textContent;
+  inp.focus();
+  inp.style.height = 'auto';
+  inp.style.height = Math.min(inp.scrollHeight, 100) + 'px';
+}
+
+async function heroClarkSend() {
+  if (hcBusy) return;
+  const inp = document.getElementById('hc-input');
+  if (!inp) return;
+  const text = inp.value.trim();
+  if (!text) return;
+
+  inp.value = '';
+  inp.style.height = 'auto';
+
+  const plan = user ? (user.plan || 'free') : 'free';
+  const lc = text.toLowerCase();
+
+  // Tier check — detect gated feature requests
+  const isWalletScan = /0x[a-fA-F0-9]{40}|bc1|[13][a-zA-Z0-9]{24,}/i.test(text) ||
+    (lc.includes('scan') && lc.includes('wallet')) || lc.includes('wallet analysis');
+  const isEliteOnly = lc.includes('smart money') || lc.includes('ghost trade') ||
+    lc.includes('trade coach') || lc.includes('whale alert') || lc.includes('proof vault');
+  const isProOnly = isWalletScan || lc.includes('pumping') || lc.includes('pump alert') ||
+    lc.includes('on base') || lc.includes('live data') || lc.includes('price alert') ||
+    lc.includes('signal') || lc.includes('dip radar') || lc.includes('sentiment');
+
+  if (isEliteOnly && plan !== 'elite') {
+    hcAddUpgradePrompt('elite');
+    return;
+  }
+  if (isProOnly && plan === 'free') {
+    hcAddUpgradePrompt('pro');
+    return;
+  }
+
+  // Hide pills once chat starts
+  const pills = document.getElementById('hc-pills');
+  if (pills) pills.style.display = 'none';
+
+  hcBusy = true;
+  hcAddMsg('user', text);
+  hcShowTyping();
+
+  const sysPrompt = plan === 'free'
+    ? 'You are Clark, ChainLens AI\'s onchain intelligence agent powered by CORTEX. You think like a crypto analyst. For free users, answer general crypto questions only — do not perform wallet scans or provide live data. Keep responses to 2-3 sentences, sharp and direct. If they ask for live data or features, tell them to upgrade.'
+    : 'You are Clark, ChainLens AI\'s onchain intelligence agent powered by CORTEX. You think like a crypto analyst and explain things like a trader. Crypto native, direct, data-driven. Sharp actionable insights, not generic advice. Specialise in Base ecosystem. Max 3 sentences unless deep detail is needed.';
+
+  try {
+    const reply = await ai(sysPrompt + '\n\nUser: ' + text + '\nClark:', 380);
+    hcRemoveTyping();
+    hcAddMsg('bot', reply.trim());
+  } catch(e) {
+    hcRemoveTyping();
+    hcAddMsg('bot', 'Having trouble connecting right now. Try the full Clark panel →');
+  }
+  hcBusy = false;
+}
+
+function hcAddMsg(role, text) {
+  const msgs = document.getElementById('hc-msgs');
+  if (!msgs) return;
+  msgs.classList.add('has-msgs');
+  const el = document.createElement('div');
+  el.className = role === 'bot' ? 'hc-msg-bot' : 'hc-msg-user';
+  el.textContent = text;
+  msgs.appendChild(el);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function hcShowTyping() {
+  const msgs = document.getElementById('hc-msgs');
+  if (!msgs) return;
+  msgs.classList.add('has-msgs');
+  const el = document.createElement('div');
+  el.id = 'hc-typing-el';
+  el.className = 'hc-typing';
+  el.innerHTML = '<span></span><span></span><span></span>';
+  msgs.appendChild(el);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function hcRemoveTyping() {
+  const el = document.getElementById('hc-typing-el');
+  if (el) el.remove();
+}
+
+function hcAddUpgradePrompt(tier) {
+  const msgs = document.getElementById('hc-msgs');
+  if (!msgs) return;
+  msgs.classList.add('has-msgs');
+  const pills = document.getElementById('hc-pills');
+  if (pills) pills.style.display = 'none';
+  const el = document.createElement('div');
+  el.className = 'hc-msg-bot';
+  if (tier === 'elite') {
+    el.innerHTML = "That's an Elite feature. <a href='#' onclick=\"go('pricing');return false;\" style='color:var(--cl-cyan);text-decoration:none;font-weight:600;'>Upgrade to Elite ($60/mo)</a> to unlock full CORTEX intelligence.";
+  } else {
+    el.innerHTML = "That needs Pro or Elite access. <a href='#' onclick=\"openAuth('signup');return false;\" style='color:var(--cl-cyan);text-decoration:none;font-weight:600;'>Start your free trial</a> to unlock wallet scans, live data, and pump alerts.";
+  }
+  msgs.appendChild(el);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// Init hero tier label
+updateHeroTierLabel();
 
 </script>
 
