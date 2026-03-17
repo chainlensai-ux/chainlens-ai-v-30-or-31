@@ -1531,6 +1531,59 @@ body::after {
 .es-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .es-input-note { font-size: 10px; color: var(--cl-text-4); text-align: center; margin-top: 6px; letter-spacing: 0.5px; }
 
+/* ── DIPRADAR ── */
+.dr-dip-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; border-radius: 10px; margin-bottom: 8px;
+  background: rgba(239,71,111,0.03); border: 1px solid rgba(239,71,111,0.12);
+  transition: border-color 0.2s;
+}
+.dr-dip-row:hover { border-color: rgba(239,71,111,0.25); }
+.dr-dip-icon {
+  width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+}
+.dr-dip-info { flex: 1; min-width: 0; }
+.dr-dip-name { font-size: 13px; font-weight: 700; }
+.dr-dip-sym  { font-size: 10px; color: var(--cl-text-3); }
+.dr-dip-pct  { font-size: 16px; font-weight: 800; flex-shrink: 0; }
+.dr-dip-analyse {
+  padding: 5px 11px; border-radius: 6px; font-size: 10px; font-weight: 700;
+  cursor: pointer; border: 1px solid rgba(120,88,192,0.25);
+  background: rgba(120,88,192,0.08); color: #a78bfa;
+  white-space: nowrap; transition: all 0.2s; flex-shrink: 0;
+}
+.dr-dip-analyse:hover { background: rgba(120,88,192,0.18); border-color: rgba(120,88,192,0.5); }
+.dr-verdict {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 800; letter-spacing: 1px;
+  padding: 8px 14px; border-radius: 7px; border: 1px solid; margin-bottom: 12px;
+}
+.dr-verdict__icon { font-size: 14px; }
+.dr-reason { font-size: 12px; color: var(--cl-text-2); line-height: 1.7; margin-bottom: 10px; }
+.dr-action {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 8px 12px; border-radius: 7px;
+  background: rgba(240,180,41,0.05); border: 1px solid rgba(240,180,41,0.15);
+  font-size: 12px; color: var(--cl-text-2); line-height: 1.5;
+}
+.dr-action__lbl {
+  font-size: 9px; font-weight: 800; color: #f0b429; letter-spacing: 1px;
+  text-transform: uppercase; white-space: nowrap; margin-top: 2px;
+}
+
+/* ── TOKEN UNLOCKS ── */
+.tu-stats {
+  display: flex; align-items: center; gap: 0; margin-bottom: 18px;
+  background: rgba(120,88,192,0.04); border: 1px solid var(--cl-border);
+  border-radius: 12px; overflow: hidden; padding: 14px 20px;
+}
+.tu-stat { text-align: center; flex: 1; }
+.tu-stat__val { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700; margin-bottom: 3px; }
+.tu-stat__lbl { font-size: 10px; color: var(--cl-text-4); letter-spacing: 0.5px; }
+.tu-stat__div { width: 1px; height: 32px; background: var(--cl-border); flex-shrink: 0; }
+
 /* ── SMARTWALLETS GRID ── */
 .sw-grid {
   display: grid;
@@ -3730,9 +3783,12 @@ body::after {
       <div class="cl-hero-chat" id="hc-box">
         <div class="cl-hero-chat__msgs" id="hc-msgs"></div>
         <div class="cl-hero-chat__pills" id="hc-pills">
-          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">Scan this wallet</button>
-          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">What's pumping on Base?</button>
+          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">What's pumping right now?</button>
+          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">Scan a whale wallet</button>
+          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">Is BTC a buy right now?</button>
           <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">Show me smart money moves</button>
+          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">Best performer this week?</button>
+          <button class="cl-hero-chat__pill" onclick="heroClarkPill(this)">What's the market sentiment?</button>
         </div>
         <div class="cl-hero-chat__input-row">
           <textarea id="hc-input" class="cl-hero-chat__input" rows="1"
@@ -3754,8 +3810,9 @@ body::after {
         <button class="cl-btn cl-btn--primary cl-btn--lg" onclick="openAuth('signup')">Start Free</button>
       </div>
       <div class="cl-stats-strip">
-        <div class="cl-stat"><span class="cl-stat__num">12+</span><div class="cl-stat__label">AI Tools</div></div>
+        <div class="cl-stat"><span class="cl-stat__num">16</span><div class="cl-stat__label">AI Tools</div></div>
         <div class="cl-stat"><span class="cl-stat__num">150+</span><div class="cl-stat__label">Coins Tracked</div></div>
+        <div class="cl-stat"><span class="cl-stat__num">5</span><div class="cl-stat__label">Chains</div></div>
         <div class="cl-stat"><span class="cl-stat__num">Live</span><div class="cl-stat__label">Price Data</div></div>
         <div class="cl-stat"><span class="cl-stat__num" id="wl-count">312</span><div class="cl-stat__label">Traders</div></div>
       </div>
@@ -4712,7 +4769,9 @@ body::after {
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-pricing">
   <div class="cl-container">
-    <button class="cl-page-back" onclick="go('home')">← Back</button>
+    <div class="pg-header" style="margin-bottom:0;">
+      <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+    </div>
     <div class="pricing-page-intro">
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(28px,4vw,48px);font-weight:900;margin-bottom:12px;">One price. Worldwide.</h1>
       <p style="font-size:15px;color:var(--cl-text-2);max-width:460px;margin:0 auto;">No dark patterns. No regional pricing. Cancel any time. Your data stays yours.</p>
@@ -5955,6 +6014,17 @@ body::after {
         </div>
       </div>
     </div>
+    <!-- Stats strip -->
+    <div class="tu-stats" id="tu-stats">
+      <div class="tu-stat"><div class="tu-stat__val" id="tu-s-total">8</div><div class="tu-stat__lbl">Total Unlocks</div></div>
+      <div class="tu-stat__div"></div>
+      <div class="tu-stat"><div class="tu-stat__val" style="color:#ef476f;" id="tu-s-high">4</div><div class="tu-stat__lbl">High Impact</div></div>
+      <div class="tu-stat__div"></div>
+      <div class="tu-stat"><div class="tu-stat__val" style="color:#f0b429;" id="tu-s-medium">2</div><div class="tu-stat__lbl">Medium</div></div>
+      <div class="tu-stat__div"></div>
+      <div class="tu-stat"><div class="tu-stat__val" style="color:#00ffc8;" id="tu-s-next">ARB</div><div class="tu-stat__lbl">Next Unlock</div></div>
+    </div>
+
     <div class="cl-card" style="margin-bottom:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
         <div class="cl-label" style="margin:0;">Upcoming Unlocks</div>
@@ -5969,7 +6039,10 @@ body::after {
       <div id="tu-list"></div>
     </div>
     <div class="cl-card" id="tu-ai-card" style="display:none;">
-      <div class="cl-label">AI Impact Analysis</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        <div class="sp-ai-avatar" style="width:28px;height:28px;font-size:12px;">⬡</div>
+        <div class="cl-label" style="margin:0;">AI Impact Analysis</div>
+      </div>
       <div class="cl-result" id="tu-ai"></div>
     </div>
   </div></div>
@@ -6824,16 +6897,16 @@ async function scanDips() {
     else {
       el.innerHTML = dips.map(c => {
         const pct = c.price_change_percentage_24h.toFixed(2);
-        const severity = Math.abs(pct) > 15 ? '#ef476f' : Math.abs(pct) > 8 ? '#f0b429' : '#7858c0';
-        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(239,71,111,0.04);border:1px solid rgba(239,71,111,0.12);border-radius:10px;margin-bottom:8px;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            <div style="width:32px;height:32px;border-radius:8px;background:rgba(239,71,111,0.1);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:${severity};">${c.symbol.toUpperCase().slice(0,2)}</div>
-            <div><div style="font-size:13px;font-weight:700;">${c.name}</div><div style="font-size:10px;color:var(--cl-text-3);">${c.symbol.toUpperCase()}</div></div>
+        const absPct = Math.abs(parseFloat(pct));
+        const severity = absPct > 15 ? '#ef476f' : absPct > 8 ? '#f0b429' : '#7858c0';
+        return `<div class="dr-dip-row">
+          <div class="dr-dip-icon" style="background:${severity}14;color:${severity};">${c.symbol.toUpperCase().slice(0,3)}</div>
+          <div class="dr-dip-info">
+            <div class="dr-dip-name">${c.name}</div>
+            <div class="dr-dip-sym">${c.symbol.toUpperCase()} · $${fmt(c.current_price)}</div>
           </div>
-          <div style="text-align:right;">
-            <div style="font-size:15px;font-weight:800;color:${severity};">${pct}%</div>
-            <div style="font-size:11px;color:var(--cl-text-3);">${fmt(c.current_price)}</div>
-          </div>
+          <div class="dr-dip-pct" style="color:${severity};">${pct}%</div>
+          <button class="dr-dip-analyse" onclick="document.getElementById('drc').value='${c.name}';document.getElementById('drd').value='${Math.abs(parseFloat(pct)).toFixed(0)}';doDR()">Analyse →</button>
         </div>`;
       }).join('');
     }
@@ -6851,10 +6924,23 @@ async function doDR() {
   try {
     const txt = await ai(`You are ChainLens AI DipRadar™. Analyse this dip.
 Coin: ${coin} | Drop: ${drop}% | Context: ${ctx2 || 'none'} | Live prices: ${ctx()}
-Give verdict: OPPORTUNITY, CAUTION or FALLING KNIFE. Explain why. One specific action. Under 150 words.`, 400);
-    res.textContent = txt;
-    res.insertAdjacentHTML('beforeend', '<div class="cl-ai-disclaimer">Not financial advice.</div>');
-  } catch(e) { res.textContent = 'Error. Try again.'; }
+Respond ONLY in this format:
+VERDICT: [OPPORTUNITY / CAUTION / FALLING KNIFE]
+REASON: [2 sentences explaining why]
+ACTION: [one specific actionable step]`, 400);
+    const verdict = txt.match(/VERDICT:\s*(.+)/)?.[1]?.trim() || 'CAUTION';
+    const reason  = txt.match(/REASON:\s*(.+)/)?.[1]?.trim()  || txt;
+    const action  = txt.match(/ACTION:\s*(.+)/)?.[1]?.trim()  || '';
+    const vc = verdict.includes('OPPORTUNITY') ? '#00ffc8' : verdict.includes('FALLING') ? '#ef476f' : '#f0b429';
+    const vi = verdict.includes('OPPORTUNITY') ? '✓' : verdict.includes('FALLING') ? '✕' : '⚠';
+    res.innerHTML = `
+      <div class="dr-verdict" style="color:${vc};border-color:${vc}30;background:${vc}0d;">
+        <span class="dr-verdict__icon">${vi}</span>${verdict}
+      </div>
+      <div class="dr-reason">${reason}</div>
+      ${action ? `<div class="dr-action"><span class="dr-action__lbl">Action</span>${action}</div>` : ''}
+      <div class="cl-ai-disclaimer" style="margin-top:10px;">Not financial advice.</div>`;
+  } catch(e) { res.innerHTML = '<div style="color:#ef476f;font-size:12px;">Error. Try again.</div>'; }
   btn.disabled = false; btn.textContent = 'Analyse This Dip →';
 }
 
@@ -8704,7 +8790,18 @@ function renderTokenUnlocks() {
   const el = document.getElementById('tu-list');
   if (!el) return;
   const now = Date.now();
-  let data = TOKEN_UNLOCKS.map(u => ({ ...u, daysUntil: Math.ceil((new Date(u.date) - now) / (1000 * 60 * 60 * 24)) }));
+  const allData = TOKEN_UNLOCKS.map(u => ({ ...u, daysUntil: Math.ceil((new Date(u.date) - now) / (1000 * 60 * 60 * 24)) }));
+  // Update stats strip
+  const sTotal  = document.getElementById('tu-s-total');
+  const sHigh   = document.getElementById('tu-s-high');
+  const sMedium = document.getElementById('tu-s-medium');
+  const sNext   = document.getElementById('tu-s-next');
+  if (sTotal)  sTotal.textContent  = allData.length;
+  if (sHigh)   sHigh.textContent   = allData.filter(u => u.impact === 'high').length;
+  if (sMedium) sMedium.textContent = allData.filter(u => u.impact === 'medium').length;
+  const nextU = allData.filter(u => u.daysUntil >= 0).sort((a,b) => a.daysUntil - b.daysUntil)[0];
+  if (sNext)   sNext.textContent   = nextU ? nextU.symbol : '—';
+  let data = [...allData];
   if (tuFilter === '7d') data = data.filter(u => u.daysUntil <= 7 && u.daysUntil >= 0);
   else if (tuFilter === '30d') data = data.filter(u => u.daysUntil <= 30 && u.daysUntil >= 0);
   else if (tuFilter === 'high') data = data.filter(u => u.impact === 'high');
