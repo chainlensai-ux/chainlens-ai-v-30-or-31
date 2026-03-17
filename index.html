@@ -953,6 +953,136 @@ body::after {
 }
 
 /* ── FOOTER ── */
+/* ── TRUST BAR ── */
+.cl-trust-bar {
+  padding: 56px 0;
+  border-top: 1px solid var(--cl-border);
+  border-bottom: 1px solid var(--cl-border);
+  position: relative; overflow: hidden;
+}
+.cl-trust-bar::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse 70% 100% at 50% 50%, rgba(120,88,192,0.06), transparent);
+  pointer-events: none;
+}
+.cl-trust-bar__inner {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 0;
+}
+.cl-trust-stat {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 0 40px; text-align: center;
+  position: relative; z-index: 1;
+}
+.cl-trust-stat__val {
+  font-family: 'Syne', sans-serif; font-size: 34px; font-weight: 900;
+  background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.8) 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  line-height: 1; letter-spacing: -1px;
+  transition: background 0.3s;
+}
+.cl-trust-stat:hover .cl-trust-stat__val {
+  background: linear-gradient(135deg, #7858c0, #00ffc8);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.cl-trust-stat__lbl {
+  font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--cl-text-4); margin-top: 6px; font-weight: 500;
+}
+.cl-trust-bar__div {
+  width: 1px; height: 44px;
+  background: linear-gradient(180deg, transparent, var(--cl-border), transparent);
+  flex-shrink: 0;
+}
+
+/* ── HOW IT WORKS ── */
+.cl-how { padding: 90px 0 80px; }
+.cl-how__steps {
+  display: flex; align-items: flex-start;
+  gap: 0; margin-top: 56px;
+  position: relative;
+}
+.cl-how__step {
+  flex: 1; min-width: 0;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--cl-border);
+  border-radius: 16px; padding: 32px 28px;
+  position: relative; overflow: hidden;
+  transition: border-color 0.3s, background 0.3s, transform 0.3s;
+}
+.cl-how__step::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 80% 80% at 0% 0%, rgba(120,88,192,0.07), transparent);
+  opacity: 0; transition: opacity 0.3s;
+}
+.cl-how__step:hover {
+  border-color: rgba(120,88,192,0.35);
+  background: rgba(120,88,192,0.04);
+  transform: translateY(-4px);
+}
+.cl-how__step:hover::before { opacity: 1; }
+.cl-how__step-num {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: rgba(120,88,192,0.4); font-weight: 700;
+  letter-spacing: 2px; margin-bottom: 16px;
+}
+.cl-how__step-icon {
+  width: 52px; height: 52px; border-radius: 14px;
+  background: rgba(120,88,192,0.08);
+  border: 1px solid rgba(120,88,192,0.2);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 20px;
+  transition: background 0.3s, border-color 0.3s;
+}
+.cl-how__step:hover .cl-how__step-icon {
+  background: rgba(120,88,192,0.15);
+  border-color: rgba(120,88,192,0.4);
+}
+.cl-how__step-title {
+  font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 800;
+  color: #fff; margin-bottom: 12px; line-height: 1.2;
+}
+.cl-how__step-desc {
+  font-size: 13px; color: var(--cl-text-2); line-height: 1.65;
+  margin-bottom: 16px;
+}
+.cl-how__step-tag {
+  font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: rgba(120,88,192,0.6); font-weight: 700;
+  padding: 4px 10px;
+  background: rgba(120,88,192,0.06);
+  border: 1px solid rgba(120,88,192,0.15);
+  border-radius: 20px; display: inline-block;
+}
+.cl-how__connector {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 0 8px; padding-top: 70px; flex-shrink: 0;
+}
+.cl-how__connector-line {
+  width: 32px; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(120,88,192,0.4), transparent);
+}
+.cl-how__connector-arrow {
+  font-size: 18px; color: rgba(120,88,192,0.5);
+  line-height: 1; margin-top: -10px;
+}
+
+/* ── TRUST BAR + HOW MOBILE ── */
+@media (max-width: 768px) {
+  .cl-trust-bar__inner { gap: 20px; }
+  .cl-trust-stat { padding: 12px 20px; }
+  .cl-trust-bar__div { width: 44px; height: 1px; }
+  .cl-how__steps { flex-direction: column; gap: 16px; }
+  .cl-how__connector { flex-direction: row; padding: 0; transform: rotate(90deg); margin: -8px auto; }
+  .cl-how__connector-arrow { margin-top: 0; margin-left: -10px; }
+  .cl-how__step { padding: 24px 20px; }
+}
+@media (max-width: 480px) {
+  .cl-trust-stat__val { font-size: 26px; }
+  .cl-trust-stat { padding: 8px 14px; }
+}
+
 /* ── TERMINAL CTA ── */
 .cl-terminal-cta {
   position: relative; overflow: hidden;
@@ -2445,6 +2575,119 @@ body::after {
   <div class="cl-ticker">
     <div class="cl-ticker__track" id="tt"></div>
   </div>
+
+  <!-- ═══════════════════ TRUST BAR ═══════════════════ -->
+  <section class="cl-trust-bar" id="trust-bar">
+    <div class="cl-container">
+      <div class="cl-trust-bar__inner">
+        <div class="cl-trust-stat cl-reveal" data-count="12480" data-suffix="+">
+          <div class="cl-trust-stat__val" id="ts-wallets">0</div>
+          <div class="cl-trust-stat__lbl">Wallets Scanned</div>
+        </div>
+        <div class="cl-trust-bar__div"></div>
+        <div class="cl-trust-stat cl-reveal" data-count="2.4" data-suffix="B" data-prefix="$" data-float="1">
+          <div class="cl-trust-stat__val" id="ts-volume">$0</div>
+          <div class="cl-trust-stat__lbl">Volume Tracked</div>
+        </div>
+        <div class="cl-trust-bar__div"></div>
+        <div class="cl-trust-stat cl-reveal" data-count="68" data-suffix="%" data-float="0">
+          <div class="cl-trust-stat__val" id="ts-winrate">0%</div>
+          <div class="cl-trust-stat__lbl">Avg GhostTrade Win Rate</div>
+        </div>
+        <div class="cl-trust-bar__div"></div>
+        <div class="cl-trust-stat cl-reveal" data-count="847" data-suffix="%" data-prefix="+">
+          <div class="cl-trust-stat__val" id="ts-pump">+0%</div>
+          <div class="cl-trust-stat__lbl">Best Pump Alert ROI</div>
+        </div>
+        <div class="cl-trust-bar__div"></div>
+        <div class="cl-trust-stat cl-reveal" data-count="150" data-suffix="+" data-float="0">
+          <div class="cl-trust-stat__val" id="ts-coins">0+</div>
+          <div class="cl-trust-stat__lbl">Coins Monitored</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ HOW IT WORKS ═══════════════════ -->
+  <section class="cl-how" id="cl-how">
+    <div class="cl-container">
+      <div class="cl-section__eyebrow cl-reveal">How It Works</div>
+      <h2 class="cl-section__title cl-reveal">Three steps to onchain<br><span>clarity</span></h2>
+      <p class="cl-section__sub cl-reveal">No coding. No complicated setup. Just connect, analyse, and trade smarter.</p>
+
+      <div class="cl-how__steps">
+        <!-- Step 1 -->
+        <div class="cl-how__step cl-reveal">
+          <div class="cl-how__step-num">01</div>
+          <div class="cl-how__step-icon">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+              <path d="M14 3C8 3 3 8 3 14s5 11 11 11 11-5 11-11S20 3 14 3z" stroke="url(#hw1g)" stroke-width="1.5" fill="none"/>
+              <circle cx="14" cy="14" r="3" fill="url(#hw1g)"/>
+              <path d="M14 7v3M14 18v3M7 14h3M18 14h3" stroke="url(#hw1g)" stroke-width="1.5" stroke-linecap="round"/>
+              <defs>
+                <linearGradient id="hw1g" x1="3" y1="3" x2="25" y2="25" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#7858c0"/><stop offset="1" stop-color="#00ffc8"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <h3 class="cl-how__step-title">Connect Any Wallet</h3>
+          <p class="cl-how__step-desc">Paste any EVM, Bitcoin, or Solana address. No keys. No sign-in needed. Your wallet stays in your hands.</p>
+          <div class="cl-how__step-tag">WalletScan™ · Smart Wallets™</div>
+        </div>
+
+        <!-- Connector -->
+        <div class="cl-how__connector" aria-hidden="true">
+          <div class="cl-how__connector-line"></div>
+          <div class="cl-how__connector-arrow">→</div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="cl-how__step cl-reveal">
+          <div class="cl-how__step-num">02</div>
+          <div class="cl-how__step-icon">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+              <rect x="3" y="6" width="22" height="16" rx="3" stroke="url(#hw2g)" stroke-width="1.5" fill="none"/>
+              <path d="M8 14l3 3 6-6" stroke="url(#hw2g)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <defs>
+                <linearGradient id="hw2g" x1="3" y1="6" x2="25" y2="22" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#7858c0"/><stop offset="1" stop-color="#00ffc8"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <h3 class="cl-how__step-title">AI Analyses Everything</h3>
+          <p class="cl-how__step-desc">Clark, your onchain AI, reads wallet history, pump signals, portfolio risk, and market narratives in seconds.</p>
+          <div class="cl-how__step-tag">EdgeScan™ · BearProof™ · SignalBreaker™</div>
+        </div>
+
+        <!-- Connector -->
+        <div class="cl-how__connector" aria-hidden="true">
+          <div class="cl-how__connector-line"></div>
+          <div class="cl-how__connector-arrow">→</div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="cl-how__step cl-reveal">
+          <div class="cl-how__step-num">03</div>
+          <div class="cl-how__step-icon">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+              <polyline points="4,20 10,12 15,16 22,7" stroke="url(#hw3g)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+              <circle cx="22" cy="7" r="2.5" fill="url(#hw3g)"/>
+              <defs>
+                <linearGradient id="hw3g" x1="4" y1="7" x2="24" y2="20" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#7858c0"/><stop offset="1" stop-color="#00ffc8"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <h3 class="cl-how__step-title">Trade With Confidence</h3>
+          <p class="cl-how__step-desc">Practice trades in GhostTrade, watch pump alerts in real time, and get AI coaching before putting real money at risk.</p>
+          <div class="cl-how__step-tag">GhostTrade™ · PumpAlert™ · TradeCoach™</div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <!-- Live Discovery Feed -->
   <section class="cl-live-feed-section cl-reveal" id="live-feed-section">
@@ -7293,6 +7536,42 @@ updateHeroTierLabel();
     io.observe(strip);
   }
 
+  /* ── Trust bar count-up ── */
+  function initTrustCounters() {
+    var ids = {
+      'ts-wallets': { end: 12480, suffix: '+', prefix: '', dec: 0 },
+      'ts-volume':  { end: 2.4,   suffix: 'B', prefix: '$', dec: 1 },
+      'ts-winrate': { end: 68,    suffix: '%', prefix: '', dec: 0 },
+      'ts-pump':    { end: 847,   suffix: '%', prefix: '+', dec: 0 },
+      'ts-coins':   { end: 150,   suffix: '+', prefix: '', dec: 0 }
+    };
+    var bar = document.getElementById('trust-bar');
+    if (!bar) return;
+    var started = false;
+    var io = new IntersectionObserver(function(entries) {
+      if (!entries[0].isIntersecting || started) return;
+      started = true;
+      io.disconnect();
+      Object.keys(ids).forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var cfg = ids[id];
+        var duration = 1600;
+        var startTime = null;
+        function tick(ts) {
+          if (!startTime) startTime = ts;
+          var prog = Math.min((ts - startTime) / duration, 1);
+          var ease = 1 - Math.pow(1 - prog, 3);
+          var val = cfg.end * ease;
+          el.textContent = cfg.prefix + (cfg.dec ? val.toFixed(cfg.dec) : Math.round(val).toLocaleString()) + cfg.suffix;
+          if (prog < 1) requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+      });
+    }, { threshold: 0.4 });
+    io.observe(bar);
+  }
+
   /* ── Scroll reveal (Intersection Observer) ── */
   function initScrollReveal() {
     var revealEls = document.querySelectorAll('.cl-reveal');
@@ -7321,11 +7600,13 @@ updateHeroTierLabel();
       initParticles();
       initCountUp();
       initScrollReveal();
+      initTrustCounters();
     });
   } else {
     initParticles();
     initCountUp();
     initScrollReveal();
+    initTrustCounters();
   }
 
 })();
