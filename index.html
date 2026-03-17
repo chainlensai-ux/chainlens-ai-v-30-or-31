@@ -867,34 +867,47 @@ body::after {
 .cl-tool-card__desc { font-size: 10px; color: var(--cl-text-3); line-height: 1.6; margin-bottom: 12px; }
 
 /* ── PRICING SECTION ── */
-.cl-pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; max-width: 920px; margin: 0 auto; }
+.cl-pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; max-width: 960px; margin: 0 auto; }
 .cl-pricing-card {
-  background: var(--cl-surface);
+  background: rgba(11,9,16,0.72);
   border: 1px solid var(--cl-border);
   border-radius: var(--cl-radius-lg);
   padding: 30px 26px;
-  transition: transform 0.25s, box-shadow 0.25s, border-color 0.25s;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  transition: transform 0.25s var(--cl-spring), box-shadow 0.25s, border-color 0.25s;
 }
-.cl-pricing-card:hover { transform: translateY(-4px); box-shadow: 0 12px 40px rgba(120,88,192,0.15); border-color: var(--cl-border-strong); }
+.cl-pricing-card:hover { transform: translateY(-5px); box-shadow: 0 14px 44px rgba(120,88,192,0.18); border-color: var(--cl-border-strong); }
 .cl-pricing-card--featured {
-  border-color: rgba(176,144,232,0.45);
-  background: linear-gradient(160deg, rgba(120,88,192,0.12), rgba(176,144,232,0.07));
-  box-shadow: 0 0 60px rgba(120,88,192,0.35), 0 0 120px rgba(120,88,192,0.14), inset 0 1px 0 rgba(176,144,232,0.18);
+  border-color: rgba(176,144,232,0.5);
+  background: linear-gradient(160deg, rgba(11,9,16,0.85) 0%, rgba(120,88,192,0.1) 100%);
+  box-shadow: 0 0 60px rgba(120,88,192,0.3), 0 0 120px rgba(120,88,192,0.12), inset 0 1px 0 rgba(176,144,232,0.2);
   position: relative;
   transform: scale(1.03);
 }
 .cl-pricing-card--featured:hover { transform: scale(1.03) translateY(-6px); }
+/* Elite: animated gradient border glow */
+@keyframes cl-elite-glow {
+  0%,100% { box-shadow: 0 0 35px rgba(176,144,232,0.2), 0 0 70px rgba(120,88,192,0.1), inset 0 1px 0 rgba(232,213,255,0.15); border-color: rgba(232,213,255,0.35); }
+  50%     { box-shadow: 0 0 55px rgba(176,144,232,0.38), 0 0 110px rgba(120,88,192,0.18), inset 0 1px 0 rgba(232,213,255,0.28); border-color: rgba(232,213,255,0.6); }
+}
 .cl-pricing-card--elite {
-  border-color: rgba(232,213,255,0.3);
-  background: linear-gradient(160deg, rgba(176,144,232,0.09), rgba(120,88,192,0.06));
-  box-shadow: 0 0 40px rgba(176,144,232,0.12), inset 0 1px 0 rgba(232,213,255,0.12);
+  background: linear-gradient(160deg, rgba(11,9,16,0.85) 0%, rgba(176,144,232,0.07) 100%);
   position: relative; overflow: hidden;
+  animation: cl-elite-glow 3.5s ease-in-out infinite;
 }
 .cl-pricing-card--elite::before {
   content: '';
   position: absolute; top: 0; left: 0; right: 0; height: 2px;
-  background: linear-gradient(90deg, transparent, #e8d5ff, #fff, #e8d5ff, transparent);
+  background: linear-gradient(90deg, transparent, #b090e8, #e8d5ff, #fff, #e8d5ff, #b090e8, transparent);
+  opacity: 0.9;
 }
+@keyframes cl-elite-top-line {
+  0%,100% { opacity: 0.7; }
+  50%     { opacity: 1; }
+}
+.cl-pricing-card--elite::before { animation: cl-elite-top-line 3.5s ease-in-out infinite; }
+.cl-pricing-card--elite:hover { transform: translateY(-5px); }
 .cl-pricing-badge {
   position: absolute; top: -13px; left: 50%;
   transform: translateX(-50%);
@@ -909,13 +922,35 @@ body::after {
 .cl-pricing-tier { font-size: 11px; font-weight: 800; letter-spacing: 2.5px; text-transform: uppercase; color: var(--cl-violet-light); margin-bottom: 10px; }
 .cl-pricing-tier--pro { color: var(--cl-cyan); }
 .cl-pricing-tier--elite { color: var(--cl-elite); text-shadow: 0 0 20px rgba(232,213,255,0.4); }
-.cl-pricing-amount { font-family: 'JetBrains Mono', monospace; font-size: 36px; font-weight: 700; color: var(--cl-text); margin-bottom: 4px; }
+.cl-pricing-amount { font-family: 'JetBrains Mono', monospace; font-size: 40px; font-weight: 700; color: var(--cl-text); margin-bottom: 2px; line-height: 1; }
+.cl-pricing-amount-sub { font-size: 10px; color: var(--cl-text-3); margin-bottom: 20px; }
 .cl-pricing-period { font-size: 10px; color: var(--cl-text-3); margin-bottom: 20px; }
-.cl-pricing-features { list-style: none; display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
-.cl-pricing-features li { font-size: 11px; color: var(--cl-text-3); display: flex; align-items: flex-start; gap: 8px; }
-.cl-pricing-features li::before { content: '—'; color: var(--cl-violet-light); flex-shrink: 0; font-family: 'Syne', sans-serif; font-size: 10px; }
-.cl-pricing-features--pro li::before { color: var(--cl-cyan); }
-.cl-pricing-features--elite li::before { color: var(--cl-elite); }
+.cl-pricing-features { list-style: none; display: flex; flex-direction: column; gap: 9px; margin-bottom: 24px; }
+.cl-pricing-features li { font-size: 11.5px; color: var(--cl-text-2); display: flex; align-items: flex-start; gap: 8px; line-height: 1.45; }
+.cl-pricing-features li::before { content: '✓'; font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.2); flex-shrink: 0; margin-top: 1px; font-family: 'Inter', sans-serif; }
+.cl-pricing-features--pro li::before { color: rgba(0,255,200,0.7); }
+.cl-pricing-features--elite li::before { color: rgba(232,213,255,0.8); }
+.cl-pricing-features li.li-dimmed { color: var(--cl-text-3); }
+.cl-pricing-cortex {
+  font-size: 9px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase;
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--cl-grad-cta);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  opacity: 0.7; margin-bottom: 16px; display: block;
+}
+/* Elite button */
+.cl-btn--elite {
+  background: linear-gradient(135deg, rgba(232,213,255,0.12), rgba(255,255,255,0.06));
+  color: #e8d5ff;
+  border: 1px solid rgba(232,213,255,0.45);
+  transition: all 0.2s var(--cl-ease-out);
+}
+.cl-btn--elite:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(232,213,255,0.2), rgba(255,255,255,0.1));
+  border-color: rgba(232,213,255,0.75);
+  box-shadow: 0 0 20px rgba(232,213,255,0.15);
+  transform: translateY(-1px);
+}
 
 /* ── FOOTER ── */
 .cl-footer {
@@ -2357,50 +2392,65 @@ body::after {
     <!-- Pricing Section -->
     <section class="cl-section" style="padding-bottom:60px;">
       <div class="cl-section__eyebrow cl-reveal">Pricing</div>
-      <h2 class="cl-section__title cl-reveal">Built for <span>serious traders.</span></h2>
-      <p class="cl-section__sub cl-reveal" style="max-width:100%;margin-bottom:40px;">Start free. Upgrade when you're ready. Cancel any time. No hidden fees.</p>
+      <h2 class="cl-section__title cl-reveal">One price. <span>Worldwide.</span></h2>
+      <p class="cl-section__sub cl-reveal" style="max-width:100%;margin-bottom:40px;">No dark patterns. No regional pricing. Start free — upgrade when you're ready. Cancel any time.</p>
       <div class="cl-pricing-grid cl-stagger">
+
+        <!-- FREE -->
         <div class="cl-pricing-card cl-reveal">
           <div class="cl-pricing-tier">Free</div>
           <div class="cl-pricing-amount">$0</div>
-          <div class="cl-pricing-period">forever free</div>
+          <div class="cl-pricing-period">forever free · no card required</div>
+          <span class="cl-pricing-cortex">⬡ CORTEX lite</span>
           <ul class="cl-pricing-features">
             <li>BearProof Score™</li>
             <li>GlobalRank™ Leaderboard</li>
             <li>150+ coin live prices</li>
+            <li>Live Discovery Feed</li>
+            <li>Clark AI — general questions</li>
           </ul>
-          <button class="cl-btn cl-btn--secondary cl-btn--full" onclick="openAuth('signup')">Get Started</button>
+          <button class="cl-btn cl-btn--secondary cl-btn--full" onclick="openAuth('signup')">Get Started Free</button>
         </div>
+
+        <!-- PRO -->
         <div class="cl-pricing-card cl-pricing-card--featured cl-reveal">
           <div class="cl-pricing-badge">Most Popular</div>
           <div class="cl-pricing-tier cl-pricing-tier--pro">Pro</div>
           <div class="cl-pricing-amount">$30</div>
           <div class="cl-pricing-period">per month · 7-day free trial</div>
+          <span class="cl-pricing-cortex">⬡ CORTEX standard</span>
           <ul class="cl-pricing-features cl-pricing-features--pro">
             <li>Everything in Free</li>
-            <li>EdgeScan™ — 10 uses/month</li>
+            <li>EdgeScan™ AI — 10 uses/month</li>
             <li>DipRadar™ + GhostTrade™</li>
-            <li>TradeCoach™ — 10 trades</li>
+            <li>TradeCoach™ — 10 trades/month</li>
             <li>SentimentPulse™ + TaxMate™</li>
             <li>Price Alerts — 5 active</li>
             <li>Token Unlocks™</li>
+            <li>Clark AI — wallet scans &amp; live data</li>
           </ul>
           <button class="cl-btn cl-btn--primary cl-btn--full" onclick="openAuth('signup')">Start Free Trial</button>
         </div>
+
+        <!-- ELITE -->
         <div class="cl-pricing-card cl-pricing-card--elite cl-reveal">
           <div class="cl-pricing-tier cl-pricing-tier--elite">Elite</div>
           <div class="cl-pricing-amount">$60</div>
           <div class="cl-pricing-period">per month · 7-day free trial</div>
+          <span class="cl-pricing-cortex">⬡ CORTEX full intelligence</span>
           <ul class="cl-pricing-features cl-pricing-features--elite">
             <li>Everything in Pro — Unlimited</li>
-            <li>WalletScan™ + Smart Wallets™</li>
+            <li>WalletScan™ — 5 chains, full AI</li>
+            <li>Smart Wallets™ tracking</li>
             <li>SignalBreaker™ + PumpAlert™</li>
-            <li>NarrativeRank™ Full</li>
-            <li>ProofVault™</li>
+            <li>NarrativeRank™ full access</li>
+            <li>ProofVault™ on-chain proofs</li>
             <li>Price Alerts — 20 active</li>
+            <li>Clark AI — all features + Elite</li>
           </ul>
-          <button class="cl-btn cl-btn--full" style="background:linear-gradient(135deg,rgba(232,213,255,0.15),rgba(255,255,255,0.08));color:#e8d5ff;border:1px solid rgba(232,213,255,0.4);border-radius:var(--cl-radius-sm);padding:10px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all 0.2s;" onmouseover="this.style.borderColor='rgba(232,213,255,0.7)'" onmouseout="this.style.borderColor='rgba(232,213,255,0.4)'" onclick="openAuth('signup')">Start Free Trial</button>
+          <button class="cl-btn cl-btn--elite cl-btn--full" onclick="openAuth('signup')">Start Free Trial</button>
         </div>
+
       </div>
     </section>
   </div>
@@ -2424,51 +2474,66 @@ body::after {
   <div class="cl-container">
     <button class="cl-page-back" onclick="go('home')">← Back</button>
     <div class="pricing-page-intro">
-      <h1 style="font-family:'Syne',sans-serif;font-size:clamp(28px,4vw,48px);font-weight:900;margin-bottom:12px;">Simple, honest pricing.</h1>
-      <p style="font-size:15px;color:var(--cl-text-2);max-width:420px;margin:0 auto;">No dark patterns. Cancel whenever. Your data stays yours.</p>
+      <h1 style="font-family:'Syne',sans-serif;font-size:clamp(28px,4vw,48px);font-weight:900;margin-bottom:12px;">One price. Worldwide.</h1>
+      <p style="font-size:15px;color:var(--cl-text-2);max-width:460px;margin:0 auto;">No dark patterns. No regional pricing. Cancel any time. Your data stays yours.</p>
     </div>
     <div class="cl-pricing-grid" style="margin-bottom:60px;">
+
+      <!-- FREE -->
       <div class="cl-pricing-card">
         <div class="cl-pricing-tier">Free</div>
         <div class="cl-pricing-amount">$0</div>
-        <div class="cl-pricing-period">forever free</div>
+        <div class="cl-pricing-period">forever free · no card required</div>
+        <span class="cl-pricing-cortex">⬡ CORTEX lite</span>
         <ul class="cl-pricing-features">
           <li>BearProof Score™</li>
           <li>GlobalRank™ Leaderboard</li>
           <li>150+ coin live prices</li>
+          <li>Live Discovery Feed</li>
+          <li>Clark AI — general questions</li>
         </ul>
         <button class="cl-btn cl-btn--secondary cl-btn--full" onclick="openAuth('signup')">Get Started Free</button>
       </div>
+
+      <!-- PRO -->
       <div class="cl-pricing-card cl-pricing-card--featured">
         <div class="cl-pricing-badge">Most Popular</div>
         <div class="cl-pricing-tier cl-pricing-tier--pro">Pro</div>
         <div class="cl-pricing-amount">$30</div>
         <div class="cl-pricing-period">per month · 7-day free trial</div>
+        <span class="cl-pricing-cortex">⬡ CORTEX standard</span>
         <ul class="cl-pricing-features cl-pricing-features--pro">
           <li>Everything in Free</li>
-          <li>EdgeScan™ AI — 10/month</li>
+          <li>EdgeScan™ AI — 10 uses/month</li>
           <li>DipRadar™ + GhostTrade™</li>
-          <li>TradeCoach™ — 10 trades</li>
+          <li>TradeCoach™ — 10 trades/month</li>
           <li>SentimentPulse™ + TaxMate™</li>
           <li>Price Alerts — 5 active</li>
           <li>Token Unlocks™</li>
+          <li>Clark AI — wallet scans &amp; live data</li>
         </ul>
         <button class="cl-btn cl-btn--primary cl-btn--full" onclick="openAuth('signup')">Start Free Trial</button>
       </div>
+
+      <!-- ELITE -->
       <div class="cl-pricing-card cl-pricing-card--elite">
         <div class="cl-pricing-tier cl-pricing-tier--elite">Elite</div>
         <div class="cl-pricing-amount">$60</div>
         <div class="cl-pricing-period">per month · 7-day free trial</div>
+        <span class="cl-pricing-cortex">⬡ CORTEX full intelligence</span>
         <ul class="cl-pricing-features cl-pricing-features--elite">
           <li>Everything in Pro — Unlimited</li>
-          <li>WalletScan™ + Smart Wallets™</li>
+          <li>WalletScan™ — 5 chains, full AI</li>
+          <li>Smart Wallets™ tracking</li>
           <li>SignalBreaker™ + PumpAlert™</li>
-          <li>NarrativeRank™ Full</li>
-          <li>ProofVault™</li>
+          <li>NarrativeRank™ full access</li>
+          <li>ProofVault™ on-chain proofs</li>
           <li>Price Alerts — 20 active</li>
+          <li>Clark AI — all features + Elite</li>
         </ul>
-        <button class="cl-btn cl-btn--full" style="background:linear-gradient(135deg,rgba(232,213,255,0.15),rgba(255,255,255,0.08));color:#e8d5ff;border:1px solid rgba(232,213,255,0.4);border-radius:var(--cl-radius-sm);padding:10px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all 0.2s;" onclick="openAuth('signup')">Start Free Trial</button>
+        <button class="cl-btn cl-btn--elite cl-btn--full" onclick="openAuth('signup')">Start Free Trial</button>
       </div>
+
     </div>
   </div>
 </div>
