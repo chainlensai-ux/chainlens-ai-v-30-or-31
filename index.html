@@ -1235,6 +1235,139 @@ body::after {
   .cl-footer__grid { grid-template-columns: 1fr; }
 }
 
+/* ── SIGNALBREAKER PAGE ── */
+.sig-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap; margin-bottom: 20px;
+}
+.sig-title {
+  font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 900; color: #fff;
+  margin-bottom: 6px;
+}
+.sig-sub { font-size: 13px; color: var(--cl-text-3); }
+.sig-legend {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 12px 20px; background: rgba(255,255,255,0.02);
+  border: 1px solid var(--cl-border); border-radius: 10px;
+}
+.sig-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--cl-text-3); }
+.sig-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.sig-summary {
+  display: flex; align-items: center; gap: 0;
+  background: rgba(255,255,255,0.02); border: 1px solid var(--cl-border);
+  border-radius: 12px; padding: 14px 0; margin-bottom: 16px;
+}
+.sig-sum-item {
+  display: flex; flex-direction: column; align-items: center;
+  flex: 1; padding: 0 16px;
+}
+.sig-sum-val {
+  font-family: 'Syne', sans-serif; font-size: 22px; font-weight: 900; line-height: 1;
+}
+.sig-sum-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--cl-text-4); margin-top: 3px; }
+.sig-sum-div { width: 1px; height: 32px; background: var(--cl-border); flex-shrink: 0; }
+.sig-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.sig-card {
+  border: 1px solid var(--cl-border); border-radius: 14px;
+  padding: 16px; position: relative; overflow: hidden;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.sig-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px; background: var(--sig-color, #7858c0);
+  border-radius: 14px 0 0 14px;
+}
+.sig-card:hover { transform: translateY(-2px); border-color: var(--sig-color, rgba(120,88,192,0.4)); }
+.sig-card__top {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+.sig-card__avatar {
+  width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 900;
+}
+.sig-card__sym { font-size: 14px; font-weight: 800; color: #fff; }
+.sig-card__price { font-size: 11px; color: var(--cl-text-3); margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+.sig-card__badge {
+  margin-left: auto; padding: 4px 10px; border-radius: 20px;
+  font-size: 10px; font-weight: 800; border: 1px solid; white-space: nowrap;
+  font-family: 'Syne', sans-serif; letter-spacing: 0.5px;
+}
+.sig-card__bar-wrap { margin-bottom: 10px; }
+.sig-card__bar-track {
+  height: 4px; background: rgba(255,255,255,0.07);
+  border-radius: 2px; overflow: hidden; margin-bottom: 4px;
+}
+.sig-card__bar-fill { height: 100%; border-radius: 2px; transition: width 1s ease; }
+.sig-card__conf { font-size: 9px; color: var(--cl-text-4); }
+.sig-card__reason { font-size: 12px; color: var(--cl-text-2); line-height: 1.5; }
+@media (max-width: 640px) { .sig-grid { grid-template-columns: 1fr; } .sig-header { flex-direction: column; } }
+
+/* ── NARRATIVERANK PAGE ── */
+.nar-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap; margin-bottom: 24px;
+}
+.nar-title {
+  font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 900; color: #fff;
+  margin-bottom: 6px;
+}
+.nar-sub { font-size: 13px; color: var(--cl-text-3); max-width: 460px; line-height: 1.5; }
+.nar-grid {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.nar-card {
+  display: flex; align-items: flex-start; gap: 16px;
+  padding: 18px 20px; border-radius: 14px;
+  border: 1px solid var(--cl-border);
+  background: rgba(255,255,255,0.02);
+  transition: border-color 0.2s, background 0.2s, transform 0.2s;
+  position: relative; overflow: hidden;
+}
+.nar-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px; background: var(--nar-color, #7858c0); border-radius: 14px 0 0 14px;
+}
+.nar-card:hover {
+  border-color: var(--nar-color); background: rgba(255,255,255,0.03);
+  transform: translateX(3px);
+}
+.nar-card__rank {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px; font-weight: 700; color: var(--nar-color);
+  min-width: 36px; line-height: 1; padding-top: 2px;
+}
+.nar-card__body { flex: 1; min-width: 0; }
+.nar-card__name {
+  font-family: 'Syne', sans-serif; font-size: 16px; font-weight: 800;
+  color: #fff; margin-bottom: 8px;
+}
+.nar-card__coins { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.nar-coin {
+  padding: 2px 8px; border-radius: 4px;
+  background: rgba(120,88,192,0.1); color: #a78bfa;
+  font-size: 10px; font-weight: 700;
+  border: 1px solid rgba(120,88,192,0.2);
+  font-family: 'JetBrains Mono', monospace;
+}
+.nar-card__reason { font-size: 12px; color: var(--cl-text-3); line-height: 1.5; margin-bottom: 10px; }
+.nar-card__bar-wrap { }
+.nar-card__bar-track {
+  height: 3px; background: rgba(255,255,255,0.06);
+  border-radius: 2px; overflow: hidden;
+}
+.nar-card__bar-fill { height: 100%; border-radius: 2px; transition: width 1s ease; }
+.nar-card__badge {
+  padding: 4px 12px; border-radius: 20px;
+  font-size: 10px; font-weight: 800; border: 1px solid;
+  white-space: nowrap; align-self: flex-start;
+  font-family: 'Syne', sans-serif;
+}
+@media (max-width: 600px) { .nar-header { flex-direction: column; } }
+
 /* ── PUMPALERT PAGE ── */
 .pa-header {
   display: flex; align-items: flex-start; justify-content: space-between;
@@ -4604,18 +4737,25 @@ body::after {
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-narrative">
   <div class="cl-container"><div class="cl-page-inner">
-    <div class="cl-page-header">
-      <button class="cl-page-back" onclick="go('home')">← Back</button>
-      <div class="cl-page-title">NarrativeRank™</div>
-      <div class="cl-page-subtitle">Which crypto sectors are gaining momentum before the crowd notices? Ranked live by AI.</div>
-    </div>
-    <div class="cl-card">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
-        <div class="cl-label" style="margin:0;">Live Narrative Rankings</div>
-        <button class="cl-btn cl-btn--secondary cl-btn--sm" id="narb" onclick="doNarrative()">Refresh →</button>
+
+    <!-- Header -->
+    <div class="nar-header">
+      <div>
+        <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+        <div class="nar-title">NarrativeRank™</div>
+        <div class="nar-sub">Which sectors are gaining momentum before the crowd notices? AI-ranked in real time.</div>
       </div>
-      <div id="narl"><div style="text-align:center;padding:28px;color:var(--cl-text-3);">Loading rankings...</div></div>
+      <button class="cl-btn cl-btn--primary cl-btn--sm" id="narb" onclick="doNarrative()" style="flex-shrink:0;">Rank Narratives →</button>
     </div>
+
+    <!-- Grid (filled by JS) -->
+    <div class="nar-grid" id="narl">
+      <div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--cl-text-3);">
+        <div style="font-size:36px;margin-bottom:12px;opacity:0.25;">🌊</div>
+        Click <strong style="color:var(--cl-text-2);">Rank Narratives</strong> to see which sectors are moving.
+      </div>
+    </div>
+
   </div></div>
 </div>
 
@@ -4846,18 +4986,41 @@ body::after {
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-signals">
   <div class="cl-container"><div class="cl-page-inner">
-    <div class="cl-page-header">
-      <button class="cl-page-back" onclick="go('home')">← Back</button>
-      <div class="cl-page-title">SignalBreaker™</div>
-      <div class="cl-page-subtitle">AI buy/sell confidence scores for 150+ coins. Updated with live market data.</div>
-    </div>
-    <div class="cl-card">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
-        <div class="cl-label" style="margin:0;">Live Signals</div>
-        <button class="cl-btn cl-btn--secondary cl-btn--sm" id="sigb" onclick="doSignals()">Refresh →</button>
+
+    <!-- Header -->
+    <div class="sig-header">
+      <div>
+        <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+        <div class="sig-title">SignalBreaker™</div>
+        <div class="sig-sub">AI buy/sell confidence scores · Live prices · Updated on demand</div>
       </div>
-      <div id="sigl"><div style="text-align:center;padding:28px;color:var(--cl-text-3);">Loading signals...</div></div>
+      <div class="sig-legend">
+        <span class="sig-legend-item"><span class="sig-dot" style="background:#00ffc8;"></span>Buy</span>
+        <span class="sig-legend-item"><span class="sig-dot" style="background:#f0b429;"></span>Hold</span>
+        <span class="sig-legend-item"><span class="sig-dot" style="background:#ef476f;"></span>Sell</span>
+        <button class="cl-btn cl-btn--primary cl-btn--sm" id="sigb" onclick="doSignals()">Generate Signals →</button>
+      </div>
     </div>
+
+    <!-- Summary bar (filled by JS) -->
+    <div class="sig-summary" id="sig-summary" style="display:none;">
+      <div class="sig-sum-item"><span class="sig-sum-val" id="sig-sum-buy" style="color:#00ffc8;">—</span><span class="sig-sum-lbl">Buy</span></div>
+      <div class="sig-sum-div"></div>
+      <div class="sig-sum-item"><span class="sig-sum-val" id="sig-sum-hold" style="color:#f0b429;">—</span><span class="sig-sum-lbl">Hold</span></div>
+      <div class="sig-sum-div"></div>
+      <div class="sig-sum-item"><span class="sig-sum-val" id="sig-sum-sell" style="color:#ef476f;">—</span><span class="sig-sum-lbl">Sell</span></div>
+      <div class="sig-sum-div"></div>
+      <div class="sig-sum-item"><span class="sig-sum-val" id="sig-sum-avg" style="color:#fff;">—</span><span class="sig-sum-lbl">Avg Confidence</span></div>
+    </div>
+
+    <!-- Signal grid -->
+    <div class="sig-grid" id="sigl">
+      <div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--cl-text-3);">
+        <div style="font-size:36px;margin-bottom:12px;opacity:0.25;">⚡</div>
+        Click <strong style="color:var(--cl-text-2);">Generate Signals</strong> to run AI analysis on live prices.
+      </div>
+    </div>
+
   </div></div>
 </div>
 
@@ -6895,25 +7058,56 @@ COIN: [symbol] | SIGNAL: [STRONG BUY/BUY/HOLD/SELL/STRONG SELL] | CONFIDENCE: [0
 List all ${top8.length} coins.`, 500);
     const lines = txt.split('\n').filter(l => l.includes('COIN:') && l.includes('SIGNAL:'));
     if (!lines.length) { el.innerHTML = `<div class="cl-result">${txt}</div>`; return; }
-    el.innerHTML = lines.map(line => {
-      const coin = line.match(/COIN:\s*([^\|]+)/)?.[1]?.trim() || '?';
-      const signal = line.match(/SIGNAL:\s*([^\|]+)/)?.[1]?.trim() || 'HOLD';
-      const conf = parseInt(line.match(/CONFIDENCE:\s*(\d+)/)?.[1] || 50);
-      const reason = line.match(/REASON:\s*(.+)/)?.[1]?.trim() || '';
-      const sc = signal.includes('BUY') ? '#00ffc8' : signal.includes('SELL') ? '#ef476f' : '#f0b429';
-      return `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--cl-border);">
-        <div style="width:40px;font-size:13px;font-weight:800;color:var(--cl-text);">${coin}</div>
-        <div style="flex:1;">
-          <div style="font-size:12px;font-weight:700;color:${sc};margin-bottom:2px;">${signal}</div>
-          <div style="font-size:11px;color:var(--cl-text-3);">${reason}</div>
+    // Update summary bar
+    const sigSummary = document.getElementById('sig-summary');
+    if (sigSummary) sigSummary.style.display = 'flex';
+    const parsed = lines.map(line => ({
+      coin:   line.match(/COIN:\s*([^\|]+)/)?.[1]?.trim() || '?',
+      signal: line.match(/SIGNAL:\s*([^\|]+)/)?.[1]?.trim() || 'HOLD',
+      conf:   parseInt(line.match(/CONFIDENCE:\s*(\d+)/)?.[1] || 50),
+      reason: line.match(/REASON:\s*(.+)/)?.[1]?.trim() || ''
+    }));
+    const buys  = parsed.filter(s => s.signal.includes('BUY')).length;
+    const sells = parsed.filter(s => s.signal.includes('SELL')).length;
+    const holds = parsed.filter(s => s.signal === 'HOLD').length;
+    const avgConf = Math.round(parsed.reduce((a,s) => a + s.conf, 0) / parsed.length);
+    const sumBuy  = document.getElementById('sig-sum-buy');
+    const sumHold = document.getElementById('sig-sum-hold');
+    const sumSell = document.getElementById('sig-sum-sell');
+    const sumAvg  = document.getElementById('sig-sum-avg');
+    if (sumBuy)  sumBuy.textContent  = buys;
+    if (sumHold) sumHold.textContent = holds;
+    if (sumSell) sumSell.textContent = sells;
+    if (sumAvg)  sumAvg.textContent  = avgConf + '%';
+
+    el.innerHTML = parsed.map(s => {
+      const sc   = s.signal.includes('BUY') ? '#00ffc8' : s.signal.includes('SELL') ? '#ef476f' : '#f0b429';
+      const bgc  = s.signal.includes('BUY') ? 'rgba(0,255,200,0.05)' : s.signal.includes('SELL') ? 'rgba(239,71,111,0.05)' : 'rgba(240,180,41,0.04)';
+      const icon = s.signal === 'STRONG BUY' ? '↑↑' : s.signal === 'BUY' ? '↑' : s.signal === 'STRONG SELL' ? '↓↓' : s.signal === 'SELL' ? '↓' : '→';
+      const priceId = s.coin.toLowerCase();
+      const livePrice = px[priceId] ? '$' + fmt(px[priceId].usd) : '';
+      const live24h   = px[priceId]?.usd_24h_change;
+      const chg       = live24h != null ? (live24h >= 0 ? '+' : '') + live24h.toFixed(1) + '%' : '';
+      const chgCol    = live24h >= 0 ? '#00ffc8' : '#ef476f';
+      return `<div class="sig-card" style="--sig-color:${sc};background:${bgc};">
+        <div class="sig-card__top">
+          <div class="sig-card__avatar" style="background:${sc}18;color:${sc};">${s.coin.slice(0,3)}</div>
+          <div class="sig-card__coin-info">
+            <div class="sig-card__sym">${s.coin}</div>
+            ${livePrice ? `<div class="sig-card__price">${livePrice} <span style="color:${chgCol};font-size:9px;">${chg}</span></div>` : ''}
+          </div>
+          <div class="sig-card__badge" style="background:${sc}20;color:${sc};border-color:${sc}40;">${icon} ${s.signal}</div>
         </div>
-        <div style="text-align:right;">
-          <div style="font-size:13px;font-weight:800;color:${sc};">${conf}%</div>
-          <div style="font-size:9px;color:var(--cl-text-3);">confidence</div>
+        <div class="sig-card__bar-wrap">
+          <div class="sig-card__bar-track">
+            <div class="sig-card__bar-fill" style="width:${s.conf}%;background:${sc};"></div>
+          </div>
+          <span class="sig-card__conf">${s.conf}% confidence</span>
         </div>
+        <div class="sig-card__reason">${s.reason}</div>
       </div>`;
     }).join('');
-    el.insertAdjacentHTML('beforeend', '<div class="cl-ai-disclaimer">AI signals only. Not financial advice.</div>');
+    el.insertAdjacentHTML('beforeend', '<div class="cl-ai-disclaimer" style="grid-column:1/-1;">AI signals only. Not financial advice.</div>');
   } catch(e) { el.innerHTML = `<div class="cl-result" style="color:var(--cl-red);">Error: ${e.message}</div>`; }
   if (btn) { btn.disabled = false; btn.textContent = 'Refresh →'; }
 }
@@ -6934,19 +7128,27 @@ For each: NARRATIVE: [name] | RANK: [1-6] | MOMENTUM: [HIGH/MEDIUM/LOW] | COINS:
     const lines = txt.split('\n').filter(l => l.includes('NARRATIVE:') && l.includes('RANK:'));
     if (!lines.length) { el.innerHTML = `<div class="cl-result">${txt}</div>`; return; }
     el.innerHTML = lines.map(line => {
-      const nar = line.match(/NARRATIVE:\s*([^\|]+)/)?.[1]?.trim() || '?';
-      const rank = line.match(/RANK:\s*(\d+)/)?.[1] || '-';
-      const mom = line.match(/MOMENTUM:\s*([^\|]+)/)?.[1]?.trim() || 'MEDIUM';
-      const coins = line.match(/COINS:\s*([^\|]+)/)?.[1]?.trim() || '';
+      const nar    = line.match(/NARRATIVE:\s*([^\|]+)/)?.[1]?.trim() || '?';
+      const rank   = line.match(/RANK:\s*(\d+)/)?.[1] || '-';
+      const mom    = line.match(/MOMENTUM:\s*([^\|]+)/)?.[1]?.trim().toUpperCase() || 'MEDIUM';
+      const coins  = line.match(/COINS:\s*([^\|]+)/)?.[1]?.trim() || '';
       const reason = line.match(/REASON:\s*(.+)/)?.[1]?.trim() || '';
-      const mc = mom === 'HIGH' ? '#00ffc8' : mom === 'MEDIUM' ? '#f0b429' : 'var(--cl-text-3)';
-      return `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--cl-border);">
-        <div style="font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:700;color:${mc};min-width:28px;text-align:center;">${rank}</div>
-        <div style="flex:1;">
-          <div style="font-size:13px;font-weight:700;margin-bottom:2px;">${nar}</div>
-          <div style="font-size:11px;color:var(--cl-text-3);">${coins} · ${reason}</div>
+      const mc     = mom === 'HIGH' ? '#00ffc8' : mom === 'MEDIUM' ? '#f0b429' : 'rgba(255,255,255,0.3)';
+      const barW   = mom === 'HIGH' ? 90 : mom === 'MEDIUM' ? 55 : 25;
+      const coinPills = coins.split(',').map(c => `<span class="nar-coin">${c.trim()}</span>`).join('');
+      return `<div class="nar-card" style="--nar-color:${mc};">
+        <div class="nar-card__rank">${rank}</div>
+        <div class="nar-card__body">
+          <div class="nar-card__name">${nar}</div>
+          <div class="nar-card__coins">${coinPills}</div>
+          <div class="nar-card__reason">${reason}</div>
+          <div class="nar-card__bar-wrap">
+            <div class="nar-card__bar-track">
+              <div class="nar-card__bar-fill" style="width:${barW}%;background:${mc};"></div>
+            </div>
+          </div>
         </div>
-        <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;background:${mc}20;color:${mc};border:1px solid ${mc}40;">${mom}</span>
+        <div class="nar-card__badge" style="background:${mc}20;color:${mc};border-color:${mc}40;">${mom}</div>
       </div>`;
     }).join('');
   } catch(e) { el.innerHTML = `<div class="cl-result" style="color:var(--cl-red);">Error: ${e.message}</div>`; }
