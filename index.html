@@ -953,6 +953,206 @@ body::after {
 }
 
 /* ── FOOTER ── */
+/* ── TERMINAL CTA ── */
+.cl-terminal-cta {
+  position: relative; overflow: hidden;
+  padding: 100px 0 120px;
+  text-align: center;
+}
+.cl-terminal-cta__bg {
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse 80% 60% at 50% 100%, rgba(120,88,192,0.18) 0%, transparent 70%),
+              radial-gradient(ellipse 60% 40% at 30% 50%, rgba(0,255,200,0.05) 0%, transparent 60%);
+  pointer-events: none;
+}
+.cl-terminal-cta::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(120,88,192,0.4), rgba(0,255,200,0.3), transparent);
+}
+.cl-terminal-cta__inner { max-width: 680px; margin: 0 auto; }
+.cl-terminal-cta__eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--cl-teal); font-weight: 600; margin-bottom: 24px;
+}
+.cl-terminal-cta__dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cl-teal);
+  box-shadow: 0 0 8px var(--cl-teal);
+  animation: ctaDotPulse 1.8s ease-in-out infinite;
+}
+@keyframes ctaDotPulse {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+.cl-terminal-cta__title {
+  font-family: 'Syne', sans-serif;
+  font-size: clamp(32px, 5vw, 56px);
+  font-weight: 900; line-height: 1.1;
+  margin-bottom: 20px;
+  background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.75) 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.cl-terminal-cta__sub {
+  font-size: 16px; color: var(--cl-text-2); line-height: 1.6;
+  max-width: 520px; margin: 0 auto 36px;
+}
+.cl-terminal-cta__stats {
+  display: flex; align-items: center; justify-content: center; gap: 0;
+  margin-bottom: 40px; flex-wrap: wrap; gap: 4px;
+}
+.cl-terminal-cta__stat {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 0 28px;
+}
+.cl-terminal-cta__stat-val {
+  font-family: 'Syne', sans-serif; font-size: 22px; font-weight: 900;
+  background: linear-gradient(135deg, #7858c0, #00ffc8);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.cl-terminal-cta__stat-lbl {
+  font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--cl-text-4); margin-top: 2px;
+}
+.cl-terminal-cta__stat-div {
+  width: 1px; height: 32px;
+  background: var(--cl-border);
+}
+.cl-terminal-cta__btn {
+  display: inline-flex; align-items: center; gap: 12px;
+  padding: 18px 40px;
+  background: linear-gradient(135deg, #7858c0 0%, #5b3fa8 50%, #7858c0 100%);
+  background-size: 200% 100%;
+  border: none; border-radius: 12px; cursor: pointer;
+  font-family: 'Syne', sans-serif; font-size: 17px; font-weight: 700;
+  color: #fff; letter-spacing: 0.3px;
+  box-shadow: 0 0 40px rgba(120,88,192,0.5), 0 8px 32px rgba(0,0,0,0.4);
+  transition: all 0.3s ease;
+  position: relative; overflow: hidden;
+}
+.cl-terminal-cta__btn::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(0,255,200,0.15), transparent);
+  opacity: 0; transition: opacity 0.3s;
+}
+.cl-terminal-cta__btn:hover { background-position: 100% 0; transform: translateY(-2px);
+  box-shadow: 0 0 60px rgba(120,88,192,0.7), 0 12px 40px rgba(0,0,0,0.5); }
+.cl-terminal-cta__btn:hover::before { opacity: 1; }
+.cl-terminal-cta__btn:active { transform: translateY(0); }
+.cl-terminal-cta__btn-icon { font-size: 20px; filter: drop-shadow(0 0 6px rgba(0,255,200,0.8)); }
+.cl-terminal-cta__btn-arrow {
+  font-size: 18px; transition: transform 0.3s;
+  display: inline-block;
+}
+.cl-terminal-cta__btn:hover .cl-terminal-cta__btn-arrow { transform: translateX(4px); }
+.cl-terminal-cta__note {
+  margin-top: 16px; font-size: 12px;
+  color: var(--cl-text-4); letter-spacing: 0.5px;
+}
+
+/* ── TERMINAL ENTRY OVERLAY ── */
+.cl-terminal-entry {
+  position: fixed; inset: 0; z-index: 9998;
+  background: #050407;
+  display: flex; align-items: center; justify-content: center;
+}
+.cl-terminal-entry canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+}
+.cl-te-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(120,88,192,0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120,88,192,0.06) 1px, transparent 1px);
+  background-size: 48px 48px;
+  animation: teGridFade 0.6s ease forwards;
+}
+@keyframes teGridFade { from { opacity: 0; } to { opacity: 1; } }
+
+.cl-te-panels {
+  position: absolute;
+  display: grid;
+  grid-template-columns: repeat(2, 220px);
+  gap: 16px;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+}
+.cl-te-panel {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(120,88,192,0.3);
+  border-radius: 12px; padding: 18px 20px;
+  backdrop-filter: blur(8px);
+  opacity: 0; transform: translateY(16px) scale(0.96);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.cl-te-panel.te-visible { opacity: 1; transform: translateY(0) scale(1); }
+.cl-te-panel__label {
+  font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--cl-teal); margin-bottom: 10px; font-weight: 600;
+}
+.cl-te-panel__score {
+  font-family: 'Syne', sans-serif; font-size: 38px; font-weight: 900;
+  background: linear-gradient(135deg, #7858c0, #00ffc8);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  line-height: 1;
+}
+.cl-te-panel__addr {
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
+  color: #00ffc8; margin-bottom: 4px;
+}
+.cl-te-panel__pnl {
+  font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 800;
+  color: #00ffc8; line-height: 1.1;
+}
+.cl-te-panel__alert {
+  font-family: 'Syne', sans-serif; font-size: 15px; font-weight: 700;
+  color: #ff4d4d; line-height: 1.2;
+}
+.cl-te-panel__sub {
+  font-size: 11px; color: var(--cl-text-3); margin-top: 4px;
+}
+
+.cl-te-logo {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  opacity: 0; transition: opacity 0.6s ease;
+}
+.cl-te-logo.te-visible { opacity: 1; }
+.cl-te-logo__hex {
+  font-size: 56px; line-height: 1;
+  background: linear-gradient(135deg, #7858c0, #00ffc8);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  filter: drop-shadow(0 0 20px rgba(0,255,200,0.4));
+  animation: teHexSpin 2s ease-in-out;
+}
+@keyframes teHexSpin { from { transform: rotate(-180deg) scale(0); } to { transform: rotate(0) scale(1); } }
+.cl-te-logo__word {
+  font-family: 'Syne', sans-serif; font-size: 52px; font-weight: 900;
+  color: #fff; line-height: 1; margin-top: 4px;
+}
+.cl-te-logo__lens {
+  background: linear-gradient(135deg, #7858c0, #00ffc8);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.cl-te-logo__tag {
+  font-size: 10px; letter-spacing: 4px; color: rgba(0,255,200,0.6);
+  margin-top: 8px; text-transform: uppercase;
+}
+
+/* ── TERMINAL CTA MOBILE ── */
+@media (max-width: 600px) {
+  .cl-terminal-cta { padding: 70px 0 80px; }
+  .cl-terminal-cta__btn { padding: 15px 28px; font-size: 15px; }
+  .cl-te-panels { grid-template-columns: repeat(2, 155px); gap: 10px; }
+  .cl-te-panel { padding: 14px 14px; }
+  .cl-te-panel__score { font-size: 28px; }
+  .cl-te-logo__word { font-size: 36px; }
+  .cl-te-logo__hex { font-size: 40px; }
+}
+
 .cl-footer {
   padding: 40px 0;
   border-top: 1px solid var(--cl-border);
@@ -2455,6 +2655,75 @@ body::after {
     </section>
   </div>
 
+  <!-- ═══════════════════ TERMINAL CTA ═══════════════════ -->
+  <section class="cl-terminal-cta" id="terminal-cta">
+    <div class="cl-terminal-cta__bg"></div>
+    <div class="cl-container" style="position:relative;z-index:2;">
+      <div class="cl-terminal-cta__inner">
+        <div class="cl-terminal-cta__eyebrow">
+          <span class="cl-terminal-cta__dot"></span>
+          ChainLens AI Terminal — Live Now
+        </div>
+        <h2 class="cl-terminal-cta__title">The command center for<br>onchain intelligence</h2>
+        <p class="cl-terminal-cta__sub">Real-time wallet scanning, pump detection, AI coaching — all in one terminal.</p>
+        <div class="cl-terminal-cta__stats">
+          <div class="cl-terminal-cta__stat"><span class="cl-terminal-cta__stat-val">12,480+</span><span class="cl-terminal-cta__stat-lbl">Wallets Tracked</span></div>
+          <div class="cl-terminal-cta__stat-div"></div>
+          <div class="cl-terminal-cta__stat"><span class="cl-terminal-cta__stat-val">68%</span><span class="cl-terminal-cta__stat-lbl">Avg Win Rate</span></div>
+          <div class="cl-terminal-cta__stat-div"></div>
+          <div class="cl-terminal-cta__stat"><span class="cl-terminal-cta__stat-val">$284K</span><span class="cl-terminal-cta__stat-lbl">Smart Money Found</span></div>
+        </div>
+        <button class="cl-terminal-cta__btn" onclick="launchTerminal()">
+          <span class="cl-terminal-cta__btn-icon">⬡</span>
+          Launch ChainLens AI Terminal
+          <span class="cl-terminal-cta__btn-arrow">→</span>
+        </button>
+        <p class="cl-terminal-cta__note">Free to start · No credit card required</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ TERMINAL ENTRY OVERLAY ═══════════════════ -->
+  <div id="terminal-entry" class="cl-terminal-entry" style="display:none;">
+    <canvas id="te-canvas"></canvas>
+    <div class="cl-te-grid" id="te-grid"></div>
+    <div class="cl-te-panels" id="te-panels">
+      <div class="cl-te-panel" id="te-p1">
+        <div class="cl-te-panel__label">BearProof Score™</div>
+        <div class="cl-te-panel__content">
+          <div class="cl-te-panel__score">73<span style="font-size:0.4em;opacity:0.6;">/100</span></div>
+          <div class="cl-te-panel__sub">Portfolio Risk: Medium</div>
+        </div>
+      </div>
+      <div class="cl-te-panel" id="te-p2">
+        <div class="cl-te-panel__label">WalletScan™</div>
+        <div class="cl-te-panel__content">
+          <div class="cl-te-panel__addr">0x7a250d…5E4</div>
+          <div class="cl-te-panel__sub">Smart Money · $284K volume</div>
+        </div>
+      </div>
+      <div class="cl-te-panel" id="te-p3">
+        <div class="cl-te-panel__label">GhostTrade™</div>
+        <div class="cl-te-panel__content">
+          <div class="cl-te-panel__pnl">+$12,480</div>
+          <div class="cl-te-panel__sub">Win rate: 68% · 14 trades</div>
+        </div>
+      </div>
+      <div class="cl-te-panel" id="te-p4">
+        <div class="cl-te-panel__label">PumpAlert™</div>
+        <div class="cl-te-panel__content">
+          <div class="cl-te-panel__alert">🚨 PUMP DETECTED</div>
+          <div class="cl-te-panel__sub">Base Network · +847%</div>
+        </div>
+      </div>
+    </div>
+    <div class="cl-te-logo" id="te-logo">
+      <div class="cl-te-logo__hex">⬡</div>
+      <div class="cl-te-logo__word">Chain<span class="cl-te-logo__lens">Lens</span></div>
+      <div class="cl-te-logo__tag">AI INTELLIGENCE TERMINAL · ONLINE</div>
+    </div>
+  </div>
+
   <footer class="cl-footer">
     <div class="cl-container" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
       <div style="display:flex;align-items:center;gap:8px;cursor:pointer;" onclick="go('home')">
@@ -3461,6 +3730,73 @@ function toast(msg, type = 'ok') {
 // ══════════════════════════════════════════════
 // ROUTING
 // ══════════════════════════════════════════════
+/* ═══════════════════════════════════════
+   TERMINAL ENTRY ANIMATION
+═══════════════════════════════════════ */
+function launchTerminal() {
+  const overlay = document.getElementById('terminal-entry');
+  const canvas  = document.getElementById('te-canvas');
+  const panels  = [1,2,3,4].map(i => document.getElementById('te-p' + i));
+  const logo    = document.getElementById('te-logo');
+
+  // Reset state
+  panels.forEach(p => p && p.classList.remove('te-visible'));
+  if (logo) logo.classList.remove('te-visible');
+  overlay.style.display = 'flex';
+
+  // Canvas matrix / particle draw
+  const ctx = canvas.getContext('2d');
+  let W = canvas.width  = window.innerWidth;
+  let H = canvas.height = window.innerHeight;
+  const cols  = Math.floor(W / 20);
+  const drops = Array.from({ length: cols }, () => Math.random() * -50);
+  const chars  = '0123456789ABCDEF⬡◈▸▹⬢'.split('');
+  let   animId = null;
+
+  function drawMatrix() {
+    ctx.fillStyle = 'rgba(5,4,7,0.12)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = '13px JetBrains Mono, monospace';
+    for (let i = 0; i < cols; i++) {
+      const char = chars[Math.floor(Math.random() * chars.length)];
+      const x = i * 20;
+      const y = drops[i] * 20;
+      // Gradient: teal near head, violet fade
+      const alpha = Math.random() > 0.9 ? 1 : 0.25 + Math.random() * 0.3;
+      ctx.fillStyle = Math.random() > 0.7
+        ? `rgba(0,255,200,${alpha})`
+        : `rgba(120,88,192,${alpha})`;
+      ctx.fillText(char, x, y);
+      if (y > H && Math.random() > 0.975) drops[i] = 0;
+      else drops[i] += 0.5 + Math.random() * 0.5;
+    }
+    animId = requestAnimationFrame(drawMatrix);
+  }
+  drawMatrix();
+
+  // Panel reveal sequence
+  const delays = [400, 850, 1300, 1750];
+  panels.forEach((p, i) => {
+    if (!p) return;
+    setTimeout(() => p.classList.add('te-visible'), delays[i]);
+  });
+
+  // Logo reveal + panel hide
+  setTimeout(() => {
+    panels.forEach(p => { if (p) { p.style.transition = 'opacity 0.4s'; p.style.opacity = '0'; } });
+    if (logo) logo.classList.add('te-visible');
+  }, 2500);
+
+  // Navigate to platform and teardown
+  setTimeout(() => {
+    cancelAnimationFrame(animId);
+    overlay.style.display = 'none';
+    ctx.clearRect(0, 0, W, H);
+    panels.forEach(p => { if (p) { p.style.opacity = ''; p.style.transition = ''; } });
+    go('sentiment'); // navigate to first tool page
+  }, 3600);
+}
+
 function go(id) {
   document.querySelectorAll('.cl-page').forEach(p => p.classList.remove('active'));
   const pg = document.getElementById('pg-' + id);
