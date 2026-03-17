@@ -386,6 +386,75 @@ body::after {
   color: var(--cl-text);
   background: rgba(120,88,192,0.06);
 }
+/* Mega-menu */
+.cl-nav__menu-wrap {
+  position: relative;
+}
+.cl-nav__link--menu {
+  display: flex; align-items: center; gap: 4px;
+}
+.cl-nav__chevron {
+  transition: transform 0.25s ease;
+  flex-shrink: 0; margin-top: 1px;
+}
+.cl-nav__menu-wrap.open .cl-nav__chevron { transform: rotate(180deg); }
+.cl-mega {
+  position: absolute; top: calc(100% + 14px); left: 50%;
+  transform: translateX(-50%) translateY(-6px);
+  background: rgba(10,8,14,0.97);
+  border: 1px solid rgba(120,88,192,0.25);
+  border-radius: 16px;
+  padding: 20px;
+  width: 680px;
+  display: none;
+  gap: 0;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.7), 0 0 0 1px rgba(120,88,192,0.08);
+  backdrop-filter: blur(24px);
+  z-index: 999;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.cl-nav__menu-wrap.open .cl-mega {
+  display: flex; flex-direction: column; gap: 0;
+  opacity: 1; transform: translateX(-50%) translateY(0);
+}
+.cl-mega__section { padding: 4px 0 12px; }
+.cl-mega__tier {
+  font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+  font-weight: 700; padding: 0 6px; margin-bottom: 10px;
+}
+.cl-mega__tier--free { color: rgba(0,255,200,0.6); }
+.cl-mega__tier--pro { color: rgba(120,88,192,0.8); }
+.cl-mega__tier--elite { color: #a78bfa; }
+.cl-mega__items {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+}
+.cl-mega__section:nth-child(3) .cl-mega__items { grid-template-columns: repeat(4,1fr); }
+.cl-mega__item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 10px; border: none;
+  background: transparent; cursor: pointer; text-align: left;
+  transition: background 0.15s;
+  width: 100%;
+}
+.cl-mega__item:hover { background: rgba(120,88,192,0.08); }
+.cl-mega__icon {
+  width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.cl-mega__name {
+  font-size: 11px; font-weight: 700; color: var(--cl-text-1);
+  line-height: 1.2; white-space: nowrap;
+}
+.cl-mega__desc { font-size: 9px; color: var(--cl-text-4); margin-top: 1px; }
+.cl-mega__divider { height: 1px; background: var(--cl-border); margin: 4px 0 12px; }
+
+/* hide mega on mobile */
+@media (max-width: 640px) { .cl-nav__menu-wrap { display: none; } }
+
 .cl-nav__right { display: flex; align-items: center; gap: 8px; }
 
 /* User pill */
@@ -2878,7 +2947,96 @@ body::after {
       </div>
     </div>
     <div class="cl-nav__links">
-      <span class="cl-nav__link" onclick="go('home')">Tools</span>
+      <div class="cl-nav__menu-wrap" id="tools-menu-wrap">
+        <span class="cl-nav__link cl-nav__link--menu" onclick="toggleToolsMenu()" id="tools-nav-btn">
+          Tools
+          <svg class="cl-nav__chevron" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <!-- Mega menu -->
+        <div class="cl-mega" id="cl-mega">
+          <div class="cl-mega__section">
+            <div class="cl-mega__tier cl-mega__tier--free">Free</div>
+            <div class="cl-mega__items">
+              <button class="cl-mega__item" onclick="closeMegaGo('bearproof')">
+                <div class="cl-mega__icon" style="background:rgba(0,255,200,0.08);border-color:rgba(0,255,200,0.2);">🛡</div>
+                <div><div class="cl-mega__name">BearProof Score™</div><div class="cl-mega__desc">Portfolio crash resilience</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('leaderboard')">
+                <div class="cl-mega__icon" style="background:rgba(0,255,200,0.08);border-color:rgba(0,255,200,0.2);">🏆</div>
+                <div><div class="cl-mega__name">GlobalRank™</div><div class="cl-mega__desc">Prediction leaderboard</div></div>
+              </button>
+            </div>
+          </div>
+          <div class="cl-mega__divider"></div>
+          <div class="cl-mega__section">
+            <div class="cl-mega__tier cl-mega__tier--pro">Pro</div>
+            <div class="cl-mega__items">
+              <button class="cl-mega__item" onclick="closeMegaGo('edgescan')">
+                <div class="cl-mega__icon">🔍</div>
+                <div><div class="cl-mega__name">EdgeScan™ AI</div><div class="cl-mega__desc">Live AI crypto analysis</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('ghosttrade')">
+                <div class="cl-mega__icon">👻</div>
+                <div><div class="cl-mega__name">GhostTrade™</div><div class="cl-mega__desc">$50K paper trading</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('digradar')">
+                <div class="cl-mega__icon">📡</div>
+                <div><div class="cl-mega__name">DipRadar™</div><div class="cl-mega__desc">AI dip scanner</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('tradecoach')">
+                <div class="cl-mega__icon">🎯</div>
+                <div><div class="cl-mega__name">TradeCoach™</div><div class="cl-mega__desc">AI pattern coaching</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('sentiment')">
+                <div class="cl-mega__icon">📊</div>
+                <div><div class="cl-mega__name">SentimentPulse™</div><div class="cl-mega__desc">Fear &amp; Greed + AI</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('taxmate')">
+                <div class="cl-mega__icon">🧾</div>
+                <div><div class="cl-mega__name">TaxMate™</div><div class="cl-mega__desc">Crypto tax AI guidance</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('alerts')">
+                <div class="cl-mega__icon">🔔</div>
+                <div><div class="cl-mega__name">Price Alerts</div><div class="cl-mega__desc">In-browser notifications</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('tokenunlocks')">
+                <div class="cl-mega__icon">🔓</div>
+                <div><div class="cl-mega__name">Token Unlocks™</div><div class="cl-mega__desc">Unlock risk AI scoring</div></div>
+              </button>
+            </div>
+          </div>
+          <div class="cl-mega__divider"></div>
+          <div class="cl-mega__section">
+            <div class="cl-mega__tier cl-mega__tier--elite">Elite</div>
+            <div class="cl-mega__items">
+              <button class="cl-mega__item" onclick="closeMegaGo('walletscan')">
+                <div class="cl-mega__icon" style="background:rgba(120,88,192,0.12);border-color:rgba(120,88,192,0.3);">🔭</div>
+                <div><div class="cl-mega__name">WalletScan™</div><div class="cl-mega__desc">Multi-chain wallet intel</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('signals')">
+                <div class="cl-mega__icon" style="background:rgba(120,88,192,0.12);border-color:rgba(120,88,192,0.3);">⚡</div>
+                <div><div class="cl-mega__name">SignalBreaker™</div><div class="cl-mega__desc">AI buy/sell signals</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('pumpalert')">
+                <div class="cl-mega__icon" style="background:rgba(120,88,192,0.12);border-color:rgba(120,88,192,0.3);">🚨</div>
+                <div><div class="cl-mega__name">PumpAlert™</div><div class="cl-mega__desc">Early pump detection</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('narrative')">
+                <div class="cl-mega__icon" style="background:rgba(120,88,192,0.12);border-color:rgba(120,88,192,0.3);">🌊</div>
+                <div><div class="cl-mega__name">NarrativeRank™</div><div class="cl-mega__desc">Sector momentum</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('smartwallets')">
+                <div class="cl-mega__icon" style="background:rgba(120,88,192,0.12);border-color:rgba(120,88,192,0.3);">💎</div>
+                <div><div class="cl-mega__name">Smart Wallets™</div><div class="cl-mega__desc">Track elite wallets</div></div>
+              </button>
+              <button class="cl-mega__item" onclick="closeMegaGo('proofvault')">
+                <div class="cl-mega__icon" style="background:rgba(120,88,192,0.12);border-color:rgba(120,88,192,0.3);">⛓</div>
+                <div><div class="cl-mega__name">ProofVault™</div><div class="cl-mega__desc">On-chain prediction proof</div></div>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
       <span class="cl-nav__link" onclick="go('signals')">Signals</span>
       <span class="cl-nav__link" onclick="go('pricing')">Pricing</span>
       <span class="cl-nav__link" onclick="go('walletscan')">Wallets</span>
@@ -4958,6 +5116,23 @@ function toast(msg, type = 'ok') {
 // ══════════════════════════════════════════════
 // ROUTING
 // ══════════════════════════════════════════════
+/* ═══════════════════════════════════════
+   NAV MEGA-MENU
+═══════════════════════════════════════ */
+function toggleToolsMenu() {
+  const wrap = document.getElementById('tools-menu-wrap');
+  wrap.classList.toggle('open');
+}
+function closeMegaGo(page) {
+  document.getElementById('tools-menu-wrap').classList.remove('open');
+  go(page);
+}
+// Close on outside click
+document.addEventListener('click', function(e) {
+  const wrap = document.getElementById('tools-menu-wrap');
+  if (wrap && !wrap.contains(e.target)) wrap.classList.remove('open');
+});
+
 /* ═══════════════════════════════════════
    FAQ TOGGLE
 ═══════════════════════════════════════ */
