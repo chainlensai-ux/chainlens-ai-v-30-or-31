@@ -3107,7 +3107,7 @@ body::after {
 #clark-win{position:fixed;bottom:96px;right:24px;z-index:8999;width:360px;height:540px;background:var(--cl-surface-2);border:1px solid var(--cl-border-strong);border-radius:20px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 64px rgba(0,0,0,0.6);transform:scale(0.92) translateY(20px);opacity:0;pointer-events:none;transition:transform 0.25s cubic-bezier(.4,0,.2,1),opacity 0.25s ease;}
 #clark-win.open{transform:scale(1) translateY(0);opacity:1;pointer-events:all;}
 #clark-header{padding:14px 16px 0;flex-shrink:0;}
-#clark-title{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+#clark-title{display:flex;align-items:center;gap:10px;margin-bottom:12px;width:100%;}
 #clark-avatar{width:36px;height:36px;border-radius:50%;overflow:hidden;flex-shrink:0;}
 #clark-name{font-size:13px;font-weight:800;color:var(--cl-text);}
 #clark-status{font-size:10px;color:#00ffc8;}
@@ -7975,15 +7975,34 @@ async function doTM() {
   const btn = document.getElementById('tmb');
   btn.disabled = true; btn.innerHTML = '<span class="cl-spinner"></span>Getting guidance...';
   const res = document.getElementById('tmr');
-  res.textContent = '';
+  res.innerHTML = '<div style="text-align:center;padding:24px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Consulting tax rules for ' + country + '...</div>';
   try {
     const txt = await ai(`You are ChainLens AI TaxMate™. Give crypto tax guidance for ${country}.
 Situation: ${situation || 'General crypto trader'}
 Question: ${question}
-Explain relevant tax rules in plain English. Note this is general information not professional tax advice. Under 250 words.`, 500);
-    res.textContent = txt;
-    res.insertAdjacentHTML('beforeend', '<div class="cl-ai-disclaimer">General information only. Consult a qualified tax professional for advice specific to your situation.</div>');
-  } catch(e) { res.textContent = 'Error. Try again.'; }
+Reply in this EXACT format (no extra text):
+JURISDICTION: [country name and relevant tax authority]
+RULE: [the core tax rule that applies in one sentence]
+ANSWER: [plain English explanation, 2-4 sentences, specific to the question]
+ACTION: [one concrete thing the user should do]`, 500);
+    const jMatch  = txt.match(/JURISDICTION:\s*(.+)/i);
+    const rMatch  = txt.match(/RULE:\s*(.+)/i);
+    const aMatch  = txt.match(/ANSWER:\s*([\s\S]+?)(?=ACTION:|$)/i);
+    const acMatch = txt.match(/ACTION:\s*(.+)/i);
+    if (jMatch && rMatch && aMatch) {
+      res.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+          <span style="background:rgba(0,255,200,0.1);border:1px solid rgba(0,255,200,0.25);color:var(--cl-cyan);border-radius:16px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.5px;">📍 ${jMatch[1].trim()}</span>
+          <span style="background:rgba(248,183,66,0.1);border:1px solid rgba(248,183,66,0.25);color:#f8b742;border-radius:16px;padding:3px 10px;font-size:10px;font-weight:800;letter-spacing:.5px;">⚖️ TAX RULE</span>
+        </div>
+        <div style="background:rgba(120,88,192,0.08);border-left:3px solid rgba(120,88,192,0.5);border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:12px;font-size:11.5px;color:var(--cl-text-2);line-height:1.6;">${rMatch[1].trim()}</div>
+        <div style="font-size:12.5px;color:var(--cl-text);line-height:1.7;margin-bottom:12px;">${(aMatch[1] || '').trim()}</div>
+        ${acMatch ? `<div style="background:rgba(0,255,200,0.06);border:1px solid rgba(0,255,200,0.2);border-radius:10px;padding:10px 14px;font-size:11.5px;color:var(--cl-cyan);line-height:1.6;"><span style="font-weight:800;margin-right:6px;">✓ Action:</span>${acMatch[1].trim()}</div>` : ''}
+        <div class="cl-ai-disclaimer" style="margin-top:12px;">General information only — not professional tax advice. Consult a qualified tax professional for your specific situation.</div>`;
+    } else {
+      res.innerHTML = `<div style="font-size:12.5px;color:var(--cl-text);line-height:1.7;">${txt}</div><div class="cl-ai-disclaimer" style="margin-top:12px;">General information only. Consult a qualified tax professional for advice specific to your situation.</div>`;
+    }
+  } catch(e) { res.innerHTML = '<div style="color:var(--cl-red);font-size:12px;">Error. Try again.</div>'; }
   btn.disabled = false; btn.textContent = 'Get Tax Guidance →';
 }
 
@@ -8833,7 +8852,7 @@ async function analyseTU(project, symbol, amount, pct, type, days) {
   const card = document.getElementById('tu-ai-card'), el = document.getElementById('tu-ai');
   if (!card || !el) return;
   card.style.display = 'block';
-  el.innerHTML = '<span class="cl-spinner"></span> Analysing unlock...';
+  el.innerHTML = '<div style="text-align:center;padding:16px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Analysing ' + symbol + ' unlock...</div>';
   card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
     const livePrice = px[Object.keys(px).find(k => SYM[k] === symbol) || '']?.usd;
@@ -8841,10 +8860,41 @@ async function analyseTU(project, symbol, amount, pct, type, days) {
 Project: ${project} (${symbol}) | Amount: ${amount} tokens (${pct}% of supply)
 Unlock type: ${type} | Days until unlock: ${days}
 Current price: ${livePrice ? '$' + livePrice : 'unknown'}
-Give: 1) Expected sell pressure 2) Likely price impact 3) What traders should do. Under 150 words.`, 400);
-    el.textContent = txt;
-    el.insertAdjacentHTML('beforeend', '<div class="cl-ai-disclaimer">Not financial advice.</div>');
-  } catch(e) { el.textContent = 'Error. Try again.'; }
+Reply in this EXACT format:
+PRESSURE: [HIGH/MEDIUM/LOW — one sentence why]
+IMPACT: [expected price impact in one sentence]
+ACTION: [what traders should do]`, 350);
+    const prMatch = txt.match(/PRESSURE:\s*(.+)/i);
+    const imMatch = txt.match(/IMPACT:\s*(.+)/i);
+    const acMatch = txt.match(/ACTION:\s*(.+)/i);
+    if (prMatch && imMatch && acMatch) {
+      const pressureLevel = (prMatch[1] || '').toUpperCase().startsWith('HIGH') ? 'HIGH'
+        : (prMatch[1] || '').toUpperCase().startsWith('MED') ? 'MEDIUM' : 'LOW';
+      const pressureColor = pressureLevel === 'HIGH' ? '#ef476f' : pressureLevel === 'MEDIUM' ? '#f0b429' : '#00ffc8';
+      el.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+          <span style="background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:2px 8px;font-size:10px;font-weight:800;color:var(--cl-text-3);">${project} · ${symbol}</span>
+          <span style="background:rgba(${pressureLevel==='HIGH'?'239,71,111':pressureLevel==='MEDIUM'?'240,180,41':'0,255,200'},0.12);border:1px solid rgba(${pressureLevel==='HIGH'?'239,71,111':pressureLevel==='MEDIUM'?'240,180,41':'0,255,200'},0.3);color:${pressureColor};border-radius:16px;padding:3px 10px;font-size:10px;font-weight:800;">📊 ${pressureLevel} PRESSURE</span>
+        </div>
+        <div style="display:grid;gap:8px;">
+          <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:10px 12px;">
+            <div style="font-size:9px;color:var(--cl-text-4);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Sell Pressure</div>
+            <div style="font-size:12px;color:var(--cl-text-2);line-height:1.5;">${prMatch[1].trim()}</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:10px 12px;">
+            <div style="font-size:9px;color:var(--cl-text-4);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Price Impact</div>
+            <div style="font-size:12px;color:var(--cl-text-2);line-height:1.5;">${imMatch[1].trim()}</div>
+          </div>
+          <div style="background:rgba(0,255,200,0.05);border:1px solid rgba(0,255,200,0.2);border-radius:8px;padding:10px 12px;">
+            <div style="font-size:9px;color:var(--cl-cyan);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;font-weight:800;">Trader Action</div>
+            <div style="font-size:12px;color:var(--cl-text);line-height:1.5;font-weight:600;">${acMatch[1].trim()}</div>
+          </div>
+        </div>
+        <div class="cl-ai-disclaimer" style="margin-top:10px;">Not financial advice.</div>`;
+    } else {
+      el.innerHTML = `<div style="font-size:12px;color:var(--cl-text-2);line-height:1.6;">${txt}</div><div class="cl-ai-disclaimer" style="margin-top:10px;">Not financial advice.</div>`;
+    }
+  } catch(e) { el.innerHTML = '<div style="color:var(--cl-red);font-size:12px;">Error. Try again.</div>'; }
 }
 
 // ══════════════════════════════════════════════
@@ -9376,13 +9426,29 @@ function clarkGreet() {
   clarkRender();
 }
 
+function clarkMd(text) {
+  // Escape HTML first, then apply safe markdown
+  return text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/`(.+?)`/g,'<code style="background:rgba(120,88,192,0.15);border-radius:3px;padding:1px 4px;font-size:0.88em;">$1</code>')
+    .replace(/\n/g,'<br>');
+}
+
+function clarkClear() {
+  clarkHistory[clarkAgent] = [];
+  clarkRender();
+  clarkGreet();
+}
+
 function clarkRender() {
   const msgs = document.getElementById('clark-msgs');
   const agent = CLARK_AGENTS[clarkAgent];
   msgs.innerHTML = clarkHistory[clarkAgent].map(m => `
     <div class="clark-msg ${m.role}">
       <div class="clark-dot">${m.role === 'bot' ? `<svg viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg" style="image-rendering:pixelated;width:28px;height:28px"><defs><linearGradient id="cd-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7858c0"/><stop offset="100%" stop-color="#00bfa5"/></linearGradient><clipPath id="cd-c"><circle cx="14" cy="14" r="14"/></clipPath></defs><circle cx="14" cy="14" r="14" fill="url(#cd-g)"/><g clip-path="url(#cd-c)"><rect x="5" y="1" width="18" height="3" fill="#111"/><rect x="4" y="4" width="20" height="3" fill="#111"/><rect x="3" y="7" width="3" height="4" fill="#111"/><rect x="22" y="7" width="3" height="3" fill="#111"/><rect x="6" y="6" width="16" height="14" fill="#d4a274"/><rect x="3" y="9" width="7" height="3" fill="#111"/><rect x="18" y="9" width="7" height="3" fill="#111"/><rect x="10" y="10" width="8" height="1" fill="#2a2a2a"/><rect x="12" y="15" width="3" height="2" fill="#a07840"/><rect x="9" y="18" width="10" height="2" fill="#2a2a2a"/><rect x="4" y="21" width="20" height="8" fill="#b038b8"/><rect x="10" y="21" width="3" height="3" fill="#8c2a9a"/><rect x="15" y="21" width="3" height="3" fill="#8c2a9a"/></g></svg>` : ''}</div>
-      <div class="clark-bubble">${m.text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+      <div class="clark-bubble">${clarkMd(m.text)}</div>
     </div>`).join('');
   msgs.scrollTop = msgs.scrollHeight;
   // Starters only when conversation is fresh
@@ -9722,7 +9788,8 @@ updateHeroTierLabel();
           <rect x="19" y="27" width="4" height="4" fill="#8c2a9a"/>
         </g>
       </svg></div>
-      <div><div id="clark-name">Clark</div><div id="clark-status">● Online</div></div>
+      <div style="flex:1;min-width:0;"><div id="clark-name">Clark</div><div id="clark-status">● Online</div></div>
+      <button id="clark-clear" onclick="clarkClear()" title="Clear chat" style="background:transparent;border:none;cursor:pointer;color:var(--cl-text-4);font-size:13px;padding:4px 6px;border-radius:6px;transition:color 0.15s;line-height:1;" onmouseover="this.style.color='var(--cl-text-2)'" onmouseout="this.style.color='var(--cl-text-4)'">✕</button>
     </div>
     <div id="clark-agents">
       <button class="clark-agent-btn active" onclick="clarkSwitch('onboarding',this)">🧭 Guide</button>
