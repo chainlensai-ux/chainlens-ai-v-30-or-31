@@ -1083,6 +1083,136 @@ body::after {
   .cl-trust-stat { padding: 8px 14px; }
 }
 
+/* ── FOOTER FULL ── */
+.cl-footer {
+  padding: 64px 0 0;
+  border-top: 1px solid var(--cl-border);
+  position: relative; z-index: 1;
+}
+.cl-footer__grid {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr 1fr;
+  gap: 48px; padding-bottom: 48px;
+}
+.cl-footer__brand { display: flex; flex-direction: column; gap: 14px; }
+.cl-footer__logo {
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer; width: fit-content;
+}
+.cl-footer__logo-hex {
+  font-size: 20px;
+  background: linear-gradient(135deg,#7858c0,#00ffc8);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.cl-footer__logo-word {
+  font-family: 'Syne',sans-serif; font-size: 18px; font-weight: 900; color: #fff;
+}
+.cl-footer__tagline {
+  font-size: 12px; color: var(--cl-text-3); line-height: 1.65;
+  max-width: 280px;
+}
+.cl-footer__socials { display: flex; gap: 10px; margin-top: 4px; }
+.cl-footer__social {
+  width: 34px; height: 34px; border-radius: 8px;
+  border: 1px solid var(--cl-border);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--cl-text-4); text-decoration: none;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+.cl-footer__social:hover {
+  border-color: rgba(120,88,192,0.5); color: #a78bfa;
+  background: rgba(120,88,192,0.08);
+}
+.cl-footer__col { display: flex; flex-direction: column; gap: 10px; }
+.cl-footer__col-title {
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--cl-text-4); font-weight: 700; margin-bottom: 4px;
+}
+.cl-footer__link {
+  font-size: 13px; color: var(--cl-text-3); cursor: pointer;
+  transition: color 0.2s; text-decoration: none; display: block;
+  width: fit-content;
+}
+.cl-footer__link:hover { color: #fff; }
+.cl-footer__coming {
+  display: flex; align-items: center; gap: 8px;
+}
+.cl-footer__coming-lbl { font-size: 13px; color: rgba(255,255,255,0.2); }
+.cl-footer__coming-tag {
+  font-size: 9px; font-weight: 700; letter-spacing: 1px;
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(120,88,192,0.1); color: rgba(120,88,192,0.5);
+  border: 1px solid rgba(120,88,192,0.2);
+}
+.cl-footer__bottom {
+  border-top: 1px solid var(--cl-border);
+  padding: 20px 0;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.cl-footer__bottom-logo { cursor: pointer; }
+.cl-footer__disclaimer {
+  font-size: 9px; color: rgba(255,255,255,0.13);
+  max-width: 480px; line-height: 1.6; text-align: center; flex: 1;
+}
+.cl-footer__right { font-size: 9px; color: var(--cl-text-4); letter-spacing: 0.5px; }
+
+/* Footer mobile */
+@media (max-width: 860px) {
+  .cl-footer__grid { grid-template-columns: 1fr 1fr; gap: 32px; }
+  .cl-footer__brand { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  .cl-footer__grid { grid-template-columns: 1fr; }
+}
+
+/* ── COMPARISON TABLE ── */
+.cl-compare-section { padding: 80px 0 60px; text-align: center; }
+.cl-compare-wrap {
+  overflow-x: auto; margin-top: 40px;
+  border-radius: 16px; border: 1px solid var(--cl-border);
+}
+.cl-compare-table { min-width: 600px; }
+.cl-compare-head {
+  display: grid; grid-template-columns: 1.8fr 1fr 1fr 1fr 1fr;
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid var(--cl-border);
+}
+.cl-compare-row {
+  display: grid; grid-template-columns: 1.8fr 1fr 1fr 1fr 1fr;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.2s;
+}
+.cl-compare-row:hover { background: rgba(255,255,255,0.015); }
+.cl-compare-row:last-child { border-bottom: none; }
+.cl-compare-row--price { background: rgba(0,255,200,0.02); }
+.cl-compare-cell {
+  padding: 14px 16px; font-size: 12px;
+  display: flex; align-items: center; justify-content: center;
+  text-align: center; color: var(--cl-text-3);
+  border-right: 1px solid rgba(255,255,255,0.04);
+}
+.cl-compare-cell:last-child { border-right: none; }
+.cl-compare-cell--feature {
+  justify-content: flex-start; text-align: left;
+  color: var(--cl-text-2); font-size: 13px; padding-left: 20px;
+}
+.cl-compare-cell--chainlens {
+  background: rgba(120,88,192,0.06);
+  border-right: 1px solid rgba(120,88,192,0.15);
+}
+.cl-compare-brand {
+  font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 800; color: #fff;
+}
+.cl-compare-price {
+  font-size: 10px; color: var(--cl-text-4); margin-top: 2px;
+}
+.cl-compare-head .cl-compare-cell { padding: 16px 16px 14px; flex-direction: column; gap: 3px; }
+.cl-cmp { font-size: 15px; font-weight: 700; }
+.cl-cmp--yes { color: #00ffc8; }
+.cl-cmp--no { color: rgba(239,71,111,0.5); }
+.cl-cmp--partial { color: #ffd60a; font-size: 18px; line-height: 1; }
+
 /* ── ANNOUNCEMENT BAR ── */
 .cl-announce {
   position: sticky; top: 0; z-index: 10000;
@@ -3328,6 +3458,106 @@ body::after {
       </div>
     </section>
 
+    <!-- ═══ COMPARISON TABLE ═══ -->
+    <section class="cl-compare-section">
+      <div class="cl-section__eyebrow cl-reveal">Why ChainLens</div>
+      <h2 class="cl-section__title cl-reveal">The tools others charge<br><span>$150/mo for. We don't.</span></h2>
+      <p class="cl-section__sub cl-reveal">Enterprise-grade onchain intelligence. Built for independent traders, priced for humans.</p>
+
+      <div class="cl-compare-wrap cl-reveal">
+        <div class="cl-compare-table">
+          <div class="cl-compare-head">
+            <div class="cl-compare-cell cl-compare-cell--feature"></div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens">
+              <div class="cl-compare-brand">
+                <span style="font-family:'Syne',sans-serif;font-weight:900;font-size:13px;">Chain<span class="cl-grad-text">Lens</span> AI</span>
+              </div>
+              <div class="cl-compare-price">From Free</div>
+            </div>
+            <div class="cl-compare-cell">
+              <div class="cl-compare-brand">Nansen</div>
+              <div class="cl-compare-price">$150+/mo</div>
+            </div>
+            <div class="cl-compare-cell">
+              <div class="cl-compare-brand">Arkham</div>
+              <div class="cl-compare-price">Freemium</div>
+            </div>
+            <div class="cl-compare-cell">
+              <div class="cl-compare-brand">Dune</div>
+              <div class="cl-compare-price">$49+/mo</div>
+            </div>
+          </div>
+
+          <div class="cl-compare-row">
+            <div class="cl-compare-cell cl-compare-cell--feature">AI-powered analysis</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+          </div>
+          <div class="cl-compare-row">
+            <div class="cl-compare-cell cl-compare-cell--feature">Paper trading (live prices)</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+          </div>
+          <div class="cl-compare-row">
+            <div class="cl-compare-cell cl-compare-cell--feature">Pump / early alert detection</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+          </div>
+          <div class="cl-compare-row">
+            <div class="cl-compare-cell cl-compare-cell--feature">Multi-chain wallet scan</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--partial">~</span></div>
+          </div>
+          <div class="cl-compare-row">
+            <div class="cl-compare-cell cl-compare-cell--feature">Bitcoin + Solana support</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--partial">~</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+          </div>
+          <div class="cl-compare-row">
+            <div class="cl-compare-cell cl-compare-cell--feature">Portfolio risk scoring</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--partial">~</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+          </div>
+          <div class="cl-compare-row">
+            <div class="cl-compare-cell cl-compare-cell--feature">In-browser price alerts</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+          </div>
+          <div class="cl-compare-row">
+            <div class="cl-compare-cell cl-compare-cell--feature">No credit card to start</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span class="cl-cmp cl-cmp--yes">✓</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--no">✕</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--partial">~</span></div>
+            <div class="cl-compare-cell"><span class="cl-cmp cl-cmp--partial">~</span></div>
+          </div>
+          <div class="cl-compare-row cl-compare-row--price">
+            <div class="cl-compare-cell cl-compare-cell--feature">Elite tier price</div>
+            <div class="cl-compare-cell cl-compare-cell--chainlens"><span style="color:#00ffc8;font-weight:800;font-family:'Syne',sans-serif;">$9/mo</span></div>
+            <div class="cl-compare-cell"><span style="color:var(--cl-text-3);">$150+/mo</span></div>
+            <div class="cl-compare-cell"><span style="color:var(--cl-text-3);">Token-gated</span></div>
+            <div class="cl-compare-cell"><span style="color:var(--cl-text-3);">$49+/mo</span></div>
+          </div>
+        </div>
+      </div>
+      <div style="text-align:center;margin-top:28px;" class="cl-reveal">
+        <button class="cl-btn cl-btn--primary" onclick="openAuth('signup')">Start Free — Upgrade Anytime</button>
+      </div>
+    </section>
+
     <!-- ═══ TESTIMONIALS ═══ -->
     <section class="cl-testi-section">
       <div class="cl-section__eyebrow cl-reveal">Real Results</div>
@@ -3650,13 +3880,86 @@ body::after {
   </div>
 
   <footer class="cl-footer">
-    <div class="cl-container" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-      <div style="display:flex;align-items:center;gap:8px;cursor:pointer;" onclick="go('home')">
-        <div style="width:18px;height:18px;border-radius:4px;background:rgba(120,88,192,0.1);border:1px solid rgba(120,88,192,0.2);display:flex;align-items:center;justify-content:center;font-size:8px;color:var(--cl-violet-light);">⬡</div>
-        <span style="font-family:'Syne',sans-serif;font-size:12px;font-weight:700;"><span style="color:#fff;">Chain</span><span class="cl-grad-text">Lens</span></span>
+    <div class="cl-container">
+
+      <!-- Top grid -->
+      <div class="cl-footer__grid">
+
+        <!-- Brand col -->
+        <div class="cl-footer__brand">
+          <div class="cl-footer__logo" onclick="go('home')">
+            <div class="cl-footer__logo-hex">⬡</div>
+            <span class="cl-footer__logo-word">Chain<span class="cl-grad-text">Lens</span></span>
+          </div>
+          <p class="cl-footer__tagline">Onchain intelligence for the trader who wants an edge. Not another dashboard — a command centre.</p>
+          <div class="cl-footer__socials">
+            <a class="cl-footer__social" href="#" aria-label="Twitter / X" title="Twitter / X">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.744l7.73-8.835L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            </a>
+            <a class="cl-footer__social" href="#" aria-label="Telegram" title="Telegram">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.96 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+            </a>
+            <a class="cl-footer__social" href="#" aria-label="Discord" title="Discord">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057.1 18.082.114 18.104.132 18.12a19.982 19.982 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.201 13.201 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
+            </a>
+          </div>
+        </div>
+
+        <!-- Tools col -->
+        <div class="cl-footer__col">
+          <div class="cl-footer__col-title">Tools</div>
+          <a class="cl-footer__link" onclick="go('bearproof')">BearProof Score™</a>
+          <a class="cl-footer__link" onclick="go('edgescan')">EdgeScan™ AI</a>
+          <a class="cl-footer__link" onclick="go('walletscan')">WalletScan™</a>
+          <a class="cl-footer__link" onclick="go('ghosttrade')">GhostTrade™</a>
+          <a class="cl-footer__link" onclick="go('pumpalert')">PumpAlert™</a>
+          <a class="cl-footer__link" onclick="go('signals')">SignalBreaker™</a>
+          <a class="cl-footer__link" onclick="go('digradar')">DipRadar™</a>
+          <a class="cl-footer__link" onclick="go('narrative')">NarrativeRank™</a>
+        </div>
+
+        <!-- Platform col -->
+        <div class="cl-footer__col">
+          <div class="cl-footer__col-title">Platform</div>
+          <a class="cl-footer__link" onclick="go('leaderboard')">GlobalRank™</a>
+          <a class="cl-footer__link" onclick="go('smartwallets')">Smart Wallets™</a>
+          <a class="cl-footer__link" onclick="go('tradecoach')">TradeCoach™</a>
+          <a class="cl-footer__link" onclick="go('proofvault')">ProofVault™</a>
+          <a class="cl-footer__link" onclick="go('taxmate')">TaxMate™</a>
+          <a class="cl-footer__link" onclick="go('tokenunlocks')">Token Unlocks™</a>
+          <a class="cl-footer__link" onclick="go('alerts')">Price Alerts</a>
+          <a class="cl-footer__link" onclick="go('sentiment')">SentimentPulse™</a>
+        </div>
+
+        <!-- Company col -->
+        <div class="cl-footer__col">
+          <div class="cl-footer__col-title">Company</div>
+          <a class="cl-footer__link" onclick="openAuth('signup')">Get Started Free</a>
+          <a class="cl-footer__link" onclick="go('pricing')">Pricing</a>
+          <a class="cl-footer__link" onclick="go('terms')">Terms of Service</a>
+          <a class="cl-footer__link" onclick="go('privacy')">Privacy Policy</a>
+          <a class="cl-footer__link" onclick="go('disclaimer')">Disclaimer</a>
+          <div class="cl-footer__coming">
+            <span class="cl-footer__coming-lbl">Blog</span>
+            <span class="cl-footer__coming-tag">Soon</span>
+          </div>
+          <div class="cl-footer__coming">
+            <span class="cl-footer__coming-lbl">API Access</span>
+            <span class="cl-footer__coming-tag">Soon</span>
+          </div>
+        </div>
+
       </div>
-      <p class="cl-footer__disclaimer">ChainLens AI provides analytical tools for informational purposes only. Not financial advice. Crypto trading carries significant risk.</p>
-      <div class="cl-footer__right">© 2026 ChainLens AI</div>
+
+      <!-- Bottom bar -->
+      <div class="cl-footer__bottom">
+        <div class="cl-footer__bottom-logo" onclick="go('home')">
+          <span style="color:rgba(255,255,255,0.3);font-family:'Syne',sans-serif;font-size:11px;font-weight:700;">Chain<span style="background:linear-gradient(135deg,#7858c0,#00ffc8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">Lens</span> AI</span>
+        </div>
+        <p class="cl-footer__disclaimer">ChainLens AI provides analytical tools for informational purposes only. Not financial advice. Crypto trading carries significant risk. Past performance is not indicative of future results.</p>
+        <div class="cl-footer__right">© 2026 ChainLens AI</div>
+      </div>
+
     </div>
   </footer>
 </div>
