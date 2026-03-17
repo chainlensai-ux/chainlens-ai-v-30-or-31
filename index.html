@@ -4769,8 +4769,20 @@ body::after {
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-pricing">
   <div class="cl-container">
-    <div class="pg-header" style="margin-bottom:0;">
+    <div class="pg-header">
       <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+      <div class="pg-header__row">
+        <div class="pg-header__icon">💎</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">Pricing</div>
+          <div class="pg-header__sub">One price. Worldwide. No dark patterns. Cancel any time.</div>
+        </div>
+        <div class="pg-header__tags">
+          <span class="pg-tag" style="color:#00ffc8;border-color:rgba(0,255,200,0.2);">7-day free trial</span>
+          <span class="pg-tag" style="color:#f0b429;border-color:rgba(240,180,41,0.2);">No card required</span>
+          <span class="pg-tag" style="color:#7858c0;border-color:rgba(120,88,192,0.2);">Cancel anytime</span>
+        </div>
+      </div>
     </div>
     <div class="pricing-page-intro">
       <h1 style="font-family:'Syne',sans-serif;font-size:clamp(28px,4vw,48px);font-weight:900;margin-bottom:12px;">One price. Worldwide.</h1>
@@ -7429,14 +7441,14 @@ function renderAllTxs(txs, address, chain) {
     if (chain === 'btc') {
       const isOut = tx.dir === 'out';
       return `<div data-dir="${isOut?'out':'in'}" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
-        <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid;">${isOut?'OUT':'IN'}</div>
+        <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid ${isOut?'rgba(239,71,111,0.5)':'rgba(0,255,200,0.5)'};background:${isOut?'rgba(239,71,111,0.08)':'rgba(0,255,200,0.08)'};color:${isOut?'#ef476f':'#00ffc8'};">${isOut?'OUT':'IN'}</div>
         <div style="flex:1;min-width:0;"><div style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--cl-text-2);">${String(tx.hash).slice(0,18)}...</div><div style="font-size:10px;color:var(--cl-text-3);">BTC · ${tx.time?fmtAge(tx.time):'—'}</div></div>
         <div style="font-size:12px;font-weight:700;flex-shrink:0;font-family:'JetBrains Mono',monospace;">${tx.val} BTC</div>
       </div>`;
     }
     if (chain === 'sol') {
       return `<div data-dir="in" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
-        <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid;">TX</div>
+        <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid rgba(0,255,200,0.5);background:rgba(0,255,200,0.08);color:#00ffc8;">TX</div>
         <div style="flex:1;min-width:0;"><div style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--cl-text-2);">${String(tx.hash).slice(0,22)}...</div><div style="font-size:10px;color:var(--cl-text-3);">Solana · ${tx.time?fmtAge(tx.time):'recent'}</div></div>
         <div style="font-size:9px;padding:2px 8px;background:rgba(0,255,200,0.08);color:#00ffc8;border:1px solid rgba(0,255,200,0.15);border-radius:5px;flex-shrink:0;font-family:'JetBrains Mono',monospace;">Confirmed</div>
       </div>`;
@@ -7448,7 +7460,7 @@ function renderAllTxs(txs, address, chain) {
     const nativeSym = txChain === 'bnb' ? 'BNB' : txChain === 'polygon' ? 'MATIC' : 'ETH';
     const nativeUsdPrice = txChain === 'bnb' ? (px['binancecoin']?.usd || 600) : txChain === 'polygon' ? (px['matic-network']?.usd || px['polygon']?.usd || 0.8) : (px['ethereum']?.usd || 3000);
     return `<div data-dir="${isOut?'out':'in'}" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
-      <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid;">${isOut?'OUT':'IN'}</div>
+      <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid ${isOut?'rgba(239,71,111,0.5)':'rgba(0,255,200,0.5)'};background:${isOut?'rgba(239,71,111,0.08)':'rgba(0,255,200,0.08)'};color:${isOut?'#ef476f':'#00ffc8'};">${isOut?'OUT':'IN'}</div>
       <div style="flex:1;min-width:0;">
         <div style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--cl-text-2);">${isOut?'To: '+fmtAddr(tx.to):'From: '+fmtAddr(tx.from)}</div>
         <div style="font-size:10px;color:var(--cl-text-3);">${chainLabel} · ${fmtAge(tx.timeStamp||tx.time||0)}</div>
@@ -8808,14 +8820,14 @@ function initFxBtns() {}  // handled by ws-currency select natively
 // SMART WALLETS — Real known whale addresses
 // ══════════════════════════════════════════════
 const SMART_WALLETS_DATA = [
-  { name: 'Vitalik.eth',      addr: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', chain: 'eth', label: 'Ethereum Co-founder',        pnl: '+$2.4M',  pnlSub: '90d PnL', tags: ['ETH','ENS','USDC'] },
-  { name: 'Binance Hot',      addr: '0x3f5CE5FBFe3E9af3971dD833D26bA9b5C936f0bE', chain: 'eth', label: 'Binance Exchange Wallet',      pnl: 'High Vol',pnlSub: 'Volume',  tags: ['ETH','BNB','USDT'] },
-  { name: 'Binance Cold',     addr: '0xBE0eB53F46cd790Cd13851d5EFf43D12404d33E8', chain: 'eth', label: 'Binance Cold Storage',         pnl: 'Accum.',  pnlSub: 'Signal',  tags: ['ETH','BTC'] },
-  { name: 'BTC Whale #1',     addr: 'bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97', chain: 'btc', label: 'Large BTC Accumulator',  pnl: '+890K',   pnlSub: '90d PnL', tags: ['BTC','HODLer'] },
-  { name: 'Justin Sun',       addr: 'TQA13spG47UkFCVAouJFSLEUKfHqRCBZrP',          chain: 'trx', label: 'Tron Founder / TRON Network',  pnl: 'Whale',   pnlSub: 'Activity',tags: ['TRX','BTC','ETH'] },
-  { name: '0xRetail Killer',  addr: '0x28C6c06298d514Db089934071355E5743bf21d60', chain: 'eth', label: 'Binance 14 — Active Trader',   pnl: '+$180K',  pnlSub: '30d PnL', tags: ['ETH','SHIB','LINK'] },
-  { name: 'SOL Whale',        addr: 'GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ', chain: 'sol', label: 'Top Solana Accumulator',    pnl: '+$320K',  pnlSub: '90d PnL', tags: ['SOL','JTO','BONK'] },
-  { name: 'DeFi OG',          addr: '0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B', chain: 'eth', label: 'Early DeFi Liquidity Provider', pnl: '+$95K',  pnlSub: '60d PnL', tags: ['USDC','AAVE','UNI'] },
+  { name: 'Vitalik.eth',      addr: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', chain: 'eth', label: 'Ethereum Co-founder',        pnl: '+$2.4M',  pnlSub: '90d PnL', tags: ['ETH','ENS','USDC'],  icon: '👤', type: 'Founder' },
+  { name: 'Binance Hot',      addr: '0x3f5CE5FBFe3E9af3971dD833D26bA9b5C936f0bE', chain: 'eth', label: 'Binance Exchange Wallet',      pnl: 'High Vol',pnlSub: 'Volume',  tags: ['ETH','BNB','USDT'],  icon: '🏦', type: 'Exchange' },
+  { name: 'Binance Cold',     addr: '0xBE0eB53F46cd790Cd13851d5EFf43D12404d33E8', chain: 'eth', label: 'Binance Cold Storage',         pnl: 'Accum.',  pnlSub: 'Signal',  tags: ['ETH','BTC'],         icon: '🔒', type: 'Custodian' },
+  { name: 'BTC Whale #1',     addr: 'bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97', chain: 'btc', label: 'Large BTC Accumulator',  pnl: '+890K',   pnlSub: '90d PnL', tags: ['BTC','HODLer'],        icon: '💰', type: 'Whale' },
+  { name: 'Justin Sun',       addr: 'TQA13spG47UkFCVAouJFSLEUKfHqRCBZrP',          chain: 'trx', label: 'Tron Founder / TRON Network',  pnl: 'Whale',   pnlSub: 'Activity',tags: ['TRX','BTC','ETH'],     icon: '🔥', type: 'Founder' },
+  { name: '0xRetail Killer',  addr: '0x28C6c06298d514Db089934071355E5743bf21d60', chain: 'eth', label: 'Binance 14 — Active Trader',   pnl: '+$180K',  pnlSub: '30d PnL', tags: ['ETH','SHIB','LINK'],   icon: '⚡', type: 'Trader' },
+  { name: 'SOL Whale',        addr: 'GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ', chain: 'sol', label: 'Top Solana Accumulator',    pnl: '+$320K',  pnlSub: '90d PnL', tags: ['SOL','JTO','BONK'],    icon: '🌊', type: 'Whale' },
+  { name: 'DeFi OG',          addr: '0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B', chain: 'eth', label: 'Early DeFi Liquidity Provider', pnl: '+$95K',  pnlSub: '60d PnL', tags: ['USDC','AAVE','UNI'],   icon: '⚗️', type: 'DeFi' },
 ];
 
 function loadSmartWallets() {
@@ -8826,12 +8838,16 @@ function loadSmartWallets() {
     const cc = chainColors[w.chain] || '#7858c0';
     const cl = chainLabels[w.chain] || w.chain.toUpperCase();
     const shortAddr = w.addr.length > 20 ? w.addr.slice(0,10) + '…' + w.addr.slice(-6) : w.addr;
+    const typeColor = w.type === 'Whale' || w.type === 'Founder' ? '#00ffc8' : w.type === 'Exchange' || w.type === 'Custodian' ? '#f0b429' : '#b090e8';
     return `<div class="sw-card" onclick="quickScanWallet('${w.addr}','${w.chain}')">
       <div class="sw-card__head">
-        <div class="sw-card__icon" style="background:${cc}18;border-color:${cc}35;">🐋</div>
-        <div class="sw-card__chain" style="background:${cc}18;color:${cc};border-color:${cc}30;">${cl}</div>
+        <div class="sw-card__icon" style="background:${cc}18;border-color:${cc}35;font-size:16px;">${w.icon || '🐋'}</div>
+        <div style="display:flex;flex-direction:column;gap:3px;">
+          <div class="sw-card__chain" style="background:${cc}18;color:${cc};border-color:${cc}30;">${cl}</div>
+          <div style="font-size:8px;font-weight:800;color:${typeColor};letter-spacing:.5px;text-transform:uppercase;">${w.type || 'Whale'}</div>
+        </div>
         <div class="sw-card__pnl">
-          <div class="sw-card__pnl-val">${w.pnl}</div>
+          <div class="sw-card__pnl-val" style="color:${w.pnl.startsWith('+')?'#00ffc8':'var(--cl-text-2);'}">${w.pnl}</div>
           <div class="sw-card__pnl-sub">${w.pnlSub}</div>
         </div>
       </div>
