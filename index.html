@@ -1083,6 +1083,161 @@ body::after {
   .cl-trust-stat { padding: 8px 14px; }
 }
 
+/* ── FEATURE SPOTLIGHT ── */
+.cl-spotlight-section { padding: 80px 0 60px; }
+.cl-spotlight {
+  padding: 60px 0;
+  position: relative;
+}
+.cl-spotlight + .cl-spotlight {
+  border-top: 1px solid var(--cl-border);
+}
+.cl-spotlight__inner {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 64px; align-items: center;
+}
+.cl-spotlight--flip .cl-spotlight__inner {
+  direction: rtl;
+}
+.cl-spotlight--flip .cl-spotlight__inner > * { direction: ltr; }
+.cl-spotlight__tag {
+  display: inline-block; padding: 3px 10px; border-radius: 20px;
+  font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+  font-weight: 700; margin-bottom: 14px;
+  background: rgba(120,88,192,0.1); color: #a78bfa;
+  border: 1px solid rgba(120,88,192,0.25);
+}
+.cl-spotlight__title {
+  font-family: 'Syne', sans-serif;
+  font-size: clamp(26px, 3.5vw, 40px);
+  font-weight: 900; color: #fff; line-height: 1.1;
+  margin-bottom: 14px;
+}
+.cl-spotlight__sub {
+  font-size: 14px; color: var(--cl-text-2); line-height: 1.7;
+  margin-bottom: 18px;
+}
+.cl-spotlight__list {
+  list-style: none; display: flex; flex-direction: column; gap: 9px;
+}
+.cl-spotlight__list li {
+  font-size: 13px; color: var(--cl-text-2); padding-left: 18px;
+  position: relative;
+}
+.cl-spotlight__list li::before {
+  content: '⬡'; position: absolute; left: 0;
+  color: var(--cl-teal); font-size: 9px; top: 2px;
+}
+
+/* Mock terminal */
+.cl-mock {
+  border-radius: 14px; overflow: hidden;
+  border: 1px solid rgba(120,88,192,0.25);
+  background: rgba(10,8,14,0.9);
+  box-shadow: 0 24px 64px rgba(0,0,0,0.5), 0 0 0 1px rgba(120,88,192,0.1),
+              inset 0 1px 0 rgba(255,255,255,0.04);
+  transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+.cl-mock:hover {
+  transform: translateY(-6px) scale(1.01);
+  box-shadow: 0 40px 80px rgba(0,0,0,0.6), 0 0 40px rgba(120,88,192,0.15),
+              inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.cl-mock__bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 12px 16px; background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.cl-mock__dot { width: 10px; height: 10px; border-radius: 50%; }
+.cl-mock__title {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--cl-text-4); margin-left: 8px; letter-spacing: 0.5px;
+}
+.cl-mock__body { padding: 18px 18px 16px; }
+.cl-mock__addr {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: rgba(0,255,200,0.7); margin-bottom: 14px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cl-mock__row {
+  display: flex; gap: 24px; margin-bottom: 10px;
+}
+.cl-mock__kv { display: flex; flex-direction: column; gap: 2px; }
+.cl-mock__k { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--cl-text-4); }
+.cl-mock__v { font-family: 'Syne', sans-serif; font-size: 15px; font-weight: 800; color: var(--cl-text-2); }
+.cl-mock__v--big { font-size: 20px; color: #fff; }
+.cl-mock__divider { height: 1px; background: var(--cl-border); margin: 12px 0; }
+.cl-mock__holdings-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--cl-text-4); margin-bottom: 8px; }
+.cl-mock__holding {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 0; font-size: 11px;
+}
+.cl-mock__sym { font-weight: 700; color: #fff; width: 44px; flex-shrink: 0; }
+.cl-mock__chain { font-size: 9px; color: var(--cl-text-4); flex: 1; }
+.cl-mock__amt { color: var(--cl-text-2); min-width: 60px; text-align: right; }
+.cl-mock__pct { font-size: 10px; font-weight: 700; min-width: 42px; text-align: right; }
+.cl-mock__pct--up { color: #00ffc8; }
+.cl-mock__pct--dn { color: #ef476f; }
+.cl-mock__ai-row {
+  display: flex; align-items: center; gap: 8px;
+}
+.cl-mock__ai-label {
+  font-size: 9px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--cl-teal);
+  flex-shrink: 0;
+}
+.cl-mock__ai-tag {
+  font-size: 10px; color: var(--cl-text-3); font-style: italic;
+}
+
+/* Streak dots */
+.cl-mock__streak-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+}
+.cl-mock__streak-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--cl-text-4); }
+.cl-mock__streak-dots { display: flex; gap: 3px; }
+.cl-mock__sd {
+  width: 18px; height: 18px; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 8px; font-weight: 800;
+}
+.cl-mock__sd--w { background: rgba(0,255,200,0.12); color: #00ffc8; }
+.cl-mock__sd--l { background: rgba(239,71,111,0.12); color: #ef476f; }
+
+/* Pump items */
+.cl-mock__pump-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 0; font-size: 11px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.cl-mock__pump-item--hot { background: rgba(255,214,10,0.03); margin: 0 -4px; padding: 7px 4px; border-radius: 6px; }
+.cl-mock__pump-sym { font-weight: 700; color: #fff; width: 60px; flex-shrink: 0; }
+.cl-mock__pump-meta { flex: 1; color: var(--cl-text-4); font-size: 10px; }
+.cl-mock__pump-pct { font-weight: 800; color: #00ffc8; min-width: 50px; text-align: right; font-family: 'Syne', sans-serif; }
+.cl-mock__pump-risk { font-size: 10px; min-width: 64px; text-align: right; }
+.cl-mock__live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #ef476f; margin-left: auto;
+  box-shadow: 0 0 6px #ef476f;
+  animation: ctaDotPulse 1.2s ease-in-out infinite;
+}
+.cl-mock__filter-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.cl-mock__filter-chip {
+  padding: 2px 8px; border-radius: 10px; font-size: 9px; font-weight: 600;
+  border: 1px solid var(--cl-border); color: var(--cl-text-4);
+}
+.cl-mock__filter-chip.active {
+  border-color: rgba(120,88,192,0.4); color: #a78bfa;
+  background: rgba(120,88,192,0.08);
+}
+
+/* Spotlight mobile */
+@media (max-width: 860px) {
+  .cl-spotlight__inner { grid-template-columns: 1fr; gap: 32px; }
+  .cl-spotlight--flip .cl-spotlight__inner { direction: ltr; }
+  .cl-spotlight { padding: 40px 0; }
+}
+
 /* ── TESTIMONIALS ── */
 .cl-testi-section {
   padding: 90px 0 80px;
@@ -2767,6 +2922,184 @@ body::after {
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- ═══════════════════ FEATURE SPOTLIGHT ═══════════════════ -->
+  <section class="cl-spotlight-section">
+    <div class="cl-container">
+      <div class="cl-section__eyebrow cl-reveal">Feature Deep Dive</div>
+      <h2 class="cl-section__title cl-reveal">Built for the edge.<br><span>Not the average trader.</span></h2>
+    </div>
+
+    <!-- Spotlight 1: WalletScan -->
+    <div class="cl-spotlight cl-reveal" id="sp-walletscan">
+      <div class="cl-container">
+        <div class="cl-spotlight__inner">
+          <div class="cl-spotlight__text">
+            <div class="cl-spotlight__tag">Elite</div>
+            <h3 class="cl-spotlight__title">WalletScan™</h3>
+            <p class="cl-spotlight__sub">Paste any wallet — ETH, BTC, SOL, BNB — and get a complete picture. Token holdings, transaction history, DeFi positions, portfolio value, and an AI reading of their trading behaviour.</p>
+            <ul class="cl-spotlight__list">
+              <li>Multi-chain: ETH, BNB, Base, Polygon, Arbitrum, SOL, BTC</li>
+              <li>Degen Score — how risky is this wallet really?</li>
+              <li>Realised PnL calculated from full tx history</li>
+              <li>Clark AI profiling in plain English</li>
+            </ul>
+            <button class="cl-btn cl-btn--primary" onclick="go('walletscan')" style="margin-top:24px;">Try WalletScan™ →</button>
+          </div>
+          <div class="cl-spotlight__mockup">
+            <div class="cl-mock cl-mock--walletscan">
+              <div class="cl-mock__bar">
+                <span class="cl-mock__dot" style="background:#ef476f;"></span>
+                <span class="cl-mock__dot" style="background:#ffd60a;"></span>
+                <span class="cl-mock__dot" style="background:#00ffc8;"></span>
+                <span class="cl-mock__title">WalletScan™</span>
+              </div>
+              <div class="cl-mock__body">
+                <div class="cl-mock__addr">0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D</div>
+                <div class="cl-mock__row">
+                  <div class="cl-mock__kv"><span class="cl-mock__k">Portfolio</span><span class="cl-mock__v cl-mock__v--big">$284,210</span></div>
+                  <div class="cl-mock__kv"><span class="cl-mock__k">Degen Score</span><span class="cl-mock__v" style="color:#ffd60a;">72 / 100</span></div>
+                </div>
+                <div class="cl-mock__divider"></div>
+                <div class="cl-mock__holdings-label">Top Holdings</div>
+                <div class="cl-mock__holding"><span class="cl-mock__sym">WETH</span><span class="cl-mock__chain">ETH</span><span class="cl-mock__amt" style="color:#fff;">$141,320</span><span class="cl-mock__pct cl-mock__pct--up">+12.4%</span></div>
+                <div class="cl-mock__holding"><span class="cl-mock__sym">ARB</span><span class="cl-mock__chain">Arbitrum</span><span class="cl-mock__amt">$67,840</span><span class="cl-mock__pct cl-mock__pct--up">+4.1%</span></div>
+                <div class="cl-mock__holding"><span class="cl-mock__sym">PEPE</span><span class="cl-mock__chain">ETH</span><span class="cl-mock__amt">$42,100</span><span class="cl-mock__pct cl-mock__pct--dn">-8.2%</span></div>
+                <div class="cl-mock__divider"></div>
+                <div class="cl-mock__ai-row">
+                  <span class="cl-mock__ai-label">Clark AI</span>
+                  <span class="cl-mock__ai-tag">Smart Money · Accumulator pattern</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Spotlight 2: GhostTrade (flipped) -->
+    <div class="cl-spotlight cl-spotlight--flip cl-reveal" id="sp-ghosttrade">
+      <div class="cl-container">
+        <div class="cl-spotlight__inner">
+          <div class="cl-spotlight__text">
+            <div class="cl-spotlight__tag">Pro</div>
+            <h3 class="cl-spotlight__title">GhostTrade™</h3>
+            <p class="cl-spotlight__sub">$50,000 in virtual capital. Real market prices. Real AI coaching after every trade. Build and test strategies without risking a single cent — then run them live when you're ready.</p>
+            <ul class="cl-spotlight__list">
+              <li>Live DexScreener prices — no artificial fills</li>
+              <li>AI post-trade breakdown: what went right, what didn't</li>
+              <li>Win rate, streak, leaderboard ranking tracked</li>
+              <li>Full trade history with PnL per position</li>
+            </ul>
+            <button class="cl-btn cl-btn--primary" onclick="go('ghosttrade')" style="margin-top:24px;">Open GhostTrade™ →</button>
+          </div>
+          <div class="cl-spotlight__mockup">
+            <div class="cl-mock cl-mock--ghosttrade">
+              <div class="cl-mock__bar">
+                <span class="cl-mock__dot" style="background:#ef476f;"></span>
+                <span class="cl-mock__dot" style="background:#ffd60a;"></span>
+                <span class="cl-mock__dot" style="background:#00ffc8;"></span>
+                <span class="cl-mock__title">GhostTrade™ — Paper Portfolio</span>
+              </div>
+              <div class="cl-mock__body">
+                <div class="cl-mock__row" style="margin-bottom:14px;">
+                  <div class="cl-mock__kv"><span class="cl-mock__k">Balance</span><span class="cl-mock__v cl-mock__v--big">$63,480</span></div>
+                  <div class="cl-mock__kv"><span class="cl-mock__k">Total P&L</span><span class="cl-mock__v" style="color:#00ffc8;">+$13,480 (+26.9%)</span></div>
+                </div>
+                <div class="cl-mock__streak-row">
+                  <span class="cl-mock__streak-lbl">Win Streak</span>
+                  <span class="cl-mock__streak-dots">
+                    <span class="cl-mock__sd cl-mock__sd--w">W</span>
+                    <span class="cl-mock__sd cl-mock__sd--w">W</span>
+                    <span class="cl-mock__sd cl-mock__sd--w">W</span>
+                    <span class="cl-mock__sd cl-mock__sd--l">L</span>
+                    <span class="cl-mock__sd cl-mock__sd--w">W</span>
+                    <span class="cl-mock__sd cl-mock__sd--w">W</span>
+                    <span class="cl-mock__sd cl-mock__sd--w">W</span>
+                  </span>
+                  <span style="font-size:10px;color:#00ffc8;">68% WR</span>
+                </div>
+                <div class="cl-mock__divider"></div>
+                <div class="cl-mock__holdings-label">Open Positions</div>
+                <div class="cl-mock__holding"><span class="cl-mock__sym">SOL</span><span class="cl-mock__chain">Solana</span><span class="cl-mock__amt">$18,200</span><span class="cl-mock__pct cl-mock__pct--up">+22.1%</span></div>
+                <div class="cl-mock__holding"><span class="cl-mock__sym">BONK</span><span class="cl-mock__chain">SOL</span><span class="cl-mock__amt">$4,840</span><span class="cl-mock__pct cl-mock__pct--up">+38.4%</span></div>
+                <div class="cl-mock__divider"></div>
+                <div class="cl-mock__ai-row">
+                  <span class="cl-mock__ai-label">Clark AI</span>
+                  <span class="cl-mock__ai-tag">Momentum trader · Avg hold 14h</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Spotlight 3: PumpAlert -->
+    <div class="cl-spotlight cl-reveal" id="sp-pumpalert">
+      <div class="cl-container">
+        <div class="cl-spotlight__inner">
+          <div class="cl-spotlight__text">
+            <div class="cl-spotlight__tag">Elite</div>
+            <h3 class="cl-spotlight__title">PumpAlert™</h3>
+            <p class="cl-spotlight__sub">Early detection of unusual volume and price action before it goes viral. Filter by chain, minimum volume, and pump %. Get in before the crowd — not after the tweet.</p>
+            <ul class="cl-spotlight__list">
+              <li>Real-time DexScreener scanner — refreshes every 60s</li>
+              <li>Filters: chain, min volume, min pump %</li>
+              <li>AI risk rating on each alert (rug risk / legit pump)</li>
+              <li>Instant in-browser notifications via Price Alerts</li>
+            </ul>
+            <button class="cl-btn cl-btn--primary" onclick="go('pumpalert')" style="margin-top:24px;">Open PumpAlert™ →</button>
+          </div>
+          <div class="cl-spotlight__mockup">
+            <div class="cl-mock cl-mock--pumpalert">
+              <div class="cl-mock__bar">
+                <span class="cl-mock__dot" style="background:#ef476f;"></span>
+                <span class="cl-mock__dot" style="background:#ffd60a;"></span>
+                <span class="cl-mock__dot" style="background:#00ffc8;"></span>
+                <span class="cl-mock__title">PumpAlert™ — Live Scanner</span>
+                <span class="cl-mock__live-dot"></span>
+              </div>
+              <div class="cl-mock__body">
+                <div class="cl-mock__pump-item cl-mock__pump-item--hot">
+                  <div class="cl-mock__pump-sym">BRETT</div>
+                  <div class="cl-mock__pump-meta">Base · $2.4M vol</div>
+                  <div class="cl-mock__pump-pct">+847%</div>
+                  <div class="cl-mock__pump-risk" style="color:#ffd60a;">⚡ High</div>
+                </div>
+                <div class="cl-mock__pump-item">
+                  <div class="cl-mock__pump-sym">MOODENG</div>
+                  <div class="cl-mock__pump-meta">SOL · $890K vol</div>
+                  <div class="cl-mock__pump-pct">+312%</div>
+                  <div class="cl-mock__pump-risk" style="color:#00ffc8;">✓ OK</div>
+                </div>
+                <div class="cl-mock__pump-item">
+                  <div class="cl-mock__pump-sym">POPCAT</div>
+                  <div class="cl-mock__pump-meta">SOL · $440K vol</div>
+                  <div class="cl-mock__pump-pct">+194%</div>
+                  <div class="cl-mock__pump-risk" style="color:#00ffc8;">✓ OK</div>
+                </div>
+                <div class="cl-mock__pump-item">
+                  <div class="cl-mock__pump-sym">BLAZE</div>
+                  <div class="cl-mock__pump-meta">ETH · $120K vol</div>
+                  <div class="cl-mock__pump-pct">+88%</div>
+                  <div class="cl-mock__pump-risk" style="color:#ef476f;">⚠ Rug risk</div>
+                </div>
+                <div class="cl-mock__divider"></div>
+                <div class="cl-mock__filter-row">
+                  <span class="cl-mock__filter-chip active">All chains</span>
+                  <span class="cl-mock__filter-chip">Base</span>
+                  <span class="cl-mock__filter-chip">SOL</span>
+                  <span class="cl-mock__filter-chip">ETH</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </section>
 
   <!-- Live Discovery Feed -->
