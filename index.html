@@ -1235,6 +1235,103 @@ body::after {
   .cl-footer__grid { grid-template-columns: 1fr; }
 }
 
+/* ── PUMPALERT PAGE ── */
+.pa-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 24px; flex-wrap: wrap; margin-bottom: 20px;
+}
+.pa-header__title {
+  font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 900;
+  color: #fff; display: flex; align-items: center; gap: 10px;
+  margin-bottom: 6px;
+}
+.pa-live-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #ef476f; flex-shrink: 0;
+  box-shadow: 0 0 8px #ef476f;
+  animation: ctaDotPulse 1.2s ease-in-out infinite;
+}
+.pa-header__sub { font-size: 13px; color: var(--cl-text-3); max-width: 460px; line-height: 1.5; }
+.pa-header__stats {
+  display: flex; gap: 24px; flex-wrap: wrap; align-items: center;
+  background: rgba(255,255,255,0.02); border: 1px solid var(--cl-border);
+  border-radius: 12px; padding: 16px 20px;
+}
+.pa-stat { text-align: center; }
+.pa-stat__val {
+  font-family: 'Syne', sans-serif; font-size: 22px; font-weight: 900; color: #fff;
+  line-height: 1;
+}
+.pa-stat__lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--cl-text-4); margin-top: 3px; }
+.pa-controls {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 10px; margin-bottom: 16px;
+}
+.pa-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.pa-filter {
+  padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 700;
+  cursor: pointer; border: 1px solid var(--cl-border);
+  background: transparent; color: var(--cl-text-3);
+  transition: all 0.2s;
+}
+.pa-filter.active, .pa-filter:hover {
+  background: rgba(120,88,192,0.12); border-color: rgba(120,88,192,0.4);
+  color: #a78bfa;
+}
+.pa-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 12px; margin-bottom: 16px;
+}
+.pa-card {
+  border: 1px solid var(--cl-border); border-radius: 14px;
+  padding: 16px; cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  position: relative; overflow: hidden;
+}
+.pa-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px; background: var(--pa-color, #7858c0);
+  border-radius: 14px 0 0 14px;
+}
+.pa-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.3);
+  border-color: var(--pa-color, rgba(120,88,192,0.4));
+}
+.pa-card__top {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+.pa-card__avatar {
+  width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 900;
+}
+.pa-card__info { flex: 1; min-width: 0; }
+.pa-card__name { font-size: 13px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pa-card__flags { font-size: 10px; color: var(--cl-text-4); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pa-card__pct {
+  font-family: 'Syne', sans-serif; font-size: 20px; font-weight: 900;
+  flex-shrink: 0; line-height: 1;
+}
+.pa-card__bar-wrap { margin-bottom: 10px; }
+.pa-card__bar-track {
+  height: 3px; background: rgba(255,255,255,0.07);
+  border-radius: 2px; overflow: hidden; margin-bottom: 4px;
+}
+.pa-card__bar-fill { height: 100%; border-radius: 2px; transition: width 0.8s ease; }
+.pa-card__vol-lbl { font-size: 9px; color: var(--cl-text-4); }
+.pa-card__footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06);
+}
+.pa-card__vol { font-size: 10px; color: var(--cl-text-3); }
+.pa-card__ai {
+  font-size: 10px; font-weight: 700; color: var(--pa-color, #7858c0);
+  letter-spacing: 0.5px;
+}
+@media (max-width: 768px) { .pa-grid { grid-template-columns: repeat(2, 1fr); } .pa-header { flex-direction: column; } }
+@media (max-width: 480px) { .pa-grid { grid-template-columns: 1fr; } }
+
 /* ── COMPARISON TABLE ── */
 .cl-compare-section { padding: 80px 0 60px; text-align: center; }
 .cl-compare-wrap {
@@ -4857,31 +4954,67 @@ body::after {
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-pumpalert">
   <div class="cl-container"><div class="cl-page-inner">
-    <div class="cl-page-header">
-      <button class="cl-page-back" onclick="go('home')">← Back</button>
-      <div class="cl-page-title">PumpAlert™</div>
-      <div class="cl-page-subtitle">Real-time pump/dump detection across 150 coins. AI classifies each move.</div>
-    </div>
-    <div class="cl-card">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
-        <div class="cl-label" style="margin:0;">Live Detections</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button class="pa-filter active" onclick="setPAFilter('all',this)">All</button>
-          <button class="pa-filter" onclick="setPAFilter('pump',this)">🚀 Pumps</button>
-          <button class="pa-filter" onclick="setPAFilter('dump',this)">📉 Dumps</button>
-          <button class="pa-filter" onclick="setPAFilter('watch',this)">👁 Watch</button>
+
+    <!-- Scanner Header -->
+    <div class="pa-header">
+      <div class="pa-header__left">
+        <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+        <div class="pa-header__title">
+          <span class="pa-live-dot"></span>
+          PumpAlert™
         </div>
-        <button class="cl-btn cl-btn--secondary cl-btn--sm" onclick="doPumpAlert()">Refresh →</button>
+        <div class="pa-header__sub">Early pump &amp; dump detection across 150+ coins. Click any alert for AI classification.</div>
       </div>
-      <div id="pa-results"><div style="text-align:center;padding:28px;color:var(--cl-text-3);">Loading pump scanner...</div></div>
+      <div class="pa-header__stats">
+        <div class="pa-stat">
+          <div class="pa-stat__val" id="pa-stat-count">—</div>
+          <div class="pa-stat__lbl">Alerts Found</div>
+        </div>
+        <div class="pa-stat">
+          <div class="pa-stat__val" id="pa-stat-pumps" style="color:#00ffc8;">—</div>
+          <div class="pa-stat__lbl">Pumping</div>
+        </div>
+        <div class="pa-stat">
+          <div class="pa-stat__val" id="pa-stat-dumps" style="color:#ef476f;">—</div>
+          <div class="pa-stat__lbl">Dumping</div>
+        </div>
+        <div class="pa-stat">
+          <div class="pa-stat__val" id="pa-stat-time" style="font-size:12px;color:var(--cl-text-4);">—</div>
+          <div class="pa-stat__lbl">Last Scan</div>
+        </div>
+      </div>
     </div>
+
+    <!-- Controls bar -->
+    <div class="pa-controls">
+      <div class="pa-filters">
+        <button class="pa-filter active" onclick="setPAFilter('all',this)">All</button>
+        <button class="pa-filter" onclick="setPAFilter('pump',this)">🚀 Pumps</button>
+        <button class="pa-filter" onclick="setPAFilter('dump',this)">📉 Dumps</button>
+        <button class="pa-filter" onclick="setPAFilter('watch',this)">👁 Watch</button>
+      </div>
+      <button class="cl-btn cl-btn--secondary cl-btn--sm" onclick="doPumpAlert()" id="pa-refresh-btn">Scan Now →</button>
+    </div>
+
+    <!-- Results grid -->
+    <div class="pa-grid" id="pa-results">
+      <div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--cl-text-3);">
+        <div style="font-size:32px;margin-bottom:12px;opacity:0.3;">🚨</div>
+        Click <strong>Scan Now</strong> to run the pump detector.
+      </div>
+    </div>
+
     <!-- AI Modal -->
     <div id="pa-modal" style="display:none;margin-top:14px;">
       <div class="cl-card">
-        <div class="cl-label" id="pa-modal-title">AI Analysis</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <div class="cl-label" id="pa-modal-title" style="margin:0;">AI Analysis</div>
+          <button onclick="document.getElementById('pa-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:var(--cl-text-4);font-size:18px;">✕</button>
+        </div>
         <div class="cl-result" id="pa-modal-body">Loading...</div>
       </div>
     </div>
+
   </div></div>
 </div>
 
@@ -6850,22 +6983,55 @@ function classifyPA(c) {
 function renderPAResults() {
   const el = document.getElementById('pa-results');
   if (!paAllData.length) return;
-  let data = paAllData;
-  if (paFilter !== 'all') data = data.filter(c => classifyPA(c).type === paFilter);
-  if (!data.length) { el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--cl-text-3);">No coins match this filter right now.</div>'; return; }
-  el.innerHTML = data.slice(0, 20).map(c => {
+  const all = paAllData.filter(c => classifyPA(c).type !== 'normal');
+  let data = paFilter === 'all' ? all : all.filter(c => classifyPA(c).type === paFilter);
+
+  // Update stat bar
+  const pumps = all.filter(c => classifyPA(c).type === 'pump').length;
+  const dumps  = all.filter(c => classifyPA(c).type === 'dump').length;
+  const countEl = document.getElementById('pa-stat-count');
+  const pumpsEl = document.getElementById('pa-stat-pumps');
+  const dumpsEl = document.getElementById('pa-stat-dumps');
+  if (countEl) countEl.textContent = all.length;
+  if (pumpsEl) pumpsEl.textContent = pumps;
+  if (dumpsEl) dumpsEl.textContent = dumps;
+
+  if (!data.length) {
+    el.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:32px;color:var(--cl-text-3);">No coins match this filter right now.</div>';
+    return;
+  }
+
+  el.innerHTML = data.slice(0, 24).map(c => {
     const { type, flags } = classifyPA(c);
-    if (type === 'normal') return '';
-    const up = c.price_change_percentage_24h >= 0;
-    const color = type === 'pump' ? '#00ffc8' : type === 'dump' ? '#ef476f' : '#f0b429';
-    return `<div onclick="analysePAModal('${c.id}','${c.name}','${c.symbol.toUpperCase()}','${c.price_change_percentage_24h?.toFixed(2)}','${type}')" style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--cl-border);cursor:pointer;transition:background 0.15s;" onmouseover="this.style.background='rgba(120,88,192,0.04)'" onmouseout="this.style.background=''">
-      <div style="display:flex;align-items:center;gap:10px;">
-        <div style="width:36px;height:36px;border-radius:8px;background:${color}18;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:${color};">${c.symbol.toUpperCase().slice(0,2)}</div>
-        <div><div style="font-size:13px;font-weight:700;">${c.name}</div><div style="font-size:10px;color:var(--cl-text-3);">${flags.join(' · ')}</div></div>
+    const pct = c.price_change_percentage_24h || 0;
+    const vol = c.total_volume || 0;
+    const mcap = c.market_cap || 1;
+    const vr = Math.min((vol / mcap) * 100, 100);
+    const up = pct >= 0;
+    const color  = type === 'pump' ? '#00ffc8' : type === 'dump' ? '#ef476f' : '#f0b429';
+    const bgCol  = type === 'pump' ? 'rgba(0,255,200,0.06)' : type === 'dump' ? 'rgba(239,71,111,0.06)' : 'rgba(240,180,41,0.05)';
+    const brdCol = type === 'pump' ? 'rgba(0,255,200,0.2)' : type === 'dump' ? 'rgba(239,71,111,0.2)' : 'rgba(240,180,41,0.18)';
+    const volFmt = vol >= 1e9 ? '$' + (vol/1e9).toFixed(1) + 'B' : vol >= 1e6 ? '$' + (vol/1e6).toFixed(0) + 'M' : '$' + (vol/1e3).toFixed(0) + 'K';
+    const sym2 = c.symbol.toUpperCase().slice(0,3);
+    return `<div class="pa-card" style="--pa-color:${color};background:${bgCol};border-color:${brdCol};"
+      onclick="analysePAModal('${c.id}','${encodeURIComponent(c.name)}','${c.symbol.toUpperCase()}','${pct.toFixed(2)}','${type}')">
+      <div class="pa-card__top">
+        <div class="pa-card__avatar" style="background:${color}18;color:${color};">${sym2}</div>
+        <div class="pa-card__info">
+          <div class="pa-card__name">${c.name}</div>
+          <div class="pa-card__flags">${flags.slice(0,2).join(' · ')}</div>
+        </div>
+        <div class="pa-card__pct" style="color:${color};">${up?'+':''}${pct.toFixed(1)}%</div>
       </div>
-      <div style="text-align:right;">
-        <div style="font-size:13px;font-weight:800;color:${color};">${up?'+':''}${c.price_change_percentage_24h?.toFixed(2)}%</div>
-        <div style="font-size:10px;color:var(--cl-cyan);">AI Analysis →</div>
+      <div class="pa-card__bar-wrap">
+        <div class="pa-card__bar-track">
+          <div class="pa-card__bar-fill" style="width:${vr.toFixed(0)}%;background:${color};"></div>
+        </div>
+        <span class="pa-card__vol-lbl">Vol/MCap ${vr.toFixed(0)}%</span>
+      </div>
+      <div class="pa-card__footer">
+        <span class="pa-card__vol">${volFmt} 24h vol</span>
+        <span class="pa-card__ai">Clark AI →</span>
       </div>
     </div>`;
   }).join('');
@@ -6873,15 +7039,24 @@ function renderPAResults() {
 
 async function doPumpAlert() {
   const el = document.getElementById('pa-results');
-  el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--cl-text-3);">Scanning 150+ coins...</div>';
+  const btn = document.getElementById('pa-refresh-btn');
+  el.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--cl-text-3);"><span class="cl-spinner"></span><br><br>Scanning 150+ coins...</div>';
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
   try {
     const r = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=100&price_change_percentage=24h,7d&x_cg_demo_api_key=${CGK}`);
     paAllData = await r.json();
+    const timeEl = document.getElementById('pa-stat-time');
+    if (timeEl) timeEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     renderPAResults();
-  } catch(e) { el.innerHTML = '<div style="color:var(--cl-red);">Error loading data. Try again.</div>'; }
+  } catch(e) {
+    el.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:32px;color:#ef476f;">Scan failed. Check your connection and try again.</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Scan Now →'; }
+  }
 }
 
 async function analysePAModal(id, name, sym, pct, type) {
+  name = decodeURIComponent(name);
   const modal = document.getElementById('pa-modal'), body = document.getElementById('pa-modal-body');
   document.getElementById('pa-modal-title').textContent = `${name} (${sym}) AI Analysis`;
   modal.style.display = 'block'; body.textContent = '';
