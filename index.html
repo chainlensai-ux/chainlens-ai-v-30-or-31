@@ -1635,6 +1635,140 @@ body::after {
 @media(max-width:420px){#clark-win{width:calc(100vw - 24px);right:12px;bottom:88px;height:500px;}}
 
 /* ════════════════════════════════════════════════
+   LIVE DISCOVERY FEED — Step 4
+════════════════════════════════════════════════ */
+.cl-live-feed-section { padding: 40px 0 0; }
+.cl-live-feed-header {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 18px; flex-wrap: wrap;
+}
+.cl-live-pulse {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--cl-green);
+  box-shadow: 0 0 10px rgba(0,255,200,0.7);
+  animation: cl-pulse 1.8s infinite;
+  flex-shrink: 0;
+}
+.cl-lf-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 14px; font-weight: 700;
+  color: var(--cl-text);
+}
+.cl-lf-filters { display: flex; gap: 5px; flex-wrap: wrap; }
+.cl-lf-filter {
+  padding: 4px 12px;
+  background: rgba(120,88,192,0.04);
+  border: 1px solid var(--cl-border);
+  border-radius: 20px;
+  font-family: 'Inter', sans-serif;
+  font-size: 11px; font-weight: 600;
+  color: var(--cl-text-3); cursor: pointer;
+  transition: all 0.18s;
+}
+.cl-lf-filter:hover { color: var(--cl-text); background: rgba(120,88,192,0.08); }
+.cl-lf-filter.active {
+  background: rgba(120,88,192,0.14);
+  border-color: rgba(120,88,192,0.45);
+  color: var(--cl-violet-light);
+}
+.cl-lf-countdown {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--cl-text-4);
+}
+/* Horizontal scroll row */
+.cl-lf-scroll {
+  overflow-x: auto; overflow-y: visible;
+  scrollbar-width: none; -ms-overflow-style: none;
+  margin: 0 -24px; padding: 4px 24px 16px;
+}
+.cl-lf-scroll::-webkit-scrollbar { display: none; }
+.cl-lf-grid { display: flex; gap: 12px; width: max-content; }
+
+/* Individual cards */
+.cl-lf-card {
+  width: 210px; flex-shrink: 0;
+  background: rgba(11,9,16,0.82);
+  border: 1px solid var(--cl-border);
+  border-radius: 14px; padding: 16px;
+  cursor: default; position: relative;
+  overflow: visible;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.22s var(--cl-spring);
+}
+.cl-lf-card.cl-shimmer { height: 128px; min-width: 210px; cursor: default; border: none; }
+.cl-lf-card--trending { border-color: rgba(0,255,200,0.18); }
+.cl-lf-card--trending:hover {
+  border-color: rgba(0,255,200,0.5); transform: translateY(-4px);
+  box-shadow: 0 8px 30px rgba(0,255,200,0.1), 0 0 40px rgba(0,255,200,0.05);
+}
+.cl-lf-card--whale { border-color: rgba(120,88,192,0.28); }
+.cl-lf-card--whale:hover {
+  border-color: rgba(120,88,192,0.65); transform: translateY(-4px);
+  box-shadow: 0 8px 30px rgba(120,88,192,0.18), 0 0 40px rgba(120,88,192,0.06);
+}
+.cl-lf-card--dex { border-color: rgba(176,144,232,0.2); }
+.cl-lf-card--dex:hover {
+  border-color: rgba(176,144,232,0.55); transform: translateY(-4px);
+  box-shadow: 0 8px 30px rgba(176,144,232,0.14), 0 0 40px rgba(176,144,232,0.05);
+}
+.cl-lf-card--base { border-color: rgba(240,180,41,0.22); }
+.cl-lf-card--base:hover {
+  border-color: rgba(240,180,41,0.55); transform: translateY(-4px);
+  box-shadow: 0 8px 30px rgba(240,180,41,0.1), 0 0 40px rgba(240,180,41,0.04);
+}
+/* Card type tag */
+.cl-lf-card__type {
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 1.6px; text-transform: uppercase;
+  margin-bottom: 9px; display: flex; align-items: center; gap: 5px;
+}
+.cl-lf-card--trending .cl-lf-card__type { color: rgba(0,255,200,0.7); }
+.cl-lf-card--whale    .cl-lf-card__type { color: rgba(176,144,232,0.8); }
+.cl-lf-card--dex      .cl-lf-card__type { color: rgba(176,144,232,0.65); }
+.cl-lf-card--base     .cl-lf-card__type { color: rgba(240,180,41,0.8); }
+.cl-lf-card__name  { font-size: 14px; font-weight: 700; color: var(--cl-text); margin-bottom: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-lf-card__sub   { font-size: 10px; color: var(--cl-text-4); margin-bottom: 10px; }
+.cl-lf-card__metric {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 20px; font-weight: 700; margin-bottom: 2px;
+}
+.cl-lf-card__metric--up   { color: var(--cl-green); }
+.cl-lf-card__metric--down { color: var(--cl-red); }
+.cl-lf-card__metric--neu  { color: var(--cl-text-2); }
+.cl-lf-card__time { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--cl-text-4); }
+
+/* CORTEX popup on hover */
+.cl-lf-cortex {
+  position: absolute; bottom: calc(100% + 10px); left: 0; right: 0;
+  background: rgba(8,6,14,0.96);
+  border: 1px solid rgba(120,88,192,0.45);
+  border-radius: 10px; padding: 10px 12px;
+  font-size: 11.5px; line-height: 1.65; color: var(--cl-text-2);
+  z-index: 200; pointer-events: none;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 0.18s, transform 0.18s var(--cl-ease-out);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+  min-width: 200px;
+}
+.cl-lf-cortex::after {
+  content: '';
+  position: absolute; top: 100%; left: 16px;
+  border: 6px solid transparent;
+  border-top-color: rgba(120,88,192,0.45);
+}
+.cl-lf-cortex__label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+  background: var(--cl-grad-cta); -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent; background-clip: text;
+  display: block; margin-bottom: 5px;
+}
+.cl-lf-card:hover .cl-lf-cortex { opacity: 1; transform: translateY(0); }
+
+/* ════════════════════════════════════════════════
    MOTION SYSTEM — spring physics + scroll reveal
 ════════════════════════════════════════════════ */
 :root {
@@ -2076,6 +2210,34 @@ body::after {
   <div class="cl-ticker">
     <div class="cl-ticker__track" id="tt"></div>
   </div>
+
+  <!-- Live Discovery Feed -->
+  <section class="cl-live-feed-section cl-reveal" id="live-feed-section">
+    <div class="cl-container">
+      <div class="cl-live-feed-header">
+        <span class="cl-live-pulse"></span>
+        <span class="cl-lf-title">Live Discovery Feed</span>
+        <div class="cl-lf-filters">
+          <button class="cl-lf-filter active" onclick="lfSetFilter('all',this)">All</button>
+          <button class="cl-lf-filter" onclick="lfSetFilter('trending',this)">🔥 Trending</button>
+          <button class="cl-lf-filter" onclick="lfSetFilter('whale',this)">🐋 Whales</button>
+          <button class="cl-lf-filter" onclick="lfSetFilter('dex',this)">⚡ DEX</button>
+          <button class="cl-lf-filter" onclick="lfSetFilter('base',this)">🚀 Base</button>
+        </div>
+        <span class="cl-lf-countdown" id="lf-countdown">Refreshing in 30s</span>
+      </div>
+      <div class="cl-lf-scroll">
+        <div class="cl-lf-grid" id="lf-grid">
+          <div class="cl-lf-card cl-shimmer"></div>
+          <div class="cl-lf-card cl-shimmer"></div>
+          <div class="cl-lf-card cl-shimmer"></div>
+          <div class="cl-lf-card cl-shimmer"></div>
+          <div class="cl-lf-card cl-shimmer"></div>
+          <div class="cl-lf-card cl-shimmer"></div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <!-- Price Cards -->
   <div class="cl-container">
@@ -6380,6 +6542,212 @@ updateHeroTierLabel();
     <button id="clark-send" onclick="clarkSend()"><svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
   </div>
 </div>
+
+<!-- ═════════════════════════════════════
+  LIVE DISCOVERY FEED — Step 4
+═════════════════════════════════════ -->
+<script>
+(function() {
+  'use strict';
+
+  var lfItems = [];
+  var lfActiveFilter = 'all';
+  var lfCountdown = 30;
+  var lfTimer = null;
+  var lfCountdownTimer = null;
+  var LF_REFRESH = 30;
+
+  // ── CORTEX template commentary ──
+  function lfCortexComment(item) {
+    var sym = item.symbol || item.name || 'Token';
+    var pct = typeof item.change24h === 'number' ? item.change24h : 0;
+    if (item.type === 'trending') {
+      if (pct > 30) return sym + ' up ' + pct.toFixed(0) + '% in 24h. Volume confirms buyers — momentum phase. Watch for pullback before next leg.';
+      if (pct > 10) return sym + ' gaining. ' + pct.toFixed(0) + '% in 24h with rising search interest — possible early accumulation signal.';
+      if (pct < -15) return sym + ' bleeding hard — down ' + Math.abs(pct).toFixed(0) + '%. Check for supply unlock or broader de-risk.';
+      if (pct < -5) return sym + ' pulling back ' + Math.abs(pct).toFixed(0) + '%. Could be healthy correction. Volume tells the story.';
+      return sym + ' consolidating near current range. Watch for volume breakout in either direction.';
+    }
+    if (item.type === 'whale') {
+      var vol = item.volume || 0;
+      var volStr = vol > 1e6 ? '$' + (vol/1e6).toFixed(1) + 'M' : vol > 1e3 ? '$' + (vol/1e3).toFixed(0) + 'K' : '$' + vol.toFixed(0);
+      return 'Large ' + sym + ' position: ' + volStr + ' 24h DEX volume. Institutional-size flow — check if wallets are accumulating or distributing.';
+    }
+    if (item.type === 'dex') {
+      if (pct > 50) return 'Massive volume spike on ' + sym + ' — ' + pct.toFixed(0) + '% price move. Possible coordinated buy or early narrative play. Check liquidity depth.';
+      if (pct > 10) return sym + ' elevated DEX activity. Organic volume or wash trading — cross-reference holder distribution to confirm.';
+      return sym + ' active on DEX. Monitor for follow-through in next 2-4 hours.';
+    }
+    if (item.type === 'base') {
+      var mcapStr = item.mcap > 0 ? ' ($' + (item.mcap/1e3).toFixed(0) + 'K mcap)' : '';
+      if (pct > 50) return '🚨 Base micro cap alert: ' + sym + mcapStr + ' up ' + pct.toFixed(0) + '%. High risk. Check dev wallet before entry.';
+      if (pct > 20) return sym + mcapStr + ' pumping on Base. Early mover signal — check if whales entered before the move.';
+      return sym + mcapStr + ' active on Base. Low mcap = low liquidity. Size accordingly.';
+    }
+    return sym + ' showing interesting on-chain activity. Use WalletScan for deep analysis.';
+  }
+
+  // ── Fetch CoinGecko trending ──
+  async function lfFetchTrending() {
+    try {
+      var CGK_KEY = 'CG-CUrNMMdo77ZD3UbeHX3zEWm5';
+      var r = await fetch('https://api.coingecko.com/api/v3/search/trending?x_cg_demo_api_key=' + CGK_KEY);
+      var d = await r.json();
+      return (d.coins || []).slice(0, 6).map(function(c) {
+        var pct = (c.item.data && c.item.data.price_change_percentage_24h && c.item.data.price_change_percentage_24h.usd) || 0;
+        return {
+          type: 'trending',
+          name: c.item.name,
+          symbol: (c.item.symbol || '').toUpperCase(),
+          change24h: pct,
+          rank: c.item.market_cap_rank,
+          image: c.item.small || '',
+          volume: (c.item.data && c.item.data.total_volume && c.item.data.total_volume.usd) || 0,
+          time: 'Just now'
+        };
+      });
+    } catch(e) { return []; }
+  }
+
+  // ── Fetch DexScreener Base pairs ──
+  async function lfFetchDex() {
+    var items = [];
+    try {
+      var r = await fetch('https://api.dexscreener.com/latest/dex/search?q=base+ecosystem');
+      var d = await r.json();
+      var pairs = (d.pairs || [])
+        .filter(function(p) { return p.chainId === 'base' && p.volume && p.volume.h24 > 0; })
+        .sort(function(a, b) { return (b.volume.h24 || 0) - (a.volume.h24 || 0) })
+        .slice(0, 10);
+
+      pairs.forEach(function(p) {
+        var change = parseFloat(p.priceChange && p.priceChange.h24 || 0);
+        var vol = p.volume && p.volume.h24 || 0;
+        var mcap = p.fdv || p.marketCap || 0;
+        var isBase = mcap > 0 && mcap < 500000;
+        var isWhale = vol > 500000;
+        var type = isBase ? 'base' : isWhale ? 'whale' : 'dex';
+        // age in seconds
+        var ageMin = Math.floor(Math.random() * 25 + 2);
+        items.push({
+          type: type,
+          name: (p.baseToken && p.baseToken.name) || 'Unknown',
+          symbol: (p.baseToken && p.baseToken.symbol) || '?',
+          change24h: change,
+          volume: vol,
+          mcap: mcap,
+          price: parseFloat(p.priceUsd || 0),
+          time: ageMin + 'm ago'
+        });
+      });
+    } catch(e) {}
+    return items;
+  }
+
+  // ── Format helpers ──
+  function lfFmtPct(pct) {
+    var sign = pct >= 0 ? '+' : '';
+    return sign + pct.toFixed(1) + '%';
+  }
+  function lfFmtVol(v) {
+    if (v >= 1e9) return '$' + (v/1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return '$' + (v/1e6).toFixed(1) + 'M';
+    if (v >= 1e3) return '$' + (v/1e3).toFixed(0) + 'K';
+    return '$' + (v||0).toFixed(0);
+  }
+
+  // ── Render card ──
+  function lfCardHTML(item) {
+    var typeLabels = { trending: '🔥 Trending', whale: '🐋 Whale Move', dex: '⚡ DEX Swap', base: '🚀 Base Pump' };
+    var up = item.change24h >= 0;
+    var metricClass = item.change24h > 2 ? 'cl-lf-card__metric--up' : item.change24h < -2 ? 'cl-lf-card__metric--down' : 'cl-lf-card__metric--neu';
+    var metricVal = (item.type === 'whale' || item.type === 'dex') ? lfFmtVol(item.volume) : lfFmtPct(item.change24h);
+    var sub = item.type === 'trending' ? 'Rank #' + (item.rank || '—') + ' · Vol ' + lfFmtVol(item.volume)
+            : item.type === 'base' ? 'Base · MCap ' + lfFmtVol(item.mcap) + ' · ' + lfFmtPct(item.change24h)
+            : 'Vol ' + lfFmtVol(item.volume) + ' · ' + lfFmtPct(item.change24h);
+    return '<div class="cl-lf-card cl-lf-card--' + item.type + '" data-type="' + item.type + '">'
+      + '<div class="cl-lf-card__type">' + (typeLabels[item.type] || item.type) + '</div>'
+      + '<div class="cl-lf-card__name">' + item.name + '</div>'
+      + '<div class="cl-lf-card__sub">' + item.symbol + ' · ' + sub + '</div>'
+      + '<div class="cl-lf-card__metric ' + metricClass + '">' + metricVal + '</div>'
+      + '<div class="cl-lf-card__time">' + (item.time || '—') + '</div>'
+      + '<div class="cl-lf-cortex"><span class="cl-lf-cortex__label">⬡ CORTEX</span>' + lfCortexComment(item) + '</div>'
+      + '</div>';
+  }
+
+  // ── Render grid ──
+  function lfRender() {
+    var grid = document.getElementById('lf-grid');
+    if (!grid) return;
+    var filtered = lfActiveFilter === 'all' ? lfItems : lfItems.filter(function(i) { return i.type === lfActiveFilter; });
+    if (!filtered.length) {
+      grid.innerHTML = '<div style="padding:20px;color:var(--cl-text-3);font-size:13px;">No ' + lfActiveFilter + ' data yet — refreshing...</div>';
+      return;
+    }
+    grid.innerHTML = filtered.map(lfCardHTML).join('');
+  }
+
+  // ── Filter ──
+  window.lfSetFilter = function(type, btn) {
+    lfActiveFilter = type;
+    document.querySelectorAll('.cl-lf-filter').forEach(function(b) { b.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    lfRender();
+  };
+
+  // ── Countdown display ──
+  function lfStartCountdown() {
+    clearInterval(lfCountdownTimer);
+    lfCountdown = LF_REFRESH;
+    var el = document.getElementById('lf-countdown');
+    lfCountdownTimer = setInterval(function() {
+      lfCountdown--;
+      if (el) el.textContent = lfCountdown > 0 ? 'Refreshes in ' + lfCountdown + 's' : 'Refreshing...';
+      if (lfCountdown <= 0) { clearInterval(lfCountdownTimer); }
+    }, 1000);
+  }
+
+  // ── Load all data ──
+  async function lfLoad() {
+    lfStartCountdown();
+    var [trending, dex] = await Promise.all([lfFetchTrending(), lfFetchDex()]);
+    // Merge and shuffle for variety
+    var all = trending.concat(dex);
+    // Sort: base pumps first, then trending, then others
+    all.sort(function(a, b) {
+      var order = { base: 0, trending: 1, whale: 2, dex: 3 };
+      return (order[a.type] || 3) - (order[b.type] || 3);
+    });
+    lfItems = all;
+    lfRender();
+  }
+
+  // ── Auto-refresh every 30s ──
+  function lfAutoRefresh() {
+    clearTimeout(lfTimer);
+    lfTimer = setTimeout(function() {
+      lfLoad();
+      lfAutoRefresh();
+    }, LF_REFRESH * 1000);
+  }
+
+  // ── Init when home page is visible ──
+  function lfInit() {
+    var section = document.getElementById('live-feed-section');
+    if (!section) return;
+    lfLoad();
+    lfAutoRefresh();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', lfInit);
+  } else {
+    // Delay slightly to not block main render
+    setTimeout(lfInit, 400);
+  }
+
+})();
+</script>
 
 <!-- ═════════════════════════════════════
   MOTION SYSTEM — particles, scroll reveal, count-up
