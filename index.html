@@ -6534,7 +6534,7 @@ function renderTrades() {
       + (canReplay ? '<button data-idx="' + i + '" onclick="gtReplay(+this.dataset.idx)" style="padding:2px 7px;background:rgba(120,88,192,0.1);border:1px solid rgba(120,88,192,0.25);border-radius:5px;font-size:9px;font-weight:700;color:var(--cl-violet);cursor:pointer;">▶ Replay</button>' : '')
       + '</div></div>'
       + '<div style="font-size:10px;color:var(--cl-text-3);margin-bottom:' + (coach ? '6px' : '0') + ';">' + chain.toUpperCase() + (timeStr ? ' · ' + timeStr : '') + '</div>'
-      + (coach ? '<div style="font-size:11px;color:var(--cl-text-3);">AI: ' + coach + '</div>' : '')
+      + (coach ? '<div style="font-size:11px;color:var(--cl-text-3);line-height:1.5;">🤖 ' + clarkMd(coach) + '</div>' : '')
       + '</div>';
   }).join('');
 }
@@ -9236,16 +9236,29 @@ function renderGTLeaderboard() {
   if (!el) return;
   gtUpdateLeaderboard();
   const lb = getGTLeaderboard();
+  const medals = ['🥇', '🥈', '🥉'];
   const rankColors = ['#FFD700', '#C0C0C0', '#CD7F32'];
   el.innerHTML = lb.slice(0, 10).map((e, i) => {
     const up = e.pct >= 0;
-    const rc = i < 3 ? rankColors[i] : 'var(--cl-text-3)';
-    return '<div style="display:flex;align-items:center;gap:10px;padding:8px ' + (e.isMe ? '10px' : '4px') + ';border-bottom:1px solid var(--cl-border);' + (e.isMe ? 'background:rgba(120,88,192,0.07);border-radius:7px;margin:0 -4px;' : '') + '">'
-      + '<div style="width:22px;text-align:center;font-size:12px;font-weight:900;color:' + rc + ';">' + (i + 1) + '</div>'
-      + '<div style="flex:1;font-size:12px;font-weight:' + (e.isMe ? '800' : '600') + ';color:' + (e.isMe ? 'var(--cl-cyan)' : 'var(--cl-text-1)') + ';">' + e.name + (e.isMe ? ' <span style="font-size:8px;padding:1px 5px;border-radius:10px;background:rgba(120,88,192,0.2);color:var(--cl-violet);">YOU</span>' : '') + '</div>'
-      + '<div style="font-size:10px;color:var(--cl-text-3);">$' + e.val.toLocaleString('en-US') + '</div>'
-      + '<div style="font-size:12px;font-weight:800;color:' + (up ? '#00ffc8' : '#ef476f') + ';min-width:58px;text-align:right;">' + (up ? '+' : '') + e.pct + '%</div>'
-      + '</div>';
+    const rc = i < 3 ? rankColors[i] : 'var(--cl-text-4)';
+    const rankIcon = i < 3 ? medals[i] : (i + 1);
+    const pctColor = up ? '#00ffc8' : '#ef476f';
+    const barW = Math.min(100, Math.max(2, Math.abs(e.pct) / 10));
+    return `<div style="display:flex;align-items:center;gap:10px;padding:9px ${e.isMe?'10px':'4px'};border-bottom:1px solid var(--cl-border);${e.isMe?'background:rgba(120,88,192,0.07);border-radius:8px;margin:2px -4px;':''}">
+      <div style="width:26px;text-align:center;font-size:${i<3?'16px':'12px'};font-weight:900;color:${rc};flex-shrink:0;">${rankIcon}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:12px;font-weight:${e.isMe?800:600};color:${e.isMe?'var(--cl-cyan)':'var(--cl-text-1)'};display:flex;align-items:center;gap:5px;">
+          ${e.name}${e.isMe?'<span style="font-size:8px;padding:1px 5px;border-radius:10px;background:rgba(120,88,192,0.2);color:var(--cl-violet);">YOU</span>':''}
+        </div>
+        <div style="height:3px;background:rgba(255,255,255,0.06);border-radius:2px;margin-top:4px;overflow:hidden;">
+          <div style="height:100%;width:${barW}%;background:${pctColor};border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+      </div>
+      <div style="text-align:right;flex-shrink:0;">
+        <div style="font-size:12px;font-weight:800;color:${pctColor};">${up?'+':''}${e.pct}%</div>
+        <div style="font-size:10px;color:var(--cl-text-4);">$${e.val.toLocaleString('en-US')}</div>
+      </div>
+    </div>`;
   }).join('');
 }
 
@@ -9301,17 +9314,27 @@ async function gtShowRisk(callback) {
   const level = score <= 3 ? 'LOW' : score <= 6 ? 'MEDIUM' : score <= 8 ? 'HIGH' : 'EXTREME';
   const scoreColor = score <= 3 ? '#00ffc8' : score <= 6 ? '#FFD700' : '#ef476f';
   const liqLabel = liq >= 1e6 ? (liq/1e6).toFixed(1) + 'M' : liq >= 1e3 ? (liq/1e3).toFixed(0) + 'K' : liq > 0 ? '$' + liq.toFixed(0) : 'Unknown';
-  const breakdown = [
-    '24h move: ' + (change24h >= 0 ? '+' : '') + change24h.toFixed(1) + '%  →  ' + (absV > 50 ? '🔴 Extreme' : absV > 30 ? '🟠 Very High' : absV > 15 ? '🟡 High' : absV > 5 ? '🔵 Moderate' : '🟢 Low') + ' volatility',
-    liq > 0 ? 'Liquidity: ' + liqLabel + '  →  ' + (liq < 10000 ? '🔴 Very Low' : liq < 50000 ? '🟠 Low' : liq < 200000 ? '🟡 Moderate' : '🟢 Good') : 'Liquidity: Unknown',
-    'Risk score: ' + score + '/10',
-  ].join('\n');
+  const volLevel = absV > 50 ? { label: 'Extreme', color: '#ef476f' } : absV > 30 ? { label: 'Very High', color: '#ef476f' } : absV > 15 ? { label: 'High', color: '#f0b429' } : absV > 5 ? { label: 'Moderate', color: '#b090e8' } : { label: 'Low', color: '#00ffc8' };
+  const liqLevel = !liq ? { label: 'Unknown', color: 'var(--cl-text-3)' } : liq < 10000 ? { label: 'Very Low', color: '#ef476f' } : liq < 50000 ? { label: 'Low', color: '#f0b429' } : liq < 200000 ? { label: 'Moderate', color: '#b090e8' } : { label: 'Good', color: '#00ffc8' };
   scoreEl.textContent = score;
   scoreEl.style.color = scoreColor;
   document.getElementById('gt-risk-label').textContent = level + ' RISK';
   document.getElementById('gt-risk-label').style.color = scoreColor;
-  document.getElementById('gt-risk-breakdown').style.whiteSpace = 'pre-line';
-  document.getElementById('gt-risk-breakdown').textContent = breakdown;
+  document.getElementById('gt-risk-breakdown').innerHTML = `
+    <div style="display:grid;gap:6px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:var(--cl-text-3);font-size:10px;">24h Move</span>
+        <span style="font-weight:700;font-size:11px;"><span style="color:${change24h>=0?'#00ffc8':'#ef476f'}">${change24h>=0?'+':''}${change24h.toFixed(1)}%</span> <span style="color:${volLevel.color};font-size:10px;">${volLevel.label}</span></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:var(--cl-text-3);font-size:10px;">Liquidity</span>
+        <span style="font-weight:700;font-size:11px;"><span style="color:var(--cl-text-2);">${liq > 0 ? '$'+liqLabel : '—'}</span> <span style="color:${liqLevel.color};font-size:10px;">${liqLevel.label}</span></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding-top:4px;border-top:1px solid var(--cl-border);">
+        <span style="color:var(--cl-text-3);font-size:10px;">Risk Score</span>
+        <span style="font-weight:800;font-size:12px;color:${scoreColor};">${score} / 10</span>
+      </div>
+    </div>`;
   document.getElementById('gt-risk-warn').style.display = score > 7 ? 'block' : 'none';
   const confirmBtn = document.getElementById('gt-risk-confirm');
   if (score > 7) { confirmBtn.style.background = 'rgba(239,71,111,0.1)'; confirmBtn.style.borderColor = 'rgba(239,71,111,0.3)'; confirmBtn.style.color = '#ef476f'; }
