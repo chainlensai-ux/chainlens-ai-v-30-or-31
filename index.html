@@ -1083,6 +1083,78 @@ body::after {
   .cl-trust-stat { padding: 8px 14px; }
 }
 
+/* ── ANNOUNCEMENT BAR ── */
+.cl-announce {
+  position: sticky; top: 0; z-index: 10000;
+  background: linear-gradient(90deg, #2d1b69 0%, #1a0f3d 50%, #0f2d1a 100%);
+  border-bottom: 1px solid rgba(120,88,192,0.3);
+  display: flex; align-items: center; justify-content: center;
+  padding: 9px 48px 9px 16px;
+  text-align: center;
+}
+.cl-announce__inner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center;
+}
+.cl-announce__badge {
+  background: linear-gradient(135deg, #7858c0, #00ffc8);
+  color: #000; font-size: 9px; font-weight: 900;
+  letter-spacing: 2px; padding: 2px 7px; border-radius: 3px;
+  flex-shrink: 0;
+}
+.cl-announce__text { font-size: 12px; color: rgba(255,255,255,0.85); }
+.cl-announce__link {
+  background: none; border: none; cursor: pointer;
+  color: #00ffc8; font-size: 12px; font-weight: 700;
+  padding: 0; text-decoration: underline; text-underline-offset: 2px;
+}
+.cl-announce__link:hover { color: #fff; }
+.cl-announce__close {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer;
+  color: rgba(255,255,255,0.4); font-size: 14px; line-height: 1;
+  padding: 4px;
+}
+.cl-announce__close:hover { color: #fff; }
+
+/* ── FAQ ── */
+.cl-faq-section {
+  padding: 80px 0 70px;
+  border-top: 1px solid var(--cl-border);
+}
+.cl-faq-grid {
+  margin-top: 48px; display: flex; flex-direction: column; gap: 0;
+  max-width: 760px; margin-left: auto; margin-right: auto;
+}
+.cl-faq {
+  border-bottom: 1px solid var(--cl-border);
+}
+.cl-faq__q {
+  width: 100%; background: none; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 20px 4px; text-align: left;
+  font-size: 15px; font-weight: 600; color: var(--cl-text-1);
+  font-family: inherit; transition: color 0.2s;
+}
+.cl-faq__q:hover { color: #fff; }
+.cl-faq__chevron {
+  font-size: 22px; color: var(--cl-text-4); flex-shrink: 0;
+  transition: transform 0.3s ease, color 0.2s;
+  display: inline-block; line-height: 1;
+}
+.cl-faq.open .cl-faq__chevron {
+  transform: rotate(90deg); color: var(--cl-teal);
+}
+.cl-faq__a {
+  max-height: 0; overflow: hidden;
+  transition: max-height 0.35s ease, padding 0.3s ease;
+  font-size: 14px; color: var(--cl-text-2); line-height: 1.7;
+  padding: 0 4px;
+}
+.cl-faq.open .cl-faq__a {
+  max-height: 200px;
+  padding: 0 4px 20px;
+}
+
 /* ── FEATURE SPOTLIGHT ── */
 .cl-spotlight-section { padding: 80px 0 60px; }
 .cl-spotlight {
@@ -2641,6 +2713,17 @@ body::after {
 <div class="cl-toast" id="toast"></div>
 
 <!-- ═════════════════════════════════════
+  ANNOUNCEMENT BAR
+═════════════════════════════════════ -->
+<div class="cl-announce" id="cl-announce">
+  <div class="cl-announce__inner">
+    <span class="cl-announce__badge">NEW</span>
+    <span class="cl-announce__text">PumpAlert now scans Base, Solana &amp; ETH simultaneously — <button class="cl-announce__link" onclick="go('pumpalert')">Try it free →</button></span>
+  </div>
+  <button class="cl-announce__close" onclick="document.getElementById('cl-announce').style.display='none'" aria-label="Dismiss">✕</button>
+</div>
+
+<!-- ═════════════════════════════════════
   NAV
 ═════════════════════════════════════ -->
 <nav class="cl-nav">
@@ -3404,6 +3487,98 @@ body::after {
       </div>
     </section>
   </div>
+
+  <!-- ═══════════════════ FAQ ═══════════════════ -->
+  <section class="cl-faq-section">
+    <div class="cl-container">
+      <div class="cl-section__eyebrow cl-reveal">FAQ</div>
+      <h2 class="cl-section__title cl-reveal">Questions you<br><span>probably have</span></h2>
+
+      <div class="cl-faq-grid">
+
+        <div class="cl-faq cl-reveal">
+          <button class="cl-faq__q" onclick="toggleFaq(this)">
+            Do you store my wallet keys or private data?
+            <span class="cl-faq__chevron">›</span>
+          </button>
+          <div class="cl-faq__a">
+            Never. ChainLens AI only reads public blockchain data from wallet addresses you provide. We never ask for private keys, seed phrases, or wallet connections. Your funds are always 100% in your control.
+          </div>
+        </div>
+
+        <div class="cl-faq cl-reveal">
+          <button class="cl-faq__q" onclick="toggleFaq(this)">
+            Which chains does WalletScan support?
+            <span class="cl-faq__chevron">›</span>
+          </button>
+          <div class="cl-faq__a">
+            Ethereum, BNB Chain, Polygon, Arbitrum, Base, Optimism (EVM wallets), Solana, and Bitcoin. More chains are added regularly. If a chain has a public explorer API, we can add it.
+          </div>
+        </div>
+
+        <div class="cl-faq cl-reveal">
+          <button class="cl-faq__q" onclick="toggleFaq(this)">
+            Is GhostTrade using real prices?
+            <span class="cl-faq__chevron">›</span>
+          </button>
+          <div class="cl-faq__a">
+            Yes. GhostTrade pulls live prices from DexScreener so your simulated trades reflect actual market conditions. There's no spread manipulation or artificial pricing — it's as close to real trading as paper trading gets.
+          </div>
+        </div>
+
+        <div class="cl-faq cl-reveal">
+          <button class="cl-faq__q" onclick="toggleFaq(this)">
+            How does PumpAlert detect pumps early?
+            <span class="cl-faq__chevron">›</span>
+          </button>
+          <div class="cl-faq__a">
+            PumpAlert queries DexScreener's live pairs API every 60 seconds, filtering for tokens showing unusual volume spikes and price action above your configured thresholds. It scores each alert for rug risk so you can separate genuine momentum from manufactured pumps.
+          </div>
+        </div>
+
+        <div class="cl-faq cl-reveal">
+          <button class="cl-faq__q" onclick="toggleFaq(this)">
+            Can I cancel my subscription any time?
+            <span class="cl-faq__chevron">›</span>
+          </button>
+          <div class="cl-faq__a">
+            Yes, always. No lock-ins, no cancellation fees. Cancel from your account settings in under 10 seconds. Your access continues until the end of the billing period you already paid for.
+          </div>
+        </div>
+
+        <div class="cl-faq cl-reveal">
+          <button class="cl-faq__q" onclick="toggleFaq(this)">
+            What's the difference between Pro and Elite?
+            <span class="cl-faq__chevron">›</span>
+          </button>
+          <div class="cl-faq__a">
+            Pro unlocks GhostTrade, DipRadar, TradeCoach, EdgeScan AI, SentimentPulse, TaxMate, Price Alerts, and Token Unlocks. Elite adds WalletScan, SignalBreaker, PumpAlert, NarrativeRank, Smart Wallets, and ProofVault — the heavy on-chain intelligence tools.
+          </div>
+        </div>
+
+        <div class="cl-faq cl-reveal">
+          <button class="cl-faq__q" onclick="toggleFaq(this)">
+            Is the AI analysis accurate?
+            <span class="cl-faq__chevron">›</span>
+          </button>
+          <div class="cl-faq__a">
+            Clark AI combines live blockchain data with GPT-4-class reasoning to give you specific, data-backed analysis — not generic crypto advice. That said, no AI is infallible. Always treat AI output as one input among many, not a financial instruction.
+          </div>
+        </div>
+
+        <div class="cl-faq cl-reveal">
+          <button class="cl-faq__q" onclick="toggleFaq(this)">
+            Do you have a mobile app?
+            <span class="cl-faq__chevron">›</span>
+          </button>
+          <div class="cl-faq__a">
+            ChainLens AI is a fully responsive web app — it works on any device. You can add it to your home screen on iOS and Android for an app-like experience. A native app is on the roadmap.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
 
   <!-- ═══════════════════ TERMINAL CTA ═══════════════════ -->
   <section class="cl-terminal-cta" id="terminal-cta">
@@ -4480,6 +4655,17 @@ function toast(msg, type = 'ok') {
 // ══════════════════════════════════════════════
 // ROUTING
 // ══════════════════════════════════════════════
+/* ═══════════════════════════════════════
+   FAQ TOGGLE
+═══════════════════════════════════════ */
+function toggleFaq(btn) {
+  const item = btn.closest('.cl-faq');
+  const isOpen = item.classList.contains('open');
+  // Close all open FAQs
+  document.querySelectorAll('.cl-faq.open').forEach(f => f.classList.remove('open'));
+  if (!isOpen) item.classList.add('open');
+}
+
 /* ═══════════════════════════════════════
    TERMINAL ENTRY ANIMATION
 ═══════════════════════════════════════ */
