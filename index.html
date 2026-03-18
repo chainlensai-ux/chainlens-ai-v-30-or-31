@@ -9849,9 +9849,10 @@ async function clarkSend() {
     clarkHistory[clarkAgent].push({ role: 'bot', text: reply.trim() });
   } catch(e) {
     clarkHistory[clarkAgent].push({ role: 'bot', text: 'Scan failed: ' + (e.message || 'unknown error') + '. Try again.' });
+  } finally {
+    clarkBusy = false;
+    clarkRender();
   }
-  clarkBusy = false;
-  clarkRender();
 }
 
 // Init Clark
@@ -9898,12 +9899,11 @@ async function heroClarkSend() {
   const sendBtn = document.getElementById('hc-send');
   if (sendBtn) sendBtn.style.opacity = '0.5';
 
-  hcAddMsg('user', text);
-  hcShowTyping();
-
   const sysPrompt = CLARK_BASE + '\n\nYou are answering a question on the ChainLens AI landing page. Keep responses to 2-3 sharp sentences. If the user asks to scan a specific wallet address, explain that live wallet scanning is available in the app — describe what ChainLens would show them (portfolio breakdown, smart money signals, transaction history) and encourage them to sign up free. Be direct, crypto-native, and compelling.';
 
   try {
+    hcAddMsg('user', text);
+    hcShowTyping();
     const reply = await ai(sysPrompt + '\n\nUser: ' + text + '\nClark:', 400);
     hcRemoveTyping();
     hcAddMsg('bot', (reply || '').trim() || 'Got it — connect your wallet inside the app for full live analysis.');
