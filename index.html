@@ -3698,6 +3698,31 @@ body::after {
 <!-- ═════════════════════════════════════
   AUTH MODAL
 ═════════════════════════════════════ -->
+<div class="cl-modal-overlay" id="wallet-modal">
+  <div class="cl-modal" style="max-width:400px;">
+    <button class="cl-modal__close" onclick="document.getElementById('wallet-modal').classList.remove('open')">×</button>
+    <div class="cl-modal__title" style="font-size:18px;margin-bottom:6px;">Connect Wallet</div>
+    <div class="cl-modal__sub" style="margin-bottom:24px;">Link your on-chain identity to ChainLens AI</div>
+    <div id="wm-metamask-btn-wrap">
+      <button class="cl-btn cl-btn--primary cl-btn--full" id="wm-metamask-btn" onclick="wmConnectMetaMask()" style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:12px;">
+        <svg width="22" height="22" viewBox="0 0 318 318" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0"><path d="M274.1 35.5l-99.7 73.9 18.4-43.6z" fill="#E2761B"/><path d="M43.9 35.5l98.7 74.6-17.4-44.3zm185.6 184.8l-26.5 40.6 56.7 15.6 16.3-55.3zm-226.5.9l16.2 55.3 56.7-15.6-26.5-40.6z" fill="#E4761B"/><path d="M167.7 174.7l-15.5 23.8 55.4 2.5-1.9-59.5zm-82.9-33.2l-1.9 59.5 55.4-2.5-15.5-23.8z" fill="#E4761B"/><path d="M121.2 110.1l-51 4.3 37.8 51.4zm74.5 55.7l37.8-51.4-51 4.3z" fill="#D7C1B3"/><path d="M120.9 267.5l33.5-16.2-28.8-22.5zm43.6-16.2l33.5 16.2-4.8-38.7z" fill="#233447"/><path d="M197.9 267.5l-33.4-16.2-2.7 21.9.3 9.4zm-76.9 0l36 15.1.2-9.4-2.6-21.9z" fill="#CD6116"/><path d="M158.1 206.2l-28-8.2 19.8-9zm1.8 0l8.2-17.2 19.9 9z" fill="#E4751F"/><path d="M120.9 267.5l5-40.6-31.5.9zm71.2-40.6l5 40.6 26.5-39.7zm31.8-82.9l-55.4 2.5 5.1 28.2 8.2-17.2 19.9 9zm-110.5 22.5l19.8-9 8.1 17.2 5.2-28.2-55.5-2.5z" fill="#F6851B"/><path d="M84.3 165.1l23.3 45.5-.8-22.6zm127-22.6l-.9 22.6 23.4-45.5zM167.7 174.7l-5.2 28.2 6.5 33.5 1.5-44.2zm-51.1 17.5l6.4-33.5-5.1-28.2-5 44.2z" fill="#FEF5DC" fill-opacity=".9"/><path d="M196.3 197.2l-19.9-9-1.6 13.3 1.8 22.5zm-75.4-9l-19.8 9 17.7 26.8 1.8-22.5z" fill="#D87C30"/></svg>
+        MetaMask
+      </button>
+    </div>
+    <div id="wm-no-mm" style="display:none;text-align:center;padding:12px;background:rgba(255,255,255,0.04);border-radius:10px;margin-bottom:12px;">
+      <div style="font-size:13px;color:var(--cl-text-2);margin-bottom:8px;">MetaMask not detected</div>
+      <a href="https://metamask.io/download/" target="_blank" class="cl-btn cl-btn--ghost" style="font-size:12px;display:inline-block;padding:6px 16px;">Install MetaMask →</a>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:16px 0;">
+      <div style="flex:1;height:1px;background:rgba(255,255,255,0.08);"></div>
+      <span style="font-size:11px;color:var(--cl-text-3);">or</span>
+      <div style="flex:1;height:1px;background:rgba(255,255,255,0.08);"></div>
+    </div>
+    <button class="cl-btn cl-btn--ghost cl-btn--full" onclick="document.getElementById('wallet-modal').classList.remove('open');openAuth('signup')">Sign up with Email →</button>
+    <div style="font-size:10px;color:var(--cl-text-3);text-align:center;margin-top:14px;line-height:1.5;">We never ask for private keys or seed phrases. Read-only access only.</div>
+  </div>
+</div>
+
 <div class="cl-modal-overlay" id="auth-modal">
   <div class="cl-modal">
     <button class="cl-modal__close" onclick="closeAuth()">×</button>
@@ -6679,45 +6704,50 @@ function openAuth(tab = 'signup') {
 }
 function closeAuth() { document.getElementById('auth-modal').classList.remove('open'); }
 
-async function connectWallet() {
+function connectWallet() {
+  const modal = document.getElementById('wallet-modal');
+  const noMM = document.getElementById('wm-no-mm');
+  const mmBtn = document.getElementById('wm-metamask-btn-wrap');
   if (typeof window.ethereum !== 'undefined') {
-    try {
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      const address = accounts[0];
-      const short = address.slice(0, 6) + '...' + address.slice(-4);
-      // Store wallet session locally
-      const walletSession = { wallet: address, plan: 'free', name: short };
-      localStorage.setItem('cl_wallet', address);
-      if (!user) {
-        user = walletSession;
-        updateNav();
-        toast('Wallet connected: ' + short, 'ok');
-      } else {
-        toast('Wallet connected: ' + short, 'ok');
-      }
-      // Listen for account changes
-      window.ethereum.on('accountsChanged', accs => {
-        if (!accs.length) {
-          localStorage.removeItem('cl_wallet');
-          user = null;
-          updateNav();
-          toast('Wallet disconnected', 'er');
-        } else {
-          const a = accs[0];
-          localStorage.setItem('cl_wallet', a);
-          if (user) { user.wallet = a; user.name = a.slice(0,6)+'...'+a.slice(-4); updateNav(); }
-        }
-      });
-    } catch(err) {
-      if (err.code === 4001) toast('Wallet connection cancelled', 'er');
-      else openAuth('signup');
-    }
+    noMM.style.display = 'none';
+    mmBtn.style.display = 'block';
   } else {
-    // No web3 wallet detected — fall back to email signup
-    openAuth('signup');
+    mmBtn.style.display = 'none';
+    noMM.style.display = 'block';
+  }
+  modal.classList.add('open');
+}
+
+async function wmConnectMetaMask() {
+  try {
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const address = accounts[0];
+    const short = address.slice(0, 6) + '...' + address.slice(-4);
+    localStorage.setItem('cl_wallet', address);
+    document.getElementById('wallet-modal').classList.remove('open');
+    if (!user) {
+      user = { wallet: address, plan: 'free', name: short };
+      updateNav();
+    }
+    toast('Wallet connected: ' + short, 'ok');
+    window.ethereum.on('accountsChanged', accs => {
+      if (!accs.length) {
+        localStorage.removeItem('cl_wallet');
+        if (user && user.wallet && !user.accessToken) { user = null; updateNav(); }
+        toast('Wallet disconnected', 'er');
+      } else {
+        const a = accs[0];
+        localStorage.setItem('cl_wallet', a);
+        if (user && user.wallet) { user.wallet = a; user.name = a.slice(0,6)+'...'+a.slice(-4); updateNav(); }
+      }
+    });
+  } catch(err) {
+    if (err.code === 4001) toast('Wallet connection cancelled', 'er');
+    else toast('Could not connect wallet', 'er');
   }
 }
 document.getElementById('auth-modal').addEventListener('click', e => { if (e.target === document.getElementById('auth-modal')) closeAuth(); });
+document.getElementById('wallet-modal').addEventListener('click', e => { if (e.target === document.getElementById('wallet-modal')) document.getElementById('wallet-modal').classList.remove('open'); });
 
 function switchTab(tab) {
   document.getElementById('tab-signup').classList.toggle('active', tab === 'signup');
