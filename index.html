@@ -3807,7 +3807,7 @@ body::after {
       </div>
 
       <div class="cl-hero__ctas">
-        <button class="cl-btn cl-btn--secondary cl-btn--lg" onclick="openAuth('signup')">Connect Wallet</button>
+        <button class="cl-btn cl-btn--secondary cl-btn--lg" onclick="connectWallet()">Connect Wallet</button>
         <button class="cl-btn cl-btn--primary cl-btn--lg" onclick="openAuth('signup')">Start Free</button>
       </div>
       <div class="cl-stats-strip">
@@ -6618,6 +6618,12 @@ function canAccess(feature) {
 
 async function initAuth() {
   try {
+    // Restore wallet-only session
+    const savedWallet = localStorage.getItem('cl_wallet');
+    if (savedWallet && !localStorage.getItem('cl_session')) {
+      user = { wallet: savedWallet, plan: 'free', name: savedWallet.slice(0,6)+'...'+savedWallet.slice(-4) };
+      updateNav();
+    }
     const cached = localStorage.getItem('cl_session');
     if (cached) {
       const parsed = JSON.parse(cached);
@@ -6672,6 +6678,45 @@ function openAuth(tab = 'signup') {
   switchTab(tab);
 }
 function closeAuth() { document.getElementById('auth-modal').classList.remove('open'); }
+
+async function connectWallet() {
+  if (typeof window.ethereum !== 'undefined') {
+    try {
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const address = accounts[0];
+      const short = address.slice(0, 6) + '...' + address.slice(-4);
+      // Store wallet session locally
+      const walletSession = { wallet: address, plan: 'free', name: short };
+      localStorage.setItem('cl_wallet', address);
+      if (!user) {
+        user = walletSession;
+        updateNav();
+        toast('Wallet connected: ' + short, 'ok');
+      } else {
+        toast('Wallet connected: ' + short, 'ok');
+      }
+      // Listen for account changes
+      window.ethereum.on('accountsChanged', accs => {
+        if (!accs.length) {
+          localStorage.removeItem('cl_wallet');
+          user = null;
+          updateNav();
+          toast('Wallet disconnected', 'er');
+        } else {
+          const a = accs[0];
+          localStorage.setItem('cl_wallet', a);
+          if (user) { user.wallet = a; user.name = a.slice(0,6)+'...'+a.slice(-4); updateNav(); }
+        }
+      });
+    } catch(err) {
+      if (err.code === 4001) toast('Wallet connection cancelled', 'er');
+      else openAuth('signup');
+    }
+  } else {
+    // No web3 wallet detected — fall back to email signup
+    openAuth('signup');
+  }
+}
 document.getElementById('auth-modal').addEventListener('click', e => { if (e.target === document.getElementById('auth-modal')) closeAuth(); });
 
 function switchTab(tab) {
@@ -9801,9 +9846,9 @@ function heroClarkPill(btn) {
   const inp = document.getElementById('hc-input');
   if (!inp) return;
   inp.value = btn.textContent;
-  inp.focus();
   inp.style.height = 'auto';
   inp.style.height = Math.min(inp.scrollHeight, 100) + 'px';
+  heroClarkSend();
 }
 
 async function heroClarkSend() {
