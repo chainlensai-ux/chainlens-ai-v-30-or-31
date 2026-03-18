@@ -2851,7 +2851,7 @@ body::after {
   background: #0a0a0a; border: 1px solid rgba(255,255,255,0.07);
   border-radius: 14px; padding: 20px; margin-bottom: 10px;
 }
-.ws-section--ai { border-top: 2px solid #00ffc8; border-radius: 0 0 14px 14px; }
+.ws-section--ai { border-top: 2px solid #00ffc8; border-radius: 14px; }
 .ws-section-header {
   display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
   padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -5591,7 +5591,7 @@ body::after {
           <span class="ws-section-title">AI Analysis</span>
           <span class="ws-section-badge">WalletScan AI</span>
         </div>
-        <div class="ws-terminal ws-terminal--active" id="ws-ai">Generating analysis...</div>
+        <div class="ws-terminal" id="ws-ai">Generating analysis...</div>
       </div>
 
       <!-- Holdings -->
@@ -6312,7 +6312,10 @@ function toggleFaq(btn) {
 /* ═══════════════════════════════════════
    TERMINAL ENTRY ANIMATION
 ═══════════════════════════════════════ */
+let _teRunning = false;
 function launchTerminal() {
+  if (_teRunning) return;
+  _teRunning = true;
   const overlay = document.getElementById('terminal-entry');
   const canvas  = document.getElementById('te-canvas');
   const panels  = [1,2,3,4].map(i => document.getElementById('te-p' + i));
@@ -6372,6 +6375,7 @@ function launchTerminal() {
     overlay.style.display = 'none';
     ctx.clearRect(0, 0, W, H);
     panels.forEach(p => { if (p) { p.style.opacity = ''; p.style.transition = ''; } });
+    _teRunning = false;
     go('sentiment'); // navigate to first tool page
   }, 3600);
 }
@@ -8722,9 +8726,7 @@ async function doWS() {
       _sv.textContent = _s;
       _sv.style.color = _ringColor;
     }
-    // Remove terminal cursor class once analysis is ready (re-applied on scan start)
-    const _aiEl = document.getElementById('ws-ai');
-    if (_aiEl) _aiEl.classList.add('ws-terminal--active');
+    // Cursor stays active (added on scan start) while AI analysis loads asynchronously
 
     // Intelligence grid
     const intelItems = [
@@ -8848,7 +8850,8 @@ async function doWS() {
   } catch(e) {
     document.getElementById('ws-total-value').textContent = 'Error';
     document.getElementById('ws-total-sub').textContent = e.message;
-    document.getElementById('ws-ai').textContent = 'Scan failed: ' + e.message;
+    const _aiErrEl = document.getElementById('ws-ai');
+    if (_aiErrEl) { _aiErrEl.classList.remove('ws-terminal--active'); _aiErrEl.textContent = 'Scan failed: ' + e.message; }
     toast(e.message, 'er');
   }
   btn.disabled = false; btn.textContent = 'SCAN';
