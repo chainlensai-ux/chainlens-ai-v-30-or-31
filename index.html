@@ -6463,6 +6463,71 @@ body::after {
 </div>
 
 <!-- ═════════════════════════════════════
+  PAGE: EXCHANGE FLOW
+═════════════════════════════════════ -->
+<div class="cl-page" id="pg-exchangeflow">
+  <div class="cl-container"><div class="cl-page-inner">
+    <div class="pg-header">
+      <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+      <div class="pg-header__row">
+        <div class="pg-header__icon">🔓</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">Exchange Flow</div>
+          <div class="pg-header__sub">Live exchange inflow &amp; outflow data. Track where smart money is moving crypto on-chain.</div>
+        </div>
+        <div class="pg-header__tags">
+          <span class="pg-tag" style="color:#00ffc8;border-color:rgba(0,255,200,0.2);">Inflow / Outflow</span>
+          <span class="pg-tag" style="color:#7858c0;border-color:rgba(120,88,192,0.2);">Exchange volumes</span>
+          <button class="cl-btn cl-btn--primary cl-btn--sm" id="efb" onclick="doExchangeFlow()" style="flex-shrink:0;">Scan Flows →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stat bar -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;" id="ef-stats">
+      <div class="cl-stat-pill">Exchange: <strong id="ef-stat-name">—</strong></div>
+      <div class="cl-stat-pill">24h Vol: <strong id="ef-stat-vol">—</strong></div>
+      <div class="cl-stat-pill">Top Pair: <strong id="ef-stat-pair">—</strong></div>
+    </div>
+
+    <div class="cl-two-col">
+      <!-- Exchange selector -->
+      <div class="cl-card">
+        <div class="cl-label">Select Exchange</div>
+        <select class="cl-input cl-select" id="ef-exchange" style="margin-bottom:12px;">
+          <option value="binance">Binance</option>
+          <option value="coinbase">Coinbase</option>
+          <option value="kraken">Kraken</option>
+          <option value="okx">OKX</option>
+          <option value="bybit">Bybit</option>
+          <option value="kucoin">KuCoin</option>
+          <option value="htx">HTX (Huobi)</option>
+          <option value="bitfinex">Bitfinex</option>
+        </select>
+        <div class="cl-label" style="margin-top:8px;">Token</div>
+        <input class="cl-input" id="ef-token" placeholder="e.g. bitcoin, ethereum, solana" value="bitcoin" style="margin-bottom:12px;"/>
+        <button class="cl-btn cl-btn--primary cl-btn--full" id="efb2" onclick="doExchangeFlow()">Fetch Flow Data →</button>
+        <div class="cl-ai-disclaimer" style="margin-top:10px;">Data sourced from CoinGecko exchange API.</div>
+      </div>
+
+      <!-- AI analysis -->
+      <div class="cl-card">
+        <div class="cl-label">CORTEX Flow Analysis</div>
+        <div id="ef-ai" style="min-height:60px;color:var(--cl-text-3);font-size:12px;">Run a scan to get AI flow analysis.</div>
+      </div>
+    </div>
+
+    <!-- Flow data table -->
+    <div class="cl-card" style="margin-top:14px;">
+      <div class="cl-label">Exchange Volume &amp; Flow Data</div>
+      <div id="ef-results" style="overflow-x:auto;">
+        <div style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:12px;">Select an exchange and token, then click Fetch Flow Data →</div>
+      </div>
+    </div>
+  </div></div>
+</div>
+
+<!-- ═════════════════════════════════════
   PAGE: TOKEN UNLOCKS
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-tokenunlocks">
@@ -6670,7 +6735,7 @@ body::after {
           <span class="td-nav-item__name">Whale Alerts</span>
           <span class="td-nav-item__badge">Elite</span>
         </div>
-        <div class="td-nav-item" onclick="tdNavGo('tokenunlocks',this)">
+        <div class="td-nav-item" onclick="tdNavGo('exchangeflow',this)">
           <span class="td-nav-item__icon">🔓</span>
           <span class="td-nav-item__name">Exchange Flow</span>
           <span class="td-nav-item__badge">Elite</span>
@@ -6921,7 +6986,8 @@ const GATED = {
   edgescan:'pro', digradar:'pro', ghosttrade:'pro', tradecoach:'pro',
   taxmate:'pro', sentiment:'pro', leaderboard:'free', proofvault:'pro',
   alerts:'pro', signals:'elite', narrative:'elite', walletscan:'elite',
-  pumpalert:'elite', smartwallets:'elite', tokenunlocks:'pro'
+  pumpalert:'elite', smartwallets:'elite', tokenunlocks:'pro',
+  exchangeflow:'elite', tokenscanner:'elite', portfoliotracker:'pro'
 };
 
 let px = {};
@@ -7063,7 +7129,7 @@ function go(id) {
   }
 
   // Auto-init pages
-  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); } };
+  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); }, exchangeflow: doExchangeFlow };
   if (inits[id]) inits[id]();
   if (id === 'alerts') { renderAlerts(); startAlertChecker(); }
   if (id === 'leaderboard') renderLB();
@@ -10372,6 +10438,119 @@ function loadSmartWallets() {
       <div class="sw-card__cta">Scan wallet →</div>
     </div>`;
   }).join('')}</div>`;
+}
+
+// ══════════════════════════════════════════════
+// ══════════════════════════════════════════════
+// EXCHANGE FLOW
+// ══════════════════════════════════════════════
+async function doExchangeFlow() {
+  const btn = document.getElementById('efb');
+  const btn2 = document.getElementById('efb2');
+  const resultsEl = document.getElementById('ef-results');
+  const aiEl = document.getElementById('ef-ai');
+  const exchangeId = document.getElementById('ef-exchange')?.value || 'binance';
+  const tokenInput = document.getElementById('ef-token')?.value.trim().toLowerCase() || 'bitcoin';
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="cl-spinner"></span>'; }
+  if (btn2) { btn2.disabled = true; btn2.innerHTML = '<span class="cl-spinner"></span>Fetching...'; }
+  resultsEl.innerHTML = '<div style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Fetching exchange flow data from CoinGecko...</div>';
+  aiEl.innerHTML = '<span class="cl-spinner"></span> Analysing flows...';
+
+  try {
+    // Fetch exchange info and tickers in parallel
+    const [infoR, tickersR] = await Promise.all([
+      fetch('/api/coingecko', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'exchange_info', exchangeId }) }),
+      fetch('/api/coingecko', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'exchange_tickers', exchangeId, coinId: tokenInput }) })
+    ]);
+
+    const info = infoR.ok ? await infoR.json() : null;
+    const tickersData = tickersR.ok ? await tickersR.json() : null;
+    const tickers = (tickersData?.tickers || []).slice(0, 15);
+
+    // Update stat bar
+    if (info) {
+      const nameEl = document.getElementById('ef-stat-name');
+      const volEl = document.getElementById('ef-stat-vol');
+      if (nameEl) nameEl.textContent = info.name || exchangeId;
+      if (volEl) volEl.textContent = info.trade_volume_24h_btc_normalized ? '$' + (parseFloat(info.trade_volume_24h_btc_normalized) * (px['bitcoin']?.usd || 90000) / 1e9).toFixed(1) + 'B' : '—';
+    }
+    if (tickers.length) {
+      const pairEl = document.getElementById('ef-stat-pair');
+      if (pairEl) pairEl.textContent = tickers[0].base + '/' + tickers[0].target;
+    }
+
+    // Render flow table
+    if (tickers.length) {
+      resultsEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="color:var(--cl-text-4);text-transform:uppercase;font-size:9px;letter-spacing:0.5px;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <th style="text-align:left;padding:6px 8px;">Pair</th>
+              <th style="text-align:right;padding:6px 8px;">Price (USD)</th>
+              <th style="text-align:right;padding:6px 8px;">24h Vol (USD)</th>
+              <th style="text-align:right;padding:6px 8px;">Spread</th>
+              <th style="text-align:right;padding:6px 8px;">Trust</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tickers.map(t => {
+              const vol = t.converted_volume?.usd;
+              const volFmt = vol >= 1e9 ? '$' + (vol/1e9).toFixed(2) + 'B' : vol >= 1e6 ? '$' + (vol/1e6).toFixed(1) + 'M' : vol >= 1e3 ? '$' + (vol/1e3).toFixed(0) + 'K' : vol ? '$' + vol.toFixed(0) : '—';
+              const price = t.converted_last?.usd;
+              const priceFmt = price >= 1000 ? '$' + price.toLocaleString('en-US', {maximumFractionDigits:0}) : price >= 1 ? '$' + price.toFixed(2) : price ? '$' + price.toFixed(6) : '—';
+              const spread = t.bid_ask_spread_percentage;
+              const spreadFmt = spread ? spread.toFixed(3) + '%' : '—';
+              const trust = t.trust_score === 'green' ? '<span style="color:#00ffc8;">●</span>' : t.trust_score === 'yellow' ? '<span style="color:#f0b429;">●</span>' : '<span style="color:#ef476f;">●</span>';
+              return `<tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+                <td style="padding:7px 8px;color:var(--cl-text);font-weight:600;">${t.base}/${t.target}</td>
+                <td style="padding:7px 8px;text-align:right;color:var(--cl-text-2);">${priceFmt}</td>
+                <td style="padding:7px 8px;text-align:right;color:#00ffc8;font-weight:700;">${volFmt}</td>
+                <td style="padding:7px 8px;text-align:right;color:var(--cl-text-3);">${spreadFmt}</td>
+                <td style="padding:7px 8px;text-align:right;">${trust}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+    } else {
+      resultsEl.innerHTML = '<div style="text-align:center;padding:24px;color:var(--cl-text-3);font-size:12px;">No tickers found for this exchange/token combination. Try a different token.</div>';
+    }
+
+    // AI CORTEX analysis
+    const totalVol = tickers.reduce((s, t) => s + (t.converted_volume?.usd || 0), 0);
+    const volFmtAI = totalVol >= 1e9 ? '$' + (totalVol/1e9).toFixed(2) + 'B' : '$' + (totalVol/1e6).toFixed(1) + 'M';
+    const exchangeName = info?.name || exchangeId;
+    const topPairs = tickers.slice(0, 5).map(t => t.base + '/' + t.target + ' (' + (t.converted_volume?.usd >= 1e6 ? '$' + (t.converted_volume.usd/1e6).toFixed(0) + 'M' : '$?') + ')').join(', ');
+
+    const aiTxt = await ai(`You are ChainLens AI Exchange Flow analyst.
+Exchange: ${exchangeName} | Token queried: ${tokenInput.toUpperCase()} | Total 24h volume: ${volFmtAI}
+Top pairs: ${topPairs || 'N/A'}
+Live prices: ${ctx()}
+Reply ONLY in this format:
+FLOW: [inflow or outflow signal based on volume data — 1 sentence]
+SIGNAL: [ACCUMULATION / DISTRIBUTION / NEUTRAL]
+CONTEXT: [2 sentences on what this volume pattern means for price direction]`, 300);
+
+    const flowMatch = aiTxt.match(/FLOW:\s*(.+)/i);
+    const sigMatch = aiTxt.match(/SIGNAL:\s*(\w+)/i);
+    const ctxMatch = aiTxt.match(/CONTEXT:\s*([\s\S]+)/i);
+    const sig = (sigMatch?.[1] || 'NEUTRAL').trim();
+    const sigColor = sig === 'ACCUMULATION' ? '#00ffc8' : sig === 'DISTRIBUTION' ? '#ef476f' : '#f0b429';
+
+    aiEl.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+        <span style="background:${sigColor}15;border:1px solid ${sigColor}40;color:${sigColor};border-radius:12px;padding:3px 10px;font-size:10px;font-weight:800;">⬡ ${sig}</span>
+      </div>
+      ${flowMatch ? `<div style="font-size:12px;color:var(--cl-text);line-height:1.6;margin-bottom:8px;">${flowMatch[1].trim()}</div>` : ''}
+      ${ctxMatch ? `<div style="font-size:11.5px;color:var(--cl-text-2);line-height:1.6;">${ctxMatch[1].trim()}</div>` : ''}
+      <div class="cl-ai-disclaimer" style="margin-top:10px;">Not financial advice.</div>`;
+
+  } catch(e) {
+    resultsEl.innerHTML = `<div style="color:var(--cl-red);font-size:12px;padding:16px;">Error: ${e.message}</div>`;
+    aiEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;">Analysis failed.</div>';
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Scan Flows →'; }
+  if (btn2) { btn2.disabled = false; btn2.textContent = 'Fetch Flow Data →'; }
 }
 
 // ══════════════════════════════════════════════
