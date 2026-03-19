@@ -9220,12 +9220,31 @@ async function doSentiment() {
 
     drawSentimentChart(d.data.reverse());
 
+    // Fetch price momentum data from CoinGecko (top gainers/losers for context)
+    let momentumData = '';
+    try {
+      const cgR = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=percent_change_desc&per_page=10&price_change_percentage=24h&x_cg_demo_api_key=${CGK}`);
+      if (cgR.ok) {
+        const gainers = await cgR.json();
+        const top3Gainers = gainers.filter(c => c.price_change_percentage_24h > 0).slice(0, 3)
+          .map(c => `${c.symbol.toUpperCase()} +${c.price_change_percentage_24h.toFixed(1)}%`).join(', ');
+        const cgR2 = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=percent_change_asc&per_page=5&price_change_percentage=24h&x_cg_demo_api_key=${CGK}`);
+        let top3Losers = '';
+        if (cgR2.ok) {
+          const losers = await cgR2.json();
+          top3Losers = losers.filter(c => c.price_change_percentage_24h < 0).slice(0, 3)
+            .map(c => `${c.symbol.toUpperCase()} ${c.price_change_percentage_24h.toFixed(1)}%`).join(', ');
+        }
+        momentumData = `\nPRICE MOMENTUM (24h): Top gainers: ${top3Gainers} | Top losers: ${top3Losers}`;
+      }
+    } catch(e) {}
+
     const txt = await ai(`You are ChainLens AI SentimentPulse™. Fear & Greed Index is ${val} (${current.value_classification}).
-Live prices: ${ctx()}
+Live prices: ${ctx()}${momentumData}
 Respond ONLY in this format:
 VERDICT: [1 bold sentence about what this score means right now]
 SIGNAL: [BUY DIP / HOLD / CAUTION / TAKE PROFIT]
-CONTEXT: [2-3 sentences on what's driving sentiment and what to watch]`, 350);
+CONTEXT: [2-3 sentences on what's driving sentiment, referencing top movers if relevant]`, 350);
 
     const verdict = txt.match(/VERDICT:\s*(.+)/)?.[1]?.trim() || '';
     const signal  = txt.match(/SIGNAL:\s*(.+)/)?.[1]?.trim() || '';
