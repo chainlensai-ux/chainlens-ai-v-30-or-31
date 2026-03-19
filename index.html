@@ -8976,6 +8976,24 @@ async function updateGT(silent = false) {
         })());
       }
       await Promise.all(fetches);
+      // CoinGecko fallback: for positions with no DexScreener price but a known CoinGecko ID
+      const noPrice = holdings.filter(([addr, pos]) => !priceMap[addr.toLowerCase()] && pos.coinGeckoId);
+      if (noPrice.length) {
+        try {
+          const ids = noPrice.map(([, pos]) => pos.coinGeckoId).join(',');
+          const cgCtrl = new AbortController();
+          const cgT = setTimeout(() => cgCtrl.abort(), 3000);
+          const cgR = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&x_cg_demo_api_key=${CGK}`, { signal: cgCtrl.signal });
+          clearTimeout(cgT);
+          if (cgR.ok) {
+            const cgData = await cgR.json();
+            for (const [addr, pos] of noPrice) {
+              const d = cgData[pos.coinGeckoId];
+              if (d && d.usd) priceMap[addr.toLowerCase()] = { price: d.usd, change24h: d.usd_24h_change || 0 };
+            }
+          }
+        } catch(e) {}
+      }
       for (const [addr, pos] of holdings) {
         const hit = priceMap[addr.toLowerCase()];
         if (hit) { pos.price = hit.price; pos.change24h = hit.change24h; }
@@ -9007,7 +9025,7 @@ async function gtrade() {
 }
 
 async function _executeGTrade(amt) {
-  // Fetch live execution price
+  // Fetch live execution price — DexScreener primary, CoinGecko fallback
   try {
     const ctrl2 = new AbortController();
     const t2 = setTimeout(() => ctrl2.abort(), 5000);
@@ -9015,6 +9033,16 @@ async function _executeGTrade(amt) {
     clearTimeout(t2);
     if (r.ok) { const d = await r.json(); const pairs = d.pairs || []; const p = pairs.sort((a,b) => parseFloat(b.liquidity?.usd||0) - parseFloat(a.liquidity?.usd||0)).find(x => x.priceUsd); if (p && p.priceUsd) gtToken.price = parseFloat(p.priceUsd); }
   } catch(e) {}
+  // CoinGecko fallback for major coins or when DexScreener has no price
+  if (!gtToken.price && gtToken.coinGeckoId) {
+    try {
+      const cgCtrl = new AbortController();
+      const cgT = setTimeout(() => cgCtrl.abort(), 4000);
+      const cgR = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${gtToken.coinGeckoId}&vs_currencies=usd&x_cg_demo_api_key=${CGK}`, { signal: cgCtrl.signal });
+      clearTimeout(cgT);
+      if (cgR.ok) { const cd = await cgR.json(); if (cd[gtToken.coinGeckoId]?.usd) gtToken.price = cd[gtToken.coinGeckoId].usd; }
+    } catch(e) {}
+  }
   const price = gtToken.price;
   if (!price) { toast('Could not get live price', 'er'); return; }
   const addr = gtToken.address;
