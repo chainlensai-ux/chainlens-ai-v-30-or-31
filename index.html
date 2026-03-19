@@ -10120,17 +10120,54 @@ async function doWS() {
         if (allEvmTxs[i].status === 'fulfilled') allTxs = allTxs.concat(allEvmTxs[i].value);
       });
       allTxs = allTxs.sort((a, b) => parseInt(b.timeStamp || 0) - parseInt(a.timeStamp || 0)).slice(0, 100);
-      // Fetch live prices for all ERC20 tokens via DexScreener
-      document.getElementById('ws-total-sub').textContent = 'Fetching token prices...';
+
+      // Fetch Covalent multi-chain token balances (with USD values) in parallel with DexScreener prices
+      document.getElementById('ws-total-sub').textContent = 'Fetching token balances via Covalent...';
       const tokenAssets = assets.filter(a => a.contractAddress);
-      const priceMap = await fetchTokenPrices(tokenAssets);
+      const [priceMap, covalentData] = await Promise.all([
+        fetchTokenPrices(tokenAssets),
+        fetch('/api/covalent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
+        }).then(r => r.ok ? r.json() : null).catch(() => null)
+      ]);
+
+      // Merge Covalent data: enrich existing assets and add any missing tokens
+      if (covalentData && !covalentData.error) {
+        const existingContracts = new Set(assets.map(a => (a.contractAddress || '').toLowerCase()));
+        Object.values(covalentData).forEach(chainResult => {
+          if (!chainResult?.tokens) return;
+          chainResult.tokens.forEach(ct => {
+            const ctAddr = (ct.contractAddress || '').toLowerCase();
+            const existingIdx = assets.findIndex(a => (a.contractAddress || '').toLowerCase() === ctAddr && a.chain === ct.chain);
+            if (existingIdx >= 0) {
+              // Enrich existing asset with Covalent USD value
+              if (ct.usdValue > 0) assets[existingIdx].usdValue = ct.usdValue;
+              if (ct.price > 0) assets[existingIdx].price = ct.price;
+            } else if (ctAddr && !existingContracts.has(ctAddr) && ct.balance > 0 && ct.usdValue > 0) {
+              // Add token found by Covalent but not by Etherscan
+              assets.push({ ...ct });
+              existingContracts.add(ctAddr);
+            }
+          });
+        });
+      }
+
+      // Apply DexScreener prices as fallback for tokens without Covalent pricing
       assets.forEach(a => {
         if (a.contractAddress) {
           const addr = a.contractAddress.toLowerCase();
-          a.price = priceMap[addr] != null ? priceMap[addr] : null;
-          a.usdValue = a.price != null ? a.price * a.balance : null;
+          if (a.price == null && priceMap[addr] != null) {
+            a.price = priceMap[addr];
+            a.usdValue = a.price * a.balance;
+          } else if (a.price == null) {
+            a.price = null;
+            a.usdValue = a.usdValue || null;
+          }
         }
       });
+
       totalUsd = assets.reduce((s, a) => s + (a.usdValue || 0), 0);
       const activeChains = [...new Set(assets.map(a => a.chain))].join(', ');
       portfolioSummary = 'Multi-chain: ' + (activeChains || 'none') + ', Assets: ' + assets.length + ', Txs: ' + allTxs.length;
