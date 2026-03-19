@@ -9600,6 +9600,33 @@ async function doPumpAlert() {
   }
 }
 
+// Fetch recent Base chain token transfers via Basescan to detect new wallet entries (last 30 min)
+async function fetchBaseNewWallets(contractAddress) {
+  if (!contractAddress || !contractAddress.startsWith('0x') || contractAddress.length < 40) return null;
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - 1800; // 30 minutes ago
+    const url = `https://api.basescan.org/api?module=account&action=tokentx&contractaddress=${contractAddress}&startblock=0&endblock=99999999&sort=desc&offset=50&page=1&apikey=ENV`;
+    const r = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d.status !== '1' || !Array.isArray(d.result)) return null;
+    const recentTxs = d.result.filter(tx => parseInt(tx.timeStamp) >= cutoff);
+    if (!recentTxs.length) return null;
+    // Count unique new buyer wallets (wallets receiving tokens for first time in this window)
+    const allSenders = new Set(d.result.map(tx => tx.from.toLowerCase()));
+    const newBuyers = recentTxs
+      .filter(tx => tx.to && !allSenders.has(tx.to.toLowerCase()) || recentTxs.filter(t => t.to?.toLowerCase() === tx.to?.toLowerCase()).length === 1)
+      .map(tx => tx.to?.toLowerCase())
+      .filter(Boolean);
+    const uniqueNew = new Set(newBuyers).size;
+    return { uniqueNew, totalRecent: recentTxs.length };
+  } catch(e) { return null; }
+}
+
 async function analysePAModal(id, name, sym, pct, type) {
   name = decodeURIComponent(name);
   const modal = document.getElementById('pa-modal'), body = document.getElementById('pa-modal-body');
@@ -9607,10 +9634,21 @@ async function analysePAModal(id, name, sym, pct, type) {
   modal.style.display = 'block';
   body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Analysing ' + sym + '...</div>';
   modal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  // Check if this is a Base chain token (id is a contract address from DexScreener)
+  const isBaseToken = id && id.startsWith('0x') && id.length >= 40;
+  let newWalletData = null;
+  if (isBaseToken) {
+    newWalletData = await fetchBaseNewWallets(id);
+  }
+
   try {
+    const walletContext = newWalletData
+      ? `\nBase chain wallet activity (last 30 min): ${newWalletData.uniqueNew} new wallets entered, ${newWalletData.totalRecent} total transactions.`
+      : '';
     const txt = await ai(`You are ChainLens AI PumpAlert™. Analyse this ${type} event.
 Coin: ${name} (${sym}) | 24h change: ${pct}% | Type: ${type.toUpperCase()}
-Live prices: ${ctx()}
+Live prices: ${ctx()}${walletContext}
 Reply in this EXACT format:
 ASSESSMENT: [ORGANIC/MANIPULATION/MIXED — one sentence why]
 DRIVER: [what is driving this move in one sentence]
@@ -9644,6 +9682,7 @@ ACTION: [what traders should do right now]`, 350);
             <div style="font-size:12px;color:var(--cl-text);line-height:1.5;font-weight:600;">${acMatch[1].trim()}</div>
           </div>
         </div>
+        ${newWalletData ? `<div style="background:rgba(167,139,250,0.08);border:1px solid rgba(167,139,250,0.2);border-radius:8px;padding:10px 12px;"><div style="font-size:9px;color:#a78bfa;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;font-weight:700;">🔗 Base Wallet Activity (30 min)</div><div style="font-size:12px;color:var(--cl-text-2);line-height:1.5;"><strong style="color:${newWalletData.uniqueNew > 5 ? '#ef476f' : newWalletData.uniqueNew > 2 ? '#f0b429' : '#00ffc8'};">${newWalletData.uniqueNew} new wallets</strong> entered · ${newWalletData.totalRecent} total txs in last 30 min${newWalletData.uniqueNew > 5 ? ' ⚠ Unusual wallet influx' : newWalletData.uniqueNew > 2 ? ' · Moderate interest' : ' · Low new interest'}</div></div>` : ''}
         <div class="cl-ai-disclaimer" style="margin-top:10px;">Not financial advice.</div>`;
     } else {
       body.innerHTML = `<div style="font-size:12px;color:var(--cl-text-2);line-height:1.6;">${txt.replace(/</g,'&lt;')}</div><div class="cl-ai-disclaimer" style="margin-top:10px;">Not financial advice.</div>`;
