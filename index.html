@@ -3640,8 +3640,8 @@ body::after {
   border: 1px solid transparent;
 }
 .td-nav-item:hover { background: rgba(139,92,246,0.06); color: #aaa; }
-.td-nav-item.td-active { background: rgba(139,92,246,0.1); color: #a78bfa; border-color: rgba(139,92,246,0.2); }
-.td-nav-item__icon { font-size: 13px; width: 16px; text-align: center; flex-shrink: 0; }
+.td-nav-item.td-active { background: rgba(139,92,246,0.1); color: #a78bfa; border-color: rgba(139,92,246,0.2); border-left: 3px solid rgba(139,92,246,0.8); padding-left: 8px; }
+.td-nav-item__icon { font-size: 18px; width: 18px; text-align: center; flex-shrink: 0; }
 .td-nav-item__name { flex: 1; }
 .td-nav-item__badge {
   font-size: 9px; font-family: 'JetBrains Mono', monospace;
@@ -3679,17 +3679,17 @@ body::after {
 
 /* Widgets */
 .td-widget {
-  background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 10px; overflow: hidden;
+  background: linear-gradient(180deg, #0d0d0d 0%, #0a0a0a 100%); border: 1px solid #1a1a1a; border-radius: 10px; overflow: hidden;
 }
 .td-widget--wide { grid-column: span 2; }
 .td-widget--full { grid-column: span 3; }
 .td-widget__header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 14px 9px; border-bottom: 1px solid #111;
+  padding: 10px 20px 9px; border-bottom: 1px solid #111;
 }
 .td-widget__title {
   font-family: 'Syne', sans-serif; font-size: 10px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 1.2px; color: #2DD4BF;
+  text-transform: uppercase; letter-spacing: 2px; color: #2DD4BF;
   display: flex; align-items: center; gap: 6px;
 }
 .td-widget__title-dot {
@@ -3701,7 +3701,7 @@ body::after {
   cursor: pointer; transition: color 0.2s; background: none; border: none; padding: 0;
 }
 .td-widget__action:hover { color: #8b5cf6; }
-.td-widget__body { padding: 12px 14px; }
+.td-widget__body { padding: 20px; }
 
 /* Portfolio Widget */
 .td-portfolio-value {
@@ -3815,8 +3815,9 @@ body::after {
 }
 .td-right.td-collapsed { width: 0; min-width: 0; opacity: 0; overflow: hidden; pointer-events: none; }
 .td-right__header {
-  height: 52px; padding: 0 12px; border-bottom: 1px solid #1a1a1a;
+  height: 52px; padding: 0 12px; border-bottom: 1px solid rgba(45,212,191,0.3);
   display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  box-shadow: 0 1px 8px rgba(45,212,191,0.08);
 }
 .td-right__clark-logo {
   width: 26px; height: 26px; border-radius: 6px;
@@ -6616,7 +6617,6 @@ body::after {
         <span class="td-topbar__bell-dot"></span>
       </button>
       <button class="td-topbar__wallet-btn" id="td-wallet-display" onclick="connectWallet()">Connect Wallet</button>
-      <button class="td-topbar__exit-btn" onclick="tdExitTerminal()">← Home</button>
     </div>
   </div>
 
@@ -7244,13 +7244,13 @@ function tdDrawGauge() {
   if (cortexEl) cortexEl.textContent = cortexMessages[grade];
 
   const ctx = canvas.getContext('2d');
-  const cx = 55, cy = 55, r = 44;
+  const cx = 55, cy = 55, r = 40;
   ctx.clearRect(0, 0, 110, 110);
 
   // Track
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0.75 * Math.PI, 0.25 * Math.PI, false);
-  ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 8; ctx.lineCap = 'round';
+  ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 14; ctx.lineCap = 'round';
   ctx.stroke();
 
   // Fill arc
@@ -7261,7 +7261,7 @@ function tdDrawGauge() {
   grad.addColorStop(1, gradeColor);
   ctx.beginPath();
   ctx.arc(cx, cy, r, startAngle, endAngle, false);
-  ctx.strokeStyle = grad; ctx.lineWidth = 8; ctx.lineCap = 'round';
+  ctx.strokeStyle = grad; ctx.lineWidth = 14; ctx.lineCap = 'round';
   ctx.stroke();
 }
 
