@@ -6528,6 +6528,69 @@ body::after {
 </div>
 
 <!-- ═════════════════════════════════════
+  PAGE: TOKEN SCANNER
+═════════════════════════════════════ -->
+<div class="cl-page" id="pg-tokenscanner">
+  <div class="cl-container"><div class="cl-page-inner">
+    <div class="pg-header">
+      <button class="cl-page-back" onclick="go('home')" style="margin-bottom:10px;">← Back</button>
+      <div class="pg-header__row">
+        <div class="pg-header__icon">🔬</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">Token Scanner</div>
+          <div class="pg-header__sub">Deep-scan Base chain tokens. DexScreener liquidity &amp; volume data. Basescan deployer wallet tracking.</div>
+        </div>
+        <div class="pg-header__tags">
+          <span class="pg-tag" style="color:#00ffc8;border-color:rgba(0,255,200,0.2);">DexScreener</span>
+          <span class="pg-tag" style="color:#7858c0;border-color:rgba(120,88,192,0.2);">Basescan</span>
+          <button class="cl-btn cl-btn--primary cl-btn--sm" id="tsb" onclick="doTokenScanner()" style="flex-shrink:0;">Scan Token →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stat bar -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;" id="ts-stats">
+      <div class="cl-stat-pill">Liquidity: <strong id="ts-stat-liq">—</strong></div>
+      <div class="cl-stat-pill">24h Vol: <strong id="ts-stat-vol">—</strong></div>
+      <div class="cl-stat-pill">FDV: <strong id="ts-stat-fdv">—</strong></div>
+      <div class="cl-stat-pill">Age: <strong id="ts-stat-age">—</strong></div>
+    </div>
+
+    <div class="cl-two-col">
+      <!-- Search input -->
+      <div class="cl-card">
+        <div class="cl-label">Token Address or Name</div>
+        <input class="cl-input" id="ts-input" placeholder="0x... or token name (e.g. DEGEN)" style="margin-bottom:12px;"/>
+        <button class="cl-btn cl-btn--primary cl-btn--full" id="tsb2" onclick="doTokenScanner()">Scan Token →</button>
+        <div class="cl-ai-disclaimer" style="margin-top:10px;">Searches Base chain via DexScreener + Basescan.</div>
+      </div>
+
+      <!-- AI analysis -->
+      <div class="cl-card">
+        <div class="cl-label">CORTEX Token Analysis</div>
+        <div id="ts-ai" style="min-height:60px;color:var(--cl-text-3);font-size:12px;">Enter a token address or name to get AI analysis.</div>
+      </div>
+    </div>
+
+    <!-- DexScreener pair data -->
+    <div class="cl-card" style="margin-top:14px;">
+      <div class="cl-label">DexScreener — Base Chain Pairs</div>
+      <div id="ts-pairs" style="overflow-x:auto;">
+        <div style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:12px;">Enter a token to scan Base chain pairs.</div>
+      </div>
+    </div>
+
+    <!-- Basescan deployer / dev wallet -->
+    <div class="cl-card" style="margin-top:14px;">
+      <div class="cl-label">Basescan — Deployer &amp; Dev Wallet Transfers</div>
+      <div id="ts-deployer" style="overflow-x:auto;">
+        <div style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:12px;">Dev wallet data will appear here after scan.</div>
+      </div>
+    </div>
+  </div></div>
+</div>
+
+<!-- ═════════════════════════════════════
   PAGE: TOKEN UNLOCKS
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-tokenunlocks">
@@ -6708,10 +6771,10 @@ body::after {
           <span class="td-nav-item__icon">🔍</span>
           <span class="td-nav-item__name">WalletScan</span>
         </div>
-        <div class="td-nav-item" onclick="tdNavGo('edgescan',this)">
-          <span class="td-nav-item__icon">⚡</span>
+        <div class="td-nav-item" onclick="tdNavGo('tokenscanner',this)">
+          <span class="td-nav-item__icon">🔬</span>
           <span class="td-nav-item__name">Token Scanner</span>
-          <span class="td-nav-item__badge">Pro</span>
+          <span class="td-nav-item__badge">Elite</span>
         </div>
         <div class="td-nav-item" onclick="tdNavGo('ghosttrade',this)">
           <span class="td-nav-item__icon">👻</span>
@@ -7129,7 +7192,7 @@ function go(id) {
   }
 
   // Auto-init pages
-  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); }, exchangeflow: doExchangeFlow };
+  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); }, exchangeflow: doExchangeFlow, tokenscanner: doTokenScanner };
   if (inits[id]) inits[id]();
   if (id === 'alerts') { renderAlerts(); startAlertChecker(); }
   if (id === 'leaderboard') renderLB();
@@ -10551,6 +10614,243 @@ CONTEXT: [2 sentences on what this volume pattern means for price direction]`, 3
   }
   if (btn) { btn.disabled = false; btn.textContent = 'Scan Flows →'; }
   if (btn2) { btn2.disabled = false; btn2.textContent = 'Fetch Flow Data →'; }
+}
+
+// ══════════════════════════════════════════════
+// TOKEN SCANNER
+// ══════════════════════════════════════════════
+async function doTokenScanner() {
+  const btn = document.getElementById('tsb');
+  const btn2 = document.getElementById('tsb2');
+  const pairsEl = document.getElementById('ts-pairs');
+  const deployerEl = document.getElementById('ts-deployer');
+  const aiEl = document.getElementById('ts-ai');
+  const query = (document.getElementById('ts-input')?.value || '').trim();
+
+  if (!query) {
+    pairsEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;padding:16px;">Enter a token address or name.</div>';
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="cl-spinner"></span>'; }
+  if (btn2) { btn2.disabled = true; btn2.innerHTML = '<span class="cl-spinner"></span>Scanning...'; }
+  pairsEl.innerHTML = '<div style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Fetching DexScreener data...</div>';
+  deployerEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Fetching Basescan data...</div>';
+  aiEl.innerHTML = '<span class="cl-spinner"></span> Analysing token...';
+
+  const isAddress = /^0x[0-9a-fA-F]{40}/.test(query);
+
+  try {
+    // ── DexScreener: search Base chain pairs ──
+    const dsEndpoint = isAddress
+      ? `https://api.dexscreener.com/latest/dex/tokens/${query}`
+      : `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`;
+
+    const dsR = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: dsEndpoint })
+    });
+
+    const dsData = dsR.ok ? await dsR.json() : null;
+    const allPairs = (dsData?.pairs || []);
+    const basePairs = allPairs.filter(p => p.chainId === 'base').slice(0, 10);
+    const bestPair = basePairs[0] || allPairs[0];
+
+    // Update stat bar
+    if (bestPair) {
+      const liqEl = document.getElementById('ts-stat-liq');
+      const volEl = document.getElementById('ts-stat-vol');
+      const fdvEl = document.getElementById('ts-stat-fdv');
+      const ageEl = document.getElementById('ts-stat-age');
+      const liq = bestPair.liquidity?.usd;
+      const vol = bestPair.volume?.h24;
+      const fdv = bestPair.fdv;
+      const created = bestPair.pairCreatedAt;
+      if (liqEl) liqEl.textContent = liq >= 1e6 ? '$' + (liq/1e6).toFixed(1)+'M' : liq >= 1e3 ? '$' + (liq/1e3).toFixed(0)+'K' : liq ? '$'+liq.toFixed(0) : '—';
+      if (volEl) volEl.textContent = vol >= 1e6 ? '$' + (vol/1e6).toFixed(1)+'M' : vol >= 1e3 ? '$' + (vol/1e3).toFixed(0)+'K' : vol ? '$'+vol.toFixed(0) : '—';
+      if (fdvEl) fdvEl.textContent = fdv >= 1e9 ? '$' + (fdv/1e9).toFixed(2)+'B' : fdv >= 1e6 ? '$' + (fdv/1e6).toFixed(1)+'M' : fdv >= 1e3 ? '$' + (fdv/1e3).toFixed(0)+'K' : fdv ? '$'+fdv.toFixed(0) : '—';
+      if (ageEl && created) {
+        const days = Math.floor((Date.now() - created) / 86400000);
+        ageEl.textContent = days < 1 ? '< 1 day' : days < 30 ? days + 'd' : Math.floor(days/30) + 'mo';
+      }
+    }
+
+    // Render pairs table
+    const displayPairs = basePairs.length ? basePairs : allPairs.slice(0, 10);
+    if (displayPairs.length) {
+      pairsEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="color:var(--cl-text-4);text-transform:uppercase;font-size:9px;letter-spacing:0.5px;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <th style="text-align:left;padding:6px 8px;">Pair</th>
+              <th style="text-align:left;padding:6px 8px;">DEX</th>
+              <th style="text-align:right;padding:6px 8px;">Price</th>
+              <th style="text-align:right;padding:6px 8px;">24h Chg</th>
+              <th style="text-align:right;padding:6px 8px;">Liquidity</th>
+              <th style="text-align:right;padding:6px 8px;">Vol 24h</th>
+              <th style="text-align:right;padding:6px 8px;">FDV</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${displayPairs.map(p => {
+              const price = parseFloat(p.priceUsd || 0);
+              const priceFmt = price >= 1000 ? '$'+price.toLocaleString('en-US',{maximumFractionDigits:0}) : price >= 1 ? '$'+price.toFixed(4) : price > 0 ? '$'+price.toFixed(8) : '—';
+              const chg = parseFloat(p.priceChange?.h24 || 0);
+              const chgColor = chg >= 0 ? '#00ffc8' : '#ef476f';
+              const liq = p.liquidity?.usd || 0;
+              const vol = p.volume?.h24 || 0;
+              const fdv = p.fdv || 0;
+              const fmt = v => v >= 1e9 ? '$'+(v/1e9).toFixed(2)+'B' : v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1e3 ? '$'+(v/1e3).toFixed(0)+'K' : v ? '$'+v.toFixed(0) : '—';
+              const chainBadge = p.chainId !== 'base' ? `<span style="font-size:9px;color:var(--cl-text-4);margin-left:4px;">${p.chainId}</span>` : '';
+              return `<tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+                <td style="padding:7px 8px;color:var(--cl-text);font-weight:600;">${p.baseToken?.symbol||'?'}/${p.quoteToken?.symbol||'?'}${chainBadge}</td>
+                <td style="padding:7px 8px;color:var(--cl-text-3);">${p.dexId||'—'}</td>
+                <td style="padding:7px 8px;text-align:right;color:var(--cl-text-2);">${priceFmt}</td>
+                <td style="padding:7px 8px;text-align:right;color:${chgColor};font-weight:700;">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</td>
+                <td style="padding:7px 8px;text-align:right;color:var(--cl-text-2);">${fmt(liq)}</td>
+                <td style="padding:7px 8px;text-align:right;color:#00ffc8;font-weight:700;">${fmt(vol)}</td>
+                <td style="padding:7px 8px;text-align:right;color:var(--cl-text-3);">${fmt(fdv)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+    } else {
+      pairsEl.innerHTML = '<div style="text-align:center;padding:24px;color:var(--cl-text-3);font-size:12px;">No pairs found. Try a contract address for more precise results.</div>';
+    }
+
+    // ── Basescan: deployer wallet + dev transfers ──
+    let deployerAddress = null;
+    let deployerTxs = [];
+    let devTransfers = [];
+    let totalSupply = 0;
+
+    const contractAddress = isAddress ? query : (bestPair?.baseToken?.address || null);
+
+    if (contractAddress) {
+      // Get contract deployer (creation tx)
+      const creatorUrl = `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contractAddress}&apikey=ENV`;
+      const creatorR = await fetch('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: creatorUrl })
+      });
+      const creatorData = creatorR.ok ? await creatorR.json() : null;
+      deployerAddress = creatorData?.result?.[0]?.contractCreator || null;
+
+      if (deployerAddress) {
+        // Get dev wallet token transfers for this token
+        const transferUrl = `https://api.basescan.org/api?module=account&action=tokentx&contractaddress=${contractAddress}&address=${deployerAddress}&sort=desc&page=1&offset=20&apikey=ENV`;
+        const transferR = await fetch('/api/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: transferUrl })
+        });
+        const transferData = transferR.ok ? await transferR.json() : null;
+        devTransfers = (transferData?.result || []).filter(t => typeof t === 'object' && t.hash);
+      }
+    }
+
+    // Render deployer section
+    if (contractAddress && deployerAddress) {
+      const shortDev = deployerAddress.slice(0,6) + '…' + deployerAddress.slice(-4);
+      let transferRows = '';
+      let totalSent = BigInt(0);
+      let totalReceived = BigInt(0);
+
+      devTransfers.forEach(tx => {
+        const isSend = tx.from?.toLowerCase() === deployerAddress.toLowerCase();
+        const val = BigInt(tx.value || 0);
+        const decimals = parseInt(tx.tokenDecimal || 18);
+        const humanVal = Number(val) / Math.pow(10, decimals);
+        const ts = new Date(parseInt(tx.timeStamp) * 1000);
+        const tsStr = ts.toISOString().slice(0,16).replace('T',' ');
+        if (isSend) totalSent += val; else totalReceived += val;
+        const dir = isSend
+          ? '<span style="color:#ef476f;font-weight:700;">↑ OUT</span>'
+          : '<span style="color:#00ffc8;font-weight:700;">↓ IN</span>';
+        const humanFmt = humanVal >= 1e9 ? (humanVal/1e9).toFixed(2)+'B' : humanVal >= 1e6 ? (humanVal/1e6).toFixed(2)+'M' : humanVal >= 1e3 ? (humanVal/1e3).toFixed(0)+'K' : humanVal.toFixed(0);
+        transferRows += `<tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+          <td style="padding:6px 8px;">${dir}</td>
+          <td style="padding:6px 8px;color:var(--cl-text-2);">${humanFmt} ${tx.tokenSymbol||'?'}</td>
+          <td style="padding:6px 8px;color:var(--cl-text-3);font-size:10px;">${tsStr} UTC</td>
+          <td style="padding:6px 8px;"><a href="https://basescan.org/tx/${tx.hash}" target="_blank" style="color:var(--cl-violet);font-size:10px;">View →</a></td>
+        </tr>`;
+      });
+
+      const sentHuman = devTransfers.length ? (Number(totalSent) / Math.pow(10, parseInt(devTransfers[0]?.tokenDecimal||18))) : 0;
+      const sentFmt = sentHuman >= 1e9 ? (sentHuman/1e9).toFixed(2)+'B' : sentHuman >= 1e6 ? (sentHuman/1e6).toFixed(2)+'M' : sentHuman >= 1e3 ? (sentHuman/1e3).toFixed(0)+'K' : sentHuman.toFixed(0);
+
+      deployerEl.innerHTML = `
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,0.06);">
+          <div class="cl-stat-pill">Deployer: <strong style="color:var(--cl-violet);">${shortDev}</strong></div>
+          <div class="cl-stat-pill">Total Dev Sells: <strong style="color:#ef476f;">${sentFmt} ${devTransfers[0]?.tokenSymbol||''}</strong></div>
+          <div class="cl-stat-pill">Tx Count: <strong>${devTransfers.length}</strong></div>
+          <a href="https://basescan.org/address/${deployerAddress}" target="_blank" class="cl-btn cl-btn--sm" style="font-size:10px;padding:4px 10px;">View on Basescan →</a>
+        </div>
+        ${devTransfers.length ? `
+          <table style="width:100%;border-collapse:collapse;font-size:11px;">
+            <thead>
+              <tr style="color:var(--cl-text-4);text-transform:uppercase;font-size:9px;letter-spacing:0.5px;border-bottom:1px solid rgba(255,255,255,0.06);">
+                <th style="text-align:left;padding:6px 8px;">Direction</th>
+                <th style="text-align:left;padding:6px 8px;">Amount</th>
+                <th style="text-align:left;padding:6px 8px;">Timestamp</th>
+                <th style="text-align:left;padding:6px 8px;">Tx</th>
+              </tr>
+            </thead>
+            <tbody>${transferRows}</tbody>
+          </table>` : '<div style="color:var(--cl-text-3);font-size:12px;padding:8px;">No dev wallet transfers found for this token.</div>'}`;
+    } else if (contractAddress) {
+      deployerEl.innerHTML = '<div style="color:var(--cl-text-3);font-size:12px;padding:16px;">Could not retrieve deployer data. The contract may not be verified on Basescan.</div>';
+    } else {
+      deployerEl.innerHTML = '<div style="color:var(--cl-text-3);font-size:12px;padding:16px;">No Base contract address found. Try scanning with a 0x address for full deployer data.</div>';
+    }
+
+    // ── CORTEX AI Analysis ──
+    const tokenName = bestPair?.baseToken?.name || bestPair?.baseToken?.symbol || query;
+    const tokenSym = bestPair?.baseToken?.symbol || query.toUpperCase();
+    const priceUsd = bestPair?.priceUsd || '?';
+    const liqUsd = bestPair?.liquidity?.usd || 0;
+    const volUsd = bestPair?.volume?.h24 || 0;
+    const fdvUsd = bestPair?.fdv || 0;
+    const chg24 = bestPair?.priceChange?.h24 || 0;
+    const pairCount = displayPairs.length;
+
+    const fmtN = v => v >= 1e9 ? '$'+(v/1e9).toFixed(2)+'B' : v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1e3 ? '$'+(v/1e3).toFixed(0)+'K' : v ? '$'+v.toFixed(0) : '?';
+    const devSellNote = deployerAddress ? `Dev wallet: ${deployerAddress.slice(0,6)}… | Dev transfers: ${devTransfers.length} txs` : 'Deployer data unavailable';
+
+    const aiTxt = await ai(`You are ChainLens AI Token Scanner™ CORTEX analyst on Base chain.
+Token: ${tokenName} (${tokenSym}) | Contract: ${contractAddress || 'unknown'}
+Price: $${priceUsd} | 24h Change: ${chg24}% | Liquidity: ${fmtN(liqUsd)} | 24h Vol: ${fmtN(volUsd)} | FDV: ${fmtN(fdvUsd)}
+Active pairs on Base: ${pairCount} | ${devSellNote}
+Live market: ${ctx()}
+Reply ONLY in this format:
+SAFETY: [SAFE / RISKY / RED FLAG — based on liquidity, FDV, dev activity]
+SIGNAL: [BULLISH / BEARISH / NEUTRAL — based on price action and volume]
+ANALYSIS: [2-3 sentences on token health, dev wallet risk, and liquidity depth]`, 350);
+
+    const safetyMatch = aiTxt.match(/SAFETY:\s*(.+)/i);
+    const signalMatch = aiTxt.match(/SIGNAL:\s*(\w+)/i);
+    const analysisMatch = aiTxt.match(/ANALYSIS:\s*([\s\S]+)/i);
+    const safety = (safetyMatch?.[1] || '').trim();
+    const signal = (signalMatch?.[1] || 'NEUTRAL').toUpperCase().trim();
+    const safetyColor = safety.includes('RED') ? '#ef476f' : safety.includes('RISKY') ? '#f0b429' : '#00ffc8';
+    const sigColor = signal === 'BULLISH' ? '#00ffc8' : signal === 'BEARISH' ? '#ef476f' : '#f0b429';
+
+    aiEl.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+        <span style="background:${safetyColor}15;border:1px solid ${safetyColor}40;color:${safetyColor};border-radius:12px;padding:3px 10px;font-size:10px;font-weight:800;">🛡 ${safety || 'SCANNING'}</span>
+        <span style="background:${sigColor}15;border:1px solid ${sigColor}40;color:${sigColor};border-radius:12px;padding:3px 10px;font-size:10px;font-weight:800;">⬡ ${signal}</span>
+      </div>
+      ${analysisMatch ? `<div style="font-size:12px;color:var(--cl-text);line-height:1.6;">${analysisMatch[1].trim()}</div>` : ''}
+      <div class="cl-ai-disclaimer" style="margin-top:10px;">Not financial advice. Always DYOR.</div>`;
+
+  } catch(e) {
+    pairsEl.innerHTML = `<div style="color:var(--cl-red);font-size:12px;padding:16px;">Error: ${e.message}</div>`;
+    aiEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;">Analysis failed.</div>';
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Scan Token →'; }
+  if (btn2) { btn2.disabled = false; btn2.textContent = 'Scan Token →'; }
 }
 
 // ══════════════════════════════════════════════
