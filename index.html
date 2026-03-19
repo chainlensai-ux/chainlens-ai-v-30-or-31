@@ -6401,7 +6401,7 @@ function launchTerminal() {
     ctx.clearRect(0, 0, W, H);
     panels.forEach(p => { if (p) { p.style.opacity = ''; p.style.transition = ''; } });
     _teRunning = false;
-    go('sentiment'); // navigate to first tool page
+    go('home'); // navigate to main dashboard
   }, 3600);
 }
 
