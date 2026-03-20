@@ -7991,16 +7991,56 @@ async function tdClarkSend() {
     const liveCtx = ctx();
     const systemCtx = CLARK_BASE + `\n\nTERMINAL MODE: You are inside the ChainLens AI terminal dashboard. Be sharp and concise.\nLIVE PRICES: ${liveCtx}\nUse specific numbers. Max 3-4 sentences unless deep analysis is requested.`;
 
-    // Fetch detailed token data from CoinGecko when user asks about specific tokens
+    // Fetch detailed token data + LunarCrush social context when user asks about sentiment/trending/social
+    const needsLunarSocial = LUNARCRUSH_SOCIAL_KEYWORDS.test(text);
     let liveTokenData = '';
-    if (MARKET_KEYWORDS.test(text)) {
+    let fetchedForLunar = null;
+    if (MARKET_KEYWORDS.test(text) || needsLunarSocial) {
       try {
         const fetched = await clarkFetchTokenData(text);
-        if (fetched) liveTokenData = '\n\nLIVE TOKEN DATA (CoinGecko real-time):\n' + fetched;
+        fetchedForLunar = fetched;
+        if (MARKET_KEYWORDS.test(text) && fetched) liveTokenData = '\n\nLIVE TOKEN DATA (CoinGecko real-time):\n' + fetched;
       } catch(e) {}
     }
 
-    const userContent = liveTokenData ? text + liveTokenData : text;
+    let lunarSocialData = '';
+    if (needsLunarSocial && fetchedForLunar) {
+      try {
+        const extracted = clarkExtractFirstTokenTopicFromFetched(fetchedForLunar);
+        const topic = extracted?.topic;
+        if (topic) {
+          const sr = await fetch('/api/lunarsocial', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ topic, interval: '1d', limit: 14 })
+          });
+          const sd = sr.ok ? await sr.json() : null;
+          const gal = sd?.galaxyScore;
+          const sentScore = sd?.sentiment?.score;
+          const socialVol = sd?.socialVolumeTrend?.latest;
+          const fmtVol = v => {
+            if (v == null || !Number.isFinite(Number(v))) return '—';
+            const n = Number(v);
+            if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+            return n.toFixed(0);
+          };
+          const galTxt = gal != null ? gal + '/100' : '—';
+          const sentTxt = sentScore != null ? sentScore + '/100' : '—';
+          const volTxt = fmtVol(socialVol);
+          lunarSocialData =
+            '\n\nLUNARCRUSH SOCIAL CONTEXT (token: ' + topic + '):\n'
+            + 'Galaxy Score: ' + galTxt + '\n'
+            + 'Sentiment Score: ' + sentTxt + '\n'
+            + 'Social Volume (latest): ' + volTxt;
+        }
+      } catch(e) {}
+    }
+
+    let userContent = text;
+    if (liveTokenData) userContent += liveTokenData;
+    if (lunarSocialData) userContent += lunarSocialData;
     const res = await fetch('/api/claude', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -12181,6 +12221,20 @@ const SYM_TO_ID = Object.fromEntries(Object.entries(SYM).map(([id, sym]) => [sym
 // Keywords that suggest the user is asking about price / market data
 const MARKET_KEYWORDS = /\b(price|prices|priced|market cap|marketcap|volume|vol|24h|7d|change|pump|dump|ath|atl|high|low|rally|dip|performance|how is|how's|what is|what's|worth|trading at|sitting at|bullish|bearish)\b/i;
 
+// Keywords that suggest the user is asking about social/sentiment/trending for a token
+const LUNARCRUSH_SOCIAL_KEYWORDS = /\b(sentiment|trending|trend|social|activity|engagement|mentions|hype|galaxy score|galaxy|bullish|bearish)\b/i;
+
+function clarkExtractFirstTokenTopicFromFetched(fetchedText) {
+  if (!fetchedText) return null;
+  // Expected format from `clarkFetchTokenData()`:
+  // SYMBOL (Coin Name): price=$... | ...
+  const m = String(fetchedText).match(/^([A-Z0-9-_.]+)\s+\(([^)]+)\):/m);
+  if (!m) return null;
+  const sym = (m[1] || '').trim();
+  const name = (m[2] || '').trim();
+  return { topic: (name || sym).trim(), symbol: sym, name };
+}
+
 async function clarkFetchTokenData(text) {
   // Extract potential token symbols or names (1-10 char words, skip stopwords)
   const stopwords = new Set(['the','and','for','are','was','how','what','that','this','with','from','they','have','been','will','not','but','all','can','her','his','its','our','out','who','did','get','may','now','any','two','way','use','man','too','him','see','say','got','new','via','per','set','one','top','key','big','low','ran','hit','put','far','ask','had']);
@@ -12365,15 +12419,55 @@ async function clarkSend() {
 
       // Fetch live CoinGecko data for market / alpha / onboarding agents when the query mentions prices or tokens
       let liveMarketData = '';
+      let lunarSocialData = '';
       const isMarketQuery = ['market', 'alpha', 'onboarding'].includes(clarkAgent) && MARKET_KEYWORDS.test(text);
-      if (isMarketQuery) {
+      const needsLunarSocial = LUNARCRUSH_SOCIAL_KEYWORDS.test(text);
+      let fetchedForLunar = null;
+      if (isMarketQuery || needsLunarSocial) {
         const tb2 = document.querySelector('#clark-typing .clark-bubble');
         if (tb2) tb2.innerHTML = '<span style="font-size:0.72rem;opacity:0.75;white-space:nowrap">Fetching live data...</span>';
         const fetched = await clarkFetchTokenData(text);
-        if (fetched) liveMarketData = '\n\nLIVE MARKET DATA (real-time from CoinGecko):\n' + fetched + '\n\nUse this live data in your response — do not guess prices.';
+        if (fetched) {
+          fetchedForLunar = fetched;
+          if (isMarketQuery) liveMarketData = '\n\nLIVE MARKET DATA (real-time from CoinGecko):\n' + fetched + '\n\nUse this live data in your response — do not guess prices.';
+        }
       }
 
-      const prompt = CLARK_AGENTS[clarkAgent].system + liveMarketData + '\n\n' + (conv ? conv + '\n' : '') + 'User: ' + text + '\nClark:';
+      if (needsLunarSocial && fetchedForLunar) {
+        try {
+          const extracted = clarkExtractFirstTokenTopicFromFetched(fetchedForLunar);
+          const topic = extracted?.topic;
+          if (topic) {
+            const sr = await fetch('/api/lunarsocial', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ topic, interval: '1d', limit: 14 })
+            });
+            const sd = sr.ok ? await sr.json() : null;
+            const gal = sd?.galaxyScore;
+            const sentScore = sd?.sentiment?.score;
+            const socialVol = sd?.socialVolumeTrend?.latest;
+            const fmtVol = v => {
+              if (v == null || !Number.isFinite(Number(v))) return '—';
+              const n = Number(v);
+              if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+              if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+              if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+              return n.toFixed(0);
+            };
+            const galTxt = gal != null ? gal + '/100' : '—';
+            const sentTxt = sentScore != null ? sentScore + '/100' : '—';
+            const volTxt = fmtVol(socialVol);
+            lunarSocialData =
+              '\n\nLUNARCRUSH SOCIAL CONTEXT (token: ' + topic + '):\n'
+              + 'Galaxy Score: ' + galTxt + '\n'
+              + 'Sentiment Score: ' + sentTxt + '\n'
+              + 'Social Volume (latest): ' + volTxt;
+          }
+        } catch(e) {}
+      }
+
+      const prompt = CLARK_AGENTS[clarkAgent].system + liveMarketData + lunarSocialData + '\n\n' + (conv ? conv + '\n' : '') + 'User: ' + text + '\nClark:';
       reply = await ai(prompt, 400);
     }
 
@@ -12438,12 +12532,52 @@ async function heroClarkSend() {
 
     // Inject live CoinGecko data when user asks about token prices or market data
     let heroLiveData = '';
-    if (MARKET_KEYWORDS.test(text)) {
+    let heroLunarSocialData = '';
+    const needsLunarSocial = LUNARCRUSH_SOCIAL_KEYWORDS.test(text);
+    let fetchedForLunar = null;
+    if (MARKET_KEYWORDS.test(text) || needsLunarSocial) {
       const fetched = await clarkFetchTokenData(text);
-      if (fetched) heroLiveData = '\n\nLIVE MARKET DATA (real-time from CoinGecko):\n' + fetched + '\n\nUse this live data in your response — do not guess prices.';
+      if (fetched) {
+        fetchedForLunar = fetched;
+        if (MARKET_KEYWORDS.test(text)) heroLiveData = '\n\nLIVE MARKET DATA (real-time from CoinGecko):\n' + fetched + '\n\nUse this live data in your response — do not guess prices.';
+      }
     }
 
-    const reply = await ai(sysPrompt + heroLiveData + '\n\nUser: ' + text + '\nClark:', 400);
+    if (needsLunarSocial && fetchedForLunar) {
+      try {
+        const extracted = clarkExtractFirstTokenTopicFromFetched(fetchedForLunar);
+        const topic = extracted?.topic;
+        if (topic) {
+          const sr = await fetch('/api/lunarsocial', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ topic, interval: '1d', limit: 14 })
+          });
+          const sd = sr.ok ? await sr.json() : null;
+          const gal = sd?.galaxyScore;
+          const sentScore = sd?.sentiment?.score;
+          const socialVol = sd?.socialVolumeTrend?.latest;
+          const fmtVol = v => {
+            if (v == null || !Number.isFinite(Number(v))) return '—';
+            const n = Number(v);
+            if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+            return n.toFixed(0);
+          };
+          const galTxt = gal != null ? gal + '/100' : '—';
+          const sentTxt = sentScore != null ? sentScore + '/100' : '—';
+          const volTxt = fmtVol(socialVol);
+          heroLunarSocialData =
+            '\n\nLUNARCRUSH SOCIAL CONTEXT (token: ' + topic + '):\n'
+            + 'Galaxy Score: ' + galTxt + '\n'
+            + 'Sentiment Score: ' + sentTxt + '\n'
+            + 'Social Volume (latest): ' + volTxt;
+        }
+      } catch(e) {}
+    }
+
+    const reply = await ai(sysPrompt + heroLiveData + heroLunarSocialData + '\n\nUser: ' + text + '\nClark:', 400);
     hcRemoveTyping();
     hcAddMsg('bot', (reply || '').trim() || 'Got it — connect your wallet inside the app for full live analysis.');
   } catch(e) {
