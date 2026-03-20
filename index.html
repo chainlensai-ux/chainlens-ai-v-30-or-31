@@ -7270,6 +7270,7 @@ let _tdClarkBusy = false;
 let _tdInitDone = false;
 let _tdWhaleTimer = null;
 let _tdPumpTimer = null;
+let _tdMarketTimer = null;
 
 function tdExitTerminal() { go('home'); }
 
@@ -7338,11 +7339,13 @@ function initTerminal() {
   tdRenderPositions();
   tdRenderMarket();
 
-  // Live feed refresh every 30s
+  // Live feed refresh timers
   if (_tdWhaleTimer) clearInterval(_tdWhaleTimer);
   if (_tdPumpTimer) clearInterval(_tdPumpTimer);
+  if (_tdMarketTimer) clearInterval(_tdMarketTimer);
   _tdWhaleTimer = setInterval(tdAddWhaleItem, 8000);
   _tdPumpTimer = setInterval(tdAddPumpItem, 12000);
+  _tdMarketTimer = setInterval(tdRenderMarket, 60000);
 }
 
 /* ── Portfolio Widget ── */
@@ -7675,17 +7678,7 @@ function tdRenderPositions() {
 }
 
 /* ── Market Snapshot ── */
-function tdRenderMarket() {
-  // Find top gainer and loser from px
-  const coins = Object.entries(px || {});
-  if (coins.length === 0) return;
-  const sorted = coins
-    .filter(([, v]) => v?.usd_24h_change != null)
-    .sort((a, b) => b[1].usd_24h_change - a[1].usd_24h_change);
-
-  const gainer = sorted[0];
-  const loser = sorted[sorted.length - 1];
-
+async function tdRenderMarket() {
   const gainerEl = document.getElementById('td-mkt-gainer');
   const gainerChg = document.getElementById('td-mkt-gainer-chg');
   const loserEl = document.getElementById('td-mkt-loser');
@@ -7695,28 +7688,71 @@ function tdRenderMarket() {
   const btcDomEl = document.getElementById('td-mkt-btcdom');
   const btcDomSub = document.getElementById('td-mkt-btcdom-sub');
 
-  if (gainer && gainerEl) {
-    gainerEl.textContent = gainer[0].toUpperCase().slice(0,8);
-    if (gainerChg) gainerChg.textContent = '+' + gainer[1].usd_24h_change.toFixed(2) + '%';
-  }
-  if (loser && loserEl) {
-    loserEl.textContent = loser[0].toUpperCase().slice(0,8);
-    if (loserChg) loserChg.textContent = loser[1].usd_24h_change.toFixed(2) + '%';
-  }
+  try {
+    const [marketsRes, globalRes, fearGreedRes] = await Promise.all([
+      fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=150&page=1&price_change_percentage=24h'),
+      fetch('https://api.coingecko.com/api/v3/global'),
+      fetch('https://api.alternative.me/fng/?limit=1&format=json')
+    ]);
 
-  // BTC price change as sentiment proxy
-  const btcChg = px['bitcoin']?.usd_24h_change || 0;
-  const sentiment = btcChg > 3 ? 'GREED' : btcChg > 0 ? 'NEUTRAL' : btcChg > -3 ? 'CAUTION' : 'FEAR';
-  const sentColor = btcChg > 3 ? '#2DD4BF' : btcChg > 0 ? '#a78bfa' : btcChg > -3 ? '#f0b429' : '#ef476f';
-  if (sentEl) { sentEl.textContent = sentiment; sentEl.style.color = sentColor; }
-  if (sentSub) { sentSub.textContent = 'BTC ' + (btcChg >= 0 ? '+' : '') + btcChg.toFixed(2) + '%'; }
+    const markets = marketsRes.ok ? await marketsRes.json() : [];
+    const globalData = globalRes.ok ? await globalRes.json() : null;
+    const fearGreedData = fearGreedRes.ok ? await fearGreedRes.json() : null;
 
-  // BTC dominance estimate
-  const btcMcap = px['bitcoin']?.usd * 19700000 || 0;
-  const totalMcap = coins.reduce((s, [, v]) => s + (v?.usd || 0) * 1000000, 0);
-  const dom = btcMcap > 0 && totalMcap > 0 ? ((btcMcap / (totalMcap * 100)) * 100).toFixed(1) : '—';
-  if (btcDomEl) btcDomEl.textContent = typeof dom === 'string' && dom !== '—' ? dom + '%' : '~54%';
-  if (btcDomSub) { btcDomSub.textContent = btcChg >= 0 ? 'Trending up' : 'Trending down'; }
+    // Top gainer / loser from CoinGecko markets (by 24h change)
+    if (Array.isArray(markets) && markets.length > 0) {
+      const sorted = markets
+        .filter(m => m && (m.price_change_percentage_24h_in_currency != null || m.price_change_percentage_24h != null))
+        .sort((a, b) => {
+          const aChg = a.price_change_percentage_24h_in_currency ?? a.price_change_percentage_24h ?? 0;
+          const bChg = b.price_change_percentage_24h_in_currency ?? b.price_change_percentage_24h ?? 0;
+          return bChg - aChg;
+        });
+
+      if (sorted.length > 0 && gainerEl && gainerChg) {
+        const gainer = sorted[0];
+        const gChg = gainer.price_change_percentage_24h_in_currency ?? gainer.price_change_percentage_24h ?? 0;
+        gainerEl.textContent = (gainer.symbol || gainer.id || '').toUpperCase().slice(0, 8);
+        gainerChg.textContent = (gChg >= 0 ? '+' : '') + gChg.toFixed(2) + '%';
+      }
+
+      if (sorted.length > 1 && loserEl && loserChg) {
+        const loser = sorted[sorted.length - 1];
+        const lChg = loser.price_change_percentage_24h_in_currency ?? loser.price_change_percentage_24h ?? 0;
+        loserEl.textContent = (loser.symbol || loser.id || '').toUpperCase().slice(0, 8);
+        loserChg.textContent = (lChg >= 0 ? '+' : '') + lChg.toFixed(2) + '%';
+      }
+    }
+
+    // BTC dominance from CoinGecko /global
+    if (globalData && globalData.data && globalData.data.market_cap_percentage && btcDomEl && btcDomSub) {
+      const btcDom = globalData.data.market_cap_percentage.btc;
+      if (typeof btcDom === 'number') {
+        btcDomEl.textContent = btcDom.toFixed(1) + '%';
+        btcDomSub.textContent = 'Share of total market cap';
+      }
+    }
+
+    // Fear / Greed sentiment (Alternative.me)
+    if (fearGreedData && Array.isArray(fearGreedData.data) && fearGreedData.data.length > 0 && sentEl && sentSub) {
+      const fg = fearGreedData.data[0];
+      const value = parseFloat(fg.value);
+      const classification = fg.value_classification || 'Neutral';
+
+      let color = '#a78bfa';
+      if (value <= 25) color = '#ef476f';          // Extreme Fear
+      else if (value <= 45) color = '#f0b429';     // Fear
+      else if (value < 60) color = '#a78bfa';      // Neutral
+      else if (value < 75) color = '#2DD4BF';      // Greed
+      else color = '#16a34a';                      // Extreme Greed
+
+      sentEl.textContent = classification.toUpperCase();
+      sentEl.style.color = color;
+      sentSub.textContent = 'Index ' + value.toFixed(0) + ' / 100';
+    }
+  } catch (e) {
+    // Fail silently to avoid breaking the terminal dashboard
+  }
 }
 
 /* ── Clark AI Chat (Terminal Panel) ── */
