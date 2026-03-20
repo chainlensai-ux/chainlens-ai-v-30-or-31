@@ -3915,16 +3915,22 @@ function renderJournal() {
 // ══════════════════════════════════════════════
 async function doSentiment() {
   try {
-    const r = await pfetch('https://api.alternative.me/fng/?limit=30');
+    const r = await fetch('/api/lunarsentiment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: 'bitcoin', interval: '1d', limit: 30 })
+    });
     const d = await r.json();
-    const current = d.data[0];
+    const current = d?.data?.[0] || { value: 50, value_classification: 'Neutral' };
     const val = parseInt(current.value);
-    document.getElementById('fgn').textContent = val;
-    document.getElementById('fgl').textContent = current.value_classification;
-    document.getElementById('fgl').style.color = val < 30 ? '#ef476f' : val > 70 ? '#00ffc8' : '#f0b429';
-    document.getElementById('fgp').style.left = (val) + '%';
-    drawSentimentChart(d.data.reverse());
-    const txt = await ai(`You are ChainLens AI SentimentPulse™. The current Fear & Greed Index is ${val} (${current.value_classification}).
+    const safeVal = Number.isFinite(val) ? val : 50;
+    const safeClass = current.value_classification || 'Neutral';
+    document.getElementById('fgn').textContent = safeVal;
+    document.getElementById('fgl').textContent = safeClass;
+    document.getElementById('fgl').style.color = safeVal < 30 ? '#ef476f' : safeVal > 70 ? '#00ffc8' : '#f0b429';
+    document.getElementById('fgp').style.left = safeVal + '%';
+    drawSentimentChart((d?.data || [current]).slice().reverse());
+    const txt = await ai(`You are ChainLens AI SentimentPulse™. The current Fear & Greed Index is ${safeVal} (${safeClass}).
 Live prices: ${ctx()}
 Interpret what this means for traders right now. What should they watch for? Under 150 words.`, 300);
     document.getElementById('fga').textContent = txt;
