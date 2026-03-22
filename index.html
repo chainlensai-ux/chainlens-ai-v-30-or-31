@@ -3834,10 +3834,11 @@ body::after {
   box-shadow: 0 1px 8px rgba(45,212,191,0.08);
 }
 .td-right__clark-logo {
-  width: 26px; height: 26px; border-radius: 6px;
-  background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.3);
-  display: flex; align-items: center; justify-content: center; font-size: 12px;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
 }
+.td-right__clark-logo svg { display: block; }
 .td-right__name {
   font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 800; color: #fff; flex: 1;
 }
@@ -7114,7 +7115,12 @@ body::after {
     <!-- Right: Clark AI Panel -->
     <aside class="td-right" id="td-right-panel">
       <div class="td-right__header">
-        <div class="td-right__clark-logo">🤖</div>
+        <div class="td-right__clark-logo" aria-hidden="true">
+          <svg width="26" height="26" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="16" cy="16" r="16" fill="#8b5cf6"/>
+            <text x="16" y="21" text-anchor="middle" fill="#ffffff" font-family="Syne, Inter, system-ui, sans-serif" font-size="11" font-weight="800" letter-spacing="-0.5px">CL</text>
+          </svg>
+        </div>
         <div class="td-right__name">Clark AI</div>
         <div class="td-right__online">
           <span class="td-right__online-dot"></span>
