@@ -8121,7 +8121,31 @@ function tdAddWhaleItem() {
 }
 
 /* ── Pump Feed ── */
-const _tdPumpChains = new Set(['base', 'solana']);
+const _TD_PUMP_MIN_VOL_USD = 100;
+
+function tdPumpNum(x) {
+  const t = typeof x === 'number' ? x : parseFloat(String(x == null ? '' : x).replace(/,/g, ''));
+  return isFinite(t) ? t : 0;
+}
+
+/** Effective USD volume for filter/sort: prefers short-window activity so h1=0 but m5/h24 spike still counts. */
+function tdPumpEffectiveVolumeUsd(p) {
+  const v = p && p.volume ? p.volume : {};
+  const h1 = tdPumpNum(v.h1);
+  const h24 = tdPumpNum(v.h24);
+  const m5 = tdPumpNum(v.m5);
+  const m15 = tdPumpNum(v.m15);
+  return Math.max(h1, m5 * 12, m15 * 4, h24);
+}
+
+function tdPumpPairChainId(p) {
+  let c = String(p.chainId || '').trim().toLowerCase();
+  if (c === 'eth') c = 'ethereum';
+  if (c) return c;
+  const u = String(p.url || '');
+  const m = u.match(/dexscreener\.com\/([^/]+)\//i);
+  return m ? String(m[1]).toLowerCase() : '';
+}
 
 function tdFormatMoneyCompact(n) {
   const v = typeof n === 'number' ? n : parseFloat(n);
@@ -8156,20 +8180,19 @@ function tdPumpEl(d) {
     <div class="td-feed-item__icon">${d.isUp ? '🚀' : '📉'}</div>
     <div class="td-feed-item__info">
       <div class="td-feed-item__token">${tdEscape(d.name)} <span style="color:#333;font-size:10px;">${tdEscape(d.chain)}</span></div>
-      <div class="td-feed-item__desc">Vol $${tdEscape(d.volume)} · 1h</div>
+      <div class="td-feed-item__desc">Vol $${tdEscape(d.volume)}</div>
     </div>
     <div class="td-feed-item__right">
       <div><span class="td-pump-badge ${d.isUp ? 'td-pump-badge--up' : 'td-pump-badge--down'}">${tdEscape(d.pctStr)}</span></div>
-      <div class="td-feed-item__time">1h</div>
+      <div class="td-feed-item__time">${tdEscape(d.pctWindow || 'Δ')}</div>
     </div>`;
   return el;
 }
 
 async function tdFetchPumpPairs() {
-  // DexScreener via server proxy — q=USDC surfaces liquid Base/Solana pairs (q=token returns spam "Token" names).
+  // DexScreener via server proxy — liquid quote search, multi-chain; no chainIds so Base/Solana + EVM spikes can appear.
   const url =
-    'https://api.dexscreener.com/latest/dex/search?q=USDC&' +
-    'sort=volume&order=desc&limit=80&chainIds=base%2Csolana';
+    'https://api.dexscreener.com/latest/dex/search?q=USDC&sort=volume&order=desc&limit=80';
 
   const res = await fetch('/api/scan', {
     method: 'POST',
@@ -8191,33 +8214,42 @@ async function tdFetchPumpPairs() {
   const rawLen = pairs.length;
 
   const mapped = pairs
-    .filter(p => p && _tdPumpChains.has(p.chainId))
+    .filter(p => !!p)
     .map(p => {
-      const chain = (p.chainId || '').toUpperCase();
+      const cid = tdPumpPairChainId(p);
+      const chain = (cid || 'pair').toUpperCase();
       const name = tdPumpDisplayName(p);
 
-      // DexScreener uses volume.h1 as the volume in the last hour.
-      const vol1h = p.volume?.h1 ?? p.volume?.h24 ?? 0;
-      const pct = p.priceChange?.h1 ?? p.priceChange?.h24 ?? 0;
+      const volEff = tdPumpEffectiveVolumeUsd(p);
+      const pctH1 = tdPumpNum(p.priceChange?.h1);
+      const pctH24 = tdPumpNum(p.priceChange?.h24);
+      const useH1 = Math.abs(pctH1) >= Math.abs(pctH24);
+      const pct = useH1 ? pctH1 : pctH24;
+      const pctWindow = useH1 ? '1h' : '24h';
 
-      const isUp = typeof pct === 'number' ? pct >= 0 : parseFloat(pct) >= 0;
-      const pctNum = typeof pct === 'number' ? pct : parseFloat(pct);
+      const isUp = pct >= 0;
+      const pctNum = isFinite(pct) ? pct : 0;
 
       return {
         name,
         chain,
-        vol1h,
-        volume: tdFormatMoneyCompact(vol1h),
-        pctStr: (isUp ? '+' : '') + (isFinite(pctNum) ? pctNum.toFixed(1) : '0.0') + '%',
-        isUp
+        volEff,
+        volume: tdFormatMoneyCompact(volEff),
+        pctStr: (isUp ? '+' : '') + pctNum.toFixed(1) + '%',
+        pctWindow,
+        isUp,
+        pctNum
       };
     })
-    .filter(d => d.vol1h > 0);
+    .filter(d => d.volEff >= _TD_PUMP_MIN_VOL_USD);
 
-  mapped.sort((a, b) => (b.vol1h || 0) - (a.vol1h || 0));
+  mapped.sort((a, b) => {
+    const sa = (a.volEff || 0) * (1 + Math.min(100, Math.abs(a.pctNum || 0)) / 100);
+    const sb = (b.volEff || 0) * (1 + Math.min(100, Math.abs(b.pctNum || 0)) / 100);
+    return sb - sa || (b.volEff || 0) - (a.volEff || 0);
+  });
 
-  // Ensure stable top-3 even if sorting above is approximate due to compact formatting.
-  return { items: mapped.slice(0, 3), rawLen };
+  return { items: mapped.slice(0, 5), rawLen };
 }
 
 function tdRenderPumps() {
@@ -8228,19 +8260,15 @@ function tdRenderPumps() {
   feed.innerHTML = '<div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">Scanning pump signals...</div>';
 
   tdFetchPumpPairs()
-    .then(({ items, rawLen }) => {
+    .then(({ items }) => {
       feed.innerHTML = '';
       if (!items || items.length === 0) {
-        tdSetWidgetDebug('td-debug-pump', 'DEBUG: Pump Alerts — DexScreener HTTP 200 but 0 pairs after Base/Solana + volume filter (raw pairs: ' + rawLen + '). Routed via POST /api/scan.');
         feed.innerHTML = '<div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">No pump signals found</div>';
         return;
       }
-      tdSetWidgetDebug('td-debug-pump', '');
       items.forEach(it => feed.appendChild(tdPumpEl(it)));
     })
-    .catch((e) => {
-      const why = (e && e.message) ? e.message : String(e);
-      tdSetWidgetDebug('td-debug-pump', 'DEBUG: Pump Alerts — ' + why);
+    .catch(() => {
       feed.innerHTML = '<div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">Failed to load pump alerts</div>';
     });
 }
