@@ -7951,6 +7951,22 @@ function tdFormatMoneyCompact(n) {
   return v.toFixed(2);
 }
 
+/** Label from DexScreener pair baseToken.name / baseToken.symbol (avoids bogus "Token" search hits). */
+function tdPumpDisplayName(p) {
+  const b = p && p.baseToken ? p.baseToken : {};
+  const n = String(b.name != null ? b.name : '').trim();
+  const s = String(b.symbol != null ? b.symbol : '').trim();
+  const junk = (t) => !t || /^token$/i.test(t);
+  if (!junk(n) && !junk(s) && n.toLowerCase() !== s.toLowerCase()) return n + ' (' + s + ')';
+  if (!junk(n)) return n;
+  if (!junk(s)) return s;
+  const addr = String(b.address || '').trim();
+  if (addr.length > 12) return addr.slice(0, 6) + '…' + addr.slice(-4);
+  const pa = String(p.pairAddress || '').trim();
+  if (pa.length > 12) return pa.slice(0, 6) + '…' + pa.slice(-4);
+  return pa || '—';
+}
+
 function tdPumpEl(d) {
   const el = document.createElement('div');
   el.className = 'td-feed-item';
@@ -7968,10 +7984,10 @@ function tdPumpEl(d) {
 }
 
 async function tdFetchPumpPairs() {
-  // DexScreener via server proxy (avoids browser CORS on api.dexscreener.com).
+  // DexScreener via server proxy — q=USDC surfaces liquid Base/Solana pairs (q=token returns spam "Token" names).
   const url =
-    'https://api.dexscreener.com/latest/dex/search?q=token&' +
-    'sort=volume&order=desc&limit=60&chainIds=base%2Csolana';
+    'https://api.dexscreener.com/latest/dex/search?q=USDC&' +
+    'sort=volume&order=desc&limit=80&chainIds=base%2Csolana';
 
   const res = await fetch('/api/scan', {
     method: 'POST',
@@ -7996,8 +8012,7 @@ async function tdFetchPumpPairs() {
     .filter(p => p && _tdPumpChains.has(p.chainId))
     .map(p => {
       const chain = (p.chainId || '').toUpperCase();
-      const baseToken = p.baseToken || {};
-      const name = baseToken.name || baseToken.symbol || p.pairAddress || '—';
+      const name = tdPumpDisplayName(p);
 
       // DexScreener uses volume.h1 as the volume in the last hour.
       const vol1h = p.volume?.h1 ?? p.volume?.h24 ?? 0;
