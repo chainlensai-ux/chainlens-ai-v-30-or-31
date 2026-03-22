@@ -3642,7 +3642,13 @@ body::after {
 }
 .td-nav-item:hover { background: rgba(139,92,246,0.06); color: #aaa; }
 .td-nav-item.td-active { background: rgba(139,92,246,0.1); color: #a78bfa; border-color: rgba(139,92,246,0.2); border-left: 3px solid rgba(139,92,246,0.8); padding-left: 8px; }
-.td-nav-item__icon { font-size: 18px; width: 18px; text-align: center; flex-shrink: 0; }
+.td-nav-item__icon {
+  width: 20px; height: 20px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #8b5cf6;
+}
+.td-nav-item.td-active .td-nav-item__icon { color: #00ffc8; }
+.td-nav-item__icon svg { width: 20px; height: 20px; display: block; }
 .td-nav-item__name { flex: 1; }
 .td-nav-item__badge {
   font-size: 9px; font-family: 'JetBrains Mono', monospace;
@@ -3668,6 +3674,13 @@ body::after {
   font-size: 11px; color: #333; transition: color 0.2s;
 }
 .td-settings-link:hover { color: #777; }
+.td-settings-link__icon {
+  width: 20px; height: 20px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #8b5cf6;
+}
+.td-settings-link:hover .td-settings-link__icon { color: #00ffc8; }
+.td-settings-link__icon svg { width: 20px; height: 20px; display: block; }
 
 /* Main Content */
 .td-main { flex: 1; overflow: hidden; background: #0a0a0a; padding: 10px; display: flex; flex-direction: column; min-height: 0; }
@@ -6831,9 +6844,11 @@ body::after {
         <span class="td-sidebar__label">Dashboard</span>
         <div class="td-nav-item td-active" onclick="tdNavHighlight(this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M12 2 22 7 22 17 12 22 2 17 2 7Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-              <circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="1.7"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+              <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+              <rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+              <rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
             </svg>
           </span>
           <span class="td-nav-item__name">Terminal</span>
@@ -6844,20 +6859,18 @@ body::after {
         <span class="td-sidebar__label">Tools</span>
         <div class="td-nav-item" onclick="tdNavGo('walletscan',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M15.5 15.5 22 22" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <circle cx="11" cy="11" r="6" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M16 16l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">WalletScan</span>
         </div>
         <div class="td-nav-item" onclick="tdNavGo('tokenscanner',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M5 21h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M10 3l6 2-2 6-6-2 2-6Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-              <circle cx="15" cy="10" r="2" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M13 11l4 10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M7 3H4v4M17 3h3v4M7 21H4v-4M17 21h3v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="8" y="8" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.5"/>
             </svg>
           </span>
           <span class="td-nav-item__name">Token Scanner</span>
@@ -6865,21 +6878,19 @@ body::after {
         </div>
         <div class="td-nav-item" onclick="tdNavGo('ghosttrade',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M8 20V10a4 4 0 1 1 8 0v10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M10 14c.6.6 1.2.6 1.8 0 .6-.6 1.2-.6 1.8 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M6 20h12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M12 16v0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M12 4a4 4 0 0 1 4 4v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V8a4 4 0 0 1 4-4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M9 19v2M12 19v2M15 19v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">GhostTrade</span>
         </div>
         <div class="td-nav-item" onclick="tdNavGo('tradecoach',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.7"/>
-              <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="12" cy="12" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="12" cy="12" r="1.5" stroke="currentColor" stroke-width="1.5"/>
             </svg>
           </span>
           <span class="td-nav-item__name">TradeCoach</span>
@@ -6887,21 +6898,17 @@ body::after {
         </div>
         <div class="td-nav-item" onclick="tdNavGo('pumpalert',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M10 20a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M19 3l1 1-2 2-1-1 2-2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M3 17 9 11l4 4 8-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M14 7h6v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">PumpAlert</span>
         </div>
         <div class="td-nav-item" onclick="tdNavGo('portfoliotracker',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M4 19h17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M7 19V11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M12 19V7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M17 19V13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M6 20V11M12 20V6M18 20v-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">Portfolio Tracker</span>
@@ -6909,12 +6916,8 @@ body::after {
         </div>
         <div class="td-nav-item" onclick="tdNavGo('smartwallets',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M4 12c4-7 12-7 16 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M8 12c0 4 8 4 8 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M6 14l-2 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M18 14l2 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <circle cx="16.2" cy="10.2" r="1.1" stroke="currentColor" stroke-width="1.7"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M3 14c1.5-2 3-2 4.5 0s3 2 4.5 0 3-2 4.5 0 3 2 4.5 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">Whale Alerts</span>
@@ -6922,11 +6925,9 @@ body::after {
         </div>
         <div class="td-nav-item" onclick="tdNavGo('exchangeflow',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M7 11V8a5 5 0 0 1 10 0v3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M6 11h12v11H6V11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-              <path d="M12 16v0" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-              <path d="M4 9h2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M7 8h9M7 8l2.5-2.5M7 8l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M17 16H8M17 16l-2.5-2.5M17 16l-2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">Exchange Flow</span>
@@ -6934,33 +6935,31 @@ body::after {
         </div>
         <div class="td-nav-item" onclick="tdNavGo('bearproof',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M12 2 20 6v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6l8-4Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-              <path d="M8.5 12.5 11 15l4.5-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M12 3 20 7v7c0 4.5-3.5 8.2-8 9-4.5-.8-8-4.5-8-9V7l8-4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">BearProof Score</span>
         </div>
         <div class="td-nav-item" onclick="tdNavGo('sentiment',this)">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M9 19c-2 0-3-1.5-3-3 0-1 .4-1.8 1-2.4C6.2 12.1 6 11 6 10c0-2.2 1.8-4 4-4 1-.9 2-1 3-1s2 .1 3 1c2.2 0 4 1.8 4 4 0 1-.2 2.1-1 3.6.6.6 1 1.4 1 2.4 0 1.5-1 3-3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M10 9v0M14 9v0" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-              <path d="M10 14c1 1 3 1 4 0" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M9 10h.01M15 10h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M8.5 14.5c1.3 1.5 2.9 2.3 3.5 2.3s2.2-.8 3.5-2.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">SentimentPulse</span>
         </div>
         <div class="td-nav-item" onclick="tdFocusClark()">
           <span class="td-nav-item__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <path d="M10 3h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M12 3v3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <rect x="7" y="8" width="10" height="12" rx="2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-              <circle cx="10.5" cy="13.5" r="1.2" stroke="currentColor" stroke-width="1.7"/>
-              <circle cx="13.5" cy="13.5" r="1.2" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M9 16c1 .7 2.1 1 3 1s2-.3 3-1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M4 12h3M17 12h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M9 5h6M12 3v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <rect x="6" y="7" width="12" height="13" rx="2.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <circle cx="9.5" cy="13" r="1" stroke="currentColor" stroke-width="1.5"/>
+              <circle cx="14.5" cy="13" r="1" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M9 17c1 .6 2.1 1 3 1s2-.4 3-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
           </span>
           <span class="td-nav-item__name">Clark AI</span>
@@ -6975,11 +6974,11 @@ body::after {
           <div class="td-plan-badge__wallet" id="td-plan-wallet">No wallet connected</div>
         </div>
         <div class="td-settings-link" onclick="go('home')">
-          <span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block">
-              <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <span class="td-settings-link__icon">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2 16.7 7.3M7.3 16.7 5.2 18.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
           </span> Settings &amp; Account
         </div>
