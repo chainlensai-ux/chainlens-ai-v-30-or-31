@@ -7958,25 +7958,38 @@ function tdPumpEl(d) {
   el.innerHTML = `
     <div class="td-feed-item__icon">${d.isUp ? '🚀' : '📉'}</div>
     <div class="td-feed-item__info">
-      <div class="td-feed-item__token">${d.name} <span style="color:#333;font-size:10px;">${d.chain}</span></div>
-      <div class="td-feed-item__desc">Vol $${d.volume} · 1h</div>
+      <div class="td-feed-item__token">${tdEscape(d.name)} <span style="color:#333;font-size:10px;">${tdEscape(d.chain)}</span></div>
+      <div class="td-feed-item__desc">Vol $${tdEscape(d.volume)} · 1h</div>
     </div>
     <div class="td-feed-item__right">
-      <div><span class="td-pump-badge ${d.isUp ? 'td-pump-badge--up' : 'td-pump-badge--down'}">${d.pctStr}</span></div>
+      <div><span class="td-pump-badge ${d.isUp ? 'td-pump-badge--up' : 'td-pump-badge--down'}">${tdEscape(d.pctStr)}</span></div>
       <div class="td-feed-item__time">1h</div>
     </div>`;
   return el;
 }
 
 async function tdFetchPumpPairs() {
-  // DexScreener search is token-query based; we use a generic query and then filter locally by Base + Solana.
+  // DexScreener via server proxy (avoids browser CORS on api.dexscreener.com).
   const url =
     'https://api.dexscreener.com/latest/dex/search?q=token&' +
     'sort=volume&order=desc&limit=60&chainIds=base%2Csolana';
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('GET https://api.dexscreener.com/latest/dex/search failed: HTTP ' + res.status);
-  const data = await res.json();
+  const res = await fetch('/api/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url })
+  });
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error('POST /api/scan (DexScreener) returned non-JSON: HTTP ' + res.status + ' ' + text.slice(0, 100));
+  }
+  if (!res.ok) {
+    const msg = (data && (data.error || data.message)) ? String(data.error || data.message) : text.slice(0, 120);
+    throw new Error('POST /api/scan (DexScreener) failed: HTTP ' + res.status + ' — ' + msg);
+  }
   const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
   const rawLen = pairs.length;
 
@@ -8022,7 +8035,7 @@ function tdRenderPumps() {
     .then(({ items, rawLen }) => {
       feed.innerHTML = '';
       if (!items || items.length === 0) {
-        tdSetWidgetDebug('td-debug-pump', 'DEBUG: Pump Alerts — DexScreener HTTP 200 but 0 pairs after Base/Solana + volume filter (raw pairs: ' + rawLen + '). Request: direct browser fetch (not /api/scan).');
+        tdSetWidgetDebug('td-debug-pump', 'DEBUG: Pump Alerts — DexScreener HTTP 200 but 0 pairs after Base/Solana + volume filter (raw pairs: ' + rawLen + '). Routed via POST /api/scan.');
         feed.innerHTML = '<div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">No pump signals found</div>';
         return;
       }
