@@ -7694,23 +7694,68 @@ function tdDrawGauge() {
   ctx.stroke();
 }
 
-/* ── Whale Feed — Etherscan live large ETH transactions > $50K ── */
+/* ── Whale Feed — Etherscan v2: large native ETH transfers > $50K (high-flow watch address) ── */
+const _TD_ETHERSCAN_V2 = 'https://api.etherscan.io/v2/api';
+const _TD_WHALE_WATCH = '0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549';
+
+function tdShortAddr(addr) {
+  if (!addr || typeof addr !== 'string') return '—';
+  const a = addr.trim();
+  if (a.length < 12) return a;
+  return a.slice(0, 6) + '...' + a.slice(-4);
+}
+
+function tdWhaleCortexExplain(tx, watchLower, ethVal) {
+  const from = (tx.from || '').toLowerCase();
+  const to = (tx.to || '').toLowerCase();
+  const failed = tx.isError === '1' || tx.txreceipt_status === '0';
+  if (failed) {
+    return 'CORTEX: On-chain transfer did not complete successfully — no value moved; worth watching for stuck gas or contract reverts.';
+  }
+  if (to === watchLower) {
+    return 'CORTEX: Large ETH moved into a major exchange hot wallet — usually a user or institutional deposit ahead of trading or custody.';
+  }
+  if (from === watchLower) {
+    return 'CORTEX: Large ETH leaving exchange infrastructure — commonly a customer withdrawal batch or an internal rebalance between vaults.';
+  }
+  if (ethVal >= 500) {
+    return 'CORTEX: Very large native ETH movement on mainnet — signals deep liquidity shifting between counterparties.';
+  }
+  return 'CORTEX: Substantial native ETH transfer on Ethereum — indicates serious capital rotation on-chain.';
+}
+
+async function tdScanEtherscanJson(res, label) {
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(label + ': non-JSON from /api/scan (HTTP ' + res.status + ') ' + text.slice(0, 100));
+  }
+  if (!res.ok) {
+    const msg = (data && (data.result || data.error || data.message)) ? String(data.result || data.error || data.message) : text.slice(0, 120);
+    throw new Error(label + ': /api/scan HTTP ' + res.status + ' — ' + msg);
+  }
+  return data;
+}
+
 async function tdLoadWhales() {
   const feed = document.getElementById('td-whale-feed');
   if (!feed) return;
   tdSetWidgetDebug('td-debug-whale', '');
+  feed.innerHTML = '<div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">Loading whale data...</div>';
   try {
     const ethPrice = px['ethereum']?.usd || 3000;
     const minUsd = 50000;
     const minEth = minUsd / ethPrice;
 
     const nowSec = Math.floor(Date.now() / 1000);
-    const sinceSec = nowSec - 3600; // last hour
+    const sinceSec = nowSec - 7200;
 
-    // Resolve block window for the last hour.
-    const latestBlockUrl = 'https://api.etherscan.io/api?module=proxy&action=eth_blockNumber&apikey=ENV';
+    const latestBlockUrl =
+      `${_TD_ETHERSCAN_V2}?chainid=1&module=proxy&action=eth_blockNumber&apikey=ENV`;
     const sinceBlockUrl =
-      `https://api.etherscan.io/api?module=block&action=getblocknobytime&timestamp=${sinceSec}&closest=before&apikey=ENV`;
+      `${_TD_ETHERSCAN_V2}?chainid=1&module=block&action=getblocknobytime&timestamp=${sinceSec}&closest=before&apikey=ENV`;
 
     const [latestR, sinceR] = await Promise.all([
       fetch('/api/scan', {
@@ -7725,69 +7770,108 @@ async function tdLoadWhales() {
       })
     ]);
 
-    if (!latestR.ok || !sinceR.ok) {
-      throw new Error('POST /api/scan (eth_blockNumber or getblocknobytime) failed: latest HTTP ' + latestR.status + ', since HTTP ' + sinceR.status + '. Server must set ETHERSCAN_KEY or URLs keep apikey=ENV (invalid).');
+    const latestData = await tdScanEtherscanJson(latestR, 'eth_blockNumber');
+    const sinceData = await tdScanEtherscanJson(sinceR, 'getblocknobytime');
+
+    if (latestData && latestData.error) {
+      throw new Error('eth_blockNumber: ' + (latestData.error.message || JSON.stringify(latestData.error)));
+    }
+    const latestRaw = latestData && latestData.result != null ? String(latestData.result) : '';
+    const latestBlock = latestRaw.startsWith('0x') ? parseInt(latestRaw, 16) : parseInt(latestRaw, 10);
+    if (!Number.isFinite(latestBlock) || latestBlock <= 0) {
+      throw new Error('eth_blockNumber: bad result ' + JSON.stringify(latestData.result));
     }
 
-    const latestData = await latestR.json();
-    const sinceData = await sinceR.json();
-    const latestResult = String(latestData.result || '0x0');
-    const latestBlock = latestResult.startsWith('0x') ? parseInt(latestResult, 16) : parseInt(latestResult, 10);
-    const sinceBlock = parseInt(String(sinceData.result || '0'), 10);
+    if (sinceData.status === '0') {
+      throw new Error('getblocknobytime: ' + (sinceData.message || sinceData.result || 'NOTOK'));
+    }
+    let sinceBlock = parseInt(String(sinceData.result != null ? sinceData.result : ''), 10);
+    if (!Number.isFinite(sinceBlock) || sinceBlock < 0) {
+      throw new Error('getblocknobytime: invalid block ' + JSON.stringify(sinceData.result));
+    }
 
-    // Fetch txs from a known high-activity address as a proxy for large whale moves.
-    const depositContract = '0x00000000219ab540356cBB839Cbe05303d7705Fa';
-    const url =
-      `https://api.etherscan.io/api?module=account&action=txlist&address=${depositContract}` +
-      `&startblock=${sinceBlock}&endblock=${latestBlock}&page=1&offset=100&sort=desc&apikey=ENV`;
+    let startBlock = sinceBlock;
+    const endBlock = latestBlock;
+    if (startBlock > endBlock) {
+      startBlock = Math.max(0, endBlock - 3000);
+    }
+
+    const watch = _TD_WHALE_WATCH;
+    const txUrl =
+      `${_TD_ETHERSCAN_V2}?chainid=1&module=account&action=txlist&address=${watch}` +
+      `&startblock=${startBlock}&endblock=${endBlock}&page=1&offset=1000&sort=desc&apikey=ENV`;
 
     const r = await fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
+      body: JSON.stringify({ url: txUrl })
     });
-    if (!r.ok) throw new Error('POST /api/scan (txlist deposit contract) failed: HTTP ' + r.status);
-    const data = await r.json();
-    if (data && data.status === '0' && data.message && String(data.message).toLowerCase().includes('invalid api key')) {
-      throw new Error('Etherscan API error: ' + data.message + ' (ETHERSCAN_KEY missing or wrong on server).');
+    const data = await tdScanEtherscanJson(r, 'txlist');
+
+    if (data.status === '0' && typeof data.result === 'string') {
+      const errText = (data.result + ' ' + (data.message || '')).toLowerCase();
+      if (errText.includes('invalid api key')) {
+        throw new Error('Etherscan: invalid API key — check ETHERSCAN_KEY on the server.');
+      }
+      throw new Error('Etherscan txlist: ' + data.result);
     }
 
-    const txs = (data.result || [])
+    const rawList = data.result;
+    if (!Array.isArray(rawList)) {
+      throw new Error('txlist: expected transaction array, got ' + typeof rawList);
+    }
+
+    const watchLower = watch.toLowerCase();
+    const txs = rawList
       .filter(tx => {
+        if (!tx || tx.isError === '1') return false;
+        if (tx.txreceipt_status === '0') return false;
         const txTs = parseInt(tx.timeStamp, 10) || 0;
         if (txTs < sinceSec) return false;
         const ethVal = parseFloat(tx.value) / 1e18;
         return ethVal >= minEth;
       })
+      .sort((a, b) => (parseFloat(b.value) || 0) - (parseFloat(a.value) || 0))
       .slice(0, 4);
 
     feed.innerHTML = '';
     if (!txs.length) {
-      feed.innerHTML = '<div style="padding:14px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">No whales &gt; $50K in the last hour</div>';
+      feed.innerHTML = '<div style="padding:14px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">No ETH transfers &gt; $50K in the last 2h (watch wallet)</div>';
       return;
     }
 
     txs.forEach(tx => {
       const ethValNum = parseFloat(tx.value) / 1e18;
-      const usdVal = (ethValNum * ethPrice).toLocaleString('en-US', { maximumFractionDigits: 0 });
-      const from = tx.from ? tx.from.slice(0,6) + '...' + tx.from.slice(-4) : '?';
-      const secsAgo = Math.max(0, nowSec - (parseInt(tx.timeStamp, 10) || nowSec));
-      const minsAgo = Math.max(1, Math.floor(secsAgo / 60));
+      const usdNum = ethValNum * ethPrice;
+      const usdVal = usdNum.toLocaleString('en-US', { maximumFractionDigits: 0 });
+      const fromL = (tx.from || '').toLowerCase();
+      const counterparty = fromL === watchLower ? tx.to : tx.from;
+      const walletShort = tdShortAddr(counterparty);
+      const tsec = parseInt(tx.timeStamp, 10) || 0;
+      const timeStr = tsec
+        ? (new Date(tsec * 1000).toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true,
+            timeZone: 'UTC'
+          }) + ' UTC')
+        : '—';
 
-      const fn = (tx.functionName || '').trim();
-      const type = tx.isError === '1' ? 'Failed' : (fn ? fn : 'Transfer');
-      const icon = ethValNum >= 100 ? '🐋' : ethValNum >= 50 ? '🦈' : '⚡';
+      const fn = (tx.functionName || '').split('(')[0].trim();
+      const tokenLine = fn ? ('ETH · ' + fn) : 'ETH · Native transfer';
+      const icon = ethValNum >= 200 ? '🐋' : ethValNum >= 80 ? '🦈' : '⚡';
 
-      const d = {
+      feed.appendChild(tdWhaleEl({
         icon,
-        type,
-        token: 'ETH',
-        chain: 'ETH',
+        tokenLine,
+        wallet: walletShort,
+        cortex: tdWhaleCortexExplain(tx, watchLower, ethValNum),
         usd: usdVal,
-        wallet: from,
-        mins: minsAgo
-      };
-      feed.appendChild(tdWhaleEl(d));
+        timeStr
+      }));
     });
     tdSetWidgetDebug('td-debug-whale', '');
   } catch (e) {
@@ -7798,19 +7882,24 @@ async function tdLoadWhales() {
 }
 
 function tdMakeWhaleItem() {
-  const _tdWhaleTokens = ['ETH','ETH','ETH','BTC','USDC','USDT','WBTC'];
-  const token = _tdWhaleTokens[Math.floor(Math.random() * _tdWhaleTokens.length)];
   const ethPrice = px['ethereum']?.usd || 3000;
-  const amount = (Math.random() * 20 + 15).toFixed(2); // 15-35 ETH = $45K-$105K
-  const usd = (parseFloat(amount) * ethPrice).toLocaleString('en-US', {maximumFractionDigits:0});
-  const wallets = ['0x1a2b...9f3e','0x7c8d...4a1b','0x3e4f...8c2d','0xfe21...11ab','0x9c3d...8f02'];
+  const amount = (Math.random() * 20 + 15).toFixed(2);
+  const usd = (parseFloat(amount) * ethPrice).toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const wallets = ['0x1a2b...9f3e', '0x7c8d...4a1b', '0x3e4f...8c2d', '0xfe21...11ab', '0x9c3d...8f02'];
   const wallet = wallets[Math.floor(Math.random() * wallets.length)];
   const mins = Math.floor(Math.random() * 30) + 1;
-  const types = ['Transfer','Deposit','Withdrawal'];
+  const types = ['Transfer', 'Deposit', 'Withdrawal'];
   const type = types[Math.floor(Math.random() * types.length)];
-  const icons = ['🐋','🦈','💎','🔥','⚡'];
+  const icons = ['🐋', '🦈', '💎', '🔥', '⚡'];
   const icon = icons[Math.floor(Math.random() * icons.length)];
-  return { token, chain: 'ETH', amount, usd, wallet, mins: mins + 'm ago', type, icon };
+  return {
+    icon,
+    tokenLine: 'ETH · ' + type,
+    wallet,
+    cortex: 'CORTEX: Layout preview only — connect live Etherscan feed for real whale moves.',
+    usd,
+    timeStr: mins + 'm ago'
+  };
 }
 
 function tdRenderWhalesMock() {
@@ -7833,12 +7922,13 @@ function tdWhaleEl(d) {
   el.innerHTML = `
     <div class="td-feed-item__icon">${d.icon}</div>
     <div class="td-feed-item__info">
-      <div class="td-feed-item__token">${d.type} · ${d.token} <span style="color:#333;font-size:10px;">${d.chain}</span></div>
-      <div class="td-feed-item__desc">${d.wallet}</div>
+      <div class="td-feed-item__token">${tdEscape(d.tokenLine)} <span style="color:#333;font-size:10px;">ETH</span></div>
+      <div class="td-feed-item__desc">${tdEscape(d.wallet)}</div>
+      <div class="td-feed-item__desc">${tdEscape(d.cortex)}</div>
     </div>
     <div class="td-feed-item__right">
-      <div class="td-feed-item__amount" style="color:#a78bfa;">$${d.usd}</div>
-      <div class="td-feed-item__time">${d.mins}m ago</div>
+      <div class="td-feed-item__amount" style="color:#a78bfa;">$${tdEscape(d.usd)}</div>
+      <div class="td-feed-item__time">${tdEscape(d.timeStr)}</div>
     </div>`;
   return el;
 }

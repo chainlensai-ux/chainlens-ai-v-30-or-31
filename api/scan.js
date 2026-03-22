@@ -7,7 +7,15 @@ export default async function handler(req, res) {
   let { url, body, method } = req.body || {};
   if (!url) return res.status(400).json({ error: 'No URL provided' });
   const ESCAN = process.env.ETHERSCAN_KEY || '';
-  if (ESCAN) url = url.replace('apikey=ENV', `apikey=${ESCAN}`);
+  const isEtherscan = typeof url === 'string' && url.includes('api.etherscan.io');
+  if (isEtherscan && (!ESCAN || !String(ESCAN).trim()) && /apikey=ENV\b/.test(url)) {
+    return res.status(503).json({
+      status: '0',
+      message: 'NOTOK',
+      result: 'ETHERSCAN_KEY is not set on the server (Vercel env / local .env).'
+    });
+  }
+  if (ESCAN) url = url.replace(/apikey=ENV\b/g, () => `apikey=${encodeURIComponent(String(ESCAN).trim())}`);
   const allowed = [
     'api.etherscan.io',
     'api.basescan.org',
