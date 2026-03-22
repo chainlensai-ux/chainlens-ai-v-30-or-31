@@ -8128,31 +8128,100 @@ async function tdRenderMarket() {
   const btcDomEl = document.getElementById('td-mkt-btcdom');
   const btcDomSub = document.getElementById('td-mkt-btcdom-sub');
 
+  const tdMktSetLoading = (on) => {
+    const rows = [
+      [gainerEl, gainerChg],
+      [loserEl, loserChg],
+      [sentEl, sentSub],
+      [btcDomEl, btcDomSub]
+    ];
+    for (let i = 0; i < rows.length; i++) {
+      const v = rows[i][0];
+      const s = rows[i][1];
+      if (!v || !s) continue;
+      if (on) {
+        v.textContent = '…';
+        s.textContent = 'Loading...';
+        if (v === sentEl) v.style.color = '';
+      }
+    }
+  };
+
+  const tdMktClearLeftoverLoading = () => {
+    const rows = [
+      [gainerEl, gainerChg],
+      [loserEl, loserChg],
+      [sentEl, sentSub],
+      [btcDomEl, btcDomSub]
+    ];
+    for (let i = 0; i < rows.length; i++) {
+      const v = rows[i][0];
+      const s = rows[i][1];
+      if (v && s && v.textContent === '…') {
+        v.textContent = '—';
+        s.textContent = '—';
+      }
+    }
+    if (sentEl && sentEl.textContent === '—') sentEl.style.color = '';
+  };
+
   tdSetWidgetDebug('td-debug-market', '');
+  tdMktSetLoading(true);
+
   try {
-    const [marketsRes, globalRes, fearGreedRes] = await Promise.all([
-      fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=150&page=1&price_change_percentage=24h'),
-      fetch('https://api.coingecko.com/api/v3/global'),
+    const cgKeyParam = 'x_cg_demo_api_key=' + encodeURIComponent(typeof CGK !== 'undefined' ? CGK : '');
+    const marketsUrl =
+      'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=150&page=1&price_change_percentage=24h&' +
+      cgKeyParam;
+    const globalUrl = 'https://api.coingecko.com/api/v3/global?' + cgKeyParam;
+
+    async function tdCgViaScan(fullUrl, label) {
+      const res = await fetch('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: fullUrl })
+      });
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (parseE) {
+        return {
+          ok: false,
+          err: label + ': non-JSON from /api/scan HTTP ' + res.status + ' ' + text.slice(0, 80)
+        };
+      }
+      if (!res.ok) {
+        const msg = (data && (data.error || data.message)) ? String(data.error || data.message) : text.slice(0, 80);
+        return { ok: false, err: label + ': /api/scan HTTP ' + res.status + ' — ' + msg };
+      }
+      return { ok: true, data };
+    }
+
+    const [marketsBox, globalBox, fearGreedRes] = await Promise.all([
+      tdCgViaScan(marketsUrl, 'CoinGecko /coins/markets'),
+      tdCgViaScan(globalUrl, 'CoinGecko /global'),
       fetch('https://api.alternative.me/fng/?limit=1&format=json')
     ]);
 
     const issues = [];
-    if (!marketsRes.ok) issues.push('CoinGecko /coins/markets HTTP ' + marketsRes.status);
-    if (!globalRes.ok) issues.push('CoinGecko /global HTTP ' + globalRes.status);
+    if (!marketsBox.ok) issues.push(marketsBox.err);
+    if (!globalBox.ok) issues.push(globalBox.err);
     if (!fearGreedRes.ok) issues.push('Alternative.me /fng HTTP ' + fearGreedRes.status);
 
     let markets = [];
-    try {
-      markets = marketsRes.ok ? await marketsRes.json() : [];
-    } catch (parseE) {
-      issues.push('CoinGecko /coins/markets JSON parse error: ' + ((parseE && parseE.message) || String(parseE)));
+    if (marketsBox.ok) {
+      if (Array.isArray(marketsBox.data)) {
+        markets = marketsBox.data;
+        if (markets.length === 0) issues.push('CoinGecko /coins/markets returned empty array');
+      } else {
+        issues.push('CoinGecko /coins/markets response is not an array');
+      }
     }
+
     let globalData = null;
-    try {
-      globalData = globalRes.ok ? await globalRes.json() : null;
-    } catch (parseE) {
-      issues.push('CoinGecko /global JSON parse error: ' + ((parseE && parseE.message) || String(parseE)));
-    }
+    if (globalBox.ok) globalData = globalBox.data;
+
     let fearGreedData = null;
     try {
       fearGreedData = fearGreedRes.ok ? await fearGreedRes.json() : null;
@@ -8186,10 +8255,6 @@ async function tdRenderMarket() {
       if (sorted.length === 0) {
         issues.push('CoinGecko /coins/markets: no entries with 24h change fields (Top Gainer/Loser stay —)');
       }
-    } else if (marketsRes.ok && Array.isArray(markets) && markets.length === 0) {
-      issues.push('CoinGecko /coins/markets returned empty array');
-    } else if (marketsRes.ok && !Array.isArray(markets)) {
-      issues.push('CoinGecko /coins/markets response is not an array');
     }
 
     // BTC dominance from CoinGecko /global
@@ -8199,7 +8264,7 @@ async function tdRenderMarket() {
         btcDomEl.textContent = btcDom.toFixed(1) + '%';
         btcDomSub.textContent = 'Share of total market cap';
       }
-    } else if (globalRes.ok && globalData) {
+    } else if (globalBox.ok && globalData) {
       issues.push('CoinGecko /global missing data.market_cap_percentage.btc');
     }
 
@@ -8225,11 +8290,14 @@ async function tdRenderMarket() {
       issues.push('Alternative.me /fng returned no data[] entry');
     }
 
+    tdMktClearLeftoverLoading();
+
     if (issues.length) {
-      tdSetWidgetDebug('td-debug-market', 'DEBUG: Market Snapshot — ' + issues.join(' | ') + ' (direct browser fetches; rate limit / CORS / demo key may apply).');
+      tdSetWidgetDebug('td-debug-market', 'DEBUG: Market Snapshot — ' + issues.join(' | ') + ' (CoinGecko via POST /api/scan; Fear & Greed direct from Alternative.me).');
     }
   } catch (e) {
     const why = (e && e.message) ? e.message : String(e);
+    tdMktClearLeftoverLoading();
     tdSetWidgetDebug('td-debug-market', 'DEBUG: Market Snapshot — exception: ' + why);
   }
 }

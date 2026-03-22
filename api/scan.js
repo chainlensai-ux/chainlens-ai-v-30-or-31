@@ -29,6 +29,7 @@ export default async function handler(req, res) {
     'rpc.ankr.com',
     'solana-mainnet.g.alchemy.com',
     'api.dexscreener.com',
+    'api.coingecko.com',
     'token.jup.ag',
     'tokens.jup.ag',
     'api.alternative.me'
