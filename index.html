@@ -3969,6 +3969,20 @@ body::after {
 }
 .td-chat-typing span:nth-child(2) { animation-delay: 0.2s; }
 .td-chat-typing span:nth-child(3) { animation-delay: 0.4s; }
+.td-chat-thinking { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.td-chat-thinking__dots { display: flex; gap: 3px; }
+.td-chat-thinking__dots span {
+  width: 5px; height: 5px; border-radius: 50%; background: #2DD4BF;
+  animation: td-think-dot 1.1s infinite ease-in-out;
+}
+.td-chat-thinking__dots span:nth-child(2) { animation-delay: 0.18s; }
+.td-chat-thinking__dots span:nth-child(3) { animation-delay: 0.36s; }
+.td-chat-thinking__status {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #8b5cf6;
+  letter-spacing: 0.2px;
+}
 
 /* Collapse toggle on edge */
 .td-panel-toggle {
@@ -3988,6 +4002,7 @@ body::after {
 @keyframes td-stagger-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes td-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 @keyframes td-typing { 0%, 60%, 100% { opacity: 0.2; transform: scale(0.8); } 30% { opacity: 1; transform: scale(1); } }
+@keyframes td-think-dot { 0%, 70%, 100% { opacity: 0.25; transform: scale(0.8); } 35% { opacity: 1; transform: scale(1); } }
 @keyframes td-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
 .td-widget:nth-child(1) { animation: td-stagger-in 0.4s ease 0.05s both; }
@@ -8650,9 +8665,24 @@ async function tdClarkSend() {
   // Typing indicator
   const typing = document.createElement('div');
   typing.className = 'td-chat-msg td-chat-msg--ai';
-  typing.innerHTML = '<div class="td-chat-msg__name">Clark</div><div class="td-chat-typing"><span></span><span></span><span></span></div>';
+  const thinkMessages = [
+    'Searching onchain data...',
+    'Pulling whale context...',
+    'Running CORTEX analysis...'
+  ];
+  let thinkIdx = 0;
+  typing.innerHTML = '<div class="td-chat-msg__name">Clark</div>'
+    + '<div class="td-chat-thinking">'
+    + '<div class="td-chat-thinking__dots"><span></span><span></span><span></span></div>'
+    + '<div class="td-chat-thinking__status" id="td-thinking-status">' + tdEscape(thinkMessages[0]) + '</div>'
+    + '</div>';
   msgs.appendChild(typing);
   msgs.scrollTop = msgs.scrollHeight;
+  const thinkStatusEl = typing.querySelector('#td-thinking-status');
+  const thinkTimer = setInterval(() => {
+    thinkIdx = (thinkIdx + 1) % thinkMessages.length;
+    if (thinkStatusEl) thinkStatusEl.textContent = thinkMessages[thinkIdx];
+  }, 1300);
 
   try {
     // CORTEX system prompt with live market context
@@ -8717,8 +8747,10 @@ async function tdClarkSend() {
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     const reply = data.text || 'Unable to get response right now.';
+    clearInterval(thinkTimer);
     typing.innerHTML = '<div class="td-chat-msg__name">Clark</div>' + tdEscape(reply).replace(/\n/g, '<br>');
   } catch (e) {
+    clearInterval(thinkTimer);
     typing.innerHTML = '<div class="td-chat-msg__name">Clark</div>Connection error. Please try again.';
   }
 
