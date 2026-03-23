@@ -10962,8 +10962,14 @@ async function doSentiment() {
     const d = await r.json();
     const current = d?.data?.[0] || { value: 50, value_classification: 'Neutral' };
     const metrics = d?.metrics || {};
-    let val = parseInt(metrics.galaxy_score != null ? metrics.galaxy_score : current.value);
-    val = Number.isFinite(val) ? val : 50;
+    const galaxyScore = Number(metrics.galaxy_score);
+    const altRank = Number(metrics.alt_rank);
+    let val = Number.isFinite(galaxyScore) ? galaxyScore : Number(current.value);
+    if (Number.isFinite(altRank) && altRank > 0) {
+      const altRankNorm = Math.max(0, Math.min(100, 100 - ((Math.min(altRank, 1000) - 1) / 999) * 100));
+      val = (val * 0.7) + (altRankNorm * 0.3);
+    }
+    val = Number.isFinite(val) ? Math.round(val) : 50;
     const bias = val > 60 ? 'Bullish' : val < 40 ? 'Bearish' : 'Neutral';
     const col = bias === 'Bullish' ? '#00ffc8' : bias === 'Bearish' ? '#ef476f' : '#f0b429';
     const moodEmoji = bias === 'Bullish' ? '🟢' : bias === 'Bearish' ? '🔴' : '🟡';

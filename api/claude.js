@@ -276,87 +276,34 @@ function slimDexPairs(pairs) {
   }));
 }
 
-async function fetchLunarDirect(topic) {
+async function fetchLunarDirect(req, topic) {
   try {
-    const key = (process.env.LUNARCRUSH_KEY || '').trim();
-    if (!key) return null;
-    const headers = { Authorization: `Bearer ${key}` };
-    const overviewUrl = `${LUNARCRUSH_API}/topic/${encodeURIComponent(topic)}/v1`;
-    const tsUrl = `${LUNARCRUSH_API}/topic/${encodeURIComponent(topic)}/time-series/v1?interval=1d&data_points=12`;
-
-    const [ovRes, tsRes] = await Promise.all([
-      fetch(overviewUrl, { headers: { ...headers, Accept: 'application/json', 'User-Agent': 'ChainLens-Clark/1.0' } }),
-      fetch(tsUrl, { headers: { ...headers, Accept: 'application/json', 'User-Agent': 'ChainLens-Clark/1.0' } }),
-    ]);
-
-    if (!ovRes.ok && !tsRes.ok) return null;
-
-    let overview = {};
-    if (ovRes.ok) {
-      try {
-        overview = await ovRes.json();
-      } catch {
-        overview = {};
-      }
-    }
-
-    let seriesPoints = [];
-    if (tsRes.ok) {
-      try {
-        const tsJson = await tsRes.json();
-        seriesPoints = Array.isArray(tsJson.data) ? tsJson.data : [];
-      } catch {
-        seriesPoints = [];
-      }
-    }
-
-    let currentVal = pickLunarNumber(overview, [
-      'sentiment',
-      'social_sentiment',
-      'galaxy_score',
-      'galaxyScore',
-      'average_sentiment',
-      'sentiment_score',
-    ]);
-    if (currentVal == null) currentVal = 50;
-    currentVal = Math.max(0, Math.min(100, Math.round(currentVal)));
-
-    const samplePoints = seriesPoints.slice(0, 5).map((p) => {
-      const v = pickLunarNumber(p, [
-        'sentiment',
-        'galaxy_score',
-        'galaxyScore',
-        'social_sentiment',
-        'average_sentiment',
-      ]);
-      const val = v != null ? Math.max(0, Math.min(100, Math.round(v))) : currentVal;
-      return {
-        value: val,
-        value_classification: classifyLunarSentiment(val),
-        time: p.time ?? p.timestamp ?? null,
-      };
+    const origin = internalApiOrigin(req).replace(/\/$/, '');
+    const r = await fetch(`${origin}/api/lunarsentiment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic, interval: '1d', limit: 12 }),
     });
-
-    if (!samplePoints.length) {
-      samplePoints.push({
-        value: currentVal,
-        value_classification: classifyLunarSentiment(currentVal),
-        time: Date.now(),
-      });
-    } else {
-      samplePoints[0].value = currentVal;
-      samplePoints[0].value_classification = classifyLunarSentiment(currentVal);
-    }
-
+    if (!r.ok) return null;
+    const json = await r.json();
+    const metrics = json?.metrics || {};
+    const points = Array.isArray(json?.data) ? json.data : [];
+    const currentVal = Number.isFinite(Number(metrics.galaxy_score))
+      ? Number(metrics.galaxy_score)
+      : Number.isFinite(Number(points?.[0]?.value))
+        ? Number(points[0].value)
+        : 50;
+    const clamped = Math.max(0, Math.min(100, Math.round(currentVal)));
     return {
       topic,
-      lunarCrushSentimentGauge0to100: currentVal,
-      classification: classifyLunarSentiment(currentVal),
+      lunarCrushSentimentGauge0to100: clamped,
+      classification: classifyLunarSentiment(clamped),
       galaxyScoreOrSentimentFields: {
-        galaxy_score: overview.galaxy_score ?? overview.galaxyScore ?? null,
-        sentiment: overview.sentiment ?? overview.social_sentiment ?? null,
+        galaxy_score: metrics.galaxy_score ?? null,
+        sentiment: metrics.sentiment_score ?? null,
+        alt_rank: metrics.alt_rank ?? null,
       },
-      samplePoints,
+      samplePoints: points.slice(0, 5),
     };
   } catch {
     return null;
@@ -494,7 +441,7 @@ async function buildLiveContextBlock(req, userPrompt) {
     const lunarResults = [];
     for (const t of topics) {
       try {
-        const row = await fetchLunarDirect(t);
+        const row = await fetchLunarDirect(req, t);
         if (row) lunarResults.push(row);
       } catch {
         /* soft fail per topic */
@@ -545,7 +492,7 @@ async function buildLiveContextBlock(req, userPrompt) {
 
     if (topics.length) {
       parts.push(
-        'LUNARCRUSH_SENTIMENT_GAUGE (direct, LUNARCRUSH_KEY): ' +
+        'LUNARCRUSH_SENTIMENT_GAUGE (via /api/lunarsentiment, LUNARCRUSH_KEY): ' +
           (lunarResults.length
             ? safeStringify(lunarResults, 6000)
             : '(skipped — no data or LUNARCRUSH_KEY / API error)')

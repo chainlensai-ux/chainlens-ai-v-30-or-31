@@ -47,6 +47,14 @@ function coerceArray(payload) {
   return [];
 }
 
+function unwrapObject(payload) {
+  if (!payload || typeof payload !== 'object') return {};
+  if (Array.isArray(payload)) return payload[0] || {};
+  if (payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)) return payload.data;
+  if (payload.topic && typeof payload.topic === 'object') return payload.topic;
+  return payload;
+}
+
 function extractSentimentLike(p) {
   // We try sentiment-like (0-100) fields first. If none exist, we fall back later.
   return pickNumber(p, [
@@ -98,7 +106,12 @@ export default async function handler(req, res) {
   const { topic = 'bitcoin', interval = '1d', limit = 30 } = req.body || {};
 
   try {
-    const authHeaders = { 'Authorization': `Bearer ${LUNARCRUSH_KEY}` };
+    const authHeaders = {
+      Authorization: `Bearer ${LUNARCRUSH_KEY}`,
+      'X-API-Key': LUNARCRUSH_KEY,
+      Accept: 'application/json',
+      'User-Agent': 'ChainLens-LunarSentiment/1.0',
+    };
     const overviewUrl = `${LUNARCRUSH_API}/topic/${encodeURIComponent(topic)}/v1`;
     const tsUrl = `${LUNARCRUSH_API}/topic/${encodeURIComponent(topic)}/time-series/v1?interval=${encodeURIComponent(interval)}&data_points=${encodeURIComponent(limit)}`;
 
@@ -108,18 +121,43 @@ export default async function handler(req, res) {
     ]);
 
     let overview = {};
+    let overviewOk = false;
+    let overviewErr = null;
     if (ovRes.status === 'fulfilled') {
-      try { overview = await ovRes.value.json(); } catch (e) { overview = {}; }
+      overviewOk = ovRes.value.ok;
+      try {
+        const ovJson = await ovRes.value.json();
+        if (overviewOk) overview = unwrapObject(ovJson);
+        else overviewErr = ovJson?.error || ovJson?.message || `HTTP ${ovRes.value.status}`;
+      } catch (e) {
+        if (overviewOk) overview = {};
+        else overviewErr = `HTTP ${ovRes.value.status}`;
+      }
+    } else {
+      overviewErr = ovRes.reason?.message || 'overview request failed';
     }
 
     let seriesPoints = [];
+    let tsOk = false;
+    let tsErr = null;
     if (tsRes.status === 'fulfilled') {
+      tsOk = tsRes.value.ok;
       try {
         const tsJson = await tsRes.value.json();
-        seriesPoints = coerceArray(tsJson);
+        if (tsOk) seriesPoints = coerceArray(tsJson);
+        else tsErr = tsJson?.error || tsJson?.message || `HTTP ${tsRes.value.status}`;
       } catch (e) {
-        seriesPoints = [];
+        if (tsOk) seriesPoints = [];
+        else tsErr = `HTTP ${tsRes.value.status}`;
       }
+    } else {
+      tsErr = tsRes.reason?.message || 'timeseries request failed';
+    }
+
+    if (!overviewOk && !tsOk) {
+      return res.status(502).json({
+        error: `LunarCrush unavailable: overview=${overviewErr || 'failed'}; timeseries=${tsErr || 'failed'}`
+      });
     }
 
     // Current sentiment from topic overview (best single-source-of-truth).
@@ -142,8 +180,7 @@ export default async function handler(req, res) {
 
     if (!mapped.length) {
       // Ensure the UI still renders even if the time-series endpoint fails.
-      const data = [{ value: currentVal, value_classification: classify(currentVal), time: Date.now() }];
-      return res.status(200).json({ data });
+      mapped = [{ t: Date.now(), raw: {}, v: currentVal, c: null }];
     }
 
     if (!anySentimentLike) {
@@ -177,8 +214,8 @@ export default async function handler(req, res) {
       const v = Math.round(clamp(x.v, 0, 100));
       return { value: v, value_classification: classify(v), time: x.t ?? null };
     });
-    const galaxyScore = pickNumber(overview, ['galaxy_score', 'galaxyScore', 'galaxy_score_avg']) ?? currentVal;
-    const sentimentScore = pickNumber(overview, ['sentiment', 'social_sentiment', 'average_sentiment', 'sentiment_score']) ?? currentVal;
+    const galaxyScore = pickNumber(overview, ['galaxy_score', 'galaxyScore', 'galaxy_score_avg', 'galaxy']) ?? currentVal;
+    const sentimentScore = pickNumber(overview, ['sentiment', 'social_sentiment', 'average_sentiment', 'sentiment_score', 'avg_sentiment']) ?? currentVal;
     const altRank = extractAltRankLike(overview);
     const socialVolume = pickNumber(overview, [
       'social_volume',
