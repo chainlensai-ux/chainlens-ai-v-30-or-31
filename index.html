@@ -3563,6 +3563,125 @@ body::after {
   font-size: 10px; color: var(--cl-text-4);
 }
 
+/* Landing Clark side panel (opens on submit) */
+#pg-home { transition: width 0.28s ease, margin-right 0.28s ease; }
+#pg-home.hc-side-open { width: 60vw; margin-right: 40vw; }
+.hc-side-panel {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: 40vw;
+  background: #0d0d0d;
+  border-left: 1px solid rgba(139,92,246,0.3);
+  z-index: 8900;
+  display: flex; flex-direction: column;
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.28s ease, opacity 0.28s ease;
+}
+.hc-side-panel.open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.hc-side-panel__header {
+  height: 60px;
+  border-bottom: 1px solid rgba(139,92,246,0.2);
+  padding: 0 14px;
+  display: flex; align-items: center; gap: 10px;
+  flex-shrink: 0;
+}
+.hc-side-panel__avatar { width: 36px; height: 36px; border-radius: 50%; overflow: hidden; flex-shrink: 0; }
+.hc-side-panel__name-wrap { flex: 1; min-width: 0; }
+.hc-side-panel__name {
+  font-family: 'Syne', sans-serif;
+  font-size: 14px; font-weight: 800; color: #fff;
+}
+.hc-side-panel__status {
+  font-size: 10px;
+  color: #2DD4BF;
+  font-family: 'Inter', sans-serif;
+}
+.hc-side-panel__close {
+  width: 28px; height: 28px;
+  border: 1px solid rgba(139,92,246,0.28);
+  background: transparent;
+  border-radius: 8px;
+  color: #8b5cf6;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
+}
+.hc-side-panel__close:hover {
+  border-color: rgba(139,92,246,0.55);
+  color: #2DD4BF;
+  background: rgba(139,92,246,0.08);
+}
+.hc-side-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139,92,246,0.25) transparent;
+}
+.hc-side-panel__body::-webkit-scrollbar { width: 3px; }
+.hc-side-panel__body::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.25); border-radius: 4px; }
+.hc-side-msg {
+  max-width: 96%;
+  border-radius: 10px;
+  padding: 9px 11px;
+  font-size: 12px;
+  line-height: 1.62;
+  animation: clarkMsgIn 0.2s ease;
+}
+.hc-side-msg--user {
+  align-self: flex-end;
+  background: rgba(139,92,246,0.14);
+  border: 1px solid rgba(139,92,246,0.28);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.hc-side-msg--bot {
+  align-self: flex-start;
+  background: rgba(139,92,246,0.08);
+  border: 1px solid rgba(139,92,246,0.22);
+  color: var(--cl-text-2);
+  border-bottom-left-radius: 4px;
+}
+.hc-side-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  background: rgba(139,92,246,0.08);
+  border: 1px solid rgba(139,92,246,0.22);
+  border-radius: 10px;
+  border-bottom-left-radius: 4px;
+  padding: 10px 11px;
+}
+.hc-side-thinking__dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.hc-side-thinking__dots span {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: #8b5cf6;
+  animation: clarkDot 1.2s infinite;
+}
+.hc-side-thinking__dots span:nth-child(2) { animation-delay: 0.2s; }
+.hc-side-thinking__dots span:nth-child(3) { animation-delay: 0.4s; }
+.hc-side-thinking__text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #2DD4BF;
+}
+
 /* ════════════════════════════════════════════════
    TERMINAL DASHBOARD — Bloomberg meets Web3
 ════════════════════════════════════════════════ */
@@ -4307,6 +4426,38 @@ body::after {
   PAGE: HOME
 ═════════════════════════════════════ -->
 <div class="cl-page active" id="pg-home">
+  <aside id="hc-side-panel" class="hc-side-panel" aria-label="Clark side panel">
+    <div class="hc-side-panel__header">
+      <div class="hc-side-panel__avatar"><svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg" style="image-rendering:pixelated;width:36px;height:36px">
+        <defs>
+          <linearGradient id="hc-side-avatar-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7858c0"/><stop offset="100%" stop-color="#00bfa5"/></linearGradient>
+          <clipPath id="hc-side-avatar-clip"><circle cx="18" cy="18" r="18"/></clipPath>
+        </defs>
+        <circle cx="18" cy="18" r="18" fill="url(#hc-side-avatar-g)"/>
+        <g clip-path="url(#hc-side-avatar-clip)">
+          <rect x="7" y="2" width="22" height="3" fill="#111"/>
+          <rect x="5" y="5" width="26" height="4" fill="#111"/>
+          <rect x="4" y="9" width="4" height="5" fill="#111"/>
+          <rect x="28" y="9" width="4" height="4" fill="#111"/>
+          <rect x="8" y="8" width="20" height="18" fill="#d4a274"/>
+          <rect x="5" y="11" width="9" height="4" fill="#111"/>
+          <rect x="22" y="11" width="9" height="4" fill="#111"/>
+          <rect x="14" y="12" width="8" height="2" fill="#2a2a2a"/>
+          <rect x="16" y="19" width="3" height="3" fill="#a07840"/>
+          <rect x="12" y="23" width="12" height="2" fill="#2a2a2a"/>
+          <rect x="5" y="27" width="26" height="10" fill="#b038b8"/>
+          <rect x="13" y="27" width="4" height="4" fill="#8c2a9a"/>
+          <rect x="19" y="27" width="4" height="4" fill="#8c2a9a"/>
+        </g>
+      </svg></div>
+      <div class="hc-side-panel__name-wrap">
+        <div class="hc-side-panel__name">Clark AI</div>
+        <div class="hc-side-panel__status">Live Onchain Intel</div>
+      </div>
+      <button class="hc-side-panel__close" type="button" onclick="hcCloseSidePanel()" aria-label="Close Clark side panel">×</button>
+    </div>
+    <div id="hc-side-body" class="hc-side-panel__body"></div>
+  </aside>
   <!-- Hero -->
   <section class="cl-hero">
     <canvas id="cl-particles"></canvas>
@@ -7534,6 +7685,7 @@ function launchTerminal() {
 }
 
 function go(id) {
+  if (id !== 'home') hcCloseSidePanel(true);
   document.querySelectorAll('.cl-page').forEach(p => p.classList.remove('active'));
   const pg = document.getElementById('pg-' + id);
   if (pg) pg.classList.add('active');
@@ -13643,6 +13795,89 @@ setTimeout(() => { if (!clarkHistory[clarkAgent].length) clarkGreet(); }, 500);
 // HERO CLARK CHAT — centered homepage chat box
 // ══════════════════════════════════════════════
 let hcBusy = false;
+let hcSideThinkingTimer = null;
+let hcSideStreamTimer = null;
+
+function hcOpenSidePanel() {
+  const panel = document.getElementById('hc-side-panel');
+  const home = document.getElementById('pg-home');
+  if (panel) panel.classList.add('open');
+  if (home) home.classList.add('hc-side-open');
+}
+
+function hcCloseSidePanel(silent) {
+  const panel = document.getElementById('hc-side-panel');
+  const home = document.getElementById('pg-home');
+  if (panel) panel.classList.remove('open');
+  if (home) home.classList.remove('hc-side-open');
+  if (hcSideThinkingTimer) { clearInterval(hcSideThinkingTimer); hcSideThinkingTimer = null; }
+  if (hcSideStreamTimer) { clearInterval(hcSideStreamTimer); hcSideStreamTimer = null; }
+  if (!silent) {
+    const body = document.getElementById('hc-side-body');
+    if (body) body.scrollTop = body.scrollHeight;
+  }
+}
+
+function hcSideAddMsg(role, text, isHtml) {
+  const body = document.getElementById('hc-side-body');
+  if (!body) return null;
+  const el = document.createElement('div');
+  el.className = 'hc-side-msg ' + (role === 'user' ? 'hc-side-msg--user' : 'hc-side-msg--bot');
+  if (isHtml) el.innerHTML = text;
+  else el.textContent = text;
+  body.appendChild(el);
+  body.scrollTop = body.scrollHeight;
+  return el;
+}
+
+function hcSideShowThinking() {
+  const body = document.getElementById('hc-side-body');
+  if (!body) return;
+  hcSideHideThinking();
+  const wrap = document.createElement('div');
+  wrap.id = 'hc-side-thinking';
+  wrap.className = 'hc-side-thinking';
+  wrap.innerHTML = '<span class="hc-side-thinking__dots"><span></span><span></span><span></span></span><span id="hc-side-thinking-text" class="hc-side-thinking__text">Searching onchain data...</span>';
+  body.appendChild(wrap);
+  body.scrollTop = body.scrollHeight;
+  const steps = ['Searching onchain data...', 'Pulling whale context...', 'Running CORTEX analysis...'];
+  let idx = 0;
+  hcSideThinkingTimer = setInterval(() => {
+    idx = (idx + 1) % steps.length;
+    const txt = document.getElementById('hc-side-thinking-text');
+    if (txt) txt.textContent = steps[idx];
+  }, 1200);
+}
+
+function hcSideHideThinking() {
+  if (hcSideThinkingTimer) { clearInterval(hcSideThinkingTimer); hcSideThinkingTimer = null; }
+  const el = document.getElementById('hc-side-thinking');
+  if (el) el.remove();
+}
+
+function hcSideStreamBot(text) {
+  if (hcSideStreamTimer) { clearInterval(hcSideStreamTimer); hcSideStreamTimer = null; }
+  const target = hcSideAddMsg('bot', '');
+  if (!target) return;
+  const full = String(text || '');
+  if (!full) {
+    target.innerHTML = clarkMd('Got it — connect your wallet inside the app for full live analysis.');
+    return;
+  }
+  let i = 0;
+  hcSideStreamTimer = setInterval(() => {
+    i += 5;
+    const done = i >= full.length;
+    const slice = done ? full : full.slice(0, i);
+    target.innerHTML = clarkMd(slice);
+    const body = document.getElementById('hc-side-body');
+    if (body) body.scrollTop = body.scrollHeight;
+    if (done) {
+      clearInterval(hcSideStreamTimer);
+      hcSideStreamTimer = null;
+    }
+  }, 22);
+}
 
 function updateHeroTierLabel() {
   const el = document.getElementById('hc-tier-label');
@@ -13682,6 +13917,9 @@ async function heroClarkSend() {
   const sysPrompt = CLARK_BASE + '\n\nYou are answering a question on the ChainLens AI landing page. Keep responses to 2-3 sharp sentences. If the user asks to scan a specific wallet address, explain that live wallet scanning is available in the app — describe what ChainLens would show them (portfolio breakdown, smart money signals, transaction history) and encourage them to sign up free. Be direct, crypto-native, and compelling.';
 
   try {
+    hcOpenSidePanel();
+    hcSideAddMsg('user', text);
+    hcSideShowThinking();
     hcAddMsg('user', text);
     hcShowTyping();
 
@@ -13733,10 +13971,14 @@ async function heroClarkSend() {
     }
 
     const reply = await ai(sysPrompt + heroLiveData + heroLunarSocialData + '\n\nUser: ' + text + '\nClark:', 400);
+    hcSideHideThinking();
+    hcSideStreamBot((reply || '').trim() || 'Got it — connect your wallet inside the app for full live analysis.');
     hcRemoveTyping();
     hcAddMsg('bot', (reply || '').trim() || 'Got it — connect your wallet inside the app for full live analysis.');
   } catch(e) {
     console.error('Hero Clark error:', e);
+    hcSideHideThinking();
+    hcSideAddMsg('bot', 'Couldn\'t reach CORTEX right now — try again in a moment or open the full Clark panel below.');
     hcRemoveTyping();
     hcAddMsg('bot', 'Couldn\'t reach CORTEX right now — try again in a moment or open the full Clark panel below.');
   } finally {
