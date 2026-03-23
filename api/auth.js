@@ -1,5 +1,5 @@
 // api/auth.js — ChainLens Supabase Auth Handler
-// Handles: signup, login, getUser, logout, updatePlan
+// Handles: signup, login, getUser, oauthStart, logout, updatePlan
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY; // service role key (never exposed to client)
@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Supabase not configured. Add SUPABASE_URL and SUPABASE_SERVICE_KEY to Vercel env vars.' });
   }
 
-  const { action, email, password, name, plan, userId, accessToken } = req.body || {};
+  const { action, email, password, name, plan, userId, accessToken, provider, redirectTo } = req.body || {};
 
   try {
 
@@ -142,6 +142,16 @@ export default async function handler(req, res) {
           accessToken, // pass back same token
         }
       });
+    }
+
+    // ── OAUTH START (Google / GitHub) ───────────────────────────────
+    if (action === 'oauthStart') {
+      const p = String(provider || '').toLowerCase();
+      if (!['google', 'github'].includes(p)) return res.status(400).json({ error: 'Unsupported OAuth provider' });
+      const rt = String(redirectTo || '').trim();
+      if (!rt) return res.status(400).json({ error: 'Missing redirectTo' });
+      const url = `${SUPABASE_URL}/auth/v1/authorize?provider=${encodeURIComponent(p)}&redirect_to=${encodeURIComponent(rt)}`;
+      return res.status(200).json({ success: true, url });
     }
 
     // ── UPDATE PLAN (called by Stripe webhook later) ────────────────

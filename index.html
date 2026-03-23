@@ -654,6 +654,24 @@ body::after {
 .cl-terms-row input { accent-color: var(--cl-cyan); margin-top: 2px; flex-shrink: 0; }
 .cl-terms-row a { color: var(--cl-cyan); text-decoration: none; }
 .cl-terms-row a:hover { text-decoration: underline; }
+.cl-auth-oauth {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.cl-auth-oauth__btn {
+  width: 100%;
+  border: 0.5px solid rgba(255,255,255,0.2);
+  border-radius: 8px;
+  height: 38px;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cl-auth-oauth__btn--google { background: #ffffff; color: #202124; }
+.cl-auth-oauth__btn--github { background: #1a1a1a; color: #ffffff; }
 
 /* ════════════════════════════════════════════════
    COMPONENT: LOCK WALL
@@ -4510,6 +4528,10 @@ body::after {
         <span>I agree to the <a href="#" onclick="go('terms');return false;">Terms of Service</a>, <a href="#" onclick="go('privacy');return false;">Privacy Policy</a> and <a href="#" onclick="go('disclaimer');return false;">Risk Disclaimer</a>.</span>
       </label>
       <button class="cl-btn cl-btn--primary cl-btn--full" id="auth-btn" onclick="doAuth()">Create Account →</button>
+      <div class="cl-auth-oauth">
+        <button type="button" class="cl-auth-oauth__btn cl-auth-oauth__btn--google" onclick="authOAuth('google')">Continue with Google</button>
+        <button type="button" class="cl-auth-oauth__btn cl-auth-oauth__btn--github" onclick="authOAuth('github')">Continue with GitHub</button>
+      </div>
       <div style="font-size:11px;color:var(--cl-text-3);text-align:center;">7-day free trial on Pro & Elite.</div>
     </div>
     <div id="auth-account-view" class="cl-auth-account-view" style="display:none;">
@@ -9281,6 +9303,26 @@ function canAccess(feature) {
 
 async function initAuth() {
   try {
+    const hash = window.location.hash ? new URLSearchParams(window.location.hash.replace(/^#/, '')) : null;
+    const oauthAccessToken = hash ? hash.get('access_token') : null;
+    const oauthError = hash ? (hash.get('error_description') || hash.get('error')) : null;
+    if (oauthAccessToken) {
+      const oauthUser = await sbAuth('getUser', { accessToken: oauthAccessToken });
+      if (oauthUser.success && oauthUser.user) {
+        user = oauthUser.user;
+        localStorage.setItem('cl_session', JSON.stringify(user));
+        if (window.location.hash) history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        updateNav();
+        closeAuth();
+        syncAllDataDown();
+        go('terminal');
+        return;
+      }
+    } else if (oauthError) {
+      if (window.location.hash) history.replaceState({}, document.title, window.location.pathname + window.location.search);
+      toast('OAuth login failed', 'er');
+    }
+
     // Restore wallet-only session
     const savedWallet = localStorage.getItem('cl_wallet');
     if (savedWallet && !localStorage.getItem('cl_session')) {
@@ -9474,6 +9516,20 @@ function switchTab(tab) {
   if (termsRow) termsRow.style.display = tab === 'signup' ? '' : 'none';
   document.getElementById('auth-btn').textContent = tab === 'signup' ? 'Create Account →' : 'Log In →';
   document.getElementById('auth-sub').textContent = tab === 'signup' ? 'Built for serious crypto traders.' : 'Welcome back.';
+}
+
+async function authOAuth(provider) {
+  try {
+    const redirectTo = window.location.origin + window.location.pathname;
+    const res = await sbAuth('oauthStart', { provider, redirectTo });
+    if (!res.success || !res.url) {
+      toast(res.error || 'OAuth unavailable', 'er');
+      return;
+    }
+    window.location.href = res.url;
+  } catch (e) {
+    toast('OAuth unavailable', 'er');
+  }
 }
 
 async function doAuth() {
@@ -14059,10 +14115,17 @@ function hcExtractActivityRows(reply) {
 }
 
 function hcExtractEdge(reply) {
-  const t = hcStripMarkdown(String(reply || '').trim());
+  const t = hcPlainTextEdge(String(reply || '').trim());
   if (!t) return 'Run WalletScan in Expert mode and follow the dominant accumulation/distribution signal.';
   const m = t.split(/[.!?]\s+/)[0] || t;
   return m.length > 160 ? m.slice(0, 157) + '...' : m;
+}
+
+function hcPlainTextEdge(text) {
+  let out = hcStripMarkdown(text);
+  out = out.replace(/[*#_`]/g, ' ');
+  out = out.replace(/\s+/g, ' ').trim();
+  return out;
 }
 
 function hcStripMarkdown(text) {
