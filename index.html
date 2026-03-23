@@ -6129,11 +6129,11 @@ body::after {
         <div class="ws-terminal" id="ws-ai">Generating analysis...</div>
       </div>
 
-      <!-- Holdings -->
+      <!-- Token Holdings -->
       <div class="ws-section">
         <div class="ws-section-header">
           <div class="ws-dot ws-dot--mint"></div>
-          <span class="ws-section-title">Holdings</span>
+          <span class="ws-section-title">Token Holdings</span>
         </div>
         <div class="ws-table-head">
           <span>Token</span>
@@ -6153,14 +6153,24 @@ body::after {
         <div id="ws-pnl"></div>
       </div>
 
-      <!-- Transactions -->
+      <!-- Transaction History -->
       <div class="ws-section">
         <div class="ws-section-header">
           <div class="ws-dot ws-dot--dim"></div>
-          <span class="ws-section-title">Transactions</span>
+          <span class="ws-section-title">Transaction History</span>
           <span class="ws-section-sub" id="ws-tx-count"></span>
         </div>
         <div class="ws-tx-list" id="ws-txs"></div>
+      </div>
+
+      <!-- DeFi Positions -->
+      <div class="ws-section">
+        <div class="ws-section-header">
+          <div class="ws-dot ws-dot--mint"></div>
+          <span class="ws-section-title">DeFi Positions</span>
+          <span class="ws-section-sub" id="ws-defi-count"></span>
+        </div>
+        <div id="ws-defi"></div>
       </div>
 
     </div><!-- /ws-results -->
@@ -11085,6 +11095,124 @@ async function submitLB() {
 // ══════════════════════════════════════════════
 let savedWallets = JSON.parse(localStorage.getItem('cl_saved_wallets') || '[]');
 
+async function moralisViaScan(url) {
+  try {
+    const r = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+function normalizeMoralisChain(chain) {
+  const c = String(chain || '').toLowerCase();
+  if (c === 'eth') return 'eth';
+  if (c === 'base') return 'base';
+  if (c === 'bsc' || c === 'bnb') return 'bsc';
+  if (c === 'polygon' || c === 'matic') return 'polygon';
+  if (c === 'solana' || c === 'sol') return 'solana';
+  return c || 'eth';
+}
+
+function mapMoralisToken(t, chain) {
+  const decimals = Number(t.decimals || 0);
+  const balRaw = Number(t.balance_formatted != null ? t.balance_formatted : (t.balance || 0));
+  const bal = Number.isFinite(balRaw) ? balRaw : (Number(t.balance || 0) / Math.pow(10, decimals || 1));
+  const price = Number(t.usd_price || t.token_price || t.price_usd || 0);
+  const usd = Number(t.usd_value || (Number.isFinite(price) ? price * (bal || 0) : 0));
+  return {
+    symbol: t.symbol || (t.token_symbol || 'TKN'),
+    name: t.name || t.token_name || (t.symbol || 'Token'),
+    balance: Number.isFinite(bal) ? bal : 0,
+    usdValue: Number.isFinite(usd) ? usd : 0,
+    price: Number.isFinite(price) ? price : null,
+    contractAddress: t.token_address || t.address || '',
+    chain: normalizeMoralisChain(chain)
+  };
+}
+
+function mapMoralisTx(tx, address, chain) {
+  const a = String(address || '').toLowerCase();
+  const from = String(tx.from_address || tx.from || '').toLowerCase();
+  const to = String(tx.to_address || tx.to || '').toLowerCase();
+  const valEth = Number(tx.value_formatted != null ? tx.value_formatted : fmtEth(tx.value || 0));
+  const ts = tx.block_timestamp ? Math.floor(new Date(tx.block_timestamp).getTime() / 1000) : (parseInt(tx.block_timestamp || 0, 10) || 0);
+  return {
+    from: from || tx.from || '',
+    to: to || tx.to || '',
+    value: Number.isFinite(valEth) ? String(Math.max(0, valEth * 1e18)) : (tx.value || '0'),
+    timeStamp: ts || tx.timeStamp || 0,
+    hash: tx.hash || tx.transaction_hash || '',
+    dir: from === a ? 'out' : (to === a ? 'in' : (tx.dir || 'tx')),
+    _chain: normalizeMoralisChain(chain)
+  };
+}
+
+function renderWSDefiPositions(rows) {
+  if (!rows || !rows.length) {
+    return '<div style="text-align:center;padding:20px;color:var(--cl-text-3);font-size:12px;font-family:\'Inter\',sans-serif;">No DeFi positions found</div>';
+  }
+  return '<div style="display:flex;flex-direction:column;gap:1px;">' + rows.map((p, i) => {
+    const chain = normalizeMoralisChain(p.chain || p.chain_id || '');
+    const protocol = p.protocol_name || p.protocol || p.platform || 'Protocol';
+    const type = p.position_type || p.category || p.label || 'Position';
+    const netUsd = Number(p.net_usd_value || p.usd_value || p.value_usd || 0);
+    const val = Number.isFinite(netUsd) ? fmtFx(netUsd) : '—';
+    return '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(120,88,192,0.08);">'
+      + '<div style="width:36px;height:36px;border-radius:10px;background:rgba(139,92,246,0.12);border:1px solid rgba(139,92,246,0.25);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#8b5cf6;font-family:\'JetBrains Mono\',monospace;flex-shrink:0;">DFI</div>'
+      + '<div style="flex:1;min-width:0;">'
+      + `<div style="font-size:12px;font-weight:700;color:var(--cl-text-1);">${protocol}</div>`
+      + `<div style="font-size:10px;color:var(--cl-text-3);font-family:'JetBrains Mono',monospace;">${type} · ${chain.toUpperCase()}</div>`
+      + '</div>'
+      + `<div style="text-align:right;font-size:12px;font-weight:700;color:#00ffc8;font-family:'JetBrains Mono',monospace;">${val}</div>`
+      + '</div>';
+  }).join('') + '</div>';
+}
+
+async function fetchMoralisWalletScan(address, chainType) {
+  const base = 'https://deep-index.moralis.io/api/v2.2';
+  const out = { holdings: [], txs: [], defi: [] };
+  try {
+    if (chainType === 'evm') {
+      const chains = ['eth', 'base', 'bsc', 'polygon'];
+      for (const chain of chains) {
+        const [tok, txs, defi] = await Promise.all([
+          moralisViaScan(`${base}/wallets/${address}/tokens?chain=${chain}`),
+          moralisViaScan(`${base}/wallets/${address}/history?chain=${chain}&order=DESC`),
+          moralisViaScan(`${base}/wallets/${address}/defi/positions?chain=${chain}`)
+        ]);
+        const tokRows = Array.isArray(tok?.result) ? tok.result : [];
+        const txRows = Array.isArray(txs?.result) ? txs.result : [];
+        const defiRows = Array.isArray(defi?.result) ? defi.result : [];
+        out.holdings = out.holdings.concat(tokRows.map(t => mapMoralisToken(t, chain)));
+        out.txs = out.txs.concat(txRows.map(t => mapMoralisTx(t, address, chain)));
+        out.defi = out.defi.concat(defiRows.map(d => ({ ...d, chain })));
+      }
+      out.holdings = out.holdings.filter(a => (a.balance || 0) > 0).sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0));
+      out.txs = out.txs.sort((a, b) => (parseInt(b.timeStamp || 0, 10) - parseInt(a.timeStamp || 0, 10)));
+      return out;
+    }
+    if (chainType === 'sol') {
+      const [tok, txs, defi] = await Promise.all([
+        moralisViaScan(`${base}/wallets/${address}/tokens?chain=solana`),
+        moralisViaScan(`${base}/wallets/${address}/history?chain=solana&order=DESC`),
+        moralisViaScan(`${base}/wallets/${address}/defi/positions?chain=solana`)
+      ]);
+      const tokRows = Array.isArray(tok?.result) ? tok.result : [];
+      const txRows = Array.isArray(txs?.result) ? txs.result : [];
+      const defiRows = Array.isArray(defi?.result) ? defi.result : [];
+      out.holdings = tokRows.map(t => mapMoralisToken(t, 'solana')).filter(a => (a.balance || 0) > 0);
+      out.txs = txRows.map(t => mapMoralisTx(t, address, 'solana')).sort((a, b) => (parseInt(b.timeStamp || 0, 10) - parseInt(a.timeStamp || 0, 10)));
+      out.defi = defiRows.map(d => ({ ...d, chain: 'solana' }));
+      return out;
+    }
+  } catch (e) {}
+  return out;
+}
+
 async function doWS() {
   const address = document.getElementById('wsi').value.trim();
   if (!address) { toast('Enter a wallet address', 'er'); return; }
@@ -11102,6 +11230,7 @@ async function doWS() {
   document.getElementById('ws-intel-grid').innerHTML = loading;
   document.getElementById('ws-all-assets').innerHTML = loading;
   document.getElementById('ws-txs').innerHTML = loading;
+  document.getElementById('ws-defi').innerHTML = loading;
   document.getElementById('ws-ai').innerHTML = '<span class="cl-spinner"></span> AI analysing...';
   // Reset degen ring
   const _arcReset = document.getElementById('ws-degen-arc');
@@ -11119,6 +11248,7 @@ async function doWS() {
 
   try {
     let assets = [], allTxs = [], totalUsd = 0, portfolioSummary = '';
+    let moralisData = { holdings: [], txs: [], defi: [] };
 
     if (chainType === 'evm') {
       document.getElementById('ws-total-sub').textContent = 'Scanning ETH, Base, BNB, Polygon...';
@@ -11216,6 +11346,11 @@ async function doWS() {
       }
       totalUsd = assets.reduce((s, a) => s + (a.usdValue || 0), 0);
       portfolioSummary = `SOL: ${sol.nativeBal.toFixed(4)}, SPL Tokens: ${sol.tokens.length}, Txs: ${sol.txs.length}`;
+    }
+
+    if (chainType === 'evm' || chainType === 'sol') {
+      document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
+      moralisData = await fetchMoralisWalletScan(address, chainType);
     }
 
     document.getElementById('ws-total-value').textContent = fmtFx(totalUsd);
@@ -11372,9 +11507,13 @@ async function doWS() {
       + `</div>`
     ).join('');
 
-    document.getElementById('ws-all-assets').innerHTML = renderAllAssets(assets, allTxs, address);
-    document.getElementById('ws-txs').innerHTML = renderAllTxs(allTxs, address, chainType === 'evm' ? (selectedEvmChain || 'eth') : chainType);
-    document.getElementById('ws-tx-count').textContent = allTxs.length + ' transactions';
+    const assetsForUI = (moralisData.holdings && moralisData.holdings.length) ? moralisData.holdings : assets;
+    const txsForUI = (moralisData.txs && moralisData.txs.length) ? moralisData.txs : allTxs;
+    document.getElementById('ws-all-assets').innerHTML = renderAllAssets(assetsForUI, txsForUI, address);
+    document.getElementById('ws-txs').innerHTML = renderAllTxs(txsForUI, address, chainType === 'evm' ? (selectedEvmChain || 'eth') : chainType);
+    document.getElementById('ws-tx-count').textContent = txsForUI.length + ' transactions';
+    document.getElementById('ws-defi').innerHTML = renderWSDefiPositions(moralisData.defi || []);
+    document.getElementById('ws-defi-count').textContent = (moralisData.defi || []).length + ' positions';
     drawPie(assets.filter(a => a.usdValue > 0));
 
     // Historical PnL for EVM wallets — runs async, doesn't block
