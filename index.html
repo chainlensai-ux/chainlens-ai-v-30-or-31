@@ -10764,6 +10764,70 @@ For each: NARRATIVE: [name] | RANK: [1-6] | MOMENTUM: [HIGH/MEDIUM/LOW] | COINS:
 // PUMP ALERT
 // ══════════════════════════════════════════════
 let paAllData = [], paFilter = 'all';
+const _DEV_SCAN_CACHE = {};
+
+function _devChainId(chainLike) {
+  const c = String(chainLike || '').toLowerCase();
+  if (c === 'base') return 8453;
+  if (c === 'ethereum' || c === 'eth') return 1;
+  if (c === 'bsc' || c === 'bnb') return 56;
+  if (c === 'polygon' || c === 'matic') return 137;
+  return null;
+}
+
+function _devSignalFromPct(pctMoved) {
+  const p = Number.isFinite(pctMoved) ? pctMoved : 0;
+  if (p > 5) return { label: 'DANGER', color: '#ff4444' };
+  if (p > 0) return { label: 'CAUTION', color: '#f5a623' };
+  return { label: 'SAFE', color: '#00ffc8' };
+}
+
+async function fetchDevWalletMovement(contractAddress, chainLike) {
+  try {
+    const chainId = _devChainId(chainLike);
+    const ca = String(contractAddress || '').trim().toLowerCase();
+    if (!ca.startsWith('0x') || ca.length !== 42 || !chainId) return { pctMoved: 0, moved: false, signal: _devSignalFromPct(0), deployer: null };
+    const key = chainId + ':' + ca;
+    if (_DEV_SCAN_CACHE[key]) return _DEV_SCAN_CACHE[key];
+
+    const creatorUrl = `https://api.etherscan.io/v2/api?chainid=${chainId}&module=contract&action=getcontractcreation&contractaddresses=${ca}&apikey=ENV`;
+    const creatorR = await fetch('/api/scan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: creatorUrl })
+    });
+    const creatorD = creatorR.ok ? await creatorR.json() : null;
+    const deployer = creatorD?.result?.[0]?.contractCreator || null;
+    if (!deployer) {
+      const out = { pctMoved: 0, moved: false, signal: _devSignalFromPct(0), deployer: null };
+      _DEV_SCAN_CACHE[key] = out; return out;
+    }
+
+    const supplyUrl = `https://api.etherscan.io/v2/api?chainid=${chainId}&module=stats&action=tokensupply&contractaddress=${ca}&apikey=ENV`;
+    const txUrl = `https://api.etherscan.io/v2/api?chainid=${chainId}&module=account&action=tokentx&contractaddress=${ca}&address=${deployer}&sort=desc&page=1&offset=200&apikey=ENV`;
+    const [supplyR, txR] = await Promise.all([
+      fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: supplyUrl }) }),
+      fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: txUrl }) })
+    ]);
+    const supplyD = supplyR.ok ? await supplyR.json() : null;
+    const txD = txR.ok ? await txR.json() : null;
+    const supplyRaw = BigInt((supplyD && supplyD.status === '1' && supplyD.result) ? String(supplyD.result) : '0');
+    const cutoff = Math.floor(Date.now() / 1000) - 86400;
+    let movedRaw = BigInt(0);
+    const txs = Array.isArray(txD?.result) ? txD.result : [];
+    txs.forEach(t => {
+      const ts = parseInt(t.timeStamp || '0', 10);
+      const isOut = String(t.from || '').toLowerCase() === String(deployer).toLowerCase();
+      if (isOut && ts >= cutoff) {
+        try { movedRaw += BigInt(String(t.value || '0')); } catch (e) {}
+      }
+    });
+    const pctMoved = supplyRaw > 0n ? Number((movedRaw * 10000n) / supplyRaw) / 100 : 0;
+    const out = { pctMoved, moved: pctMoved > 0, signal: _devSignalFromPct(pctMoved), deployer };
+    _DEV_SCAN_CACHE[key] = out;
+    return out;
+  } catch (e) {
+    return { pctMoved: 0, moved: false, signal: _devSignalFromPct(0), deployer: null };
+  }
+}
 
 function setPAFilter(f, btn) {
   paFilter = f;
@@ -10820,6 +10884,11 @@ function renderPAResults() {
     const brdCol = type === 'pump' ? 'rgba(0,255,200,0.2)' : type === 'dump' ? 'rgba(239,71,111,0.2)' : 'rgba(240,180,41,0.18)';
     const volFmt = vol >= 1e9 ? '$' + (vol/1e9).toFixed(1) + 'B' : vol >= 1e6 ? '$' + (vol/1e6).toFixed(0) + 'M' : '$' + (vol/1e3).toFixed(0) + 'K';
     const sym2 = c.symbol.toUpperCase().slice(0,3);
+    const dev = c._devSignal || { pctMoved: 0, moved: false, signal: { label: 'SAFE', color: '#00ffc8' } };
+    const devBadge = dev.moved
+      ? `<span style="margin-left:8px;padding:2px 7px;border-radius:8px;background:rgba(255,68,68,0.14);border:1px solid rgba(255,68,68,0.5);color:#ff4444;font-size:9px;font-weight:800;font-family:'JetBrains Mono',monospace;">DEV WALLET MOVED ${dev.pctMoved.toFixed(2)}%</span>`
+      : '';
+    const devSig = `<span style="padding:2px 7px;border-radius:8px;background:${dev.signal.color}14;border:1px solid ${dev.signal.color}66;color:${dev.signal.color};font-size:9px;font-weight:800;font-family:'JetBrains Mono',monospace;">${dev.signal.label}</span>`;
     return `<div class="pa-card" style="--pa-color:${color};background:${bgCol};border-color:${brdCol};"
       onclick="analysePAModal('${c.id}','${encodeURIComponent(c.name)}','${c.symbol.toUpperCase()}','${pct.toFixed(2)}','${type}')">
       <div class="pa-card__top">
@@ -10837,7 +10906,8 @@ function renderPAResults() {
         <span class="pa-card__vol-lbl">Vol/MCap ${vr.toFixed(0)}%</span>
       </div>
       <div class="pa-card__footer">
-        <span class="pa-card__vol">${volFmt} 24h vol${c._chain ? ` · <span style="color:#a78bfa;font-size:9px;font-weight:700;">BASE</span>` : ''}</span>
+        <span class="pa-card__vol">${volFmt} 24h vol${c._chain ? ` · <span style="color:#a78bfa;font-size:9px;font-weight:700;">BASE</span>` : ''}${devBadge ? ' · ' + devBadge : ''}</span>
+        ${devSig}
         <span class="pa-card__ai">Clark AI →</span>
       </div>
     </div>`;
@@ -10882,12 +10952,52 @@ async function doPumpAlert() {
             price_change_percentage_7d_in_currency: 0,
             _source: 'dexscreener',
             _chain: 'base',
+            _chainId: 'base',
+            _contractAddress: pair.baseToken?.address || null,
             _pairAddress: pair.pairAddress,
             _liquidity: pair.liquidity?.usd || 0
           });
         }
       }
     } catch(e) {}
+
+    // Dev wallet movement signal (ETHERSCAN via /api/scan) for displayed tokens
+    const toScan = paAllData.slice(0, 24);
+    async function resolvePumpContract(c) {
+      if (c._contractAddress) return { ca: c._contractAddress, chain: c._chainId || c._chain || null };
+      if (String(c.id || '').startsWith('0x')) return { ca: String(c.id), chain: c._chainId || c._chain || 'base' };
+      try {
+        const s = encodeURIComponent(String(c.symbol || c.name || '').trim());
+        if (!s) return { ca: null, chain: null };
+        const sr = await fetch('/api/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: `https://api.dexscreener.com/latest/dex/search?q=${s}` })
+        });
+        const sd = sr.ok ? await sr.json() : null;
+        const pairs = Array.isArray(sd?.pairs) ? sd.pairs : [];
+        const hit = pairs.find(p => {
+          const sym = String(p?.baseToken?.symbol || '').toUpperCase();
+          const target = String(c.symbol || '').toUpperCase();
+          return sym === target && _devChainId(p?.chainId);
+        }) || pairs.find(p => _devChainId(p?.chainId));
+        return { ca: hit?.baseToken?.address || null, chain: hit?.chainId || null };
+      } catch (e) { return { ca: null, chain: null }; }
+    }
+
+    await Promise.allSettled(toScan.map(async c => {
+      let ca = c._contractAddress || null;
+      let chain = c._chainId || c._chain || null;
+      if (!ca && String(c.id || '').startsWith('0x')) ca = String(c.id);
+      if (!chain && c._chain) chain = c._chain;
+      if (!ca || !_devChainId(chain)) {
+        const rr = await resolvePumpContract(c);
+        ca = ca || rr.ca;
+        chain = chain || rr.chain;
+      }
+      if (ca && chain) c._devSignal = await fetchDevWalletMovement(ca, chain);
+      else c._devSignal = { pctMoved: 0, moved: false, signal: _devSignalFromPct(0), deployer: null };
+    }));
 
     const timeEl = document.getElementById('pa-stat-time');
     if (timeEl) timeEl.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
@@ -12008,6 +12118,11 @@ async function doTokenScanner() {
 
     // Render pairs table
     const displayPairs = basePairs.length ? basePairs : allPairs.slice(0, 10);
+    await Promise.allSettled(displayPairs.map(async p => {
+      const ca = p?.baseToken?.address;
+      const ch = p?.chainId;
+      p._devSignal = await fetchDevWalletMovement(ca, ch);
+    }));
     if (displayPairs.length) {
       pairsEl.innerHTML = `
         <table style="width:100%;border-collapse:collapse;font-size:11px;">
@@ -12033,8 +12148,13 @@ async function doTokenScanner() {
               const fdv = p.fdv || 0;
               const fmt = v => v >= 1e9 ? '$'+(v/1e9).toFixed(2)+'B' : v >= 1e6 ? '$'+(v/1e6).toFixed(1)+'M' : v >= 1e3 ? '$'+(v/1e3).toFixed(0)+'K' : v ? '$'+v.toFixed(0) : '—';
               const chainBadge = p.chainId !== 'base' ? `<span style="font-size:9px;color:var(--cl-text-4);margin-left:4px;">${p.chainId}</span>` : '';
+              const dev = p._devSignal || { pctMoved: 0, moved: false, signal: { label: 'SAFE', color: '#00ffc8' } };
+              const devBadge = dev.moved
+                ? `<span style="margin-left:6px;padding:2px 6px;border-radius:8px;background:rgba(255,68,68,0.14);border:1px solid rgba(255,68,68,0.45);color:#ff4444;font-size:9px;font-weight:800;font-family:'JetBrains Mono',monospace;">DEV WALLET MOVED ${dev.pctMoved.toFixed(2)}%</span>`
+                : '';
+              const devSignal = `<span style="margin-left:6px;padding:2px 6px;border-radius:8px;background:${dev.signal.color}14;border:1px solid ${dev.signal.color}66;color:${dev.signal.color};font-size:9px;font-weight:800;font-family:'JetBrains Mono',monospace;">${dev.signal.label}</span>`;
               return `<tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
-                <td style="padding:7px 8px;color:var(--cl-text);font-weight:600;">${p.baseToken?.symbol||'?'}/${p.quoteToken?.symbol||'?'}${chainBadge}</td>
+                <td style="padding:7px 8px;color:var(--cl-text);font-weight:600;">${p.baseToken?.symbol||'?'}/${p.quoteToken?.symbol||'?'}${chainBadge}${devSignal}${devBadge}</td>
                 <td style="padding:7px 8px;color:var(--cl-text-3);">${p.dexId||'—'}</td>
                 <td style="padding:7px 8px;text-align:right;color:var(--cl-text-2);">${priceFmt}</td>
                 <td style="padding:7px 8px;text-align:right;color:${chgColor};font-weight:700;">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</td>
