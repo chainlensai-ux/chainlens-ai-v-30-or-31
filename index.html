@@ -12018,6 +12018,40 @@ function wsRenderWalletLabels(labels) {
   }).join('')}</div>`;
 }
 
+function wsCalcCortexScore(ctx) {
+  const ageDays = Number(ctx?.ageDays || 0);
+  const txCount = Number(ctx?.txCount || 0);
+  const holdingsCount = Number(ctx?.holdingsCount || 0);
+  const totalUsd = Number(ctx?.totalUsd || 0);
+  const hasSmartMoney = !!ctx?.hasSmartMoney;
+  const inCount = Number(ctx?.inCount || 0);
+  const outCount = Number(ctx?.outCount || 0);
+  const earlyEntries = Number(ctx?.earlyEntries || 0);
+
+  const ageScore = ageDays >= 730 ? 20 : ageDays >= 365 ? 16 : ageDays >= 180 ? 12 : ageDays >= 90 ? 8 : ageDays >= 30 ? 4 : 1;
+  const freqScore = txCount >= 500 ? 20 : txCount >= 250 ? 16 : txCount >= 100 ? 12 : txCount >= 40 ? 8 : txCount >= 10 ? 4 : 1;
+  const diversityScore = holdingsCount >= 25 ? 16 : holdingsCount >= 15 ? 12 : holdingsCount >= 8 ? 8 : holdingsCount >= 3 ? 4 : 1;
+  const earlyScore = earlyEntries >= 8 ? 16 : earlyEntries >= 4 ? 12 : earlyEntries >= 2 ? 8 : earlyEntries >= 1 ? 4 : 0;
+  const smartMoneyScore = hasSmartMoney ? 16 : 0;
+
+  // P/L pattern proxy from transfer direction + size: balanced active flow and meaningful size score higher.
+  const flowTotal = Math.max(1, inCount + outCount);
+  const flowBalance = 1 - Math.abs(inCount - outCount) / flowTotal; // 0..1
+  const sizeFactor = totalUsd >= 1000000 ? 1 : totalUsd >= 250000 ? 0.8 : totalUsd >= 50000 ? 0.6 : totalUsd >= 10000 ? 0.4 : 0.2;
+  const pnlPatternScore = Math.round(12 * flowBalance * sizeFactor);
+
+  const raw = ageScore + freqScore + diversityScore + earlyScore + smartMoneyScore + pnlPatternScore;
+  const score = Math.max(0, Math.min(100, raw));
+  const tier = score <= 30 ? 'WEAK' : score <= 60 ? 'AVERAGE' : score <= 80 ? 'STRONG' : 'ELITE';
+  const color = tier === 'ELITE' ? '#00ffc8' : '#8b5cf6';
+  const verdict =
+    tier === 'ELITE' ? 'CORTEX verdict: Elite wallet quality with repeatable high-signal behavior.' :
+    tier === 'STRONG' ? 'CORTEX verdict: Strong wallet profile with credible execution signals.' :
+    tier === 'AVERAGE' ? 'CORTEX verdict: Mixed quality profile; selective follow is required.' :
+    'CORTEX verdict: Weak wallet profile with limited actionable edge.';
+  return { score, tier, color, verdict };
+}
+
 async function doWS() {
   const address = document.getElementById('wsi').value.trim();
   if (!address) { toast('Enter a wallet address', 'er'); return; }
@@ -12275,6 +12309,25 @@ async function doWS() {
       if (days > 30) return Math.floor(days/30) + ' months';
       return days + ' days';
     })();
+    const walletAgeDays = (() => {
+      const timestamps = allTxs.map(tx => parseInt(tx.timeStamp||tx.time||0)).filter(Boolean);
+      if (!timestamps.length) return 0;
+      const first = Math.min(...timestamps);
+      return Math.max(0, Math.floor((Date.now()/1000 - first) / 86400));
+    })();
+    const inCount = allTxs.filter(tx => String(tx.to || '').toLowerCase() === address.toLowerCase()).length;
+    const outCount = allTxs.filter(tx => String(tx.from || '').toLowerCase() === address.toLowerCase()).length;
+    const earlyEntries = allTxs.filter(tx => String(tx.dir || '').toLowerCase() === 'in').slice(0, 20).length;
+    const cortex = wsCalcCortexScore({
+      ageDays: walletAgeDays,
+      txCount: allTxs.length,
+      totalUsd,
+      holdingsCount: assets.length,
+      hasSmartMoney: wsLabels.includes('SMART MONEY'),
+      inCount,
+      outCount,
+      earlyEntries
+    });
 
     // Stat pills
     const _ds = degenScore.score;
@@ -12310,7 +12363,13 @@ async function doWS() {
     if (copySignal.show) intelItems.push({ label: 'Copy Signal', value: copySignal.text, color: copySignal.color, wide: true });
     if (flags.length) flags.forEach(f => intelItems.push({ label: 'Flag', value: f.text, color: f.color }));
 
-    document.getElementById('ws-intel-grid').innerHTML = intelItems.map(item =>
+    const cortexCard = `<div style="grid-column:1/-1;padding:16px;border:1px solid rgba(139,92,246,0.28);border-radius:12px;background:rgba(139,92,246,0.06);">
+      <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--cl-text-3);margin-bottom:8px;font-family:'Inter',sans-serif;">CORTEX Wallet Score</div>
+      <div style="font-size:44px;line-height:1;font-weight:900;color:${cortex.color};font-family:'JetBrains Mono',monospace;">${cortex.score}</div>
+      <div style="margin-top:6px;font-size:12px;font-weight:800;color:${cortex.color};font-family:'JetBrains Mono',monospace;">${cortex.tier}</div>
+      <div style="margin-top:8px;font-size:11px;color:var(--cl-text-2);font-family:'Inter',sans-serif;">${cortex.verdict}</div>
+    </div>`;
+    document.getElementById('ws-intel-grid').innerHTML = cortexCard + intelItems.map(item =>
       `<div style="padding:12px;background:rgba(${item.color==='#00ffc8'?'0,255,200':item.color==='#ef476f'?'239,71,111':item.color==='#f0b429'?'240,180,41':'120,88,192'},0.06);border:1px solid rgba(${item.color==='#00ffc8'?'0,255,200':item.color==='#ef476f'?'239,71,111':item.color==='#f0b429'?'240,180,41':'120,88,192'},0.15);border-radius:12px;${item.wide?'grid-column:1/-1;':''}">`
       + `<div style="font-size:9px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--cl-text-3);margin-bottom:5px;">${item.label}</div>`
       + `<div style="font-size:12px;font-weight:700;color:${item.color};">${item.value}</div>`
