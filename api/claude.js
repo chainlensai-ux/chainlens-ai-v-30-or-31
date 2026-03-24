@@ -18,6 +18,7 @@ const WHALE_WATCH = '0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549';
 const ALCHEMY_RPC_ENV_URL = 'https://eth-mainnet.g.alchemy.com/v2/ENV';
 
 const LUNARCRUSH_API = 'https://lunarcrush.com/api4/public';
+const GRAPH_UNISWAP_V3_SUBGRAPH_ID = 'ELUcwgpm14LKPLrBRuVvPvNKHQ9HvwmtKgKSH6123cr7';
 
 const LUNAR_TOPIC_MAP = {
   btc: 'bitcoin',
@@ -403,6 +404,64 @@ async function fetchWhaleMovesDirect(ethUsd) {
   }
 }
 
+async function fetchGraphDexContextDirect() {
+  try {
+    const graphKey = String(process.env.GRAPH_API_KEY || '').trim();
+    if (!graphKey) return null;
+
+    const dayAgo = Math.floor(Date.now() / 1000) - 86400;
+    const endpoint = `https://gateway.thegraph.com/api/${encodeURIComponent(graphKey)}/subgraphs/id/${GRAPH_UNISWAP_V3_SUBGRAPH_ID}`;
+    const query = `
+      query TopUniswapV3Pools($dayAgo: Int!) {
+        poolDayDatas(
+          first: 5
+          orderBy: volumeUSD
+          orderDirection: desc
+          where: { date_gte: $dayAgo }
+        ) {
+          date
+          volumeUSD
+          tvlUSD
+          pool {
+            id
+            token0 { symbol }
+            token1 { symbol }
+          }
+        }
+      }
+    `;
+
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'User-Agent': 'ChainLens-Clark/1.0',
+      },
+      body: JSON.stringify({ query, variables: { dayAgo } }),
+    });
+    if (!r.ok) return null;
+
+    const json = await r.json();
+    const rows = Array.isArray(json?.data?.poolDayDatas) ? json.data.poolDayDatas : [];
+    if (!rows.length) return null;
+
+    return rows.slice(0, 5).map((row) => {
+      const t0 = String(row?.pool?.token0?.symbol || '').trim() || 'UNKNOWN';
+      const t1 = String(row?.pool?.token1?.symbol || '').trim() || 'UNKNOWN';
+      const volumeUsd = Number(row?.volumeUSD);
+      const liquidityUsd = Number(row?.tvlUSD);
+      return {
+        pair: `${t0}/${t1}`,
+        volumeUsd24h: Number.isFinite(volumeUsd) ? Math.round(volumeUsd) : null,
+        liquidityUsd: Number.isFinite(liquidityUsd) ? Math.round(liquidityUsd) : null,
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
 async function buildLiveContextBlock(req, userPrompt) {
   try {
     const priceUrl = appendCoinGeckoKeyToUrl(
@@ -455,10 +514,17 @@ async function buildLiveContextBlock(req, userPrompt) {
       whaleBox = { error: 'whale_context_unavailable' };
     }
 
+    let graphDexBox = null;
+    try {
+      graphDexBox = await fetchGraphDexContextDirect();
+    } catch {
+      graphDexBox = null;
+    }
+
     const parts = [];
 
     parts.push(
-      'LIVE_CONTEXT_SOURCE: direct HTTP to CoinGecko, DexScreener, Etherscan, LunarCrush (no internal /api proxy).'
+      'LIVE_CONTEXT_SOURCE: direct HTTP to CoinGecko, DexScreener, Etherscan, LunarCrush, The Graph (no internal /api proxy except /api/lunarsentiment).'
     );
 
     parts.push(
@@ -488,6 +554,13 @@ async function buildLiveContextBlock(req, userPrompt) {
         (whaleBox && !whaleBox.error
           ? safeStringify(whaleBox, 4000)
           : '(skipped — unavailable)')
+    );
+
+    parts.push(
+      'GRAPH_DEX_CONTEXT (The Graph, Uniswap v3 top pools by 24h volume): ' +
+        (Array.isArray(graphDexBox) && graphDexBox.length
+          ? safeStringify(graphDexBox, 4000)
+          : '(skipped — unavailable or GRAPH_API_KEY missing)')
     );
 
     if (topics.length) {
