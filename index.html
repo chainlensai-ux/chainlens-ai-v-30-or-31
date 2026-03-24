@@ -9178,6 +9178,36 @@ async function sbAuth(action, body = {}) {
   return { ...json, _httpStatus: r.status };
 }
 
+async function handleOAuthCallbackHash() {
+  const hash = window.location.hash ? new URLSearchParams(window.location.hash.replace(/^#/, '')) : null;
+  const oauthAccessToken = hash ? hash.get('access_token') : null;
+  if (!oauthAccessToken) return false;
+
+  try {
+    // Ask Supabase client for active session first, then fallback to URL hash token.
+    let accessToken = oauthAccessToken;
+    if (window.supabase && window.supabase.auth && typeof window.supabase.auth.getSession === 'function') {
+      const sess = await window.supabase.auth.getSession();
+      accessToken = sess?.data?.session?.access_token || sess?.session?.access_token || accessToken;
+    }
+    if (!accessToken) return false;
+
+    const oauthUser = await sbAuth('getUser', { accessToken });
+    if (!oauthUser.success || !oauthUser.user) return false;
+
+    user = oauthUser.user;
+    localStorage.setItem('cl_session', JSON.stringify(user));
+    if (window.location.hash) history.replaceState({}, document.title, window.location.pathname + window.location.search);
+    updateNav();
+    closeAuth();
+    syncAllDataDown();
+    go('terminal');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function sbData(action, table, extra = {}) {
   if (!user?.accessToken) return { success: false, error: 'Not logged in' };
   try {
@@ -9303,46 +9333,12 @@ function canAccess(feature) {
 
 async function initAuth() {
   try {
-    const hash = window.location.hash ? new URLSearchParams(window.location.hash.replace(/^#/, '')) : null;
-    const oauthAccessToken = hash ? hash.get('access_token') : null;
-    const oauthError = hash ? (hash.get('error_description') || hash.get('error')) : null;
-    if (oauthAccessToken) {
-      // Supabase OAuth hash-session handler: resolve the session first, then route to terminal.
-      try {
-        if (window.supabase && window.supabase.auth && typeof window.supabase.auth.getSession === 'function') {
-          const sess = await window.supabase.auth.getSession();
-          const accessToken =
-            sess?.data?.session?.access_token ||
-            sess?.session?.access_token ||
-            oauthAccessToken;
-          if (accessToken) {
-            const oauthUser = await sbAuth('getUser', { accessToken });
-            if (oauthUser.success && oauthUser.user) {
-              user = oauthUser.user;
-              localStorage.setItem('cl_session', JSON.stringify(user));
-              if (window.location.hash) history.replaceState({}, document.title, window.location.pathname + window.location.search);
-              updateNav();
-              closeAuth();
-              syncAllDataDown();
-              go('terminal');
-              return;
-            }
-          }
-        }
-      } catch (e) {}
+    const oauthHandled = await handleOAuthCallbackHash();
+    if (oauthHandled) return;
 
-      const oauthUser = await sbAuth('getUser', { accessToken: oauthAccessToken });
-      if (oauthUser.success && oauthUser.user) {
-        user = oauthUser.user;
-        localStorage.setItem('cl_session', JSON.stringify(user));
-        if (window.location.hash) history.replaceState({}, document.title, window.location.pathname + window.location.search);
-        updateNav();
-        closeAuth();
-        syncAllDataDown();
-        go('terminal');
-        return;
-      }
-    } else if (oauthError) {
+    const hash = window.location.hash ? new URLSearchParams(window.location.hash.replace(/^#/, '')) : null;
+    const oauthError = hash ? (hash.get('error_description') || hash.get('error')) : null;
+    if (oauthError) {
       if (window.location.hash) history.replaceState({}, document.title, window.location.pathname + window.location.search);
       toast('OAuth login failed', 'er');
     }
