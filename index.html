@@ -12160,6 +12160,8 @@ async function doWS() {
     let assets = [], allTxs = [], totalUsd = 0, portfolioSummary = '';
     let moralisData = { holdings: [], txs: [], defi: [] };
     let alchemyData = { holdings: [], txs: [] };
+    let baseTxCount = null;
+    let baseWalletAgeDays = null;
 
     if (chainType === 'evm') {
       document.getElementById('ws-total-sub').textContent = 'Scanning ETH, Base, BNB, Polygon...';
@@ -12179,6 +12181,21 @@ async function doWS() {
         if (allEvmTxs[i].status === 'fulfilled') allTxs = allTxs.concat(allEvmTxs[i].value);
       });
       allTxs = allTxs.sort((a, b) => parseInt(b.timeStamp || 0) - parseInt(a.timeStamp || 0)).slice(0, 100);
+
+      // Base txlist source-of-truth for tx count + wallet age
+      try {
+        const baseTxUrl = `https://api.etherscan.io/v2/api?chainid=8453&module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&sort=desc&apikey=${ESCAN}`;
+        const baseTxRes = await pfetch(baseTxUrl);
+        const baseTxJson = await baseTxRes.json();
+        const baseTxRows = Array.isArray(baseTxJson?.result) ? baseTxJson.result : [];
+        baseTxCount = baseTxRows.length;
+        if (baseTxRows.length) {
+          const earliestTs = Math.min(...baseTxRows.map(t => parseInt(t.timeStamp || '0', 10)).filter(v => Number.isFinite(v) && v > 0));
+          if (Number.isFinite(earliestTs) && earliestTs > 0) {
+            baseWalletAgeDays = Math.max(0, Math.floor((Date.now() / 1000 - earliestTs) / 86400));
+          }
+        }
+      } catch (e) {}
 
       // Fetch Covalent multi-chain token balances (with USD values) in parallel with DexScreener prices
       document.getElementById('ws-total-sub').textContent = 'Fetching token balances via Covalent...';
@@ -12385,6 +12402,12 @@ async function doWS() {
 
     // Wallet age
     const walletAge = (() => {
+      if (Number.isFinite(baseWalletAgeDays)) {
+        const days = Number(baseWalletAgeDays);
+        if (days > 365) return Math.floor(days / 365) + 'y ' + Math.floor((days % 365) / 30) + 'mo';
+        if (days > 30) return Math.floor(days / 30) + ' months';
+        return days + ' days';
+      }
       const timestamps = allTxs.map(tx => parseInt(tx.timeStamp||tx.time||0)).filter(Boolean);
       if (!timestamps.length) return null;
       const first = Math.min(...timestamps);
@@ -12394,6 +12417,7 @@ async function doWS() {
       return days + ' days';
     })();
     const walletAgeDays = (() => {
+      if (Number.isFinite(baseWalletAgeDays)) return Number(baseWalletAgeDays);
       const timestamps = allTxs.map(tx => parseInt(tx.timeStamp||tx.time||0)).filter(Boolean);
       if (!timestamps.length) return 0;
       const first = Math.min(...timestamps);
@@ -12418,7 +12442,7 @@ async function doWS() {
     const _dc = _ds >= 80 ? '#ef476f' : _ds >= 50 ? '#f0b429' : '#00ffc8';
     document.getElementById('ws-stat-pills').innerHTML = [
       `<div>${assets.length} Assets</div>`,
-      `<div>${allTxs.length} Txs</div>`,
+      `<div>${Number.isFinite(baseTxCount) ? baseTxCount : allTxs.length} Txs</div>`,
       `<div style="color:${_dc}!important;border-color:rgba(${_dc==='#ef476f'?'239,71,111':_dc==='#f0b429'?'240,180,41':'0,255,200'},0.2)!important;">Degen ${_ds}/100</div>`,
       walletAge ? `<div>Age: ${walletAge}</div>` : '',
     ].join('');
@@ -12484,7 +12508,7 @@ async function doWS() {
     ].sort((a, b) => (parseInt(b.timeStamp || 0, 10) - parseInt(a.timeStamp || 0, 10)));
     document.getElementById('ws-all-assets').innerHTML = renderAllAssets(assetsForUI, txsForUI, address);
     document.getElementById('ws-txs').innerHTML = renderAllTxs(txsForUI, address, chainType === 'evm' ? (selectedEvmChain || 'eth') : chainType);
-    document.getElementById('ws-tx-count').textContent = txsForUI.length + ' transactions';
+    document.getElementById('ws-tx-count').textContent = (Number.isFinite(baseTxCount) ? baseTxCount : txsForUI.length) + ' transactions';
     document.getElementById('ws-defi').innerHTML = renderWSDefiPositions(moralisData.defi || []);
     document.getElementById('ws-defi-count').textContent = (moralisData.defi || []).length + ' positions';
     drawPie(assets.filter(a => a.usdValue > 0));
