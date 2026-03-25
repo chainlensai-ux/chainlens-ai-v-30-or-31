@@ -8369,18 +8369,7 @@ async function tdLoadWhales() {
     const sinceBlockUrl =
       `${_TD_ETHERSCAN_V2}?chainid=1&module=block&action=getblocknobytime&timestamp=${sinceSec}&closest=before&apikey=ENV`;
 
-    const [latestR, sinceR] = await Promise.all([
-      fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: latestBlockUrl })
-      }),
-      fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: sinceBlockUrl })
-      })
-    ]);
+    const [latestR, sinceR] = await Promise.all([pfetch(latestBlockUrl), pfetch(sinceBlockUrl)]);
 
     const latestData = await tdScanEtherscanJson(latestR, 'eth_blockNumber');
     const sinceData = await tdScanEtherscanJson(sinceR, 'getblocknobytime');
@@ -8413,11 +8402,7 @@ async function tdLoadWhales() {
       `${_TD_ETHERSCAN_V2}?chainid=1&module=account&action=txlist&address=${watch}` +
       `&startblock=${startBlock}&endblock=${endBlock}&page=1&offset=1000&sort=desc&apikey=ENV`;
 
-    const r = await fetch('/api/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: txUrl })
-    });
+    const r = await pfetch(txUrl);
     const data = await tdScanEtherscanJson(r, 'txlist');
 
     if (data.status === '0' && typeof data.result === 'string') {
@@ -9900,79 +9885,83 @@ ACTION: [one specific actionable step]`, 400);
 // WALLETSCAN — Real blockchain data
 // ══════════════════════════════════════════════
 const ESCAN = 'ENV'; // Proxied via /api/scan — key stored in Vercel env
-let _escanQueue = [];
-let _escanQueueBusy = false;
-let _escanLastCallAt = 0;
+const _etherscanQueue = [];
+let isProcessing = false;
+let _etherscanLastCallAt = 0;
 let _wsScanSeq = 0;
 let _wsActiveScanId = 0;
 let _wsTxlistCache = { scanId: 0, address: '', rows: null };
 
 function _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function _isEtherscanUrl(url) { return /https:\/\/api\.etherscan\.io\/v2\/api/i.test(String(url || '')); }
-function _isRateLimitPayload(parsed, text) {
-  const msg = String(parsed?.result || parsed?.message || parsed?.error || text || '');
-  return /Max calls per sec rate limit reached/i.test(msg);
+function _isRateLimitReached(parsed, text) {
+  const t = String(text || '') + ' ' + String(parsed?.result || parsed?.message || parsed?.error || '');
+  return /Max calls per sec rate limit reached/i.test(t);
 }
 
-async function _pfetchViaScan(payload) {
+async function _callViaScan(payload) {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
-    const r = await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: ctrl.signal });
+    const r = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal
+    });
     clearTimeout(timer);
     const text = await r.text();
-    let parsed; try { parsed = JSON.parse(text); } catch (e) { parsed = {}; }
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { parsed = {}; }
     return { ok: r.ok, status: r.status, parsed, text };
   } catch (e) {
     return { ok: false, status: 500, parsed: {}, text: '' };
   }
 }
 
-function _enqueueEtherscan(url) {
+function _enqueueEtherscan(payload) {
   return new Promise((resolve) => {
-    _escanQueue.push({ url, resolve });
-    _drainEtherscanQueue();
+    _etherscanQueue.push({ payload, attempts: 0, resolve });
+    if (!isProcessing) _processEtherscanQueue();
   });
 }
 
-async function _drainEtherscanQueue() {
-  if (_escanQueueBusy) return;
-  _escanQueueBusy = true;
+async function _processEtherscanQueue() {
+  if (isProcessing) return;
+  isProcessing = true;
   try {
-    while (_escanQueue.length) {
-      const job = _escanQueue.shift();
-      const waitMs = Math.max(0, 400 - (Date.now() - _escanLastCallAt));
+    while (_etherscanQueue.length) {
+      const job = _etherscanQueue.shift();
+
+      // 500ms delay between calls
+      const waitMs = _etherscanLastCallAt ? Math.max(0, 500 - (Date.now() - _etherscanLastCallAt)) : 0;
       if (waitMs > 0) await _sleep(waitMs);
 
-      let first = await _pfetchViaScan({ url: job.url });
-      _escanLastCallAt = Date.now();
+      let out = await _callViaScan(job.payload);
+      _etherscanLastCallAt = Date.now();
 
-      if (_isRateLimitPayload(first.parsed, first.text)) {
+      if (_isRateLimitReached(out.parsed, out.text) && job.attempts < 1) {
         await _sleep(1000);
-        const retryGap = Math.max(0, 400 - (Date.now() - _escanLastCallAt));
-        if (retryGap > 0) await _sleep(retryGap);
-        first = await _pfetchViaScan({ url: job.url });
-        _escanLastCallAt = Date.now();
+        _etherscanQueue.unshift({ ...job, attempts: job.attempts + 1 });
+        continue; // retry from front
       }
 
       job.resolve({
-        ok: first.ok,
-        status: first.status,
-        json: async () => first.parsed,
-        text: async () => first.text
+        ok: out.ok,
+        status: out.status,
+        json: async () => out.parsed,
+        text: async () => out.text
       });
     }
   } finally {
-    _escanQueueBusy = false;
+    isProcessing = false;
   }
 }
 
 async function pfetch(url, options = {}) {
   const payload = { url };
   if (options.method === 'POST') { payload.method = 'POST'; payload.body = options.body; }
-  if (!options.method && _isEtherscanUrl(url)) {
-    return _enqueueEtherscan(url);
-  }
+  if (_isEtherscanUrl(url)) return _enqueueEtherscan(payload);
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
@@ -11391,9 +11380,7 @@ async function fetchDevWalletMovement(contractAddress, chainLike) {
     if (_DEV_SCAN_CACHE[key]) return _DEV_SCAN_CACHE[key];
 
     const creatorUrl = `https://api.etherscan.io/v2/api?chainid=${chainId}&module=contract&action=getcontractcreation&contractaddresses=${ca}&apikey=ENV`;
-    const creatorR = await fetch('/api/scan', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: creatorUrl })
-    });
+    const creatorR = await pfetch(creatorUrl);
     const creatorD = creatorR.ok ? await creatorR.json() : null;
     const deployer = creatorD?.result?.[0]?.contractCreator || null;
     if (!deployer) {
@@ -11404,8 +11391,8 @@ async function fetchDevWalletMovement(contractAddress, chainLike) {
     const supplyUrl = `https://api.etherscan.io/v2/api?chainid=${chainId}&module=stats&action=tokensupply&contractaddress=${ca}&apikey=ENV`;
     const txUrl = `https://api.etherscan.io/v2/api?chainid=${chainId}&module=account&action=tokentx&contractaddress=${ca}&address=${deployer}&sort=desc&page=1&offset=200&apikey=ENV`;
     const [supplyR, txR] = await Promise.all([
-      fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: supplyUrl }) }),
-      fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: txUrl }) })
+      pfetch(supplyUrl),
+      pfetch(txUrl)
     ]);
     const supplyD = supplyR.ok ? await supplyR.json() : null;
     const txD = txR.ok ? await txR.json() : null;
@@ -12138,18 +12125,7 @@ async function wsDetectBaseDevWallet(address) {
     const creatorUrl = `https://api.etherscan.io/v2/api?chainid=8453&module=contract&action=getcontractcreation&contractaddresses=${addr}&apikey=ENV`;
     const txlistUrl = `https://api.etherscan.io/v2/api?chainid=8453&module=account&action=txlist&address=${addr}&sort=desc&page=1&offset=200&apikey=ENV`;
 
-    const [creatorR, txlistR] = await Promise.all([
-      fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: creatorUrl })
-      }),
-      fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: txlistUrl })
-      })
-    ]);
+    const [creatorR, txlistR] = await Promise.all([pfetch(creatorUrl), pfetch(txlistUrl)]);
 
     const creatorD = creatorR.ok ? await creatorR.json() : null;
     const txlistD = txlistR.ok ? await txlistR.json() : null;
