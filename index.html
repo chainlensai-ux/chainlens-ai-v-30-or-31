@@ -10367,15 +10367,41 @@ function calcTokenPnL(contractAddress, allTxs, address, currentPrice, decimals) 
 
 function renderAllAssets(assets, allTxs, address) {
   if (!assets.length) return '<div style="text-align:center;padding:20px;color:var(--cl-text-3);font-size:12px;">No assets found</div>';
-  const sorted = [...assets].sort((a,b) => (b.usdValue||0)-(a.usdValue||0));
+  const cleaned = (Array.isArray(assets) ? assets : []).filter(a => {
+    const bal = Number(a?.balance || 0);
+    if (!Number.isFinite(bal) || bal <= 0) return false;
+    if (bal > 1e9) return false; // likely scam airdrop quantity
+    const sym = String(a?.symbol || '').toUpperCase();
+    if (sym === 'WETH' && bal > 1e6) return false; // fake WETH pattern
+    const usd = Number(a?.usdValue || 0);
+    const unitPrice = Number.isFinite(Number(a?.price)) && Number(a?.price) > 0
+      ? Number(a.price)
+      : (bal > 0 ? usd / bal : 0);
+    if (Number.isFinite(unitPrice) && unitPrice > 0 && unitPrice < 0.000001) return false; // near-zero fake price
+    return true;
+  });
+
+  // Deduplicate by chain+symbol and keep highest USD value row.
+  const byKey = new Map();
+  cleaned.forEach(a => {
+    const key = `${String(a?.chain || '').toLowerCase()}|${String(a?.symbol || '').toUpperCase()}`;
+    const prev = byKey.get(key);
+    if (!prev || Number(a?.usdValue || 0) > Number(prev?.usdValue || 0)) byKey.set(key, a);
+  });
+  const sorted = [...byKey.values()].sort((a,b) => (b.usdValue||0)-(a.usdValue||0));
+  const totalDisplayUsd = sorted.reduce((s, x) => s + (Number(x?.usdValue || 0) || 0), 0);
   const chainColors = { eth:'#7858c0', bnb:'#f0b429', base:'#b090e8', polygon:'#8247e5', btc:'#f7931a', sol:'#00ffc8' };
   return '<div style="display:flex;flex-direction:column;gap:1px;">' +
     sorted.map((a, i) => {
       const c = chainColors[a.chain] || '#7858c0';
       const bal = parseFloat(a.balance);
-      const usdVal = a.usdValue != null ? fmtFx(a.usdValue) : '—';
-      const pct = assets.reduce((s,x) => s+(x.usdValue||0),0) > 0 && a.usdValue
-        ? ((a.usdValue / assets.reduce((s,x) => s+(x.usdValue||0),0)) * 100).toFixed(1) : null;
+      const sym = String(a.symbol || '').toUpperCase();
+      const rawUsd = Number(a?.usdValue || 0);
+      const stableSuspicious = (sym === 'USDT' || sym === 'USDC') && rawUsd > 1000000;
+      const shownUsdNum = stableSuspicious ? 1000000 : rawUsd;
+      const usdVal = Number.isFinite(shownUsdNum) && shownUsdNum > 0 ? fmtFx(shownUsdNum) : '—';
+      const pct = totalDisplayUsd > 0 && shownUsdNum > 0
+        ? ((shownUsdNum / totalDisplayUsd) * 100).toFixed(1) : null;
       const chainLabel = a.chain ? a.chain.toUpperCase() : '';
       return `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(120,88,192,0.08);">`
         + `<div style="width:36px;height:36px;border-radius:10px;background:${c}18;border:1px solid ${c}30;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:900;color:${c};font-family:'Syne',sans-serif;flex-shrink:0;">${a.symbol.slice(0,3)}</div>`
@@ -10383,11 +10409,12 @@ function renderAllAssets(assets, allTxs, address) {
         + `<div style="display:flex;align-items:center;gap:6px;">`
         + `<span style="font-size:13px;font-weight:700;">${a.symbol}</span>`
         + (chainLabel ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:${c}15;color:${c};border:1px solid ${c}25;">${chainLabel}</span>` : '')
+        + (stableSuspicious ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(245,166,35,0.12);color:#f5a623;border:1px solid rgba(245,166,35,0.35);">SUSPICIOUS</span>` : '')
         + `</div>`
         + `<div style="font-size:10px;color:var(--cl-text-3);margin-top:2px;">${bal.toLocaleString(undefined,{maximumFractionDigits:4})} ${a.symbol}</div>`
         + `</div>`
         + `<div style="text-align:right;flex-shrink:0;">`
-        + `<div style="font-size:13px;font-weight:800;color:${a.usdValue > 0 ? 'var(--cl-text)' : 'var(--cl-text-3)'};">${usdVal}</div>`
+        + `<div style="font-size:13px;font-weight:800;color:${shownUsdNum > 0 ? 'var(--cl-text)' : 'var(--cl-text-3)'};">${usdVal}</div>`
         + (pct ? `<div style="font-size:10px;color:var(--cl-text-3);">${pct}%</div>` : '')
         + `</div>`
         + `</div>`;
