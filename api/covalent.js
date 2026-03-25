@@ -1,29 +1,27 @@
 /**
- * Multi-chain portfolio proxy for Covalent / GoldRush (api.covalenthq.com).
- * Env: COVALENT_API_KEY
+ * Multi-chain portfolio proxy — Moralis as primary source for token balances.
+ * Alchemy used as backup for ETH mainnet native balance.
+ * Env: MORALIS_KEY, ALCHEMY_KEY
  *
  * POST body: { address, chains?: ['eth','bnb','base','polygon'], history?: boolean, days?: number }
- * Response: { eth: { tokens, history? }, bnb, base, polygon, history? } — matches Portfolio Value widget.
+ * Response: { eth: { tokens }, bnb, base, polygon } — matches Portfolio Value widget.
  */
 
-const COVALENT_BASE = 'https://api.covalenthq.com/v1';
+const MORALIS_BASE = 'https://deep-index.moralis.io/api/v2.2';
 
-const CHAIN_IDS = {
-  eth: '1',
-  bnb: '56',
-  base: '8453',
-  polygon: '137'
+// Moralis chain identifiers
+const MORALIS_CHAIN_MAP = {
+  eth: 'eth',
+  bnb: 'bsc',
+  base: 'base',
+  polygon: 'polygon'
 };
 
 function parseBody(req) {
   let b = req.body;
   if (b == null) return {};
   if (typeof b === 'string') {
-    try {
-      return JSON.parse(b);
-    } catch {
-      return {};
-    }
+    try { return JSON.parse(b); } catch { return {}; }
   }
   return b;
 }
@@ -34,70 +32,107 @@ function numQuote(q) {
   return isFinite(n) ? n : 0;
 }
 
-function mapBalanceItems(items) {
-  return (Array.isArray(items) ? items : []).map((item) => ({
-    contractTicker: item.contract_ticker_symbol,
-    symbol: item.contract_ticker_symbol,
-    contractAddress: item.contract_address,
-    name: item.contract_name,
-    contractDecimals: item.contract_decimals,
-    balance: item.balance,
-    usdValue: numQuote(item.quote)
-  }));
-}
-
-/** Sum token holding quotes per timestamp for one chain (portfolio_v2). */
-function historyFromPortfolioData(data) {
-  const items = data?.items;
-  if (!Array.isArray(items)) return [];
-  const byTs = new Map();
-  for (const token of items) {
-    const holdings = token.holdings;
-    if (!Array.isArray(holdings)) continue;
-    for (const h of holdings) {
-      const ts = h.timestamp;
-      if (!ts) continue;
-      const q = h.close?.quote;
-      const n = numQuote(q);
-      if (!isFinite(n)) continue;
-      byTs.set(ts, (byTs.get(ts) || 0) + n);
-    }
+/**
+ * Parse raw integer balance string to human-readable decimal.
+ * Prefers balance_formatted from Moralis; falls back to raw / 10^decimals.
+ * Returns the decimal balance so callers don't need contractDecimals for conversion.
+ */
+function parseDecimalBalance(item) {
+  if (item.balance_formatted != null) {
+    const f = parseFloat(item.balance_formatted);
+    if (Number.isFinite(f) && f >= 0) return f;
   }
-  return [...byTs.entries()]
-    .sort((a, b) => Date.parse(a[0]) - Date.parse(b[0]))
-    .map(([timestamp, totalUsdValue]) => ({
-      timestamp,
-      date: timestamp,
-      totalUsdValue,
-      usdValue: totalUsdValue
-    }));
+  const decimals = Number.isFinite(Number(item.decimals)) ? Number(item.decimals) : 18;
+  const raw = String(item.balance || '0');
+  try {
+    // Use BigInt for precision on large integers
+    const rawBig = BigInt(raw);
+    return Number(rawBig) / Math.pow(10, decimals);
+  } catch {
+    return parseFloat(raw) / Math.pow(10, decimals) || 0;
+  }
 }
 
-async function covalentFetch(pathAndQuery, apiKey) {
-  const url = `${COVALENT_BASE}${pathAndQuery}${pathAndQuery.includes('?') ? '&' : '?'}key=${encodeURIComponent(apiKey)}`;
+async function moralisFetch(path, moralisKey) {
+  const url = `${MORALIS_BASE}${path}`;
   const r = await fetch(url, {
     method: 'GET',
-    headers: { Accept: 'application/json' }
+    headers: {
+      Accept: 'application/json',
+      'X-API-Key': moralisKey
+    }
   });
   const text = await r.text();
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    return { ok: false, status: r.status, error: `Invalid JSON from Covalent (HTTP ${r.status})` };
+    return { ok: false, status: r.status, error: `Invalid JSON from Moralis (HTTP ${r.status})` };
   }
   if (!r.ok) {
-    const msg = json?.error_message || json?.error_code || text.slice(0, 200);
+    const msg = json?.message || text.slice(0, 200);
     return { ok: false, status: r.status, error: String(msg) };
   }
-  if (json.error === true || json.error === 'true') {
-    return {
-      ok: false,
-      status: r.status,
-      error: String(json.error_message || json.error_code || 'Covalent error')
-    };
-  }
   return { ok: true, data: json };
+}
+
+/** Alchemy backup: fetch native ETH balance on mainnet. */
+async function alchemyGetEthBalance(address, alchemyKey) {
+  if (!alchemyKey) return null;
+  try {
+    const url = `https://eth-mainnet.g.alchemy.com/v2/${alchemyKey}`;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'eth_getBalance',
+        params: [address, 'latest']
+      })
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const hex = j?.result;
+    if (!hex) return null;
+    return parseInt(hex, 16) / 1e18;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Map Moralis token list to portfolio format.
+ * - Filters spam tokens (possible_spam: true).
+ * - Filters ERC-20 tokens worth under $1 USD.
+ * - Returns balance as human-readable decimal (contractDecimals: 0).
+ *   This ensures fetchBaseCovalentBalances in the frontend doesn't double-convert.
+ */
+function mapMoralisItems(items, chainKey) {
+  return (Array.isArray(items) ? items : [])
+    .filter(item => {
+      if (item.possible_spam === true) return false;
+      const isNative = item.native_token === true;
+      const usd = numQuote(item.usd_value);
+      // Always keep native tokens; filter ERC-20 tokens under $1
+      if (!isNative && usd < 1) return false;
+      return true;
+    })
+    .map(item => {
+      const isNative = item.native_token === true;
+      const bal = parseDecimalBalance(item);
+      return {
+        contractTicker: item.symbol || '',
+        symbol: item.symbol || '',
+        // Native tokens use empty address so frontend deduplicates correctly
+        contractAddress: isNative ? '' : (item.token_address || ''),
+        name: item.name || item.symbol || 'Token',
+        // Set to 0 because balance is already decimal-formatted
+        contractDecimals: 0,
+        balance: bal,
+        usdValue: numQuote(item.usd_value),
+        chain: chainKey
+      };
+    });
 }
 
 export default async function handler(req, res) {
@@ -109,26 +144,26 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = (process.env.COVALENT_API_KEY || process.env.COVALENT_KEY || '').trim();
-  if (!apiKey) {
+  const moralisKey = (process.env.MORALIS_KEY || '').trim();
+  if (!moralisKey) {
     return res.status(503).json({
-      error: 'COVALENT_API_KEY is not set on the server (Vercel env / local .env).'
+      error: 'MORALIS_KEY is not set on the server (Vercel env / local .env).'
     });
   }
+
+  const alchemyKey = (process.env.ALCHEMY_KEY || '').trim();
 
   const body = parseBody(req);
   const address = String(body.address || '').trim();
   const requestedChains = Array.isArray(body.chains) && body.chains.length
     ? body.chains
     : ['eth', 'bnb', 'base', 'polygon'];
-  const wantHistory = Boolean(body.history);
-  const days = Math.min(30, Math.max(1, parseInt(String(body.days || 7), 10) || 7));
 
   if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
     return res.status(400).json({ error: 'Invalid EVM wallet address' });
   }
 
-  const chainKeys = requestedChains.filter((k) => CHAIN_IDS[k]);
+  const chainKeys = requestedChains.filter(k => MORALIS_CHAIN_MAP[k]);
   if (!chainKeys.length) {
     return res.status(400).json({ error: 'No supported chains requested' });
   }
@@ -137,54 +172,49 @@ export default async function handler(req, res) {
 
   await Promise.all(
     chainKeys.map(async (key) => {
-      const chainId = CHAIN_IDS[key];
-      const balPath = `/${chainId}/address/${address}/balances_v2/?quote-currency=USD`;
-      const bal = await covalentFetch(balPath, apiKey);
+      const moralisChain = MORALIS_CHAIN_MAP[key];
+      const result = await moralisFetch(
+        `/wallets/${address}/tokens?chain=${moralisChain}&include_native=true`,
+        moralisKey
+      );
 
-      if (!bal.ok) {
-        out[key] = { tokens: [], error: bal.error };
+      if (!result.ok) {
+        out[key] = { tokens: [], error: result.error };
         return;
       }
 
-      const items = bal.data?.data?.items;
-      out[key] = {
-        tokens: mapBalanceItems(items)
-      };
+      let tokens = mapMoralisItems(result.data?.result || [], key);
 
-      if (wantHistory) {
-        const portPath = `/${chainId}/address/${address}/portfolio_v2/?quote-currency=USD&days=${days}`;
-        const port = await covalentFetch(portPath, apiKey);
-        if (port.ok && port.data?.data) {
-          out[key].history = historyFromPortfolioData(port.data.data);
-        } else {
-          out[key].history = [];
+      // ETH mainnet: use Alchemy as backup if Moralis didn't return native ETH
+      if (key === 'eth') {
+        const hasNativeEth = tokens.some(
+          t => t.contractAddress === '' && String(t.symbol).toUpperCase() === 'ETH'
+        );
+        if (!hasNativeEth && alchemyKey) {
+          const ethBal = await alchemyGetEthBalance(address, alchemyKey);
+          if (ethBal != null && ethBal > 0.000001) {
+            tokens.unshift({
+              contractTicker: 'ETH',
+              symbol: 'ETH',
+              contractAddress: '',
+              name: 'Ethereum',
+              contractDecimals: 0,
+              balance: ethBal,
+              usdValue: 0, // frontend prices native ETH via ethPrice
+              chain: 'eth'
+            });
+          }
         }
       }
+
+      out[key] = { tokens };
     })
   );
 
-  if (wantHistory) {
-    const byDay = new Map();
-    for (const k of chainKeys) {
-      const hist = out[k]?.history;
-      if (!Array.isArray(hist)) continue;
-      for (const row of hist) {
-        const ts = row.timestamp || row.date;
-        if (!ts || typeof ts !== 'string') continue;
-        const day = ts.length >= 10 ? ts.slice(0, 10) : ts;
-        const v = Number(row.totalUsdValue ?? row.usdValue ?? 0);
-        if (!isFinite(v)) continue;
-        byDay.set(day, (byDay.get(day) || 0) + v);
-      }
-    }
-    out.history = [...byDay.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([date, totalUsdValue]) => ({
-        date,
-        timestamp: date,
-        totalUsdValue,
-        usdValue: totalUsdValue
-      }));
+  // Return empty history — Moralis doesn't have equivalent portfolio history.
+  // Frontend handles missing history gracefully (no sparkline rendered).
+  if (body.history) {
+    out.history = [];
   }
 
   return res.status(200).json(out);
