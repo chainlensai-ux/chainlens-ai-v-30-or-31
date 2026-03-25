@@ -10012,7 +10012,7 @@ async function fetchEVM(address, chain) {
         if (!tokenMeta[tx.contractAddress]) tokenMeta[tx.contractAddress] = { symbol: tx.tokenSymbol, name: tx.tokenName, decimals: parseInt(tx.tokenDecimal) || 18, contractAddress: tx.contractAddress };
       });
     }
-    const contracts = Object.keys(tokenMeta).slice(0, 20);
+    const contracts = Object.keys(tokenMeta);
     const balResults = await Promise.allSettled(
       contracts.map(addr =>
         pfetch(`${cfg.explorer}?chainid=${cfg.chainId}&module=account&action=tokenbalance&contractaddress=${addr}&address=${address}&tag=latest&apikey=${ESCAN}`)
@@ -10025,7 +10025,7 @@ async function fetchEVM(address, chain) {
         const meta = tokenMeta[r.value.addr] || { symbol: r.value.addr.slice(0,6), name: 'Unknown', decimals: 18, contractAddress: r.value.addr };
         return { ...meta, balance: parseFloat(r.value.result) / Math.pow(10, meta.decimals) };
       })
-      .filter(t => t.balance > 0.000001).slice(0, 15);
+      .filter(t => t.balance > 0.000001);
     return { nativeBal, tokens, chain, chainName: cfg.name, nativeSymbol: cfg.symbol };
   } catch(e) { throw e; }
 }
@@ -10299,6 +10299,36 @@ async function fetchTokenPrices(tokens) {
     } catch(e) {}
   }));
   return priceMap;
+}
+
+async function fetchBaseCovalentBalances(address) {
+  try {
+    const r = await fetch('/api/covalent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address, chains: ['base'] })
+    });
+    const d = r.ok ? await r.json() : null;
+    const baseRows = Array.isArray(d?.base?.tokens) ? d.base.tokens : [];
+    return baseRows
+      .map(t => {
+        const decimals = Number.isFinite(Number(t.contractDecimals)) ? Number(t.contractDecimals) : 18;
+        const rawBal = Number(t.balance || 0);
+        const bal = Number.isFinite(rawBal) && rawBal > 0 ? rawBal / Math.pow(10, decimals) : 0;
+        const usd = Number(t.usdValue);
+        return {
+          symbol: t.symbol || t.contractTicker || 'TOKEN',
+          name: t.name || t.contractName || 'Token',
+          balance: bal,
+          usdValue: Number.isFinite(usd) ? usd : 0,
+          contractAddress: t.contractAddress || '',
+          chain: 'base'
+        };
+      })
+      .filter(t => t.balance > 0);
+  } catch (e) {
+    return [];
+  }
 }
 
 
@@ -12153,13 +12183,14 @@ async function doWS() {
       // Fetch Covalent multi-chain token balances (with USD values) in parallel with DexScreener prices
       document.getElementById('ws-total-sub').textContent = 'Fetching token balances via Covalent...';
       const tokenAssets = assets.filter(a => a.contractAddress);
-      const [priceMap, covalentData] = await Promise.all([
+      const [priceMap, covalentData, baseCovalent] = await Promise.all([
         fetchTokenPrices(tokenAssets),
         fetch('/api/covalent', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
-        }).then(r => r.ok ? r.json() : null).catch(() => null)
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetchBaseCovalentBalances(address)
       ]);
 
       // Merge Covalent data: enrich existing assets and add any missing tokens
@@ -12183,6 +12214,12 @@ async function doWS() {
         });
       }
 
+      // Base chain token balances: prefer Covalent full balance list for accurate portfolio value.
+      if (Array.isArray(baseCovalent) && baseCovalent.length) {
+        const nonBase = assets.filter(a => (a.chain || '').toLowerCase() !== 'base' || !a.contractAddress);
+        assets = nonBase.concat(baseCovalent);
+      }
+
       // Apply DexScreener prices as fallback for tokens without Covalent pricing
       assets.forEach(a => {
         if (a.contractAddress) {
@@ -12197,7 +12234,7 @@ async function doWS() {
         }
       });
 
-      totalUsd = assets.reduce((s, a) => s + (a.usdValue || 0), 0);
+      totalUsd = assets.reduce((s, a) => s + (Number.isFinite(Number(a.usdValue)) ? Number(a.usdValue) : 0), 0);
       const activeChains = [...new Set(assets.map(a => a.chain))].join(', ');
       portfolioSummary = 'Multi-chain: ' + (activeChains || 'none') + ', Assets: ' + assets.length + ', Txs: ' + allTxs.length;
 
@@ -12427,10 +12464,20 @@ async function doWS() {
       + `</div>`
     ).join('');
 
-    const assetsForUI = [
-      ...((moralisData.holdings && moralisData.holdings.length) ? moralisData.holdings : assets),
-      ...((alchemyData.holdings && alchemyData.holdings.length) ? alchemyData.holdings : [])
-    ];
+    const assetsForUI = (() => {
+      const merged = [];
+      const seen = new Set();
+      const pushRow = (row) => {
+        const k = `${String(row.chain || '').toLowerCase()}:${String(row.contractAddress || row.mint || row.symbol || '').toLowerCase()}`;
+        if (!k || seen.has(k)) return;
+        seen.add(k);
+        merged.push(row);
+      };
+      assets.forEach(pushRow);
+      (moralisData.holdings || []).forEach(pushRow);
+      (alchemyData.holdings || []).forEach(pushRow);
+      return merged;
+    })();
     const txsForUI = [
       ...((moralisData.txs && moralisData.txs.length) ? moralisData.txs : allTxs),
       ...((alchemyData.txs && alchemyData.txs.length) ? alchemyData.txs : [])

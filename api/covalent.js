@@ -40,6 +40,7 @@ function mapBalanceItems(items) {
     symbol: item.contract_ticker_symbol,
     contractAddress: item.contract_address,
     name: item.contract_name,
+    contractDecimals: item.contract_decimals,
     balance: item.balance,
     usdValue: numQuote(item.quote)
   }));
@@ -108,7 +109,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = (process.env.COVALENT_API_KEY || '').trim();
+  const apiKey = (process.env.COVALENT_API_KEY || process.env.COVALENT_KEY || '').trim();
   if (!apiKey) {
     return res.status(503).json({
       error: 'COVALENT_API_KEY is not set on the server (Vercel env / local .env).'
