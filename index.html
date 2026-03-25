@@ -9866,19 +9866,6 @@ ACTION: [one specific actionable step]`, 400);
 // WALLETSCAN — Real blockchain data
 // ══════════════════════════════════════════════
 const ESCAN = 'ENV'; // Proxied via /api/scan — key stored in Vercel env
-const _etherscanQueue = [];
-let isProcessing = false;
-let _etherscanLastCallAt = 0;
-let _wsScanSeq = 0;
-let _wsActiveScanId = 0;
-let _wsTxlistCache = { scanId: 0, address: '', rows: null };
-
-function _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-function _isEtherscanUrl(url) { return /https:\/\/api\.etherscan\.io\/v2\/api/i.test(String(url || '')); }
-function _isRateLimitReached(parsed, text) {
-  const t = String(text || '') + ' ' + String(parsed?.result || parsed?.message || parsed?.error || '');
-  return /Max calls per sec rate limit reached/i.test(t);
-}
 
 async function _callViaScan(payload) {
   try {
@@ -9900,57 +9887,12 @@ async function _callViaScan(payload) {
   }
 }
 
-function _enqueueEtherscan(payload) {
-  return new Promise((resolve) => {
-    _etherscanQueue.push({ payload, attempts: 0, resolve });
-    if (!isProcessing) _processEtherscanQueue();
-  });
-}
-
-async function _processEtherscanQueue() {
-  if (isProcessing) return;
-  isProcessing = true;
-  try {
-    while (_etherscanQueue.length) {
-      const job = _etherscanQueue.shift();
-
-      // 500ms delay between calls
-      const waitMs = _etherscanLastCallAt ? Math.max(0, 500 - (Date.now() - _etherscanLastCallAt)) : 0;
-      if (waitMs > 0) await _sleep(waitMs);
-
-      let out = await _callViaScan(job.payload);
-      _etherscanLastCallAt = Date.now();
-
-      if (_isRateLimitReached(out.parsed, out.text) && job.attempts < 1) {
-        await _sleep(1000);
-        _etherscanQueue.unshift({ ...job, attempts: job.attempts + 1 });
-        continue; // retry from front
-      }
-
-      job.resolve({
-        ok: out.ok,
-        status: out.status,
-        json: async () => out.parsed,
-        text: async () => out.text
-      });
-    }
-  } finally {
-    isProcessing = false;
-  }
-}
-
 async function pfetch(url, options = {}) {
   const payload = { url };
   if (options.method === 'POST') { payload.method = 'POST'; payload.body = options.body; }
-  if (_isEtherscanUrl(url)) return _enqueueEtherscan(payload);
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
-    const r = await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: ctrl.signal });
-    clearTimeout(timer);
-    const text = await r.text();
-    let parsed; try { parsed = JSON.parse(text); } catch(e) { parsed = {}; }
-    return { ok: r.ok, status: r.status, json: async () => parsed, text: async () => text };
+    const out = await _callViaScan(payload);
+    return { ok: out.ok, status: out.status, json: async () => out.parsed, text: async () => out.text };
   } catch(e) {
     return { ok: false, status: 500, json: async () => ({}), text: async () => '' };
   }
@@ -12173,9 +12115,68 @@ function wsCalcCortexScore(ctx) {
   return { score, tier, color, verdict };
 }
 
+function wsPriceTimestampMs(a) {
+  const candidates = [
+    a?.priceUpdatedAt, a?.price_updated_at, a?.updatedAt, a?.updated_at,
+    a?.quoteUpdatedAt, a?.quote_updated_at, a?.lastUpdated, a?.last_updated
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    const ms = new Date(c).getTime();
+    if (Number.isFinite(ms) && ms > 0) return ms;
+  }
+  return null;
+}
+
+function wsWrappedUnderlyingSymbol(sym) {
+  const s = String(sym || '').toUpperCase();
+  const map = { WETH: 'ETH', WBNB: 'BNB', WMATIC: 'MATIC', WBTC: 'BTC', WSOL: 'SOL', WAVAX: 'AVAX' };
+  return map[s] || null;
+}
+
+function wsIsLpLikeToken(a) {
+  const s = String(a?.symbol || '').toUpperCase();
+  const n = String(a?.name || '').toUpperCase();
+  return /\bLP\b/.test(s) || /\bLP\b/.test(n) || n.includes('LIQUIDITY POOL') || s.includes('UNI-V2') || s.includes('SLP');
+}
+
+function wsEligibleTokenUsdForTotal(assets) {
+  const rows = Array.isArray(assets) ? assets : [];
+  const now = Date.now();
+  const staleCutoffMs = 7 * 24 * 60 * 60 * 1000;
+  const bySymbol = new Set(rows.map(r => String(r?.symbol || '').toUpperCase()));
+  let total = 0;
+
+  for (const a of rows) {
+    const sym = String(a?.symbol || '').toUpperCase();
+    const usd = Number(a?.usdValue);
+    const bal = Number(a?.balance || 0);
+    const chainSym = String(a?.chain || '').toUpperCase();
+    const isNative = sym === chainSym || ['ETH', 'BNB', 'MATIC', 'BTC', 'SOL'].includes(sym);
+    if (isNative) {
+      if (Number.isFinite(usd) && usd >= 1) total += usd;
+      continue;
+    }
+
+    if (!Number.isFinite(usd) || usd < 1) continue; // Exclude dust by USD value
+
+    const price = Number.isFinite(Number(a?.price)) ? Number(a.price) : (bal > 0 ? usd / bal : NaN);
+    if (!Number.isFinite(price) || price <= 1) continue; // Confirmed unit price must be > $1
+
+    const tsMs = wsPriceTimestampMs(a);
+    if (tsMs && (now - tsMs) > staleCutoffMs) continue; // Exclude stale priced tokens
+
+    if (wsIsLpLikeToken(a)) continue; // Exclude LP tokens
+
+    const underlying = wsWrappedUnderlyingSymbol(sym);
+    if (underlying && bySymbol.has(underlying)) continue; // Exclude wrapped duplicates
+
+    total += usd;
+  }
+  return total;
+}
+
 async function doWS() {
-  _wsActiveScanId = ++_wsScanSeq;
-  _wsTxlistCache = { scanId: _wsActiveScanId, address: String(document.getElementById('wsi').value.trim() || '').toLowerCase(), rows: null };
   const address = document.getElementById('wsi').value.trim();
   if (!address) { toast('Enter a wallet address', 'er'); return; }
   const chainType = detectChain(address);
@@ -12284,7 +12285,7 @@ async function doWS() {
         }
       });
 
-      totalUsd = assets.reduce((s, a) => s + (Number.isFinite(Number(a.usdValue)) ? Number(a.usdValue) : 0), 0);
+      totalUsd = wsEligibleTokenUsdForTotal(assets);
       const activeChains = [...new Set(assets.map(a => a.chain))].join(', ');
       portfolioSummary = 'Multi-chain: ' + (activeChains || 'none') + ', Assets: ' + assets.length + ', Txs: ' + allTxs.length;
 
@@ -12481,7 +12482,7 @@ async function doWS() {
     const _dc = _ds >= 80 ? '#ef476f' : _ds >= 50 ? '#f0b429' : '#00ffc8';
     document.getElementById('ws-stat-pills').innerHTML = [
       `<div>${assets.length} Assets</div>`,
-      `<div>${Number.isFinite(baseTxCount) ? baseTxCount : allTxs.length} Txs</div>`,
+      `<div>${allTxs.length} Txs</div>`,
       `<div style="color:${_dc}!important;border-color:rgba(${_dc==='#ef476f'?'239,71,111':_dc==='#f0b429'?'240,180,41':'0,255,200'},0.2)!important;">Degen ${_ds}/100</div>`,
       walletAge ? `<div>Age: ${walletAge}</div>` : '',
     ].join('');
@@ -13675,7 +13676,6 @@ async function gtRefreshPrices() {
   } finally {
     _gtRefreshing = false;
   }
-  _wsActiveScanId = 0;
 }
 setInterval(gtRefreshPrices, 1000);
 renderLB();
