@@ -8019,24 +8019,22 @@ function parseZerionPositions(raw) {
     const chainId = pos?.relationships?.chain?.data?.id || '';
     const chainKey = CHAIN_MAP[chainId];
     if (!chainKey) return;
-    const usdValue = parseFloat(attrs.value) || 0;
-    if (usdValue < 10) return;
-    const qty = attrs.quantity || {};
-    const balance = parseFloat(qty.float ?? qty.numeric) || 0;
-    const price = balance > 0 ? usdValue / balance : 0;
+    const usdValue = parseFloat(attrs.value);
+    if (!usdValue || usdValue < 10) return;
     const fi = attrs.fungible_info || {};
     const symbol = fi.symbol || '';
     const name = fi.name || symbol || 'Token';
+    const balance = parseFloat((attrs.quantity || {}).float) || 0;
+    const price = balance > 0 ? usdValue / balance : 0;
     const impls = Array.isArray(fi.implementations) ? fi.implementations : [];
     const impl = impls.find(im => CHAIN_MAP[im?.chain_id] === chainKey);
     out[chainKey].tokens.push({
       contractTicker: symbol, symbol, contractAddress: impl?.address || '', name,
-      contractDecimals: parseFloat(qty.decimals) || 18, balance, usdValue, price, chain: chainKey
+      contractDecimals: parseFloat((attrs.quantity || {}).decimals) || 18, balance, usdValue, price, chain: chainKey
     });
   });
   Object.values(out).forEach(cd => cd.tokens.sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0)));
-  const totalUsd = parseFloat(raw?.portfolio?.data?.attributes?.total?.positions) || 0;
-  if (totalUsd > 0) out.totalUsd = totalUsd;
+  out.totalUsd = Number(raw?.portfolio?.data?.attributes?.total?.positions) || 0;
   return out;
 }
 
