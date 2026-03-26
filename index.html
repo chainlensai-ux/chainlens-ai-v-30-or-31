@@ -8009,6 +8009,37 @@ function tdSetWidgetDebug(elId, text) {
   if (el) el.textContent = text || '';
 }
 
+/* ── Zerion response parser: converts raw { portfolio, positions } to per-chain token map ── */
+function parseZerionPositions(raw) {
+  const CHAIN_MAP = { ethereum: 'eth', 'binance-smart-chain': 'bnb', base: 'base', polygon: 'polygon' };
+  const out = { eth: { tokens: [] }, bnb: { tokens: [] }, base: { tokens: [] }, polygon: { tokens: [] } };
+  const positions = Array.isArray(raw?.positions?.data) ? raw.positions.data : [];
+  positions.forEach(pos => {
+    const attrs = pos?.attributes || {};
+    const chainId = pos?.relationships?.chain?.data?.id || '';
+    const chainKey = CHAIN_MAP[chainId];
+    if (!chainKey) return;
+    const usdValue = parseFloat(attrs.value) || 0;
+    if (usdValue < 10) return;
+    const qty = attrs.quantity || {};
+    const balance = parseFloat(qty.float ?? qty.numeric) || 0;
+    const price = balance > 0 ? usdValue / balance : 0;
+    const fi = attrs.fungible_info || {};
+    const symbol = fi.symbol || '';
+    const name = fi.name || symbol || 'Token';
+    const impls = Array.isArray(fi.implementations) ? fi.implementations : [];
+    const impl = impls.find(im => CHAIN_MAP[im?.chain_id] === chainKey);
+    out[chainKey].tokens.push({
+      contractTicker: symbol, symbol, contractAddress: impl?.address || '', name,
+      contractDecimals: parseFloat(qty.decimals) || 18, balance, usdValue, price, chain: chainKey
+    });
+  });
+  Object.values(out).forEach(cd => cd.tokens.sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0)));
+  const totalUsd = parseFloat(raw?.portfolio?.data?.attributes?.total?.positions) || 0;
+  if (totalUsd > 0) out.totalUsd = totalUsd;
+  return out;
+}
+
 /* ── Portfolio Widget ── */
 function tdRenderPortfolio() {
   const valEl = document.getElementById('td-portfolio-val');
@@ -8040,31 +8071,23 @@ function tdRenderPortfolio() {
   (async () => {
     try {
       const address = wallet.trim();
-      const r = await fetch('/api/zerion', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          address,
-          chains: ['eth', 'bnb', 'base', 'polygon'],
-          history: true,
-          days: 7
-        })
-      });
+      const r = await fetch('/api/zerion?address=' + encodeURIComponent(address));
 
-      if (!r.ok) throw new Error('POST /api/zerion rejected: HTTP ' + r.status + ' ' + (r.statusText || ''));
+      if (!r.ok) throw new Error('GET /api/zerion rejected: HTTP ' + r.status + ' ' + (r.statusText || ''));
 
-      const data = await r.json();
-      if (data?.error) {
-        throw new Error(data?.error || 'Zerion error');
+      const raw = await r.json();
+      if (raw?.error) {
+        throw new Error(raw?.error || 'Zerion error');
       }
+      const data = parseZerionPositions(raw);
 
-      // Total USD value: sum usdValue across tokens for all requested chains.
-      let totalUsd = 0;
-      const chainKeys = ['eth', 'bnb', 'base', 'polygon'];
-      chainKeys.forEach(k => {
-        const chainResult = data?.[k];
-        (chainResult?.tokens || []).forEach(t => { totalUsd += (t?.usdValue || 0); });
-      });
+      // Total USD value from Zerion portfolio endpoint, fallback to summing tokens.
+      let totalUsd = data.totalUsd || 0;
+      if (!totalUsd) {
+        ['eth', 'bnb', 'base', 'polygon'].forEach(k => {
+          (data[k]?.tokens || []).forEach(t => { totalUsd += (t?.usdValue || 0); });
+        });
+      }
 
       // Extract 7-day total USD history if present.
       let dayValues = null;
@@ -10247,12 +10270,8 @@ async function fetchTokenPrices(tokens) {
 
 async function fetchBaseCovalentBalances(address) {
   try {
-    const r = await fetch('/api/zerion', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, chains: ['base'] })
-    });
-    const d = r.ok ? await r.json() : null;
+    const r = await fetch('/api/zerion?address=' + encodeURIComponent(address));
+    const d = r.ok ? parseZerionPositions(await r.json()) : null;
     const baseRows = Array.isArray(d?.base?.tokens) ? d.base.tokens : [];
     return baseRows
       .map(t => {
@@ -12269,11 +12288,8 @@ async function doWS() {
 
       // Fetch token holdings via Zerion (primary source for EVM token holdings and portfolio total)
       document.getElementById('ws-total-sub').textContent = 'Fetching token holdings via Zerion...';
-      debankResult = await fetch('/api/zerion', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
-      }).then(r => r.ok ? r.json() : null).catch(() => null);
+      debankResult = await fetch('/api/zerion?address=' + encodeURIComponent(address))
+        .then(r => r.ok ? r.json().then(parseZerionPositions) : null).catch(() => null);
 
       if (debankResult && !debankResult._error) {
         const existingContracts = new Set(assets.map(a => ((a.contractAddress || '').toLowerCase() + ':' + (a.chain || ''))));
@@ -13149,11 +13165,7 @@ async function doPortfolioTracker() {
   aiEl.innerHTML = '<span class="cl-spinner"></span> Preparing analysis...';
 
   try {
-    const r = await fetch('/api/zerion', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
-    });
+    const r = await fetch('/api/zerion?address=' + encodeURIComponent(address));
 
     if (!r.ok) {
       const errData = await r.json().catch(() => ({}));
@@ -13165,7 +13177,7 @@ async function doPortfolioTracker() {
       throw new Error('Zerion API error: ' + r.status);
     }
 
-    const data = await r.json();
+    const data = parseZerionPositions(await r.json());
     _ptAllData = data;
     _ptActiveChain = 'all';
 
