@@ -8036,11 +8036,11 @@ function tdRenderPortfolio() {
   if (valEl) valEl.textContent = '$—';
   if (chgVal) chgVal.textContent = '—';
 
-  // Use Covalent multi-chain portfolio API (ETH, Base, BNB, Polygon)
+  // Use Zerion multi-chain portfolio API (ETH, Base, BNB, Polygon)
   (async () => {
     try {
       const address = wallet.trim();
-      const r = await fetch('/api/covalent', {
+      const r = await fetch('/api/zerion', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -8051,11 +8051,11 @@ function tdRenderPortfolio() {
         })
       });
 
-      if (!r.ok) throw new Error('POST /api/covalent rejected: HTTP ' + r.status + ' ' + (r.statusText || ''));
+      if (!r.ok) throw new Error('POST /api/zerion rejected: HTTP ' + r.status + ' ' + (r.statusText || ''));
 
       const data = await r.json();
       if (data?.error) {
-        throw new Error(data?.error || 'Covalent error');
+        throw new Error(data?.error || 'Zerion error');
       }
 
       // Total USD value: sum usdValue across tokens for all requested chains.
@@ -8104,7 +8104,7 @@ function tdRenderPortfolio() {
       }
 
       if (!Array.isArray(dayValues) || dayValues.length < 2) {
-        // If history isn't provided by /api/covalent, keep portfolio values but avoid fake sparkline.
+        // If history isn't provided by /api/zerion, keep portfolio values but avoid fake sparkline.
         dayValues = [];
       }
 
@@ -8131,7 +8131,7 @@ function tdRenderPortfolio() {
       tdSetWidgetDebug('td-debug-portfolio', '');
     } catch (e) {
       const why = (e && e.message) ? e.message : String(e);
-      tdSetWidgetDebug('td-debug-portfolio', 'DEBUG: Portfolio Value — ' + why + (String(why).indexOf('404') >= 0 ? ' (this repo has no api/covalent handler).' : ''));
+      tdSetWidgetDebug('td-debug-portfolio', 'DEBUG: Portfolio Value — ' + why + (String(why).indexOf('404') >= 0 ? ' (this repo has no api/zerion handler).' : ''));
       if (subEl) subEl.textContent = 'Failed to load portfolio data';
       if (valEl) valEl.textContent = '$—';
       if (chgVal) chgVal.textContent = '—';
@@ -10247,7 +10247,7 @@ async function fetchTokenPrices(tokens) {
 
 async function fetchBaseCovalentBalances(address) {
   try {
-    const r = await fetch('/api/covalent', {
+    const r = await fetch('/api/zerion', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, chains: ['base'] })
@@ -10256,14 +10256,11 @@ async function fetchBaseCovalentBalances(address) {
     const baseRows = Array.isArray(d?.base?.tokens) ? d.base.tokens : [];
     return baseRows
       .map(t => {
-        const decimals = Number.isFinite(Number(t.contractDecimals)) ? Number(t.contractDecimals) : 18;
-        const rawBal = Number(t.balance || 0);
-        const bal = Number.isFinite(rawBal) && rawBal > 0 ? rawBal / Math.pow(10, decimals) : 0;
         const usd = Number(t.usdValue);
         return {
           symbol: t.symbol || t.contractTicker || 'TOKEN',
-          name: t.name || t.contractName || 'Token',
-          balance: bal,
+          name: t.name || 'Token',
+          balance: Number(t.balance) || 0,
           usdValue: Number.isFinite(usd) ? usd : 0,
           contractAddress: t.contractAddress || '',
           chain: 'base'
@@ -12253,6 +12250,7 @@ async function doWS() {
     let alchemyData = { holdings: [], txs: [] };
     let baseTxCount = null;
     let baseWalletAgeDays = null;
+    let debankResult = null;
 
     if (chainType === 'evm') {
       document.getElementById('ws-total-sub').textContent = 'Scanning ETH, Base, BNB, Polygon...';
@@ -12269,64 +12267,34 @@ async function doWS() {
       });
       allTxs = allTxs.sort((a, b) => parseInt(b.timeStamp || 0) - parseInt(a.timeStamp || 0)).slice(0, 100);
 
-      // Fetch Covalent multi-chain token balances (with USD values) in parallel with DexScreener prices
-      document.getElementById('ws-total-sub').textContent = 'Fetching token balances via Covalent...';
-      const tokenAssets = assets.filter(a => a.contractAddress);
-      const [priceMap, covalentData, baseCovalent] = await Promise.all([
-        fetchTokenPrices(tokenAssets),
-        fetch('/api/covalent', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetchBaseCovalentBalances(address)
-      ]);
+      // Fetch token holdings via Zerion (primary source for EVM token holdings and portfolio total)
+      document.getElementById('ws-total-sub').textContent = 'Fetching token holdings via Zerion...';
+      debankResult = await fetch('/api/zerion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
+      }).then(r => r.ok ? r.json() : null).catch(() => null);
 
-      // Merge Covalent data: enrich existing assets and add any missing tokens
-      if (covalentData && !covalentData.error) {
+      if (debankResult && !debankResult._error) {
         const existingContracts = new Set(assets.map(a => ((a.contractAddress || '').toLowerCase() + ':' + (a.chain || ''))));
-        Object.entries(covalentData).forEach(([chainKey, chainResult]) => {
-          if (!chainResult?.tokens) return;
-          chainResult.tokens.forEach(ct => {
-            const ctWithChain = { ...ct, chain: chainKey };
-            const ctAddr = (ctWithChain.contractAddress || '').toLowerCase();
+        ['eth', 'bnb', 'base', 'polygon'].forEach(chainKey => {
+          (debankResult[chainKey]?.tokens || []).forEach(ct => {
+            const ctAddr = (ct.contractAddress || '').toLowerCase();
             const dedupeKey = ctAddr + ':' + chainKey;
             const existingIdx = assets.findIndex(a => (a.contractAddress || '').toLowerCase() === ctAddr && a.chain === chainKey);
             if (existingIdx >= 0) {
-              // Enrich existing asset with Covalent USD value
-              if (ctWithChain.usdValue > 0) assets[existingIdx].usdValue = ctWithChain.usdValue;
-              if (ctWithChain.price > 0) assets[existingIdx].price = ctWithChain.price;
-            } else if (ctAddr && !existingContracts.has(dedupeKey) && ct.balance > 0 && ct.usdValue > 0) {
-              // Add token found by Covalent but not by native balance scan
-              assets.push(ctWithChain);
+              if (ct.usdValue > 0) assets[existingIdx].usdValue = ct.usdValue;
+              if (ct.price > 0) assets[existingIdx].price = ct.price;
+            } else if (!existingContracts.has(dedupeKey) && ct.balance > 0 && ct.usdValue >= 10) {
+              assets.push({ ...ct, chain: chainKey });
               existingContracts.add(dedupeKey);
             }
           });
         });
       }
 
-      // Base chain token balances: prefer Covalent full balance list for accurate portfolio value.
-      if (Array.isArray(baseCovalent) && baseCovalent.length) {
-        const nonBase = assets.filter(a => (a.chain || '').toLowerCase() !== 'base' || !a.contractAddress);
-        assets = nonBase.concat(baseCovalent);
-      }
-
-      // Apply DexScreener prices as fallback for tokens without Covalent pricing
-      assets.forEach(a => {
-        if (a.contractAddress) {
-          const addr = a.contractAddress.toLowerCase();
-          if (a.price == null && priceMap[addr] != null) {
-            a.price = priceMap[addr];
-            a.usdValue = a.price * a.balance;
-          } else if (a.price == null) {
-            a.price = null;
-            a.usdValue = a.usdValue || null;
-          }
-        }
-      });
-
       assets = wsApplyCriticalHoldingFilters(assets);
-      totalUsd = wsEligibleTokenUsdForTotal(assets);
+      totalUsd = (debankResult?.totalUsd > 0) ? debankResult.totalUsd : wsEligibleTokenUsdForTotal(assets);
       const activeChains = [...new Set(assets.map(a => a.chain))].join(', ');
       portfolioSummary = 'Multi-chain: ' + (activeChains || 'none') + ', Assets: ' + assets.length + ', Txs: ' + allTxs.length;
 
@@ -13177,11 +13145,11 @@ async function doPortfolioTracker() {
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="cl-spinner"></span>'; }
   if (btn2) { btn2.disabled = true; btn2.innerHTML = '<span class="cl-spinner"></span>Tracking...'; }
-  holdingsEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Fetching token balances from Covalent...</div>';
+  holdingsEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Fetching token balances from Zerion...</div>';
   aiEl.innerHTML = '<span class="cl-spinner"></span> Preparing analysis...';
 
   try {
-    const r = await fetch('/api/covalent', {
+    const r = await fetch('/api/zerion', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
@@ -13189,12 +13157,12 @@ async function doPortfolioTracker() {
 
     if (!r.ok) {
       const errData = await r.json().catch(() => ({}));
-      if (errData.code === 'MISSING_KEY') {
-        holdingsEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;padding:16px;">Covalent API key not configured. Add COVALENT_API_KEY to Vercel environment variables.</div>';
+      if (errData.code === 'MISSING_KEY' || errData.error?.includes('ZERION_KEY')) {
+        holdingsEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;padding:16px;">Zerion API key not configured. Add ZERION_KEY to Vercel environment variables.</div>';
         aiEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;">API key missing.</div>';
         return;
       }
-      throw new Error('Covalent API error: ' + r.status);
+      throw new Error('Zerion API error: ' + r.status);
     }
 
     const data = await r.json();
