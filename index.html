@@ -12324,22 +12324,27 @@ async function doWS() {
       portfolioSummary = `SOL: ${sol.nativeBal.toFixed(4)}, SPL Tokens: ${sol.tokens.length}, Txs: ${sol.txs.length}`;
     }
 
-    if (chainType === 'evm' || chainType === 'sol') {
-      document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
-      moralisData = await fetchMoralisWalletScan(address, chainType);
-    }
+    let isDevWalletBase = false;
     if (chainType === 'evm') {
-      document.getElementById('ws-total-sub').textContent = 'Loading Alchemy transaction context...';
-      alchemyData = await fetchAlchemyWalletScan(address, chainType);
-      const baseStats = await fetchAlchemyBaseTxStats(address);
-      baseTxCount = Number(baseStats.txCount || 0);
-      baseWalletAgeDays = Number.isFinite(baseStats.walletAgeDays) ? Number(baseStats.walletAgeDays) : null;
+      document.getElementById('ws-total-sub').textContent = 'Loading portfolio context...';
+      const [_moralis, _alchemy, _baseStats, _isDevWallet] = await Promise.all([
+        fetchMoralisWalletScan(address, chainType),
+        fetchAlchemyWalletScan(address, chainType),
+        fetchAlchemyBaseTxStats(address),
+        wsDetectBaseDevWallet(address)
+      ]);
+      moralisData = _moralis;
+      alchemyData = _alchemy;
+      baseTxCount = Number(_baseStats.txCount || 0);
+      baseWalletAgeDays = Number.isFinite(_baseStats.walletAgeDays) ? Number(_baseStats.walletAgeDays) : null;
       if (Array.isArray(alchemyData.txs) && alchemyData.txs.length) {
         allTxs = alchemyData.txs.slice().sort((a, b) => parseInt(b.timeStamp || 0, 10) - parseInt(a.timeStamp || 0, 10));
       }
+      isDevWalletBase = _isDevWallet;
+    } else if (chainType === 'sol') {
+      document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
+      moralisData = await fetchMoralisWalletScan(address, chainType);
     }
-
-    const isDevWalletBase = chainType === 'evm' ? await wsDetectBaseDevWallet(address) : false;
     document.getElementById('ws-total-value').textContent = fmtFx(totalUsd);
     const wsLabels = wsInferWalletLabels(address, chainType, totalUsd, assets, allTxs);
     if (isDevWalletBase && !wsLabels.includes('DEV')) wsLabels.push('DEV');
