@@ -6,17 +6,29 @@ export default async function handler(req, res) {
   const encoded = Buffer.from(key + ':').toString('base64');
 
   try {
-    const [portfolio, positions] = await Promise.all([
-      fetch(`https://api.zerion.io/v1/wallets/${address}/portfolio`, {
-        headers: { 'Authorization': `Basic ${encoded}`, 'accept': 'application/json' }
-      }),
-      fetch(`https://api.zerion.io/v1/wallets/${address}/positions?filter[position_types]=wallet&currency=usd&page[size]=100&sort=-value`, {
-        headers: { 'Authorization': `Basic ${encoded}`, 'accept': 'application/json' }
-      })
-    ]);
+    const portfolioRes = await fetch(`https://api.zerion.io/v1/wallets/${address}/portfolio`, {
+      headers: { 'Authorization': `Basic ${encoded}`, 'accept': 'application/json' }
+    });
+    const portfolioData = await portfolioRes.json();
 
-    const portfolioData = await portfolio.json();
-    const positionsData = await positions.json();
+    // Paginate through all positions pages
+    const allPositions = [];
+    let nextUrl = `https://api.zerion.io/v1/wallets/${address}/positions?filter[position_types]=wallet&currency=usd&page[size]=100&sort=-value`;
+
+    while (nextUrl) {
+      const posRes = await fetch(nextUrl, {
+        headers: { 'Authorization': `Basic ${encoded}`, 'accept': 'application/json' }
+      });
+      const posData = await posRes.json();
+
+      if (posData.data) {
+        allPositions.push(...posData.data);
+      }
+
+      nextUrl = posData.links?.next || null;
+    }
+
+    const positionsData = { data: allPositions };
 
     res.json({ portfolio: portfolioData, positions: positionsData });
   } catch (e) {
