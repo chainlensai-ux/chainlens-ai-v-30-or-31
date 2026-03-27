@@ -61,11 +61,15 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {
-  background: var(--cl-bg);
+  background: #0a0a0a;
   color: var(--cl-text);
   font-family: 'Inter', sans-serif;
   overflow-x: hidden;
   min-height: 100vh;
+  background-image:
+    linear-gradient(rgba(139,92,246,0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(139,92,246,0.06) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.3); border-radius: 2px; }
@@ -4331,19 +4335,7 @@ body::after {
 <nav class="cl-nav">
   <div class="cl-nav__inner">
     <div class="cl-nav__logo" onclick="go('home')">
-      <svg width="52" height="32" viewBox="0 0 52 32" style="flex-shrink:0;pointer-events:none;">
-        <defs>
-          <linearGradient id="cl-lg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#8b5cf6"/>
-            <stop offset="100%" stop-color="#64ffda"/>
-          </linearGradient>
-        </defs>
-        <!-- C: arc from top-right to bottom-right of a circle centred at 14,16 r=11 -->
-        <path d="M 22 5 A 11 11 0 1 0 22 27" fill="none" stroke="url(#cl-lg)" stroke-width="5" stroke-linecap="butt"/>
-        <!-- L: vertical then horizontal foot -->
-        <line x1="32" y1="5" x2="32" y2="27" stroke="url(#cl-lg)" stroke-width="5" stroke-linecap="round"/>
-        <line x1="32" y1="27" x2="50" y2="27" stroke="url(#cl-lg)" stroke-width="5" stroke-linecap="round"/>
-      </svg>
+      <img src="/cl-logo.png" style="width:32px;height:32px;flex-shrink:0;pointer-events:none;">
       <div>
         <div class="cl-nav__logo-text"><span class="chain">Chain</span><span class="lens">Lens</span></div>
         <span class="cl-nav__logo-sub">AI Intelligence</span>
