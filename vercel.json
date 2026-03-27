@@ -2,7 +2,9 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/manifest.json", "destination": "/manifest.json" },
-    { "source": "/sw.js", "destination": "/sw.js" }
+    { "source": "/sw.js", "destination": "/sw.js" },
+    { "source": "/app", "destination": "/index.html" },
+    { "source": "/", "destination": "/coming-soon.html" }
   ],
   "headers": [
     {
@@ -25,6 +27,7 @@
     "api/claude.js": { "maxDuration": 30 },
     "api/scan.js": { "maxDuration": 15 },
     "api/zerion.js": { "maxDuration": 15 },
-    "api/covalent.js": { "maxDuration": 15 }
+    "api/covalent.js": { "maxDuration": 15 },
+    "api/waitlist.js": { "maxDuration": 10 }
   }
 }

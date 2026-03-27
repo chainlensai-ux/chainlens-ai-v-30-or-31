@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChainLens AI — Coming Soon</title>
+<meta name="theme-color" content="#0a0a0a">
+<meta name="description" content="See the market before it moves. ChainLens AI — launching Early April.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%232DD4BF'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%230a0a0a'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='18' fill='url(%23g)'%3E⬡%3C/text%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --purple: #8b5cf6;
+    --teal:   #2DD4BF;
+    --mint:   #64ffda;
+    --pink:   #ec4899;
+    --bg:     #0a0a0a;
+  }
+
+  html, body {
+    min-height: 100%;
+    background: var(--bg);
+    color: #ffffff;
+    font-family: 'Inter', sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  body {
+    padding: 2rem 1.25rem;
+  }
+
+  /* Subtle background glow */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 60% 40% at 30% 20%, rgba(139,92,246,0.12) 0%, transparent 70%),
+      radial-gradient(ellipse 50% 35% at 75% 75%, rgba(45,212,191,0.09) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    position: relative;
+    z-index: 1;
+    max-width: 520px;
+    width: 100%;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  /* ── Logo ── */
+  .logo {
+    width: 72px;
+    height: 72px;
+    margin-bottom: 1.75rem;
+    filter: drop-shadow(0 0 18px rgba(139,92,246,0.45));
+  }
+
+  /* ── Brand name ── */
+  .brand {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: clamp(2.6rem, 8vw, 3.75rem);
+    line-height: 1.05;
+    background: linear-gradient(135deg, var(--purple) 0%, var(--teal) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -0.02em;
+    margin-bottom: 1rem;
+  }
+
+  /* ── Tagline ── */
+  .tagline {
+    font-size: 1.125rem;
+    font-weight: 400;
+    color: rgba(255,255,255,0.72);
+    letter-spacing: 0.01em;
+    margin-bottom: 2.5rem;
+    line-height: 1.5;
+  }
+
+  /* ── Form ── */
+  .form {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-bottom: 2rem;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 0.625rem;
+    width: 100%;
+  }
+
+  .email-input {
+    flex: 1;
+    min-width: 0;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(139,92,246,0.3);
+    border-radius: 10px;
+    padding: 0.8125rem 1rem;
+    font-size: 0.9375rem;
+    font-family: 'Inter', sans-serif;
+    color: #ffffff;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .email-input::placeholder {
+    color: rgba(255,255,255,0.35);
+  }
+
+  .email-input:focus {
+    border-color: rgba(139,92,246,0.65);
+    box-shadow: 0 0 0 3px rgba(139,92,246,0.15);
+  }
+
+  .btn {
+    flex-shrink: 0;
+    padding: 0.8125rem 1.375rem;
+    border-radius: 10px;
+    border: none;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    background: linear-gradient(135deg, var(--purple), var(--teal));
+    color: #ffffff;
+    transition: opacity 0.18s, transform 0.18s, box-shadow 0.18s;
+    white-space: nowrap;
+    box-shadow: 0 4px 20px rgba(139,92,246,0.35);
+  }
+
+  .btn:hover:not(:disabled) {
+    opacity: 0.88;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 28px rgba(139,92,246,0.5);
+  }
+
+  .btn:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  .btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .message {
+    font-size: 0.875rem;
+    min-height: 1.25rem;
+    transition: opacity 0.2s;
+  }
+
+  .message.success {
+    color: var(--mint);
+  }
+
+  .message.error {
+    color: var(--pink);
+  }
+
+  /* ── Launch badge ── */
+  .launch-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: rgba(45,212,191,0.08);
+    border: 1px solid rgba(45,212,191,0.22);
+    border-radius: 999px;
+    padding: 0.4rem 1rem;
+    font-size: 0.8125rem;
+    color: var(--teal);
+    letter-spacing: 0.04em;
+    font-weight: 500;
+  }
+
+  .launch-badge .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--teal);
+    box-shadow: 0 0 8px var(--teal);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.5; transform: scale(0.85); }
+  }
+
+  @media (max-width: 420px) {
+    .input-row {
+      flex-direction: column;
+    }
+    .btn {
+      width: 100%;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- CL Logo -->
+  <svg class="logo" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg" aria-label="ChainLens logo">
+    <defs>
+      <linearGradient id="cl-grad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#8b5cf6"/>
+        <stop offset="100%" stop-color="#2DD4BF"/>
+      </linearGradient>
+    </defs>
+    <rect width="72" height="72" rx="18" fill="#111111"/>
+    <!-- Hexagon chain-link mark -->
+    <polygon points="36,12 52,21 52,39 36,48 20,39 20,21" fill="none" stroke="url(#cl-grad)" stroke-width="3" stroke-linejoin="round"/>
+    <circle cx="36" cy="30" r="7" fill="none" stroke="url(#cl-grad)" stroke-width="2.5"/>
+    <line x1="29" y1="30" x2="20" y2="30" stroke="url(#cl-grad)" stroke-width="2" stroke-linecap="round"/>
+    <line x1="43" y1="30" x2="52" y2="30" stroke="url(#cl-grad)" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+
+  <h1 class="brand">ChainLens</h1>
+
+  <p class="tagline">See the market before it moves</p>
+
+  <!-- Waitlist form -->
+  <form class="form" id="waitlist-form" novalidate>
+    <div class="input-row">
+      <input
+        class="email-input"
+        type="email"
+        id="email-input"
+        placeholder="your@email.com"
+        autocomplete="email"
+        required
+        aria-label="Email address"
+      >
+      <button class="btn" type="submit" id="submit-btn">Join Waitlist</button>
+    </div>
+    <div class="message" id="form-message" role="status" aria-live="polite"></div>
+  </form>
+
+  <!-- Launch date -->
+  <div class="launch-badge">
+    <span class="dot"></span>
+    Launching Early April
+  </div>
+
+</div>
+
+<script>
+  const form    = document.getElementById('waitlist-form');
+  const input   = document.getElementById('email-input');
+  const btn     = document.getElementById('submit-btn');
+  const msgEl   = document.getElementById('form-message');
+
+  function showMsg(text, type) {
+    msgEl.textContent = text;
+    msgEl.className = 'message ' + type;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = input.value.trim();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showMsg('Please enter a valid email address.', 'error');
+      input.focus();
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Joining…';
+    showMsg('', '');
+
+    try {
+      const res = await fetch('/api/waitlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        showMsg("You're on the list! We'll be in touch.", 'success');
+        input.value = '';
+        btn.textContent = 'Joined!';
+      } else {
+        showMsg(data.error || 'Something went wrong. Please try again.', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Join Waitlist';
+      }
+    } catch {
+      showMsg('Network error. Please try again.', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Join Waitlist';
+    }
+  });
+</script>
+</body>
+</html>
