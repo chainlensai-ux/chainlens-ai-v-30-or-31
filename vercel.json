@@ -1,10 +1,12 @@
 {
+  "redirects": [
+    { "source": "/", "destination": "/coming-soon.html", "permanent": true }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/manifest.json", "destination": "/manifest.json" },
     { "source": "/sw.js", "destination": "/sw.js" },
-    { "source": "/app", "destination": "/index.html" },
-    { "source": "/", "destination": "/coming-soon.html" }
+    { "source": "/app", "destination": "/index.html" }
   ],
   "headers": [
     {
