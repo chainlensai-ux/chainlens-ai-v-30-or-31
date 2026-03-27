@@ -13427,6 +13427,7 @@ document.getElementById('pwa-install-btn')?.addEventListener('click', async () =
 // ══════════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════════
+if (window.location.pathname === '/app') go('terminal');
 initAuth();
 loadPrices();
 setInterval(loadPrices, 60000);
