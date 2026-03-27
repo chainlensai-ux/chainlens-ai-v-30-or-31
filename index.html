@@ -4438,7 +4438,7 @@ body::after {
     </div>
     <div class="cl-nav__right" id="nav-auth">
       <button class="cl-btn cl-btn--ghost cl-btn--sm" onclick="openAuth('login')">Sign In</button>
-      <button class="cl-btn cl-btn--primary cl-btn--sm" onclick="openAuth('signup')">Get Access</button>
+      <button class="cl-btn cl-btn--primary cl-btn--sm" onclick="window.location='/app'">Get Access</button>
     </div>
   </div>
 </nav>
@@ -4669,7 +4669,7 @@ body::after {
 
       <div class="cl-hero__ctas">
         <button class="cl-btn cl-btn--primary cl-btn--lg" onclick="connectWallet()">Connect Wallet</button>
-        <button class="cl-btn cl-btn--primary cl-btn--lg" onclick="openAuth('signup')">Start Free</button>
+        <button class="cl-btn cl-btn--primary cl-btn--lg" onclick="window.location='/app'">Start Free</button>
       </div>
     </div>
   </section>
@@ -5112,7 +5112,7 @@ body::after {
         </div>
       </div>
       <div style="text-align:center;margin-top:28px;" class="cl-reveal">
-        <button class="cl-btn cl-btn--primary" onclick="openAuth('signup')">Start Free — Upgrade Anytime</button>
+        <button class="cl-btn cl-btn--primary" onclick="window.location='/app'">Start Free — Upgrade Anytime</button>
       </div>
     </section>
 
@@ -5206,7 +5206,7 @@ body::after {
 
       <div class="cl-testi__cta cl-reveal">
         <p class="cl-testi__cta-note">Join thousands of traders using ChainLens AI every day</p>
-        <button class="cl-btn cl-btn--primary" onclick="openAuth('signup')">Start Free — No Credit Card</button>
+        <button class="cl-btn cl-btn--primary" onclick="window.location='/app'">Start Free — No Credit Card</button>
       </div>
     </section>
 
@@ -5250,7 +5250,7 @@ body::after {
             <li>Token Unlocks™</li>
             <li>Clark AI — wallet scans &amp; live data</li>
           </ul>
-          <button class="cl-btn cl-btn--primary cl-btn--full" onclick="openAuth('signup')">Start Free Trial</button>
+          <button class="cl-btn cl-btn--primary cl-btn--full" onclick="window.location='/app'">Start Free Trial</button>
         </div>
 
         <!-- ELITE -->
@@ -5269,7 +5269,7 @@ body::after {
             <li>Price Alerts — 20 active</li>
             <li>Clark AI — all features + Elite</li>
           </ul>
-          <button class="cl-btn cl-btn--elite cl-btn--full" onclick="openAuth('signup')">Start Free Trial</button>
+          <button class="cl-btn cl-btn--elite cl-btn--full" onclick="window.location='/app'">Start Free Trial</button>
         </div>
 
       </div>
@@ -5554,7 +5554,7 @@ body::after {
           <li>Token Unlocks™</li>
           <li>Clark AI — wallet scans &amp; live data</li>
         </ul>
-        <button class="cl-btn cl-btn--primary cl-btn--full" onclick="openAuth('signup')">Start Free Trial</button>
+        <button class="cl-btn cl-btn--primary cl-btn--full" onclick="window.location='/app'">Start Free Trial</button>
       </div>
 
       <!-- ELITE -->
@@ -5573,7 +5573,7 @@ body::after {
           <li>Price Alerts — 20 active</li>
           <li>Clark AI — all features + Elite</li>
         </ul>
-        <button class="cl-btn cl-btn--elite cl-btn--full" onclick="openAuth('signup')">Start Free Trial</button>
+        <button class="cl-btn cl-btn--elite cl-btn--full" onclick="window.location='/app'">Start Free Trial</button>
       </div>
 
     </div>
@@ -9230,7 +9230,7 @@ function updateNav() {
   } else {
     navAuth.innerHTML = `
       <button class="cl-btn cl-btn--ghost cl-btn--sm" onclick="openAuth('login')">Sign In</button>
-      <button class="cl-btn cl-btn--primary cl-btn--sm" onclick="openAuth('signup')">Get Access</button>`;
+      <button class="cl-btn cl-btn--primary cl-btn--sm" onclick="window.location='/app'">Get Access</button>`;
     if (umH && umD) { umH.style.display = 'none'; umD.style.display = 'none'; }
   }
   updateHeroTierLabel();
