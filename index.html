@@ -7565,12 +7565,6 @@ body::after {
   JAVASCRIPT
 ═════════════════════════════════════ -->
 <script>
-if (window.location.pathname === '/app') {
-  document.addEventListener('DOMContentLoaded', function() {
-    go('terminal');
-  });
-}
-
 // ══════════════════════════════════════════════
 // CONSTANTS & DATA
 // ══════════════════════════════════════════════
@@ -13432,10 +13426,11 @@ document.getElementById('pwa-install-btn')?.addEventListener('click', async () =
 // ══════════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════════
-initAuth();
+initAuth().then(function() {
+  if (window.location.pathname === '/app') go('terminal');
+});
 loadPrices();
 setInterval(loadPrices, 60000);
-if (window.location.pathname === '/app') go('terminal');
 
 // Live PnL price refresh every 1.5 seconds
 let _gtRefreshing = false;
