@@ -8009,6 +8009,35 @@ function tdSetWidgetDebug(elId, text) {
   if (el) el.textContent = text || '';
 }
 
+/* ── Zerion response parser: converts raw { portfolio, positions } to per-chain token map ── */
+function parseZerionPositions(raw) {
+  const CHAIN_MAP = { ethereum: 'eth', 'binance-smart-chain': 'bnb', base: 'base', polygon: 'polygon' };
+  const out = { eth: { tokens: [] }, bnb: { tokens: [] }, base: { tokens: [] }, polygon: { tokens: [] } };
+  const positions = Array.isArray(raw?.positions?.data) ? raw.positions.data : [];
+  positions.forEach(pos => {
+    const attrs = pos?.attributes || {};
+    const chainId = pos?.relationships?.chain?.data?.id || '';
+    const chainKey = CHAIN_MAP[chainId];
+    if (!chainKey) return;
+    const usdValue = parseFloat(attrs.value);
+    if (!usdValue || usdValue < 10) return;
+    const fi = attrs.fungible_info || {};
+    const symbol = fi.symbol || '';
+    const name = fi.name || symbol || 'Token';
+    const balance = parseFloat((attrs.quantity || {}).float) || 0;
+    const price = balance > 0 ? usdValue / balance : 0;
+    const impls = Array.isArray(fi.implementations) ? fi.implementations : [];
+    const impl = impls.find(im => CHAIN_MAP[im?.chain_id] === chainKey);
+    out[chainKey].tokens.push({
+      contractTicker: symbol, symbol, contractAddress: impl?.address || '', name,
+      contractDecimals: parseFloat((attrs.quantity || {}).decimals) || 18, balance, usdValue, price, chain: chainKey
+    });
+  });
+  Object.values(out).forEach(cd => cd.tokens.sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0)));
+  out.totalUsd = Number(raw?.portfolio?.data?.attributes?.total?.positions) || 0;
+  return out;
+}
+
 /* ── Portfolio Widget ── */
 function tdRenderPortfolio() {
   const valEl = document.getElementById('td-portfolio-val');
@@ -8036,35 +8065,27 @@ function tdRenderPortfolio() {
   if (valEl) valEl.textContent = '$—';
   if (chgVal) chgVal.textContent = '—';
 
-  // Use Covalent multi-chain portfolio API (ETH, Base, BNB, Polygon)
+  // Use Zerion multi-chain portfolio API (ETH, Base, BNB, Polygon)
   (async () => {
     try {
       const address = wallet.trim();
-      const r = await fetch('/api/covalent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          address,
-          chains: ['eth', 'bnb', 'base', 'polygon'],
-          history: true,
-          days: 7
-        })
-      });
+      const r = await fetch('/api/zerion?address=' + encodeURIComponent(address));
 
-      if (!r.ok) throw new Error('POST /api/covalent rejected: HTTP ' + r.status + ' ' + (r.statusText || ''));
+      if (!r.ok) throw new Error('GET /api/zerion rejected: HTTP ' + r.status + ' ' + (r.statusText || ''));
 
-      const data = await r.json();
-      if (data?.error) {
-        throw new Error(data?.error || 'Covalent error');
+      const raw = await r.json();
+      if (raw?.error) {
+        throw new Error(raw?.error || 'Zerion error');
       }
+      const data = parseZerionPositions(raw);
 
-      // Total USD value: sum usdValue across tokens for all requested chains.
-      let totalUsd = 0;
-      const chainKeys = ['eth', 'bnb', 'base', 'polygon'];
-      chainKeys.forEach(k => {
-        const chainResult = data?.[k];
-        (chainResult?.tokens || []).forEach(t => { totalUsd += (t?.usdValue || 0); });
-      });
+      // Total USD value from Zerion portfolio endpoint, fallback to summing tokens.
+      let totalUsd = data.totalUsd || 0;
+      if (!totalUsd) {
+        ['eth', 'bnb', 'base', 'polygon'].forEach(k => {
+          (data[k]?.tokens || []).forEach(t => { totalUsd += (t?.usdValue || 0); });
+        });
+      }
 
       // Extract 7-day total USD history if present.
       let dayValues = null;
@@ -8104,7 +8125,7 @@ function tdRenderPortfolio() {
       }
 
       if (!Array.isArray(dayValues) || dayValues.length < 2) {
-        // If history isn't provided by /api/covalent, keep portfolio values but avoid fake sparkline.
+        // If history isn't provided by /api/zerion, keep portfolio values but avoid fake sparkline.
         dayValues = [];
       }
 
@@ -8131,7 +8152,7 @@ function tdRenderPortfolio() {
       tdSetWidgetDebug('td-debug-portfolio', '');
     } catch (e) {
       const why = (e && e.message) ? e.message : String(e);
-      tdSetWidgetDebug('td-debug-portfolio', 'DEBUG: Portfolio Value — ' + why + (String(why).indexOf('404') >= 0 ? ' (this repo has no api/covalent handler).' : ''));
+      tdSetWidgetDebug('td-debug-portfolio', 'DEBUG: Portfolio Value — ' + why + (String(why).indexOf('404') >= 0 ? ' (this repo has no api/zerion handler).' : ''));
       if (subEl) subEl.textContent = 'Failed to load portfolio data';
       if (valEl) valEl.textContent = '$—';
       if (chgVal) chgVal.textContent = '—';
@@ -9975,40 +9996,9 @@ async function fetchNativeBalRPC(address, chain) {
 
 async function fetchEVM(address, chain) {
   const cfg = EVM_CHAINS[chain] || EVM_CHAINS.eth;
-  try {
-    const [balRes, tokRes] = await Promise.all([
-      pfetch(`${cfg.explorer}?chainid=${cfg.chainId}&module=account&action=balance&address=${address}&tag=latest&apikey=${ESCAN}`),
-      pfetch(`${cfg.explorer}?chainid=${cfg.chainId}&module=account&action=tokentx&address=${address}&sort=desc&page=1&offset=200&apikey=${ESCAN}`)
-    ]);
-    const balData = await balRes.json();
-    const tokData = await tokRes.json();
-    const escanFailed = balData.status === '0' || balData.message === 'NOTOK' || !balData.result || typeof balData.result !== 'string' || isNaN(parseFloat(balData.result));
-    // Fallback to free Ankr RPC for native balance if Etherscan key missing/rate-limited
-    const nativeBal = escanFailed
-      ? await fetchNativeBalRPC(address, chain)
-      : parseFloat(fmtEth(balData.result));
-    const tokenMeta = {};
-    if (!escanFailed && tokData.result && Array.isArray(tokData.result)) {
-      tokData.result.forEach(tx => {
-        if (!tokenMeta[tx.contractAddress]) tokenMeta[tx.contractAddress] = { symbol: tx.tokenSymbol, name: tx.tokenName, decimals: parseInt(tx.tokenDecimal) || 18, contractAddress: tx.contractAddress };
-      });
-    }
-    const contracts = Object.keys(tokenMeta);
-    const balResults = await Promise.allSettled(
-      contracts.map(addr =>
-        pfetch(`${cfg.explorer}?chainid=${cfg.chainId}&module=account&action=tokenbalance&contractaddress=${addr}&address=${address}&tag=latest&apikey=${ESCAN}`)
-          .then(r => r.json()).then(d => ({ addr, result: d.result }))
-      )
-    );
-    const tokens = balResults
-      .filter(r => r.status === 'fulfilled' && r.value.result && r.value.result !== '0' && r.value.result !== 'Max rate limit reached')
-      .map(r => {
-        const meta = tokenMeta[r.value.addr] || { symbol: r.value.addr.slice(0,6), name: 'Unknown', decimals: 18, contractAddress: r.value.addr };
-        return { ...meta, balance: parseFloat(r.value.result) / Math.pow(10, meta.decimals) };
-      })
-      .filter(t => t.balance > 0.000001);
-    return { nativeBal, tokens, chain, chainName: cfg.name, nativeSymbol: cfg.symbol };
-  } catch(e) { throw e; }
+  // Native balance via Ankr RPC only — token list comes from Covalent
+  const nativeBal = await fetchNativeBalRPC(address, chain);
+  return { nativeBal, tokens: [], chain, chainName: cfg.name, nativeSymbol: cfg.symbol };
 }
 
 async function fetchAllTxsEVM(address, chain) {
@@ -10278,23 +10268,16 @@ async function fetchTokenPrices(tokens) {
 
 async function fetchBaseCovalentBalances(address) {
   try {
-    const r = await fetch('/api/covalent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, chains: ['base'] })
-    });
-    const d = r.ok ? await r.json() : null;
+    const r = await fetch('/api/zerion?address=' + encodeURIComponent(address));
+    const d = r.ok ? parseZerionPositions(await r.json()) : null;
     const baseRows = Array.isArray(d?.base?.tokens) ? d.base.tokens : [];
     return baseRows
       .map(t => {
-        const decimals = Number.isFinite(Number(t.contractDecimals)) ? Number(t.contractDecimals) : 18;
-        const rawBal = Number(t.balance || 0);
-        const bal = Number.isFinite(rawBal) && rawBal > 0 ? rawBal / Math.pow(10, decimals) : 0;
         const usd = Number(t.usdValue);
         return {
           symbol: t.symbol || t.contractTicker || 'TOKEN',
-          name: t.name || t.contractName || 'Token',
-          balance: bal,
+          name: t.name || 'Token',
+          balance: Number(t.balance) || 0,
           usdValue: Number.isFinite(usd) ? usd : 0,
           contractAddress: t.contractAddress || '',
           chain: 'base'
@@ -11844,19 +11827,22 @@ async function fetchMoralisWalletScan(address, chainType) {
   try {
     if (chainType === 'evm') {
       const chains = ['eth', 'base', 'bsc', 'polygon'];
+      const ZERION_CHAIN = { eth: 'eth', base: 'base', bsc: 'bnb', polygon: 'polygon' };
+      const zerionRaw = await fetch('/api/zerion?address=' + encodeURIComponent(address)).then(r => r.ok ? r.json() : null).catch(() => null);
+      const zerionData = zerionRaw ? parseZerionPositions(zerionRaw) : null;
       for (const chain of chains) {
-        const [tok, txs, defi] = await Promise.all([
-          moralisViaScan(`${base}/wallets/${address}/tokens?chain=${chain}`),
+        const [txs, defi] = await Promise.all([
           moralisViaScan(`${base}/wallets/${address}/history?chain=${chain}&order=DESC`),
           moralisViaScan(`${base}/wallets/${address}/defi/positions?chain=${chain}`)
         ]);
-        const tokRows = Array.isArray(tok?.result) ? tok.result : [];
+        const tokRows = zerionData ? (zerionData[ZERION_CHAIN[chain]]?.tokens || []) : [];
         const txRows = Array.isArray(txs?.result) ? txs.result : [];
         const defiRows = Array.isArray(defi?.result) ? defi.result : [];
-        out.holdings = out.holdings.concat(tokRows.map(t => mapMoralisToken(t, chain)));
+        out.holdings = out.holdings.concat(tokRows);
         out.txs = out.txs.concat(txRows.map(t => mapMoralisTx(t, address, chain)));
         out.defi = out.defi.concat(defiRows.map(d => ({ ...d, chain })));
       }
+      if (zerionData?.totalUsd) out.totalUsd = zerionData.totalUsd;
       out.holdings = out.holdings.filter(a => (a.balance || 0) > 0).sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0));
       out.txs = out.txs.sort((a, b) => (parseInt(b.timeStamp || 0, 10) - parseInt(a.timeStamp || 0, 10)));
       return out;
@@ -11883,29 +11869,10 @@ async function fetchAlchemyWalletScan(address, chainType) {
   const out = { holdings: [], txs: [] };
   if (chainType !== 'evm') return out;
   try {
-    const balReq = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'alchemy_getTokenBalances',
-      params: [address, 'DEFAULT_TOKENS']
-    };
-    const balRes = await alchemyRpcViaScan(balReq);
-    const tokenBalances = Array.isArray(balRes?.result?.tokenBalances) ? balRes.result.tokenBalances : [];
-    out.holdings = tokenBalances
-      .filter(t => t && t.tokenBalance && t.tokenBalance !== '0x0')
-      .slice(0, 180)
-      .map(t => {
-        const raw = parseInt(t.tokenBalance || '0x0', 16);
-        return {
-          symbol: 'ERC20',
-          name: (t.contractAddress || 'Token').slice(0, 10) + '…',
-          balance: Number.isFinite(raw) ? raw / 1e18 : 0,
-          usdValue: 0,
-          contractAddress: t.contractAddress || '',
-          chain: 'eth'
-        };
-      })
-      .filter(t => t.balance > 0);
+    const zerionRaw = await fetch('/api/zerion?address=' + encodeURIComponent(address)).then(r => r.ok ? r.json() : null).catch(() => null);
+    const zerionData = zerionRaw ? parseZerionPositions(zerionRaw) : null;
+    out.holdings = zerionData ? (zerionData.eth?.tokens || []) : [];
+    if (zerionData?.totalUsd) out.totalUsd = zerionData.totalUsd;
 
     let pageKey = null;
     const transferRows = [];
@@ -12089,23 +12056,8 @@ function wsRenderWalletLabels(labels) {
 }
 
 async function wsDetectBaseDevWallet(address) {
-  try {
-    const addr = String(address || '').trim();
-    if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) return false;
-
-    const creatorUrl = `https://api.etherscan.io/v2/api?chainid=8453&module=contract&action=getcontractcreation&contractaddresses=${addr}&apikey=ENV`;
-    const creatorR = await pfetch(creatorUrl);
-
-    const creatorD = creatorR.ok ? await creatorR.json() : null;
-
-    const creatorRows = Array.isArray(creatorD?.result) ? creatorD.result : [];
-    const hasCreatorHit = creatorRows.some(r =>
-      String(r?.contractCreator || '').toLowerCase() === addr.toLowerCase() || !!r?.contractAddress
-    );
-    return hasCreatorHit;
-  } catch (e) {
-    return false;
-  }
+  // Dev wallet detection via Etherscan removed — Etherscan API no longer used
+  return false;
 }
 
 function wsCalcCortexScore(ctx) {
@@ -12268,6 +12220,17 @@ async function doWS() {
   document.getElementById('ws-txs').innerHTML = loading;
   document.getElementById('ws-defi').innerHTML = loading;
   document.getElementById('ws-ai').innerHTML = '<span class="cl-spinner"></span> AI analysing...';
+  // Clear stat elements so stale data never shows between scans
+  const _statPills = document.getElementById('ws-stat-pills');
+  if (_statPills) _statPills.innerHTML = '';
+  const _pnlCard = document.getElementById('ws-pnl-card');
+  if (_pnlCard) _pnlCard.style.display = 'none';
+  const _pnlEl = document.getElementById('ws-pnl');
+  if (_pnlEl) _pnlEl.innerHTML = '';
+  const _defiCount = document.getElementById('ws-defi-count');
+  if (_defiCount) _defiCount.textContent = '';
+  const _txCount = document.getElementById('ws-tx-count');
+  if (_txCount) _txCount.textContent = '';
   // Reset degen ring
   const _arcReset = document.getElementById('ws-degen-arc');
   const _svReset  = document.getElementById('ws-degen-score-val');
@@ -12288,6 +12251,7 @@ async function doWS() {
     let alchemyData = { holdings: [], txs: [] };
     let baseTxCount = null;
     let baseWalletAgeDays = null;
+    let debankResult = null;
 
     if (chainType === 'evm') {
       document.getElementById('ws-total-sub').textContent = 'Scanning ETH, Base, BNB, Polygon...';
@@ -12304,62 +12268,31 @@ async function doWS() {
       });
       allTxs = allTxs.sort((a, b) => parseInt(b.timeStamp || 0) - parseInt(a.timeStamp || 0)).slice(0, 100);
 
-      // Fetch Covalent multi-chain token balances (with USD values) in parallel with DexScreener prices
-      document.getElementById('ws-total-sub').textContent = 'Fetching token balances via Covalent...';
-      const tokenAssets = assets.filter(a => a.contractAddress);
-      const [priceMap, covalentData, baseCovalent] = await Promise.all([
-        fetchTokenPrices(tokenAssets),
-        fetch('/api/covalent', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetchBaseCovalentBalances(address)
-      ]);
+      // Fetch token holdings via Zerion (primary source for EVM token holdings and portfolio total)
+      document.getElementById('ws-total-sub').textContent = 'Fetching token holdings via Zerion...';
+      debankResult = await fetch('/api/zerion?address=' + encodeURIComponent(address))
+        .then(r => r.ok ? r.json().then(parseZerionPositions) : null).catch(() => null);
 
-      // Merge Covalent data: enrich existing assets and add any missing tokens
-      if (covalentData && !covalentData.error) {
-        const existingContracts = new Set(assets.map(a => (a.contractAddress || '').toLowerCase()));
-        Object.values(covalentData).forEach(chainResult => {
-          if (!chainResult?.tokens) return;
-          chainResult.tokens.forEach(ct => {
+      if (debankResult && !debankResult._error) {
+        const existingContracts = new Set(assets.map(a => ((a.contractAddress || '').toLowerCase() + ':' + (a.chain || ''))));
+        ['eth', 'bnb', 'base', 'polygon'].forEach(chainKey => {
+          (debankResult[chainKey]?.tokens || []).forEach(ct => {
             const ctAddr = (ct.contractAddress || '').toLowerCase();
-            const existingIdx = assets.findIndex(a => (a.contractAddress || '').toLowerCase() === ctAddr && a.chain === ct.chain);
+            const dedupeKey = ctAddr + ':' + chainKey;
+            const existingIdx = assets.findIndex(a => (a.contractAddress || '').toLowerCase() === ctAddr && a.chain === chainKey);
             if (existingIdx >= 0) {
-              // Enrich existing asset with Covalent USD value
               if (ct.usdValue > 0) assets[existingIdx].usdValue = ct.usdValue;
               if (ct.price > 0) assets[existingIdx].price = ct.price;
-            } else if (ctAddr && !existingContracts.has(ctAddr) && ct.balance > 0 && ct.usdValue > 0) {
-              // Add token found by Covalent but not by Etherscan
-              assets.push({ ...ct });
-              existingContracts.add(ctAddr);
+            } else if (!existingContracts.has(dedupeKey) && ct.balance > 0 && ct.usdValue >= 10) {
+              assets.push({ ...ct, chain: chainKey });
+              existingContracts.add(dedupeKey);
             }
           });
         });
       }
 
-      // Base chain token balances: prefer Covalent full balance list for accurate portfolio value.
-      if (Array.isArray(baseCovalent) && baseCovalent.length) {
-        const nonBase = assets.filter(a => (a.chain || '').toLowerCase() !== 'base' || !a.contractAddress);
-        assets = nonBase.concat(baseCovalent);
-      }
-
-      // Apply DexScreener prices as fallback for tokens without Covalent pricing
-      assets.forEach(a => {
-        if (a.contractAddress) {
-          const addr = a.contractAddress.toLowerCase();
-          if (a.price == null && priceMap[addr] != null) {
-            a.price = priceMap[addr];
-            a.usdValue = a.price * a.balance;
-          } else if (a.price == null) {
-            a.price = null;
-            a.usdValue = a.usdValue || null;
-          }
-        }
-      });
-
       assets = wsApplyCriticalHoldingFilters(assets);
-      totalUsd = wsEligibleTokenUsdForTotal(assets);
+      totalUsd = (debankResult?.totalUsd > 0) ? debankResult.totalUsd : wsEligibleTokenUsdForTotal(assets);
       const activeChains = [...new Set(assets.map(a => a.chain))].join(', ');
       portfolioSummary = 'Multi-chain: ' + (activeChains || 'none') + ', Assets: ' + assets.length + ', Txs: ' + allTxs.length;
 
@@ -12391,22 +12324,27 @@ async function doWS() {
       portfolioSummary = `SOL: ${sol.nativeBal.toFixed(4)}, SPL Tokens: ${sol.tokens.length}, Txs: ${sol.txs.length}`;
     }
 
-    if (chainType === 'evm' || chainType === 'sol') {
-      document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
-      moralisData = await fetchMoralisWalletScan(address, chainType);
-    }
+    let isDevWalletBase = false;
     if (chainType === 'evm') {
-      document.getElementById('ws-total-sub').textContent = 'Loading Alchemy transaction context...';
-      alchemyData = await fetchAlchemyWalletScan(address, chainType);
-      const baseStats = await fetchAlchemyBaseTxStats(address);
-      baseTxCount = Number(baseStats.txCount || 0);
-      baseWalletAgeDays = Number.isFinite(baseStats.walletAgeDays) ? Number(baseStats.walletAgeDays) : null;
+      document.getElementById('ws-total-sub').textContent = 'Loading portfolio context...';
+      const [_moralis, _alchemy, _baseStats, _isDevWallet] = await Promise.all([
+        fetchMoralisWalletScan(address, chainType),
+        fetchAlchemyWalletScan(address, chainType),
+        fetchAlchemyBaseTxStats(address),
+        wsDetectBaseDevWallet(address)
+      ]);
+      moralisData = _moralis;
+      alchemyData = _alchemy;
+      baseTxCount = Number(_baseStats.txCount || 0);
+      baseWalletAgeDays = Number.isFinite(_baseStats.walletAgeDays) ? Number(_baseStats.walletAgeDays) : null;
       if (Array.isArray(alchemyData.txs) && alchemyData.txs.length) {
         allTxs = alchemyData.txs.slice().sort((a, b) => parseInt(b.timeStamp || 0, 10) - parseInt(a.timeStamp || 0, 10));
       }
+      isDevWalletBase = _isDevWallet;
+    } else if (chainType === 'sol') {
+      document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
+      moralisData = await fetchMoralisWalletScan(address, chainType);
     }
-
-    const isDevWalletBase = chainType === 'evm' ? await wsDetectBaseDevWallet(address) : false;
     document.getElementById('ws-total-value').textContent = fmtFx(totalUsd);
     const wsLabels = wsInferWalletLabels(address, chainType, totalUsd, assets, allTxs);
     if (isDevWalletBase && !wsLabels.includes('DEV')) wsLabels.push('DEV');
@@ -12616,6 +12554,8 @@ async function doWS() {
       (alchemyData.holdings || []).forEach(pushRow);
       return merged;
     })();
+    // Use Zerion portfolio total as-is (already includes all chains); do not re-sum from merged assets.
+    document.getElementById('ws-total-value').textContent = fmtFx(totalUsd);
     const txsForUI = [
       ...((moralisData.txs && moralisData.txs.length) ? moralisData.txs : allTxs),
       ...((alchemyData.txs && alchemyData.txs.length) ? alchemyData.txs : [])
@@ -12627,58 +12567,7 @@ async function doWS() {
     document.getElementById('ws-defi-count').textContent = (moralisData.defi || []).length + ' positions';
     drawPie(assets.filter(a => a.usdValue > 0));
 
-    // Historical PnL for EVM wallets — runs async, doesn't block
-    if (chainType === 'evm') {
-      document.getElementById('ws-pnl-card').style.display = 'block';
-      document.getElementById('ws-pnl').innerHTML = '<div style="text-align:center;padding:12px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Calculating PnL...</div>';
-      const _pnlTimeout = new Promise(res => setTimeout(() => res('timeout'), 25000));
-      (async () => {
-        try {
-          const _pnlWork = (async () => {
-            const chainKeys2 = Object.keys(EVM_CHAINS);
-            const tokTxResults = await Promise.allSettled(
-              chainKeys2.map(c => {
-                const cfg2 = EVM_CHAINS[c];
-                return pfetch(cfg2.explorer + '?chainid=' + cfg2.chainId + '&module=account&action=tokentx&address=' + address + '&sort=asc&page=1&offset=500&apikey=' + ESCAN)
-                  .then(r => r.json()).then(d => Array.isArray(d.result) ? d.result : []);
-              })
-            );
-            const allTokTxs = tokTxResults.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-            const priceMap2 = {};
-            assets.forEach(a => { if (a.contractAddress && a.price) priceMap2[a.contractAddress.toLowerCase()] = a.price; });
-            const missingAddrs = [...new Set(allTokTxs.map(tx => tx.contractAddress?.toLowerCase()).filter(a => a && !priceMap2[a]))];
-            if (missingAddrs.length) {
-              const missingChunks = [];
-              for (let i = 0; i < missingAddrs.length; i += 5) missingChunks.push(missingAddrs.slice(i, i + 5));
-              await Promise.allSettled(missingChunks.map(async chunk => {
-                try {
-                  const _mc = new AbortController(); const _mt = setTimeout(() => _mc.abort(), 5000);
-                  const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + chunk.join(','), { signal: _mc.signal });
-                  clearTimeout(_mt);
-                  if (r.ok) {
-                    const d = await r.json();
-                    (d.pairs || []).forEach(pair => {
-                      const addr = (pair.baseToken?.address || '').toLowerCase();
-                      if (!priceMap2[addr] && pair.priceUsd) priceMap2[addr] = parseFloat(pair.priceUsd);
-                    });
-                  }
-                } catch(e) {}
-              }));
-            }
-            const pnlData = calculatePnL(allTokTxs, address, priceMap2);
-            return pnlData;
-          })();
-          const result = await Promise.race([_pnlWork, _pnlTimeout]);
-          if (result === 'timeout') {
-            document.getElementById('ws-pnl').innerHTML = '<div style="color:var(--cl-text-3);font-size:12px;padding:8px;">PnL timed out — network too slow.</div>';
-          } else {
-            document.getElementById('ws-pnl').innerHTML = result.length ? renderPnL(result) : '<div style="text-align:center;padding:16px;color:var(--cl-text-3);font-size:12px;">No token transactions found</div>';
-          }
-        } catch(e) {
-          document.getElementById('ws-pnl').innerHTML = '<div style="color:#ef476f;font-size:12px;padding:8px;">PnL calculation failed: ' + e.message + '</div>';
-        }
-      })();
-    }
+    // Historical PnL — not available (Etherscan tokentx removed; data now sourced from Alchemy + Covalent only)
 
     // AI analysis — fires async so data is already visible
     const firstTxDate = allTxs.length ? new Date(parseInt(allTxs[allTxs.length-1].timeStamp||0)*1000).toLocaleDateString() : 'unknown';
@@ -13256,27 +13145,23 @@ async function doPortfolioTracker() {
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="cl-spinner"></span>'; }
   if (btn2) { btn2.disabled = true; btn2.innerHTML = '<span class="cl-spinner"></span>Tracking...'; }
-  holdingsEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Fetching token balances from Covalent...</div>';
+  holdingsEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--cl-text-3);font-size:12px;"><span class="cl-spinner"></span> Fetching token balances from Zerion...</div>';
   aiEl.innerHTML = '<span class="cl-spinner"></span> Preparing analysis...';
 
   try {
-    const r = await fetch('/api/covalent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address, chains: ['eth', 'bnb', 'base', 'polygon'] })
-    });
+    const r = await fetch('/api/zerion?address=' + encodeURIComponent(address));
 
     if (!r.ok) {
       const errData = await r.json().catch(() => ({}));
-      if (errData.code === 'MISSING_KEY') {
-        holdingsEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;padding:16px;">Covalent API key not configured. Add COVALENT_API_KEY to Vercel environment variables.</div>';
+      if (errData.code === 'MISSING_KEY' || errData.error?.includes('ZERION_KEY')) {
+        holdingsEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;padding:16px;">Zerion API key not configured. Add ZERION_KEY to Vercel environment variables.</div>';
         aiEl.innerHTML = '<div style="color:var(--cl-red);font-size:12px;">API key missing.</div>';
         return;
       }
-      throw new Error('Covalent API error: ' + r.status);
+      throw new Error('Zerion API error: ' + r.status);
     }
 
-    const data = await r.json();
+    const data = parseZerionPositions(await r.json());
     _ptAllData = data;
     _ptActiveChain = 'all';
 
