@@ -10,7 +10,7 @@ export default async function handler(req, res) {
       fetch(`https://api.zerion.io/v1/wallets/${address}/portfolio`, {
         headers: { 'Authorization': `Basic ${encoded}`, 'accept': 'application/json' }
       }),
-      fetch(`https://api.zerion.io/v1/wallets/${address}/positions?filter[position_types]=wallet&currency=usd`, {
+      fetch(`https://api.zerion.io/v1/wallets/${address}/positions?filter[position_types]=wallet&currency=usd&page[size]=100&sort=-value`, {
         headers: { 'Authorization': `Basic ${encoded}`, 'accept': 'application/json' }
       })
     ]);
