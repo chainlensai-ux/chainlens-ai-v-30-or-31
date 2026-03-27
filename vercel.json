@@ -1,11 +1,9 @@
 {
-  "redirects": [
-    { "source": "/", "destination": "/coming-soon.html", "permanent": true }
-  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/manifest.json", "destination": "/manifest.json" },
     { "source": "/sw.js", "destination": "/sw.js" },
+    { "source": "/", "destination": "/index.html" },
     { "source": "/app", "destination": "/index.html" },
     { "source": "/cl-logo.png", "destination": "/cl-logo.png" }
   ],
