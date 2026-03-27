@@ -39,8 +39,8 @@
     position: fixed;
     inset: 0;
     background:
-      radial-gradient(ellipse 60% 40% at 30% 20%, rgba(139,92,246,0.12) 0%, transparent 70%),
-      radial-gradient(ellipse 50% 35% at 75% 75%, rgba(45,212,191,0.09) 0%, transparent 70%);
+      radial-gradient(ellipse 60% 40% at 30% 20%, rgba(100,255,218,0.10) 0%, transparent 70%),
+      radial-gradient(ellipse 50% 35% at 75% 75%, rgba(236,72,153,0.11) 0%, transparent 70%);
     pointer-events: none;
     z-index: 0;
   }
@@ -71,7 +71,7 @@
     font-weight: 700;
     font-size: clamp(2.6rem, 8vw, 3.75rem);
     line-height: 1.05;
-    background: linear-gradient(135deg, var(--purple) 0%, var(--teal) 100%);
+    background: linear-gradient(135deg, var(--pink) 0%, var(--purple) 50%, var(--mint) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -136,17 +136,18 @@
     font-family: 'Inter', sans-serif;
     font-size: 0.9375rem;
     font-weight: 600;
-    background: linear-gradient(135deg, var(--purple), var(--teal));
+    background: var(--purple);
     color: #ffffff;
-    transition: opacity 0.18s, transform 0.18s, box-shadow 0.18s;
+    transition: background 0.18s, opacity 0.18s, transform 0.18s, box-shadow 0.18s;
     white-space: nowrap;
     box-shadow: 0 4px 20px rgba(139,92,246,0.35);
   }
 
   .btn:hover:not(:disabled) {
-    opacity: 0.88;
+    background: var(--pink);
+    opacity: 1;
     transform: translateY(-1px);
-    box-shadow: 0 6px 28px rgba(139,92,246,0.5);
+    box-shadow: 0 6px 28px rgba(236,72,153,0.5);
   }
 
   .btn:active:not(:disabled) {
@@ -215,20 +216,7 @@
 <div class="container">
 
   <!-- CL Logo -->
-  <svg class="logo" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg" aria-label="ChainLens logo">
-    <defs>
-      <linearGradient id="cl-grad" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#8b5cf6"/>
-        <stop offset="100%" stop-color="#2DD4BF"/>
-      </linearGradient>
-    </defs>
-    <rect width="72" height="72" rx="18" fill="#111111"/>
-    <!-- Hexagon chain-link mark -->
-    <polygon points="36,12 52,21 52,39 36,48 20,39 20,21" fill="none" stroke="url(#cl-grad)" stroke-width="3" stroke-linejoin="round"/>
-    <circle cx="36" cy="30" r="7" fill="none" stroke="url(#cl-grad)" stroke-width="2.5"/>
-    <line x1="29" y1="30" x2="20" y2="30" stroke="url(#cl-grad)" stroke-width="2" stroke-linecap="round"/>
-    <line x1="43" y1="30" x2="52" y2="30" stroke="url(#cl-grad)" stroke-width="2" stroke-linecap="round"/>
-  </svg>
+  <img class="logo" src="/cl-logo.png" alt="ChainLens logo">
 
   <h1 class="brand">ChainLens</h1>
 
