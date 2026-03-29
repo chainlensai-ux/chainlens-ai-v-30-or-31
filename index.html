@@ -7898,7 +7898,7 @@ function initTerminal() {
   if (_tdWhaleTimer) clearInterval(_tdWhaleTimer);
   if (_tdPumpTimer) clearInterval(_tdPumpTimer);
   if (_tdMarketTimer) clearInterval(_tdMarketTimer);
-  _tdWhaleTimer = setInterval(tdAddWhaleItem, 60000);
+  _tdWhaleTimer = setInterval(tdAddWhaleItem, 30000);
   _tdPumpTimer = setInterval(tdAddPumpItem, 30000);
   _tdMarketTimer = setInterval(tdRenderMarket, 60000);
 }
@@ -8271,11 +8271,45 @@ async function tdScanEtherscanJson(res, label) {
   return data;
 }
 
-async function tdLoadWhales() {
+function tdWhaleFromAlertRow(row, ethPrice) {
+  const amt = Number(row.amount_usd);
+  const usdVal = Number.isFinite(amt) ? Math.round(amt).toLocaleString('en-US') : '—';
+  const token = row.token || '—';
+  const chain = row.chain || '—';
+  let insight = String(row.cortex_insight || '').trim();
+  if (!insight) insight = 'Large on-chain transfer — watch follow-up flow.';
+  if (!/^cortex:/i.test(insight)) insight = 'CORTEX: ' + insight;
+  const wallet = tdShortAddr(row.wallet_from) + ' → ' + tdShortAddr(row.wallet_to);
+  const ethEquiv = Number.isFinite(amt) && ethPrice ? amt / ethPrice : 0;
+  const icon = ethEquiv >= 200 ? '🐋' : ethEquiv >= 80 ? '🦈' : '⚡';
+  const tsec = row.timestamp ? Math.floor(new Date(row.timestamp).getTime() / 1000) : 0;
+  const timeStr = tsec
+    ? (new Date(tsec * 1000).toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+        timeZone: 'UTC'
+      }) + ' UTC')
+    : '—';
+  const label = String(row.entity_label || '').trim();
+  const tokenLine = label ? (token + ' · ' + chain + ' · ' + label) : (token + ' · ' + chain);
+  return {
+    icon,
+    tokenLine,
+    wallet,
+    cortex: insight,
+    breakdownHtml: '',
+    usd: usdVal,
+    timeStr
+  };
+}
+
+async function tdLoadWhalesWatchFallback() {
   const feed = document.getElementById('td-whale-feed');
   if (!feed) return;
-  tdSetWidgetDebug('td-debug-whale', '');
-  feed.innerHTML = '<div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">Loading whale data...</div>';
   try {
     const ethPrice = px['ethereum']?.usd || 3000;
     const minUsd = 50000;
@@ -8382,6 +8416,30 @@ async function tdLoadWhales() {
   }
 }
 
+async function tdLoadWhales() {
+  const feed = document.getElementById('td-whale-feed');
+  if (!feed) return;
+  tdSetWidgetDebug('td-debug-whale', '');
+  feed.innerHTML = '<div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">Loading whale data...</div>';
+  try {
+    const res = await fetch('/api/whale-alerts');
+    if (res.ok) {
+      const data = await res.json();
+      const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+      if (alerts.length > 0) {
+        const ethPrice = px['ethereum']?.usd || 3000;
+        feed.innerHTML = '';
+        for (let i = 0; i < alerts.length; i++) {
+          feed.appendChild(tdWhaleEl(tdWhaleFromAlertRow(alerts[i], ethPrice)));
+        }
+        tdSetWidgetDebug('td-debug-whale', '');
+        return;
+      }
+    }
+  } catch (e) { /* use watch fallback */ }
+  await tdLoadWhalesWatchFallback();
+}
+
 function tdMakeWhaleItem() {
   const ethPrice = px['ethereum']?.usd || 3000;
   const amount = (Math.random() * 20 + 15).toFixed(2);
@@ -8420,16 +8478,19 @@ function tdRenderWhales() {
 function tdWhaleEl(d) {
   const el = document.createElement('div');
   el.className = 'td-feed-item';
+  const bd = d.breakdownHtml
+    ? `<div style="margin-top:6px;padding:8px 10px;border:1px solid rgba(139,92,246,0.25);border-radius:10px;background:rgba(139,92,246,0.05);">
+        <div style="font-size:9px;color:#64ffda;font-weight:800;letter-spacing:0.8px;margin-bottom:4px;font-family:'JetBrains Mono',monospace;">CORTEX BREAKDOWN</div>
+        ${d.breakdownHtml}
+      </div>`
+    : '';
   el.innerHTML = `
     <div class="td-feed-item__icon">${d.icon}</div>
     <div class="td-feed-item__info">
-      <div class="td-feed-item__token">${tdEscape(d.tokenLine)} <span style="color:#333;font-size:10px;">ETH</span></div>
+      <div class="td-feed-item__token">${tdEscape(d.tokenLine)} <span style="color:#333;font-size:10px;">whale</span></div>
       <div class="td-feed-item__desc">${tdEscape(d.wallet)}</div>
       <div class="td-feed-item__desc">${tdEscape(d.cortex)}</div>
-      <div style="margin-top:6px;padding:8px 10px;border:1px solid rgba(139,92,246,0.25);border-radius:10px;background:rgba(139,92,246,0.05);">
-        <div style="font-size:9px;color:#64ffda;font-weight:800;letter-spacing:0.8px;margin-bottom:4px;font-family:'JetBrains Mono',monospace;">CORTEX BREAKDOWN</div>
-        ${d.breakdownHtml || ''}
-      </div>
+      ${bd}
     </div>
     <div class="td-feed-item__right">
       <div class="td-feed-item__amount" style="color:#a78bfa;">$${tdEscape(d.usd)}</div>

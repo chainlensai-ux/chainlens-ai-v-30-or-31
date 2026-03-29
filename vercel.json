@@ -29,6 +29,8 @@
     "api/scan.js": { "maxDuration": 15 },
     "api/zerion.js": { "maxDuration": 15 },
     "api/covalent.js": { "maxDuration": 15 },
-    "api/waitlist.js": { "maxDuration": 10 }
+    "api/waitlist.js": { "maxDuration": 10 },
+    "api/whale-webhook.js": { "maxDuration": 60 },
+    "api/whale-alerts.js": { "maxDuration": 10 }
   }
 }
