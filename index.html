@@ -4194,25 +4194,37 @@ body::after {
 
 /* Right Clark AI Panel */
 .td-right {
-  width: 320px; flex-shrink: 0; background: #0a0a0a; border-left: 1px solid #1a1a1a;
-  display: flex; flex-direction: column;
+  width: 380px; flex-shrink: 0; background: #0a0a0a; border-left: none;
+  display: flex; flex-direction: column; position: relative;
   transition: width 0.25s ease, opacity 0.25s ease, min-width 0.25s ease;
-  min-width: 320px;
+  min-width: 380px;
+}
+.td-right::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; z-index: 1;
+  background: linear-gradient(180deg, #8b5cf6 0%, #2DD4BF 100%);
+  pointer-events: none;
 }
 .td-right.td-collapsed { width: 0; min-width: 0; opacity: 0; overflow: hidden; pointer-events: none; }
+.td-right.td-collapsed::before { opacity: 0; }
 .td-right__header {
   height: 52px; padding: 0 12px; border-bottom: 1px solid rgba(45,212,191,0.3);
   display: flex; align-items: center; gap: 10px; flex-shrink: 0;
   box-shadow: 0 1px 8px rgba(45,212,191,0.08);
 }
 .td-right__clark-logo {
-  width: 36px; height: 36px;
+  width: 40px; height: 40px; position: relative;
   border-radius: 50%;
   background: linear-gradient(135deg, #ec4899, #8b5cf6, #64ffda);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
-.td-right__clark-logo svg { display: block; width: 36px; height: 36px; }
+.td-right__clark-logo svg { display: block; width: 40px; height: 40px; }
+.td-right__clark-logo::after {
+  content: ''; position: absolute; right: 0; bottom: 0; width: 10px; height: 10px;
+  border-radius: 50%; background: #22c55e; border: 2px solid #0a0a0a;
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45);
+  animation: td-pulse-online 1.6s ease-in-out infinite;
+}
 .td-right__name {
   font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 800; color: #fff; flex: 1;
 }
@@ -4221,7 +4233,7 @@ body::after {
   font-family: 'Inter', sans-serif; font-size: 9px; color: #2DD4BF;
 }
 .td-right__online-dot {
-  width: 5px; height: 5px; border-radius: 50%; background: #2DD4BF; animation: td-pulse 2s infinite;
+  display: none;
 }
 .td-right__collapse-btn {
   background: none; border: none; cursor: pointer; color: #2a2a2a; font-size: 16px;
@@ -4232,7 +4244,22 @@ body::after {
 .td-chat::-webkit-scrollbar { width: 2px; }
 .td-chat::-webkit-scrollbar-thumb { background: #161616; }
 .td-chat-msg { max-width: 92%; padding: 8px 11px; border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 12px; line-height: 1.6; }
-.td-chat-msg--ai { background: #0d0d0d; border: 1px solid #1a1a1a; color: #aaa; align-self: flex-start; }
+.td-chat-msg--ai {
+  background: #0d0d0d; border: 1px solid rgba(139,92,246,0.2); color: #aaa; align-self: flex-start;
+  padding: 12px 14px;
+}
+.td-chat-msg__section {
+  font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase; color: #64ffda;
+  margin: 10px 0 6px;
+}
+.td-chat-msg__section:first-child { margin-top: 0; }
+.td-chat-msg__verdict {
+  margin-top: 12px; padding: 9px 11px; border-radius: 8px;
+  background: rgba(139,92,246,0.18); border: 1px solid rgba(139,92,246,0.45);
+  font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600; color: #ddd;
+  line-height: 1.5;
+}
 .td-chat-msg--user { background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.2); color: #fff; align-self: flex-end; }
 .td-chat-msg__name { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 3px; }
 .td-chat-msg--ai .td-chat-msg__name { color: #8b5cf6; }
@@ -4247,7 +4274,10 @@ body::after {
   outline: none; resize: none; transition: border-color 0.2s; max-height: 80px; min-height: 34px;
 }
 .td-chat-input::placeholder { color: #2a2a2a; }
-.td-chat-input:focus { border-color: rgba(139,92,246,0.35); }
+.td-chat-input:focus {
+  border-color: #2DD4BF;
+  box-shadow: 0 0 0 1px rgba(45,212,191,0.35), 0 0 14px rgba(45,212,191,0.22);
+}
 .td-chat-send {
   width: 34px; height: 34px; border-radius: 8px; background: #8b5cf6; border: none;
   cursor: pointer; display: flex; align-items: center; justify-content: center;
@@ -4265,11 +4295,11 @@ body::after {
 .td-chat-thinking { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
 .td-chat-thinking__dots { display: flex; gap: 3px; }
 .td-chat-thinking__dots span {
-  width: 5px; height: 5px; border-radius: 50%; background: #2DD4BF;
-  animation: td-think-dot 1.1s infinite ease-in-out;
+  width: 6px; height: 6px; border-radius: 50%; background: #2DD4BF;
+  animation: td-think-dot 1.05s infinite ease-in-out;
 }
-.td-chat-thinking__dots span:nth-child(2) { animation-delay: 0.18s; }
-.td-chat-thinking__dots span:nth-child(3) { animation-delay: 0.36s; }
+.td-chat-thinking__dots span:nth-child(2) { animation-delay: 0.2s; }
+.td-chat-thinking__dots span:nth-child(3) { animation-delay: 0.4s; }
 .td-chat-thinking__status {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
@@ -4279,7 +4309,7 @@ body::after {
 
 /* Collapse toggle on edge */
 .td-panel-toggle {
-  position: absolute; right: 320px; top: 50%; transform: translateY(-50%);
+  position: absolute; right: 380px; top: 50%; transform: translateY(-50%);
   width: 14px; height: 36px; background: #0d0d0d; border: 1px solid #1a1a1a;
   border-right: none; border-radius: 6px 0 0 6px;
   cursor: pointer; display: flex; align-items: center; justify-content: center;
@@ -4294,8 +4324,15 @@ body::after {
 @keyframes td-slide-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes td-stagger-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes td-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@keyframes td-pulse-online {
+  0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50% { opacity: 0.85; transform: scale(1.15); box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+}
 @keyframes td-typing { 0%, 60%, 100% { opacity: 0.2; transform: scale(0.8); } 30% { opacity: 1; transform: scale(1); } }
-@keyframes td-think-dot { 0%, 70%, 100% { opacity: 0.25; transform: scale(0.8); } 35% { opacity: 1; transform: scale(1); } }
+@keyframes td-think-dot {
+  0%, 100% { opacity: 0.35; transform: scale(0.75); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
 @keyframes td-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
 .td-widget:nth-child(1) { animation: td-stagger-in 0.4s ease 0.05s both; }
@@ -4307,8 +4344,8 @@ body::after {
 
 /* Responsive */
 @media (max-width: 1100px) {
-  .td-right { width: 280px; min-width: 280px; }
-  .td-panel-toggle { right: 280px; }
+  .td-right { width: 300px; min-width: 300px; }
+  .td-panel-toggle { right: 300px; }
 }
 @media (max-width: 900px) {
   .td-sidebar { width: 200px; }
@@ -8918,7 +8955,7 @@ async function tdClarkSend() {
     if (data.error) throw new Error(data.error);
     const reply = data.text || 'Unable to get response right now.';
     clearInterval(thinkTimer);
-    typing.innerHTML = '<div class="td-chat-msg__name">Clark</div>' + tdEscape(reply).replace(/\n/g, '<br>');
+    typing.innerHTML = '<div class="td-chat-msg__name">Clark</div>' + tdFormatClarkReply(reply);
   } catch (e) {
     clearInterval(thinkTimer);
     typing.innerHTML = '<div class="td-chat-msg__name">Clark</div>Connection error. Please try again.';
@@ -8930,6 +8967,41 @@ async function tdClarkSend() {
 
 function tdEscape(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function tdFormatClarkReply(raw) {
+  const safe = tdEscape(String(raw || ''));
+  const lines = safe.split('\n');
+  let vi = lines.length - 1;
+  while (vi >= 0 && !lines[vi].trim()) vi--;
+  let verdictHtml = '';
+  if (vi >= 0) {
+    const L = lines[vi].trim();
+    const vm = L.match(/^(\*{0,2})?verdict(\*{0,2})?\s*[:.]?\s*(.*)$/i);
+    if (vm) {
+      const vcontent = (vm[3] || '').trim();
+      if (vcontent) {
+        verdictHtml = '<div class="td-chat-msg__verdict">' + vcontent + '</div>';
+        lines.splice(vi, 1);
+      }
+    }
+  }
+  const parts = [];
+  for (let li = 0; li < lines.length; li++) {
+    const trimmed = lines[li].trim();
+    let mm = trimmed.match(/^\*\*(.+?)\*\*$/);
+    if (mm) {
+      parts.push('<div class="td-chat-msg__section">' + mm[1] + '</div>');
+      continue;
+    }
+    mm = trimmed.match(/^#{1,3}\s+(.+)$/);
+    if (mm) {
+      parts.push('<div class="td-chat-msg__section">' + mm[1] + '</div>');
+      continue;
+    }
+    parts.push(lines[li]);
+  }
+  return parts.join('<br>') + verdictHtml;
 }
 
 // ══════════════════════════════════════════════
