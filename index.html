@@ -6720,6 +6720,31 @@ body::after {
 </div>
 
 <!-- ═════════════════════════════════════
+  PAGE: WHALE ALERTS (live feed)
+═════════════════════════════════════ -->
+<div class="cl-page" id="pg-whalealerts">
+  <div class="cl-container"><div class="cl-page-inner">
+    <div class="pg-header">
+      <button class="cl-page-back" onclick="go('terminal')" style="margin-bottom:10px;">← Back</button>
+      <div class="pg-header__row">
+        <div class="pg-header__icon">🐋</div>
+        <div class="pg-header__text">
+          <div class="pg-header__title">Whale Alerts</div>
+          <div class="pg-header__sub">Large on-chain transfers ingested from Alchemy Notify ($50K+ notional on ETH and Base).</div>
+        </div>
+        <div class="pg-header__tags">
+          <span class="pg-tag" style="color:#64ffda;border-color:rgba(100,255,218,0.2);">Live feed</span>
+          <span class="pg-tag" style="color:#8b5cf6;border-color:rgba(139,92,246,0.2);">CORTEX</span>
+        </div>
+      </div>
+    </div>
+    <div id="wa-alerts-list">
+      <div class="cl-card" style="text-align:center;padding:28px;color:var(--cl-text-3);font-size:13px;">Loading…</div>
+    </div>
+  </div></div>
+</div>
+
+<!-- ═════════════════════════════════════
   PAGE: PUMPALERT
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-pumpalert">
@@ -7761,6 +7786,10 @@ function launchTerminal() {
 }
 
 function go(id) {
+  if (id !== 'whalealerts' && _waPageTimer) {
+    clearInterval(_waPageTimer);
+    _waPageTimer = null;
+  }
   if (id !== 'home') hcCloseSidePanel(true);
   document.querySelectorAll('.cl-page').forEach(p => p.classList.remove('active'));
   const pg = document.getElementById('pg-' + id);
@@ -7784,7 +7813,7 @@ function go(id) {
   }
 
   // Auto-init pages
-  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); }, exchangeflow: doExchangeFlow, tokenscanner: doTokenScanner, portfoliotracker: doPortfolioTracker };
+  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, whalealerts: loadWhaleAlertsPage, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); }, exchangeflow: doExchangeFlow, tokenscanner: doTokenScanner, portfoliotracker: doPortfolioTracker };
   if (inits[id]) inits[id]();
   if (id === 'alerts') { renderAlerts(); startAlertChecker(); }
   if (id === 'leaderboard') renderLB();
@@ -7800,6 +7829,7 @@ let _tdInitDone = false;
 let _tdWhaleTimer = null;
 let _tdPumpTimer = null;
 let _tdMarketTimer = null;
+let _waPageTimer = null;
 
 function tdExitTerminal() { go('home'); }
 
@@ -7810,16 +7840,7 @@ function tdNavGo(pageId, el) {
 
 function tdNavWhaleAlerts(el) {
   if (el) tdNavHighlight(el);
-  go('terminal');
-  const focusWhale = () => {
-    const feed = document.getElementById('td-whale-feed');
-    if (feed) {
-      feed.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      tdLoadWhales();
-    }
-  };
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => setTimeout(focusWhale, 50));
-  else setTimeout(focusWhale, 100);
+  go('whalealerts');
 }
 
 function tdNavHighlight(el) {
@@ -12683,6 +12704,66 @@ const SMART_WALLETS_DATA = [
   { name: 'SOL Whale',        addr: 'GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ', chain: 'sol', label: 'Top Solana Accumulator',    pnl: '+$320K',  pnlSub: '90d PnL', tags: ['SOL','JTO','BONK'],    icon: '🌊', type: 'Whale' },
   { name: 'DeFi OG',          addr: '0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B', chain: 'eth', label: 'Early DeFi Liquidity Provider', pnl: '+$95K',  pnlSub: '60d PnL', tags: ['USDC','AAVE','UNI'],   icon: '⚗️', type: 'DeFi' },
 ];
+
+const WA_EMPTY_MSG = 'No whale alerts yet — monitoring $50K+ transactions on ETH and Base';
+
+function waRenderAlertCard(row) {
+  const from = tdEscape(String(row.wallet_from || '—'));
+  const to = tdEscape(String(row.wallet_to || '—'));
+  const amt = Number(row.amount_usd);
+  const usd = Number.isFinite(amt) ? ('$' + Math.round(amt).toLocaleString('en-US')) : '—';
+  const token = tdEscape(String(row.token || '—'));
+  const chain = tdEscape(String(row.chain || '—'));
+  const tsRaw = row.timestamp ? new Date(row.timestamp) : null;
+  const ts = tsRaw && !isNaN(tsRaw.getTime())
+    ? tdEscape(tsRaw.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }))
+    : '—';
+  let cortex = String(row.cortex_insight || '').trim();
+  if (!cortex) cortex = '—';
+  cortex = tdEscape(cortex);
+  return `<div class="cl-card" style="margin-bottom:14px;padding:16px 18px;">
+    <div style="display:grid;gap:12px;font-size:13px;color:var(--cl-text-2);line-height:1.5;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div><span style="color:var(--cl-text-4);font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">wallet_from</span><div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--cl-text);word-break:break-all;margin-top:4px;">${from}</div></div>
+        <div><span style="color:var(--cl-text-4);font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">wallet_to</span><div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--cl-text);word-break:break-all;margin-top:4px;">${to}</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+        <div><span style="color:var(--cl-text-4);font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">amount_usd</span><div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#a78bfa;margin-top:4px;">${tdEscape(usd)}</div></div>
+        <div><span style="color:var(--cl-text-4);font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">token</span><div style="margin-top:4px;color:var(--cl-text);">${token}</div></div>
+        <div><span style="color:var(--cl-text-4);font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">chain</span><div style="margin-top:4px;color:var(--cl-text);">${chain}</div></div>
+      </div>
+      <div><span style="color:var(--cl-text-4);font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">timestamp</span><div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--cl-text);margin-top:4px;">${ts}</div></div>
+      <div style="padding:10px 12px;border-radius:8px;border:1px solid rgba(139,92,246,0.25);background:rgba(139,92,246,0.06);">
+        <span style="color:var(--cl-text-4);font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">cortex_insight</span>
+        <div style="margin-top:6px;font-size:12px;color:var(--cl-text-2);line-height:1.55;">${cortex}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function fetchAndRenderWhaleAlertsPage() {
+  const root = document.getElementById('wa-alerts-list');
+  if (!root) return;
+  const emptyHtml = `<div class="cl-card" style="text-align:center;padding:36px 20px;color:var(--cl-text-3);font-size:14px;line-height:1.65;max-width:520px;margin:0 auto;">${tdEscape(WA_EMPTY_MSG)}</div>`;
+  try {
+    const res = await fetch('/api/whale-alerts?limit=30');
+    const data = res.ok ? await res.json() : {};
+    const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+    if (!alerts.length) {
+      root.innerHTML = emptyHtml;
+      return;
+    }
+    root.innerHTML = alerts.map((row) => waRenderAlertCard(row)).join('');
+  } catch (e) {
+    root.innerHTML = emptyHtml;
+  }
+}
+
+function loadWhaleAlertsPage() {
+  fetchAndRenderWhaleAlertsPage();
+  if (_waPageTimer) clearInterval(_waPageTimer);
+  _waPageTimer = setInterval(fetchAndRenderWhaleAlertsPage, 30000);
+}
 
 function loadSmartWallets() {
   const el = document.getElementById('sw-list');
