@@ -13,6 +13,60 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237858c0'/%3E%3Cstop offset='1' stop-color='%2300ffc8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23050407'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='18' fill='url(%23g)'%3E⬡%3C/text%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800;900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
+<!-- WalletConnect AppKit CDN -->
+<script type="module">
+(async () => {
+  try {
+    const [{ createAppKit }, { EthersAdapter }, nets] = await Promise.all([
+      import('https://esm.sh/@reown/appkit@1.6.8'),
+      import('https://esm.sh/@reown/appkit-adapter-ethers@1.6.8'),
+      import('https://esm.sh/@reown/appkit@1.6.8/networks')
+    ]);
+    const { mainnet, polygon, bsc, base } = nets;
+    // Replace with your WalletConnect project ID from cloud.walletconnect.com
+    const projectId = 'd30f54a5344f3be2e68e0c302e5c4a5b';
+    const ethersAdapter = new EthersAdapter();
+    window.appKit = createAppKit({
+      adapters: [ethersAdapter],
+      networks: [mainnet, polygon, bsc, base],
+      projectId,
+      metadata: {
+        name: 'ChainLens AI',
+        description: 'AI-powered crypto intelligence platform',
+        url: window.location.origin,
+        icons: [window.location.origin + '/cl-logo.png']
+      },
+      themeMode: 'dark',
+      themeVariables: {
+        '--w3m-accent': '#8b5cf6',
+        '--w3m-border-radius-master': '8px',
+        '--w3m-font-family': "'Inter', sans-serif"
+      },
+      featuredWalletIds: [
+        'c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96',
+        'fd20dc426fb37566d803205b19bbc1d4096b248ac04548e3cfb6b3a38bd033aa',
+        'a797aa35c0fadbfc1a53e7f675162ed5226968b44a19ee3d24385c64d1d3c393',
+        '1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369'
+      ]
+    });
+    window.appKit.subscribeAccount(account => {
+      if (account.isConnected && account.address) {
+        if (typeof window.clApplyWallet === 'function') window.clApplyWallet(account.address);
+        const wsi = document.getElementById('wsi');
+        if (wsi) { wsi.value = account.address; setTimeout(() => { if (typeof doWS === 'function') doWS(); }, 200); }
+        if (typeof tdRenderPortfolio === 'function') tdRenderPortfolio();
+      } else if (account.isConnected === false) {
+        window._connectedWallet = null;
+        localStorage.removeItem('cl_wallet');
+      }
+    });
+    window.connectWallet = function() { window.appKit.open(); };
+  } catch(e) {
+    console.warn('AppKit CDN init failed, using fallback wallet connect', e);
+  }
+})();
+</script>
+
 <style>
 /* ═══════════════════════════════════════════════════
    CHAINLENS AI — v6 DESIGN SYSTEM
@@ -3947,8 +4001,8 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
 .td-sidebar::-webkit-scrollbar-thumb { background: #1a1a1a; }
 .td-sidebar__section { padding: 0 10px 10px; }
 .td-sidebar__label {
-  font-family: 'Inter', sans-serif; font-size: 9px; font-weight: 700;
-  letter-spacing: 1.5px; text-transform: uppercase; color: #2a2a2a;
+  font-family: 'Inter', sans-serif; font-size: 9px; font-weight: 500;
+  letter-spacing: 0.15em; text-transform: uppercase; color: rgba(255,255,255,0.25);
   padding: 0 8px 6px; margin-bottom: 2px; display: block;
 }
 .td-nav-item {
@@ -3958,7 +4012,7 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
   border: 1px solid transparent;
 }
 .td-nav-item:hover { background: rgba(139,92,246,0.06); color: #aaa; }
-.td-nav-item.td-active { background: rgba(139,92,246,0.1); color: #a78bfa; border-color: rgba(139,92,246,0.2); border-left: 3px solid rgba(139,92,246,0.8); padding-left: 8px; }
+.td-nav-item.td-active { background: rgba(139,92,246,0.2); color: #a78bfa; border-color: rgba(139,92,246,0.2); border-left: 3px solid rgba(139,92,246,0.8); padding-left: 8px; }
 .td-nav-item__icon {
   width: 20px; height: 20px; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
@@ -3974,17 +4028,16 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
 .td-sidebar__divider { height: 1px; background: #111; margin: 6px 10px; }
 .td-sidebar__footer { margin-top: auto; padding: 10px; border-top: 1px solid #111; }
 .td-plan-badge {
-  padding: 8px 10px; border-radius: 8px; border: 1px solid #1a1a1a;
-  background: #0d0d0d; margin-bottom: 8px;
+  display: flex; justify-content: flex-start; margin-bottom: 8px;
 }
 .td-plan-badge__tier {
-  font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 800;
-  text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px;
+  font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 500;
+  padding: 3px 9px; border-radius: 20px; background: #141414;
+  border: 1px solid #222; letter-spacing: 0.3px;
 }
-.td-plan-badge__tier--free { color: #444; }
+.td-plan-badge__tier--free { color: #555; }
 .td-plan-badge__tier--pro { color: #2DD4BF; }
 .td-plan-badge__tier--elite { color: #a78bfa; }
-.td-plan-badge__wallet { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #333; }
 .td-settings-link {
   display: flex; align-items: center; gap: 8px; padding: 7px 8px;
   border-radius: 8px; cursor: pointer; font-family: 'Inter', sans-serif;
@@ -4067,30 +4120,38 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
 
 /* Widgets */
 .td-widget {
-  background: linear-gradient(180deg, #0d0d0d 0%, #0a0a0a 100%); border: 1px solid #1a1a1a; border-radius: 10px; overflow: hidden;
+  background: linear-gradient(180deg, #0d0d0d 0%, #0a0a0a 100%); border: 1px solid rgba(45, 212, 191, 0.15); box-shadow: 0 0 12px rgba(45, 212, 191, 0.06); border-radius: 10px; overflow: hidden;
   display: flex; flex-direction: column; min-height: 0;
 }
+.td-widget:nth-child(even) { border-color: rgba(139,92,246,0.15); box-shadow: 0 0 12px rgba(139,92,246,0.06); }
 .td-widget--wide { grid-column: span 2; }
 .td-widget--full { grid-column: span 3; }
 .td-widget__header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; border-bottom: 1px solid #111; flex-shrink: 0;
+  padding: 12px 16px; border-bottom: 1px solid #111; flex-shrink: 0;
 }
 .td-widget__title {
-  font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 2px; color: #2DD4BF;
+  font-family: 'Syne', sans-serif; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.12em; color: #ffffff;
   display: flex; align-items: center; gap: 6px;
 }
 .td-widget__title-dot {
   width: 5px; height: 5px; border-radius: 50%; background: #2DD4BF;
   animation: td-pulse 2s infinite;
 }
+/* Per-widget dot colours: 1=Portfolio pink, 2=Whale teal, 3=BearProof purple, 4=PumpAlerts mint, 5=GhostTrade pink, 6=MarketSnapshot teal */
+.td-widget:nth-child(1) .td-widget__title-dot { background: #ec4899; }
+.td-widget:nth-child(2) .td-widget__title-dot { background: #2DD4BF; }
+.td-widget:nth-child(3) .td-widget__title-dot { background: #8b5cf6; }
+.td-widget:nth-child(4) .td-widget__title-dot { background: #64ffda; }
+.td-widget:nth-child(5) .td-widget__title-dot { background: #ec4899; }
+.td-widget:nth-child(6) .td-widget__title-dot { background: #2DD4BF; }
 .td-widget__action {
   font-family: 'Inter', sans-serif; font-size: 10px; color: #2a2a2a;
   cursor: pointer; transition: color 0.2s; background: none; border: none; padding: 0;
 }
 .td-widget__action:hover { color: #8b5cf6; }
-.td-widget__body { padding: 12px; flex: 1; min-height: 0; overflow: hidden; }
+.td-widget__body { padding: 16px; flex: 1; min-height: 0; overflow: hidden; }
 
 /* Portfolio Widget */
 .td-portfolio-value {
@@ -4101,9 +4162,9 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
   font-family: 'JetBrains Mono', monospace; font-size: 12px;
   display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
 }
-.td-portfolio-change--up { color: #2DD4BF; }
-.td-portfolio-change--down { color: #ef476f; }
-.td-portfolio-sub { font-family: 'Inter', sans-serif; font-size: 10px; color: #2a2a2a; margin-top: 4px; }
+.td-portfolio-change--up { color: #64ffda; }
+.td-portfolio-change--down { color: #ff4d4d; }
+.td-portfolio-sub { font-family: 'Inter', sans-serif; font-size: 10px; color: #ffffff; margin-top: 4px; }
 .td-sparkline { width: 100%; height: 36px; }
 
 /* Feed Widgets */
@@ -4125,18 +4186,18 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
 .td-feed-item__info { flex: 1; min-width: 0; }
 .td-feed-item__token {
   font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600;
-  color: #e0e0e0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #ffffff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.td-feed-item__desc { font-family: 'Inter', sans-serif; font-size: 10px; color: #444; margin-top: 1px; }
+.td-feed-item__desc { font-family: 'Inter', sans-serif; font-size: 10px; color: #ffffff; margin-top: 1px; }
 .td-feed-item__right { text-align: right; flex-shrink: 0; }
 .td-feed-item__amount { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #fff; }
-.td-feed-item__time { font-family: 'Inter', sans-serif; font-size: 9px; color: #2a2a2a; margin-top: 2px; }
+.td-feed-item__time { font-family: 'Inter', sans-serif; font-size: 9px; color: #ffffff; margin-top: 2px; }
 .td-pump-badge {
   font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
   padding: 2px 6px; border-radius: 4px;
 }
-.td-pump-badge--up { background: rgba(45,212,191,0.1); color: #2DD4BF; }
-.td-pump-badge--down { background: rgba(239,71,111,0.1); color: #ef476f; }
+.td-pump-badge--up { background: rgba(100,255,218,0.1); color: #64ffda; }
+.td-pump-badge--down { background: rgba(255,77,77,0.1); color: #ff4d4d; }
 
 /* BearProof Gauge */
 .td-gauge-wrap { display: flex; flex-direction: column; align-items: center; padding: 4px 0; }
@@ -4150,14 +4211,14 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
   color: #fff; line-height: 1;
 }
 .td-gauge__lbl {
-  font-family: 'Inter', sans-serif; font-size: 8px; color: #333;
+  font-family: 'Inter', sans-serif; font-size: 8px; color: #ffffff;
   text-transform: uppercase; letter-spacing: 1px;
 }
 .td-gauge-score-label {
   font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 700; margin-top: 3px;
 }
 .td-gauge-cortex {
-  font-family: 'Inter', sans-serif; font-size: 10px; color: #444;
+  font-family: 'Inter', sans-serif; font-size: 10px; color: #ffffff;
   text-align: center; margin-top: 4px; line-height: 1.4; padding: 0 4px;
 }
 
@@ -4169,16 +4230,16 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
 .td-position:last-child { border-bottom: none; }
 .td-position__token {
   font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
-  color: #e0e0e0; width: 55px; flex-shrink: 0;
+  color: #ffffff; width: 55px; flex-shrink: 0;
 }
 .td-position__meta { flex: 1; }
-.td-position__entry { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #444; }
-.td-position__chain { font-family: 'Inter', sans-serif; font-size: 9px; color: #2a2a2a; margin-top: 1px; }
+.td-position__entry { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #ffffff; }
+.td-position__chain { font-family: 'Inter', sans-serif; font-size: 9px; color: #ffffff; margin-top: 1px; }
 .td-position__pnl {
   font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; text-align: right;
 }
-.td-position__pnl--up { color: #2DD4BF; }
-.td-position__pnl--down { color: #ef476f; }
+.td-position__pnl--up { color: #64ffda; }
+.td-position__pnl--down { color: #ff4d4d; }
 
 /* Market Snapshot */
 .td-market-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -4187,12 +4248,12 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
 }
 .td-market-card__label {
   font-family: 'Inter', sans-serif; font-size: 9px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 1px; color: #2a2a2a; margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 1px; color: #ffffff; margin-bottom: 4px;
 }
-.td-market-card__value { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: #e0e0e0; }
+.td-market-card__value { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: #ffffff; }
 .td-market-card__change { font-family: 'JetBrains Mono', monospace; font-size: 11px; margin-top: 2px; }
-.td-market-card__change--up { color: #2DD4BF; }
-.td-market-card__change--down { color: #ef476f; }
+.td-market-card__change--up { color: #64ffda; }
+.td-market-card__change--down { color: #ff4d4d; }
 .td-market-card__change--neutral { color: #444; }
 
 /* Right Clark AI Panel */
@@ -7396,8 +7457,7 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
 
       <div class="td-sidebar__footer">
         <div class="td-plan-badge">
-          <div class="td-plan-badge__tier td-plan-badge__tier--free" id="td-plan-tier">FREE PLAN</div>
-          <div class="td-plan-badge__wallet" id="td-plan-wallet">No wallet connected</div>
+          <div class="td-plan-badge__tier td-plan-badge__tier--free" id="td-plan-tier">Free Plan</div>
         </div>
         <div class="td-settings-link" onclick="tdOpenSettings()" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();tdOpenSettings();}">
           <span class="td-settings-link__icon">
@@ -7937,7 +7997,7 @@ function initTerminal() {
   const walletBtn = document.getElementById('td-wallet-display');
   if (tierEl) {
     const plan = user?.plan || 'free';
-    tierEl.textContent = plan.toUpperCase() + ' PLAN';
+    tierEl.textContent = plan.charAt(0).toUpperCase() + plan.slice(1) + ' Plan';
     tierEl.className = 'td-plan-badge__tier td-plan-badge__tier--' + plan;
   }
   if (walletEl && window._connectedWallet) {
@@ -8213,7 +8273,7 @@ function tdRenderPortfolio() {
       tdSetWidgetDebug('td-debug-portfolio', '');
     } catch (e) {
       const why = (e && e.message) ? e.message : String(e);
-      tdSetWidgetDebug('td-debug-portfolio', 'DEBUG: Portfolio Value — ' + why + (String(why).indexOf('404') >= 0 ? ' (this repo has no api/zerion handler).' : ''));
+      tdSetWidgetDebug('td-debug-portfolio', '');
       if (subEl) subEl.textContent = 'Failed to load portfolio data';
       if (valEl) valEl.textContent = '$—';
       if (chgVal) chgVal.textContent = '—';
@@ -8306,7 +8366,7 @@ function tdDrawGauge() {
     const missing = [];
     if (!btcOk) missing.push('bitcoin.usd_24h_change');
     if (!ethOk) missing.push('ethereum.usd_24h_change');
-    tdSetWidgetDebug('td-debug-bearproof', 'DEBUG: BearProof Score — score uses 0% fallback for missing CoinGecko `px` fields: ' + missing.join(', ') + ' (initTerminal often runs before loadPrices(); gauge is not from a dedicated API).');
+    tdSetWidgetDebug('td-debug-bearproof', 'Loading market data...');
   } else {
     tdSetWidgetDebug('td-debug-bearproof', '');
   }
@@ -8573,7 +8633,7 @@ async function tdLoadWhalesWatchFallback() {
     tdSetWidgetDebug('td-debug-whale', '');
   } catch (e) {
     const why = (e && e.message) ? e.message : String(e);
-    tdSetWidgetDebug('td-debug-whale', 'DEBUG: Whale Moves — ' + why);
+    tdSetWidgetDebug('td-debug-whale', '');
     feed.innerHTML = '<div style="padding:14px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:\'Inter\',sans-serif;">Failed to load whale moves</div>';
   }
 }
@@ -8841,7 +8901,7 @@ function tdRenderPositions() {
     const eth = px['ethereum']?.usd || 0;
     const sol = px['solana']?.usd || 0;
     if (btc === 0) {
-      tdSetWidgetDebug('td-debug-ghost', 'DEBUG: GhostTrade — sample paper rows need CoinGecko `px` (bitcoin.usd etc.); got btc=' + btc + ' (loadPrices() not finished or fetch failed). No API call in this widget.');
+      tdSetWidgetDebug('td-debug-ghost', '');
       container.innerHTML = '<div style="padding:14px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:Inter,sans-serif;">No open positions — start paper trading</div>';
       return;
     }
@@ -9064,12 +9124,12 @@ async function tdRenderMarket() {
     tdMktClearLeftoverLoading();
 
     if (issues.length) {
-      tdSetWidgetDebug('td-debug-market', 'DEBUG: Market Snapshot — ' + issues.join(' | ') + ' (CoinGecko via POST /api/scan; Fear & Greed direct from Alternative.me).');
+      tdSetWidgetDebug('td-debug-market', '');
     }
   } catch (e) {
     const why = (e && e.message) ? e.message : String(e);
     tdMktClearLeftoverLoading();
-    tdSetWidgetDebug('td-debug-market', 'DEBUG: Market Snapshot — exception: ' + why);
+    tdSetWidgetDebug('td-debug-market', '');
   }
 }
 
@@ -9692,6 +9752,7 @@ window.chainlensClearConnectedWallet = function() {
 };
 
 function connectWallet() {
+  if (window.appKit) { window.appKit.open(); return; }
   const modal = document.getElementById('wallet-modal');
   const noMM = document.getElementById('wm-no-mm');
   const mmBtn = document.getElementById('wm-metamask-btn-wrap');
@@ -9704,6 +9765,20 @@ function connectWallet() {
   }
   modal.classList.add('open');
 }
+
+// Called by AppKit subscription to sync wallet state
+window.clApplyWallet = function(address) {
+  const short = address.slice(0,6) + '...' + address.slice(-4);
+  localStorage.setItem('cl_wallet', address);
+  window._connectedWallet = address;
+  if (!user) { user = { wallet: address, plan: 'free', name: short }; }
+  else if (user && !user.accessToken) { user.wallet = address; user.name = short; }
+  const btn = document.getElementById('td-wallet-display');
+  if (btn && btn.tagName !== 'W3M-BUTTON') btn.textContent = short;
+  if (typeof updateNav === 'function') updateNav();
+  if (typeof tdRenderPortfolio === 'function') tdRenderPortfolio();
+  if (typeof toast === 'function') toast('Wallet connected: ' + short, 'ok');
+};
 
 async function wmConnectMetaMask() {
   try {
