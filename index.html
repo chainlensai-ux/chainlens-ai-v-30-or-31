@@ -9753,7 +9753,7 @@ async function wmConnectMetaMask() {
   loadScript('https://unpkg.com/@web3modal/standalone@2.4.1/dist/index.umd.js', function() {
     loadScript('https://unpkg.com/@walletconnect/ethereum-provider@2.10.6/dist/index.umd.js', function() {
       window._wcWeb3Modal = new window['@web3modal/standalone'].Web3Modal({
-        projectId: 'WALLETCONNECT_PROJECT_ID',
+        projectId: 'd30f54a5344f3be2e68e0c302e5c4a5b',
         standaloneChains: ['eip155:1'],
         walletConnectVersion: 2
       });
@@ -9769,7 +9769,7 @@ async function wmConnectWalletConnect() {
     const EthereumProvider = window['@walletconnect/ethereum-provider'].EthereumProvider || window['@walletconnect/ethereum-provider'];
     const web3Modal = window._wcWeb3Modal;
     const wcProvider = await EthereumProvider.init({
-      projectId: 'WALLETCONNECT_PROJECT_ID',
+      projectId: 'd30f54a5344f3be2e68e0c302e5c4a5b',
       chains: [1],
       showQrModal: false
     });
