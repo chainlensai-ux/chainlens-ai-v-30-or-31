@@ -4366,6 +4366,17 @@ body::after {
 }
 </style>
 
+<script type="module">
+  import { createWeb3Modal, defaultWagmiConfig } from 'https://esm.sh/@web3modal/wagmi@4.1.8'
+  import { mainnet } from 'https://esm.sh/viem@2.7.6/chains'
+
+  const projectId = 'd30f54a5344f3be2e68e0c302e5c4a5b'
+  const metadata = { name: 'ChainLens AI', description: 'Onchain Intelligence', url: 'https://chainlens-vthirty.vercel.app', icons: [] }
+  const chains = [mainnet]
+  const config = defaultWagmiConfig({ chains, projectId, metadata })
+  const modal = createWeb3Modal({ wagmi: config, projectId, chains })
+  window._wcModal = modal
+</script>
 </head>
 <body>
 
@@ -9751,8 +9762,25 @@ async function wmConnectMetaMask() {
   }
 }
 
-function wmConnectWalletConnect() {
-  toast('WalletConnect coming soon', 'ok');
+async function wmConnectWalletConnect() {
+  try {
+    if (!window._wcModal) { toast('WalletConnect loading... try again in a moment', 'er'); return; }
+    await window._wcModal.open();
+    window._wcModal.subscribeEvents(async (event) => {
+      if (event.data.event === 'MODAL_CLOSE') {
+        const addr = window._wcModal.getAddress();
+        if (addr) {
+          localStorage.setItem('cl_wallet', addr);
+          window._connectedWallet = addr;
+          document.getElementById('wallet-modal').classList.remove('open');
+          toast('Wallet connected: ' + addr.slice(0,6) + '...' + addr.slice(-4), 'ok');
+          updateNav();
+        }
+      }
+    });
+  } catch(e) {
+    toast('WalletConnect error: ' + (e.message || 'try again'), 'er');
+  }
 }
 
 document.getElementById('auth-modal').addEventListener('click', e => { if (e.target === document.getElementById('auth-modal')) closeAuth(); });
