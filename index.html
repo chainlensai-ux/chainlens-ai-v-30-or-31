@@ -7611,7 +7611,7 @@ body::after {
         <div class="td-settings-actions">
           <button type="button" class="td-settings-btn td-settings-btn--primary" id="td-settings-upgrade" onclick="tdCloseSettings();go('pricing');">Upgrade plan</button>
           <button type="button" class="td-settings-btn" id="td-settings-auth" onclick="tdCloseSettings();openAuth('login');">Sign in / Create account</button>
-          <button type="button" class="td-settings-btn" onclick="tdCloseSettings();connectWallet();">Connect wallet</button>
+          <button type="button" class="td-settings-btn" onclick="connectWallet();">Connect wallet</button>
           <button type="button" class="td-settings-btn td-settings-btn--danger" id="td-settings-signout" onclick="tdCloseSettings();logout();">Sign out</button>
         </div>
       </div>
@@ -7951,9 +7951,6 @@ function initTerminal() {
     if (window._connectedWallet) {
       const w = window._connectedWallet;
       walletBtn.textContent = w.slice(0,6) + '...' + w.slice(-4);
-    } else if (user && user.email) {
-      const name = user.name || user.email;
-      walletBtn.textContent = name.length > 18 ? name.slice(0, 6) + '...' + name.slice(-4) : name;
     } else {
       walletBtn.textContent = 'Connect Wallet';
     }
@@ -9814,7 +9811,7 @@ async function doAuth() {
     toast(`Welcome back, ${(user.name || 'Trader').split(' ')[0]}`);
     updateNav();
     syncAllDataDown();
-    closeAuth();
+    closeAuth(); go('terminal');
   }
   btn.disabled = false;
   btn.textContent = tab === 'signup' ? 'Create Account →' : 'Log In →';
