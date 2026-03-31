@@ -9701,10 +9701,6 @@ window.chainlensClearConnectedWallet = function() {
 };
 
 function connectWallet() {
-  if (user && user.email) {
-    toast('Already signed in as ' + (user.name || user.email));
-    return;
-  }
   const modal = document.getElementById('wallet-modal');
   const noMM = document.getElementById('wm-no-mm');
   const mmBtn = document.getElementById('wm-metamask-btn-wrap');
