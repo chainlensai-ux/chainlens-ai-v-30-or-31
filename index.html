@@ -8,64 +8,8 @@
 <meta name="theme-color" content="#030206">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="description" content="AI-powered crypto intelligence — wallet scanner, bear market scoring, paper trading and more.">
-<!-- Set your Reown (WalletConnect) Cloud project id for production: https://dashboard.reown.com -->
-<meta name="reown-project-id" content="">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237858c0'/%3E%3Cstop offset='1' stop-color='%2300ffc8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23050407'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='18' fill='url(%23g)'%3E⬡%3C/text%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800;900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-
-<!-- WalletConnect AppKit CDN -->
-<script type="module">
-(async () => {
-  try {
-    const [{ createAppKit }, { EthersAdapter }, nets] = await Promise.all([
-      import('https://esm.sh/@reown/appkit@1.6.8'),
-      import('https://esm.sh/@reown/appkit-adapter-ethers@1.6.8'),
-      import('https://esm.sh/@reown/appkit@1.6.8/networks')
-    ]);
-    const { mainnet, polygon, bsc, base } = nets;
-    // Replace with your WalletConnect project ID from cloud.walletconnect.com
-    const projectId = 'd30f54a5344f3be2e68e0c302e5c4a5b';
-    const ethersAdapter = new EthersAdapter();
-    window.appKit = createAppKit({
-      adapters: [ethersAdapter],
-      networks: [mainnet, polygon, bsc, base],
-      projectId,
-      metadata: {
-        name: 'ChainLens AI',
-        description: 'AI-powered crypto intelligence platform',
-        url: window.location.origin,
-        icons: [window.location.origin + '/cl-logo.png']
-      },
-      themeMode: 'dark',
-      themeVariables: {
-        '--w3m-accent': '#8b5cf6',
-        '--w3m-border-radius-master': '8px',
-        '--w3m-font-family': "'Inter', sans-serif"
-      },
-      featuredWalletIds: [
-        'c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96',
-        'fd20dc426fb37566d803205b19bbc1d4096b248ac04548e3cfb6b3a38bd033aa',
-        'a797aa35c0fadbfc1a53e7f675162ed5226968b44a19ee3d24385c64d1d3c393',
-        '1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369'
-      ]
-    });
-    window.appKit.subscribeAccount(account => {
-      if (account.isConnected && account.address) {
-        if (typeof window.clApplyWallet === 'function') window.clApplyWallet(account.address);
-        const wsi = document.getElementById('wsi');
-        if (wsi) { wsi.value = account.address; setTimeout(() => { if (typeof doWS === 'function') doWS(); }, 200); }
-        if (typeof tdRenderPortfolio === 'function') tdRenderPortfolio();
-      } else if (account.isConnected === false) {
-        window._connectedWallet = null;
-        localStorage.removeItem('cl_wallet');
-      }
-    });
-    window.connectWallet = function() { window.appKit.open(); };
-  } catch(e) {
-    console.warn('AppKit CDN init failed, using fallback wallet connect', e);
-  }
-})();
-</script>
 
 <style>
 /* ═══════════════════════════════════════════════════
@@ -3969,7 +3913,6 @@ body::after {
   color: #a78bfa; cursor: pointer; transition: all 0.2s; white-space: nowrap;
 }
 .td-topbar__wallet-btn:hover { background: rgba(139,92,246,0.2); border-color: rgba(139,92,246,0.5); }
-w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
 .td-topbar__exit-btn {
   padding: 5px 10px; background: none; border: 1px solid #222; border-radius: 8px;
   font-family: 'Inter', sans-serif; font-size: 10px; color: #444;
@@ -4588,6 +4531,10 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
       <div style="font-size:13px;color:var(--cl-text-2);margin-bottom:8px;">MetaMask not detected</div>
       <a href="https://metamask.io/download/" target="_blank" class="cl-btn cl-btn--ghost" style="font-size:12px;display:inline-block;padding:6px 16px;">Install MetaMask →</a>
     </div>
+    <button class="cl-btn cl-btn--primary cl-btn--full" id="wm-walletconnect-btn" onclick="wmConnectWalletConnect()" style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:12px;">
+      <svg width="22" height="22" viewBox="0 0 300 185" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0"><path d="M61.4 36.3C109.3-10.1 186.7-10.1 234.6 36.3L240.3 41.9C242.7 44.2 242.7 47.9 240.3 50.3L220.7 69.3C219.5 70.5 217.6 70.5 216.4 69.3L208.6 61.7C175.3 29.2 104.7 29.2 71.4 61.7L63.1 69.8C61.9 71 60 71 58.8 69.8L39.2 50.8C36.8 48.4 36.8 44.7 39.2 42.4L61.4 36.3ZM275.7 76.3L293.2 93.4C295.6 95.7 295.6 99.4 293.2 101.8L211.9 181.1C209.5 183.4 205.7 183.4 203.3 181.1L144.7 123.6C144.1 123 143.2 123 142.6 123.6L84 181.1C81.6 183.4 77.8 183.4 75.4 181.1L-6.2 101.8C-8.6 99.4 -8.6 95.7 -6.2 93.4L11.3 76.3C13.7 74 17.5 74 19.9 76.3L78.5 133.8C79.1 134.4 80 134.4 80.6 133.8L139.2 76.3C141.6 74 145.4 74 147.8 76.3L206.4 133.8C207 134.4 207.9 134.4 208.5 133.8L267.1 76.3C269.4 74 273.2 74 275.7 76.3Z" fill="#3B99FC"/></svg>
+      WalletConnect
+    </button>
     <div style="display:flex;align-items:center;gap:8px;margin:16px 0;">
       <div style="flex:1;height:1px;background:rgba(255,255,255,0.08);"></div>
       <span style="font-size:11px;color:var(--cl-text-3);">or</span>
@@ -7304,7 +7251,7 @@ w3m-modal, w3m-router, appkit-modal { z-index: 100050 !important; }
         🔔
         <span class="td-topbar__bell-dot"></span>
       </button>
-      <button type="button" class="td-topbar__wallet-btn" id="td-wallet-display">Connect Wallet</button>
+      <button type="button" class="td-topbar__wallet-btn" id="td-wallet-display" onclick="openAuth('signup')">Connect Wallet</button>
     </div>
   </div>
 
@@ -9752,7 +9699,6 @@ window.chainlensClearConnectedWallet = function() {
 };
 
 function connectWallet() {
-  if (window.appKit) { window.appKit.open(); return; }
   const modal = document.getElementById('wallet-modal');
   const noMM = document.getElementById('wm-no-mm');
   const mmBtn = document.getElementById('wm-metamask-btn-wrap');
@@ -9765,20 +9711,6 @@ function connectWallet() {
   }
   modal.classList.add('open');
 }
-
-// Called by AppKit subscription to sync wallet state
-window.clApplyWallet = function(address) {
-  const short = address.slice(0,6) + '...' + address.slice(-4);
-  localStorage.setItem('cl_wallet', address);
-  window._connectedWallet = address;
-  if (!user) { user = { wallet: address, plan: 'free', name: short }; }
-  else if (user && !user.accessToken) { user.wallet = address; user.name = short; }
-  const btn = document.getElementById('td-wallet-display');
-  if (btn && btn.tagName !== 'W3M-BUTTON') btn.textContent = short;
-  if (typeof updateNav === 'function') updateNav();
-  if (typeof tdRenderPortfolio === 'function') tdRenderPortfolio();
-  if (typeof toast === 'function') toast('Wallet connected: ' + short, 'ok');
-};
 
 async function wmConnectMetaMask() {
   try {
@@ -9810,6 +9742,58 @@ async function wmConnectMetaMask() {
   } catch(err) {
     if (err.code === 4001) toast('Wallet connection cancelled', 'er');
     else toast('Could not connect wallet', 'er');
+  }
+}
+// WalletConnect v2 — load CDN scripts then expose wmConnectWalletConnect
+(function() {
+  function loadScript(src, cb) {
+    var s = document.createElement('script'); s.src = src; s.onload = cb;
+    document.head.appendChild(s);
+  }
+  loadScript('https://unpkg.com/@web3modal/standalone@2.4.1/dist/index.umd.js', function() {
+    loadScript('https://unpkg.com/@walletconnect/ethereum-provider@2.10.6/dist/index.umd.js', function() {
+      window._wcWeb3Modal = new window['@web3modal/standalone'].Web3Modal({
+        projectId: 'd30f54a5344f3be2e68e0c302e5c4a5b',
+        standaloneChains: ['eip155:1'],
+        walletConnectVersion: 2
+      });
+    });
+  });
+})();
+
+async function wmConnectWalletConnect() {
+  try {
+    if (!window['@walletconnect/ethereum-provider'] || !window._wcWeb3Modal) {
+      toast('WalletConnect loading, please try again', 'er'); return;
+    }
+    const EthereumProvider = window['@walletconnect/ethereum-provider'].EthereumProvider || window['@walletconnect/ethereum-provider'];
+    const web3Modal = window._wcWeb3Modal;
+    const wcProvider = await EthereumProvider.init({
+      projectId: 'd30f54a5344f3be2e68e0c302e5c4a5b',
+      chains: [1],
+      showQrModal: false
+    });
+    wcProvider.on('display_uri', async (uri) => { await web3Modal.openModal({ uri }); });
+    await new Promise((resolve, reject) => {
+      wcProvider.on('connect', () => resolve());
+      wcProvider.on('disconnect', () => reject(new Error('disconnected')));
+      wcProvider.connect().catch(reject);
+    });
+    web3Modal.closeModal();
+    const address = wcProvider.accounts[0];
+    if (!address) { toast('No account returned', 'er'); return; }
+    const short = address.slice(0, 6) + '...' + address.slice(-4);
+    localStorage.setItem('cl_wallet', address);
+    window._connectedWallet = address;
+    document.getElementById('wallet-modal').classList.remove('open');
+    if (!user) { user = { wallet: address, plan: 'free', name: short }; updateNav(); }
+    const _tdW = document.getElementById('td-wallet-display');
+    if (_tdW) { _tdW.textContent = short; _tdW.title = address; }
+    if (document.getElementById('pg-terminal')?.classList.contains('active') && typeof tdRenderPortfolio === 'function') tdRenderPortfolio();
+    toast('Wallet connected: ' + short, 'ok');
+  } catch(err) {
+    if (err && (err.message === 'disconnected' || (err.message && err.message.toLowerCase().includes('rejected')))) toast('WalletConnect cancelled', 'er');
+    else toast('Could not open WalletConnect', 'er');
   }
 }
 document.getElementById('auth-modal').addEventListener('click', e => { if (e.target === document.getElementById('auth-modal')) closeAuth(); });
@@ -15768,63 +15752,6 @@ updateHeroTierLabel();
     initTrustCounters();
   }
 
-})();
-</script>
-
-<script type="module">
-(async () => {
-  const btn = document.getElementById('td-wallet-display');
-  try {
-    const { createAppKit } = await import('https://esm.sh/@reown/appkit@1.7.8');
-    const { EthersAdapter } = await import('https://esm.sh/@reown/appkit-adapter-ethers@1.7.8');
-    const n = await import('https://esm.sh/@reown/appkit@1.7.8/networks');
-    const networks = [n.mainnet, n.base, n.bsc, n.polygon].filter(Boolean);
-    const pidMeta = document.querySelector('meta[name="reown-project-id"]');
-    const projectId = (pidMeta && pidMeta.getAttribute('content') || '').trim() || 'b56e18d47c72ab683b10814fe9495694';
-    const origin = window.location.origin || '';
-    const modal = createAppKit({
-      adapters: [new EthersAdapter()],
-      networks,
-      metadata: {
-        name: 'ChainLens AI',
-        description: 'Onchain intelligence terminal',
-        url: origin || 'https://chainlens-vthirty.vercel.app',
-        icons: origin ? [origin + '/cl-logo.png'] : ['https://chainlens-vthirty.vercel.app/cl-logo.png'],
-      },
-      projectId,
-      featuredWalletIds: [
-        '171c86bb4ff1f6f1c5e8bad036a03513fe60501e40fffbf2a5221f7bf7b27c1a',
-        'fd20dc426fb37566d3032059fc2290c147a596c0',
-        '1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369',
-        'b173189b098d05ecbe9aec5934653389362e8780346c3b57ebc131ef69013de2',
-      ],
-      features: {
-        analytics: false,
-        email: false,
-        socials: [],
-        swaps: false,
-        onramp: false,
-      },
-    });
-    window.__chainlensAppKit = modal;
-    if (btn) {
-      btn.addEventListener('click', () => modal.open({ view: 'Connect', namespace: 'eip155' }));
-    }
-    modal.subscribeProvider((state) => {
-      const addr = state && state.address;
-      const ok = state && state.isConnected && addr && /^0x[a-fA-F0-9]{40}$/i.test(String(addr));
-      if (ok && window.chainlensApplyConnectedEvmAddress) window.chainlensApplyConnectedEvmAddress(String(addr));
-    });
-    try {
-      const a = modal.getAddress && modal.getAddress();
-      if (a && /^0x[a-fA-F0-9]{40}$/i.test(String(a)) && window.chainlensApplyConnectedEvmAddress) {
-        window.chainlensApplyConnectedEvmAddress(String(a));
-      }
-    } catch (e) {}
-  } catch (e) {
-    console.error('[ChainLens AppKit]', e);
-    if (btn) btn.addEventListener('click', () => { if (typeof connectWallet === 'function') connectWallet(); });
-  }
 })();
 </script>
 
