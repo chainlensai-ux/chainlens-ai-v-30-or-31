@@ -4366,7 +4366,6 @@ body::after {
 }
 </style>
 
-<script src="https://unpkg.com/@walletconnect/ethereum-provider@2.10.6/dist/index.umd.js"></script>
 </head>
 <body>
 
@@ -9752,31 +9751,9 @@ async function wmConnectMetaMask() {
   }
 }
 
-async function wmConnectWalletConnect() {
-  try {
-    const WC_PROJECT_ID = 'd30f54a5344f3be2e68e0c302e5c4a5b';
-    const { EthereumProvider } = window.EthereumProvider || {};
-
-    const provider = await window.EthereumProvider.init({
-      projectId: WC_PROJECT_ID,
-      chains: [1],
-      showQrModal: true,
-      qrModalOptions: { themeMode: 'dark' }
-    });
-
-    await provider.enable();
-    const accounts = provider.accounts;
-    if (accounts && accounts[0]) {
-      const address = accounts[0];
-      localStorage.setItem('cl_wallet', address);
-      window._connectedWallet = address;
-      document.getElementById('wallet-modal').classList.remove('open');
-      toast('Wallet connected: ' + address.slice(0,6) + '...' + address.slice(-4), 'ok');
-      updateNav();
-    }
-  } catch(e) {
-    toast('WalletConnect failed: ' + (e.message || 'Try MetaMask instead.'), 'er');
-  }
+function wmConnectWalletConnect() {
+  window.open('https://link.walletconnect.com/wc?uri=wc%3Ad30f54a5344f3be2e68e0c302e5c4a5b%40chainlens-vthirty.vercel.app', '_blank');
+  toast('Opening WalletConnect — scan the QR code in your wallet app', 'ok');
 }
 
 document.getElementById('auth-modal').addEventListener('click', e => { if (e.target === document.getElementById('auth-modal')) closeAuth(); });
