@@ -9331,7 +9331,9 @@ async function sbAuth(action, body = {}) {
 
 async function handleOAuthCallbackHash() {
   const hash = window.location.hash ? new URLSearchParams(window.location.hash.replace(/^#/, '')) : null;
+  console.log('[OAuth] hash string:', window.location.hash);
   const oauthAccessToken = hash ? hash.get('access_token') : null;
+  console.log('[OAuth] oauthAccessToken from hash:', oauthAccessToken);
   if (!oauthAccessToken) return false;
 
   try {
@@ -9339,11 +9341,14 @@ async function handleOAuthCallbackHash() {
     let accessToken = oauthAccessToken;
     if (window.supabase && window.supabase.auth && typeof window.supabase.auth.getSession === 'function') {
       const sess = await window.supabase.auth.getSession();
+      console.log('[OAuth] supabase.auth.getSession() result:', sess);
       accessToken = sess?.data?.session?.access_token || sess?.session?.access_token || accessToken;
     }
+    console.log('[OAuth] accessToken used for getUser:', accessToken);
     if (!accessToken) return false;
 
     const oauthUser = await sbAuth('getUser', { accessToken });
+    console.log('[OAuth] oauthUser response:', oauthUser);
     if (!oauthUser.success || !oauthUser.user) return false;
 
     user = oauthUser.user;
@@ -9355,6 +9360,7 @@ async function handleOAuthCallbackHash() {
     go('terminal');
     return true;
   } catch (e) {
+    console.log('[OAuth] error caught:', e);
     return false;
   }
 }
