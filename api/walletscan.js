@@ -34,7 +34,8 @@ export default async function handler(req, res) {
     .map(token => {
       const ca = (token.contract_address || '').toLowerCase();
       const zerionMatch = zerionMap[ca];
-      const usdValue = zerionMatch ? zerionMatch.attributes?.value : (token.quote || 0);
+      const zerionValue = zerionMatch?.attributes?.value;
+      const usdValue = zerionValue != null ? zerionValue : (token.quote_rate > 0 ? (token.quote || 0) : 0);
       const isUnindexed = !zerionMatch;
       return {
         symbol: token.contract_ticker_symbol,
