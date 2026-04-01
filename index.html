@@ -9336,6 +9336,17 @@ async function getGoldRushData(address, chainId = '1') {
   return await r.json();
 }
 
+async function getWalletScanData(address, chainId = '8453') {
+  const r = await fetch('/api/walletscan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ address, chainId })
+  });
+  const data = await r.json();
+  if (!data.success) throw new Error(data.error || 'WalletScan failed');
+  return data;
+}
+
 async function sbAuth(action, body = {}) {
   const r = await fetch('/api/auth', {
     method: 'POST',
@@ -10715,6 +10726,7 @@ function renderAllAssets(assets, allTxs, address) {
         + `<span style="font-size:13px;font-weight:700;">${a.symbol}</span>`
         + (chainLabel ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:${c}15;color:${c};border:1px solid ${c}25;">${chainLabel}</span>` : '')
         + (stableSuspicious ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(245,166,35,0.12);color:#f5a623;border:1px solid rgba(245,166,35,0.35);">SUSPICIOUS</span>` : '')
+        + (a.isNewOrUnindexed ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(255,214,10,0.12);color:#ffd60a;border:1px solid rgba(255,214,10,0.35);">LOW CAP</span>` : '')
         + `</div>`
         + `<div style="font-size:10px;color:var(--cl-text-3);margin-top:2px;">${bal.toLocaleString(undefined,{maximumFractionDigits:4})} ${a.symbol}</div>`
         + `</div>`
@@ -12627,6 +12639,26 @@ async function doWS() {
       }
 
       assets = wsApplyCriticalHoldingFilters(assets);
+
+      // GoldRush + Zerion merged wallet pipeline
+      try {
+        document.getElementById('ws-total-sub').textContent = 'Running GoldRush + Zerion pipeline...';
+        const wsScan = await getWalletScanData(address, '8453');
+        if (wsScan && Array.isArray(wsScan.tokens)) {
+          wsScan.tokens.forEach(t => {
+            const ca = (t.contractAddress || '').toLowerCase();
+            const existingIdx = assets.findIndex(a => (a.contractAddress || '').toLowerCase() === ca && a.chain === 'base');
+            if (existingIdx >= 0) {
+              if (t.usdValue > 0) assets[existingIdx].usdValue = t.usdValue;
+              if (t.price > 0) assets[existingIdx].price = t.price;
+              if (t.isNewOrUnindexed) assets[existingIdx].isNewOrUnindexed = true;
+            } else if ((t.usdValue || 0) >= 0.01) {
+              assets.push({ ...t, chain: 'base' });
+            }
+          });
+        }
+      } catch (e) { /* walletscan is best-effort */ }
+
       totalUsd = (debankResult?.totalUsd > 0) ? debankResult.totalUsd : wsEligibleTokenUsdForTotal(assets);
       const activeChains = [...new Set(assets.map(a => a.chain))].join(', ');
       portfolioSummary = 'Multi-chain: ' + (activeChains || 'none') + ', Assets: ' + assets.length + ', Txs: ' + allTxs.length;
