@@ -3160,13 +3160,58 @@ async function fetchEVM(address, chain) {
   } catch(e) { throw e; }
 }
 
+function wsTxKey(tx) {
+  const chain = String(tx?._chain || '').toLowerCase();
+  const hash = String(tx?.hash || '').toLowerCase();
+  const from = String(tx?.from || '').toLowerCase();
+  const to = String(tx?.to || '').toLowerCase();
+  const ts = String(tx?.timeStamp || tx?.time || 0);
+  const value = String(tx?.value || 0);
+  const asset = String(tx?._assetSymbol || '');
+  return [chain, hash, from, to, ts, value, asset].join('|');
+}
+
+function wsMergeTxs() {
+  const seen = new Set();
+  const out = [];
+  for (const list of arguments) {
+    const rows = Array.isArray(list) ? list : [];
+    rows.forEach(tx => {
+      const key = wsTxKey(tx);
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(tx);
+    });
+  }
+  return out.sort((a, b) => parseInt(b.timeStamp || b.time || 0, 10) - parseInt(a.timeStamp || a.time || 0, 10));
+}
+
+function wsMapEvmTx(tx, chain, kind) {
+  const out = { ...tx, _chain: chain };
+  if (kind === 'token') {
+    const decimals = parseInt(tx.tokenDecimal || 18, 10) || 18;
+    const rawVal = parseFloat(tx.value || 0);
+    const assetAmount = rawVal / Math.pow(10, decimals);
+    out._assetSymbol = tx.tokenSymbol || 'TOKEN';
+    out._assetAmount = Number.isFinite(assetAmount) ? assetAmount : 0;
+    out.value = '0';
+  }
+  return out;
+}
+
 async function fetchAllTxsEVM(address, chain) {
   const cfg = EVM_CHAINS[chain] || EVM_CHAINS.eth;
   try {
-    const r = await pfetch(`https://api.etherscan.io/v2/api?chainid=${cfg.chainId}&module=account&action=txlist&address=${address}&sort=desc&page=1&offset=50&apikey=${ESCAN}`);
-    const d = await r.json();
-    if (d.result && Array.isArray(d.result)) return d.result.map(t => ({ ...t, _chain: chain }));
-    return [];
+    const [normalR, internalR, tokenR] = await Promise.all([
+      pfetch(`https://api.etherscan.io/v2/api?chainid=${cfg.chainId}&module=account&action=txlist&address=${address}&sort=desc&page=1&offset=200&apikey=${ESCAN}`),
+      pfetch(`https://api.etherscan.io/v2/api?chainid=${cfg.chainId}&module=account&action=txlistinternal&address=${address}&sort=desc&page=1&offset=200&apikey=${ESCAN}`),
+      pfetch(`https://api.etherscan.io/v2/api?chainid=${cfg.chainId}&module=account&action=tokentx&address=${address}&sort=desc&page=1&offset=200&apikey=${ESCAN}`)
+    ]);
+    const [normalD, internalD, tokenD] = await Promise.all([normalR.json(), internalR.json(), tokenR.json()]);
+    const normalTxs = Array.isArray(normalD.result) ? normalD.result.map(t => wsMapEvmTx(t, chain, 'native')) : [];
+    const internalTxs = Array.isArray(internalD.result) ? internalD.result.map(t => wsMapEvmTx(t, chain, 'internal')) : [];
+    const tokenTxs = Array.isArray(tokenD.result) ? tokenD.result.map(t => wsMapEvmTx(t, chain, 'token')) : [];
+    return wsMergeTxs(normalTxs, internalTxs, tokenTxs).slice(0, 200);
   } catch(e) { return []; }
 }
 
@@ -3525,10 +3570,15 @@ function renderAllTxs(txs, address, chain) {
     }
     const isOut = tx.from?.toLowerCase() === address.toLowerCase();
     const val = parseFloat(fmtEth(tx.value || 0));
+    const assetAmount = Number(tx._assetAmount || 0);
+    const assetSymbol = String(tx._assetSymbol || '').trim();
     const txChain = (tx._chain || chain || 'eth').toLowerCase();
     const chainLabel = txChain.toUpperCase();
     const nativeSym = txChain === 'bnb' ? 'BNB' : txChain === 'polygon' ? 'MATIC' : 'ETH';
     const nativeUsdPrice = txChain === 'bnb' ? (px['binancecoin']?.usd || 600) : txChain === 'polygon' ? (px['matic-network']?.usd || px['polygon']?.usd || 0.8) : (px['ethereum']?.usd || 3000);
+    const amountLabel = assetSymbol && assetAmount > 0
+      ? (assetAmount >= 1 ? assetAmount.toFixed(4) : assetAmount.toPrecision(4)) + ' ' + assetSymbol
+      : (val > 0 ? val.toFixed(4) + ' ' + nativeSym : 'Contract');
     return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(120,88,192,0.08);">
       <div style="width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;${isOut?'background:rgba(239,71,111,0.12);color:#ef476f;border:1px solid rgba(239,71,111,0.2);':'background:rgba(0,255,200,0.1);color:#00ffc8;border:1px solid rgba(0,255,200,0.2);'}">${isOut?'OUT':'IN'}</div>
       <div style="flex:1;min-width:0;">
@@ -3536,8 +3586,8 @@ function renderAllTxs(txs, address, chain) {
         <div style="font-size:10px;color:var(--cl-text-3);">${chainLabel} · ${fmtAge(tx.timeStamp||tx.time||0)}</div>
       </div>
       <div style="text-align:right;flex-shrink:0;">
-        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};">${val>0?val.toFixed(4)+' '+nativeSym:'Contract'}</div>
-        ${val>0?`<div style="font-size:10px;color:var(--cl-text-3);">${fmtFx(val*nativeUsdPrice)}</div>`:''}
+        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};">${amountLabel}</div>
+        ${(!assetSymbol && val>0)?`<div style="font-size:10px;color:var(--cl-text-3);">${fmtFx(val*nativeUsdPrice)}</div>`:''}
       </div>
     </div>`;
   }).join('');
