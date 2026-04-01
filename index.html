@@ -12712,7 +12712,7 @@ async function doWS() {
       document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
       moralisData = await fetchMoralisWalletScan(address, chainType);
     }
-    document.getElementById('ws-total-value').textContent = fmtFx(totalUsd);
+    document.getElementById('ws-total-value').textContent = fmtFx(debankResult != null ? debankResult.totalUsd : totalUsd);
     const wsLabels = wsInferWalletLabels(address, chainType, totalUsd, assets, allTxs);
     if (isDevWalletBase && !wsLabels.includes('DEV')) wsLabels.push('DEV');
     const devWalletBadge = isDevWalletBase
@@ -12922,7 +12922,7 @@ async function doWS() {
       return merged;
     })();
     // Use Zerion portfolio total as-is (already includes all chains); do not re-sum from merged assets.
-    document.getElementById('ws-total-value').textContent = fmtFx(totalUsd);
+    document.getElementById('ws-total-value').textContent = fmtFx(debankResult != null ? debankResult.totalUsd : totalUsd);
     const txsForUI = [
       ...((moralisData.txs && moralisData.txs.length) ? moralisData.txs : allTxs),
       ...((alchemyData.txs && alchemyData.txs.length) ? alchemyData.txs : [])
