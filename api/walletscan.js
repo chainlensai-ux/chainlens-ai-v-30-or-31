@@ -34,8 +34,8 @@ export default async function handler(req, res) {
     .map(token => {
       const ca = (token.contract_address || '').toLowerCase();
       const zerionMatch = zerionMap[ca];
-      const zerionValue = zerionMatch?.attributes?.value;
-      const usdValue = zerionValue != null ? zerionValue : (token.quote_rate > 0 ? (token.quote || 0) : 0);
+      const usdValue = zerionMatch != null ? (zerionMatch.attributes?.value ?? 0) : 0;
+      const price = zerionMatch != null ? (zerionMatch.attributes?.price ?? 0) : 0;
       const isUnindexed = !zerionMatch;
       return {
         symbol: token.contract_ticker_symbol,
@@ -44,7 +44,7 @@ export default async function handler(req, res) {
         balance: token.balance,
         decimals: token.contract_decimals,
         usdValue,
-        price: token.quote_rate || 0,
+        price,
         chain: chainId,
         source: isUnindexed ? 'goldrush_only' : 'merged',
         isLowCap: isUnindexed,
@@ -52,24 +52,9 @@ export default async function handler(req, res) {
       };
     });
 
-  zerionPositions.forEach(p => {
-    const ca = (p?.relationships?.fungible?.data?.id || '').toLowerCase();
-    const already = merged.find(t => (t.contractAddress || '').toLowerCase() === ca);
-    if (!already) {
-      merged.push({
-        symbol: p.attributes?.fungible_info?.symbol,
-        name: p.attributes?.fungible_info?.name,
-        contractAddress: ca,
-        usdValue: p.attributes?.value || 0,
-        price: p.attributes?.price || 0,
-        source: 'zerion_only',
-        isLowCap: false,
-        isNewOrUnindexed: false
-      });
-    }
-  });
-
   merged.sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0));
 
-  return res.status(200).json({ success: true, tokens: merged, totalTokens: merged.length });
+  const portfolioTotal = merged.reduce((sum, t) => t.source === 'merged' ? sum + (t.usdValue || 0) : sum, 0);
+
+  return res.status(200).json({ success: true, tokens: merged, totalTokens: merged.length, portfolioTotal });
 }
