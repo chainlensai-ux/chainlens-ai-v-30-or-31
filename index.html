@@ -9327,6 +9327,15 @@ function showLockWall(toolId, requiredPlan) {
 // ══════════════════════════════════════════════
 let _syncQueue = [];
 
+async function getGoldRushData(address, chainId = '1') {
+  const r = await fetch('/api/goldrush', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ address, chainId })
+  });
+  return await r.json();
+}
+
 async function sbAuth(action, body = {}) {
   const r = await fetch('/api/auth', {
     method: 'POST',
