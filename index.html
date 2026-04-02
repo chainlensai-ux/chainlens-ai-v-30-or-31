@@ -12687,6 +12687,7 @@ async function doWS() {
     let baseTxCount = null;
     let baseWalletAgeDays = null;
     let debankResult = null;
+    let zerionPortfolioTotalUsd = 0;
 
     if (chainType === 'evm') {
       document.getElementById('ws-total-sub').textContent = 'Scanning ETH, Base, BNB, Polygon...';
@@ -12707,6 +12708,10 @@ async function doWS() {
       document.getElementById('ws-total-sub').textContent = 'Fetching token holdings via Zerion...';
       const zerionData = await fetch('/api/zerion?address=' + encodeURIComponent(address))
         .then(r => r.ok ? r.json() : null).catch(() => null);
+      console.log('ZERION VAR:', JSON.stringify(Object.keys(window).filter(k => k.toLowerCase().includes('zerion'))));
+      console.log('ZERION DATA VAR:', zerionData);
+      console.log('PORTFOLIO KEYS:', JSON.stringify(Object.keys(zerionData?.portfolio || {})));
+      zerionPortfolioTotalUsd = Number(zerionData?.portfolio?.data?.attributes?.total?.positions) || 0;
       console.log('ZERION POSITIONS:', JSON.stringify(zerionData?.data?.slice(0,5)));
       console.log('ZERION TOTAL:', zerionData?.meta?.total_value);
       debankResult = zerionData ? parseZerionPositions(zerionData) : null;
@@ -12813,7 +12818,7 @@ async function doWS() {
       document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
       moralisData = await fetchMoralisWalletScan(address, chainType);
     }
-    document.getElementById('ws-total-value').textContent = fmtFx(assets.filter(a => (a.usdValue || 0) > 0).reduce((s, a) => s + a.usdValue, 0));
+    document.getElementById('ws-total-value').textContent = fmtFx(chainType === 'evm' ? zerionPortfolioTotalUsd : assets.filter(a => (a.usdValue || 0) > 0).reduce((s, a) => s + a.usdValue, 0));
     const wsLabels = wsInferWalletLabels(address, chainType, totalUsd, assets, allTxs);
     if (isDevWalletBase && !wsLabels.includes('DEV')) wsLabels.push('DEV');
     const devWalletBadge = isDevWalletBase
