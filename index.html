@@ -10358,6 +10358,45 @@ function wsMapEvmTx(tx, chain, kind) {
   return out;
 }
 
+function wsTxKey(tx) {
+  const chain = String(tx?._chain || '').toLowerCase();
+  const hash = String(tx?.hash || '').toLowerCase();
+  const from = String(tx?.from || '').toLowerCase();
+  const to = String(tx?.to || '').toLowerCase();
+  const ts = String(tx?.timeStamp || tx?.time || 0);
+  const value = String(tx?.value || 0);
+  const asset = String(tx?._assetSymbol || '');
+  return [chain, hash, from, to, ts, value, asset].join('|');
+}
+
+function wsMergeTxs() {
+  const seen = new Set();
+  const out = [];
+  for (const list of arguments) {
+    const rows = Array.isArray(list) ? list : [];
+    rows.forEach(tx => {
+      const key = wsTxKey(tx);
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(tx);
+    });
+  }
+  return out.sort((a, b) => parseInt(b.timeStamp || b.time || 0, 10) - parseInt(a.timeStamp || a.time || 0, 10));
+}
+
+function wsMapEvmTx(tx, chain, kind) {
+  const out = { ...tx, _chain: chain };
+  if (kind === 'token') {
+    const decimals = parseInt(tx.tokenDecimal || 18, 10) || 18;
+    const rawVal = parseFloat(tx.value || 0);
+    const assetAmount = rawVal / Math.pow(10, decimals);
+    out._assetSymbol = tx.tokenSymbol || 'TOKEN';
+    out._assetAmount = Number.isFinite(assetAmount) ? assetAmount : 0;
+    out.value = '0';
+  }
+  return out;
+}
+
 async function fetchAllTxsEVM(address, chain) {
   const cfg = EVM_CHAINS[chain] || EVM_CHAINS.eth;
   try {
