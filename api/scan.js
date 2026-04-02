@@ -19,17 +19,14 @@ export default async function handler(req, res) {
       result: 'ETHERSCAN_KEY is not set on the server (Vercel env / local .env).'
     });
   }
-  if (isAlchemy && (!ALCHEMY || !String(ALCHEMY).trim()) && /\/v2\/ENV\b/.test(url)) {
-    return res.status(503).json({
-      error: 'ALCHEMY_KEY is not set on the server (Vercel env / local .env).'
-    });
-  }
   if (typeof url === 'string' && url.includes('api.basescan.org') && BSCAN) {
     url = url.replace(/apikey=ENV\b/g, () => `apikey=${encodeURIComponent(String(BSCAN).trim())}`);
   } else if (ESCAN) {
     url = url.replace(/apikey=ENV\b/g, () => `apikey=${encodeURIComponent(String(ESCAN).trim())}`);
   }
-  if (ALCHEMY) url = url.replace(/\/v2\/ENV\b/g, () => `/v2/${String(ALCHEMY).trim()}`);
+  if (isAlchemy) {
+    url = url.replace('/v2/ENV', `/v2/${String(ALCHEMY).trim()}`);
+  }
   const allowed = [
     'api.etherscan.io',
     'api.basescan.org',

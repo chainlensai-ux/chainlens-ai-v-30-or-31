@@ -13124,12 +13124,30 @@ async function doWS() {
       zerionPortfolioTotalUsd,
       debankResult
     };
+    const top20 = (data?.tokens || [])
+      .slice()
+      .sort((a, b) => (b?.usdValue || 0) - (a?.usdValue || 0))
+      .slice(0, 20);
+    const walletData = {
+      address: address,
+      summary: {
+        total_value_usd: data?.portfolioTotal,
+        tx_count: data?.txCount,
+        first_tx_date: data?.firstTx,
+        last_tx_date: data?.lastTx,
+        primary_chains: data?.chains
+      },
+      top_tokens: top20,
+      labels: data?.labels || []
+    };
+    console.log("CLARK PAYLOAD:", JSON.stringify(walletData));
+    console.table((walletData.top_tokens || []).map(t => ({ symbol: t?.symbol, usdValue: t?.usdValue })));
     fetch('/api/claude', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         mode: 'wallet',
-        walletData: walletScanResult,
+        walletData,
         max_tokens: 400
       })
     })
