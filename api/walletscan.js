@@ -9,14 +9,17 @@ export default async function handler(req, res) {
   const GOLDRUSH_KEY = process.env.GOLDRUSH_API_KEY;
   const ZERION_KEY = process.env.ZERION_KEY;
 
-  const [goldRushRes, zerionRes] = await Promise.allSettled([
+  const [goldRushRes, zerionPositionsRes, zerionPortfolioRes] = await Promise.allSettled([
     fetch(`https://api.covalenthq.com/v1/${chainId}/address/${address}/balances_v2/?key=${GOLDRUSH_KEY}`).then(r => r.json()),
     fetch(`https://api.zerion.io/v1/wallets/${address}/positions/?filter[position_types]=wallet`, {
+      headers: { Authorization: `Basic ${Buffer.from(ZERION_KEY + ':').toString('base64')}` }
+    }).then(r => r.json()),
+    fetch(`https://api.zerion.io/v1/wallets/${address}/portfolio/?currency=usd`, {
       headers: { Authorization: `Basic ${Buffer.from(ZERION_KEY + ':').toString('base64')}` }
     }).then(r => r.json())
   ]);
 
-  if (goldRushRes.status === 'rejected' && zerionRes.status === 'rejected') {
+  if (goldRushRes.status === 'rejected' && zerionPositionsRes.status === 'rejected' && zerionPortfolioRes.status === 'rejected') {
     return res.status(500).json({ error: 'Both data sources unavailable' });
   }
 
