@@ -13001,6 +13001,56 @@ async function doWS() {
       + `</div>`
     ).join('');
 
+    // Simple token unrealised PnL from tx history (per-token average buy price).
+    const addrLower = String(address || '').toLowerCase();
+    assets.forEach(a => {
+      const ca = String(a?.contractAddress || '').toLowerCase();
+      if (!ca) return;
+      const tokenTxs = (Array.isArray(allTxs) ? allTxs : []).filter(tx => {
+        return String(tx?.contractAddress || '').toLowerCase() === ca;
+      });
+      if (!tokenTxs.length) {
+        a.unrealizedPnlUsd = null;
+        a.unrealizedPnlPct = null;
+        if (a.realizedPnlUsd == null) a.realizedPnlPct = null;
+        return;
+      }
+      let totalSpentUsd = 0;
+      let totalBought = 0;
+      tokenTxs.forEach(tx => {
+        const isBuy = String(tx?.to || '').toLowerCase() === addrLower;
+        if (!isBuy) return;
+        const decimals = Number(tx?.tokenDecimal || a?.contractDecimals || 18) || 18;
+        const qty = Number(tx?._assetAmount || (Number(tx?.value || 0) / Math.pow(10, decimals)) || 0);
+        if (!Number.isFinite(qty) || qty <= 0) return;
+        const chain = String(tx?._chain || a?.chain || 'eth').toLowerCase();
+        const nativePrice = chain === 'bnb'
+          ? (px['binancecoin']?.usd || 600)
+          : chain === 'polygon'
+            ? (px['matic-network']?.usd || px['polygon']?.usd || 0.8)
+            : (px['ethereum']?.usd || 3000);
+        const spentNative = Number(tx?.value || 0) / 1e18;
+        const spentUsd = Math.max(0, spentNative * nativePrice);
+        totalBought += qty;
+        totalSpentUsd += spentUsd;
+      });
+      if (totalBought <= 0 || totalSpentUsd <= 0) {
+        a.unrealizedPnlUsd = null;
+        a.unrealizedPnlPct = null;
+        return;
+      }
+      const avgBuyPrice = totalSpentUsd / totalBought;
+      const currentPrice = Number(a?.price || 0);
+      const currentBalance = Number(a?.balance || 0);
+      if (!Number.isFinite(currentPrice) || currentPrice <= 0 || !Number.isFinite(currentBalance) || currentBalance <= 0) {
+        a.unrealizedPnlUsd = null;
+        a.unrealizedPnlPct = null;
+        return;
+      }
+      a.unrealizedPnlUsd = (currentPrice - avgBuyPrice) * currentBalance;
+      a.unrealizedPnlPct = avgBuyPrice > 0 ? ((currentPrice - avgBuyPrice) / avgBuyPrice) * 100 : null;
+    });
+
     const assetsForUI = (() => {
       const merged = [];
       const seen = new Set();
