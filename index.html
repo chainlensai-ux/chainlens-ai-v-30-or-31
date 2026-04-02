@@ -12746,6 +12746,7 @@ async function doWS() {
         const wsScan = await getWalletScanData(address, '8453');
         const stablecoinSymbols = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'USDC.E']);
         const isStablecoinSymbol = (symbol) => stablecoinSymbols.has(String(symbol || '').trim().toUpperCase());
+        walletScanPortfolioTotal = Number(wsScan?.portfolioTotal) || 0;
         if (wsScan && Array.isArray(wsScan.tokens)) {
           wsScan.tokens.forEach(t => {
             const ca = (t.contractAddress || '').toLowerCase();
@@ -13075,7 +13076,7 @@ async function doWS() {
       (alchemyData.holdings || []).forEach(pushRow);
       return merged;
     })();
-    const displayedTotal = assets.reduce((sum, a) => sum + (a.usdValue || 0), 0);
+    const displayedTotal = chainType === 'evm' ? walletScanPortfolioTotal : assets.reduce((sum, a) => sum + (a.usdValue || 0), 0);
     document.getElementById('ws-total-value').textContent = fmtFx(displayedTotal);
     const txsForUI = [
       ...((moralisData.txs && moralisData.txs.length) ? moralisData.txs : allTxs),

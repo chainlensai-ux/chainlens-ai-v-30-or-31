@@ -61,5 +61,5 @@ export default async function handler(req, res) {
     console.log(`[walletscan] symbol=${token.symbol} usdValue=${token.usdValue} source=${token.source}`);
   });
 
-  return res.status(200).json({ success: true, tokens: merged, totalTokens: merged.length, portfolioTotal });
+  return res.status(200).json({ portfolioTotal, tokens: merged, success: true, totalTokens: merged.length });
 }
