@@ -24,8 +24,7 @@ export default async function handler(req, res) {
   }
 
   const goldRushTokens = goldRushRes.status === 'fulfilled' ? (goldRushRes.value?.data?.items || []) : [];
-  const zerionData = zerionPositionsRes.status === 'fulfilled' ? zerionPositionsRes.value : {};
-  const zerionPortfolio = zerionPortfolioRes.status === 'fulfilled' ? zerionPortfolioRes.value : {};
+  const zerionData = zerionRes.status === 'fulfilled' ? zerionRes.value : {};
   const zerionPositions = Array.isArray(zerionData?.data) ? zerionData.data : [];
 
   const zerionMap = {};
@@ -59,7 +58,7 @@ export default async function handler(req, res) {
 
   merged.sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0));
 
-  const portfolioTotal = zerionPortfolio?.data?.attributes?.total?.positions || 0;
+  const portfolioTotal = zerionData.portfolio?.data?.attributes?.total?.positions || 0;
 
   merged.forEach(token => {
     console.log(`[walletscan] symbol=${token.symbol} usdValue=${token.usdValue} source=${token.source}`);
