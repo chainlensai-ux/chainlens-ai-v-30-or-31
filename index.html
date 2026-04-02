@@ -13087,15 +13087,22 @@ async function doWS() {
     const assetsForUI = (() => {
       const byKey = new Map();
       const pushRow = (row) => {
-        const k = String(row.symbol || '').toUpperCase();
-        if (!k) return;
+        const k = `${String(row.chain || '').toLowerCase()}:${String(row.contractAddress || '').toLowerCase()}`;
+        if (!k || k === ':') return;
         const prev = byKey.get(k);
         if (!prev || Number(row.usdValue || 0) > Number(prev.usdValue || 0)) byKey.set(k, row);
       };
       assets.forEach(pushRow);
       (moralisData.holdings || []).forEach(pushRow);
       (alchemyData.holdings || []).forEach(pushRow);
-      return [...byKey.values()];
+      let rows = [...byKey.values()];
+      // Keep only the highest-usdValue entry for VIRTUAL symbol
+      const virtualRows = rows.filter(r => String(r.symbol || '').toUpperCase() === 'VIRTUAL');
+      if (virtualRows.length > 1) {
+        const bestVirtual = virtualRows.reduce((best, r) => Number(r.usdValue || 0) > Number(best.usdValue || 0) ? r : best, virtualRows[0]);
+        rows = rows.filter(r => String(r.symbol || '').toUpperCase() !== 'VIRTUAL' || r === bestVirtual);
+      }
+      return rows;
     })();
     const displayedTotal = chainType === 'evm' ? data?.portfolioTotal || 0 : assets.reduce((sum, a) => sum + (a.usdValue || 0), 0);
     document.getElementById('ws-total-value').textContent = fmtFx(displayedTotal);
