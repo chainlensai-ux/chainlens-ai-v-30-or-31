@@ -105,9 +105,30 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Both data sources unavailable' });
   }
 
+  const CHAIN_ID_TO_ZERION_NAME = {
+    '1': 'ethereum',
+    '8453': 'base',
+    '137': 'polygon',
+    '42161': 'arbitrum',
+    '10': 'optimism',
+    '56': 'binance-smart-chain',
+    '43114': 'avalanche',
+  };
+
   const goldRushTokens = goldRushRes.status === 'fulfilled' ? (goldRushRes.value?.data?.items || []) : [];
-  const portfolioTotal = zerionPortfolioRes.status === 'fulfilled' ? (zerionPortfolioRes.value?.data?.attributes?.total?.positions || 0) : 0;
   const zerionPositions = zerionPositionsResult.status === 'fulfilled' ? (zerionPositionsResult.value || []) : [];
+
+  let portfolioTotal = 0;
+  if (zerionPortfolioRes.status === 'fulfilled') {
+    const attrs = zerionPortfolioRes.value?.data?.attributes;
+    const chainDist = attrs?.positions_distribution_by_chain;
+    const zerionChainName = CHAIN_ID_TO_ZERION_NAME[String(chainId)];
+    if (chainDist && zerionChainName && chainDist[zerionChainName] != null) {
+      portfolioTotal = chainDist[zerionChainName];
+    } else {
+      portfolioTotal = attrs?.total?.positions || 0;
+    }
+  }
 
   const zerionMap = {};
   zerionPositions.forEach(p => {
