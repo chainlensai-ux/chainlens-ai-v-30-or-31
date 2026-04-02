@@ -12810,8 +12810,6 @@ async function doWS() {
       document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
       moralisData = await fetchMoralisWalletScan(address, chainType);
     }
-    console.log('ALL ASSETS:', JSON.stringify(assets.map(a => ({symbol: a.symbol, chain: a.chain, usdValue: a.usdValue, source: a.source}))));
-    console.log('FINAL ASSETS TOTAL:', assets.map(a => a.symbol + ':' + a.usdValue).join(', '));
     document.getElementById('ws-total-value').textContent = fmtFx(assets.filter(a => (a.usdValue || 0) > 0).reduce((s, a) => s + a.usdValue, 0));
     const wsLabels = wsInferWalletLabels(address, chainType, totalUsd, assets, allTxs);
     if (isDevWalletBase && !wsLabels.includes('DEV')) wsLabels.push('DEV');
