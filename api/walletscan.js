@@ -1,3 +1,17 @@
+async function fetchAllZerionWalletPositions(address, zerionHeaders) {
+  let url = `https://api.zerion.io/v1/wallets/${address}/positions/?filter[position_types]=wallet&currency=usd&page[size]=100`;
+  const allPositions = [];
+  while (url) {
+    const res = await fetch(url, { headers: zerionHeaders });
+    if (!res.ok) break;
+    const json = await res.json();
+    const items = Array.isArray(json?.data) ? json.data : [];
+    allPositions.push(...items);
+    url = json?.links?.next || null;
+  }
+  return allPositions;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -76,12 +90,10 @@ export default async function handler(req, res) {
     });
   }
 
-  // EVM path: GoldRush + Zerion positions (wallet) + Zerion transactions + Zerion DeFi positions
-  const [goldRushRes, zerionPositionsRes, zerionPortfolioRes, zerionTxData, zerionDefiData] = await Promise.allSettled([
+  // EVM path: GoldRush + Zerion positions (wallet, all chains, paginated) + Zerion transactions + Zerion DeFi positions
+  const [goldRushRes, zerionPositionsResult, zerionPortfolioRes, zerionTxData, zerionDefiData] = await Promise.allSettled([
     fetch(`https://api.covalenthq.com/v1/${chainId}/address/${address}/balances_v2/?key=${GOLDRUSH_KEY}`).then(r => r.json()),
-    fetch(`https://api.zerion.io/v1/wallets/${address}/positions/?filter[position_types]=wallet`, {
-      headers: { Authorization: `Basic ${Buffer.from(ZERION_KEY + ':').toString('base64')}` }
-    }).then(r => r.json()),
+    fetchAllZerionWalletPositions(address, zerionHeaders),
     fetch(`https://api.zerion.io/v1/wallets/${address}/portfolio/?currency=usd`, {
       headers: { Authorization: `Basic ${Buffer.from(ZERION_KEY + ':').toString('base64')}` }
     }).then(r => r.json()),
@@ -89,13 +101,13 @@ export default async function handler(req, res) {
     fetchZerionDefi
   ]);
 
-  if (goldRushRes.status === 'rejected' && zerionPositionsRes.status === 'rejected' && zerionPortfolioRes.status === 'rejected') {
+  if (goldRushRes.status === 'rejected' && zerionPositionsResult.status === 'rejected' && zerionPortfolioRes.status === 'rejected') {
     return res.status(500).json({ error: 'Both data sources unavailable' });
   }
 
   const goldRushTokens = goldRushRes.status === 'fulfilled' ? (goldRushRes.value?.data?.items || []) : [];
   const portfolioTotal = zerionPortfolioRes.status === 'fulfilled' ? (zerionPortfolioRes.value?.data?.attributes?.total?.positions || 0) : 0;
-  const zerionPositions = zerionPositionsRes.status === 'fulfilled' ? (zerionPositionsRes.value?.data || []) : [];
+  const zerionPositions = zerionPositionsResult.status === 'fulfilled' ? (zerionPositionsResult.value || []) : [];
 
   const zerionMap = {};
   zerionPositions.forEach(p => {
