@@ -12757,7 +12757,7 @@ async function doWS() {
         }
       } catch (e) { /* walletscan is best-effort */ }
 
-      totalUsd = (debankResult?.totalUsd > 0) ? debankResult.totalUsd : wsEligibleTokenUsdForTotal(assets);
+      totalUsd = assets.filter(a => (a.usdValue || 0) > 0).reduce((s, a) => s + a.usdValue, 0);
       const activeChains = [...new Set(assets.map(a => a.chain))].join(', ');
       portfolioSummary = 'Multi-chain: ' + (activeChains || 'none') + ', Assets: ' + assets.length + ', Txs: ' + allTxs.length;
 
@@ -12810,7 +12810,7 @@ async function doWS() {
       document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
       moralisData = await fetchMoralisWalletScan(address, chainType);
     }
-    document.getElementById('ws-total-value').textContent = fmtFx(assets.reduce((sum, a) => sum + (parseFloat(a.usdValue) || 0), 0));
+    document.getElementById('ws-total-value').textContent = fmtFx(assets.filter(a => (a.usdValue || 0) > 0).reduce((s, a) => s + a.usdValue, 0));
     const wsLabels = wsInferWalletLabels(address, chainType, totalUsd, assets, allTxs);
     if (isDevWalletBase && !wsLabels.includes('DEV')) wsLabels.push('DEV');
     const devWalletBadge = isDevWalletBase
