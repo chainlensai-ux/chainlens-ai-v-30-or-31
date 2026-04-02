@@ -12705,8 +12705,11 @@ async function doWS() {
 
       // Fetch token holdings via Zerion (primary source for EVM token holdings and portfolio total)
       document.getElementById('ws-total-sub').textContent = 'Fetching token holdings via Zerion...';
-      debankResult = await fetch('/api/zerion?address=' + encodeURIComponent(address))
-        .then(r => r.ok ? r.json().then(parseZerionPositions) : null).catch(() => null);
+      const zerionData = await fetch('/api/zerion?address=' + encodeURIComponent(address))
+        .then(r => r.ok ? r.json() : null).catch(() => null);
+      console.log('ZERION POSITIONS:', JSON.stringify(zerionData?.data?.slice(0,5)));
+      console.log('ZERION TOTAL:', zerionData?.meta?.total_value);
+      debankResult = zerionData ? parseZerionPositions(zerionData) : null;
 
       if (debankResult && !debankResult._error) {
         const existingContracts = new Set(assets.map(a => ((a.contractAddress || '').toLowerCase() + ':' + (a.chain || ''))));
