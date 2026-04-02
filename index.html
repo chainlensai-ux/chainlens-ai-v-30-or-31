@@ -10815,7 +10815,7 @@ function renderAllAssets(assets, allTxs, address) {
         + `<span style="font-size:13px;font-weight:700;">${a.symbol}</span>`
         + (chainLabel ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:${c}15;color:${c};border:1px solid ${c}25;">${chainLabel}</span>` : '')
         + (stableSuspicious ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(245,166,35,0.12);color:#f5a623;border:1px solid rgba(245,166,35,0.35);">SUSPICIOUS</span>` : '')
-        + (a.isNewOrUnindexed ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(255,214,10,0.12);color:#ffd60a;border:1px solid rgba(255,214,10,0.35);">LOW CAP</span>` : '')
+        + ((a.isNewOrUnindexed && !['USDC','USDT','DAI','BUSD','FRAX','LUSD','USDC.E'].includes(String(a.symbol || '').trim().toUpperCase())) ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(255,214,10,0.12);color:#ffd60a;border:1px solid rgba(255,214,10,0.35);">LOW CAP</span>` : '')
         + `</div>`
         + `<div style="font-size:10px;color:var(--cl-text-3);margin-top:2px;">${bal.toLocaleString(undefined,{maximumFractionDigits:4})} ${a.symbol}</div>`
         + `</div>`
@@ -12738,16 +12738,20 @@ async function doWS() {
       try {
         document.getElementById('ws-total-sub').textContent = 'Running GoldRush + Zerion pipeline...';
         const wsScan = await getWalletScanData(address, '8453');
+        const stablecoinSymbols = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'USDC.E']);
+        const isStablecoinSymbol = (symbol) => stablecoinSymbols.has(String(symbol || '').trim().toUpperCase());
         if (wsScan && Array.isArray(wsScan.tokens)) {
           wsScan.tokens.forEach(t => {
             const ca = (t.contractAddress || '').toLowerCase();
             const existingIdx = assets.findIndex(a => (a.contractAddress || '').toLowerCase() === ca && a.chain === 'base');
+            const tokenIsStable = isStablecoinSymbol(t.symbol);
             if (existingIdx >= 0) {
               if (t.usdValue > 0) assets[existingIdx].usdValue = t.usdValue;
               if (t.price > 0) assets[existingIdx].price = t.price;
-              if (t.isNewOrUnindexed) assets[existingIdx].isNewOrUnindexed = true;
+              if (!tokenIsStable && t.isNewOrUnindexed) assets[existingIdx].isNewOrUnindexed = true;
+              if (isStablecoinSymbol(assets[existingIdx].symbol)) assets[existingIdx].isNewOrUnindexed = false;
             } else if ((t.usdValue || 0) >= 0.01) {
-              assets.push({ ...t, chain: 'base' });
+              assets.push({ ...t, chain: 'base', isNewOrUnindexed: tokenIsStable ? false : !!t.isNewOrUnindexed });
             }
           });
         }
@@ -13004,10 +13008,10 @@ async function doWS() {
     // Simple token unrealised PnL from tx history (per-token average buy price).
     const addrLower = String(address || '').toLowerCase();
     assets.forEach(a => {
-      const ca = String(a?.contractAddress || '').toLowerCase();
-      if (!ca) return;
+      const symbol = String(a?.symbol || '').trim().toUpperCase();
+      if (!symbol) return;
       const tokenTxs = (Array.isArray(allTxs) ? allTxs : []).filter(tx => {
-        return String(tx?.contractAddress || '').toLowerCase() === ca;
+        return String(tx?.asset || '').trim().toUpperCase() === symbol || String(tx?.symbol || '').trim().toUpperCase() === symbol;
       });
       if (!tokenTxs.length) {
         a.unrealizedPnlUsd = null;
@@ -13065,8 +13069,10 @@ async function doWS() {
       (alchemyData.holdings || []).forEach(pushRow);
       return merged;
     })();
-    // Use assets-only sum for displayed portfolio total.
-    document.getElementById('ws-total-value').textContent = fmtFx(assets.reduce((sum, a) => sum + (parseFloat(a.usdValue) || 0), 0));
+    const displayedTotal = assets.filter(a => a.usdValue > 0).reduce((sum, a) => sum + (a.usdValue || 0), 0);
+    console.log('assets total:', assets.reduce((s,a) => s + (a.usdValue||0), 0));
+    console.log('assets count:', assets.length);
+    document.getElementById('ws-total-value').textContent = fmtFx(displayedTotal);
     const txsForUI = [
       ...((moralisData.txs && moralisData.txs.length) ? moralisData.txs : allTxs),
       ...((alchemyData.txs && alchemyData.txs.length) ? alchemyData.txs : [])
