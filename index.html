@@ -13085,18 +13085,17 @@ async function doWS() {
     });
 
     const assetsForUI = (() => {
-      const merged = [];
-      const seen = new Set();
+      const byKey = new Map();
       const pushRow = (row) => {
         const k = `${String(row.chain || '').toLowerCase()}:${String(row.contractAddress || row.mint || row.symbol || '').toLowerCase()}`;
-        if (!k || seen.has(k)) return;
-        seen.add(k);
-        merged.push(row);
+        if (!k) return;
+        const prev = byKey.get(k);
+        if (!prev || Number(row.usdValue || 0) > Number(prev.usdValue || 0)) byKey.set(k, row);
       };
       assets.forEach(pushRow);
       (moralisData.holdings || []).forEach(pushRow);
       (alchemyData.holdings || []).forEach(pushRow);
-      return merged;
+      return [...byKey.values()];
     })();
     const displayedTotal = chainType === 'evm' ? data?.portfolioTotal || 0 : assets.reduce((sum, a) => sum + (a.usdValue || 0), 0);
     document.getElementById('ws-total-value').textContent = fmtFx(displayedTotal);
