@@ -9,19 +9,23 @@ export default async function handler(req, res) {
   const GOLDRUSH_KEY = process.env.GOLDRUSH_API_KEY;
   const ZERION_KEY = process.env.ZERION_KEY;
 
-  const [goldRushRes, zerionRes] = await Promise.allSettled([
+  const [goldRushRes, zerionPositionsRes, zerionPortfolioRes] = await Promise.allSettled([
     fetch(`https://api.covalenthq.com/v1/${chainId}/address/${address}/balances_v2/?key=${GOLDRUSH_KEY}`).then(r => r.json()),
     fetch(`https://api.zerion.io/v1/wallets/${address}/positions/?filter[position_types]=wallet`, {
+      headers: { Authorization: `Basic ${Buffer.from(ZERION_KEY + ':').toString('base64')}` }
+    }).then(r => r.json()),
+    fetch(`https://api.zerion.io/v1/wallets/${address}/portfolio/?currency=usd`, {
       headers: { Authorization: `Basic ${Buffer.from(ZERION_KEY + ':').toString('base64')}` }
     }).then(r => r.json())
   ]);
 
-  if (goldRushRes.status === 'rejected' && zerionRes.status === 'rejected') {
+  if (goldRushRes.status === 'rejected' && zerionPositionsRes.status === 'rejected' && zerionPortfolioRes.status === 'rejected') {
     return res.status(500).json({ error: 'Both data sources unavailable' });
   }
 
   const goldRushTokens = goldRushRes.status === 'fulfilled' ? (goldRushRes.value?.data?.items || []) : [];
-  const zerionPositions = zerionPositionsRes.status === 'fulfilled' ? (zerionPositionsRes.value?.data || []) : [];
+  const zerionData = zerionRes.status === 'fulfilled' ? zerionRes.value : {};
+  const zerionPositions = Array.isArray(zerionData?.data) ? zerionData.data : [];
 
   const zerionMap = {};
   zerionPositions.forEach(p => {
@@ -54,11 +58,11 @@ export default async function handler(req, res) {
 
   merged.sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0));
 
-  const portfolioTotal = merged.reduce((sum, t) => t.source === 'merged' ? sum + (t.usdValue || 0) : sum, 0);
+  const portfolioTotal = zerionData.portfolio?.data?.attributes?.total?.positions || 0;
 
   merged.forEach(token => {
     console.log(`[walletscan] symbol=${token.symbol} usdValue=${token.usdValue} source=${token.source}`);
   });
 
-  return res.status(200).json({ success: true, tokens: merged, totalTokens: merged.length, portfolioTotal });
+  return res.status(200).json({ portfolioTotal, tokens: merged, success: true, totalTokens: merged.length });
 }
