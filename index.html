@@ -13087,7 +13087,7 @@ async function doWS() {
     const assetsForUI = (() => {
       const byKey = new Map();
       const pushRow = (row) => {
-        const k = `${String(row.chain || '').toLowerCase()}:${String(row.contractAddress || row.mint || row.symbol || '').toLowerCase()}`;
+        const k = String(row.symbol || '').toUpperCase();
         if (!k) return;
         const prev = byKey.get(k);
         if (!prev || Number(row.usdValue || 0) > Number(prev.usdValue || 0)) byKey.set(k, row);
