@@ -10858,14 +10858,14 @@ function renderAllTxs(txs, address, chain) {
     const amountLabel = assetSymbol && assetAmount > 0
       ? (assetAmount >= 1 ? assetAmount.toFixed(4) : assetAmount.toPrecision(4)) + ' ' + assetSymbol
       : (val > 0 ? val.toFixed(4) + ' ' + nativeSym : 'Contract');
-    return `<div data-dir="${isOut?'out':'in'}" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
-      <div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;border:1px solid ${isOut?'rgba(239,71,111,0.5)':'rgba(100,255,218,0.5)'};background:${isOut?'rgba(239,71,111,0.08)':'rgba(100,255,218,0.08)'};color:${isOut?'#ef476f':'#64ffda'};">${isOut?'OUT':'IN'}</div>
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(120,88,192,0.08);">
+      <div style="width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0;${isOut?'background:rgba(239,71,111,0.12);color:#ef476f;border:1px solid rgba(239,71,111,0.2);':'background:rgba(0,255,200,0.1);color:#00ffc8;border:1px solid rgba(0,255,200,0.2);'}">${isOut?'OUT':'IN'}</div>
       <div style="flex:1;min-width:0;">
         <div style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--cl-text-2);">${isOut?'To: '+fmtAddr(tx.to):'From: '+fmtAddr(tx.from)}</div>
         <div style="font-size:10px;color:var(--cl-text-3);">${chainLabel} · ${fmtAge(tx.timeStamp||tx.time||0)}</div>
       </div>
       <div style="text-align:right;flex-shrink:0;">
-        <div style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${isOut?'#ef476f':'#64ffda'};">${amountLabel}</div>
+        <div style="font-size:12px;font-weight:700;color:${isOut?'#ef476f':'#00ffc8'};">${amountLabel}</div>
         ${(!assetSymbol && val>0)?`<div style="font-size:10px;color:var(--cl-text-3);">${fmtFx(val*nativeUsdPrice)}</div>`:''}
       </div>
     </div>`;
@@ -12807,7 +12807,7 @@ async function doWS() {
       document.getElementById('ws-total-sub').textContent = 'Loading Moralis portfolio context...';
       moralisData = await fetchMoralisWalletScan(address, chainType);
     }
-    document.getElementById('ws-total-value').textContent = fmtFx(debankResult != null ? debankResult.totalUsd : totalUsd);
+    document.getElementById('ws-total-value').textContent = fmtFx(assets.reduce((sum, a) => sum + (parseFloat(a.usdValue) || 0), 0));
     const wsLabels = wsInferWalletLabels(address, chainType, totalUsd, assets, allTxs);
     if (isDevWalletBase && !wsLabels.includes('DEV')) wsLabels.push('DEV');
     const devWalletBadge = isDevWalletBase
@@ -13016,8 +13016,8 @@ async function doWS() {
       (alchemyData.holdings || []).forEach(pushRow);
       return merged;
     })();
-    // Use Zerion portfolio total as-is (already includes all chains); do not re-sum from merged assets.
-    document.getElementById('ws-total-value').textContent = fmtFx(debankResult != null ? debankResult.totalUsd : totalUsd);
+    // Use assets-only sum for displayed portfolio total.
+    document.getElementById('ws-total-value').textContent = fmtFx(assets.reduce((sum, a) => sum + (parseFloat(a.usdValue) || 0), 0));
     const txsForUI = [
       ...((moralisData.txs && moralisData.txs.length) ? moralisData.txs : allTxs),
       ...((alchemyData.txs && alchemyData.txs.length) ? alchemyData.txs : [])
