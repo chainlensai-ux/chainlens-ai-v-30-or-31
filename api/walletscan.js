@@ -140,6 +140,9 @@ export default async function handler(req, res) {
 
   merged.sort((a, b) => (b.usdValue || 0) - (a.usdValue || 0));
 
+  const virtualTokens = merged.filter(t => t.symbol === 'VIRTUAL');
+  console.log(`[walletscan] VIRTUAL positions (${virtualTokens.length}):`, JSON.stringify(virtualTokens));
+
   merged.forEach(token => {
     console.log(`[walletscan] symbol=${token.symbol} usdValue=${token.usdValue} source=${token.source}`);
   });
