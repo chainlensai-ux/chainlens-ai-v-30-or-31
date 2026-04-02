@@ -13076,7 +13076,7 @@ async function doWS() {
       (alchemyData.holdings || []).forEach(pushRow);
       return merged;
     })();
-    const displayedTotal = chainType === 'evm' ? walletScanPortfolioTotal : assets.reduce((sum, a) => sum + (a.usdValue || 0), 0);
+    const displayedTotal = chainType === 'evm' ? wsScan?.portfolioTotal || 0 : assets.reduce((sum, a) => sum + (a.usdValue || 0), 0);
     document.getElementById('ws-total-value').textContent = fmtFx(displayedTotal);
     const txsForUI = [
       ...((moralisData.txs && moralisData.txs.length) ? moralisData.txs : allTxs),
