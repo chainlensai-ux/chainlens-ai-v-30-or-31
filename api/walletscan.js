@@ -116,7 +116,7 @@ export default async function handler(req, res) {
   };
 
   const goldRushTokens = goldRushRes.status === 'fulfilled' ? (goldRushRes.value?.data?.items || []) : [];
-  console.log('[walletscan] goldRushTokens count:', goldRushTokens.length);
+  console.log('[walletscan] goldRushTokens:', goldRushTokens.map(t => t.contract_ticker_symbol + ':' + t.quote));
   const zerionPositions = zerionPositionsResult.status === 'fulfilled' ? (zerionPositionsResult.value || []) : [];
 
   let portfolioTotal = 0;
