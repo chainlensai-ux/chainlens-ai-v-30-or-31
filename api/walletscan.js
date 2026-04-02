@@ -116,6 +116,7 @@ export default async function handler(req, res) {
   };
 
   const goldRushTokens = goldRushRes.status === 'fulfilled' ? (goldRushRes.value?.data?.items || []) : [];
+  console.log('[walletscan] goldRushTokens count:', goldRushTokens.length);
   const zerionPositions = zerionPositionsResult.status === 'fulfilled' ? (zerionPositionsResult.value || []) : [];
 
   let portfolioTotal = 0;
@@ -188,5 +189,6 @@ export default async function handler(req, res) {
     ? (Array.isArray(zerionDefiData.value?.data) ? zerionDefiData.value.data : [])
     : (Array.isArray(zerionDefiData?.data) ? zerionDefiData.data : []);
 
+  console.log('[walletscan] portfolioTotal:', portfolioTotal);
   return res.status(200).json({ portfolioTotal, tokens: merged, transactions, positions, success: true, totalTokens: merged.length });
 }
