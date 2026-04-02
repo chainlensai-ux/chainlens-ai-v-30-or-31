@@ -12707,6 +12707,8 @@ async function doWS() {
       document.getElementById('ws-total-sub').textContent = 'Fetching token holdings via Zerion...';
       const zerionData = await fetch('/api/zerion?address=' + encodeURIComponent(address))
         .then(r => r.ok ? r.json() : null).catch(() => null);
+      console.log('ZERION VAR:', JSON.stringify(Object.keys(window).filter(k => k.toLowerCase().includes('zerion'))));
+      console.log('ZERION DATA VAR:', zerionData);
       console.log('ZERION POSITIONS:', JSON.stringify(zerionData?.data?.slice(0,5)));
       console.log('ZERION TOTAL:', zerionData?.meta?.total_value);
       debankResult = zerionData ? parseZerionPositions(zerionData) : null;
