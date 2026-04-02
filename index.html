@@ -8028,19 +8028,23 @@ function parseZerionPositions(raw) {
     const ch = attrs.changes || {};
     const changeAbs1d = typeof ch.absolute_1d === 'number' ? ch.absolute_1d : parseFloat(ch.absolute_1d);
     const changePct1d = typeof ch.percent_1d === 'number' ? ch.percent_1d : parseFloat(ch.percent_1d);
-    let stats = null;
-    if (pnlById && fungibleId && pnlById[fungibleId]) stats = pnlById[fungibleId];
-    if (!stats && pnlByImpl && contractAddress) {
-      const zChain = CHAIN_ID_FOR_IMPL[chainKey];
-      if (zChain) {
-        const implKey = `${zChain}:${contractAddress.toLowerCase()}`;
-        stats = pnlByImpl[implKey] || pnlByImpl[`${zChain}:${contractAddress}`];
+    const parseZerionPnlValue = (v) => {
+      if (v == null) return null;
+      const direct = Number(v);
+      if (Number.isFinite(direct)) return direct;
+      if (typeof v === 'object') {
+        const candidates = [v.value, v.amount, v.usd, v.absolute, v.gain, v.float];
+        for (const c of candidates) {
+          const n = Number(c);
+          if (Number.isFinite(n)) return n;
+        }
       }
-    }
-    const realizedPnlUsd = stats && Number.isFinite(Number(stats.realized_gain)) ? Number(stats.realized_gain) : null;
-    const unrealizedPnlUsd = stats && Number.isFinite(Number(stats.unrealized_gain)) ? Number(stats.unrealized_gain) : null;
-    const realizedPnlPct = stats && Number.isFinite(Number(stats.relative_realized_gain_percentage)) ? Number(stats.relative_realized_gain_percentage) : null;
-    const unrealizedPnlPct = stats && Number.isFinite(Number(stats.relative_unrealized_gain_percentage)) ? Number(stats.relative_unrealized_gain_percentage) : null;
+      return null;
+    };
+    const realizedPnlUsd = parseZerionPnlValue(attrs.profit_loss);
+    const unrealizedPnlUsd = parseZerionPnlValue(attrs.unrealised_profit_loss);
+    const realizedPnlPct = null;
+    const unrealizedPnlPct = null;
     out[chainKey].tokens.push({
       contractTicker: symbol, symbol, contractAddress, name, fungibleId,
       contractDecimals: parseFloat((attrs.quantity || {}).decimals) || 18, balance, usdValue, price, chain: chainKey,
@@ -10796,19 +10800,14 @@ function renderAllAssets(assets, allTxs, address) {
       const chainLabel = a.chain ? a.chain.toUpperCase() : '';
       const rlz = a.realizedPnlUsd;
       const urlz = a.unrealizedPnlUsd;
-      const hasFifo = (typeof rlz === 'number' && Number.isFinite(rlz)) || (typeof urlz === 'number' && Number.isFinite(urlz));
       const rlzPct = a.realizedPnlPct;
       const urlzPct = a.unrealizedPnlPct;
-      const pnlBlock = hasFifo
-        ? `<div style="text-align:right;flex-shrink:0;min-width:100px;">`
+      const pnlBlock = `<div style="text-align:right;flex-shrink:0;min-width:100px;">`
         + `<div style="font-size:8px;font-weight:700;letter-spacing:0.4px;color:var(--cl-text-4);text-transform:uppercase;margin-bottom:2px;">Realised</div>`
         + `<div style="font-size:11px;font-weight:800;color:${pnlColor(rlz)};line-height:1.2;">${typeof rlz === 'number' && Number.isFinite(rlz) ? fmtSignedUsd(rlz) : '—'}${typeof rlzPct === 'number' && Number.isFinite(rlzPct) ? ' <span style="font-size:9px;font-weight:700;">(' + fmtSignedPct(rlzPct, 1) + ')</span>' : ''}</div>`
         + `<div style="font-size:8px;font-weight:700;letter-spacing:0.4px;color:var(--cl-text-4);text-transform:uppercase;margin-top:6px;margin-bottom:2px;">Unrealised</div>`
         + `<div style="font-size:11px;font-weight:800;color:${pnlColor(urlz)};line-height:1.2;">${typeof urlz === 'number' && Number.isFinite(urlz) ? fmtSignedUsd(urlz) : '—'}${typeof urlzPct === 'number' && Number.isFinite(urlzPct) ? ' <span style="font-size:9px;font-weight:700;">(' + fmtSignedPct(urlzPct, 1) + ')</span>' : ''}</div>`
-        + `</div>`
-        : (typeof a.changeAbs1d === 'number' && Number.isFinite(a.changeAbs1d)
-          ? `<div style="text-align:right;flex-shrink:0;min-width:72px;"><div style="font-size:8px;font-weight:700;color:var(--cl-text-4);text-transform:uppercase;margin-bottom:2px;">24h Δ</div><div style="font-size:11px;font-weight:800;color:${pnlColor(a.changeAbs1d)};">${fmtSignedUsd(a.changeAbs1d)}</div>${typeof a.changePct1d === 'number' && Number.isFinite(a.changePct1d) ? '<div style="font-size:9px;font-weight:700;color:' + pnlColor(a.changePct1d) + ';">' + fmtSignedPct(a.changePct1d, 2) + '</div>' : ''}</div>`
-          : `<div style="text-align:right;flex-shrink:0;min-width:72px;"><div style="font-size:8px;color:var(--cl-text-4);text-transform:uppercase;margin-bottom:2px;">PnL</div><div style="font-size:10px;color:var(--cl-text-4);">—</div></div>`);
+        + `</div>`;
       return `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(139,92,246,0.08);">`
         + `<div style="width:36px;height:36px;border-radius:10px;background:${c}18;border:1px solid ${c}30;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:900;color:${c};font-family:'Syne',sans-serif;flex-shrink:0;">${a.symbol.slice(0,3)}</div>`
         + `<div style="flex:1;min-width:0;">`
