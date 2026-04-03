@@ -13751,28 +13751,19 @@ async function doBaseScreener() {
   tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:13px;"><span class="cl-spinner"></span> Fetching live Base chain data...</td></tr>';
 
   try {
-    const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/base');
+    const r = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/pairs/base', method: 'GET' })
+    });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
-    let pairs = (d.pairs || []);
-
-    // Filter pairs
-    pairs = pairs.filter(function(pair) {
-      if (!pair.baseToken) return false;
-      if (pair.baseToken.name.length > 25) return false;
-      if ((pair.volume && pair.volume.h24 || 0) < 5000) return false;
-      if ((pair.baseToken.symbol || '').includes('USD')) return false;
-      const nameLower = (pair.baseToken.name || '').toLowerCase();
-      if (nameLower.includes('brian') || nameLower.includes('coinbase') || nameLower.includes('normie')) return false;
-      return true;
-    });
-
-    // Sort by 24h price change descending
-    pairs.sort(function(a, b) {
-      return parseFloat(b.priceChange && b.priceChange.h24 || 0) - parseFloat(a.priceChange && a.priceChange.h24 || 0);
-    });
-
-    pairs = pairs.slice(0, 60);
+    let pairs = (d.pairs || [])
+      .filter(p => p.baseToken && p.baseToken.name.length <= 25)
+      .filter(p => (p.volume?.h24 || 0) >= 5000)
+      .filter(p => !(p.baseToken.symbol || '').includes('USD'))
+      .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
+      .slice(0, 25);
 
     if (!pairs.length) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--cl-text-3);">No tokens matched the filter criteria.</td></tr>';
