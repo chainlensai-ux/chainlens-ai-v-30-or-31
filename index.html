@@ -780,14 +780,15 @@ body::after {
   text-align: center;
   position: relative;
   overflow: hidden;
+  background: #07070e;
 }
 .cl-hero__orb {
   position: absolute; border-radius: 50%; pointer-events: none;
   filter: blur(80px);
 }
-.cl-hero__orb--1 { width: 440px; height: 440px; top: -160px; left: 50%; transform: translateX(-50%); background: radial-gradient(circle, rgba(139,92,246,0.22), transparent 70%); }
-.cl-hero__orb--2 { width: 220px; height: 220px; top: 40px; right: 5%; background: radial-gradient(circle, rgba(100,255,218,0.09), transparent 70%); }
-.cl-hero__orb--3 { width: 200px; height: 200px; top: 60px; left: 5%; background: radial-gradient(circle, rgba(139,92,246,0.12), transparent 70%); }
+.cl-hero__orb--1 { width: 440px; height: 440px; top: -160px; left: 50%; transform: translateX(-50%); background: radial-gradient(ellipse at 70% 50%, rgba(217,70,239,0.06) 0%, transparent 60%); }
+.cl-hero__orb--2 { width: 220px; height: 220px; top: 40px; right: 5%; background: radial-gradient(ellipse at 30% 50%, rgba(45,212,191,0.05) 0%, transparent 60%); }
+.cl-hero__orb--3 { display: none; }
 
 .cl-hero__eyebrow {
   display: inline-flex; align-items: center; gap: 8px;
@@ -3521,12 +3522,14 @@ body::after {
   background: rgba(139,92,246,0.06);
   border: 1px solid rgba(139,92,246,0.28);
   border-radius: 20px;
-  font-family: 'Inter', sans-serif;
-  font-size: 11.5px; font-weight: 500;
+  font-family: 'IBM Plex Mono', 'JetBrains Mono', monospace;
+  font-size: 10px; font-weight: 500;
   color: var(--cl-text-2);
   cursor: pointer;
   transition: all 0.18s var(--cl-ease-out);
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 .cl-hero-chat__pill:hover {
   background: rgba(139,92,246,0.14);
@@ -3534,6 +3537,10 @@ body::after {
   color: var(--cl-text);
   transform: translateY(-1px);
 }
+.cl-hero-chat__pill:nth-child(1) { border-color: #2DD4BF; }
+.cl-hero-chat__pill:nth-child(2) { border-color: #8b5cf6; }
+.cl-hero-chat__pill:nth-child(3) { border-color: #d946ef; }
+.cl-hero-chat__pill:nth-child(4) { border-color: rgba(255,255,255,0.2); }
 
 /* Input row */
 .cl-hero-chat__input-row {
@@ -3799,7 +3806,7 @@ body::after {
   border-top: none;
 }
 .hc-side-analysis__sec-h {
-  color: #8b5cf6;
+  color: #ffffff;
   font-family: 'Inter', sans-serif;
   font-size: 11px;
   font-weight: 700;
@@ -3998,6 +4005,65 @@ body::after {
 }
 .td-settings-link:hover .td-settings-link__icon { color: #64ffda; }
 .td-settings-link__icon svg { width: 20px; height: 20px; display: block; }
+
+/* ════════════════════════════════════════════════
+   TOKEN SCREENER (Base Chain)
+════════════════════════════════════════════════ */
+.bs-header { margin-bottom: 24px; }
+.bs-header__title {
+  font-family: 'Syne', sans-serif;
+  font-size: 28px; font-weight: 900; color: #fff;
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 6px;
+}
+.bs-live-badge {
+  display: inline-flex; align-items: center;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 9px; font-weight: 800;
+  letter-spacing: 1.2px; text-transform: uppercase;
+  background: #d946ef;
+  border: 1px solid rgba(217,70,239,0.3);
+  color: #fff;
+  font-family: 'JetBrains Mono', monospace;
+  box-shadow: 0 0 12px rgba(217,70,239,0.25);
+}
+.bs-header__sub { font-size: 13px; color: var(--cl-text-3); line-height: 1.5; }
+.bs-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--cl-border);
+  border-radius: 14px;
+  background: var(--cl-surface);
+}
+.bs-table { width: 100%; border-collapse: collapse; }
+.bs-table th {
+  color: rgba(255,255,255,0.3);
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 2px; text-transform: uppercase;
+  padding: 12px 14px; text-align: left;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+}
+.bs-table td {
+  padding: 10px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  vertical-align: middle;
+}
+.bs-row:last-child td { border-bottom: none; }
+.bs-row {
+  cursor: default;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.bs-row:hover {
+  background: rgba(139,92,246,0.04);
+  box-shadow: inset 0 0 0 1px rgba(139,92,246,0.08);
+}
+.bs-trend-bar {
+  width: 60px; height: 8px; border-radius: 4px;
+  background: rgba(255,255,255,0.06); overflow: hidden;
+}
+.bs-trend-bar__fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
 
 /* Terminal Settings modal (in-page, no route change) */
 .td-settings-overlay {
@@ -4337,7 +4403,7 @@ body::after {
 }
 .td-chat-msg--user { background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.2); color: #fff; align-self: flex-end; }
 .td-chat-msg__name { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 3px; }
-.td-chat-msg--ai .td-chat-msg__name { color: #8b5cf6; }
+.td-chat-msg--ai .td-chat-msg__name { color: #ffffff; }
 .td-chat-msg--user .td-chat-msg__name { color: #6d28d9; }
 .td-chat-input-row {
   padding: 10px 12px; border-top: 1px solid #1a1a1a;
@@ -4354,11 +4420,11 @@ body::after {
   box-shadow: 0 0 0 1px rgba(45,212,191,0.35), 0 0 14px rgba(45,212,191,0.22);
 }
 .td-chat-send {
-  width: 34px; height: 34px; border-radius: 8px; background: #8b5cf6; border: none;
+  width: 34px; height: 34px; border-radius: 8px; background: linear-gradient(135deg, #8b5cf6, #d946ef); border: none;
   cursor: pointer; display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; transition: background 0.2s;
+  flex-shrink: 0; transition: opacity 0.2s;
 }
-.td-chat-send:hover { background: #7c3aed; }
+.td-chat-send:hover { opacity: 0.85; }
 .td-chat-send svg { width: 13px; height: 13px; fill: #fff; }
 .td-chat-typing { display: flex; gap: 3px; padding: 4px 2px; }
 .td-chat-typing span {
@@ -4378,7 +4444,7 @@ body::after {
 .td-chat-thinking__status {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: #8b5cf6;
+  color: #ffffff;
   letter-spacing: 0.2px;
 }
 
@@ -7266,6 +7332,39 @@ WALLETCONNECT
 </div>
 
 <!-- ═════════════════════════════════════
+  PAGE: BASE TOKEN SCREENER
+═════════════════════════════════════ -->
+<div class="cl-page" id="pg-basescreener">
+  <div class="cl-container"><div class="cl-page-inner">
+    <div class="bs-header">
+      <button class="cl-page-back" onclick="go('terminal')" style="margin-bottom:10px;">← Back</button>
+      <div class="bs-header__title">
+        TOKEN SCREENER
+        <span class="bs-live-badge">LIVE</span>
+      </div>
+      <div class="bs-header__sub">Real-time Base chain pairs — filtered &amp; sorted by 24h price change</div>
+    </div>
+    <div class="bs-table-wrap">
+      <table class="bs-table">
+        <thead>
+          <tr>
+            <th>TOKEN</th>
+            <th>PRICE</th>
+            <th>24H %</th>
+            <th>BUYS / SELLS</th>
+            <th>AGE</th>
+            <th>TREND</th>
+          </tr>
+        </thead>
+        <tbody id="bs-tbody">
+          <tr><td colspan="6" style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:13px;"><span class="cl-spinner"></span> Fetching live Base chain data...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div></div>
+</div>
+
+<!-- ═════════════════════════════════════
   PAGE: DISCLAIMER
 ═════════════════════════════════════ -->
 <div class="cl-page" id="pg-disclaimer">
@@ -7360,6 +7459,15 @@ WALLETCONNECT
           </span>
           <span class="td-nav-item__name">Token Scanner</span>
           <span class="td-nav-item__badge td-nav-item__badge--elite">Elite</span>
+        </div>
+        <div class="td-nav-item" onclick="tdNavGo('basescreener',this)">
+          <span class="td-nav-item__icon">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M3 6h18M3 12h18M3 18h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="20" cy="18" r="2" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </span>
+          <span class="td-nav-item__name">Token Screener</span>
         </div>
         <div class="td-nav-item" onclick="tdNavGo('ghosttrade',this)">
           <span class="td-nav-item__icon">
@@ -7838,7 +7946,7 @@ function go(id) {
   }
 
   // Auto-init pages
-  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, whalealerts: loadWhaleAlertsPage, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); }, exchangeflow: doExchangeFlow, tokenscanner: doTokenScanner, portfoliotracker: doPortfolioTracker };
+  const inits = { sentiment: doSentiment, narrative: doNarrative, signals: doSignals, pumpalert: doPumpAlert, digradar: scanDips, tokenunlocks: loadTokenUnlocks, smartwallets: loadSmartWallets, whalealerts: loadWhaleAlertsPage, walletscan: () => renderSavedWallets(), ghosttrade: () => { updateGT(true); renderTrades(); _paintStreak(); gtUpdateLeaderboard(); }, exchangeflow: doExchangeFlow, tokenscanner: doTokenScanner, portfoliotracker: doPortfolioTracker, basescreener: doBaseScreener };
   if (inits[id]) inits[id]();
   if (id === 'alerts') { renderAlerts(); startAlertChecker(); }
   if (id === 'leaderboard') renderLB();
@@ -13611,6 +13719,98 @@ CONTEXT: [2 sentences on what this volume pattern means for price direction]`, 3
 }
 
 // ══════════════════════════════════════════════
+// BASE TOKEN SCREENER
+// ══════════════════════════════════════════════
+function bsFormatAge(timestamp) {
+  if (!timestamp) return '—';
+  const diff = Date.now() - timestamp;
+  const mins = diff / 60000;
+  const hours = mins / 60;
+  const days = hours / 24;
+  const weeks = days / 7;
+  const months = days / 30;
+  if (months >= 1) return Math.floor(months) + 'm';
+  if (weeks >= 1) return Math.floor(weeks) + 'w';
+  if (days >= 1) return Math.floor(days) + 'd';
+  if (hours >= 1) return Math.floor(hours) + 'h';
+  return Math.floor(mins) + 'min';
+}
+
+function bsFormatPrice(price) {
+  if (!price || isNaN(price)) return '—';
+  if (price < 0.000001) return price.toExponential(2);
+  if (price < 0.001) return price.toFixed(7);
+  if (price < 1) return price.toFixed(5);
+  if (price < 1000) return price.toFixed(4);
+  return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+async function doBaseScreener() {
+  const tbody = document.getElementById('bs-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:13px;"><span class="cl-spinner"></span> Fetching live Base chain data...</td></tr>';
+
+  try {
+    const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/base');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    let pairs = (d.pairs || []);
+
+    // Filter pairs
+    pairs = pairs.filter(function(pair) {
+      if (!pair.baseToken) return false;
+      if (pair.baseToken.name.length > 25) return false;
+      if ((pair.volume && pair.volume.h24 || 0) < 5000) return false;
+      if ((pair.baseToken.symbol || '').includes('USD')) return false;
+      const nameLower = (pair.baseToken.name || '').toLowerCase();
+      if (nameLower.includes('brian') || nameLower.includes('coinbase') || nameLower.includes('normie')) return false;
+      return true;
+    });
+
+    // Sort by 24h price change descending
+    pairs.sort(function(a, b) {
+      return parseFloat(b.priceChange && b.priceChange.h24 || 0) - parseFloat(a.priceChange && a.priceChange.h24 || 0);
+    });
+
+    pairs = pairs.slice(0, 60);
+
+    if (!pairs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--cl-text-3);">No tokens matched the filter criteria.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = pairs.map(function(pair) {
+      const name = pair.baseToken.name || '—';
+      const symbol = pair.baseToken.symbol || '—';
+      const price = parseFloat(pair.priceUsd || 0);
+      const change = parseFloat(pair.priceChange && pair.priceChange.h24 || 0);
+      const buys = (pair.txns && pair.txns.h24 && pair.txns.h24.buys) || 0;
+      const sells = (pair.txns && pair.txns.h24 && pair.txns.h24.sells) || 0;
+      const age = bsFormatAge(pair.pairCreatedAt);
+
+      const changeUp = change >= 0;
+      const changeFmt = (changeUp ? '+' : '') + change.toFixed(2) + '%';
+      const changeColor = changeUp ? '#2DD4BF' : '#ef476f';
+      const bsColor = buys > sells ? '#2DD4BF' : (sells > buys ? '#ef476f' : 'rgba(255,255,255,0.5)');
+      const trendColor = changeUp ? '#2DD4BF' : '#ec4899';
+      const barWidth = Math.min(Math.abs(change), 100);
+
+      return '<tr class="bs-row">'
+        + '<td><div style="font-size:13px;font-weight:700;color:#fff;line-height:1.2;">' + name + '</div>'
+        + '<div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:2px;font-family:\'JetBrains Mono\',monospace;">' + symbol + '</div></td>'
+        + '<td style="color:#fff;font-family:\'JetBrains Mono\',monospace;font-size:12px;">$' + bsFormatPrice(price) + '</td>'
+        + '<td style="color:' + changeColor + ';font-weight:700;font-family:\'JetBrains Mono\',monospace;">' + changeFmt + '</td>'
+        + '<td style="color:' + bsColor + ';font-family:\'JetBrains Mono\',monospace;">' + buys + ' / ' + sells + '</td>'
+        + '<td style="color:rgba(255,255,255,0.45);font-size:11px;">' + age + '</td>'
+        + '<td><div class="bs-trend-bar"><div class="bs-trend-bar__fill" style="width:' + barWidth + '%;background:' + trendColor + ';"></div></div></td>'
+        + '</tr>';
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:#ef476f;font-size:13px;">Failed to load data: ' + e.message + '</td></tr>';
+  }
+}
+
+// ══════════════════════════════════════════════
 // TOKEN SCANNER
 // ══════════════════════════════════════════════
 function tsParseGoPlusRow(gpJson, contractAddress) {
@@ -15862,11 +16062,19 @@ updateHeroTierLabel();
   async function lfFetchDex() {
     var items = [];
     try {
-      var r = await fetch('https://api.dexscreener.com/latest/dex/search?q=base+ecosystem');
+      var r = await fetch('https://api.dexscreener.com/latest/dex/pairs/base');
       var d = await r.json();
       var pairs = (d.pairs || [])
-        .filter(function(p) { return p.chainId === 'base' && p.volume && p.volume.h24 > 0; })
-        .sort(function(a, b) { return (b.volume.h24 || 0) - (a.volume.h24 || 0) })
+        .filter(function(p) {
+          if (!p.baseToken) return false;
+          if (p.baseToken.name.length > 25) return false;
+          if ((p.volume && p.volume.h24 || 0) < 5000) return false;
+          if ((p.baseToken.symbol || '').includes('USD')) return false;
+          var nameLower = (p.baseToken.name || '').toLowerCase();
+          if (nameLower.includes('brian') || nameLower.includes('coinbase') || nameLower.includes('normie')) return false;
+          return true;
+        })
+        .sort(function(a, b) { return parseFloat(b.priceChange && b.priceChange.h24 || 0) - parseFloat(a.priceChange && a.priceChange.h24 || 0); })
         .slice(0, 10);
 
       pairs.forEach(function(p) {
@@ -15876,12 +16084,13 @@ updateHeroTierLabel();
         var isBase = mcap > 0 && mcap < 500000;
         var isWhale = vol > 500000;
         var type = isBase ? 'base' : isWhale ? 'whale' : 'dex';
-        // age in seconds
         var ageMin = Math.floor(Math.random() * 25 + 2);
+        var name = (p.baseToken && p.baseToken.name) || 'Unknown';
+        var symbol = (p.baseToken && p.baseToken.symbol) || '?';
         items.push({
           type: type,
-          name: (p.baseToken && p.baseToken.name) || 'Unknown',
-          symbol: (p.baseToken && p.baseToken.symbol) || '?',
+          name: name + ' (' + symbol + ')',
+          symbol: symbol,
           change24h: change,
           volume: vol,
           mcap: mcap,
