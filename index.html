@@ -13869,6 +13869,7 @@ function bsFormatPrice(price) {
 }
 
 async function doBaseScreener() {
+  console.log('SCREENER FETCH STARTING');
   const tbody = document.getElementById('bs-tbody');
   if (!tbody) return;
   tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:13px;"><span class="cl-spinner"></span> Fetching live Base chain data...</td></tr>';
@@ -13919,8 +13920,9 @@ async function doBaseScreener() {
         + '<td><div class="bs-trend-bar"><div class="bs-trend-bar__fill" style="width:' + barWidth + '%;background:' + trendColor + ';"></div></div></td>'
         + '</tr>';
     }).join('');
-  } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:#ef476f;font-size:13px;">Failed to load data: ' + e.message + '</td></tr>';
+  } catch(err) {
+    console.log('SCREENER ERROR:', err);
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:#ef476f;font-size:13px;">Failed to load data: ' + err.message + '</td></tr>';
   }
 }
 
