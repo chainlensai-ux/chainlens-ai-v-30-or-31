@@ -13871,7 +13871,7 @@ function bsFormatPrice(price) {
 async function doBaseScreener() {
   console.log('SCREENER FETCH STARTING');
   const tbody = document.getElementById('bs-tbody');
-  if (!tbody) return;
+  if (!tbody) { console.error('bs-tbody not found'); return; }
   tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:13px;"><span class="cl-spinner"></span> Fetching live Base chain data...</td></tr>';
 
   try {
@@ -13898,6 +13898,8 @@ async function doBaseScreener() {
       return;
     }
 
+    console.log('TBODY ELEMENT:', tbody);
+    console.log('PAIRS TO RENDER:', pairs.length);
     tbody.innerHTML = pairs.map(function(pair) {
       const name = pair.baseToken.name || '—';
       const symbol = pair.baseToken.symbol || '—';
