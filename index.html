@@ -3856,7 +3856,7 @@ body::after {
 ════════════════════════════════════════════════ */
 #pg-terminal { padding-top: 0; background: #0a0a0a; }
 #pg-terminal.active {
-  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column; height: 100vh;
   animation: td-fade-in 0.4s ease forwards;
 }
 .terminal-active .cl-nav { display: none !important; }
@@ -3928,7 +3928,7 @@ body::after {
 .td-topbar__exit-btn:hover { color: #888; border-color: #333; }
 
 /* Body Layout */
-.td-body-wrap { display: flex; flex: 1; overflow: hidden; position: relative; }
+.td-body-wrap { display: flex; flex: 1; position: relative; }
 
 /* Left Sidebar */
 .td-sidebar {
@@ -4126,7 +4126,6 @@ body::after {
 /* Main Content */
 .td-main {
   flex: 1;
-  overflow: hidden;
   background: #07070e;
   padding: 12px;
   display: flex;
@@ -4292,7 +4291,6 @@ body::after {
   flex-direction: column;
   min-height: 0;
   flex: 1;
-  overflow: hidden;
 }
 .td-screener__head, .td-screener__filters {
   padding: 10px 14px;
@@ -4328,7 +4326,7 @@ body::after {
 .td-filter-pill,.td-filter-btn{
   height:28px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.02);color:rgba(255,255,255,0.72);font-size:11px;
 }
-.td-table-wrap{flex:1;min-height:0;overflow:auto;}
+.td-table-wrap{flex:1;}
 .td-token-table{width:100%;border-collapse:collapse;}
 .td-token-table th{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.28);text-align:left;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.08);}
 .td-token-table td{padding:11px 12px;height:44px;font-size:12px;color:#fff;border-bottom:1px solid rgba(255,255,255,0.04);font-family:'IBM Plex Mono',monospace;}
@@ -8199,13 +8197,22 @@ async function tdLoadSentimentStat() {
   const sub = document.getElementById('td-stat-sentiment-sub');
   if (!stat) return;
   try {
-    const r = await fetch('/api/data');
+    const r = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' })
+    });
     const d = await r.json();
-    const score = Number(d?.score ?? d?.sentiment ?? 0);
-    const sentiment = score > 0.2 ? 'Bullish' : (score < -0.2 ? 'Bearish' : 'Neutral');
+    const pairs = Array.isArray(d?.pairs) ? d.pairs.slice(0, 20) : [];
+    const avgChange = pairs.length
+      ? pairs.reduce((sum, p) => sum + Number(p?.priceChange?.h24 || 0), 0) / pairs.length
+      : 0;
+    const sentiment = avgChange > 1 ? 'Bullish' : (avgChange < -1 ? 'Bearish' : 'Neutral');
     const color = sentiment === 'Bullish' ? '#2DD4BF' : (sentiment === 'Bearish' ? '#f43f5e' : '#eab308');
     stat.innerHTML = `<span class="td-dot" style="background:${color}"></span>${sentiment}`;
-    if (sub) sub.textContent = d?.summary || 'Signal from internal /api/data feed';
+    if (sub) sub.textContent = pairs.length
+      ? `Based on ${pairs.length} Base DexScreener pairs (avg 24h ${avgChange >= 0 ? '+' : ''}${avgChange.toFixed(2)}%).`
+      : 'No Base pair data available from DexScreener.';
   } catch (e) {
     stat.innerHTML = '<span class="td-dot" style="background:#eab308"></span>Neutral';
     if (sub) sub.textContent = 'Sentiment feed unavailable.';
