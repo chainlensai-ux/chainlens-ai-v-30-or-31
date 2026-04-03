@@ -3897,7 +3897,7 @@ body::after {
   font-size: 12px; color: #fff; outline: none; transition: border-color 0.2s; box-sizing: border-box;
 }
 .td-topbar__search-input::placeholder { color: #333; }
-.td-topbar__search-input:focus { border-color: rgba(139,92,246,0.4); }
+.td-topbar__search-input:focus { border-color: rgba(45,212,191,0.4); }
 .td-topbar__search-icon {
   position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
   color: #333; font-size: 13px; pointer-events: none;
@@ -3912,14 +3912,14 @@ body::after {
 .td-topbar__bell:hover { color: #fff; border-color: #333; }
 .td-topbar__bell-dot {
   position: absolute; top: 6px; right: 6px; width: 5px; height: 5px;
-  border-radius: 50%; background: #8b5cf6;
+  border-radius: 50%; background: #2DD4BF;
 }
 .td-topbar__wallet-btn {
-  padding: 6px 12px; background: rgba(139,92,246,0.12); border: 1px solid rgba(139,92,246,0.3);
+  padding: 6px 12px; background: rgba(45,212,191,0.12); border: 1px solid rgba(45,212,191,0.3);
   border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: 11px;
-  color: #a78bfa; cursor: pointer; transition: all 0.2s; white-space: nowrap;
+  color: #2DD4BF; cursor: pointer; transition: all 0.2s; white-space: nowrap;
 }
-.td-topbar__wallet-btn:hover { background: rgba(139,92,246,0.2); border-color: rgba(139,92,246,0.5); }
+.td-topbar__wallet-btn:hover { background: rgba(45,212,191,0.18); border-color: rgba(45,212,191,0.5); }
 .td-topbar__exit-btn {
   padding: 5px 10px; background: none; border: 1px solid #222; border-radius: 8px;
   font-family: 'Inter', sans-serif; font-size: 10px; color: #444;
@@ -3943,7 +3943,7 @@ body::after {
   text-decoration: none; border-radius: 6px; width: max-content; transition: color 0.15s;
 }
 .td-sidebar__back:hover { color: #999; }
-.td-sidebar__back:focus-visible { outline: 1px solid rgba(139,92,246,0.45); outline-offset: 2px; }
+.td-sidebar__back:focus-visible { outline: 1px solid rgba(45,212,191,0.45); outline-offset: 2px; }
 .td-sidebar__back svg {
   width: 14px; height: 14px; flex-shrink: 0; display: block;
   stroke: currentColor; fill: none;
@@ -3959,15 +3959,15 @@ body::after {
 .td-nav-item {
   display: flex; align-items: center; gap: 9px; padding: 7px 10px;
   border-radius: 8px; cursor: pointer; transition: background 0.15s, color 0.15s;
-  font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.4);
+  font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.78);
   border: 1px solid transparent;
 }
-.td-nav-item:hover { background: rgba(139,92,246,0.06); color: rgba(255,255,255,0.72); }
-.td-nav-item.td-active { background: rgba(45,212,191,0.12); color: #fff; border-color: rgba(45,212,191,0.2); border-left: 3px solid #2DD4BF; padding-left: 8px; }
+.td-nav-item:hover { background: rgba(255,255,255,0.03); color: #fff; }
+.td-nav-item.td-active { background: rgba(45,212,191,0.04); color: #fff; border-color: transparent; border-left: 3px solid #2DD4BF; padding-left: 8px; }
 .td-nav-item__icon {
   width: 20px; height: 20px; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  color: #8b5cf6;
+  color: rgba(255,255,255,0.72);
 }
 .td-nav-item.td-active .td-nav-item__icon { color: #64ffda; }
 .td-nav-item__icon svg { width: 20px; height: 20px; display: block; }
@@ -4143,10 +4143,10 @@ body::after {
 .td-hero {
   position: relative;
   min-height: 280px;
-  border: 1px solid rgba(139,92,246,0.24);
+  border: 1px solid rgba(255,255,255,0.08);
   border-radius: 14px;
   overflow: hidden;
-  background: #090914;
+  background: #07070e;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4156,16 +4156,35 @@ body::after {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 20% 20%, rgba(217,70,239,0.24), transparent 40%),
-    radial-gradient(circle at 80% 30%, rgba(45,212,191,0.18), transparent 45%),
-    radial-gradient(circle at 52% 78%, rgba(139,92,246,0.24), transparent 45%);
+    radial-gradient(ellipse at 20% 100%, rgba(217,70,239,0.07) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 0%, rgba(45,212,191,0.05) 0%, transparent 50%);
 }
 .td-hero::after {
   content: '';
   position: absolute;
   inset: 0;
   background-image: linear-gradient(rgba(45,212,191,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(45,212,191,0.03) 1px, transparent 1px);
-  background-size: 30px 30px;
+  background-size: 48px 48px;
+}
+.td-hero__corner {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+  border-color: rgba(45,212,191,0.2);
+  border-style: solid;
+  z-index: 1;
+}
+.td-hero__corner--tl { top: 12px; left: 12px; border-width: 1px 0 0 1px; }
+.td-hero__corner--tr { top: 12px; right: 12px; border-width: 1px 1px 0 0; }
+.td-hero__corner--bl { bottom: 12px; left: 12px; border-width: 0 0 1px 1px; }
+.td-hero__corner--br { bottom: 12px; right: 12px; border-width: 0 1px 1px 0; }
+.td-hero__badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #2DD4BF;
+  display: inline-block;
 }
 .td-hero__content {
   position: relative;
@@ -4178,18 +4197,21 @@ body::after {
   align-items: center;
 }
 .td-hero__badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 10px;
+  font-size: 9px;
   text-transform: uppercase;
-  letter-spacing: 1.6px;
+  letter-spacing: 3px;
   color: #2DD4BF;
   margin-bottom: 16px;
 }
 .td-hero__title {
   font-family: 'Inter', sans-serif;
-  font-size: clamp(30px, 3.5vw, 42px);
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 38px;
+  font-weight: 800;
+  letter-spacing: -1px;
   color: #fff;
   text-align: center;
 }
@@ -4197,23 +4219,22 @@ body::after {
   margin-top: 9px;
   max-width: 760px;
   text-align: center;
-  color: rgba(255,255,255,0.72);
-  font-size: 14px;
+  color: rgba(255,255,255,0.35);
+  font-size: 13px;
 }
 .td-hero-ask {
   width: min(700px, 100%);
   margin-top: 20px;
-  border: 1px solid rgba(139,92,246,0.3);
+  border: 1px solid rgba(255,255,255,0.08);
   border-radius: 12px;
-  background: rgba(7,7,14,0.9);
-  box-shadow: 0 0 30px rgba(139,92,246,0.16);
+  background: rgba(255,255,255,0.03);
   padding: 10px;
 }
 .td-hero-ask__row { display: flex; gap: 10px; }
 .td-hero-ask__input {
   flex: 1;
   border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(255,255,255,0.02);
+  background: rgba(255,255,255,0.03);
   color: #fff;
   border-radius: 10px;
   height: 40px;
@@ -4221,11 +4242,12 @@ body::after {
   font-size: 13px;
 }
 .td-hero-ask__input::placeholder { color: rgba(255,255,255,0.4); }
+.td-hero-ask__input:focus { outline: none; border-color: rgba(45,212,191,0.4); }
 .td-hero-ask__send {
   border: none;
   border-radius: 10px;
   width: 42px;
-  background: #8b5cf6;
+  background: linear-gradient(135deg, #8b5cf6, #d946ef);
   color: #fff;
   font-size: 18px;
   cursor: pointer;
@@ -4248,15 +4270,22 @@ body::after {
 }
 .td-chip {
   border: 1px solid rgba(255,255,255,0.16);
-  color: rgba(255,255,255,0.7);
+  color: #fff;
   background: rgba(255,255,255,0.02);
   border-radius: 999px;
   padding: 7px 10px;
-  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
   cursor: pointer;
 }
+.td-chip:nth-child(1){border-color:#2DD4BF;}
+.td-chip:nth-child(2){border-color:#8b5cf6;}
+.td-chip:nth-child(3){border-color:#d946ef;}
+.td-chip:nth-child(4){border-color:rgba(255,255,255,0.2);}
 .td-screener {
-  border: 1px solid rgba(139,92,246,0.2);
+  border: 1px solid rgba(255,255,255,0.08);
   border-radius: 14px;
   background: #080810;
   display: flex;
@@ -4284,8 +4313,9 @@ body::after {
   margin-left: 8px;
   font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
-  color: #2DD4BF;
-  border: 1px solid rgba(45,212,191,0.35);
+  color: #d946ef;
+  border: 1px solid rgba(217,70,239,0.3);
+  background: rgba(217,70,239,0.15);
   border-radius: 999px;
   padding: 2px 8px;
 }
@@ -4293,26 +4323,35 @@ body::after {
 .td-time-tab{
   border:none;background:transparent;color:rgba(255,255,255,0.45);font-family:'IBM Plex Mono',monospace;font-size:10px;cursor:pointer;padding:4px 6px;border-radius:6px;
 }
-.td-time-tab.active{background:rgba(139,92,246,0.2);color:#8b5cf6;}
+.td-time-tab.active{color:#fff;text-decoration:underline;text-decoration-color:#8b5cf6;text-underline-offset:5px;text-decoration-thickness:2px;}
 .td-filter-group{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .td-filter-pill,.td-filter-btn{
   height:28px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.02);color:rgba(255,255,255,0.72);font-size:11px;
 }
-.td-filter-toggle{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.72);font-size:11px;}
 .td-table-wrap{flex:1;min-height:0;overflow:auto;}
 .td-token-table{width:100%;border-collapse:collapse;}
-.td-token-table th{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.3);text-align:left;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.08);}
-.td-token-table td{padding:11px 12px;font-size:12px;color:#fff;border-bottom:1px solid rgba(255,255,255,0.04);}
-.td-token-table tbody tr:nth-child(even){background:rgba(255,255,255,0.02);}
-.td-token-table tbody tr:hover{background:rgba(139,92,246,0.14);box-shadow:inset 0 0 18px rgba(217,70,239,0.08);}
+.td-token-table th{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.28);text-align:left;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.08);}
+.td-token-table td{padding:11px 12px;height:44px;font-size:12px;color:#fff;border-bottom:1px solid rgba(255,255,255,0.04);font-family:'IBM Plex Mono',monospace;}
+.td-token-table tbody tr:nth-child(odd){background:rgba(255,255,255,0.015);}
+.td-token-table tbody tr:hover{background:rgba(255,255,255,0.03);}
 .td-token{display:flex;align-items:center;gap:8px;}
-.td-token img,.td-chain-icon{width:18px;height:18px;border-radius:50%;object-fit:cover;background:#111;}
+.td-token-initial{width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;font-family:'IBM Plex Mono',monospace;}
+.td-chain-pill{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;border:1px solid rgba(45,212,191,0.32);background:rgba(45,212,191,0.12);color:#2DD4BF;font-size:10px;font-family:'IBM Plex Mono',monospace;}
+.td-token-name{display:flex;flex-direction:column;line-height:1.1;}
+.td-token-name strong{font-family:'Inter',sans-serif;font-size:12px;color:#fff;font-weight:700;}
+.td-token-name span{color:rgba(255,255,255,0.5);font-size:11px;}
+.td-trend{width:50px;height:7px;background:rgba(255,255,255,0.08);border-radius:999px;overflow:hidden;}
+.td-trend>span{display:block;height:100%;}
 .td-pos{color:#2DD4BF;}.td-neg{color:#f43f5e;}
-.td-whale-pos{color:#2DD4BF;}.td-whale-neg{color:#d946ef;}
-.td-netbar{width:82px;height:6px;background:rgba(255,255,255,0.08);border-radius:999px;overflow:hidden;}
-.td-netbar>span{display:block;height:100%;background:linear-gradient(90deg,#2DD4BF,#d946ef);}
+.td-bs-pos{color:#2DD4BF;}.td-bs-neg{color:#f43f5e;}
 .td-skeleton-row td{padding:14px 12px;}
 .td-skeleton{height:10px;border-radius:6px;background:linear-gradient(90deg,rgba(255,255,255,0.05),rgba(255,255,255,0.12),rgba(255,255,255,0.05));background-size:200% 100%;animation:td-shimmer 1.3s infinite;}
+.td-stats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;}
+.td-stat-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:16px;}
+.td-stat-label{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.32);margin-bottom:10px;}
+.td-stat-value{font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px;}
+.td-stat-sub{font-family:'IBM Plex Mono',monospace;font-size:12px;color:rgba(255,255,255,0.65);margin-top:4px;}
+.td-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
 
 /* Responsive */
 @media (max-width: 1100px) {
@@ -4330,6 +4369,7 @@ body::after {
   .td-screener__head, .td-screener__filters { flex-direction: column; align-items: flex-start; }
   .td-hero-ask__meta { flex-direction: column; gap: 4px; }
   .td-hero-chips { grid-template-columns: 1fr; }
+  .td-stats-grid { grid-template-columns: 1fr; }
 }
 
 /* Right Clark AI Panel */
@@ -7515,15 +7555,6 @@ WALLETCONNECT
           </span>
           <span class="td-nav-item__name">Whale Alerts</span>
         </div>
-        <div class="td-nav-item" onclick="tdNavGo('smartwallets',this)">
-          <span class="td-nav-item__icon">
-            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm12 10v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </span>
-          <span class="td-nav-item__name">Smart Wallets</span>
-          <span class="td-nav-item__badge td-nav-item__badge--elite">Elite</span>
-        </div>
         <div class="td-nav-item" onclick="tdNavGo('exchangeflow',this)">
           <span class="td-nav-item__icon">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -7589,8 +7620,12 @@ WALLETCONNECT
     <main class="td-main">
       <div class="td-dashboard">
         <section class="td-hero">
+          <span class="td-hero__corner td-hero__corner--tl"></span>
+          <span class="td-hero__corner td-hero__corner--tr"></span>
+          <span class="td-hero__corner td-hero__corner--bl"></span>
+          <span class="td-hero__corner td-hero__corner--br"></span>
           <div class="td-hero__content">
-            <div class="td-hero__badge">● POWERED BY CORTEX ENGINE</div>
+            <div class="td-hero__badge"><span class="td-hero__badge-dot"></span>POWERED BY CORTEX ENGINE</div>
             <h1 class="td-hero__title">What do you want to know today?</h1>
             <p class="td-hero__subline">Ask Clark anything — scan wallets, find early pumps, track whales, get real-time Base intelligence.</p>
 
@@ -7606,10 +7641,10 @@ WALLETCONNECT
             </div>
 
             <div class="td-hero-chips">
-              <button class="td-chip" onclick="tdUsePromptChip('Scan a whale wallet')">Scan a whale wallet</button>
-              <button class="td-chip" onclick="tdUsePromptChip(`What's pumping on Base?`)">What's pumping on Base?</button>
-              <button class="td-chip" onclick="tdUsePromptChip('Analyze this token')">Analyze this token</button>
-              <button class="td-chip" onclick="tdUsePromptChip('What are whales buying?')">What are whales buying?</button>
+              <button class="td-chip" onclick="tdUsePromptChip('Scan a whale wallet')">SCAN A WHALE WALLET</button>
+              <button class="td-chip" onclick="tdUsePromptChip(`What's pumping on Base?`)">WHAT'S PUMPING ON BASE?</button>
+              <button class="td-chip" onclick="tdUsePromptChip('Analyze this token')">ANALYZE THIS TOKEN</button>
+              <button class="td-chip" onclick="tdUsePromptChip('What are whales buying?')">WHAT ARE WHALES BUYING?</button>
             </div>
           </div>
         </section>
@@ -7634,15 +7669,31 @@ WALLETCONNECT
               <select class="td-filter-pill"><option>Token Age</option></select>
               <button class="td-filter-btn">+ Filter</button>
             </div>
-            <label class="td-filter-toggle"><input type="checkbox" id="td-smart-sort"> Sort by Smart Money</label>
           </div>
           <div class="td-table-wrap">
             <table class="td-token-table">
               <thead>
-                <tr><th>Chain</th><th>Token</th><th>Price</th><th>24h Change</th><th>MCap</th><th>Volume</th><th>Liquidity</th><th>Whale Flow</th><th>Net Flow</th></tr>
+                <tr><th>Chain</th><th>Token</th><th>Price</th><th>24H</th><th>MCap</th><th>Volume</th><th>Buys/Sells</th><th>Age</th><th>Trend</th></tr>
               </thead>
               <tbody id="td-screener-body"></tbody>
             </table>
+          </div>
+        </section>
+        <section class="td-stats-grid">
+          <div class="td-stat-card">
+            <div class="td-stat-label">Market Sentiment</div>
+            <div class="td-stat-value" id="td-stat-sentiment"><span class="td-dot" style="background:#eab308"></span>Neutral</div>
+            <div class="td-stat-sub" id="td-stat-sentiment-sub">Loading signal...</div>
+          </div>
+          <div class="td-stat-card">
+            <div class="td-stat-label">Top Gainer 24h</div>
+            <div class="td-stat-value" id="td-stat-gainer">—</div>
+            <div class="td-stat-sub" id="td-stat-gainer-sub">Waiting for DexScreener data...</div>
+          </div>
+          <div class="td-stat-card">
+            <div class="td-stat-label">BTC Dominance</div>
+            <div class="td-stat-value" id="td-stat-btc">—</div>
+            <div class="td-stat-sub">CoinGecko global market cap share</div>
           </div>
         </section>
       </div>
@@ -8091,75 +8142,157 @@ function tdSetScreenerLoading() {
 }
 
 function tdScreenerSortVal(item, key) {
-  if (key === 'm5') return Math.abs(item.m5 || 0);
-  if (key === 'm10') return Math.abs(item.m5 || 0) * 2;
-  if (key === 'h1') return Math.abs(item.h1 || 0);
-  if (key === 'h6') return Math.abs(item.h6 || 0);
-  if (key === 'd7') return Math.abs(item.d7 || 0);
+  if (key === 'm5') return Math.abs(item.m5Vol || 0);
+  if (key === 'm10') return Math.abs(item.m10Vol || 0);
+  if (key === 'h1') return Math.abs(item.h1Vol || 0);
+  if (key === 'h6') return Math.abs(item.h6Vol || 0);
+  if (key === 'd7') return Math.abs(item.d7Vol || 0);
   return Math.abs(item.h24Vol || 0);
+}
+
+function tdTokenInitialColor(seedText) {
+  const seed = String(seedText || 'T');
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  const hue = Math.abs(hash) % 360;
+  return 'hsl(' + hue + ' 65% 42%)';
+}
+
+function tdPairAge(ts) {
+  const created = Number(ts || 0);
+  if (!created) return '—';
+  const deltaMs = Date.now() - created;
+  if (!isFinite(deltaMs) || deltaMs <= 0) return '0d';
+  const day = 24 * 60 * 60 * 1000;
+  const month = 30 * day;
+  if (deltaMs < 7 * day) return Math.max(1, Math.floor(deltaMs / day)) + 'd';
+  if (deltaMs < month) return Math.max(1, Math.floor(deltaMs / (7 * day))) + 'w';
+  return Math.max(1, Math.floor(deltaMs / month)) + 'm';
 }
 
 function tdRenderScreenerRows() {
   const body = document.getElementById('td-screener-body');
   if (!body) return;
-  const smartSort = document.getElementById('td-smart-sort')?.checked;
-  const rows = [..._tdScreenerData].sort((a, b) => {
-    if (smartSort) return Math.abs(b.whaleFlowRaw || 0) - Math.abs(a.whaleFlowRaw || 0);
-    return tdScreenerSortVal(b, _tdActiveTime) - tdScreenerSortVal(a, _tdActiveTime);
-  }).slice(0, 20);
+  const rows = [..._tdScreenerData].sort((a, b) => tdScreenerSortVal(b, _tdActiveTime) - tdScreenerSortVal(a, _tdActiveTime)).slice(0, 20);
 
   body.innerHTML = rows.map((r) => {
     const change24 = Number(r.change24 || 0);
-    const whale = Number(r.whaleFlowRaw || 0);
-    const whaleCls = whale >= 0 ? 'td-whale-pos' : 'td-whale-neg';
-    const flowPct = Math.min(100, Math.max(4, Math.abs(whale) * 5));
+    const trendPct = Math.max(6, Math.min(100, Math.abs(change24)));
+    const initial = (r.name || 'T').charAt(0).toUpperCase();
+    const buysDominant = (r.buys || 0) > (r.sells || 0);
     return `<tr>
-      <td><img class="td-chain-icon" src="${r.chainIcon}" alt="Base"></td>
-      <td><div class="td-token"><img src="${r.icon}" alt="${r.symbol}"><span>${r.name} <span style="color:rgba(255,255,255,.45)">${r.symbol}</span></span></div></td>
+      <td><span class="td-chain-pill">BASE</span></td>
+      <td><div class="td-token"><span class="td-token-initial" style="background:${tdTokenInitialColor(r.symbol || r.name)}">${initial}</span><span class="td-token-name"><strong>${r.name}</strong><span>${r.symbol}</span></span></div></td>
       <td>${tdFmtPrice(r.price)}</td>
       <td class="${change24 >= 0 ? 'td-pos' : 'td-neg'}">${change24 >= 0 ? '+' : ''}${change24.toFixed(2)}%</td>
       <td>${tdFmtMoney(r.mcap)}</td>
       <td>${tdFmtMoney(r.h24Vol)}</td>
-      <td>${tdFmtMoney(r.liq)}</td>
-      <td class="${whaleCls}">${whale >= 0 ? '+' : ''}${whale.toFixed(1)}%</td>
-      <td><div class="td-netbar"><span style="width:${flowPct}%;opacity:${whale >= 0 ? 0.95 : 0.7}"></span></div></td>
+      <td class="${buysDominant ? 'td-bs-pos' : 'td-bs-neg'}">${Number(r.buys || 0).toLocaleString()} / ${Number(r.sells || 0).toLocaleString()}</td>
+      <td>${tdPairAge(r.pairCreatedAt)}</td>
+      <td><div class="td-trend"><span style="width:${trendPct}%;background:${change24 >= 0 ? '#2DD4BF' : '#d946ef'}"></span></div></td>
     </tr>`;
   }).join('');
 }
 
+async function tdLoadSentimentStat() {
+  const stat = document.getElementById('td-stat-sentiment');
+  const sub = document.getElementById('td-stat-sentiment-sub');
+  if (!stat) return;
+  try {
+    const r = await fetch('/api/data');
+    const d = await r.json();
+    const score = Number(d?.score ?? d?.sentiment ?? 0);
+    const sentiment = score > 0.2 ? 'Bullish' : (score < -0.2 ? 'Bearish' : 'Neutral');
+    const color = sentiment === 'Bullish' ? '#2DD4BF' : (sentiment === 'Bearish' ? '#f43f5e' : '#eab308');
+    stat.innerHTML = `<span class="td-dot" style="background:${color}"></span>${sentiment}`;
+    if (sub) sub.textContent = d?.summary || 'Signal from internal /api/data feed';
+  } catch (e) {
+    stat.innerHTML = '<span class="td-dot" style="background:#eab308"></span>Neutral';
+    if (sub) sub.textContent = 'Sentiment feed unavailable.';
+  }
+}
+
+function tdLoadTopGainerStat() {
+  const val = document.getElementById('td-stat-gainer');
+  const sub = document.getElementById('td-stat-gainer-sub');
+  if (!val) return;
+  if (!_tdScreenerData.length) {
+    val.textContent = '—';
+    if (sub) sub.textContent = 'No Base pairs matched current filters.';
+    return;
+  }
+  const top = [..._tdScreenerData].sort((a, b) => (b.change24 || 0) - (a.change24 || 0))[0];
+  const pct = Number(top?.change24 || 0);
+  val.textContent = top?.name || '—';
+  if (sub) sub.innerHTML = `<span style="color:#2DD4BF;">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span> · ${top?.symbol || ''}`;
+}
+
+async function tdLoadBtcDominanceStat() {
+  const el = document.getElementById('td-stat-btc');
+  if (!el) return;
+  try {
+    const r = await fetch('https://api.coingecko.com/api/v3/global');
+    const d = await r.json();
+    const btc = Number(d?.data?.market_cap_percentage?.btc || 0);
+    el.textContent = isFinite(btc) ? btc.toFixed(2) + '%' : '—';
+  } catch (e) {
+    el.textContent = '—';
+  }
+}
+
+const jsfetch = (typeof window !== 'undefined' && typeof window.jsfetch === 'function')
+  ? window.jsfetch.bind(window)
+  : fetch.bind(window);
+
 async function tdFetchScreenerData() {
   tdSetScreenerLoading();
   try {
-    const res = await fetch('https://api.dexscreener.com/latest/dex/search/?q=base');
-    const data = await res.json();
+    const data = await jsfetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: 'https://api.dexscreener.com/latest/dex/pairs/base',
+        method: 'GET'
+      })
+    }).then(r => r.json());
     const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
-    const baseIcon = 'https://dd.dexscreener.com/ds-data/chains/base.png';
     _tdScreenerData = pairs
-      .filter(p => (p.chainId || '').toLowerCase() === 'base')
+      .filter((p) => {
+        const name = String(p?.baseToken?.name || '');
+        const symbol = String(p?.baseToken?.symbol || '');
+        const volume24 = Number(p?.volume?.h24 || 0);
+        const lname = name.toLowerCase();
+        return (
+          name.length <= 25 &&
+          volume24 >= 5000 &&
+          !symbol.toUpperCase().includes('USD') &&
+          !lname.includes('brian') &&
+          !lname.includes('coinbase')
+        );
+      })
       .map((p) => {
         const tx24 = p.txns?.h24 || {};
-        const buys = Number(tx24.buys || 0);
-        const sells = Number(tx24.sells || 0);
-        const whaleFlowRaw = buys + sells > 0 ? ((buys - sells) / (buys + sells)) * 100 : 0;
         return {
           name: p.baseToken?.name || 'Unknown',
           symbol: p.baseToken?.symbol || '—',
-          icon: p.info?.imageUrl || p.info?.openGraph || baseIcon,
-          chainIcon: baseIcon,
           price: Number(p.priceUsd || 0),
           change24: Number(p.priceChange?.h24 || 0),
-          mcap: Number(p.marketCap || 0),
+          mcap: Number(p.fdv || 0),
           h24Vol: Number(p.volume?.h24 || 0),
           liq: Number(p.liquidity?.usd || 0),
-          whaleFlowRaw,
-          m5: Number(p.volume?.m5 || 0),
-          h1: Number(p.volume?.h1 || 0),
-          h6: Number(p.volume?.h6 || 0),
-          d7: Number(p.volume?.h24 || 0) * 7
+          buys: Number(tx24.buys || 0),
+          sells: Number(tx24.sells || 0),
+          pairCreatedAt: Number(p.pairCreatedAt || 0),
+          m5Vol: Number(p.volume?.m5 || 0),
+          m10Vol: Number(p.volume?.m5 || 0) * 2,
+          h1Vol: Number(p.volume?.h1 || 0),
+          h6Vol: Number(p.volume?.h6 || 0),
+          d7Vol: Number(p.volume?.h24 || 0) * 7
         };
       })
       .sort((a, b) => (b.h24Vol || 0) - (a.h24Vol || 0));
     tdRenderScreenerRows();
+    tdLoadTopGainerStat();
   } catch (e) {
     const body = document.getElementById('td-screener-body');
     if (body) body.innerHTML = '<tr><td colspan="9" style="color:rgba(255,255,255,.55);padding:16px;">Failed to load DexScreener Base data.</td></tr>';
@@ -8180,8 +8313,8 @@ function tdInitScreener() {
       tdRenderScreenerRows();
     };
   });
-  const smartSort = document.getElementById('td-smart-sort');
-  if (smartSort) smartSort.onchange = tdRenderScreenerRows;
+  tdLoadSentimentStat();
+  tdLoadBtcDominanceStat();
   tdFetchScreenerData();
 }
 
