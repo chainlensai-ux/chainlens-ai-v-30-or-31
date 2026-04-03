@@ -8199,13 +8199,22 @@ async function tdLoadSentimentStat() {
   const sub = document.getElementById('td-stat-sentiment-sub');
   if (!stat) return;
   try {
-    const r = await fetch('/api/data');
+    const r = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' })
+    });
     const d = await r.json();
-    const score = Number(d?.score ?? d?.sentiment ?? 0);
-    const sentiment = score > 0.2 ? 'Bullish' : (score < -0.2 ? 'Bearish' : 'Neutral');
+    const pairs = Array.isArray(d?.pairs) ? d.pairs.slice(0, 20) : [];
+    const avgChange = pairs.length
+      ? pairs.reduce((sum, p) => sum + Number(p?.priceChange?.h24 || 0), 0) / pairs.length
+      : 0;
+    const sentiment = avgChange > 1 ? 'Bullish' : (avgChange < -1 ? 'Bearish' : 'Neutral');
     const color = sentiment === 'Bullish' ? '#2DD4BF' : (sentiment === 'Bearish' ? '#f43f5e' : '#eab308');
     stat.innerHTML = `<span class="td-dot" style="background:${color}"></span>${sentiment}`;
-    if (sub) sub.textContent = d?.summary || 'Signal from internal /api/data feed';
+    if (sub) sub.textContent = pairs.length
+      ? `Based on ${pairs.length} Base DexScreener pairs (avg 24h ${avgChange >= 0 ? '+' : ''}${avgChange.toFixed(2)}%).`
+      : 'No Base pair data available from DexScreener.';
   } catch (e) {
     stat.innerHTML = '<span class="td-dot" style="background:#eab308"></span>Neutral';
     if (sub) sub.textContent = 'Sentiment feed unavailable.';
