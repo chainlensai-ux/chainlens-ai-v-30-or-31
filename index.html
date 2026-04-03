@@ -8333,7 +8333,6 @@ function initTerminal() {
   }
 
   tdInitScreener();
-  doBaseScreener();
 
   // Live feed refresh timers
   if (_tdPumpTimer) clearInterval(_tdPumpTimer);
@@ -13892,6 +13891,7 @@ async function doBaseScreener() {
       .slice(0, 25);
     console.log('AFTER FILTER COUNT:', pairs.length);
     console.log('FIRST PAIR:', JSON.stringify(pairs[0]));
+    console.log('RENDERING PAIRS:', pairs.length);
 
     if (!pairs.length) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--cl-text-3);">No tokens matched the filter criteria.</td></tr>';
