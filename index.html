@@ -4242,8 +4242,9 @@ body::after {
 .td-token{display:flex;align-items:center;gap:8px;}
 .td-token img,.td-chain-icon{width:18px;height:18px;border-radius:50%;object-fit:cover;background:#111;}
 .td-pos{color:#2DD4BF;}.td-neg{color:#f43f5e;}
-.td-buysells-up{color:#2DD4BF;}
-.td-buysells-down{color:#f43f5e;}
+.td-whale-pos{color:#2DD4BF;}.td-whale-neg{color:#d946ef;}
+.td-netbar{width:82px;height:6px;background:rgba(255,255,255,0.08);border-radius:999px;overflow:hidden;}
+.td-netbar>span{display:block;height:100%;background:linear-gradient(90deg,#2DD4BF,#d946ef);}
 .td-skeleton-row td{padding:14px 12px;}
 .td-skeleton{height:10px;border-radius:6px;background:linear-gradient(90deg,rgba(255,255,255,0.05),rgba(255,255,255,0.12),rgba(255,255,255,0.05));background-size:200% 100%;animation:td-shimmer 1.3s infinite;}
 
@@ -7525,12 +7526,12 @@ WALLETCONNECT
               <select class="td-filter-pill"><option>Token Age</option></select>
               <button class="td-filter-btn">+ Filter</button>
             </div>
-            <div class="td-filter-toggle">DexScreener Base Pairs</div>
+            <label class="td-filter-toggle"><input type="checkbox" id="td-smart-sort"> Sort by Smart Money</label>
           </div>
           <div class="td-table-wrap">
             <table class="td-token-table">
               <thead>
-                <tr><th>Chain</th><th>Token</th><th>Price</th><th>24h Change</th><th>MCap</th><th>Volume 24h</th><th>Buys/Sells</th><th>Liquidity</th><th>Age</th></tr>
+                <tr><th>Chain</th><th>Token</th><th>Price</th><th>24h Change</th><th>MCap</th><th>Volume</th><th>Liquidity</th><th>Whale Flow</th><th>Net Flow</th></tr>
               </thead>
               <tbody id="td-screener-body"></tbody>
             </table>
@@ -7986,20 +7987,24 @@ function tdScreenerSortVal(item, key) {
   if (key === 'm10') return Math.abs(item.m5 || 0) * 2;
   if (key === 'h1') return Math.abs(item.h1 || 0);
   if (key === 'h6') return Math.abs(item.h6 || 0);
-  if (key === 'd7') return Math.abs(item.tx24Total || 0);
+  if (key === 'd7') return Math.abs(item.d7 || 0);
   return Math.abs(item.h24Vol || 0);
 }
 
 function tdRenderScreenerRows() {
   const body = document.getElementById('td-screener-body');
   if (!body) return;
-  const rows = [..._tdScreenerData].sort((a, b) => tdScreenerSortVal(b, _tdActiveTime) - tdScreenerSortVal(a, _tdActiveTime)).slice(0, 20);
+  const smartSort = document.getElementById('td-smart-sort')?.checked;
+  const rows = [..._tdScreenerData].sort((a, b) => {
+    if (smartSort) return Math.abs(b.whaleFlowRaw || 0) - Math.abs(a.whaleFlowRaw || 0);
+    return tdScreenerSortVal(b, _tdActiveTime) - tdScreenerSortVal(a, _tdActiveTime);
+  }).slice(0, 20);
 
   body.innerHTML = rows.map((r) => {
     const change24 = Number(r.change24 || 0);
-    const buys = Number(r.buys24 || 0);
-    const sells = Number(r.sells24 || 0);
-    const buysSellsCls = buys >= sells ? 'td-buysells-up' : 'td-buysells-down';
+    const whale = Number(r.whaleFlowRaw || 0);
+    const whaleCls = whale >= 0 ? 'td-whale-pos' : 'td-whale-neg';
+    const flowPct = Math.min(100, Math.max(4, Math.abs(whale) * 5));
     return `<tr>
       <td><img class="td-chain-icon" src="${r.chainIcon}" alt="Base"></td>
       <td><div class="td-token"><img src="${r.icon}" alt="${r.symbol}"><span>${r.name} <span style="color:rgba(255,255,255,.45)">${r.symbol}</span></span></div></td>
@@ -8007,9 +8012,9 @@ function tdRenderScreenerRows() {
       <td class="${change24 >= 0 ? 'td-pos' : 'td-neg'}">${change24 >= 0 ? '+' : ''}${change24.toFixed(2)}%</td>
       <td>${tdFmtMoney(r.mcap)}</td>
       <td>${tdFmtMoney(r.h24Vol)}</td>
-      <td class="${buysSellsCls}">${buys.toLocaleString()} / ${sells.toLocaleString()}</td>
       <td>${tdFmtMoney(r.liq)}</td>
-      <td>${r.ageLabel}</td>
+      <td class="${whaleCls}">${whale >= 0 ? '+' : ''}${whale.toFixed(1)}%</td>
+      <td><div class="td-netbar"><span style="width:${flowPct}%;opacity:${whale >= 0 ? 0.95 : 0.7}"></span></div></td>
     </tr>`;
   }).join('');
 }
@@ -8017,7 +8022,7 @@ function tdRenderScreenerRows() {
 async function tdFetchScreenerData() {
   tdSetScreenerLoading();
   try {
-    const res = await fetch('https://api.dexscreener.com/latest/dex/pairs/base');
+    const res = await fetch('https://api.dexscreener.com/latest/dex/search/?q=base');
     const data = await res.json();
     const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
     const baseIcon = 'https://dd.dexscreener.com/ds-data/chains/base.png';
@@ -8025,23 +8030,12 @@ async function tdFetchScreenerData() {
       .filter(p => (p.chainId || '').toLowerCase() === 'base')
       .map((p) => {
         const tx24 = p.txns?.h24 || {};
-        const buys24 = Number(tx24.buys || 0);
-        const sells24 = Number(tx24.sells || 0);
-        const name = (p.baseToken?.name || 'Unknown').trim();
-        const symbol = (p.baseToken?.symbol || '—').trim();
-        const createdAt = Number(p.pairCreatedAt || 0);
-        const ageMs = createdAt > 0 ? Date.now() - createdAt : null;
-        let ageLabel = '—';
-        if (ageMs != null && ageMs >= 0) {
-          const d = Math.floor(ageMs / 86400000);
-          if (d < 1) ageLabel = Math.max(1, Math.floor(ageMs / 3600000)) + 'h';
-          else if (d < 7) ageLabel = d + 'd';
-          else if (d < 30) ageLabel = Math.floor(d / 7) + 'w';
-          else ageLabel = Math.floor(d / 30) + 'm';
-        }
+        const buys = Number(tx24.buys || 0);
+        const sells = Number(tx24.sells || 0);
+        const whaleFlowRaw = buys + sells > 0 ? ((buys - sells) / (buys + sells)) * 100 : 0;
         return {
-          name,
-          symbol,
+          name: p.baseToken?.name || 'Unknown',
+          symbol: p.baseToken?.symbol || '—',
           icon: p.info?.imageUrl || p.info?.openGraph || baseIcon,
           chainIcon: baseIcon,
           price: Number(p.priceUsd || 0),
@@ -8049,18 +8043,13 @@ async function tdFetchScreenerData() {
           mcap: Number(p.marketCap || 0),
           h24Vol: Number(p.volume?.h24 || 0),
           liq: Number(p.liquidity?.usd || 0),
-          buys24,
-          sells24,
-          ageLabel,
-          tx24Total: buys24 + sells24,
+          whaleFlowRaw,
           m5: Number(p.volume?.m5 || 0),
           h1: Number(p.volume?.h1 || 0),
-          h6: Number(p.volume?.h6 || 0)
+          h6: Number(p.volume?.h6 || 0),
+          d7: Number(p.volume?.h24 || 0) * 7
         };
       })
-      .filter((p) => (p.h24Vol || 0) >= 5000)
-      .filter((p) => (p.name || '').length <= 25)
-      .filter((p) => !['USDC', 'USDT', 'DAI'].includes((p.symbol || '').toUpperCase()))
       .sort((a, b) => (b.h24Vol || 0) - (a.h24Vol || 0));
     tdRenderScreenerRows();
   } catch (e) {
@@ -8083,6 +8072,8 @@ function tdInitScreener() {
       tdRenderScreenerRows();
     };
   });
+  const smartSort = document.getElementById('td-smart-sort');
+  if (smartSort) smartSort.onchange = tdRenderScreenerRows;
   tdFetchScreenerData();
 }
 
