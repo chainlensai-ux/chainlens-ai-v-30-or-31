@@ -8243,7 +8243,7 @@ async function tdLoadBtcDominanceStat() {
 async function tdFetchScreenerData() {
   tdSetScreenerLoading();
   try {
-    const res = await fetch('https://api.dexscreener.com/latest/dex/pairs/base');
+    const res = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' }) });
     const data = await res.json();
     const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
     _tdScreenerData = pairs
@@ -11044,7 +11044,7 @@ async function fetchTokenPrices(tokens) {
     try {
       const addrs = chunk.map(t => t.contractAddress || t.mint).join(',');
       const _c = new AbortController(); const _t = setTimeout(() => _c.abort(), 5000);
-      const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + addrs, { signal: _c.signal });
+      const r = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/tokens/' + addrs, method: 'GET' }), signal: _c.signal });
       clearTimeout(_t);
       if (r.ok) {
         const d = await r.json();
@@ -11288,7 +11288,7 @@ async function gtSearch() {
   resultsEl.innerHTML = '<div style="padding:8px;color:var(--cl-text-3);font-size:11px;"><span class="cl-spinner"></span> Searching...</div>';
   try {
     const _sc = new AbortController(); const _st = setTimeout(() => _sc.abort(), 6000);
-    const r = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(q), { signal: _sc.signal });
+    const r = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(q), method: 'GET' }), signal: _sc.signal });
     clearTimeout(_st);
     const d = await r.json();
     let pairs = (d.pairs || []);
@@ -11460,7 +11460,7 @@ async function updateGT(silent = false) {
         try {
           const ctrl = new AbortController();
           const t = setTimeout(() => ctrl.abort(), 2000);
-          const r = await fetch('https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + pairAddrs, { signal: ctrl.signal });
+          const r = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + pairAddrs, method: 'GET' }), signal: ctrl.signal });
           clearTimeout(t);
           if (r.ok) {
             const d = await r.json();
@@ -11477,7 +11477,7 @@ async function updateGT(silent = false) {
           try {
             const ctrl = new AbortController();
             const t = setTimeout(() => ctrl.abort(), 2000);
-            const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + tokenFallback.map(([a]) => a).join(','), { signal: ctrl.signal });
+            const r = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/tokens/' + tokenFallback.map(([a]) => a).join(','), method: 'GET' }), signal: ctrl.signal });
             clearTimeout(t);
             if (r.ok) {
               const d = await r.json();
@@ -11546,7 +11546,7 @@ async function _executeGTrade(amt) {
   try {
     const ctrl2 = new AbortController();
     const t2 = setTimeout(() => ctrl2.abort(), 5000);
-    const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + gtToken.address, { signal: ctrl2.signal });
+    const r = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/tokens/' + gtToken.address, method: 'GET' }), signal: ctrl2.signal });
     clearTimeout(t2);
     if (r.ok) { const d = await r.json(); const pairs = d.pairs || []; const p = pairs.sort((a,b) => parseFloat(b.liquidity?.usd||0) - parseFloat(a.liquidity?.usd||0)).find(x => x.priceUsd); if (p && p.priceUsd) gtToken.price = parseFloat(p.priceUsd); }
   } catch(e) {}
@@ -12248,7 +12248,7 @@ async function doPumpAlert() {
     try {
       const dsCtrl = new AbortController();
       const dsT = setTimeout(() => dsCtrl.abort(), 5000);
-      const dsR = await fetch('https://api.dexscreener.com/latest/dex/search?q=base&chainId=base', { signal: dsCtrl.signal });
+      const dsR = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&chainId=base', method: 'GET' }), signal: dsCtrl.signal });
       clearTimeout(dsT);
       if (dsR.ok) {
         const dsData = await dsR.json();
@@ -14937,7 +14937,7 @@ async function gtRefreshPrices() {
     for (const [chain, items] of Object.entries(byChain)) {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 2500);
-      reqs.push(fetch('https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + items.map(i => i.pos.pairAddress).join(','), { signal: ctrl.signal })
+      reqs.push(fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/pairs/' + chain + '/' + items.map(i => i.pos.pairAddress).join(','), method: 'GET' }), signal: ctrl.signal })
         .then(r => { clearTimeout(t); return r.ok ? r.json() : null; })
         .then(d => { for (const p of (d?.pairs || [])) { const a = (p.baseToken?.address || '').toLowerCase(); if (a && p.priceUsd) priceMap[a] = { price: +p.priceUsd, change24h: +(p.priceChange?.h24 || 0) }; } })
         .catch(() => { clearTimeout(t); }));
@@ -14945,7 +14945,7 @@ async function gtRefreshPrices() {
     if (noAddr.length) {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 2500);
-      reqs.push(fetch('https://api.dexscreener.com/latest/dex/tokens/' + noAddr.join(','), { signal: ctrl.signal })
+      reqs.push(fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/tokens/' + noAddr.join(','), method: 'GET' }), signal: ctrl.signal })
         .then(r => { clearTimeout(t); return r.ok ? r.json() : null; })
         .then(d => { for (const p of (d?.pairs || [])) { const a = (p.baseToken?.address || '').toLowerCase(); const liq = +(p.liquidity?.usd || 0); if (a && p.priceUsd && (!priceMap[a] || liq > (priceMap[a].liq || 0))) priceMap[a] = { price: +p.priceUsd, change24h: +(p.priceChange?.h24 || 0), liq }; } })
         .catch(() => { clearTimeout(t); }));
@@ -15100,7 +15100,7 @@ async function gtShowRisk(callback) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 4000);
-    const r = await fetch('https://api.dexscreener.com/latest/dex/tokens/' + gtToken.address, { signal: ctrl.signal });
+    const r = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/tokens/' + gtToken.address, method: 'GET' }), signal: ctrl.signal });
     clearTimeout(t);
     if (r.ok) {
       const d = await r.json();
