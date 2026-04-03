@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="description" content="AI-powered crypto intelligence — wallet scanner, bear market scoring, paper trading and more.">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237858c0'/%3E%3Cstop offset='1' stop-color='%2300ffc8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23050407'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='18' fill='url(%23g)'%3E⬡%3C/text%3E%3C/svg%3E">
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800;900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800;900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <style>
 /* ═══════════════════════════════════════════════════
@@ -4058,173 +4058,212 @@ body::after {
 .td-settings-btn--danger:hover { color: #ff6b8a; border-color: rgba(239,71,111,0.4); }
 
 /* Main Content */
-.td-main { flex: 1; overflow: hidden; background: #0a0a0a; padding: 10px; display: flex; flex-direction: column; min-height: 0; }
-.td-grid {
-  display: grid; grid-template-columns: 1fr 1fr 1fr;
-  grid-template-rows: 1fr 1fr; gap: 12px;
-  flex: 1; min-height: 0;
+.td-main {
+  flex: 1;
+  overflow: hidden;
+  background: #07070e;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
-
-/* Widgets */
-.td-widget {
-  background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.015) 100%); border: 1px solid rgba(255,255,255,0.09); box-shadow: 0 0 12px rgba(45, 212, 191, 0.04); border-radius: 10px; overflow: hidden;
-  display: flex; flex-direction: column; min-height: 0;
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+.td-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
 }
-.td-widget:nth-child(even) { border-color: rgba(255,255,255,0.08); box-shadow: 0 0 10px rgba(139,92,246,0.04); }
-.td-widget:hover { box-shadow: 0 0 20px rgba(217,70,239,0.06); border-color: rgba(255,255,255,0.1); }
-.td-widget--wide { grid-column: span 2; }
-.td-widget--full { grid-column: span 3; }
-.td-widget__header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px; border-bottom: 1px solid #111; flex-shrink: 0;
+.td-hero {
+  position: relative;
+  min-height: 280px;
+  border: 1px solid rgba(139,92,246,0.24);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #090914;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.td-widget__title {
-  font-family: 'Inter', sans-serif; font-size: 9px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 2px; color: rgba(255,255,255,0.35);
-  display: flex; align-items: center; gap: 6px;
+.td-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(217,70,239,0.24), transparent 40%),
+    radial-gradient(circle at 80% 30%, rgba(45,212,191,0.18), transparent 45%),
+    radial-gradient(circle at 52% 78%, rgba(139,92,246,0.24), transparent 45%);
 }
-.td-widget__title-dot {
-  width: 5px; height: 5px; border-radius: 50%; background: #2DD4BF;
-  animation: td-pulse 2s infinite;
+.td-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(rgba(45,212,191,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(45,212,191,0.03) 1px, transparent 1px);
+  background-size: 30px 30px;
 }
-/* Per-widget dot colours: mint / purple / pink sequence */
-.td-widget:nth-child(1) .td-widget__title-dot { background: #2DD4BF; }
-.td-widget:nth-child(2) .td-widget__title-dot { background: #8b5cf6; }
-.td-widget:nth-child(3) .td-widget__title-dot { background: #d946ef; }
-.td-widget:nth-child(4) .td-widget__title-dot { background: #2DD4BF; }
-.td-widget:nth-child(5) .td-widget__title-dot { background: #8b5cf6; }
-.td-widget:nth-child(6) .td-widget__title-dot { background: #d946ef; }
-.td-widget__action {
-  font-family: 'Inter', sans-serif; font-size: 9px; color: #2a2a2a;
-  cursor: pointer; transition: color 0.2s; background: none; border: none; padding: 0;
+.td-hero__content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 900px;
+  padding: 26px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
-.td-widget__action:hover { color: #8b5cf6; }
-.td-widget__body { padding: 16px; flex: 1; min-height: 0; overflow: hidden; }
-
-/* Portfolio Widget */
-.td-portfolio-value {
-  font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 700;
-  color: #fff; letter-spacing: -1px; line-height: 1; margin-bottom: 4px;
-}
-.td-portfolio-change {
-  font-family: 'JetBrains Mono', monospace; font-size: 11px;
-  display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
-}
-.td-portfolio-change--up { color: #2DD4BF; }
-.td-portfolio-change--down { color: #f43f5e; }
-.td-portfolio-sub { font-family: 'Inter', sans-serif; font-size: 9px; color: rgba(255,255,255,0.75); margin-top: 4px; }
-.td-sparkline { width: 100%; height: 36px; }
-.td-portfolio-placeholder {
-  border: 1px dashed rgba(255,255,255,0.16);
-  border-radius: 8px;
-  padding: 16px 10px;
-  text-align: center;
+.td-hero__badge {
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
-  color: rgba(255,255,255,0.38);
-  letter-spacing: 0.2px;
-}
-.td-empty-state {
-  padding: 16px 0;
-  text-align: center;
-  color: rgba(255,255,255,0.38);
-  font-size: 10px;
-  font-family: 'Inter', sans-serif;
-}
-.td-empty-state__icon {
-  display: inline-block;
-  margin-right: 5px;
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
   color: #2DD4BF;
+  margin-bottom: 16px;
 }
+.td-hero__title {
+  font-family: 'Inter', sans-serif;
+  font-size: clamp(30px, 3.5vw, 42px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #fff;
+  text-align: center;
+}
+.td-hero__subline {
+  margin-top: 9px;
+  max-width: 760px;
+  text-align: center;
+  color: rgba(255,255,255,0.72);
+  font-size: 14px;
+}
+.td-hero-ask {
+  width: min(700px, 100%);
+  margin-top: 20px;
+  border: 1px solid rgba(139,92,246,0.3);
+  border-radius: 12px;
+  background: rgba(7,7,14,0.9);
+  box-shadow: 0 0 30px rgba(139,92,246,0.16);
+  padding: 10px;
+}
+.td-hero-ask__row { display: flex; gap: 10px; }
+.td-hero-ask__input {
+  flex: 1;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
+  color: #fff;
+  border-radius: 10px;
+  height: 40px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+.td-hero-ask__input::placeholder { color: rgba(255,255,255,0.4); }
+.td-hero-ask__send {
+  border: none;
+  border-radius: 10px;
+  width: 42px;
+  background: #8b5cf6;
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+}
+.td-hero-ask__meta {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: rgba(45,212,191,0.62);
+}
+.td-hero-ask__tier { color: rgba(255,255,255,0.52); }
+.td-hero-chips {
+  margin-top: 14px;
+  width: min(700px, 100%);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.td-chip {
+  border: 1px solid rgba(255,255,255,0.16);
+  color: rgba(255,255,255,0.7);
+  background: rgba(255,255,255,0.02);
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.td-screener {
+  border: 1px solid rgba(139,92,246,0.2);
+  border-radius: 14px;
+  background: #080810;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.td-screener__head, .td-screener__filters {
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.td-screener__title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.56);
+}
+.td-live-badge {
+  margin-left: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: #2DD4BF;
+  border: 1px solid rgba(45,212,191,0.35);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.td-time-tabs{display:flex;gap:6px;}
+.td-time-tab{
+  border:none;background:transparent;color:rgba(255,255,255,0.45);font-family:'IBM Plex Mono',monospace;font-size:10px;cursor:pointer;padding:4px 6px;border-radius:6px;
+}
+.td-time-tab.active{background:rgba(139,92,246,0.2);color:#8b5cf6;}
+.td-filter-group{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.td-filter-pill,.td-filter-btn{
+  height:28px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.02);color:rgba(255,255,255,0.72);font-size:11px;
+}
+.td-filter-toggle{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,0.72);font-size:11px;}
+.td-table-wrap{flex:1;min-height:0;overflow:auto;}
+.td-token-table{width:100%;border-collapse:collapse;}
+.td-token-table th{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.3);text-align:left;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.08);}
+.td-token-table td{padding:11px 12px;font-size:12px;color:#fff;border-bottom:1px solid rgba(255,255,255,0.04);}
+.td-token-table tbody tr:nth-child(even){background:rgba(255,255,255,0.02);}
+.td-token-table tbody tr:hover{background:rgba(139,92,246,0.14);box-shadow:inset 0 0 18px rgba(217,70,239,0.08);}
+.td-token{display:flex;align-items:center;gap:8px;}
+.td-token img,.td-chain-icon{width:18px;height:18px;border-radius:50%;object-fit:cover;background:#111;}
+.td-pos{color:#2DD4BF;}.td-neg{color:#f43f5e;}
+.td-buysells-up{color:#2DD4BF;}
+.td-buysells-down{color:#f43f5e;}
+.td-skeleton-row td{padding:14px 12px;}
+.td-skeleton{height:10px;border-radius:6px;background:linear-gradient(90deg,rgba(255,255,255,0.05),rgba(255,255,255,0.12),rgba(255,255,255,0.05));background-size:200% 100%;animation:td-shimmer 1.3s infinite;}
 
-/* Feed Widgets */
-.td-feed { overflow: hidden; }
-.td-feed::-webkit-scrollbar { width: 2px; }
-.td-feed::-webkit-scrollbar-thumb { background: #161616; }
-.td-feed-item {
-  display: flex; align-items: flex-start; gap: 9px; padding: 8px 0;
-  border-bottom: 1px solid #111;
+/* Responsive */
+@media (max-width: 1100px) {
+  .td-right { width: 300px; min-width: 300px; }
+  .td-panel-toggle { right: 300px; }
+  .td-hero-chips { grid-template-columns: repeat(2, minmax(0,1fr)); }
 }
-.td-feed-item:last-child { border-bottom: none; }
-.td-feed-item--new { animation: td-slide-in 0.35s ease forwards; }
-.td-feed-item__icon {
-  width: 26px; height: 26px; border-radius: 6px;
-  background: rgba(139,92,246,0.07); border: 1px solid rgba(139,92,246,0.12);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 12px; flex-shrink: 0;
+@media (max-width: 900px) {
+  .td-sidebar { width: 200px; }
+  .td-right { display: none; }
+  .td-panel-toggle { display: none; }
 }
-.td-feed-item__info { flex: 1; min-width: 0; }
-.td-feed-item__token {
-  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
-  color: #ffffff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+@media (max-width: 640px) {
+  .td-sidebar { display: none; }
+  .td-screener__head, .td-screener__filters { flex-direction: column; align-items: flex-start; }
+  .td-hero-ask__meta { flex-direction: column; gap: 4px; }
+  .td-hero-chips { grid-template-columns: 1fr; }
 }
-.td-feed-item__desc { font-family: 'Inter', sans-serif; font-size: 9px; color: rgba(255,255,255,0.78); margin-top: 1px; }
-.td-feed-item__right { text-align: right; flex-shrink: 0; }
-.td-feed-item__amount { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #fff; }
-.td-feed-item__time { font-family: 'Inter', sans-serif; font-size: 8px; color: rgba(255,255,255,0.7); margin-top: 2px; }
-.td-pump-badge {
-  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
-  padding: 2px 6px; border-radius: 4px;
-}
-.td-pump-badge--up { background: rgba(45,212,191,0.14); color: #2DD4BF; }
-.td-pump-badge--down { background: rgba(244,63,94,0.12); color: #f43f5e; }
-
-/* BearProof Gauge */
-.td-gauge-wrap { display: flex; flex-direction: column; align-items: center; padding: 4px 0; }
-.td-gauge { position: relative; width: 80px; height: 80px; }
-.td-gauge canvas { position: absolute; top: 0; left: 0; }
-.td-gauge__value {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;
-}
-.td-gauge__num {
-  font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 700;
-  color: #fff; line-height: 1;
-}
-.td-gauge__lbl {
-  font-family: 'Inter', sans-serif; font-size: 7px; color: rgba(255,255,255,0.75);
-  text-transform: uppercase; letter-spacing: 1px;
-}
-.td-gauge-score-label {
-  font-family: 'Syne', sans-serif; font-size: 10px; font-weight: 700; margin-top: 3px;
-}
-.td-gauge-cortex {
-  font-family: 'Inter', sans-serif; font-size: 9px; color: rgba(255,255,255,0.8);
-  text-align: center; margin-top: 4px; line-height: 1.4; padding: 0 4px;
-}
-
-/* GhostTrade Positions */
-.td-position {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 0; border-bottom: 1px solid #111;
-}
-.td-position:last-child { border-bottom: none; }
-.td-position__token {
-  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
-  color: #ffffff; width: 55px; flex-shrink: 0;
-}
-.td-position__meta { flex: 1; }
-.td-position__entry { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: rgba(255,255,255,0.8); }
-.td-position__chain { font-family: 'Inter', sans-serif; font-size: 8px; color: rgba(255,255,255,0.7); margin-top: 1px; }
-.td-position__pnl {
-  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; text-align: right;
-}
-.td-position__pnl--up { color: #2DD4BF; }
-.td-position__pnl--down { color: #f43f5e; }
-
-/* Market Snapshot */
-.td-market-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.td-market-card {
-  background: #0a0a0a; border: 1px solid #141414; border-radius: 8px; padding: 10px 11px;
-}
-.td-market-card__label {
-  font-family: 'Inter', sans-serif; font-size: 8px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 1px; color: #ffffff; margin-bottom: 4px;
-}
-.td-market-card__value { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: #ffffff; }
-.td-market-card__change { font-family: 'JetBrains Mono', monospace; font-size: 10px; margin-top: 2px; }
-.td-market-card__change--up { color: #2DD4BF; }
-.td-market-card__change--down { color: #f43f5e; }
-.td-market-card__change--neutral { color: #444; }
 
 /* Right Clark AI Panel */
 .td-right {
@@ -4370,13 +4409,6 @@ body::after {
 }
 @keyframes td-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-.td-widget:nth-child(1) { animation: td-stagger-in 0.4s ease 0.05s both; }
-.td-widget:nth-child(2) { animation: td-stagger-in 0.4s ease 0.15s both; }
-.td-widget:nth-child(3) { animation: td-stagger-in 0.4s ease 0.25s both; }
-.td-widget:nth-child(4) { animation: td-stagger-in 0.4s ease 0.35s both; }
-.td-widget:nth-child(5) { animation: td-stagger-in 0.4s ease 0.45s both; }
-.td-widget:nth-child(6) { animation: td-stagger-in 0.4s ease 0.55s both; }
-
 /* Responsive */
 @media (max-width: 1100px) {
   .td-right { width: 300px; min-width: 300px; }
@@ -4389,8 +4421,6 @@ body::after {
 }
 @media (max-width: 640px) {
   .td-sidebar { display: none; }
-  .td-grid { grid-template-columns: 1fr; }
-  .td-widget--wide, .td-widget--full { grid-column: span 1; }
 }
 </style>
 
@@ -7448,129 +7478,65 @@ WALLETCONNECT
 
     <!-- Main Dashboard -->
     <main class="td-main">
-      <div class="td-grid">
+      <div class="td-dashboard">
+        <section class="td-hero">
+          <div class="td-hero__content">
+            <div class="td-hero__badge">● POWERED BY CORTEX ENGINE</div>
+            <h1 class="td-hero__title">What do you want to know today?</h1>
+            <p class="td-hero__subline">Ask Clark anything — scan wallets, find early pumps, track whales, get real-time Base intelligence.</p>
 
-        <!-- 1. Portfolio Value -->
-        <div class="td-widget">
-          <div class="td-widget__header">
-            <div class="td-widget__title"><span class="td-widget__title-dot"></span>Portfolio Value</div>
-            <button class="td-widget__action" onclick="tdNavGo('walletscan',null)">Scan Wallet →</button>
-          </div>
-          <div class="td-widget__body">
-            <div class="td-portfolio-placeholder" id="td-portfolio-placeholder">Connect wallet or paste address to scan</div>
-            <div class="td-portfolio-value" id="td-portfolio-val">$—</div>
-            <div class="td-portfolio-change td-portfolio-change--up" id="td-portfolio-chg">
-              <span id="td-portfolio-chg-icon">▲</span>
-              <span id="td-portfolio-chg-val">—</span>
-              <span style="color:#2a2a2a;font-size:10px;" id="td-portfolio-chg-label">24h change</span>
-            </div>
-            <canvas class="td-sparkline" id="td-sparkline" height="36"></canvas>
-            <div class="td-portfolio-sub" id="td-portfolio-sub">Connect wallet to load portfolio data</div>
-            <div id="td-debug-portfolio"></div>
-          </div>
-        </div>
-
-        <!-- 2. Whale Moves Feed -->
-        <div class="td-widget td-widget--wide">
-          <div class="td-widget__header">
-            <div class="td-widget__title"><span class="td-widget__title-dot"></span>Whale Moves</div>
-            <button class="td-widget__action" onclick="tdRenderWhales()">Refresh</button>
-            <button class="td-widget__action" onclick="tdNavGo('smartwallets',null)">View All →</button>
-          </div>
-          <div class="td-widget__body">
-            <div class="td-feed" id="td-whale-feed">
-              <div class="td-empty-state"><span class="td-empty-state__icon">↻</span>Whale activity will appear here. Click Refresh to load.</div>
-            </div>
-            <div id="td-debug-whale"></div>
-          </div>
-        </div>
-
-        <!-- 3. BearProof Score -->
-        <div class="td-widget">
-          <div class="td-widget__header">
-            <div class="td-widget__title"><span class="td-widget__title-dot"></span>BearProof Score</div>
-            <button class="td-widget__action" onclick="tdNavGo('bearproof',null)">Details →</button>
-          </div>
-          <div class="td-widget__body">
-            <div class="td-gauge-wrap">
-              <div class="td-gauge" id="td-gauge-wrap">
-                <canvas id="td-gauge-canvas" width="80" height="80"></canvas>
-                <div class="td-gauge__value">
-                  <div class="td-gauge__num" id="td-gauge-num">—</div>
-                  <div class="td-gauge__lbl">/ 100</div>
-                </div>
+            <div class="td-hero-ask">
+              <div class="td-hero-ask__row">
+                <input id="td-hero-input" class="td-hero-ask__input" placeholder="Ask Clark — scan a wallet, find pumps, analyze a token..." onkeydown="if(event.key==='Enter'){event.preventDefault();tdHeroAskClark();}">
+                <button class="td-hero-ask__send" onclick="tdHeroAskClark()">➤</button>
               </div>
-              <div class="td-gauge-score-label" id="td-gauge-label" style="color:#2DD4BF;">—</div>
-              <div class="td-gauge-cortex" id="td-gauge-cortex">CORTEX analyzing market conditions...</div>
-              <div class="td-empty-state" id="td-bear-loading" style="display:none;padding:8px 0 0;">Loading market data...</div>
-              <div id="td-debug-bearproof"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 4. Pump Alerts Feed -->
-        <div class="td-widget">
-          <div class="td-widget__header">
-            <div class="td-widget__title"><span class="td-widget__title-dot"></span>Pump Alerts</div>
-            <button class="td-widget__action" onclick="tdNavGo('pumpalert',null)">Full Scanner →</button>
-          </div>
-          <div class="td-widget__body">
-            <div class="td-feed" id="td-pump-feed">
-              <div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:'Inter',sans-serif;">Scanning pump signals...</div>
-            </div>
-            <div id="td-debug-pump"></div>
-          </div>
-        </div>
-
-        <!-- 5. GhostTrade Positions -->
-        <div class="td-widget">
-          <div class="td-widget__header">
-            <div class="td-widget__title"><span class="td-widget__title-dot"></span>GhostTrade</div>
-            <button class="td-widget__action" onclick="tdNavGo('ghosttrade',null)">Open Trades →</button>
-          </div>
-          <div class="td-widget__body">
-            <div id="td-positions">
-              <div style="padding:16px 0;text-align:center;color:#2a2a2a;font-size:11px;font-family:'Inter',sans-serif;">No open positions</div>
-            </div>
-            <div id="td-debug-ghost"></div>
-          </div>
-        </div>
-
-        <!-- 6. Market Snapshot -->
-        <div class="td-widget">
-          <div class="td-widget__header">
-            <div class="td-widget__title"><span class="td-widget__title-dot"></span>Market Snapshot</div>
-            <button class="td-widget__action" onclick="tdRenderMarket()">Refresh</button>
-            <button class="td-widget__action" onclick="tdNavGo('sentiment',null)">Sentiment →</button>
-          </div>
-          <div class="td-widget__body">
-            <div class="td-market-grid">
-              <div class="td-market-card">
-                <div class="td-market-card__label">Top Gainer</div>
-                <div class="td-market-card__value" id="td-mkt-gainer">—</div>
-                <div class="td-market-card__change td-market-card__change--up" id="td-mkt-gainer-chg">—</div>
-              </div>
-              <div class="td-market-card">
-                <div class="td-market-card__label">Top Loser</div>
-                <div class="td-market-card__value" id="td-mkt-loser">—</div>
-                <div class="td-market-card__change td-market-card__change--down" id="td-mkt-loser-chg">—</div>
-              </div>
-              <div class="td-market-card">
-                <div class="td-market-card__label">Sentiment</div>
-                <div class="td-market-card__value" id="td-mkt-sentiment">—</div>
-                <div class="td-market-card__change td-market-card__change--neutral" id="td-mkt-sentiment-sub">—</div>
-              </div>
-              <div class="td-market-card">
-                <div class="td-market-card__label">BTC Dominance</div>
-                <div class="td-market-card__value" id="td-mkt-btcdom">—</div>
-                <div class="td-market-card__change td-market-card__change--neutral" id="td-mkt-btcdom-sub">—</div>
+              <div class="td-hero-ask__meta">
+                <span>◎ CORTEX</span>
+                <span class="td-hero-ask__tier" id="td-hero-tier">Free</span>
               </div>
             </div>
-            <div id="td-debug-market"></div>
-          </div>
-        </div>
 
-      </div><!-- /td-grid -->
+            <div class="td-hero-chips">
+              <button class="td-chip" onclick="tdUsePromptChip('Scan a whale wallet')">Scan a whale wallet</button>
+              <button class="td-chip" onclick="tdUsePromptChip(`What's pumping on Base?`)">What's pumping on Base?</button>
+              <button class="td-chip" onclick="tdUsePromptChip('Analyze this token')">Analyze this token</button>
+              <button class="td-chip" onclick="tdUsePromptChip('What are whales buying?')">What are whales buying?</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="td-screener">
+          <div class="td-screener__head">
+            <div><span class="td-screener__title">Token Screener</span><span class="td-live-badge">LIVE</span></div>
+            <div class="td-time-tabs" id="td-time-tabs">
+              <button class="td-time-tab" data-time="m5">5m</button>
+              <button class="td-time-tab" data-time="m10">10m</button>
+              <button class="td-time-tab" data-time="h1">1h</button>
+              <button class="td-time-tab" data-time="h6">6h</button>
+              <button class="td-time-tab active" data-time="h24">24h</button>
+              <button class="td-time-tab" data-time="d7">7D</button>
+            </div>
+          </div>
+          <div class="td-screener__filters">
+            <div class="td-filter-group">
+              <select class="td-filter-pill"><option>Base</option></select>
+              <select class="td-filter-pill"><option>All Caps</option></select>
+              <select class="td-filter-pill"><option>Sectors</option></select>
+              <select class="td-filter-pill"><option>Token Age</option></select>
+              <button class="td-filter-btn">+ Filter</button>
+            </div>
+            <div class="td-filter-toggle">DexScreener Base Pairs</div>
+          </div>
+          <div class="td-table-wrap">
+            <table class="td-token-table">
+              <thead>
+                <tr><th>Chain</th><th>Token</th><th>Price</th><th>24h Change</th><th>MCap</th><th>Volume 24h</th><th>Buys/Sells</th><th>Liquidity</th><th>Age</th></tr>
+              </thead>
+              <tbody id="td-screener-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
     </main><!-- /td-main -->
 
     <!-- Panel collapse toggle -->
@@ -7968,6 +7934,158 @@ function tdSearch(q) {
   }, 200);
 }
 
+
+let _tdScreenerData = [];
+let _tdActiveTime = 'h24';
+
+function tdUsePromptChip(text) {
+  const input = document.getElementById('td-hero-input');
+  if (!input) return;
+  input.value = text;
+  input.focus();
+}
+
+function tdHeroAskClark() {
+  const heroInput = document.getElementById('td-hero-input');
+  const chatInput = document.getElementById('td-chat-input');
+  if (!heroInput || !chatInput) return;
+  const text = (heroInput.value || '').trim();
+  if (!text) return;
+  chatInput.value = text;
+  heroInput.value = '';
+  tdFocusClark();
+  tdClarkSend();
+}
+
+function tdFmtMoney(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return '—';
+  if (n >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return '$' + (n / 1e3).toFixed(2) + 'K';
+  return '$' + n.toFixed(2);
+}
+
+function tdFmtPrice(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return '—';
+  if (n < 0.001) return '$' + n.toFixed(6);
+  if (n < 1) return '$' + n.toFixed(4);
+  return '$' + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function tdSetScreenerLoading() {
+  const body = document.getElementById('td-screener-body');
+  if (!body) return;
+  body.innerHTML = Array.from({ length: 8 }).map(() => '<tr class="td-skeleton-row">' +
+    '<td><div class="td-skeleton"></div></td>'.repeat(9) + '</tr>').join('');
+}
+
+function tdScreenerSortVal(item, key) {
+  if (key === 'm5') return Math.abs(item.m5 || 0);
+  if (key === 'm10') return Math.abs(item.m5 || 0) * 2;
+  if (key === 'h1') return Math.abs(item.h1 || 0);
+  if (key === 'h6') return Math.abs(item.h6 || 0);
+  if (key === 'd7') return Math.abs(item.tx24Total || 0);
+  return Math.abs(item.h24Vol || 0);
+}
+
+function tdRenderScreenerRows() {
+  const body = document.getElementById('td-screener-body');
+  if (!body) return;
+  const rows = [..._tdScreenerData].sort((a, b) => tdScreenerSortVal(b, _tdActiveTime) - tdScreenerSortVal(a, _tdActiveTime)).slice(0, 20);
+
+  body.innerHTML = rows.map((r) => {
+    const change24 = Number(r.change24 || 0);
+    const buys = Number(r.buys24 || 0);
+    const sells = Number(r.sells24 || 0);
+    const buysSellsCls = buys >= sells ? 'td-buysells-up' : 'td-buysells-down';
+    return `<tr>
+      <td><img class="td-chain-icon" src="${r.chainIcon}" alt="Base"></td>
+      <td><div class="td-token"><img src="${r.icon}" alt="${r.symbol}"><span>${r.name} <span style="color:rgba(255,255,255,.45)">${r.symbol}</span></span></div></td>
+      <td>${tdFmtPrice(r.price)}</td>
+      <td class="${change24 >= 0 ? 'td-pos' : 'td-neg'}">${change24 >= 0 ? '+' : ''}${change24.toFixed(2)}%</td>
+      <td>${tdFmtMoney(r.mcap)}</td>
+      <td>${tdFmtMoney(r.h24Vol)}</td>
+      <td class="${buysSellsCls}">${buys.toLocaleString()} / ${sells.toLocaleString()}</td>
+      <td>${tdFmtMoney(r.liq)}</td>
+      <td>${r.ageLabel}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function tdFetchScreenerData() {
+  tdSetScreenerLoading();
+  try {
+    const res = await fetch('https://api.dexscreener.com/latest/dex/pairs/base');
+    const data = await res.json();
+    const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
+    const baseIcon = 'https://dd.dexscreener.com/ds-data/chains/base.png';
+    _tdScreenerData = pairs
+      .filter(p => (p.chainId || '').toLowerCase() === 'base')
+      .map((p) => {
+        const tx24 = p.txns?.h24 || {};
+        const buys24 = Number(tx24.buys || 0);
+        const sells24 = Number(tx24.sells || 0);
+        const name = (p.baseToken?.name || 'Unknown').trim();
+        const symbol = (p.baseToken?.symbol || '—').trim();
+        const createdAt = Number(p.pairCreatedAt || 0);
+        const ageMs = createdAt > 0 ? Date.now() - createdAt : null;
+        let ageLabel = '—';
+        if (ageMs != null && ageMs >= 0) {
+          const d = Math.floor(ageMs / 86400000);
+          if (d < 1) ageLabel = Math.max(1, Math.floor(ageMs / 3600000)) + 'h';
+          else if (d < 7) ageLabel = d + 'd';
+          else if (d < 30) ageLabel = Math.floor(d / 7) + 'w';
+          else ageLabel = Math.floor(d / 30) + 'm';
+        }
+        return {
+          name,
+          symbol,
+          icon: p.info?.imageUrl || p.info?.openGraph || baseIcon,
+          chainIcon: baseIcon,
+          price: Number(p.priceUsd || 0),
+          change24: Number(p.priceChange?.h24 || 0),
+          mcap: Number(p.marketCap || 0),
+          h24Vol: Number(p.volume?.h24 || 0),
+          liq: Number(p.liquidity?.usd || 0),
+          buys24,
+          sells24,
+          ageLabel,
+          tx24Total: buys24 + sells24,
+          m5: Number(p.volume?.m5 || 0),
+          h1: Number(p.volume?.h1 || 0),
+          h6: Number(p.volume?.h6 || 0)
+        };
+      })
+      .filter((p) => (p.h24Vol || 0) >= 5000)
+      .filter((p) => (p.name || '').length <= 25)
+      .filter((p) => !['USDC', 'USDT', 'DAI'].includes((p.symbol || '').toUpperCase()))
+      .sort((a, b) => (b.h24Vol || 0) - (a.h24Vol || 0));
+    tdRenderScreenerRows();
+  } catch (e) {
+    const body = document.getElementById('td-screener-body');
+    if (body) body.innerHTML = '<tr><td colspan="9" style="color:rgba(255,255,255,.55);padding:16px;">Failed to load DexScreener Base data.</td></tr>';
+  }
+}
+
+function tdInitScreener() {
+  const tier = document.getElementById('td-hero-tier');
+  if (tier) {
+    const plan = (user?.plan || 'free');
+    tier.textContent = plan.charAt(0).toUpperCase() + plan.slice(1);
+  }
+  document.querySelectorAll('.td-time-tab').forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll('.td-time-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _tdActiveTime = btn.dataset.time || 'h24';
+      tdRenderScreenerRows();
+    };
+  });
+  tdFetchScreenerData();
+}
+
 function initTerminal() {
   tdCloseSettings();
   // Update plan badge + wallet
@@ -7992,14 +8110,11 @@ function initTerminal() {
     }
   }
 
-  tdRenderPortfolio();
-  tdDrawGauge();
-  tdRenderPumps();
-  tdRenderPositions();
+  tdInitScreener();
 
   // Live feed refresh timers
   if (_tdPumpTimer) clearInterval(_tdPumpTimer);
-  _tdPumpTimer = setInterval(tdAddPumpItem, 30000);
+  _tdPumpTimer = setInterval(tdFetchScreenerData, 60000);
   setTimeout(function() {
     if (!user && !window._connectedWallet && !localStorage.getItem('cl_wallet')) {
       if (typeof window.ethereum !== 'undefined') {
