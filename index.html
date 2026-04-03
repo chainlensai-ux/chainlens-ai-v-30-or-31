@@ -13883,10 +13883,8 @@ async function doBaseScreener() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     let pairs = (d.pairs || [])
-      .filter(p => p.chainId === 'base')
-      .filter(p => p.baseToken && p.baseToken.name.length <= 25)
-      .filter(p => (p.volume?.h24 || 0) >= 1000)
-      .filter(p => !(p.baseToken.symbol || '').toUpperCase().includes('USD'))
+      .filter(p => p.baseToken && p.baseToken.name.length <= 40)
+      .filter(p => (p.volume?.h24 || 0) >= 100)
       .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
       .slice(0, 25);
 
