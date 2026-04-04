@@ -8200,7 +8200,7 @@ async function tdLoadSentimentStat() {
     const r = await fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' })
+      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT', method: 'GET' })
     });
     const d = await r.json();
     const pairs = Array.isArray(d?.pairs) ? d.pairs.slice(0, 20) : [];
@@ -8250,7 +8250,7 @@ async function tdLoadBtcDominanceStat() {
 async function tdFetchScreenerData() {
   tdSetScreenerLoading();
   try {
-    const res = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' }) });
+    const res = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT', method: 'GET' }) });
     const data = await res.json();
     const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
     _tdScreenerData = pairs
@@ -16176,7 +16176,7 @@ updateHeroTierLabel();
       var res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' })
+        body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT', method: 'GET' })
       });
       var d = await res.json();
       var pairs = (d.pairs || [])
