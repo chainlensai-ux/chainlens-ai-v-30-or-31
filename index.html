@@ -7498,7 +7498,7 @@ WALLETCONNECT
           <span class="td-nav-item__name">Token Scanner</span>
           <span class="td-nav-item__badge td-nav-item__badge--elite">Elite</span>
         </div>
-        <div class="td-nav-item td-active" onclick="tdNavGo('basescreener',this);doBaseScreener()">
+        <div class="td-nav-item td-active" onclick="tdNavGo('basescreener',this); setTimeout(doBaseScreener, 100);">
           <span class="td-nav-item__icon">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M3 6h18M3 12h18M3 18h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -13897,21 +13897,24 @@ async function doBaseScreener() {
   tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:13px;"><span class="cl-spinner"></span> Fetching live Base chain data...</td></tr>`;
 
   try {
-    const r = await fetch('/api/scan', {
+    const res = await fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/tokens/list?chainId=base', method: 'GET' })
+      body: JSON.stringify({
+        url: 'https://api.dexscreener.com/latest/dex/search?q=base&chainId=base',
+        method: 'GET'
+      })
     });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
     console.log('RAW DEXSCREENER RESPONSE:', JSON.stringify(d).slice(0, 500));
+    const pairs = (d.pairs || [])
+      .filter((p) => p.chainId === 'base')
+      .filter((p) => (p.volume?.h24 || 0) >= 500)
+      .filter((p) => p.baseToken.name.length <= 40)
+      .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
+      .slice(0, 25);
     console.log('PAIRS COUNT:', (d.pairs || []).length);
-    let pairs = (d.pairs || d.tokens || [])
-      .filter((p) => String(p.chainId || '').toLowerCase() === 'base')
-      .filter((p) => Number(p.volume?.h24 || 0) > 10000)
-      .filter((p) => Number(p.liquidity?.usd || 0) > 5000)
-      .sort((a, b) => Number(b.volume?.h24 || 0) - Number(a.volume?.h24 || 0))
-      .slice(0, 20);
     console.log('AFTER FILTER COUNT:', pairs.length);
     console.log('FIRST PAIR:', JSON.stringify(pairs[0]));
     console.log('RENDERING PAIRS:', pairs.length);
