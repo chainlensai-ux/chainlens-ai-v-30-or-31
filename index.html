@@ -8291,7 +8291,7 @@ async function tdFetchScreenerData() {
     tdRenderScreenerRows();
     tdLoadTopGainerStat();
   } catch (e) {
-    const body = document.getElementById('td-screener-body');
+    const body = document.getElementById('bs-tbody');
     if (body) body.innerHTML = '<tr><td colspan="9" style="color:rgba(255,255,255,.55);padding:16px;">Failed to load DexScreener Base data.</td></tr>';
   }
 }
