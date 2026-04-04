@@ -13908,7 +13908,17 @@ async function doBaseScreener() {
     console.log('PAIRS COUNT:', (d.pairs || []).length);
     let pairs = (d.pairs || [])
       .filter(p => p.baseToken && p.baseToken.name.length <= 40)
-      .filter(p => (p.volume?.h24 || 0) >= 100)
+      .filter((p) => !['BASE', 'Base Network', 'Base Protocol'].includes(String(p.baseToken?.name || '').trim()))
+      .filter((p) => Number(p.volume?.h24 || 0) >= 10000)
+      .filter((p) => Number(p.fdv || p.marketCap || 0) >= 50000)
+      .filter((p) => Number(p.liquidity?.usd || 0) >= 5000)
+      .filter((p) => {
+        const mcap = Number(p.fdv || p.marketCap || 0);
+        const tokenName = String(p.baseToken?.name || '');
+        const tokenSymbol = String(p.baseToken?.symbol || '');
+        const hasExactBase = /\bbase\b/i.test(tokenName) || /\bbase\b/i.test(tokenSymbol);
+        return !hasExactBase || mcap > 1000000;
+      })
       .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
       .slice(0, 25);
     console.log('AFTER FILTER COUNT:', pairs.length);
