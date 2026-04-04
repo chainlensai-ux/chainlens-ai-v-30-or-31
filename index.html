@@ -7498,7 +7498,7 @@ WALLETCONNECT
           <span class="td-nav-item__name">Token Scanner</span>
           <span class="td-nav-item__badge td-nav-item__badge--elite">Elite</span>
         </div>
-        <div class="td-nav-item td-active" onclick="tdNavGo('basescreener',this);doBaseScreener()">
+        <div class="td-nav-item td-active" onclick="tdNavGo('basescreener',this); setTimeout(doBaseScreener, 100);">
           <span class="td-nav-item__icon">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M3 6h18M3 12h18M3 18h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -8200,7 +8200,7 @@ async function tdLoadSentimentStat() {
     const r = await fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' })
+      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT', method: 'GET' })
     });
     const d = await r.json();
     const pairs = Array.isArray(d?.pairs) ? d.pairs.slice(0, 20) : [];
@@ -8250,9 +8250,11 @@ async function tdLoadBtcDominanceStat() {
 async function tdFetchScreenerData() {
   tdSetScreenerLoading();
   try {
-    const res = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' }) });
-    const data = await res.json();
-    const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
+    const res = await fetch('/api/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT', method: 'GET' }) });
+    const d = await res.json();
+    console.log('TD SCREENER RAW:', JSON.stringify(d).slice(0, 200));
+    console.log('TD SCREENER PAIRS:', (d.pairs||[]).length);
+    const pairs = Array.isArray(d?.pairs) ? d.pairs : [];
     _tdScreenerData = pairs
       .filter((p) => {
         const name = String(p?.baseToken?.name || '');
@@ -13879,97 +13881,47 @@ function bsFormatPrice(price) {
 }
 
 async function doBaseScreener() {
-  console.log('SCREENER FETCH STARTING');
-  const primaryTbody = document.getElementById('td-screener-body');
-  const fallbackTbody = document.getElementById('bs-tbody');
-  const tbody = primaryTbody || fallbackTbody;
-  if (!tbody) { console.error('No screener tbody found (bs-tbody/td-screener-body)'); return; }
-  const isTerminalTable = tbody.id === 'td-screener-body';
-  const colspan = isTerminalTable ? 9 : 6;
-  const fmtMoney = (n) => {
-    const v = Number(n || 0);
-    if (!isFinite(v) || v <= 0) return '—';
-    if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
-    if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
-    if (v >= 1e3) return '$' + (v / 1e3).toFixed(2) + 'K';
-    return '$' + v.toFixed(2);
-  };
-  tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:13px;"><span class="cl-spinner"></span> Fetching live Base chain data...</td></tr>`;
-
+  const tbody = document.getElementById('bs-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:rgba(255,255,255,0.3)">Loading...</td></tr>';
   try {
-    const r = await fetch('/api/scan', {
+    const res = await fetch('/api/scan', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/tokens/list?chainId=base', method: 'GET' })
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT',
+        method: 'GET'
+      })
     });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
-    console.log('RAW DEXSCREENER RESPONSE:', JSON.stringify(d).slice(0, 500));
-    console.log('PAIRS COUNT:', (d.pairs || []).length);
-    let pairs = (d.pairs || d.tokens || [])
-      .filter((p) => String(p.chainId || '').toLowerCase() === 'base')
-      .filter((p) => Number(p.volume?.h24 || 0) > 10000)
-      .filter((p) => Number(p.liquidity?.usd || 0) > 5000)
-      .sort((a, b) => Number(b.volume?.h24 || 0) - Number(a.volume?.h24 || 0))
-      .slice(0, 20);
-    console.log('AFTER FILTER COUNT:', pairs.length);
-    console.log('FIRST PAIR:', JSON.stringify(pairs[0]));
-    console.log('RENDERING PAIRS:', pairs.length);
-
-    if (!pairs.length) {
-      tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center;padding:32px;color:var(--cl-text-3);">No tokens matched the filter criteria.</td></tr>`;
-      return;
-    }
-
-    console.log('TBODY ELEMENT:', tbody);
-    console.log('PAIRS TO RENDER:', pairs.length);
-    tbody.innerHTML = pairs.map(function(pair) {
-      const name = pair.baseToken.name || '—';
-      const symbol = pair.baseToken.symbol || '—';
-      const price = parseFloat(pair.priceUsd || 0);
-      const change = parseFloat(pair.priceChange && pair.priceChange.h24 || 0);
-      const buys = (pair.txns && pair.txns.h24 && pair.txns.h24.buys) || 0;
-      const sells = (pair.txns && pair.txns.h24 && pair.txns.h24.sells) || 0;
-      const age = bsFormatAge(pair.pairCreatedAt);
-
-      const changeUp = change >= 0;
-      const changeFmt = (changeUp ? '+' : '') + change.toFixed(2) + '%';
-      const changeColor = changeUp ? '#2DD4BF' : '#ef476f';
-      const bsColor = buys > sells ? '#2DD4BF' : (sells > buys ? '#ef476f' : 'rgba(255,255,255,0.5)');
-      const trendColor = changeUp ? '#2DD4BF' : '#ec4899';
-      const barWidth = Math.min(Math.abs(change), 100);
-      const mcap = pair.fdv || pair.marketCap || 0;
-      const vol24 = pair.volume?.h24 || 0;
-
-      if (isTerminalTable) {
-        return '<tr>'
-          + '<td><span class="td-chain-pill">BASE</span></td>'
-          + '<td><div class="td-token"><span class="td-token-name"><strong>' + name + '</strong><span>' + symbol + '</span></span></div></td>'
-          + '<td>$' + bsFormatPrice(price) + '</td>'
-          + '<td class="' + (changeUp ? 'td-pos' : 'td-neg') + '">' + changeFmt + '</td>'
-          + '<td>' + fmtMoney(mcap) + '</td>'
-          + '<td>' + fmtMoney(vol24) + '</td>'
-          + '<td class="' + (buys >= sells ? 'td-bs-pos' : 'td-bs-neg') + '">' + buys.toLocaleString() + ' / ' + sells.toLocaleString() + '</td>'
-          + '<td>' + age + '</td>'
-          + '<td><div class="td-trend"><span style="width:' + barWidth + '%;background:' + trendColor + ';"></span></div></td>'
-          + '</tr>';
-      }
-
-      return '<tr class="bs-row">'
-        + '<td><div style="font-size:13px;font-weight:700;color:#fff;line-height:1.2;">' + name + '</div>'
-        + '<div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:2px;font-family:\'JetBrains Mono\',monospace;">' + symbol + '</div></td>'
-        + '<td style="color:#fff;font-family:\'JetBrains Mono\',monospace;font-size:12px;">$' + bsFormatPrice(price) + '</td>'
-        + '<td style="color:' + changeColor + ';font-weight:700;font-family:\'JetBrains Mono\',monospace;">' + changeFmt + '</td>'
-        + '<td style="color:' + bsColor + ';font-family:\'JetBrains Mono\',monospace;">' + buys + ' / ' + sells + '</td>'
-        + '<td style="color:rgba(255,255,255,0.45);font-size:11px;">' + age + '</td>'
-        + '<td><div class="bs-trend-bar"><div class="bs-trend-bar__fill" style="width:' + barWidth + '%;background:' + trendColor + ';"></div></div></td>'
-        + '</tr>';
+    const d = await res.json();
+    const pairs = (d.pairs || []).filter(p => p.chainId === 'base').sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0)).slice(0, 25);
+    if (!pairs.length) { tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:rgba(255,255,255,0.3)">No data</td></tr>'; return; }
+    tbody.innerHTML = pairs.map(p => {
+      const change = p.priceChange?.h24 || 0;
+      const cc = change >= 0 ? '#2DD4BF' : '#f43f5e';
+      const buys = p.txns?.h24?.buys || 0;
+      const sells = p.txns?.h24?.sells || 0;
+      const bc = buys >= sells ? '#2DD4BF' : '#f43f5e';
+      const age = p.pairCreatedAt ? Math.floor((Date.now() - p.pairCreatedAt) / 86400000) + 'd' : '—';
+      const vol = p.volume?.h24 || 0;
+      const vf = vol > 1000000 ? '$'+(vol/1000000).toFixed(1)+'M' : '$'+(vol/1000).toFixed(1)+'K';
+      const mc = p.fdv || 0;
+      const mf = mc > 1000000 ? '$'+(mc/1000000).toFixed(1)+'M' : '$'+(mc/1000).toFixed(1)+'K';
+      return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='transparent'">
+        <td style="padding:12px 8px"><span style="background:rgba(45,212,191,0.1);color:#2DD4BF;font-size:9px;padding:2px 6px;border-radius:3px;font-family:monospace">BASE</span></td>
+        <td style="padding:12px 8px"><div style="font-weight:600;color:#fff;font-size:13px">${p.baseToken?.name||'—'}</div><div style="color:rgba(255,255,255,0.35);font-size:10px;font-family:monospace">${p.baseToken?.symbol||'—'}</div></td>
+        <td style="padding:12px 8px;color:#fff;font-family:monospace;font-size:12px">$${parseFloat(p.priceUsd||0).toFixed(6)}</td>
+        <td style="padding:12px 8px;color:${cc};font-weight:700;font-family:monospace">${change>=0?'+':''}${change.toFixed(2)}%</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px">${mf}</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px">${vf}</td>
+        <td style="padding:12px 8px;color:${bc};font-family:monospace;font-size:12px">${buys} / ${sells}</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.4);font-size:11px">${age}</td>
+        <td style="padding:12px 8px"><div style="width:60px;height:4px;background:rgba(255,255,255,0.1);border-radius:2px"><div style="width:${Math.min(Math.abs(change),100)}%;height:100%;background:${cc};border-radius:2px"></div></div></td>
+      </tr>`;
     }).join('');
-  } catch(err) {
-    console.log('SCREENER ERROR:', err);
-    tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center;padding:32px;color:#ef476f;font-size:13px;">Failed to load data: ${err.message}</td></tr>`;
-  }
+  } catch(e) { tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:#f43f5e">Failed to load</td></tr>'; }
 }
+
 
 // ══════════════════════════════════════════════
 // TOKEN SCANNER
@@ -16226,7 +16178,7 @@ updateHeroTierLabel();
       var res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=base&rankBy=trendingScoreH24', method: 'GET' })
+        body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT', method: 'GET' })
       });
       var d = await res.json();
       var pairs = (d.pairs || [])
