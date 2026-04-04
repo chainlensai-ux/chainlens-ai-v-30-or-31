@@ -13882,7 +13882,6 @@ async function doBaseScreener() {
   const tbody = document.getElementById('bs-tbody');
   if (!tbody) return;
   tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:rgba(255,255,255,0.3)">Loading...</td></tr>';
-  
   try {
     const res = await fetch('/api/scan', {
       method: 'POST',
@@ -13893,46 +13892,34 @@ async function doBaseScreener() {
       })
     });
     const d = await res.json();
-    const pairs = (d.pairs || [])
-      .filter(p => p.chainId === 'base')
-      .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
-      .slice(0, 25);
-    
-    if (!pairs.length) {
-      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:rgba(255,255,255,0.3)">No data available</td></tr>';
-      return;
-    }
-    
+    const pairs = (d.pairs || []).filter(p => p.chainId === 'base').sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0)).slice(0, 25);
+    if (!pairs.length) { tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:rgba(255,255,255,0.3)">No data</td></tr>'; return; }
     tbody.innerHTML = pairs.map(p => {
       const change = p.priceChange?.h24 || 0;
-      const changeColor = change >= 0 ? '#2DD4BF' : '#f43f5e';
+      const cc = change >= 0 ? '#2DD4BF' : '#f43f5e';
       const buys = p.txns?.h24?.buys || 0;
       const sells = p.txns?.h24?.sells || 0;
-      const bsColor = buys >= sells ? '#2DD4BF' : '#f43f5e';
+      const bc = buys >= sells ? '#2DD4BF' : '#f43f5e';
       const age = p.pairCreatedAt ? Math.floor((Date.now() - p.pairCreatedAt) / 86400000) + 'd' : '—';
       const vol = p.volume?.h24 || 0;
-      const volFmt = vol > 1000000 ? '$' + (vol/1000000).toFixed(1) + 'M' : vol > 1000 ? '$' + (vol/1000).toFixed(1) + 'K' : '$' + vol.toFixed(0);
-      const mcap = p.fdv || 0;
-      const mcapFmt = mcap > 1000000 ? '$' + (mcap/1000000).toFixed(1) + 'M' : mcap > 1000 ? '$' + (mcap/1000).toFixed(1) + 'K' : '$' + mcap.toFixed(0);
-      return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);cursor:pointer;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='transparent'">
-        <td style="padding:12px 8px;"><span style="background:rgba(45,212,191,0.1);color:#2DD4BF;font-size:9px;padding:2px 6px;border-radius:3px;font-family:'IBM Plex Mono',monospace;">BASE</span></td>
-        <td style="padding:12px 8px;">
-          <div style="font-weight:600;color:#fff;font-size:13px;">${p.baseToken?.name || '—'}</div>
-          <div style="color:rgba(255,255,255,0.35);font-size:10px;font-family:'IBM Plex Mono',monospace;">${p.baseToken?.symbol || '—'}</div>
-        </td>
-        <td style="padding:12px 8px;color:#fff;font-family:'IBM Plex Mono',monospace;font-size:12px;">$${parseFloat(p.priceUsd||0).toFixed(4)}</td>
-        <td style="padding:12px 8px;color:${changeColor};font-weight:700;font-family:'IBM Plex Mono',monospace;">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</td>
-        <td style="padding:12px 8px;color:rgba(255,255,255,0.7);font-family:'IBM Plex Mono',monospace;font-size:12px;">${mcapFmt}</td>
-        <td style="padding:12px 8px;color:rgba(255,255,255,0.7);font-family:'IBM Plex Mono',monospace;font-size:12px;">${volFmt}</td>
-        <td style="padding:12px 8px;color:${bsColor};font-family:'IBM Plex Mono',monospace;font-size:12px;">${buys} / ${sells}</td>
-        <td style="padding:12px 8px;color:rgba(255,255,255,0.4);font-size:11px;">${age}</td>
-        <td style="padding:12px 8px;"><div style="width:60px;height:4px;background:rgba(255,255,255,0.1);border-radius:2px;"><div style="width:${Math.min(Math.abs(change),100)}%;height:100%;background:${changeColor};border-radius:2px;"></div></div></td>
+      const vf = vol > 1000000 ? '$'+(vol/1000000).toFixed(1)+'M' : '$'+(vol/1000).toFixed(1)+'K';
+      const mc = p.fdv || 0;
+      const mf = mc > 1000000 ? '$'+(mc/1000000).toFixed(1)+'M' : '$'+(mc/1000).toFixed(1)+'K';
+      return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='transparent'">
+        <td style="padding:12px 8px"><span style="background:rgba(45,212,191,0.1);color:#2DD4BF;font-size:9px;padding:2px 6px;border-radius:3px;font-family:monospace">BASE</span></td>
+        <td style="padding:12px 8px"><div style="font-weight:600;color:#fff;font-size:13px">${p.baseToken?.name||'—'}</div><div style="color:rgba(255,255,255,0.35);font-size:10px;font-family:monospace">${p.baseToken?.symbol||'—'}</div></td>
+        <td style="padding:12px 8px;color:#fff;font-family:monospace;font-size:12px">$${parseFloat(p.priceUsd||0).toFixed(6)}</td>
+        <td style="padding:12px 8px;color:${cc};font-weight:700;font-family:monospace">${change>=0?'+':''}${change.toFixed(2)}%</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px">${mf}</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px">${vf}</td>
+        <td style="padding:12px 8px;color:${bc};font-family:monospace;font-size:12px">${buys} / ${sells}</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.4);font-size:11px">${age}</td>
+        <td style="padding:12px 8px"><div style="width:60px;height:4px;background:rgba(255,255,255,0.1);border-radius:2px"><div style="width:${Math.min(Math.abs(change),100)}%;height:100%;background:${cc};border-radius:2px"></div></div></td>
       </tr>`;
     }).join('');
-  } catch(e) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:#f43f5e">Failed to load data</td></tr>';
-  }
+  } catch(e) { tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:#f43f5e">Failed to load</td></tr>'; }
 }
+
 
 // ══════════════════════════════════════════════
 // TOKEN SCANNER
