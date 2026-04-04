@@ -8340,7 +8340,9 @@ function initTerminal() {
   }
 
   tdInitScreener();
-  doBaseScreener();
+  if (typeof doBaseScreener === 'function') {
+    doBaseScreener();
+  }
 
   // Live feed refresh timers
   if (_tdPumpTimer) clearInterval(_tdPumpTimer);
