@@ -13901,7 +13901,7 @@ async function doBaseScreener() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        url: 'https://api.dexscreener.com/latest/dex/search?q=base&chainId=base',
+        url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT&rankBy=volume',
         method: 'GET'
       })
     });
@@ -13910,8 +13910,7 @@ async function doBaseScreener() {
     console.log('RAW DEXSCREENER RESPONSE:', JSON.stringify(d).slice(0, 500));
     const pairs = (d.pairs || [])
       .filter((p) => p.chainId === 'base')
-      .filter((p) => (p.volume?.h24 || 0) >= 500)
-      .filter((p) => p.baseToken.name.length <= 40)
+      .filter((p) => (p.volume?.h24 || 0) >= 100)
       .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
       .slice(0, 25);
     console.log('PAIRS COUNT:', (d.pairs || []).length);
