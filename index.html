@@ -13879,97 +13879,58 @@ function bsFormatPrice(price) {
 }
 
 async function doBaseScreener() {
-  console.log('SCREENER FETCH STARTING');
-  const primaryTbody = document.getElementById('td-screener-body');
-  const fallbackTbody = document.getElementById('bs-tbody');
-  const tbody = primaryTbody || fallbackTbody;
-  if (!tbody) { console.error('No screener tbody found (bs-tbody/td-screener-body)'); return; }
-  const isTerminalTable = tbody.id === 'td-screener-body';
-  const colspan = isTerminalTable ? 9 : 6;
-  const fmtMoney = (n) => {
-    const v = Number(n || 0);
-    if (!isFinite(v) || v <= 0) return '—';
-    if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
-    if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
-    if (v >= 1e3) return '$' + (v / 1e3).toFixed(2) + 'K';
-    return '$' + v.toFixed(2);
-  };
-  tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center;padding:32px;color:var(--cl-text-3);font-size:13px;"><span class="cl-spinner"></span> Fetching live Base chain data...</td></tr>`;
-
+  const tbody = document.getElementById('bs-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:rgba(255,255,255,0.3)">Loading...</td></tr>';
+  
   try {
     const res = await fetch('/api/scan', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT&rankBy=volume',
+        url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT',
         method: 'GET'
       })
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
     const d = await res.json();
-    console.log('RAW DEXSCREENER RESPONSE:', JSON.stringify(d).slice(0, 500));
     const pairs = (d.pairs || [])
-      .filter((p) => p.chainId === 'base')
-      .filter((p) => (p.volume?.h24 || 0) >= 100)
+      .filter(p => p.chainId === 'base')
       .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
       .slice(0, 25);
-    console.log('PAIRS COUNT:', (d.pairs || []).length);
-    console.log('AFTER FILTER COUNT:', pairs.length);
-    console.log('FIRST PAIR:', JSON.stringify(pairs[0]));
-    console.log('RENDERING PAIRS:', pairs.length);
-
+    
     if (!pairs.length) {
-      tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center;padding:32px;color:var(--cl-text-3);">No tokens matched the filter criteria.</td></tr>`;
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:rgba(255,255,255,0.3)">No data available</td></tr>';
       return;
     }
-
-    console.log('TBODY ELEMENT:', tbody);
-    console.log('PAIRS TO RENDER:', pairs.length);
-    tbody.innerHTML = pairs.map(function(pair) {
-      const name = pair.baseToken.name || '—';
-      const symbol = pair.baseToken.symbol || '—';
-      const price = parseFloat(pair.priceUsd || 0);
-      const change = parseFloat(pair.priceChange && pair.priceChange.h24 || 0);
-      const buys = (pair.txns && pair.txns.h24 && pair.txns.h24.buys) || 0;
-      const sells = (pair.txns && pair.txns.h24 && pair.txns.h24.sells) || 0;
-      const age = bsFormatAge(pair.pairCreatedAt);
-
-      const changeUp = change >= 0;
-      const changeFmt = (changeUp ? '+' : '') + change.toFixed(2) + '%';
-      const changeColor = changeUp ? '#2DD4BF' : '#ef476f';
-      const bsColor = buys > sells ? '#2DD4BF' : (sells > buys ? '#ef476f' : 'rgba(255,255,255,0.5)');
-      const trendColor = changeUp ? '#2DD4BF' : '#ec4899';
-      const barWidth = Math.min(Math.abs(change), 100);
-      const mcap = pair.fdv || pair.marketCap || 0;
-      const vol24 = pair.volume?.h24 || 0;
-
-      if (isTerminalTable) {
-        return '<tr>'
-          + '<td><span class="td-chain-pill">BASE</span></td>'
-          + '<td><div class="td-token"><span class="td-token-name"><strong>' + name + '</strong><span>' + symbol + '</span></span></div></td>'
-          + '<td>$' + bsFormatPrice(price) + '</td>'
-          + '<td class="' + (changeUp ? 'td-pos' : 'td-neg') + '">' + changeFmt + '</td>'
-          + '<td>' + fmtMoney(mcap) + '</td>'
-          + '<td>' + fmtMoney(vol24) + '</td>'
-          + '<td class="' + (buys >= sells ? 'td-bs-pos' : 'td-bs-neg') + '">' + buys.toLocaleString() + ' / ' + sells.toLocaleString() + '</td>'
-          + '<td>' + age + '</td>'
-          + '<td><div class="td-trend"><span style="width:' + barWidth + '%;background:' + trendColor + ';"></span></div></td>'
-          + '</tr>';
-      }
-
-      return '<tr class="bs-row">'
-        + '<td><div style="font-size:13px;font-weight:700;color:#fff;line-height:1.2;">' + name + '</div>'
-        + '<div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:2px;font-family:\'JetBrains Mono\',monospace;">' + symbol + '</div></td>'
-        + '<td style="color:#fff;font-family:\'JetBrains Mono\',monospace;font-size:12px;">$' + bsFormatPrice(price) + '</td>'
-        + '<td style="color:' + changeColor + ';font-weight:700;font-family:\'JetBrains Mono\',monospace;">' + changeFmt + '</td>'
-        + '<td style="color:' + bsColor + ';font-family:\'JetBrains Mono\',monospace;">' + buys + ' / ' + sells + '</td>'
-        + '<td style="color:rgba(255,255,255,0.45);font-size:11px;">' + age + '</td>'
-        + '<td><div class="bs-trend-bar"><div class="bs-trend-bar__fill" style="width:' + barWidth + '%;background:' + trendColor + ';"></div></div></td>'
-        + '</tr>';
+    
+    tbody.innerHTML = pairs.map(p => {
+      const change = p.priceChange?.h24 || 0;
+      const changeColor = change >= 0 ? '#2DD4BF' : '#f43f5e';
+      const buys = p.txns?.h24?.buys || 0;
+      const sells = p.txns?.h24?.sells || 0;
+      const bsColor = buys >= sells ? '#2DD4BF' : '#f43f5e';
+      const age = p.pairCreatedAt ? Math.floor((Date.now() - p.pairCreatedAt) / 86400000) + 'd' : '—';
+      const vol = p.volume?.h24 || 0;
+      const volFmt = vol > 1000000 ? '$' + (vol/1000000).toFixed(1) + 'M' : vol > 1000 ? '$' + (vol/1000).toFixed(1) + 'K' : '$' + vol.toFixed(0);
+      const mcap = p.fdv || 0;
+      const mcapFmt = mcap > 1000000 ? '$' + (mcap/1000000).toFixed(1) + 'M' : mcap > 1000 ? '$' + (mcap/1000).toFixed(1) + 'K' : '$' + mcap.toFixed(0);
+      return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);cursor:pointer;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='transparent'">
+        <td style="padding:12px 8px;"><span style="background:rgba(45,212,191,0.1);color:#2DD4BF;font-size:9px;padding:2px 6px;border-radius:3px;font-family:'IBM Plex Mono',monospace;">BASE</span></td>
+        <td style="padding:12px 8px;">
+          <div style="font-weight:600;color:#fff;font-size:13px;">${p.baseToken?.name || '—'}</div>
+          <div style="color:rgba(255,255,255,0.35);font-size:10px;font-family:'IBM Plex Mono',monospace;">${p.baseToken?.symbol || '—'}</div>
+        </td>
+        <td style="padding:12px 8px;color:#fff;font-family:'IBM Plex Mono',monospace;font-size:12px;">$${parseFloat(p.priceUsd||0).toFixed(4)}</td>
+        <td style="padding:12px 8px;color:${changeColor};font-weight:700;font-family:'IBM Plex Mono',monospace;">${change >= 0 ? '+' : ''}${change.toFixed(2)}%</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.7);font-family:'IBM Plex Mono',monospace;font-size:12px;">${mcapFmt}</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.7);font-family:'IBM Plex Mono',monospace;font-size:12px;">${volFmt}</td>
+        <td style="padding:12px 8px;color:${bsColor};font-family:'IBM Plex Mono',monospace;font-size:12px;">${buys} / ${sells}</td>
+        <td style="padding:12px 8px;color:rgba(255,255,255,0.4);font-size:11px;">${age}</td>
+        <td style="padding:12px 8px;"><div style="width:60px;height:4px;background:rgba(255,255,255,0.1);border-radius:2px;"><div style="width:${Math.min(Math.abs(change),100)}%;height:100%;background:${changeColor};border-radius:2px;"></div></div></td>
+      </tr>`;
     }).join('');
-  } catch(err) {
-    console.log('SCREENER ERROR:', err);
-    tbody.innerHTML = `<tr><td colspan="${colspan}" style="text-align:center;padding:32px;color:#ef476f;font-size:13px;">Failed to load data: ${err.message}</td></tr>`;
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:#f43f5e">Failed to load data</td></tr>';
   }
 }
 
