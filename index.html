@@ -13900,16 +13900,15 @@ async function doBaseScreener() {
     const r = await fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/tokens/list?chainId=base', method: 'GET' })
+      body: JSON.stringify({ url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL&chainId=base', method: 'GET' })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     console.log('RAW DEXSCREENER RESPONSE:', JSON.stringify(d).slice(0, 500));
     console.log('PAIRS COUNT:', (d.pairs || []).length);
     let pairs = (d.pairs || d.tokens || [])
-      .filter((p) => String(p.chainId || '').toLowerCase() === 'base')
-      .filter((p) => Number(p.volume?.h24 || 0) > 10000)
-      .filter((p) => Number(p.liquidity?.usd || 0) > 5000)
+      .filter((p) => p.chainId === 'base')
+      .filter((p) => (p.volume?.h24 || 0) > 1000)
       .sort((a, b) => Number(b.volume?.h24 || 0) - Number(a.volume?.h24 || 0))
       .slice(0, 20);
     console.log('AFTER FILTER COUNT:', pairs.length);
