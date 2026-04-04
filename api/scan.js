@@ -64,6 +64,8 @@ export default async function handler(req, res) {
         bodyMethod: body?.method || null,
       });
     }
+    console.log('[scan] fetching URL:', url);
+    console.log('[scan] method:', method);
     const response = await fetch(url, fetchOptions);
     const text = await response.text();
     // Pass upstream status through so callers can detect errors
