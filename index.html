@@ -13906,11 +13906,7 @@ async function doBaseScreener() {
     const d = await r.json();
     console.log('RAW DEXSCREENER RESPONSE:', JSON.stringify(d).slice(0, 500));
     console.log('PAIRS COUNT:', (d.pairs || []).length);
-    let pairs = (d.pairs || [])
-      .filter(p => p.baseToken && p.baseToken.name.length >= 3 && p.baseToken.name.length <= 40)
-      .filter(p => (p.volume?.h24 || 0) >= 5000)
-      .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
-      .slice(0, 25);
+    let pairs = (d.pairs || []).slice(0, 25);
     console.log('AFTER FILTER COUNT:', pairs.length);
     console.log('FIRST PAIR:', JSON.stringify(pairs[0]));
     console.log('RENDERING PAIRS:', pairs.length);
