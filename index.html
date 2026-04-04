@@ -13878,9 +13878,9 @@ function bsFormatPrice(price) {
 
 async function doBaseScreener() {
   console.log('SCREENER FETCH STARTING');
-  const bsTbody = document.getElementById('bs-tbody');
-  const tdTbody = document.getElementById('td-screener-body');
-  const tbody = bsTbody || tdTbody;
+  const primaryTbody = document.getElementById('td-screener-body');
+  const fallbackTbody = document.getElementById('bs-tbody');
+  const tbody = primaryTbody || fallbackTbody;
   if (!tbody) { console.error('No screener tbody found (bs-tbody/td-screener-body)'); return; }
   const isTerminalTable = tbody.id === 'td-screener-body';
   const colspan = isTerminalTable ? 9 : 6;
@@ -13905,8 +13905,8 @@ async function doBaseScreener() {
     console.log('RAW DEXSCREENER RESPONSE:', JSON.stringify(d).slice(0, 500));
     console.log('PAIRS COUNT:', (d.pairs || []).length);
     let pairs = (d.pairs || [])
-      .filter(p => p.baseToken && p.baseToken.name.length <= 40)
-      .filter(p => (p.volume?.h24 || 0) >= 100)
+      .filter(p => p.baseToken && p.baseToken.name.length >= 3 && p.baseToken.name.length <= 40)
+      .filter(p => (p.volume?.h24 || 0) >= 5000)
       .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
       .slice(0, 25);
     console.log('AFTER FILTER COUNT:', pairs.length);
