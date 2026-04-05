@@ -24,12 +24,8 @@
   ],
   "functions": {
     "api/auth.js": { "maxDuration": 10 },
-    "api/data.js": { "maxDuration": 10 },
     "api/claude.js": { "maxDuration": 30 },
     "api/scan.js": { "maxDuration": 15 },
-    "api/coingecko.js": { "maxDuration": 15 },
-    "api/zerion.js": { "maxDuration": 15 },
-    "api/covalent.js": { "maxDuration": 15 },
     "api/waitlist.js": { "maxDuration": 10 },
     "api/whale-webhook.js": { "maxDuration": 60 },
     "api/whale-alerts.js": { "maxDuration": 10 }
