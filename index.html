@@ -2911,9 +2911,22 @@ body::after {
   border-radius: 14px; padding: 20px; margin-bottom: 10px;
 }
 .ws-section--ai {
-  background: rgba(255,255,255,0.02);
+  background: #0b1220;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 16px;
+  padding: 22px;
+  position: relative;
+  overflow: hidden;
+}
+.ws-section--ai::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 3px;
+  background: #2DD4BF;
+  border-radius: 16px 0 0 16px;
 }
 .ws-section-header {
   display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
@@ -2934,13 +2947,15 @@ body::after {
 }
 .ws-section-sub { margin-left: auto; font-size: 10px; color: rgba(255,255,255,0.2); font-family: 'Inter', sans-serif; }
 .ws-section--ai .ws-section-title {
-  color: rgba(255,255,255,0.88);
+  color: rgba(255,255,255,0.92);
   letter-spacing: 1.4px;
+  font-size: 11px;
+  font-weight: 800;
 }
 .ws-section--ai .ws-section-header {
   border-bottom: 1px solid rgba(255,255,255,0.08);
   padding-bottom: 14px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 .ws-section--ai .ws-dot--mint {
   background: #2DD4BF;
@@ -2950,6 +2965,32 @@ body::after {
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(255,255,255,0.1);
   color: rgba(255,255,255,0.45);
+}
+.ws-ai-meta {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.ws-ai-desc {
+  font-size: 11px;
+  color: rgba(255,255,255,0.58);
+  font-family: 'Inter', sans-serif;
+}
+.ws-ai-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ws-ai-tag {
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.03);
+  color: rgba(255,255,255,0.78);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  font-family: 'Inter', sans-serif;
 }
 
 /* ── Intelligence grid ───────────────────── */
@@ -2981,8 +3022,11 @@ body::after {
 
 /* ── AI terminal ─────────────────────────── */
 .ws-terminal {
-  font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.9;
-  color: rgba(255,255,255,0.72); min-height: 40px;
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  line-height: 1.65;
+  color: rgba(255,255,255,0.78);
+  min-height: 40px;
   white-space: normal; word-break: break-word;
 }
 .ws-terminal--active::after {
@@ -2990,11 +3034,35 @@ body::after {
   animation: termBlink 0.9s step-end infinite;
 }
 @keyframes termBlink { 0%,100%{opacity:0} 50%{opacity:1} }
-.ws-ai-block { margin-bottom: 10px; }
-.ws-ai-head { font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: rgba(255,255,255,0.52); font-weight: 800; margin-bottom: 4px; }
+.ws-ai-block {
+  margin-bottom: 12px;
+  display: grid;
+  gap: 6px;
+}
+.ws-ai-head {
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.5);
+  font-weight: 800;
+  margin-bottom: 0;
+  font-family: 'Inter', sans-serif;
+}
 .ws-ai-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
 .ws-ai-list li { position: relative; padding-left: 14px; color: rgba(255,255,255,0.8); }
 .ws-ai-list li::before { content: ""; position: absolute; left: 0; top: 9px; width: 5px; height: 5px; border-radius: 999px; background: rgba(45,212,191,0.85); }
+.ws-ai-value {
+  color: rgba(255,255,255,0.86);
+}
+.ws-ai-mono {
+  font-family: 'IBM Plex Mono', 'JetBrains Mono', monospace;
+}
+.ws-ai-verdict {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.06);
+  padding: 12px;
+  border-radius: 10px;
+}
 .cl-ai-disclaimer {
   font-size: 10px !important; color: rgba(255,255,255,0.42) !important;
   font-family: 'Inter', sans-serif !important; margin-top: 14px !important;
@@ -6608,11 +6676,15 @@ WALLETCONNECT
       </div>
 
       <!-- AI Terminal — mint top border accent -->
-      <div class="ws-section ws-section--ai">
+      <div class="ws-section ws-section--ai wallet-intelligence">
         <div class="ws-section-header">
           <div class="ws-dot ws-dot--mint"></div>
           <span class="ws-section-title">Wallet Intelligence</span>
           <span class="ws-section-badge">AI</span>
+        </div>
+        <div class="ws-ai-meta">
+          <div class="ws-ai-desc">Onchain behaviour summary powered by CORTEX.</div>
+          <div class="ws-ai-tags" id="ws-ai-tags"></div>
         </div>
         <div class="ws-terminal" id="ws-ai">Generating analysis...</div>
       </div>
@@ -12911,34 +12983,76 @@ function wsRenderWalletLabels(labels) {
   }).join('')}</div>`;
 }
 
+function wsRenderIntelTags(labels) {
+  const labelMap = {
+    'LOW ACTIVITY': 'LOW ACTIVITY',
+    'NO POSITIONS': 'NO POSITIONS',
+    'SPORADIC TRANSFERS': 'SPORADIC TRANSFERS',
+    'NEW WALLET': 'NEW WALLET',
+    'FRESH': 'NEW WALLET',
+    'DORMANT': 'LOW ACTIVITY'
+  };
+  const source = Array.isArray(labels) ? labels : [];
+  const selected = [];
+  source.forEach(lb => {
+    const key = String(lb || '').trim().toUpperCase();
+    if (labelMap[key] && !selected.includes(labelMap[key])) selected.push(labelMap[key]);
+  });
+  if (!selected.includes('LOW ACTIVITY') && source.length <= 2) selected.push('LOW ACTIVITY');
+  return selected.slice(0, 3).map(t => `<span class="ws-ai-tag">[${t}]</span>`).join('');
+}
+
 function wsRenderAiAnalysis(text) {
   const src = String(text || '').replace(/\r/g, '').trim();
   if (!src) return '<div style="color:var(--cl-text-3);">No AI analysis returned.</div>';
   const escaped = src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const lines = escaped.split('\n').map(l => l.trim()).filter(Boolean);
-  let html = '';
-  let listOpen = false;
-  const closeList = () => { if (listOpen) { html += '</ul>'; listOpen = false; } };
+  const formatLine = (line) => line
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<span class="ws-ai-mono">$1</span>');
+  const sectionOrder = ['RISK SIGNAL', 'ACTIVITY SUMMARY', 'PORTFOLIO STATUS', 'POSSIBLE EXPLANATION', 'VERDICT'];
+  const aliases = {
+    'RISK': 'RISK SIGNAL',
+    'RISK SIGNAL': 'RISK SIGNAL',
+    'PATTERN': 'ACTIVITY SUMMARY',
+    'ACTIVITY': 'ACTIVITY SUMMARY',
+    'ACTIVITY SUMMARY': 'ACTIVITY SUMMARY',
+    'SUMMARY': 'ACTIVITY SUMMARY',
+    'PORTFOLIO': 'PORTFOLIO STATUS',
+    'PORTFOLIO STATUS': 'PORTFOLIO STATUS',
+    'EXPLANATION': 'POSSIBLE EXPLANATION',
+    'POSSIBLE EXPLANATION': 'POSSIBLE EXPLANATION',
+    'INSIGHT': 'VERDICT',
+    'VERDICT': 'VERDICT'
+  };
+  const sections = {};
+  sectionOrder.forEach(k => { sections[k] = []; });
+  let current = 'ACTIVITY SUMMARY';
   for (const rawLine of lines) {
-    const line = rawLine.replace(/^[-*]\s+/, '• ');
-    const heading = line.match(/^(?:#{1,6}\s*)?([A-Z][A-Z\s]{2,}|[A-Z][^:]{2,20}):\s*(.*)$/);
+    const line = rawLine.replace(/^[-*]\s+/, '• ').replace(/^#{1,6}\s*/, '');
+    const heading = line.match(/^([A-Z][A-Z\s]{2,}|[A-Z][^:]{2,25}):\s*(.*)$/);
     if (heading) {
-      closeList();
-      const head = heading[1].replace(/[*#_`]/g, '').trim();
-      const body = heading[2]?.trim() || '';
-      html += `<div class="ws-ai-block"><div class="ws-ai-head">${head}</div>${body ? `<div>${body.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<strong>$1</strong>')}</div>` : ''}</div>`;
-      continue;
+      const detected = aliases[heading[1].replace(/[*#_`]/g, '').trim().toUpperCase()];
+      if (detected) {
+        current = detected;
+        if (heading[2]) sections[current].push(heading[2].trim());
+        continue;
+      }
     }
-    if (/^•\s+/.test(line)) {
-      if (!listOpen) { html += '<ul class="ws-ai-list">'; listOpen = true; }
-      html += `<li>${line.replace(/^•\s+/, '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<strong>$1</strong>')}</li>`;
-      continue;
-    }
-    closeList();
-    html += `<div class="ws-ai-block">${line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/^#{1,6}\s*/,'').replace(/`([^`]+)`/g, '<strong>$1</strong>')}</div>`;
+    sections[current].push(line.trim());
   }
-  closeList();
-  return html;
+
+  const sectionHtml = sectionOrder.map((name) => {
+    const items = (sections[name] || []).filter(Boolean);
+    if (!items.length) return '';
+    const rendered = items.some(item => /^•\s+/.test(item))
+      ? `<ul class="ws-ai-list">${items.map(item => `<li>${formatLine(item.replace(/^•\s+/, ''))}</li>`).join('')}</ul>`
+      : `<div class="ws-ai-value">${items.map(item => formatLine(item)).join('<br>')}</div>`;
+    const wrapClass = name === 'VERDICT' ? 'ws-ai-block ws-ai-verdict' : 'ws-ai-block';
+    return `<div class="${wrapClass}"><div class="ws-ai-head">${name}</div>${rendered}</div>`;
+  }).join('');
+
+  return sectionHtml || `<div class="ws-ai-block"><div class="ws-ai-head">ACTIVITY SUMMARY</div><div class="ws-ai-value">${formatLine(src)}</div></div>`;
 }
 
 async function wsDetectBaseDevWallet(address) {
@@ -13106,6 +13220,8 @@ async function doWS() {
   document.getElementById('ws-txs').innerHTML = loading;
   document.getElementById('ws-defi').innerHTML = loading;
   document.getElementById('ws-ai').innerHTML = '<span class="cl-spinner"></span> AI analysing...';
+  const _aiTagsReset = document.getElementById('ws-ai-tags');
+  if (_aiTagsReset) _aiTagsReset.innerHTML = '';
   // Clear stat elements so stale data never shows between scans
   const _statPills = document.getElementById('ws-stat-pills');
   if (_statPills) _statPills.innerHTML = '';
@@ -13271,6 +13387,8 @@ async function doWS() {
     document.getElementById('ws-total-value').textContent = fmtFx(zerionPortfolioTotalUsd || assets.filter(a => (a.usdValue || 0) > 0).reduce((s, a) => s + a.usdValue, 0));
     const wsLabels = wsInferWalletLabels(address, chainType, totalUsd, assets, allTxs);
     if (isDevWalletBase && !wsLabels.includes('DEV')) wsLabels.push('DEV');
+    const wsAiTagsEl = document.getElementById('ws-ai-tags');
+    if (wsAiTagsEl) wsAiTagsEl.innerHTML = wsRenderIntelTags(wsLabels);
     const devWalletBadge = isDevWalletBase
       ? `<span style="margin-left:8px;padding:2px 8px;border-radius:8px;border:1px solid rgba(255,68,68,0.55);background:rgba(255,68,68,0.14);color:#ff4444;font-size:10px;font-weight:800;font-family:'JetBrains Mono',monospace;letter-spacing:.3px;">DEV WALLET</span>`
       : '';
@@ -13609,11 +13727,7 @@ async function doWS() {
       const riMatch = aiTxt.match(/RISK:\s*(.+)/i);
       const inMatch = aiTxt.match(/INSIGHT:\s*(.+)/i);
       if (ptMatch && riMatch && inMatch) {
-        aiEl.innerHTML = `<div style="display:grid;gap:8px;">
-          <div style="border-left:2px solid rgba(139,92,246,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(139,92,246,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Pattern</span><span style="color:rgba(255,255,255,0.8);">${ptMatch[1].trim()}</span></div>
-          <div style="border-left:2px solid rgba(240,180,41,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(240,180,41,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Risk</span><span style="color:rgba(255,255,255,0.8);">${riMatch[1].trim()}</span></div>
-          <div style="border-left:2px solid rgba(100,255,218,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(100,255,218,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Insight</span><span style="color:rgba(255,255,255,0.9);font-weight:600;">${inMatch[1].trim()}</span></div>
-        </div><div class="cl-ai-disclaimer" style="margin-top:12px;">AI-generated summary. Verify with onchain data.</div>`;
+        aiEl.innerHTML = wsRenderAiAnalysis(`RISK SIGNAL: ${riMatch[1].trim()}\nACTIVITY SUMMARY: ${ptMatch[1].trim()}\nVERDICT: ${inMatch[1].trim()}`) + '<div class="cl-ai-disclaimer" style="margin-top:12px;">AI-generated summary. Verify with onchain data.</div>';
       } else {
         aiEl.innerHTML = `${wsRenderAiAnalysis(aiTxt)}<div class="cl-ai-disclaimer" style="margin-top:12px;">AI-generated summary. Verify with onchain data.</div>`;
       }
@@ -15264,10 +15378,38 @@ RULES:
 6. Focus on behaviour, patterns, risk, and intent
 7. Prefer classification over storytelling
 8. Always provide a score (0-100) when relevant
+9. Never provide financial advice, buy/sell instructions, or future price predictions
+10. Never respond with refusal phrasing like "I cannot do that" or "I am not capable"
+11. If asked for "upside", "potential", "bullish tokens", "top tokens", "best tokens", or similar, reframe into data-led ranking factors only: narrative strength, momentum, liquidity health, smart-money inflows, on-chain activity, sector attention, and volume quality
+12. In those ranking requests, use this lead sentence exactly: "Here are tokens showing strong narrative momentum and on-chain activity right now."
 
 WALLET ARCHETYPES TO DETECT: whale, sniper, insider, farmer, degen, bot, tourist, diamond hands, exit liquidity
 
 BEHAVIOURAL PATTERNS TO DETECT: accumulation, distribution, rotation, exit liquidity, wash trading, dev dump, coordinated buy
+
+NARRATIVE RANKING MODE:
+- Trigger when user asks for token "upside", "potential", "bullish tokens", "top tokens", "best tokens", or similar
+- Rank 3-5 tokens using current data only (no forecasting)
+- Evaluate each token on:
+  1) narrative strength
+  2) momentum
+  3) liquidity health (DexScreener)
+  4) volume quality (DexScreener)
+  5) smart-money inflows (wallet scan + whale alerts)
+  6) on-chain activity
+  7) sector attention
+  8) social sentiment (LunarCrush)
+- Output a ranked list and then include JSON objects for each ranked token with:
+  {
+    "token": "",
+    "narrative_strength": "",
+    "liquidity_health": "",
+    "volume_quality": "",
+    "smart_money_inflows": "",
+    "sentiment": "",
+    "risk_level": ""
+  }
+- Never include target prices, upside percentages, or buy/sell calls
 
 RESPONSE FORMAT:
 - Line 1: one verdict sentence
@@ -15300,7 +15442,8 @@ Be direct, specific, sharp. Use the numbers. Max 4 sentences. No fluff — you A
     system: CLARK_BASE + `
 
 MODE: Market intelligence. Give sharp takes on tokens, narratives, and market conditions.
-For each query: quick directional take (bullish/bearish/neutral + one reason), top 2 ChainLens tools to dig deeper, one key risk or thing to watch. Max 4 sentences.`,
+For each query: quick directional take (bullish/bearish/neutral + one reason), top 2 ChainLens tools to dig deeper, one key risk or thing to watch.
+If user asks for token "upside"/"potential"/"best"/"top" opportunities, switch to Narrative Ranking Mode and rank based on current data factors only (no predictions, no buy/sell advice). Max 4 sentences unless Narrative Ranking Mode is triggered.`,
     starters: ['What narrative is hot right now?', 'Is BTC bullish or bearish?', 'Best sector to watch?', 'AI token plays?']
   },
   support: {
