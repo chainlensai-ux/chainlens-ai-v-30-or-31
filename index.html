@@ -2910,7 +2910,11 @@ body::after {
   background: rgba(11,9,16,0.95); border: 1px solid rgba(139,92,246,0.15);
   border-radius: 14px; padding: 20px; margin-bottom: 10px;
 }
-.ws-section--ai { border-top: 2px solid transparent; border-image: linear-gradient(90deg, #ec4899, #8b5cf6, #64ffda) 1; border-radius: 14px; }
+.ws-section--ai {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+}
 .ws-section-header {
   display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
   padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -2930,9 +2934,22 @@ body::after {
 }
 .ws-section-sub { margin-left: auto; font-size: 10px; color: rgba(255,255,255,0.2); font-family: 'Inter', sans-serif; }
 .ws-section--ai .ws-section-title {
-  background: linear-gradient(135deg, #ec4899, #8b5cf6, #64ffda);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: rgba(255,255,255,0.88);
+  letter-spacing: 1.4px;
+}
+.ws-section--ai .ws-section-header {
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+}
+.ws-section--ai .ws-dot--mint {
+  background: #2DD4BF;
+  box-shadow: none;
+}
+.ws-section--ai .ws-section-badge {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.45);
 }
 
 /* ── Intelligence grid ───────────────────── */
@@ -2974,14 +2991,14 @@ body::after {
 }
 @keyframes termBlink { 0%,100%{opacity:0} 50%{opacity:1} }
 .ws-ai-block { margin-bottom: 10px; }
-.ws-ai-head { font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: rgba(196,181,253,0.95); font-weight: 800; margin-bottom: 4px; }
+.ws-ai-head { font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: rgba(255,255,255,0.52); font-weight: 800; margin-bottom: 4px; }
 .ws-ai-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
 .ws-ai-list li { position: relative; padding-left: 14px; color: rgba(255,255,255,0.8); }
-.ws-ai-list li::before { content: ""; position: absolute; left: 0; top: 9px; width: 6px; height: 6px; border-radius: 999px; background: #2DD4BF; box-shadow: 0 0 8px rgba(45,212,191,0.8); }
+.ws-ai-list li::before { content: ""; position: absolute; left: 0; top: 9px; width: 5px; height: 5px; border-radius: 999px; background: rgba(45,212,191,0.85); }
 .cl-ai-disclaimer {
-  font-size: 10px !important; color: rgba(255,255,255,0.18) !important;
+  font-size: 10px !important; color: rgba(255,255,255,0.42) !important;
   font-family: 'Inter', sans-serif !important; margin-top: 14px !important;
-  font-style: italic !important; font-weight: 400 !important; border: none !important;
+  font-style: normal !important; font-weight: 500 !important; border: none !important;
 }
 
 /* ── Holdings table ──────────────────────── */
@@ -6594,8 +6611,8 @@ WALLETCONNECT
       <div class="ws-section ws-section--ai">
         <div class="ws-section-header">
           <div class="ws-dot ws-dot--mint"></div>
-          <span class="ws-section-title">AI Analysis</span>
-          <span class="ws-section-badge">WalletScan AI</span>
+          <span class="ws-section-title">Wallet Intelligence</span>
+          <span class="ws-section-badge">AI</span>
         </div>
         <div class="ws-terminal" id="ws-ai">Generating analysis...</div>
       </div>
@@ -13596,9 +13613,9 @@ async function doWS() {
           <div style="border-left:2px solid rgba(139,92,246,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(139,92,246,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Pattern</span><span style="color:rgba(255,255,255,0.8);">${ptMatch[1].trim()}</span></div>
           <div style="border-left:2px solid rgba(240,180,41,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(240,180,41,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Risk</span><span style="color:rgba(255,255,255,0.8);">${riMatch[1].trim()}</span></div>
           <div style="border-left:2px solid rgba(100,255,218,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(100,255,218,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Insight</span><span style="color:rgba(255,255,255,0.9);font-weight:600;">${inMatch[1].trim()}</span></div>
-        </div><div class="cl-ai-disclaimer" style="margin-top:12px;">Read-only scan of public blockchain data. Not financial advice.</div>`;
+        </div><div class="cl-ai-disclaimer" style="margin-top:12px;">AI-generated summary. Verify with onchain data.</div>`;
       } else {
-        aiEl.innerHTML = `${wsRenderAiAnalysis(aiTxt)}<div class="cl-ai-disclaimer" style="margin-top:12px;">Read-only scan of public blockchain data. Not financial advice.</div>`;
+        aiEl.innerHTML = `${wsRenderAiAnalysis(aiTxt)}<div class="cl-ai-disclaimer" style="margin-top:12px;">AI-generated summary. Verify with onchain data.</div>`;
       }
     })
     .catch(() => {
