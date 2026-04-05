@@ -204,7 +204,7 @@ body::after {
   font-size: 13px;
   color: var(--cl-text);
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .cl-input::placeholder, .cl-textarea::placeholder { color: var(--cl-text-3); }
 .cl-input:focus, .cl-select:focus, .cl-textarea:focus {
@@ -1460,7 +1460,7 @@ body::after {
 .pv-card {
   padding: 12px 14px; border-radius: 10px; margin-bottom: 10px;
   background: rgba(139,92,246,0.03); border: 1px solid var(--cl-border);
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .pv-card:hover { border-color: rgba(139,92,246,0.25); }
 .pv-card__top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -1561,7 +1561,7 @@ body::after {
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(139,92,246,0.3);
   border-radius: 12px; padding: 8px 8px 8px 16px;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .es-input-bar:focus-within { border-color: rgba(139,92,246,0.6); }
 .es-input-icon { font-size: 16px; color: rgba(139,92,246,0.5); flex-shrink: 0; }
@@ -1585,7 +1585,7 @@ body::after {
   display: flex; align-items: center; gap: 12px;
   padding: 10px 14px; border-radius: 10px; margin-bottom: 8px;
   background: rgba(239,71,111,0.03); border: 1px solid rgba(239,71,111,0.12);
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .dr-dip-row:hover { border-color: rgba(239,71,111,0.25); }
 .dr-dip-icon {
@@ -1681,7 +1681,7 @@ body::after {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 16px; border-radius: 12px; margin-bottom: 10px;
   background: rgba(139,92,246,0.03); border: 1px solid var(--cl-border);
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .al-card--fired {
   background: rgba(100,255,218,0.04); border-color: rgba(100,255,218,0.2);
@@ -2583,7 +2583,7 @@ body::after {
   background: rgba(139,92,246,0.04);
   border: 1px solid var(--cl-border);
   border-radius: 10px;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .cl-alert-item.fired {
   background: rgba(100,255,218,0.04);
@@ -2701,10 +2701,10 @@ body::after {
   --cl-text:   #ffffff;
   --cl-text-2: rgba(255,255,255,0.6);
   --cl-text-3: rgba(255,255,255,0.28);
-  --cl-border: rgba(255,255,255,0.05);
+  --cl-border: rgba(139,92,246,0.15);
   --cl-violet: rgba(255,255,255,0.55);
   --cl-cyan:   #64ffda;
-  background: #000000;
+  background: #050407;
 }
 
 /* ── Page header ─────────────────────────── */
@@ -2733,18 +2733,27 @@ body::after {
 .ws-scanner-wrap { margin-bottom: 20px; }
 .ws-scanner-bar {
   display: flex; align-items: center; gap: 0;
-  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 12px; overflow: hidden; margin-bottom: 10px;
-  transition: border-color 0.2s;
+  background: rgba(11,9,16,0.95); border: 1px solid rgba(139,92,246,0.15);
+  border-radius: 12px; overflow: hidden; margin-bottom: 10px; position: relative;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.ws-scanner-bar::before {
+  content: '';
+  position: absolute; inset: -1px; border-radius: inherit; padding: 1px;
+  background: linear-gradient(135deg, #ec4899, #8b5cf6, #64ffda);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  opacity: 0; pointer-events: none; transition: opacity 0.2s;
 }
 .ws-scanner-bar:focus-within {
-  border-color: rgba(100,255,218,0.5);
-  box-shadow: 0 0 0 3px rgba(100,255,218,0.04);
+  border-color: rgba(139,92,246,0.45);
+  box-shadow: 0 0 0 2px rgba(139,92,246,0.18), 0 0 24px rgba(45,212,191,0.18);
 }
+.ws-scanner-bar:focus-within::before { opacity: 1; }
 .ws-scan-icon {
   padding: 0 16px; height: 54px; flex-shrink: 0;
   color: rgba(255,255,255,0.22); display: flex; align-items: center;
-  border-right: 1px solid rgba(255,255,255,0.07);
+  border-right: 1px solid rgba(139,92,246,0.15);
 }
 .ws-input {
   flex: 1; background: transparent; border: none; outline: none;
@@ -2754,27 +2763,27 @@ body::after {
 .ws-input::placeholder { color: rgba(255,255,255,0.18); }
 .ws-save-btn {
   height: 54px; padding: 0 16px; background: transparent; border: none;
-  border-left: 1px solid rgba(255,255,255,0.07);
+  border-left: 1px solid rgba(139,92,246,0.15);
   font-size: 10px; font-weight: 800; color: rgba(255,255,255,0.3);
   cursor: pointer; letter-spacing: 1.5px; font-family: 'Inter', sans-serif;
   transition: all 0.15s; white-space: nowrap; flex-shrink: 0;
 }
 .ws-save-btn:hover { background: rgba(100,255,218,0.04); color: #64ffda; }
 .ws-scan-btn {
-  height: 54px; padding: 0 28px; background: #64ffda; border: none;
-  font-size: 10px; font-weight: 900; color: #000000; cursor: pointer;
+  height: 54px; padding: 0 28px; background: linear-gradient(135deg, #ec4899, #8b5cf6); border: none;
+  font-size: 10px; font-weight: 900; color: #ffffff; cursor: pointer;
   letter-spacing: 2.5px; font-family: 'Inter', sans-serif;
-  transition: background 0.2s; flex-shrink: 0; white-space: nowrap;
+  transition: background 0.2s, filter 0.2s; flex-shrink: 0; white-space: nowrap;
   border-radius: 0 11px 11px 0;
 }
-.ws-scan-btn:hover { background: #00e6b4; }
-.ws-scan-btn:disabled { background: rgba(100,255,218,0.25); color: rgba(0,0,0,0.4); cursor: not-allowed; }
+.ws-scan-btn:hover { filter: brightness(1.08); }
+.ws-scan-btn:disabled { background: rgba(139,92,246,0.25); color: rgba(255,255,255,0.45); cursor: not-allowed; }
 
 /* ── Chain selector ──────────────────────── */
 .ws-chain-selector {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 10px 14px; background: #0a0a0a;
-  border: 1px solid rgba(255,255,255,0.06);
+  padding: 10px 14px; background: rgba(11,9,16,0.95);
+  border: 1px solid rgba(139,92,246,0.15);
   border-radius: 10px; margin-bottom: 10px;
 }
 .ws-chain-label {
@@ -2783,8 +2792,8 @@ body::after {
 }
 .ws-chain-pills { display: flex; gap: 5px; flex-wrap: wrap; }
 .ws-chain-pill {
-  padding: 5px 12px; border-radius: 5px; background: #000000;
-  border: 1px solid rgba(255,255,255,0.08); color: rgba(255,255,255,0.35);
+  padding: 5px 12px; border-radius: 5px; background: #050407;
+  border: 1px solid rgba(139,92,246,0.2); color: rgba(255,255,255,0.35);
   font-size: 9px; font-weight: 800; letter-spacing: 1.5px;
   cursor: pointer; font-family: 'JetBrains Mono', monospace; transition: all 0.15s;
 }
@@ -2797,7 +2806,7 @@ body::after {
   font-size: 9px; font-weight: 700; letter-spacing: 1px; padding: 3px 8px;
   border-radius: 4px; font-family: 'JetBrains Mono', monospace;
   background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.28);
-  border: 1px solid rgba(255,255,255,0.05);
+  border: 1px solid rgba(139,92,246,0.15);
 }
 .ws-badge--sol { color: rgba(100,255,218,0.55); border-color: rgba(100,255,218,0.1); background: rgba(100,255,218,0.04); }
 .ws-badge-sep { width: 1px; height: 12px; background: rgba(255,255,255,0.06); margin: 0 3px; }
@@ -2825,12 +2834,12 @@ body::after {
   gap: 10px; margin-bottom: 10px; align-items: start;
 }
 .ws-value-block {
-  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(11,9,16,0.95); border: 1px solid rgba(139,92,246,0.15);
   border-radius: 14px; padding: 24px 26px; position: relative; overflow: hidden;
 }
 .ws-value-block::after {
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-  background: linear-gradient(90deg, transparent 0%, rgba(100,255,218,0.4) 40%, transparent 100%);
+  background: linear-gradient(90deg, #ec4899, #8b5cf6, #64ffda);
 }
 .ws-portfolio-label {
   font-size: 9px; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase;
@@ -2838,7 +2847,9 @@ body::after {
 }
 .ws-portfolio-value {
   font-family: 'JetBrains Mono', monospace; font-size: 46px; font-weight: 900;
-  color: #ffffff; line-height: 1; margin-bottom: 6px; letter-spacing: -2px;
+  background: linear-gradient(135deg, #ec4899, #8b5cf6, #64ffda);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text; line-height: 1; margin-bottom: 6px; letter-spacing: -2px;
 }
 .ws-portfolio-sub {
   font-family: 'JetBrains Mono', monospace; font-size: 11px;
@@ -2860,22 +2871,22 @@ body::after {
 
 /* ── Degen score card ────────────────────── */
 .ws-degen-card {
-  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(11,9,16,0.95); border: 1px solid rgba(139,92,246,0.15);
   border-radius: 14px; padding: 22px 20px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 10px; min-width: 128px; position: relative; overflow: hidden;
 }
 .ws-degen-card::after {
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-  background: linear-gradient(90deg, transparent 0%, rgba(100,255,218,0.4) 40%, transparent 100%);
+  background: linear-gradient(90deg, #ec4899, #8b5cf6, #64ffda);
 }
 .ws-degen-wrap { position: relative; width: 88px; height: 88px; flex-shrink: 0; }
 .ws-degen-ring { width: 88px; height: 88px; display: block; }
 .ws-ring-track { fill: none; stroke: rgba(255,255,255,0.05); stroke-width: 6; }
 .ws-ring-fill {
-  fill: none; stroke: #64ffda; stroke-width: 6; stroke-linecap: round;
+  fill: none; stroke: url(#ws-ring-grad); stroke-width: 6; stroke-linecap: round;
   transform: rotate(-90deg); transform-origin: 50px 50px;
-  transition: stroke-dashoffset 0.9s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.5s;
+  transition: stroke-dashoffset 0.9s cubic-bezier(0.4, 0, 0.2, 1), filter 0.4s;
 }
 .ws-degen-center {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -2883,7 +2894,7 @@ body::after {
 }
 .ws-degen-score {
   font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 900;
-  color: #64ffda; line-height: 1;
+  color: #64ffda; line-height: 1; transition: color 0.3s, text-shadow 0.3s;
 }
 .ws-degen-label {
   font-size: 7px; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase;
@@ -2896,10 +2907,14 @@ body::after {
 
 /* ── Section cards ───────────────────────── */
 .ws-section {
-  background: #0a0a0a; border: 1px solid rgba(255,255,255,0.07);
+  background: rgba(11,9,16,0.95); border: 1px solid rgba(139,92,246,0.15);
   border-radius: 14px; padding: 20px; margin-bottom: 10px;
 }
-.ws-section--ai { border-top: 2px solid #64ffda; border-radius: 14px; }
+.ws-section--ai {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+}
 .ws-section-header {
   display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
   padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -2909,15 +2924,33 @@ body::after {
 .ws-dot--dim  { background: rgba(255,255,255,0.2); }
 .ws-section-title {
   font-size: 9px; font-weight: 800; letter-spacing: 2.5px; text-transform: uppercase;
-  color: rgba(255,255,255,0.38); font-family: 'Inter', sans-serif;
+  color: rgba(255,255,255,0.4); font-family: 'Inter', sans-serif;
 }
 .ws-section-badge {
   margin-left: auto; font-size: 9px; padding: 2px 8px; border-radius: 4px;
-  background: rgba(100,255,218,0.06); color: rgba(100,255,218,0.45);
-  border: 1px solid rgba(100,255,218,0.1); font-family: 'Inter', sans-serif;
+  background: rgba(139,92,246,0.14); color: #c4b5fd;
+  border: 1px solid rgba(139,92,246,0.28); font-family: 'Inter', sans-serif;
   font-weight: 700; letter-spacing: 0.5px;
 }
 .ws-section-sub { margin-left: auto; font-size: 10px; color: rgba(255,255,255,0.2); font-family: 'Inter', sans-serif; }
+.ws-section--ai .ws-section-title {
+  color: rgba(255,255,255,0.88);
+  letter-spacing: 1.4px;
+}
+.ws-section--ai .ws-section-header {
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+}
+.ws-section--ai .ws-dot--mint {
+  background: #2DD4BF;
+  box-shadow: none;
+}
+.ws-section--ai .ws-section-badge {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.45);
+}
 
 /* ── Intelligence grid ───────────────────── */
 #ws-intel-grid {
@@ -2925,11 +2958,14 @@ body::after {
 }
 #ws-intel-grid > div {
   border-radius: 8px !important; padding: 12px !important;
-  background: rgba(255,255,255,0.025) !important;
-  border: 1px solid rgba(255,255,255,0.06) !important;
+  background: rgba(11,9,16,0.95) !important;
+  border: 1px solid rgba(139,92,246,0.15) !important;
+  border-left: 3px solid var(--ws-card-accent, #8b5cf6) !important;
   transition: background 0.15s !important;
 }
 #ws-intel-grid > div:hover { background: rgba(100,255,218,0.03) !important; }
+.ws-cortex-card { grid-column: 1 / -1; border-top: 2px solid transparent !important; border-image: linear-gradient(90deg, #ec4899, #8b5cf6) 1 !important; }
+.ws-cortex-score { font-size: 52px !important; }
 #ws-intel-grid > div > div:first-child {
   font-size: 8px !important; letter-spacing: 1.5px !important;
   color: rgba(255,255,255,0.25) !important; margin-bottom: 5px !important;
@@ -2947,33 +2983,38 @@ body::after {
 .ws-terminal {
   font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.9;
   color: rgba(255,255,255,0.72); min-height: 40px;
-  white-space: pre-wrap; word-break: break-word;
+  white-space: normal; word-break: break-word;
 }
 .ws-terminal--active::after {
   content: '▋'; display: inline-block; color: #64ffda; font-size: 11px; margin-left: 2px;
   animation: termBlink 0.9s step-end infinite;
 }
 @keyframes termBlink { 0%,100%{opacity:0} 50%{opacity:1} }
+.ws-ai-block { margin-bottom: 10px; }
+.ws-ai-head { font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: rgba(255,255,255,0.52); font-weight: 800; margin-bottom: 4px; }
+.ws-ai-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.ws-ai-list li { position: relative; padding-left: 14px; color: rgba(255,255,255,0.8); }
+.ws-ai-list li::before { content: ""; position: absolute; left: 0; top: 9px; width: 5px; height: 5px; border-radius: 999px; background: rgba(45,212,191,0.85); }
 .cl-ai-disclaimer {
-  font-size: 10px !important; color: rgba(255,255,255,0.18) !important;
+  font-size: 10px !important; color: rgba(255,255,255,0.42) !important;
   font-family: 'Inter', sans-serif !important; margin-top: 14px !important;
-  font-style: italic !important; font-weight: 400 !important; border: none !important;
+  font-style: normal !important; font-weight: 500 !important; border: none !important;
 }
 
 /* ── Holdings table ──────────────────────── */
 .ws-table-head {
   display: grid; grid-template-columns: 1fr auto auto; gap: 16px;
-  padding: 0 4px 10px; border-bottom: 1px solid rgba(255,255,255,0.05);
+  padding: 0 4px 10px; border-bottom: 1px solid rgba(139,92,246,0.15);
   font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
   color: rgba(255,255,255,0.2); font-family: 'Inter', sans-serif;
 }
 /* Asset row overrides */
 #ws-all-assets > div { gap: 0 !important; }
 #ws-all-assets > div > div {
-  border-bottom: 1px solid rgba(255,255,255,0.04) !important;
+  border-bottom: 1px solid rgba(139,92,246,0.12) !important;
   padding: 13px 4px !important; transition: background 0.15s;
 }
-#ws-all-assets > div > div:nth-child(even) { background: rgba(255,255,255,0.015) !important; }
+#ws-all-assets > div > div:nth-child(even) { background: rgba(139,92,246,0.045) !important; }
 #ws-all-assets > div > div:hover { background: rgba(100,255,218,0.03) !important; }
 /* Token icon box — strip purple */
 #ws-all-assets > div > div > div:first-child {
@@ -2992,7 +3033,7 @@ body::after {
 }
 
 /* ── PnL section ─────────────────────────── */
-#ws-pnl > div { border-bottom: 1px solid rgba(255,255,255,0.04) !important; transition: background 0.15s; }
+#ws-pnl > div { border-bottom: 1px solid rgba(139,92,246,0.12) !important; transition: background 0.15s; }
 #ws-pnl > div:hover { background: rgba(100,255,218,0.02) !important; }
 #ws-pnl > div > div:first-child > div:first-child {
   background: rgba(255,255,255,0.06) !important; border: 1px solid rgba(255,255,255,0.08) !important;
@@ -3008,7 +3049,7 @@ body::after {
 .ws-tx-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.07); border-radius: 2px; }
 /* Direction-coded rows via data attribute */
 .ws-tx-list > div {
-  border-bottom: 1px solid rgba(255,255,255,0.04) !important;
+  border-bottom: 1px solid rgba(139,92,246,0.12) !important;
   transition: background 0.15s; margin-left: 2px;
 }
 .ws-tx-list > div[data-dir="in"]  { border-left: 2px solid #64ffda !important; padding-left: 12px; margin-left: 0; }
@@ -3141,7 +3182,7 @@ body::after {
   border-radius: 12px;
   margin-bottom: 10px;
   cursor: pointer;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .cl-saved-wallet:hover { border-color: var(--cl-border-strong); }
 
@@ -3258,7 +3299,7 @@ body::after {
 .cl-lf-card.cl-shimmer { height: 128px; min-width: 210px; cursor: default; border: none; }
 .cl-lf-card--trending { border-color: rgba(100,255,218,0.18); }
 .cl-lf-card--trending:hover {
-  border-color: rgba(100,255,218,0.5); transform: translateY(-4px);
+  border-color: rgba(139,92,246,0.45); transform: translateY(-4px);
   box-shadow: 0 8px 30px rgba(100,255,218,0.1), 0 0 40px rgba(100,255,218,0.05);
 }
 .cl-lf-card--whale { border-color: rgba(139,92,246,0.28); }
@@ -3894,7 +3935,7 @@ body::after {
 .td-topbar__search-input {
   width: 100%; background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 8px;
   padding: 7px 14px 7px 34px; font-family: 'JetBrains Mono', monospace;
-  font-size: 12px; color: #fff; outline: none; transition: border-color 0.2s; box-sizing: border-box;
+  font-size: 12px; color: #fff; outline: none; transition: border-color 0.2s, box-shadow 0.2s; box-sizing: border-box;
 }
 .td-topbar__search-input::placeholder { color: #333; }
 .td-topbar__search-input:focus { border-color: rgba(45,212,191,0.4); }
@@ -4472,7 +4513,7 @@ body::after {
 .td-chat-input {
   flex: 1; background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 8px;
   padding: 8px 11px; font-family: 'Inter', sans-serif; font-size: 12px; color: #e0e0e0;
-  outline: none; resize: none; transition: border-color 0.2s; max-height: 80px; min-height: 34px;
+  outline: none; resize: none; transition: border-color 0.2s, box-shadow 0.2s; max-height: 80px; min-height: 34px;
 }
 .td-chat-input::placeholder { color: #2a2a2a; }
 .td-chat-input:focus {
@@ -6534,6 +6575,12 @@ WALLETCONNECT
         <div class="ws-degen-card">
           <div class="ws-degen-wrap">
             <svg class="ws-degen-ring" viewBox="0 0 100 100">
+              <defs>
+                <linearGradient id="ws-ring-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#8b5cf6"></stop>
+                  <stop offset="100%" stop-color="#ec4899"></stop>
+                </linearGradient>
+              </defs>
               <circle class="ws-ring-track" cx="50" cy="50" r="40"/>
               <circle class="ws-ring-fill" id="ws-degen-arc" cx="50" cy="50" r="40"
                 stroke-dasharray="251.3" stroke-dashoffset="251.3"/>
@@ -6564,8 +6611,8 @@ WALLETCONNECT
       <div class="ws-section ws-section--ai">
         <div class="ws-section-header">
           <div class="ws-dot ws-dot--mint"></div>
-          <span class="ws-section-title">AI Analysis</span>
-          <span class="ws-section-badge">WalletScan AI</span>
+          <span class="ws-section-title">Wallet Intelligence</span>
+          <span class="ws-section-badge">AI</span>
         </div>
         <div class="ws-terminal" id="ws-ai">Generating analysis...</div>
       </div>
@@ -11133,7 +11180,7 @@ function renderAllAssets(assets, allTxs, address) {
   });
   const sorted = [...byKey.values()].sort((a,b) => (b.usdValue||0)-(a.usdValue||0));
   const totalDisplayUsd = sorted.reduce((s, x) => s + (Number(x?.usdValue || 0) || 0), 0);
-  const chainColors = { eth:'#8b5cf6', bnb:'#f0b429', base:'#ec4899', polygon:'#8247e5', btc:'#f7931a', sol:'#64ffda' };
+  const chainColors = { eth:'#8b5cf6', bnb:'#f0b429', base:'#ec4899', polygon:'#8b5cf6', btc:'#f7931a', sol:'#64ffda' };
   return '<div style="display:flex;flex-direction:column;gap:1px;">' +
     sorted.map((a, i) => {
       const c = chainColors[a.chain] || '#8b5cf6';
@@ -11156,11 +11203,15 @@ function renderAllAssets(assets, allTxs, address) {
         + `<div style="font-size:8px;font-weight:700;letter-spacing:0.4px;color:var(--cl-text-4);text-transform:uppercase;margin-top:6px;margin-bottom:2px;">Unrealised</div>`
         + `<div style="font-size:11px;font-weight:800;color:${pnlColor(urlz)};line-height:1.2;">${typeof urlz === 'number' && Number.isFinite(urlz) ? fmtSignedUsd(urlz) : '—'}${typeof urlzPct === 'number' && Number.isFinite(urlzPct) ? ' <span style="font-size:9px;font-weight:700;">(' + fmtSignedPct(urlzPct, 1) + ')</span>' : ''}</div>`
         + `</div>`;
-      return `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid rgba(139,92,246,0.08);">`
+      const usdTone = typeof urlz === 'number' && Number.isFinite(urlz)
+        ? (urlz >= 0 ? '#64ffda' : '#ec4899')
+        : (typeof rlz === 'number' && Number.isFinite(rlz) ? (rlz >= 0 ? '#64ffda' : '#ec4899') : 'var(--cl-text)');
+      const rowBg = i % 2 ? 'rgba(139,92,246,0.04)' : 'rgba(255,255,255,0.01)';
+      return `<div style="display:flex;align-items:center;gap:12px;padding:12px 10px;border-bottom:1px solid rgba(139,92,246,0.08);border-left:2px solid ${c};background:${rowBg};">`
         + `<div style="width:36px;height:36px;border-radius:10px;background:${c}18;border:1px solid ${c}30;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:900;color:${c};font-family:'Syne',sans-serif;flex-shrink:0;">${a.symbol.slice(0,3)}</div>`
         + `<div style="flex:1;min-width:0;">`
         + `<div style="display:flex;align-items:center;gap:6px;">`
-        + `<span style="font-size:13px;font-weight:700;">${a.symbol}</span>`
+        + `<span style="font-size:13px;font-weight:800;color:#ffffff;">${a.symbol}</span>`
         + (chainLabel ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:${c}15;color:${c};border:1px solid ${c}25;">${chainLabel}</span>` : '')
         + (stableSuspicious ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(245,166,35,0.12);color:#f5a623;border:1px solid rgba(245,166,35,0.35);">SUSPICIOUS</span>` : '')
         + ((a.isNewOrUnindexed && !['ETH','WETH','BTC','WBTC','USDC','USDT','DAI','BNB','BUSD','FRAX','LUSD','USDC.E'].includes(String(a.symbol || '').trim().toUpperCase())) ? `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(255,214,10,0.12);color:#ffd60a;border:1px solid rgba(255,214,10,0.35);">LOW CAP</span>` : '')
@@ -11168,7 +11219,7 @@ function renderAllAssets(assets, allTxs, address) {
         + `<div style="font-size:10px;color:var(--cl-text-3);margin-top:2px;">${bal.toLocaleString(undefined,{maximumFractionDigits:4})} ${a.symbol}</div>`
         + `</div>`
         + `<div style="text-align:right;flex-shrink:0;">`
-        + `<div style="font-size:13px;font-weight:800;color:${shownUsdNum > 0 ? 'var(--cl-text)' : 'var(--cl-text-3)'};">${usdVal}</div>`
+        + `<div style="font-size:13px;font-weight:800;color:${shownUsdNum > 0 ? usdTone : 'var(--cl-text-3)'};">${usdVal}</div>`
         + (pct ? `<div style="font-size:10px;color:var(--cl-text-3);">${pct}%</div>` : '')
         + `</div>`
         + pnlBlock
@@ -12778,10 +12829,10 @@ async function fetchAlchemyBaseTxStats(address) {
 
 function wsLabelBadgeColor(label) {
   const k = String(label || '').toUpperCase();
-  if (k === 'WHALE') return '#8b5cf6';
-  if (k === 'SMART MONEY') return '#64ffda';
+  if (k === 'WHALE') return '#64ffda';
+  if (k === 'SMART MONEY') return '#8b5cf6';
   if (k === 'DEV') return '#ec4899';
-  if (k === 'SNIPER') return '#f5a623';
+  if (k === 'SNIPER') return '#f0b429';
   if (k === 'CEX') return '#9ca3af';
   if (k === 'INSTITUTION') return '#3b82f6';
   if (k === 'DORMANT') return '#9ca3af';
@@ -12858,6 +12909,36 @@ function wsRenderWalletLabels(labels) {
     const c = wsLabelBadgeColor(lb);
     return `<span style="padding:2px 8px;border-radius:8px;border:1px solid ${c}66;background:${c}14;color:${c};font-size:10px;font-weight:800;font-family:'JetBrains Mono',monospace;letter-spacing:.3px;">${lb}</span>`;
   }).join('')}</div>`;
+}
+
+function wsRenderAiAnalysis(text) {
+  const src = String(text || '').replace(/\r/g, '').trim();
+  if (!src) return '<div style="color:var(--cl-text-3);">No AI analysis returned.</div>';
+  const escaped = src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const lines = escaped.split('\n').map(l => l.trim()).filter(Boolean);
+  let html = '';
+  let listOpen = false;
+  const closeList = () => { if (listOpen) { html += '</ul>'; listOpen = false; } };
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/^[-*]\s+/, '• ');
+    const heading = line.match(/^(?:#{1,6}\s*)?([A-Z][A-Z\s]{2,}|[A-Z][^:]{2,20}):\s*(.*)$/);
+    if (heading) {
+      closeList();
+      const head = heading[1].replace(/[*#_`]/g, '').trim();
+      const body = heading[2]?.trim() || '';
+      html += `<div class="ws-ai-block"><div class="ws-ai-head">${head}</div>${body ? `<div>${body.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<strong>$1</strong>')}</div>` : ''}</div>`;
+      continue;
+    }
+    if (/^•\s+/.test(line)) {
+      if (!listOpen) { html += '<ul class="ws-ai-list">'; listOpen = true; }
+      html += `<li>${line.replace(/^•\s+/, '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<strong>$1</strong>')}</li>`;
+      continue;
+    }
+    closeList();
+    html += `<div class="ws-ai-block">${line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/^#{1,6}\s*/,'').replace(/`([^`]+)`/g, '<strong>$1</strong>')}</div>`;
+  }
+  closeList();
+  return html;
 }
 
 async function wsDetectBaseDevWallet(address) {
@@ -13345,11 +13426,15 @@ async function doWS() {
     const _sv  = document.getElementById('ws-degen-score-val');
     if (_arc && _sv) {
       const _s = degenScore.score;
-      const _ringColor = _s >= 80 ? '#ef476f' : _s >= 50 ? '#f0b429' : '#64ffda';
       _arc.style.strokeDashoffset = (251.3 * (1 - _s / 100)).toFixed(1);
-      _arc.style.stroke = _ringColor;
       _sv.textContent = _s;
-      _sv.style.color = _ringColor;
+      _sv.style.color = _s >= 70 ? '#ec4899' : '#64ffda';
+      _sv.style.textShadow = _s >= 70
+        ? '0 0 14px rgba(236,72,153,0.75)'
+        : '0 0 14px rgba(100,255,218,0.65)';
+      _arc.style.filter = _s >= 70
+        ? 'drop-shadow(0 0 10px rgba(236,72,153,0.65))'
+        : 'drop-shadow(0 0 10px rgba(100,255,218,0.65))';
     }
     // Cursor stays active (added on scan start) while AI analysis loads asynchronously
 
@@ -13368,14 +13453,14 @@ async function doWS() {
     const cortexVerdict = isDevWalletBase
       ? 'This wallet has deployed contracts. High risk for copy trading — dev wallets often dump on holders.'
       : cortex.verdict;
-    const cortexCard = `<div style="grid-column:1/-1;padding:16px;border:1px solid rgba(139,92,246,0.28);border-radius:12px;background:rgba(139,92,246,0.06);">
+    const cortexCard = `<div class="ws-cortex-card" style="--ws-card-accent:#8b5cf6;padding:16px;border:1px solid rgba(139,92,246,0.28);border-radius:12px;background:rgba(139,92,246,0.06);">
       <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--cl-text-3);margin-bottom:8px;font-family:'Inter',sans-serif;">CORTEX Wallet Score</div>
-      <div style="font-size:44px;line-height:1;font-weight:900;color:${cortex.color};font-family:'JetBrains Mono',monospace;">${cortex.score}</div>
+      <div class="ws-cortex-score" style="line-height:1;font-weight:900;color:${cortex.color};font-family:'JetBrains Mono',monospace;">${cortex.score}</div>
       <div style="margin-top:6px;font-size:12px;font-weight:800;color:${cortex.color};font-family:'JetBrains Mono',monospace;">${cortex.tier}</div>
       <div style="margin-top:8px;font-size:11px;color:var(--cl-text-2);font-family:'Inter',sans-serif;">${cortexVerdict}</div>
     </div>`;
     document.getElementById('ws-intel-grid').innerHTML = cortexCard + intelItems.map(item =>
-      `<div style="padding:12px;background:rgba(${item.color==='#64ffda'?'0,255,200':item.color==='#ef476f'?'239,71,111':item.color==='#f0b429'?'240,180,41':'120,88,192'},0.06);border:1px solid rgba(${item.color==='#64ffda'?'0,255,200':item.color==='#ef476f'?'239,71,111':item.color==='#f0b429'?'240,180,41':'120,88,192'},0.15);border-radius:12px;${item.wide?'grid-column:1/-1;':''}">`
+      `<div style="--ws-card-accent:${item.color};padding:12px;background:rgba(${item.color==='#64ffda'?'0,255,200':item.color==='#ef476f'?'239,71,111':item.color==='#f0b429'?'240,180,41':'120,88,192'},0.06);border:1px solid rgba(${item.color==='#64ffda'?'0,255,200':item.color==='#ef476f'?'239,71,111':item.color==='#f0b429'?'240,180,41':'120,88,192'},0.15);border-radius:12px;${item.wide?'grid-column:1/-1;':''}">`
       + `<div style="font-size:9px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--cl-text-3);margin-bottom:5px;">${item.label}</div>`
       + `<div style="font-size:12px;font-weight:700;color:${item.color};">${item.value}</div>`
       + (item.sub ? `<div style="font-size:9px;color:var(--cl-text-3);margin-top:3px;">${item.sub}</div>` : '')
@@ -13528,9 +13613,9 @@ async function doWS() {
           <div style="border-left:2px solid rgba(139,92,246,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(139,92,246,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Pattern</span><span style="color:rgba(255,255,255,0.8);">${ptMatch[1].trim()}</span></div>
           <div style="border-left:2px solid rgba(240,180,41,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(240,180,41,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Risk</span><span style="color:rgba(255,255,255,0.8);">${riMatch[1].trim()}</span></div>
           <div style="border-left:2px solid rgba(100,255,218,0.6);padding:6px 10px;"><span style="font-size:9px;letter-spacing:1.5px;color:rgba(100,255,218,0.9);font-weight:800;text-transform:uppercase;display:block;margin-bottom:3px;">Insight</span><span style="color:rgba(255,255,255,0.9);font-weight:600;">${inMatch[1].trim()}</span></div>
-        </div><div class="cl-ai-disclaimer" style="margin-top:12px;">Read-only scan of public blockchain data. Not financial advice.</div>`;
+        </div><div class="cl-ai-disclaimer" style="margin-top:12px;">AI-generated summary. Verify with onchain data.</div>`;
       } else {
-        aiEl.innerHTML = `<div style="white-space:pre-wrap;color:rgba(255,255,255,0.72);">${aiTxt.replace(/</g,'&lt;')}</div><div class="cl-ai-disclaimer" style="margin-top:12px;">Read-only scan of public blockchain data. Not financial advice.</div>`;
+        aiEl.innerHTML = `${wsRenderAiAnalysis(aiTxt)}<div class="cl-ai-disclaimer" style="margin-top:12px;">AI-generated summary. Verify with onchain data.</div>`;
       }
     })
     .catch(() => {
