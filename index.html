@@ -8154,15 +8154,15 @@ function tdRenderTrendingCards() {
     return;
   }
   grid.innerHTML = _tdTrendingData.map((t) => {
-    const up = t.change24 >= 0;
+    const up = t.change24h >= 0;
     const changeColor = up ? '#2DD4BF' : '#f43f5e';
     const barColor = up ? '#2DD4BF' : '#ec4899';
-    const barPct = Math.max(4, Math.min(100, Math.abs(t.change24)));
+    const barPct = Math.max(4, Math.min(100, Math.abs(t.change24h)));
     return `<div class="td-trending-card">
       <div class="td-tc-name">${t.name}</div>
       <div class="td-tc-symbol">${t.symbol}</div>
       <div class="td-tc-price">${tdFmtPrice(t.price)}</div>
-      <div class="td-tc-change" style="color:${changeColor}">${up ? '+' : ''}${t.change24.toFixed(2)}%</div>
+      <div class="td-tc-change" style="color:${changeColor}">${up ? '+' : ''}${t.change24h.toFixed(2)}%</div>
       <div class="td-tc-vol">Vol ${tdFmtMoney(t.vol24)}</div>
       <div class="td-tc-bar"><span style="width:${barPct}%;background:${barColor};"></span></div>
     </div>`;
@@ -8205,8 +8205,8 @@ function tdLoadTopGainerStat() {
     if (sub) sub.textContent = 'No Base pairs matched current filters.';
     return;
   }
-  const top = [..._tdTrendingData].sort((a, b) => (b.change24 || 0) - (a.change24 || 0))[0];
-  const pct = Number(top?.change24 || 0);
+  const top = [..._tdTrendingData].sort((a, b) => (b.change24h || 0) - (a.change24h || 0))[0];
+  const pct = Number(top?.change24h || 0);
   val.textContent = top?.name || '—';
   if (sub) sub.innerHTML = `<span style="color:#2DD4BF;">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span> · ${top?.symbol || ''}`;
 }
@@ -8231,26 +8231,37 @@ async function tdFetchTrendingTokens() {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL,DEGEN,BRETT,TOSHI,AERO,HIGHER,MOCHI,KEYCAT,BALD,NORMIE',
+        url: 'https://api.dexscreener.com/latest/dex/search?q=VIRTUAL DEGEN BRETT TOSHI AERO HIGHER MOCHI KEYCAT',
         method: 'GET'
       })
     });
     const data = await res.json();
     const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
-    _tdTrendingData = pairs
-      .filter((p) => p.chainId === 'base')
+
+    // Filter for Base chain — handle both 'base' and '8453'
+    let basePairs = pairs.filter(p =>
+      String(p.chainId || '').toLowerCase() === 'base' ||
+      String(p.chainId || '') === '8453'
+    );
+
+    // Fallback: if no Base pairs, use all pairs
+    if (!basePairs.length) basePairs = pairs;
+
+    _tdTrendingData = basePairs
       .sort((a, b) => Number(b.volume?.h24 || 0) - Number(a.volume?.h24 || 0))
       .slice(0, 10)
-      .map((p) => ({
+      .map(p => ({
         name: p.baseToken?.name || 'Unknown',
         symbol: p.baseToken?.symbol || '—',
         price: Number(p.priceUsd || 0),
-        change24: Number(p.priceChange?.h24 || 0),
+        change24h: Number(p.priceChange?.h24 || 0),
         vol24: Number(p.volume?.h24 || 0)
       }));
+
     tdRenderTrendingCards();
     tdLoadTopGainerStat();
   } catch (e) {
+    console.error('tdFetchTrendingTokens error:', e);
     const grid = document.getElementById('td-trending-grid');
     if (grid) grid.innerHTML = '<div style="grid-column:1/-1;padding:32px;text-align:center;font-family:\'IBM Plex Mono\',monospace;font-size:12px;color:rgba(255,255,255,0.35);">Unable to load trending data</div>';
   }
