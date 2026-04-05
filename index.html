@@ -10456,11 +10456,11 @@ function ctx() { return Object.entries(px).slice(0, 20).map(([id, d]) => `${SYM[
 // ══════════════════════════════════════════════
 // AI PROXY
 // ══════════════════════════════════════════════
-async function ai(prompt, max = 700) {
+async function ai(prompt, max = 700, extra = null) {
   const r = await fetch('/api/claude', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, max_tokens: max })
+    body: JSON.stringify({ prompt, max_tokens: max, ...(extra || {}) })
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error);
@@ -15560,6 +15560,36 @@ function clarkExtractFirstTokenTopicFromFetched(fetchedText) {
   return { topic: (name || sym).trim(), symbol: sym, name };
 }
 
+function clarkFirstWalletAddress(text) {
+  const m = String(text || '').match(/\b0x[a-fA-F0-9]{40}\b/);
+  return m ? m[0] : '';
+}
+
+function clarkFirstTokenHint(text) {
+  const words = String(text || '').toUpperCase().match(/\b[A-Z]{2,10}\b/g) || [];
+  const stop = new Set(['WALLET', 'ANALYZE', 'CHECK', 'PRICE', 'TOKEN', 'TOKENS', 'SCAN', 'RANK', 'WITH', 'FROM']);
+  return words.find(w => !stop.has(w)) || '';
+}
+
+function clarkModeFromAgent() {
+  if (clarkAgent === 'wallet') return 'wallet';
+  if (clarkAgent === 'alpha') return 'narrative';
+  return 'token';
+}
+
+async function clarkUnifiedDataForQuestion(question) {
+  const mode = clarkModeFromAgent();
+  const wallet = clarkFirstWalletAddress(question);
+  const token = clarkFirstTokenHint(question);
+  const qs = new URLSearchParams({ mode });
+  if (wallet) qs.set('wallet', wallet);
+  if (token) qs.set('token', token);
+  const r = await fetch('/api/clark-data?' + qs.toString());
+  if (!r.ok) throw new Error('Failed to load Clark data');
+  const unifiedData = await r.json();
+  return { mode, unifiedData };
+}
+
 async function clarkFetchTokenData(text) {
   // Extract potential token symbols or names (1-10 char words, skip stopwords)
   const stopwords = new Set(['the','and','for','are','was','how','what','that','this','with','from','they','have','been','will','not','but','all','can','her','his','its','our','out','who','did','get','may','now','any','two','way','use','man','too','him','see','say','got','new','via','per','set','one','top','key','big','low','ran','hit','put','far','ask','had']);
@@ -15731,7 +15761,8 @@ async function clarkSend() {
         ].join('\n');
 
         if (tb) tb.innerHTML = '<span style="font-size:0.72rem;opacity:0.75">Analysing...</span>';
-        const aiReply = await ai(aiPrompt, 500);
+        const payload = await clarkUnifiedDataForQuestion(text);
+        const aiReply = await ai(aiPrompt, 500, { prompt: text, mode: payload.mode, unifiedData: payload.unifiedData });
         const portfolioLine = `**$${totalUsd.toLocaleString('en-US', { maximumFractionDigits: 0 })}** portfolio · ${assets.length} assets · ${allTxs.length} txs · ${chainType.toUpperCase()}`;
         reply = portfolioLine + '\n\n' + aiReply.trim();
       }
@@ -15793,7 +15824,8 @@ async function clarkSend() {
       }
 
       const prompt = CLARK_AGENTS[clarkAgent].system + liveMarketData + lunarSocialData + '\n\n' + (conv ? conv + '\n' : '') + 'User: ' + text + '\nClark:';
-      reply = await ai(prompt, 400);
+      const payload = await clarkUnifiedDataForQuestion(text);
+      reply = await ai(prompt, 400, { prompt: text, mode: payload.mode, unifiedData: payload.unifiedData });
     }
 
     clarkHistory[clarkAgent].push({ role: 'bot', text: reply.trim() });

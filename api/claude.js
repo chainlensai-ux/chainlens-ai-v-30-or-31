@@ -619,23 +619,34 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { prompt, max_tokens = 700, mode, walletData, tokenData } = req.body;
+  const { prompt, max_tokens = 700, mode, walletData, tokenData, unifiedData } = req.body;
 
   const modeKey = String(mode || '').toLowerCase();
-  const activeMode = modeKey === 'wallet' || modeKey === 'token' ? modeKey : null;
+  const activeMode = modeKey === 'wallet' || modeKey === 'token' || modeKey === 'narrative' ? modeKey : null;
 
   let userMessage = prompt;
   let systemPromptBase = CLARK_WALLET_SYSTEM;
 
   if (activeMode === 'wallet') {
-    if (!walletData) return res.status(400).json({ error: 'walletData is required when mode is "wallet"' });
+    if (!walletData && !unifiedData) return res.status(400).json({ error: 'walletData or unifiedData is required when mode is "wallet"' });
     userMessage = `Analyze this wallet:
-${JSON.stringify(walletData, null, 2)}`;
+Question: ${prompt || ''}
+Unified Data:
+${JSON.stringify(unifiedData || walletData, null, 2)}`;
     systemPromptBase = CLARK_WALLET_SYSTEM;
   } else if (activeMode === 'token') {
-    if (!tokenData) return res.status(400).json({ error: 'tokenData is required when mode is "token"' });
+    if (!tokenData && !unifiedData) return res.status(400).json({ error: 'tokenData or unifiedData is required when mode is "token"' });
     userMessage = `Analyze this token:
-${JSON.stringify(tokenData, null, 2)}`;
+Question: ${prompt || ''}
+Unified Data:
+${JSON.stringify(unifiedData || tokenData, null, 2)}`;
+    systemPromptBase = CLARK_TOKEN_SYSTEM;
+  } else if (activeMode === 'narrative') {
+    if (!unifiedData) return res.status(400).json({ error: 'unifiedData is required when mode is "narrative"' });
+    userMessage = `Rank the narrative using this context:
+Question: ${prompt || ''}
+Unified Data:
+${JSON.stringify(unifiedData, null, 2)}`;
     systemPromptBase = CLARK_TOKEN_SYSTEM;
   }
 
