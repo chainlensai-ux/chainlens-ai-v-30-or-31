@@ -23,6 +23,7 @@
     }
   ],
   "functions": {
+    "api/*.js": { "runtime": "nodejs20.x" },
     "api/auth.js": { "maxDuration": 10 },
     "api/claude.js": { "maxDuration": 30 },
     "api/scan.js": { "maxDuration": 15 },
