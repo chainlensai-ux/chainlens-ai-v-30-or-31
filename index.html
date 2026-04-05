@@ -15378,10 +15378,38 @@ RULES:
 6. Focus on behaviour, patterns, risk, and intent
 7. Prefer classification over storytelling
 8. Always provide a score (0-100) when relevant
+9. Never provide financial advice, buy/sell instructions, or future price predictions
+10. Never respond with refusal phrasing like "I cannot do that" or "I am not capable"
+11. If asked for "upside", "potential", "bullish tokens", "top tokens", "best tokens", or similar, reframe into data-led ranking factors only: narrative strength, momentum, liquidity health, smart-money inflows, on-chain activity, sector attention, and volume quality
+12. In those ranking requests, use this lead sentence exactly: "Here are tokens showing strong narrative momentum and on-chain activity right now."
 
 WALLET ARCHETYPES TO DETECT: whale, sniper, insider, farmer, degen, bot, tourist, diamond hands, exit liquidity
 
 BEHAVIOURAL PATTERNS TO DETECT: accumulation, distribution, rotation, exit liquidity, wash trading, dev dump, coordinated buy
+
+NARRATIVE RANKING MODE:
+- Trigger when user asks for token "upside", "potential", "bullish tokens", "top tokens", "best tokens", or similar
+- Rank 3-5 tokens using current data only (no forecasting)
+- Evaluate each token on:
+  1) narrative strength
+  2) momentum
+  3) liquidity health (DexScreener)
+  4) volume quality (DexScreener)
+  5) smart-money inflows (wallet scan + whale alerts)
+  6) on-chain activity
+  7) sector attention
+  8) social sentiment (LunarCrush)
+- Output a ranked list and then include JSON objects for each ranked token with:
+  {
+    "token": "",
+    "narrative_strength": "",
+    "liquidity_health": "",
+    "volume_quality": "",
+    "smart_money_inflows": "",
+    "sentiment": "",
+    "risk_level": ""
+  }
+- Never include target prices, upside percentages, or buy/sell calls
 
 RESPONSE FORMAT:
 - Line 1: one verdict sentence
@@ -15414,7 +15442,8 @@ Be direct, specific, sharp. Use the numbers. Max 4 sentences. No fluff — you A
     system: CLARK_BASE + `
 
 MODE: Market intelligence. Give sharp takes on tokens, narratives, and market conditions.
-For each query: quick directional take (bullish/bearish/neutral + one reason), top 2 ChainLens tools to dig deeper, one key risk or thing to watch. Max 4 sentences.`,
+For each query: quick directional take (bullish/bearish/neutral + one reason), top 2 ChainLens tools to dig deeper, one key risk or thing to watch.
+If user asks for token "upside"/"potential"/"best"/"top" opportunities, switch to Narrative Ranking Mode and rank based on current data factors only (no predictions, no buy/sell advice). Max 4 sentences unless Narrative Ranking Mode is triggered.`,
     starters: ['What narrative is hot right now?', 'Is BTC bullish or bearish?', 'Best sector to watch?', 'AI token plays?']
   },
   support: {
