@@ -1,58 +1,51 @@
-"use client";
+import { useEffect, useState } from "react";
 
-import { motion } from "framer-motion";
+// Explicitly type starters as a Record of string keys to string values
+const starters: Record<string, string> = {
+  "token-scanner": "paste a contract address and I'll break it down",
+  "wallet-scanner": "drop a wallet address and I'll profile it",
+  "dev-wallet": "give me a contract and I'll find the dev wallet cluster",
+  "pump-alerts": "here are the top pump signals on Base right now",
+  "whale-alerts": "I'm watching Base for whale moves right now",
+  "base-radar": "here are the newest Base deployments I'm tracking",
+  "liquidity-scanner": "paste a contract and I'll check the liquidity safety",
+};
 
-export default function ClarkBot() {
+// Define props type so TS knows what selectedFeature is
+interface ClarkChatProps {
+  selectedFeature: string | null;
+}
+
+export default function ClarkChat({ selectedFeature }: ClarkChatProps) {
+  const [messages, setMessages] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (selectedFeature) {
+      const logs = [
+        "[SCAN] fetching onchain data...",
+        "[AI] CORTEX engine processing...",
+        "[ALERT] anomalies detected",
+        `Clark: ${starters[selectedFeature]}`,
+      ];
+      setMessages((prev) => [...prev, ...logs]);
+    }
+  }, [selectedFeature]);
+
   return (
-    <section className="relative flex justify-center mt-32 px-6">
-      <motion.div
-        initial={{ opacity: 0, y: 40 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        transition={{ duration: 1, ease: "easeOut" }}
-        viewport={{ once: true }}
-        className="w-full max-w-3xl bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl relative overflow-hidden"
-      >
-        {/* Glow background */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 0.4 }}
-          transition={{ duration: 1.5 }}
-          className="absolute inset-0 bg-gradient-to-br from-blue-600/20 via-purple-600/20 to-cyan-500/20 blur-2xl"
-        />
-
-        {/* Floating orb */}
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 0.5 }}
-          transition={{ duration: 1.5, ease: "easeOut" }}
-          className="absolute w-40 h-40 bg-blue-500/40 rounded-full blur-3xl -top-10 -right-10"
-        />
-
-        {/* Title */}
-        <h2 className="text-3xl font-semibold text-white relative z-10">
-          Clark AI Preview
-        </h2>
-
-        <p className="text-white/70 mt-2 relative z-10">
-          A glimpse of how Clark thinks, responds, and analyzes your Base
-          ecosystem in real time.
-        </p>
-
-        {/* Fake chat bubble */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 1.2 }}
-          className="mt-8 bg-black/40 border border-white/10 rounded-xl p-4 text-white/90 relative z-10"
-        >
-          <p>
-            <span className="text-blue-300 font-semibold">Clark:</span>  
-            Wallet 0x92… just accumulated 14.2 ETH into a fresh Base deployer.
-            Risk score: <span className="text-yellow-300">Medium</span>.  
-            Narrative alignment: <span className="text-green-300">AI Agents</span>.
-          </p>
-        </motion.div>
-      </motion.div>
-    </section>
+    <div className="flex-1 p-6 bg-[#06060a] font-inter">
+      <h2 className="text-lg font-bold">Clark Chat</h2>
+      <div className="mt-4 h-[70%] rounded bg-[#080c14] p-4 overflow-y-auto font-mono text-sm">
+        {messages.map((msg, idx) => (
+          <div key={idx} className="mb-2 text-neutral-200">
+            {msg}
+          </div>
+        ))}
+      </div>
+      <input
+        type="text"
+        placeholder="Type a message..."
+        className="mt-2 w-full rounded bg-neutral-700 p-2 font-mono"
+      />
+    </div>
   );
 }
