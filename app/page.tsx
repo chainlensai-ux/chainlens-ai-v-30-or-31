@@ -103,12 +103,17 @@ export default function HomePage() {
           <HeroChat />
 
           {/* CTAs */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '40px', animation: 'cl-fade-up 0.7s 0.7s ease both' }}>
-            <Link href="/app" style={{ padding: '12px 24px', borderRadius: '10px', background: 'linear-gradient(135deg, #ec4899, #8b5cf6)', color: '#fff', fontSize: '13px', fontWeight: 700, textDecoration: 'none', letterSpacing: '0.06em', textTransform: 'uppercase', boxShadow: '0 0 24px rgba(139,92,246,0.4)' }}>
-              Start Free
-            </Link>
-            <Link href="/app" style={{ padding: '12px 24px', borderRadius: '10px', border: '1px solid rgba(139,92,246,0.35)', background: 'transparent', color: 'rgba(255,255,255,0.7)', fontSize: '13px', fontWeight: 700, textDecoration: 'none', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-              Connect Wallet
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', marginBottom: '40px', animation: 'cl-fade-up 0.7s 0.7s ease both' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <Link href="/app" style={{ padding: '12px 24px', borderRadius: '10px', background: 'linear-gradient(135deg, #ec4899, #8b5cf6)', color: '#fff', fontSize: '13px', fontWeight: 700, textDecoration: 'none', letterSpacing: '0.06em', textTransform: 'uppercase', boxShadow: '0 0 24px rgba(139,92,246,0.4)' }}>
+                Start Free
+              </Link>
+              <Link href="/app" style={{ padding: '12px 24px', borderRadius: '10px', border: '1px solid rgba(139,92,246,0.35)', background: 'transparent', color: 'rgba(255,255,255,0.7)', fontSize: '13px', fontWeight: 700, textDecoration: 'none', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Connect Wallet
+              </Link>
+            </div>
+            <Link href="/terminal" style={{ padding: '12px 24px', borderRadius: '10px', background: '#2DD4BF', color: '#06060a', fontSize: '13px', fontWeight: 700, textDecoration: 'none', letterSpacing: '0.06em', textTransform: 'uppercase', boxShadow: '0 0 22px rgba(45,212,191,0.3)' }}>
+              Enter Terminal
             </Link>
           </div>
         </div>
