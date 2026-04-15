@@ -1,22 +1,21 @@
-import Link from "next/link";
+import Navbar from '@/components/Navbar'
+import Link from 'next/link'
 
 export default function HomePage() {
   return (
-    <main className="flex h-screen flex-col items-center justify-center bg-neutral-950 text-neutral-100">
-      {/* Hero Section */}
-      <h1 className="text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-fuchsia-500">
-        ChainLens AI
-      </h1>
-      <p className="mt-4 text-lg text-neutral-400">
-        Your crypto cockpit powered by Clark AI.
-      </p>
-
-      {/* CTA Button */}
-      <Link href="/terminal">
-        <button className="mt-8 rounded-lg bg-purple-600 px-6 py-3 font-semibold hover:bg-purple-500 transition">
+    <main style={{ minHeight: '100vh', background: '#06060a' }}>
+      <Navbar />
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '120px 24px', textAlign: 'center' }}>
+        <h1 style={{ fontSize: '48px', fontWeight: 700, background: 'linear-gradient(135deg, #8b5cf6, #ec4899, #2DD4BF)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text', marginBottom: '16px' }}>
+          ChainLens AI
+        </h1>
+        <p style={{ fontSize: '18px', color: 'rgba(255,255,255,0.5)', marginBottom: '32px' }}>
+          Your crypto cockpit powered by Clark AI.
+        </p>
+        <Link href="/app" style={{ padding: '12px 28px', borderRadius: '10px', background: '#8b5cf6', color: '#fff', fontSize: '14px', fontWeight: 700, textDecoration: 'none', letterSpacing: '0.06em', textTransform: 'uppercase', boxShadow: '0 0 24px rgba(139,92,246,0.4)' }}>
           Enter Terminal
-        </button>
-      </Link>
+        </Link>
+      </div>
     </main>
-  );
+  )
 }
