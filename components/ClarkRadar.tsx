@@ -1,4 +1,16 @@
-export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: string) => void }) {
+interface ClarkRadarProps {
+  onSelectRadar: (val: string) => void;
+  title?: string;
+  showPulse?: boolean;
+  className?: string;
+}
+
+export default function ClarkRadar({
+  onSelectRadar,
+  title = "Clark Radar",
+  showPulse = false,
+  className = "",
+}: ClarkRadarProps) {
   const mockCards = [
     { token: "BRETT", risk: "DANGER", tag: "whale exit" },
     { token: "TOSHI", risk: "SAFE", tag: "early pump" },
@@ -6,8 +18,11 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
   ];
 
   return (
-    <div className="w-96 p-6 bg-[#080c14] border-l border-[rgba(255,255,255,0.08)]">
-      <h2 className="text-lg font-bold">Clark Radar</h2>
+    <div className={`w-96 p-6 bg-[#080c14] border-l border-[rgba(255,255,255,0.08)] ${className}`}>
+      <h2 className="text-lg font-bold flex items-center gap-2">
+        {showPulse ? <span className="h-2 w-2 rounded-full bg-pink-500 animate-pulse" /> : null}
+        {title}
+      </h2>
       <div className="mt-4 space-y-4">
         {mockCards.map((c, idx) => (
           <div
