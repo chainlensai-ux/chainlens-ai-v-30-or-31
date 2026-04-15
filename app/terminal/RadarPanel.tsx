@@ -1,4 +1,4 @@
-"use client";
+""use client";
 
 import ClarkRadar from "@/components/ClarkRadar";
 
@@ -19,6 +19,4 @@ export default function RadarPanel({ onSelectFeature }: RadarPanelProps) {
       </div>
     </aside>
   );
-}
-
 }
