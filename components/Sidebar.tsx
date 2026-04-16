@@ -2,11 +2,11 @@
 
 import Image from 'next/image'
 
-// ─── Icons (14×14, strokeWidth 1.6, Lucide-style) ─────────────────────────
+// ─── Icons (16×16, strokeWidth 1.6, Lucide-style) ─────────────────────────
 
 function IcHome() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
       <polyline points="9 22 9 12 15 12 15 22"/>
     </svg>
@@ -14,7 +14,7 @@ function IcHome() {
 }
 function IcTokenScanner() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="11" cy="11" r="8"/>
       <line x1="21" y1="21" x2="16.65" y2="16.65"/>
     </svg>
@@ -22,7 +22,7 @@ function IcTokenScanner() {
 }
 function IcWalletScanner() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/>
       <path d="M4 6v12c0 1.1.9 2 2 2h14v-4"/>
       <path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>
@@ -31,7 +31,7 @@ function IcWalletScanner() {
 }
 function IcDevWallet() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="16 18 22 12 16 6"/>
       <polyline points="8 6 2 12 8 18"/>
     </svg>
@@ -39,14 +39,14 @@ function IcDevWallet() {
 }
 function IcLiquidity() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
     </svg>
   )
 }
 function IcWhaleAlerts() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
       <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
     </svg>
@@ -54,7 +54,7 @@ function IcWhaleAlerts() {
 }
 function IcPumpAlerts() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
       <polyline points="17 6 23 6 23 12"/>
     </svg>
@@ -62,7 +62,7 @@ function IcPumpAlerts() {
 }
 function IcBaseRadar() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M5.64 17.36a9 9 0 1 1 12.72 0"/>
       <path d="M8.46 14.54a5 5 0 1 1 7.07 0"/>
       <circle cx="12" cy="12" r="1" fill="currentColor"/>
@@ -71,7 +71,7 @@ function IcBaseRadar() {
 }
 function IcClarkAI() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
       <path d="M19 3v4m2-2h-4"/>
     </svg>
@@ -79,7 +79,7 @@ function IcClarkAI() {
 }
 function IcPortfolio() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <line x1="18" y1="20" x2="18" y2="10"/>
       <line x1="12" y1="20" x2="12" y2="4"/>
       <line x1="6"  y1="20" x2="6"  y2="14"/>
@@ -88,7 +88,7 @@ function IcPortfolio() {
 }
 function IcSettings() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3"/>
       <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
     </svg>
@@ -96,7 +96,7 @@ function IcSettings() {
 }
 function IcConnectWallet() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/>
       <path d="M4 6v12c0 1.1.9 2 2 2h14v-4"/>
       <path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>
@@ -139,14 +139,14 @@ function NavItem({ item, active, onSelect }: NavItemProps) {
     <button
       onClick={() => onSelect(item.key)}
       className={[
-        'w-full flex items-center gap-2.5 py-[9px] px-3 rounded-lg',
-        'text-[13px] font-medium border-l-2 transition-colors duration-100',
+        'w-full flex items-center gap-3 py-2.5 px-3 rounded-lg',
+        'text-[13px] font-medium border-l-2 transition-colors duration-150',
         on
-          ? 'bg-[#2DD4BF]/[0.08] text-[#2DD4BF] border-[#2DD4BF]'
+          ? 'bg-[#2DD4BF]/[0.12] text-[#2DD4BF] border-[#2DD4BF]'
           : 'text-[#64748b] border-transparent hover:text-[#94a3b8] hover:bg-white/[0.05]',
       ].join(' ')}
     >
-      <span className={`shrink-0 ${on ? 'text-[#2DD4BF]' : 'text-[#4a5e72]'}`}>
+      <span className={`shrink-0 ${on ? 'text-[#2DD4BF]' : 'text-[#4d6078]'}`}>
         {item.icon}
       </span>
       {item.label}
@@ -175,14 +175,14 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
   return (
     <aside className="w-[240px] h-screen shrink-0 flex flex-col bg-[#080c14] border-r border-white/[0.08]">
 
-      {/* ── Branding ────────────────────────────────────────────────── */}
+      {/* ── Branding ─────────────────────────────────────────────────── */}
       <div className="px-5 pt-7 pb-6 border-b border-white/[0.06]">
         <div className="flex items-center gap-3">
           <Image
             src="/cl-logo.png"
             alt="ChainLens AI"
-            width={32}
-            height={32}
+            width={34}
+            height={34}
             className="shrink-0"
           />
           <div>
@@ -197,11 +197,11 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
         </div>
       </div>
 
-      {/* ── Navigation ──────────────────────────────────────────────── */}
-      <nav className="flex-1 overflow-y-auto px-4 py-5 flex flex-col gap-5">
+      {/* ── Navigation ───────────────────────────────────────────────── */}
+      <nav className="flex-1 overflow-y-auto px-4 py-5 flex flex-col gap-6">
 
         {/* Home */}
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <NavItem
             item={{ key: 'home', label: 'Home', icon: <IcHome /> }}
             active={active}
@@ -210,7 +210,7 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
         </div>
 
         {/* Features */}
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <SectionLabel>Features</SectionLabel>
           {FEATURES.map(item => (
             <NavItem key={item.key} item={item} active={active} onSelect={onSelect} />
@@ -221,7 +221,7 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
         <div className="h-px bg-white/[0.08] -mx-1" />
 
         {/* Secondary */}
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {SECONDARY.map(item => (
             <NavItem key={item.key} item={item} active={active} onSelect={onSelect} />
           ))}
@@ -229,12 +229,12 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
 
       </nav>
 
-      {/* ── Auth ────────────────────────────────────────────────────── */}
+      {/* ── Auth ─────────────────────────────────────────────────────── */}
       <div className="px-5 py-5 space-y-2 border-t border-white/[0.06]">
-        <button className="w-full py-2.5 rounded-xl bg-[#2DD4BF] text-[#06060a] text-[13px] font-bold tracking-tight hover:bg-[#25bfac] active:bg-[#1fa898] transition-colors">
+        <button className="w-full py-2.5 rounded-xl bg-[#2DD4BF] text-[#06060a] text-[13px] font-bold tracking-tight hover:bg-[#25bfac] active:bg-[#1fa898] transition-colors duration-150">
           Sign Up
         </button>
-        <button className="w-full py-2.5 rounded-xl border border-white/[0.12] text-[#64748b] text-[13px] font-medium hover:text-[#94a3b8] hover:border-white/[0.18] hover:bg-white/[0.04] transition-colors">
+        <button className="w-full py-2.5 rounded-xl border border-white/[0.12] text-[#64748b] text-[13px] font-medium hover:text-[#94a3b8] hover:border-white/[0.18] hover:bg-white/[0.04] transition-colors duration-150">
           Sign In
         </button>
       </div>
