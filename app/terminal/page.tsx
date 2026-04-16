@@ -16,7 +16,7 @@ export default function TerminalPage() {
       <FeatureBar active={active} onSelect={setActive} />
 
       <main className="flex-1 overflow-y-auto min-w-0">
-        <ClarkChat active={active} toolLabel={active} />
+        <ClarkChat active={active} />
       </main>
 
       <aside

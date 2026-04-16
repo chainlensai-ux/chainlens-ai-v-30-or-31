@@ -56,11 +56,10 @@ const CHIPS = [
 // ─── Main component ───────────────────────────────────────────────────────
 
 interface Props {
-  active:    string | null
-  toolLabel: string
+  active: string | null
 }
 
-export default function ClarkChat({ active, toolLabel }: Props) {
+export default function ClarkChat({ active }: Props) {
   const [query,    setQuery]    = useState('')
   const [chain,    setChain]    = useState<ChainFilter>('All Chains')
   const [time,     setTime]     = useState<TimeFilter>('24H')
@@ -95,7 +94,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
   const filtered = chain === 'All Chains' ? TOKENS : TOKENS.filter(t => t.chain === chain)
 
   return (
-    <div className="px-6 py-6 w-full max-w-[920px] mx-auto space-y-6">
+    <div className="w-full flex flex-col" style={{ padding: '28px', gap: '24px' }}>
 
       {/* ─── Clark AI Command Box ──────────────── */}
       <div className="relative">
