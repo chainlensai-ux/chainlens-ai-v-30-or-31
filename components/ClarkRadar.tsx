@@ -44,20 +44,20 @@ function Section({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35, delay, ease: 'easeOut' }}
       className="rounded-2xl overflow-hidden"
-      style={{ background: '#060c18', border: '1px solid rgba(255,255,255,0.06)' }}
+      style={{ background: '#070d1a', border: '1px solid rgba(255,255,255,0.10)', boxShadow: '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)' }}
     >
       {/* Section header row */}
       <div
         className="flex items-center justify-between px-4 py-3"
-        style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}
+        style={{ borderBottom: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.035)' }}
       >
         <span
           className="uppercase"
           style={{
             fontSize: '10px',
-            fontWeight: 700,
+            fontWeight: 800,
             letterSpacing: '0.15em',
-            color: '#2d4a63',
+            color: '#4a7494',
             fontFamily: 'var(--font-plex-mono)',
           }}
         >
@@ -125,7 +125,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
       </div>
 
       {/* Body */}
-      <div className="px-3 py-4 space-y-3">
+      <div className="px-3 py-4 space-y-4">
 
         {/* ── Whale Alerts ─────────────────────────── */}
         <Section title="Whale Alerts" delay={0}>
@@ -166,7 +166,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
                   </p>
                   <p
                     className="mt-0.5 truncate"
-                    style={{ fontSize: '10px', color: '#3d5268', fontFamily: 'var(--font-inter)' }}
+                    style={{ fontSize: '10px', color: '#4e6e88', fontFamily: 'var(--font-inter)' }}
                   >
                     {w.action}
                   </p>
@@ -259,7 +259,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
                 </div>
                 <p
                   className="text-right mt-1"
-                  style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', color: '#2d4258' }}
+                  style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', color: '#3e5c78' }}
                 >
                   {s.bar}%
                 </p>
@@ -284,13 +284,13 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
                 />
                 <p
                   className="flex-1 leading-relaxed"
-                  style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-inter)' }}
+                  style={{ fontSize: '11px', color: '#7a90a8', fontFamily: 'var(--font-inter)' }}
                 >
                   {a.text}
                 </p>
                 <span
                   className="shrink-0 mt-0.5"
-                  style={{ fontSize: '9px', fontFamily: 'var(--font-plex-mono)', color: '#2d4258' }}
+                  style={{ fontSize: '9px', fontFamily: 'var(--font-plex-mono)', color: '#3e5c78' }}
                 >
                   {a.time}
                 </span>
@@ -308,7 +308,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
               style={{ width: '6px', height: '6px', boxShadow: '0 0 5px rgba(45,212,191,0.8)' }}
             />
             <span
-              style={{ fontSize: '11px', color: '#3d5268', fontFamily: 'var(--font-inter)' }}
+              style={{ fontSize: '11px', color: '#4e6e88', fontFamily: 'var(--font-inter)' }}
             >
               CORTEX monitoring live
             </span>

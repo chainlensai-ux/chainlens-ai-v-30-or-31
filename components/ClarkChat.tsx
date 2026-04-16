@@ -100,8 +100,9 @@ export default function ClarkChat({ active, toolLabel }: Props) {
         transition={{ duration: 0.42, ease: 'easeOut' }}
         className="relative rounded-2xl overflow-hidden"
         style={{
-          background: 'linear-gradient(150deg, #0c1929 0%, #080f1c 60%, #060b16 100%)',
-          border: '1px solid rgba(255,255,255,0.08)',
+          background: 'linear-gradient(150deg, #0d1b2e 0%, #090f1e 60%, #060b16 100%)',
+          border: '1px solid rgba(255,255,255,0.11)',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.03), inset 0 1px 0 rgba(255,255,255,0.06)',
         }}
       >
         {/* Top edge gradient line */}
@@ -116,14 +117,14 @@ export default function ClarkChat({ active, toolLabel }: Props) {
         {/* Ambient glow orbs */}
         <div
           className="absolute -top-24 -left-16 w-[360px] h-[280px] rounded-full pointer-events-none"
-          style={{ background: 'rgba(45,212,191,0.09)', filter: 'blur(60px)' }}
+          style={{ background: 'rgba(45,212,191,0.13)', filter: 'blur(60px)' }}
         />
         <div
           className="absolute -bottom-20 -right-8 w-[300px] h-[240px] rounded-full pointer-events-none"
-          style={{ background: 'rgba(139,92,246,0.09)', filter: 'blur(60px)' }}
+          style={{ background: 'rgba(139,92,246,0.13)', filter: 'blur(60px)' }}
         />
 
-        <div className="relative px-8 pt-9 pb-8">
+        <div className="relative px-9 pt-10 pb-9">
 
           {/* Icon badge + title */}
           <div className="flex items-center gap-4 mb-7">
@@ -164,7 +165,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
                 className="mt-0.5"
                 style={{
                   fontSize: '12px',
-                  color: '#3d5268',
+                  color: '#4e6e88',
                   fontFamily: 'var(--font-plex-mono)',
                 }}
               >
@@ -324,7 +325,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
                   className="mt-1.5"
                   style={{
                     fontSize: '11px',
-                    color: '#3d5268',
+                    color: '#4e6e88',
                     fontFamily: 'var(--font-inter)',
                   }}
                 >
@@ -351,7 +352,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
               className="tracking-tight"
               style={{
                 fontSize: '18px',
-                fontWeight: 700,
+                fontWeight: 800,
                 color: '#f1f5f9',
                 fontFamily: 'var(--font-inter)',
               }}
@@ -389,7 +390,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
                 style={
                   time === t
                     ? { background: 'rgba(45,212,191,0.14)', color: '#2DD4BF', border: '1px solid rgba(45,212,191,0.24)' }
-                    : { color: '#475569', border: '1px solid transparent' }
+                    : { color: '#5a7290', border: '1px solid transparent' }
                 }
                 onMouseEnter={e => {
                   if (time !== t) (e.currentTarget as HTMLButtonElement).style.color = '#94a3b8'
@@ -414,7 +415,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
               style={
                 chain === c
                   ? { background: 'rgba(45,212,191,0.12)', color: '#2DD4BF',  border: '1px solid rgba(45,212,191,0.25)' }
-                  : { background: 'rgba(255,255,255,0.04)', color: '#475569', border: '1px solid rgba(255,255,255,0.07)' }
+                  : { background: 'rgba(255,255,255,0.04)', color: '#5a7290', border: '1px solid rgba(255,255,255,0.07)' }
               }
               onMouseEnter={e => {
                 if (chain !== c) {
@@ -439,7 +440,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
         {/* Table container */}
         <div
           className="rounded-2xl overflow-hidden"
-          style={{ background: '#060c18', border: '1px solid rgba(255,255,255,0.06)' }}
+          style={{ background: '#070d1a', border: '1px solid rgba(255,255,255,0.10)', boxShadow: '0 8px 40px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)' }}
         >
 
           {/* Column headers */}
@@ -447,8 +448,8 @@ export default function ClarkChat({ active, toolLabel }: Props) {
             className="grid items-center px-5 py-3"
             style={{
               gridTemplateColumns: '40px 1fr 88px 110px 100px 100px 100px',
-              background: 'rgba(255,255,255,0.02)',
-              borderBottom: '1px solid rgba(255,255,255,0.05)',
+              background: 'rgba(255,255,255,0.032)',
+              borderBottom: '1px solid rgba(255,255,255,0.09)',
             }}
           >
             {['#', 'Token', 'Chain', 'Price', '24H Change', 'Volume', 'Liquidity'].map((h, i) => (
@@ -459,7 +460,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
                   fontSize: '10px',
                   fontWeight: 700,
                   letterSpacing: '0.14em',
-                  color: '#1e3040',
+                  color: '#3d5e7a',
                   fontFamily: 'var(--font-plex-mono)',
                 }}
               >
@@ -478,9 +479,9 @@ export default function ClarkChat({ active, toolLabel }: Props) {
               className="relative group grid items-center px-5 cursor-pointer"
               style={{
                 gridTemplateColumns: '40px 1fr 88px 110px 100px 100px 100px',
-                paddingTop: '16px',
-                paddingBottom: '16px',
-                borderBottom: i < filtered.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                paddingTop: '19px',
+                paddingBottom: '19px',
+                borderBottom: i < filtered.length - 1 ? '1px solid rgba(255,255,255,0.06)' : 'none',
               }}
               onMouseEnter={e => {
                 (e.currentTarget as HTMLDivElement).style.background = 'rgba(255,255,255,0.025)'
@@ -498,7 +499,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
               {/* Rank */}
               <div
                 className="text-center"
-                style={{ fontSize: '12px', fontFamily: 'var(--font-plex-mono)', color: '#2d4258' }}
+                style={{ fontSize: '12px', fontFamily: 'var(--font-plex-mono)', color: '#3e5c78' }}
               >
                 {token.rank}
               </div>
@@ -529,7 +530,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
                   </p>
                   <p
                     className="mt-0.5"
-                    style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', color: '#2d4258' }}
+                    style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', color: '#3e5c78' }}
                   >
                     {token.sym}
                   </p>
@@ -575,7 +576,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
               {/* Volume */}
               <div
                 className="text-right"
-                style={{ fontSize: '12px', fontFamily: 'var(--font-plex-mono)', color: '#475569' }}
+                style={{ fontSize: '12px', fontFamily: 'var(--font-plex-mono)', color: '#5a7290' }}
               >
                 {token.volume}
               </div>
