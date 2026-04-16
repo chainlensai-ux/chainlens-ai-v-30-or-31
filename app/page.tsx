@@ -291,60 +291,104 @@ export default function HomePage() {
           </div>
 
           {/* CTA buttons */}
-          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
-            <button
-              style={{
-                padding: '14px 32px',
-                borderRadius: '10px',
-                background: '#7c3aed',
-                color: '#fff',
-                fontSize: '13px',
-                fontWeight: 700,
-                letterSpacing: '0.10em',
-                textTransform: 'uppercase',
-                border: 'none',
-                cursor: 'pointer',
-                boxShadow: '0 0 28px rgba(124,58,237,0.45)',
-                transition: 'opacity 0.15s, box-shadow 0.15s',
-              }}
-              onMouseEnter={e => {
-                (e.currentTarget as HTMLButtonElement).style.opacity = '0.88'
-                ;(e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 36px rgba(124,58,237,0.65)'
-              }}
-              onMouseLeave={e => {
-                (e.currentTarget as HTMLButtonElement).style.opacity = '1'
-                ;(e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 28px rgba(124,58,237,0.45)'
-              }}
-            >
-              Connect Wallet
-            </button>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+
+            {/* Primary — Enter Terminal */}
             <Link href="/terminal" style={{
-              display: 'inline-block',
-              padding: '14px 32px',
-              borderRadius: '10px',
-              background: '#8b5cf6',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '10px',
+              padding: '16px 40px',
+              borderRadius: '12px',
+              background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
               color: '#fff',
-              fontSize: '13px',
-              fontWeight: 700,
-              letterSpacing: '0.10em',
+              fontSize: '14px',
+              fontWeight: 800,
+              letterSpacing: '0.12em',
               textTransform: 'uppercase',
               textDecoration: 'none',
-              boxShadow: '0 0 28px rgba(139,92,246,0.45)',
-              transition: 'opacity 0.15s, box-shadow 0.15s',
+              boxShadow: '0 0 36px rgba(45,212,191,0.5), 0 0 36px rgba(139,92,246,0.3)',
+              transition: 'opacity 0.15s, box-shadow 0.15s, transform 0.15s',
             }}
               onMouseEnter={e => {
                 const el = e.currentTarget as HTMLAnchorElement
-                el.style.opacity = '0.88'
-                el.style.boxShadow = '0 0 36px rgba(139,92,246,0.65)'
+                el.style.opacity    = '0.92'
+                el.style.transform  = 'translateY(-2px)'
+                el.style.boxShadow  = '0 0 52px rgba(45,212,191,0.65), 0 0 52px rgba(139,92,246,0.4)'
               }}
               onMouseLeave={e => {
                 const el = e.currentTarget as HTMLAnchorElement
-                el.style.opacity = '1'
-                el.style.boxShadow = '0 0 28px rgba(139,92,246,0.45)'
+                el.style.opacity    = '1'
+                el.style.transform  = 'translateY(0)'
+                el.style.boxShadow  = '0 0 36px rgba(45,212,191,0.5), 0 0 36px rgba(139,92,246,0.3)'
               }}
             >
-              Start Free
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="2"/>
+                <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                <path d="M7 8l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                <line x1="13" y1="11" x2="17" y2="11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              </svg>
+              Enter Terminal
             </Link>
+
+            {/* Secondary pair */}
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button
+                style={{
+                  padding: '11px 28px',
+                  borderRadius: '10px',
+                  background: 'transparent',
+                  color: 'rgba(255,255,255,0.65)',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  letterSpacing: '0.10em',
+                  textTransform: 'uppercase',
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  cursor: 'pointer',
+                  transition: 'border-color 0.15s, color 0.15s',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLButtonElement
+                  el.style.borderColor = 'rgba(255,255,255,0.38)'
+                  el.style.color       = '#fff'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLButtonElement
+                  el.style.borderColor = 'rgba(255,255,255,0.18)'
+                  el.style.color       = 'rgba(255,255,255,0.65)'
+                }}
+              >
+                Connect Wallet
+              </button>
+              <Link href="/app" style={{
+                display: 'inline-block',
+                padding: '11px 28px',
+                borderRadius: '10px',
+                background: 'rgba(139,92,246,0.18)',
+                color: 'rgba(255,255,255,0.75)',
+                fontSize: '12px',
+                fontWeight: 700,
+                letterSpacing: '0.10em',
+                textTransform: 'uppercase',
+                textDecoration: 'none',
+                border: '1px solid rgba(139,92,246,0.35)',
+                transition: 'background 0.15s, color 0.15s',
+              }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLAnchorElement
+                  el.style.background = 'rgba(139,92,246,0.28)'
+                  el.style.color      = '#fff'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLAnchorElement
+                  el.style.background = 'rgba(139,92,246,0.18)'
+                  el.style.color      = 'rgba(255,255,255,0.75)'
+                }}
+              >
+                Start Free
+              </Link>
+            </div>
           </div>
 
         </main>

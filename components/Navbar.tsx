@@ -211,6 +211,21 @@ export default function Navbar() {
           }}>
             Get Access
           </Link>
+          <Link href="/terminal" style={{
+            padding: '7px 18px',
+            borderRadius: '8px',
+            background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
+            color: '#fff',
+            fontSize: '12px',
+            fontWeight: 700,
+            textDecoration: 'none',
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            boxShadow: '0 0 22px rgba(45,212,191,0.45), 0 0 22px rgba(139,92,246,0.25)',
+            whiteSpace: 'nowrap',
+          }}>
+            Enter Terminal
+          </Link>
         </div>
 
       </div>
