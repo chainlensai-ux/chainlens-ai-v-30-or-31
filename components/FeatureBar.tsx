@@ -6,9 +6,9 @@ const NAV_GROUPS = [
   {
     label: 'Scanners',
     items: [
-      { key: 'token-scanner',     label: 'Token Scanner' },
-      { key: 'wallet-scanner',    label: 'Wallet Scanner' },
-      { key: 'dev-wallet',        label: 'Dev Wallet' },
+      { key: 'token-scanner',     label: 'Token Scanner'    },
+      { key: 'wallet-scanner',    label: 'Wallet Scanner'   },
+      { key: 'dev-wallet',        label: 'Dev Wallet'       },
       { key: 'liquidity-scanner', label: 'Liquidity Safety' },
     ],
   },
@@ -16,14 +16,14 @@ const NAV_GROUPS = [
     label: 'Alerts',
     items: [
       { key: 'whale-alerts', label: 'Whale Alerts' },
-      { key: 'pump-alerts',  label: 'Pump Alerts' },
+      { key: 'pump-alerts',  label: 'Pump Alerts'  },
     ],
   },
   {
-    label: 'Radar & AI',
+    label: 'Intelligence',
     items: [
       { key: 'base-radar', label: 'Base Radar' },
-      { key: 'clark-ai',   label: 'Clark AI' },
+      { key: 'clark-ai',   label: 'Clark AI'   },
     ],
   },
 ]
@@ -33,22 +33,28 @@ interface Props {
   onSelect: (key: string) => void
 }
 
-interface NavItemProps {
-  label: string
-  isActive: boolean
-  onClick: () => void
-}
-
-function NavItem({ label, isActive, onClick }: NavItemProps) {
+function NavItem({ label, isActive, onClick }: { label: string; isActive: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className={[
-        'w-full flex items-center pl-3.5 pr-2 py-2.5 rounded-xl text-left border-l-2 transition-all',
+      className="w-full flex items-center pl-3.5 pr-3 py-2.5 rounded-xl text-left border-l-2 transition-all"
+      style={
         isActive
-          ? 'bg-[#2DD4BF]/[0.1] text-[#2DD4BF] border-[#2DD4BF]'
-          : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.05] border-transparent',
-      ].join(' ')}
+          ? { background: 'rgba(45,212,191,0.09)', color: '#2DD4BF', borderLeftColor: '#2DD4BF' }
+          : { color: '#64748b', borderLeftColor: 'transparent' }
+      }
+      onMouseEnter={e => {
+        if (!isActive) {
+          (e.currentTarget as HTMLButtonElement).style.color = '#94a3b8';
+          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)';
+        }
+      }}
+      onMouseLeave={e => {
+        if (!isActive) {
+          (e.currentTarget as HTMLButtonElement).style.color = '#64748b';
+          (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+        }
+      }}
     >
       <span className="text-[13px] font-semibold truncate">{label}</span>
     </button>
@@ -57,47 +63,59 @@ function NavItem({ label, isActive, onClick }: NavItemProps) {
 
 export default function FeatureBar({ active, onSelect }: Props) {
   return (
-    <aside className="w-[220px] shrink-0 h-screen flex flex-col bg-[#080c14] border-r border-white/[0.08] overflow-hidden">
+    <aside
+      className="w-[220px] shrink-0 h-screen flex flex-col overflow-hidden"
+      style={{ background: '#080c14', borderRight: '1px solid rgba(255,255,255,0.07)' }}
+    >
 
       {/* Logo */}
-      <div className="px-5 pt-5 pb-5 border-b border-white/[0.07] shrink-0">
+      <div
+        className="px-5 pt-6 pb-5 shrink-0"
+        style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}
+      >
         <div className="flex items-center gap-3">
           <Image
             src="/cl-logo.png"
             alt="ChainLens AI"
-            width={28}
-            height={28}
+            width={30}
+            height={30}
             className="shrink-0"
           />
           <div className="min-w-0">
-            <div className="text-[15px] font-bold text-white leading-tight tracking-tight">
-              Chain<span className="text-[#2DD4BF]">Lens</span>
+            <div className="text-[15px] font-extrabold text-white leading-tight tracking-tight">
+              Chain<span style={{ color: '#2DD4BF' }}>Lens</span>
             </div>
-            <div className="text-[10px] text-[#475569] mt-0.5 font-medium tracking-wide">AI Terminal</div>
+            <div className="text-[10px] font-medium mt-0.5" style={{ color: '#475569' }}>AI Terminal</div>
           </div>
         </div>
       </div>
 
       {/* Home */}
-      <div className="px-3 pt-4 pb-2 shrink-0">
+      <div className="px-3 pt-4 pb-1 shrink-0">
         <button
           onClick={() => onSelect('home')}
-          className={[
-            'w-full flex items-center gap-2.5 pl-3.5 pr-2 py-2.5 rounded-xl transition-all border-l-2',
+          className="w-full flex items-center gap-2.5 pl-3.5 pr-3 py-2.5 rounded-xl transition-all border-l-2"
+          style={
             active === 'home'
-              ? 'bg-[#2DD4BF]/[0.1] text-[#2DD4BF] border-[#2DD4BF]'
-              : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.05] border-transparent',
-          ].join(' ')}
+              ? { background: 'rgba(45,212,191,0.09)', color: '#2DD4BF', borderLeftColor: '#2DD4BF' }
+              : { color: '#64748b', borderLeftColor: 'transparent' }
+          }
+          onMouseEnter={e => {
+            if (active !== 'home') {
+              (e.currentTarget as HTMLButtonElement).style.color = '#94a3b8';
+              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)';
+            }
+          }}
+          onMouseLeave={e => {
+            if (active !== 'home') {
+              (e.currentTarget as HTMLButtonElement).style.color = '#64748b';
+              (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+            }
+          }}
         >
           <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+            width="15" height="15" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
             className="shrink-0"
           >
             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -110,12 +128,13 @@ export default function FeatureBar({ active, onSelect }: Props) {
       {/* Nav groups */}
       <nav className="flex-1 overflow-y-auto px-3 pb-3">
         {NAV_GROUPS.map(group => (
-          <div key={group.label} className="mb-1">
-            <div className="px-1 pt-5 pb-2">
-              <span className="text-[10px] font-bold text-[#475569] uppercase tracking-[0.12em]">
-                {group.label}
-              </span>
-            </div>
+          <div key={group.label} className="mt-5">
+            <p
+              className="px-1 pb-2 text-[10px] font-bold uppercase tracking-[0.14em]"
+              style={{ color: '#475569' }}
+            >
+              {group.label}
+            </p>
             <div className="space-y-0.5">
               {group.items.map(item => (
                 <NavItem
@@ -130,18 +149,26 @@ export default function FeatureBar({ active, onSelect }: Props) {
         ))}
       </nav>
 
-      {/* Bottom actions */}
-      <div className="px-3 py-5 border-t border-white/[0.07] space-y-2 shrink-0">
-        <button className="w-full flex items-center gap-2.5 pl-3.5 pr-2 py-2.5 rounded-xl transition-all text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.05]">
+      {/* Bottom */}
+      <div
+        className="px-3 py-4 space-y-2 shrink-0"
+        style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}
+      >
+        <button
+          className="w-full flex items-center gap-2.5 pl-3.5 pr-3 py-2.5 rounded-xl transition-all"
+          style={{ color: '#64748b' }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLButtonElement).style.color = '#94a3b8';
+            (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)';
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLButtonElement).style.color = '#64748b';
+            (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+          }}
+        >
           <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+            width="15" height="15" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
             className="shrink-0"
           >
             <circle cx="12" cy="12" r="3" />
@@ -150,10 +177,14 @@ export default function FeatureBar({ active, onSelect }: Props) {
           <span className="text-[13px] font-semibold">Settings</span>
         </button>
         <button
-          className="w-full flex items-center justify-center px-3 py-2.5 rounded-xl bg-[#2DD4BF] text-[#06060a] font-bold hover:bg-[#25bfac] transition-colors"
-          style={{ boxShadow: '0 0 20px rgba(45,212,191,0.2)' }}
+          className="w-full flex items-center justify-center py-2.5 rounded-xl text-[12px] font-bold transition-all hover:opacity-90 active:opacity-75"
+          style={{
+            background: '#2DD4BF',
+            color: '#04070f',
+            boxShadow: '0 0 20px rgba(45,212,191,0.25)',
+          }}
         >
-          <span className="text-[12px]">Connect Wallet</span>
+          Connect Wallet
         </button>
       </div>
 

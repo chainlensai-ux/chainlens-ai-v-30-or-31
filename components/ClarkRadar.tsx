@@ -9,93 +9,135 @@ const LIVE_SIGNALS = [
 ]
 
 const WALLET_ACTIVITY = [
-  { addr: '0x7a25...88D',  action: 'Bought 2.4 ETH of BRETT', time: '2m ago'  },
-  { addr: '0xd8dA...6045', action: 'Sold 50K TOSHI',          time: '7m ago'  },
-  { addr: '0xAb5C...4Fe2', action: 'Added $120K LP on Base',  time: '14m ago' },
-  { addr: '0x1f98...4B5a', action: 'Bridged 18 ETH to Base',  time: '21m ago' },
+  { addr: '0x7a25...88D',  action: 'Bought 2.4 ETH of BRETT', time: '2m'  },
+  { addr: '0xd8dA...6045', action: 'Sold 50K TOSHI',          time: '7m'  },
+  { addr: '0xAb5C...4Fe2', action: 'Added $120K LP on Base',  time: '14m' },
+  { addr: '0x1f98...4B5a', action: 'Bridged 18 ETH to Base',  time: '21m' },
 ]
 
 const TOKEN_MOMENTUM = [
-  { sym: 'BRETT',  pct: '+18.4%', vol: '$2.1M', up: true,  bar: 74 },
-  { sym: 'AERO',   pct: '+9.1%',  vol: '$890K', up: true,  bar: 36 },
-  { sym: 'HIGHER', pct: '+4.3%',  vol: '$340K', up: true,  bar: 17 },
-  { sym: 'DEGEN',  pct: '-4.2%',  vol: '$440K', up: false, bar: 17 },
+  { sym: 'BRETT',  pct: '+18.4%', up: true,  bar: 74 },
+  { sym: 'AERO',   pct: '+9.1%',  up: true,  bar: 36 },
+  { sym: 'HIGHER', pct: '+4.3%',  up: true,  bar: 17 },
+  { sym: 'DEGEN',  pct: '-4.2%',  up: false, bar: 17 },
 ]
 
 const AI_NOTES = [
-  'Smart money rotating into Base meme layer — watch the BRETT cluster.',
-  'Unusual LP removal on VIRTUAL/WETH. Rug risk elevated.',
-  'BTC dominance rising. Alt momentum may stall in 24–48h.',
+  { text: 'Smart money rotating into Base meme layer — watch the BRETT cluster.', tag: 'ALPHA' },
+  { text: 'Unusual LP removal on VIRTUAL/WETH. Rug risk elevated.',               tag: 'RISK'  },
+  { text: 'BTC dominance rising. Alt momentum may stall in 24–48h.',             tag: 'MACRO' },
 ]
 
-const SIGNAL_BADGE: Record<string, string> = {
+const SIG_STYLE: Record<string, string> = {
   BUY:   'text-[#2DD4BF] bg-[#2DD4BF]/[0.1]  border-[#2DD4BF]/[0.2]',
   WATCH: 'text-amber-400 bg-amber-400/[0.1]   border-amber-400/[0.2]',
   SELL:  'text-rose-400  bg-rose-400/[0.1]    border-rose-400/[0.2]',
 }
 
-// Card wrapper for each section
-function Card({ title, children }: { title: string; children: ReactNode }) {
+const NOTE_TAG_STYLE: Record<string, string> = {
+  ALPHA: 'text-[#2DD4BF] bg-[#2DD4BF]/[0.08] border-[#2DD4BF]/[0.18]',
+  RISK:  'text-rose-400  bg-rose-400/[0.08]   border-rose-400/[0.18]',
+  MACRO: 'text-amber-400 bg-amber-400/[0.08]  border-amber-400/[0.18]',
+}
+
+// ─── Card wrapper ─────────────────────────────────────────────────────────
+
+function Card({ title, children, accent }: { title: string; children: ReactNode; accent?: string }) {
   return (
-    <div className="bg-[#06060a] rounded-xl border border-white/[0.07] overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.015]">
-        <span className="text-[10px] font-bold text-[#64748b] uppercase tracking-[0.12em]">
+    <div
+      className="rounded-xl overflow-hidden"
+      style={{ background: '#07090f', border: '1px solid rgba(255,255,255,0.07)' }}
+    >
+      <div
+        className="flex items-center justify-between px-4 py-3"
+        style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}
+      >
+        <span className="text-[10px] font-bold uppercase tracking-[0.13em]" style={{ color: '#64748b' }}>
           {title}
         </span>
+        {accent && (
+          <span className="text-[9px] font-bold text-[#2DD4BF] tracking-wider" style={{ fontFamily: 'var(--font-plex-mono)' }}>
+            {accent}
+          </span>
+        )}
       </div>
-      <div className="p-3.5">
+      <div className="p-4">
         {children}
       </div>
     </div>
   )
 }
 
+// ─── Component ────────────────────────────────────────────────────────────
+
 export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: string) => void }) {
   return (
-    <aside className="w-[280px] shrink-0 flex flex-col bg-[#080c14] rounded-xl border border-white/[0.08] overflow-hidden">
+    <aside
+      className="w-[284px] shrink-0 flex flex-col rounded-xl overflow-hidden"
+      style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)' }}
+    >
 
       {/* Panel header */}
-      <div className="shrink-0 flex items-center justify-between px-5 h-12 border-b border-white/[0.07]">
-        <span className="text-[13px] font-semibold text-[#94a3b8]">Radar</span>
-        <div className="flex items-center gap-1.5">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF]" style={{ boxShadow: '0 0 6px rgba(45,212,191,0.7)' }} />
-          <span className="text-[11px] text-[#475569] font-medium tracking-wide">LIVE</span>
+      <div
+        className="shrink-0 flex items-center justify-between px-5 h-[52px]"
+        style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}
+      >
+        <span className="text-[14px] font-bold text-white tracking-tight">Radar</span>
+        <div className="flex items-center gap-2">
+          <div
+            className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF]"
+            style={{ boxShadow: '0 0 8px rgba(45,212,191,0.9)' }}
+          />
+          <span
+            className="text-[10px] font-bold text-[#2DD4BF] tracking-widest"
+            style={{ fontFamily: 'var(--font-plex-mono)' }}
+          >
+            LIVE
+          </span>
         </div>
       </div>
 
-      {/* Scrollable sections */}
-      <div className="flex-1 overflow-y-auto px-3 py-3.5 space-y-3">
+      {/* Scrollable body */}
+      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-3">
 
-        {/* Live Signal */}
-        <Card title="Live Signal">
-          <div className="space-y-1.5">
+        {/* Live Signals */}
+        <Card title="Live Signals" accent="BASE">
+          <div className="space-y-2">
             {LIVE_SIGNALS.map((s, i) => (
               <button
                 key={i}
                 onClick={() => onSelectRadar(s.pair.split('/')[0].toLowerCase())}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.04] transition-colors"
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-colors hover:bg-white/[0.04]"
+                style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}
               >
+                {/* Change indicator */}
+                <div
+                  className="shrink-0 w-1 h-8 rounded-full"
+                  style={{ background: s.up ? 'rgba(45,212,191,0.5)' : 'rgba(251,113,133,0.5)' }}
+                />
                 <div className="flex-1 min-w-0 text-left">
                   <div
-                    className="text-[12px] font-semibold text-[#94a3b8] truncate"
+                    className="text-[12px] font-semibold text-white truncate leading-tight"
                     style={{ fontFamily: 'var(--font-plex-mono)' }}
                   >
                     {s.pair}
                   </div>
-                  <div className="text-[10px] text-[#475569] mt-0.5">{s.chain}</div>
+                  <div className="text-[10px] mt-0.5" style={{ color: '#475569' }}>{s.chain}</div>
                 </div>
-                <span
-                  className={`text-[11px] font-bold shrink-0 ${s.up ? 'text-[#2DD4BF]' : 'text-rose-400'}`}
-                  style={{ fontFamily: 'var(--font-plex-mono)' }}
-                >
-                  {s.change}
-                </span>
-                <span
-                  className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-md border shrink-0 ${SIGNAL_BADGE[s.signal]}`}
-                  style={{ fontFamily: 'var(--font-plex-mono)' }}
-                >
-                  {s.signal}
-                </span>
+                <div className="shrink-0 flex flex-col items-end gap-1">
+                  <span
+                    className="text-[12px] font-bold"
+                    style={{ fontFamily: 'var(--font-plex-mono)', color: s.up ? '#2DD4BF' : '#fb7185' }}
+                  >
+                    {s.change}
+                  </span>
+                  <span
+                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${SIG_STYLE[s.signal]}`}
+                    style={{ fontFamily: 'var(--font-plex-mono)' }}
+                  >
+                    {s.signal}
+                  </span>
+                </div>
               </button>
             ))}
           </div>
@@ -105,25 +147,28 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
         <Card title="Wallet Activity">
           <div className="space-y-3">
             {WALLET_ACTIVITY.map((w, i) => (
-              <div key={i} className="flex items-start gap-2.5">
-                <div className="shrink-0 w-1.5 h-1.5 rounded-full bg-[#475569] mt-1.5" />
+              <div key={i} className="flex items-start gap-3">
+                <div
+                  className="shrink-0 w-[3px] h-full rounded-full mt-1.5"
+                  style={{ background: 'rgba(255,255,255,0.12)', minHeight: '28px' }}
+                />
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2">
+                  <p className="text-[12px] font-medium text-white leading-tight truncate">
+                    {w.action}
+                  </p>
+                  <div className="flex items-center gap-2 mt-0.5">
                     <span
-                      className="text-[11px] font-medium text-[#64748b] truncate"
-                      style={{ fontFamily: 'var(--font-plex-mono)' }}
+                      className="text-[10px] truncate"
+                      style={{ fontFamily: 'var(--font-plex-mono)', color: '#64748b' }}
                     >
                       {w.addr}
                     </span>
                     <span
-                      className="text-[10px] text-[#475569] shrink-0"
-                      style={{ fontFamily: 'var(--font-plex-mono)' }}
+                      className="text-[10px] shrink-0"
+                      style={{ fontFamily: 'var(--font-plex-mono)', color: '#475569' }}
                     >
-                      {w.time}
+                      {w.time} ago
                     </span>
-                  </div>
-                  <div className="text-[11px] text-[#475569] mt-0.5 leading-snug truncate">
-                    {w.action}
                   </div>
                 </div>
               </div>
@@ -132,33 +177,32 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
         </Card>
 
         {/* Token Momentum */}
-        <Card title="Token Momentum">
-          <div className="space-y-2.5">
+        <Card title="Momentum">
+          <div className="space-y-3">
             {TOKEN_MOMENTUM.map((t, i) => (
-              <div key={i} className="flex items-center gap-2">
+              <div key={i} className="flex items-center gap-3">
                 <span
-                  className="text-[11px] font-bold text-[#64748b] w-[46px] shrink-0"
-                  style={{ fontFamily: 'var(--font-plex-mono)' }}
+                  className="text-[11px] font-bold w-12 shrink-0"
+                  style={{ fontFamily: 'var(--font-plex-mono)', color: '#94a3b8' }}
                 >
                   {t.sym}
                 </span>
-                <div className="flex-1 h-[3px] rounded-full bg-white/[0.06] overflow-hidden">
+                <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
                   <div
-                    className={`h-full rounded-full ${t.up ? 'bg-[#2DD4BF]/50' : 'bg-rose-400/50'}`}
-                    style={{ width: `${t.bar}%` }}
+                    className="h-full rounded-full transition-all"
+                    style={{
+                      width: `${t.bar}%`,
+                      background: t.up
+                        ? 'linear-gradient(90deg, #2DD4BF80, #2DD4BF)'
+                        : 'linear-gradient(90deg, #fb718580, #fb7185)',
+                    }}
                   />
                 </div>
                 <span
-                  className={`text-[10px] font-bold w-[40px] text-right shrink-0 ${t.up ? 'text-[#2DD4BF]' : 'text-rose-400'}`}
-                  style={{ fontFamily: 'var(--font-plex-mono)' }}
+                  className="text-[11px] font-bold w-12 text-right shrink-0"
+                  style={{ fontFamily: 'var(--font-plex-mono)', color: t.up ? '#2DD4BF' : '#fb7185' }}
                 >
                   {t.pct}
-                </span>
-                <span
-                  className="text-[10px] text-[#475569] w-[34px] text-right shrink-0"
-                  style={{ fontFamily: 'var(--font-plex-mono)' }}
-                >
-                  {t.vol}
                 </span>
               </div>
             ))}
@@ -166,23 +210,29 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
         </Card>
 
         {/* AI Notes */}
-        <Card title="AI Notes">
+        <Card title="CORTEX Notes">
           <div className="space-y-2">
             {AI_NOTES.map((note, i) => (
-              <div key={i} className="flex gap-2.5 items-start px-3 py-2.5 rounded-lg bg-[#8b5cf6]/[0.05] border border-[#8b5cf6]/[0.1]">
+              <div
+                key={i}
+                className="flex gap-3 items-start px-3 py-3 rounded-xl"
+                style={{ background: 'rgba(139,92,246,0.05)', border: '1px solid rgba(139,92,246,0.1)' }}
+              >
                 <span
-                  className="shrink-0 text-[9px] font-bold text-[#8b5cf6] mt-0.5"
+                  className={`shrink-0 text-[8px] font-bold px-1.5 py-0.5 rounded border mt-0.5 ${NOTE_TAG_STYLE[note.tag]}`}
                   style={{ fontFamily: 'var(--font-plex-mono)' }}
                 >
-                  AI
+                  {note.tag}
                 </span>
-                <p className="text-[11px] text-[#64748b] leading-snug">{note}</p>
+                <p className="text-[12px] leading-snug" style={{ color: '#94a3b8' }}>{note.text}</p>
               </div>
             ))}
           </div>
-          <div className="mt-3 flex items-center gap-2 px-1">
-            <div className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF]" />
-            <span className="text-[11px] text-[#475569]">CORTEX monitoring live</span>
+
+          {/* Footer */}
+          <div className="mt-4 flex items-center gap-2 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <div className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF]" style={{ boxShadow: '0 0 5px rgba(45,212,191,0.8)' }} />
+            <span className="text-[11px]" style={{ color: '#475569' }}>CORTEX monitoring live</span>
           </div>
         </Card>
 
