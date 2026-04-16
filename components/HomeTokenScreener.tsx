@@ -1,11 +1,5 @@
 'use client'
 
-import { useState } from 'react'
-
-type Tab = 'Trending' | 'Smart Money' | 'New Wallets'
-
-const TABS: Tab[] = ['Trending', 'Smart Money', 'New Wallets']
-
 const TOKENS = [
   { sym: 'BRETT',   chain: 'Base',   price: '$0.142',    change: +24.7, vol: '$12.4M', color: '#3b82f6' },
   { sym: 'TOSHI',   chain: 'Base',   price: '$0.00089',  change: +18.3, vol: '$8.2M',  color: '#0ea5e9' },
@@ -15,33 +9,47 @@ const TOKENS = [
 ]
 
 export default function HomeTokenScreener() {
-  const [tab, setTab] = useState<Tab>('Trending')
-
   return (
     <section style={{ padding: '0 24px 96px' }}>
       <div
         style={{
           maxWidth: '960px',
           margin: '0 auto',
-          background: '#080c14',
+          background: 'linear-gradient(160deg, #0a0f1e 0%, #070b16 100%)',
           border: '1px solid rgba(255,255,255,0.08)',
           borderRadius: '16px',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
           overflow: 'hidden',
+          boxShadow: [
+            '0 0 24px rgba(45,212,191,0.07)',
+            '0 0 16px rgba(139,92,246,0.06)',
+            '0 24px 64px rgba(0,0,0,0.55)',
+          ].join(', '),
         }}
       >
+        {/* Top accent line */}
+        <div
+          style={{
+            height: '1px',
+            background:
+              'linear-gradient(90deg, transparent, rgba(45,212,191,0.35), rgba(139,92,246,0.35), transparent)',
+          }}
+        />
+
         {/* Header row */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '18px 24px',
+            padding: '16px 24px',
             borderBottom: '1px solid rgba(255,255,255,0.07)',
           }}
         >
           <span
             style={{
-              fontSize: '15px',
+              fontSize: '14px',
               fontWeight: 700,
               color: '#f1f5f9',
               fontFamily: 'var(--font-inter)',
@@ -50,28 +58,20 @@ export default function HomeTokenScreener() {
             Token Screener
           </span>
 
-          {/* Tabs */}
-          <div style={{ display: 'flex', gap: '6px' }}>
-            {TABS.map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                style={{
-                  padding: '6px 14px',
-                  borderRadius: '8px',
-                  fontSize: '12px',
-                  fontFamily: 'var(--font-inter)',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  transition: 'all 0.15s',
-                  background: tab === t ? 'rgba(45,212,191,0.12)' : 'transparent',
-                  border: tab === t ? '1px solid rgba(45,212,191,0.3)' : '1px solid transparent',
-                  color: tab === t ? '#2DD4BF' : 'rgba(255,255,255,0.4)',
-                }}
-              >
-                {t}
-              </button>
-            ))}
+          {/* Single active tab — Trending only */}
+          <div
+            style={{
+              padding: '5px 14px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontFamily: 'var(--font-inter)',
+              fontWeight: 600,
+              background: 'rgba(45,212,191,0.10)',
+              border: '1px solid rgba(45,212,191,0.28)',
+              color: '#2DD4BF',
+            }}
+          >
+            Trending
           </div>
         </div>
 
@@ -80,7 +80,7 @@ export default function HomeTokenScreener() {
           style={{
             display: 'grid',
             gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
-            padding: '10px 24px',
+            padding: '9px 24px',
             borderBottom: '1px solid rgba(255,255,255,0.05)',
           }}
         >
@@ -108,7 +108,7 @@ export default function HomeTokenScreener() {
             style={{
               display: 'grid',
               gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
-              padding: '14px 24px',
+              padding: '12px 24px',
               alignItems: 'center',
               borderBottom: i < TOKENS.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
               cursor: 'pointer',
@@ -125,15 +125,15 @@ export default function HomeTokenScreener() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <div
                 style={{
-                  width: '32px',
-                  height: '32px',
+                  width: '30px',
+                  height: '30px',
                   borderRadius: '50%',
-                  background: `${token.color}22`,
-                  border: `1px solid ${token.color}40`,
+                  background: `${token.color}20`,
+                  border: `1px solid ${token.color}38`,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  fontSize: '12px',
+                  fontSize: '11px',
                   fontWeight: 700,
                   fontFamily: 'var(--font-plex-mono)',
                   color: token.color,

@@ -50,8 +50,8 @@ export default function HeroSection() {
           50%       { opacity: 0.35; box-shadow: 0 0 4px rgba(45,212,191,0.3); }
         }
         @keyframes sendGlowPulse {
-          0%, 100% { box-shadow: 0 0 16px rgba(45,212,191,0.30); }
-          50%       { box-shadow: 0 0 30px rgba(45,212,191,0.70), 0 0 10px rgba(45,212,191,0.45); }
+          0%, 100% { box-shadow: 0 0 14px rgba(45,212,191,0.30); }
+          50%       { box-shadow: 0 0 28px rgba(45,212,191,0.65), 0 0 10px rgba(45,212,191,0.40); }
         }
         .clark-send-btn {
           animation: sendGlowPulse 4s ease-in-out infinite;
@@ -64,9 +64,9 @@ export default function HeroSection() {
         .clark-chip {
           background: rgba(255,255,255,0.04);
           border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 8px;
-          padding: 8px 10px;
-          color: rgba(255,255,255,0.55);
+          border-radius: 6px;
+          padding: 7px 10px;
+          color: rgba(255,255,255,0.70);
           font-size: 11px;
           cursor: pointer;
           text-align: center;
@@ -76,17 +76,21 @@ export default function HeroSection() {
           transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.12s;
         }
         .clark-chip:hover {
-          border-color: rgba(45,212,191,0.32);
+          border-color: rgba(45,212,191,0.30);
           color: #2DD4BF;
-          background: rgba(45,212,191,0.07);
-          box-shadow: 0 0 12px rgba(45,212,191,0.18), 0 2px 8px rgba(0,0,0,0.3);
+          background: rgba(45,212,191,0.10);
+          box-shadow: 0 0 10px rgba(45,212,191,0.14), 0 0 6px rgba(139,92,246,0.08);
           transform: translateY(-1px);
         }
+        .clark-box-input::placeholder { color: rgba(255,255,255,0.30); }
       `}</style>
 
       <section
         style={{
-          padding: '128px 24px 70px',
+          paddingTop: '144px',
+          paddingBottom: '70px',
+          paddingLeft: '24px',
+          paddingRight: '24px',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -103,7 +107,7 @@ export default function HeroSection() {
             border: '1px solid rgba(45,212,191,0.18)',
             borderRadius: '100px',
             padding: '6px 14px',
-            marginBottom: '32px',
+            marginBottom: '36px',
           }}
         >
           <div
@@ -145,7 +149,7 @@ export default function HeroSection() {
             fontWeight: 800,
             lineHeight: 1.08,
             letterSpacing: '-0.03em',
-            marginBottom: '22px',
+            marginBottom: '32px',
             maxWidth: '840px',
             fontFamily: 'var(--font-inter)',
           }}
@@ -172,7 +176,7 @@ export default function HeroSection() {
             lineHeight: 1.65,
             color: 'rgba(255,255,255,0.42)',
             maxWidth: '520px',
-            marginBottom: '48px',
+            marginBottom: '64px',
             fontFamily: 'var(--font-inter)',
           }}
         >
@@ -180,15 +184,15 @@ export default function HeroSection() {
           opportunities in real time.
         </p>
 
-        {/* Command box wrapper — 8% larger */}
+        {/* Command box wrapper */}
         <div style={{ width: '100%', maxWidth: '628px', position: 'relative' }}>
-          {/* Ambient glow */}
+          {/* Ambient glow layer */}
           <div
             style={{
               position: 'absolute',
-              inset: '-48px',
+              inset: '-56px',
               background:
-                'radial-gradient(ellipse 60% 50% at 50% 60%, rgba(45,212,191,0.13) 0%, rgba(139,92,246,0.08) 55%, transparent 100%)',
+                'radial-gradient(ellipse 65% 55% at 50% 58%, rgba(45,212,191,0.14) 0%, rgba(139,92,246,0.10) 50%, transparent 100%)',
               pointerEvents: 'none',
               zIndex: 0,
             }}
@@ -202,17 +206,24 @@ export default function HeroSection() {
               background: 'linear-gradient(160deg, #0c1828 0%, #080f1c 50%, #060b16 100%)',
               border: '1px solid rgba(255,255,255,0.08)',
               borderRadius: '20px',
-              boxShadow:
-                '0 32px 80px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.04) inset, 0 1px 0 rgba(255,255,255,0.08) inset',
+              backdropFilter: 'blur(16px)',
+              WebkitBackdropFilter: 'blur(16px)',
+              boxShadow: [
+                '0 0 28px rgba(45,212,191,0.10)',
+                '0 0 18px rgba(139,92,246,0.08)',
+                '0 32px 80px rgba(0,0,0,0.70)',
+                '0 0 0 1px rgba(255,255,255,0.04) inset',
+                '0 1px 0 rgba(255,255,255,0.08) inset',
+              ].join(', '),
               overflow: 'hidden',
             }}
           >
-            {/* Top gradient line */}
+            {/* Top gradient accent line */}
             <div
               style={{
                 height: '1px',
                 background:
-                  'linear-gradient(90deg, transparent, rgba(45,212,191,0.4), rgba(139,92,246,0.4), transparent)',
+                  'linear-gradient(90deg, transparent, rgba(45,212,191,0.45), rgba(139,92,246,0.45), transparent)',
               }}
             />
 
@@ -224,10 +235,10 @@ export default function HeroSection() {
                   alignItems: 'center',
                   gap: '12px',
                   background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.08)',
+                  border: '1px solid rgba(255,255,255,0.09)',
                   borderRadius: '14px',
                   padding: '10px 10px 10px 14px',
-                  marginBottom: '16px',
+                  marginBottom: '14px',
                 }}
               >
                 {/* Sparkle orb */}
@@ -236,13 +247,13 @@ export default function HeroSection() {
                     width: '36px',
                     height: '36px',
                     borderRadius: '10px',
-                    background: 'linear-gradient(135deg, rgba(45,212,191,0.25), rgba(45,212,191,0.1))',
-                    border: '1px solid rgba(45,212,191,0.3)',
+                    background: 'linear-gradient(135deg, rgba(45,212,191,0.28), rgba(45,212,191,0.10))',
+                    border: '1px solid rgba(45,212,191,0.32)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     flexShrink: 0,
-                    boxShadow: '0 0 12px rgba(45,212,191,0.2)',
+                    boxShadow: '0 0 14px rgba(45,212,191,0.22)',
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -256,6 +267,7 @@ export default function HeroSection() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Ask Clark what whales are buying today..."
+                  className="clark-box-input"
                   style={{
                     flex: 1,
                     background: 'transparent',
@@ -268,7 +280,7 @@ export default function HeroSection() {
                   }}
                 />
 
-                {/* Send button — glow pulse animation */}
+                {/* Send button */}
                 <button
                   className="clark-send-btn"
                   style={{
@@ -289,12 +301,12 @@ export default function HeroSection() {
                 </button>
               </div>
 
-              {/* Chips grid */}
+              {/* Chips grid — 3×2, gap 6px */}
               <div
                 style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(3, 1fr)',
-                  gap: '8px',
+                  gap: '6px',
                   marginBottom: '20px',
                 }}
               >
