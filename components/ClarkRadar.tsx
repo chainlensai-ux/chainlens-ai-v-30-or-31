@@ -1,387 +1,315 @@
 'use client'
 
-import { motion } from 'framer-motion'
-import type { ReactNode } from 'react'
+import { useState } from 'react'
 
-// ─── Mock data ────────────────────────────────────────────────────────────
-
-const WHALE_ALERTS = [
-  { token: 'ETH', amount: '$2.4M',  action: 'Large transfer detected',  severity: 'HIGH',   up: true  },
-  { token: 'SOL', amount: '$890K',  action: 'Whale accumulation signal', severity: 'MEDIUM', up: true  },
-  { token: 'UNI', amount: '$1.8M',  action: 'Large sell pressure',       severity: 'HIGH',   up: false },
+const HINT_CHIPS = [
+  'What are whales buying?',
+  'Scan a wallet',
+  'Trending on Base',
+  'Top pump signals',
 ]
 
-const AI_SIGNALS = [
-  { name: 'Bitcoin',  sym: 'BTC',  bar: 78, label: 'BULLISH', color: '#f59e0b' },
-  { name: 'Ethereum', sym: 'ETH',  bar: 62, label: 'BULLISH', color: '#627EEA' },
-  { name: 'Base Eco', sym: 'BASE', bar: 44, label: 'NEUTRAL', color: '#2DD4BF' },
-]
+export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: string) => void }) {
+  const [input, setInput] = useState('')
 
-const LIVE_ACTIVITY = [
-  { text: '0x7a25…88D bought $12K BRETT on Base',  time: '30s' },
-  { text: 'New pair BONK/WETH deployed on Base',    time: '1m'  },
-  { text: '0xd8dA…6045 sold 50K TOSHI',             time: '4m'  },
-  { text: 'Whale bridged 18 ETH → Base chain',      time: '9m'  },
-  { text: 'Smart wallet added $80K LP on AERO',     time: '14m' },
-]
-
-// ─── Section card ─────────────────────────────────────────────────────────
-
-function Section({
-  title,
-  accent,
-  delay = 0,
-  children,
-}: {
-  title:     string
-  accent?:   string
-  delay?:    number
-  children:  ReactNode
-}) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, delay, ease: 'easeOut' }}
-      className="rounded-2xl overflow-hidden"
-      style={{ background: '#070d1a', border: '1px solid rgba(255,255,255,0.10)', boxShadow: '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)' }}
-    >
-      {/* Section header row */}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+
+      {/* ── Header ──────────────────────────────────────── */}
       <div
-        className="flex items-center justify-between px-4 py-3"
-        style={{ borderBottom: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.035)' }}
-      >
-        <span
-          className="uppercase"
-          style={{
-            fontSize: '10px',
-            fontWeight: 800,
-            letterSpacing: '0.15em',
-            color: '#4a7494',
-            fontFamily: 'var(--font-plex-mono)',
-          }}
-        >
-          {title}
-        </span>
-        {accent && (
-          <span
-            className="font-bold tracking-wider"
-            style={{
-              fontSize: '9px',
-              fontFamily: 'var(--font-plex-mono)',
-              color: '#2DD4BF',
-            }}
-          >
-            {accent}
-          </span>
-        )}
-      </div>
-      <div className="p-4">{children}</div>
-    </motion.div>
-  )
-}
-
-// ─── Component ────────────────────────────────────────────────────────────
-
-export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: string) => void }) {
-  return (
-    <div>
-
-      {/* Panel header — sticky */}
-      <div
-        className="flex items-center justify-between px-5 h-14"
         style={{
           position: 'sticky',
           top: 0,
           zIndex: 10,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 18px',
+          height: '56px',
           background: '#0a0d16',
           borderBottom: '1px solid rgba(255,255,255,0.07)',
+          flexShrink: 0,
         }}
       >
-        <span
-          className="tracking-tight"
+        {/* Left — icon + title */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div
+            style={{
+              width: '30px',
+              height: '30px',
+              borderRadius: '9px',
+              background: 'linear-gradient(135deg, rgba(139,92,246,0.28), rgba(45,212,191,0.18))',
+              border: '1px solid rgba(139,92,246,0.35)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 0 12px rgba(139,92,246,0.22)',
+              flexShrink: 0,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M8 2L9.2 6.8H14L10.4 9.4L11.6 14L8 11.4L4.4 14L5.6 9.4L2 6.8H6.8L8 2Z" fill="#a78bfa"/>
+            </svg>
+          </div>
+          <span
+            style={{
+              fontSize: '14px',
+              fontWeight: 700,
+              color: '#f1f5f9',
+              fontFamily: 'var(--font-inter)',
+              letterSpacing: '-0.01em',
+            }}
+          >
+            Clark AI
+          </span>
+        </div>
+
+        {/* Right — Online badge */}
+        <div
           style={{
-            fontSize: '14px',
-            fontWeight: 700,
-            color: '#f1f5f9',
-            fontFamily: 'var(--font-inter)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            background: 'rgba(45,212,191,0.07)',
+            border: '1px solid rgba(45,212,191,0.18)',
+            borderRadius: '100px',
+            padding: '4px 10px',
           }}
         >
-          Market Intelligence
-        </span>
-        {/* LIVE indicator */}
-        <div className="flex items-center gap-2">
           <div
-            className="rounded-full bg-[#2DD4BF] animate-pulse"
-            style={{ width: '7px', height: '7px', boxShadow: '0 0 8px rgba(45,212,191,0.9)' }}
+            style={{
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              background: '#2DD4BF',
+              boxShadow: '0 0 6px rgba(45,212,191,0.9)',
+              animation: 'clarkOnlinePulse 3s ease-in-out infinite',
+            }}
           />
           <span
-            className="font-bold tracking-widest text-[#2DD4BF]"
-            style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)' }}
+            style={{
+              fontSize: '10px',
+              fontWeight: 700,
+              letterSpacing: '0.1em',
+              color: '#2DD4BF',
+              fontFamily: 'var(--font-plex-mono)',
+            }}
           >
-            LIVE
+            ONLINE
           </span>
         </div>
       </div>
 
-      {/* Body */}
-      <div className="px-3 py-4 space-y-4">
+      {/* ── Messages area ───────────────────────────────── */}
+      <div
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '24px 16px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '12px',
+        }}
+      >
+        {/* Empty state */}
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            textAlign: 'center',
+            padding: '40px 16px',
+            gap: '16px',
+          }}
+        >
+          {/* Orb */}
+          <div
+            style={{
+              width: '52px',
+              height: '52px',
+              borderRadius: '16px',
+              background: 'linear-gradient(135deg, rgba(139,92,246,0.2), rgba(45,212,191,0.12))',
+              border: '1px solid rgba(139,92,246,0.28)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 0 24px rgba(139,92,246,0.18), 0 0 8px rgba(45,212,191,0.1)',
+            }}
+          >
+            <svg width="22" height="22" viewBox="0 0 16 16" fill="none">
+              <path d="M8 2L9.2 6.8H14L10.4 9.4L11.6 14L8 11.4L4.4 14L5.6 9.4L2 6.8H6.8L8 2Z" fill="#a78bfa"/>
+            </svg>
+          </div>
 
-        {/* ── Whale Alerts ─────────────────────────── */}
-        <Section title="Whale Alerts" delay={0}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {WHALE_ALERTS.map((w, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-3 p-3 rounded-xl"
+          <div>
+            <p
+              style={{
+                fontSize: '13px',
+                fontWeight: 600,
+                color: 'rgba(255,255,255,0.65)',
+                fontFamily: 'var(--font-inter)',
+                marginBottom: '8px',
+                lineHeight: 1.5,
+              }}
+            >
+              Ask Clark anything about wallets,<br />
+              smart money, tokens, or market moves.
+            </p>
+            <p
+              style={{
+                fontSize: '11px',
+                color: 'rgba(255,255,255,0.28)',
+                fontFamily: 'var(--font-inter)',
+                lineHeight: 1.6,
+              }}
+            >
+              Responses will appear here
+            </p>
+          </div>
+
+          {/* Hint chips */}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+              width: '100%',
+              marginTop: '8px',
+            }}
+          >
+            {HINT_CHIPS.map((chip) => (
+              <button
+                key={chip}
+                onClick={() => setInput(chip)}
                 style={{
                   background: 'rgba(255,255,255,0.03)',
-                  border: '1px solid rgba(255,255,255,0.09)',
-                  transition: 'border-color 0.15s, background 0.15s, box-shadow 0.15s',
-                  cursor: 'default',
-                }}
-                onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = w.up ? 'rgba(45,212,191,0.24)' : 'rgba(251,113,133,0.22)'
-                  el.style.background  = w.up ? 'rgba(45,212,191,0.04)' : 'rgba(251,113,133,0.04)'
-                  el.style.boxShadow   = w.up ? '0 2px 12px rgba(45,212,191,0.08)' : '0 2px 12px rgba(251,113,133,0.08)'
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = 'rgba(255,255,255,0.09)'
-                  el.style.background  = 'rgba(255,255,255,0.03)'
-                  el.style.boxShadow   = 'none'
-                }}
-              >
-                {/* Token icon */}
-                <div
-                  className="flex items-center justify-center shrink-0 font-bold"
-                  style={{
-                    width: '38px',
-                    height: '38px',
-                    borderRadius: '12px',
-                    fontSize: '10px',
-                    background: w.up ? 'rgba(45,212,191,0.1)'  : 'rgba(251,113,133,0.1)',
-                    color:      w.up ? '#2DD4BF'                : '#fb7185',
-                    border:     `1px solid ${w.up ? 'rgba(45,212,191,0.2)' : 'rgba(251,113,133,0.2)'}`,
-                    fontFamily: 'var(--font-plex-mono)',
-                  }}
-                >
-                  {w.token}
-                </div>
-
-                {/* Text */}
-                <div className="flex-1 min-w-0">
-                  <p
-                    className="font-bold leading-tight"
-                    style={{ fontSize: '12px', fontFamily: 'var(--font-plex-mono)', color: '#e2e8f0' }}
-                  >
-                    {w.amount}
-                  </p>
-                  <p
-                    className="mt-0.5 truncate"
-                    style={{ fontSize: '10px', color: '#4e6e88', fontFamily: 'var(--font-inter)' }}
-                  >
-                    {w.action}
-                  </p>
-                </div>
-
-                {/* Severity badge */}
-                <span
-                  className="shrink-0 font-bold px-1.5 py-0.5 rounded border uppercase"
-                  style={{
-                    fontSize: '8px',
-                    fontFamily: 'var(--font-plex-mono)',
-                    ...(w.severity === 'HIGH'
-                      ? { color: '#fb7185', background: 'rgba(251,113,133,0.08)', border: '1px solid rgba(251,113,133,0.2)' }
-                      : w.severity === 'MEDIUM'
-                      ? { color: '#fbbf24', background: 'rgba(251,191,36,0.08)',  border: '1px solid rgba(251,191,36,0.2)'  }
-                      : { color: '#2DD4BF', background: 'rgba(45,212,191,0.08)',  border: '1px solid rgba(45,212,191,0.2)'  }),
-                  }}
-                >
-                  {w.severity}
-                </span>
-              </div>
-            ))}
-          </div>
-        </Section>
-
-        {/* ── AI Signals ───────────────────────────── */}
-        <Section title="AI Signals" accent="CORTEX" delay={0.07}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {AI_SIGNALS.map((s, i) => (
-              <div
-                key={i}
-                style={{
-                  background: 'rgba(255,255,255,0.025)',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: '12px',
-                  padding: '10px 12px',
-                  transition: 'border-color 0.15s, background 0.15s',
-                  cursor: 'default',
-                }}
-                onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = `${s.color}38`
-                  el.style.background  = `${s.color}08`
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = 'rgba(255,255,255,0.08)'
-                  el.style.background  = 'rgba(255,255,255,0.025)'
-                }}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="flex items-center justify-center shrink-0 font-bold"
-                      style={{
-                        width: '24px',
-                        height: '24px',
-                        borderRadius: '8px',
-                        fontSize: '8px',
-                        background: `${s.color}15`,
-                        color: s.color,
-                        border: `1px solid ${s.color}28`,
-                        fontFamily: 'var(--font-plex-mono)',
-                      }}
-                    >
-                      {s.sym.slice(0, 2)}
-                    </div>
-                    <span
-                      className="font-semibold"
-                      style={{ fontSize: '12px', color: '#cbd5e1', fontFamily: 'var(--font-inter)' }}
-                    >
-                      {s.name}
-                    </span>
-                  </div>
-                  <span
-                    className="font-bold px-1.5 py-0.5 rounded border"
-                    style={{
-                      fontSize: '8px',
-                      fontFamily: 'var(--font-plex-mono)',
-                      ...(s.label === 'BULLISH'
-                        ? { color: '#2DD4BF', background: 'rgba(45,212,191,0.08)',  border: '1px solid rgba(45,212,191,0.2)'  }
-                        : s.label === 'BEARISH'
-                        ? { color: '#fb7185', background: 'rgba(251,113,133,0.08)', border: '1px solid rgba(251,113,133,0.2)' }
-                        : { color: '#fbbf24', background: 'rgba(251,191,36,0.08)',  border: '1px solid rgba(251,191,36,0.2)'  }),
-                    }}
-                  >
-                    {s.label}
-                  </span>
-                </div>
-
-                {/* Progress bar */}
-                <div
-                  className="h-1.5 rounded-full overflow-hidden"
-                  style={{ background: 'rgba(255,255,255,0.06)' }}
-                >
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: `${s.bar}%`,
-                      background:
-                        s.label === 'BULLISH'
-                          ? 'linear-gradient(90deg, rgba(45,212,191,0.55), #2DD4BF)'
-                          : s.label === 'BEARISH'
-                          ? 'linear-gradient(90deg, rgba(251,113,133,0.55), #fb7185)'
-                          : 'linear-gradient(90deg, rgba(251,191,36,0.55), #fbbf24)',
-                    }}
-                  />
-                </div>
-                <p
-                  className="text-right mt-1"
-                  style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', color: '#3e5c78' }}
-                >
-                  {s.bar}%
-                </p>
-              </div>
-            ))}
-          </div>
-        </Section>
-
-        {/* ── Live Activity ────────────────────────── */}
-        <Section title="Live Activity" accent="LIVE" delay={0.14}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-            {LIVE_ACTIVITY.map((a, i) => (
-              <div
-                key={i}
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '10px',
-                  background: 'rgba(255,255,255,0.025)',
                   border: '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: '10px',
-                  padding: '8px 10px',
-                  transition: 'border-color 0.15s, background 0.15s',
-                  cursor: 'default',
+                  borderRadius: '9px',
+                  padding: '9px 12px',
+                  color: 'rgba(255,255,255,0.45)',
+                  fontSize: '11px',
+                  fontFamily: 'var(--font-inter)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'border-color 0.15s, color 0.15s, background 0.15s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
                 }}
                 onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = 'rgba(45,212,191,0.2)'
-                  el.style.background  = 'rgba(45,212,191,0.04)'
+                  const el = e.currentTarget as HTMLButtonElement
+                  el.style.borderColor = 'rgba(139,92,246,0.28)'
+                  el.style.color       = 'rgba(255,255,255,0.75)'
+                  el.style.background  = 'rgba(139,92,246,0.06)'
                 }}
                 onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLDivElement
+                  const el = e.currentTarget as HTMLButtonElement
                   el.style.borderColor = 'rgba(255,255,255,0.07)'
-                  el.style.background  = 'rgba(255,255,255,0.025)'
+                  el.style.color       = 'rgba(255,255,255,0.45)'
+                  el.style.background  = 'rgba(255,255,255,0.03)'
                 }}
               >
-                <div
-                  className="shrink-0 rounded-full bg-[#2DD4BF]"
-                  style={{
-                    width: '6px',
-                    height: '6px',
-                    marginTop: '4px',
-                    boxShadow: '0 0 5px rgba(45,212,191,0.75)',
-                    flexShrink: 0,
-                  }}
-                />
-                <p
-                  style={{
-                    flex: 1,
-                    fontSize: '11px',
-                    lineHeight: 1.5,
-                    color: '#7a90a8',
-                    fontFamily: 'var(--font-inter)',
-                    margin: 0,
-                  }}
-                >
-                  {a.text}
-                </p>
-                <span
-                  style={{
-                    flexShrink: 0,
-                    fontSize: '9px',
-                    fontFamily: 'var(--font-plex-mono)',
-                    color: '#3e5c78',
-                  }}
-                >
-                  {a.time}
-                </span>
-              </div>
+                <span style={{ color: 'rgba(139,92,246,0.6)', fontSize: '12px', flexShrink: 0 }}>→</span>
+                {chip}
+              </button>
             ))}
           </div>
-
-          {/* Footer — pulsing CORTEX monitoring label */}
-          <div
-            className="mt-4 flex items-center gap-2 pt-3"
-            style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
-          >
-            <div
-              className="rounded-full bg-[#2DD4BF] animate-pulse"
-              style={{ width: '6px', height: '6px', boxShadow: '0 0 5px rgba(45,212,191,0.8)' }}
-            />
-            <span
-              style={{ fontSize: '11px', color: '#4e6e88', fontFamily: 'var(--font-inter)' }}
-            >
-              CORTEX monitoring live
-            </span>
-          </div>
-        </Section>
-
+        </div>
       </div>
+
+      {/* ── Input footer ────────────────────────────────── */}
+      <div
+        style={{
+          flexShrink: 0,
+          padding: '12px 14px 16px',
+          borderTop: '1px solid rgba(255,255,255,0.07)',
+          background: '#0a0d16',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.09)',
+            borderRadius: '12px',
+            padding: '9px 9px 9px 13px',
+          }}
+        >
+          <input
+            type="text"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder="Ask Clark..."
+            style={{
+              flex: 1,
+              background: 'transparent',
+              border: 'none',
+              outline: 'none',
+              color: '#e2e8f0',
+              fontSize: '13px',
+              fontFamily: 'var(--font-inter)',
+              caretColor: '#a78bfa',
+              minWidth: 0,
+            }}
+          />
+          <button
+            style={{
+              flexShrink: 0,
+              width: '30px',
+              height: '30px',
+              borderRadius: '8px',
+              background: input.trim()
+                ? 'linear-gradient(135deg, #8b5cf6, #7c3aed)'
+                : 'rgba(255,255,255,0.05)',
+              border: input.trim()
+                ? '1px solid rgba(139,92,246,0.5)'
+                : '1px solid rgba(255,255,255,0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: input.trim() ? 'pointer' : 'default',
+              transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s',
+              boxShadow: input.trim() ? '0 0 14px rgba(139,92,246,0.35)' : 'none',
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M5 12h14M13 6l6 6-6 6"
+                stroke={input.trim() ? '#fff' : 'rgba(255,255,255,0.25)'}
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+
+        <p
+          style={{
+            marginTop: '8px',
+            fontSize: '10px',
+            color: 'rgba(255,255,255,0.18)',
+            fontFamily: 'var(--font-plex-mono)',
+            textAlign: 'center',
+            letterSpacing: '0.08em',
+          }}
+        >
+          POWERED BY CORTEX ENGINE
+        </p>
+      </div>
+
+      {/* Keyframe for online dot */}
+      <style>{`
+        @keyframes clarkOnlinePulse {
+          0%, 100% { opacity: 1; box-shadow: 0 0 6px rgba(45,212,191,0.9); }
+          50%       { opacity: 0.5; box-shadow: 0 0 3px rgba(45,212,191,0.4); }
+        }
+      `}</style>
+
     </div>
   )
 }
