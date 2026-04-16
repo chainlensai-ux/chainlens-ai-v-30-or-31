@@ -118,25 +118,27 @@ function IcPumpAlerts() {
 const MINT   = '#2DD4BF'
 const PURPLE = '#8b5cf6'
 const PINK   = '#ec4899'
+const WHITE  = '#e2e8f0'
+const SLATE  = '#94a3b8'
 
-type Item = { key: string; label: string; icon: ReactNode; accent?: string }
+type Item = { key: string; label: string; icon: ReactNode; accent: string; iconColor: string }
 
 const MAIN_NAV: Item[] = [
-  { key: 'dashboard', label: 'Dashboard', icon: <IcDashboard />,    accent: MINT   },
-  { key: 'portfolio', label: 'Portfolio', icon: <IcPortfolio />,    accent: MINT   },
-  { key: 'settings',  label: 'Settings',  icon: <IcSettings />,     accent: MINT   },
+  { key: 'dashboard', label: 'Dashboard', icon: <IcDashboard />,    accent: MINT,   iconColor: MINT   },
+  { key: 'portfolio', label: 'Portfolio', icon: <IcPortfolio />,    accent: WHITE,  iconColor: WHITE  },
+  { key: 'settings',  label: 'Settings',  icon: <IcSettings />,     accent: SLATE,  iconColor: SLATE  },
 ]
 
 const TOOLS: Item[] = [
-  { key: 'clark-ai',       label: 'Clark AI',       icon: <IcClarkAI />,       accent: PURPLE },
-  { key: 'wallet-scan',    label: 'Wallet Scan',    icon: <IcWalletScan />,    accent: MINT   },
-  { key: 'token-scanner',  label: 'Token Scanner',  icon: <IcTokenScanner />,  accent: MINT   },
-  { key: 'token-screener', label: 'Token Screener', icon: <IcTokenScreener />, accent: MINT   },
-  { key: 'whale-alerts',   label: 'Whale Alerts',   icon: <IcWhaleAlerts />,   accent: PINK   },
-  { key: 'radar',          label: 'Radar',          icon: <IcRadar />,         accent: MINT   },
-  { key: 'markets',        label: 'Markets',        icon: <IcMarkets />,       accent: MINT   },
-  { key: 'exchange-flow',  label: 'Exchange Flow',  icon: <IcExchangeFlow />,  accent: MINT   },
-  { key: 'pump-alerts',    label: 'Pump Alerts',    icon: <IcPumpAlerts />,    accent: PINK   },
+  { key: 'clark-ai',       label: 'Clark AI',       icon: <IcClarkAI />,       accent: PURPLE, iconColor: PURPLE },
+  { key: 'wallet-scan',    label: 'Wallet Scan',    icon: <IcWalletScan />,    accent: MINT,   iconColor: MINT   },
+  { key: 'token-scanner',  label: 'Token Scanner',  icon: <IcTokenScanner />,  accent: MINT,   iconColor: MINT   },
+  { key: 'token-screener', label: 'Token Screener', icon: <IcTokenScreener />, accent: MINT,   iconColor: MINT   },
+  { key: 'whale-alerts',   label: 'Whale Alerts',   icon: <IcWhaleAlerts />,   accent: PINK,   iconColor: PINK   },
+  { key: 'radar',          label: 'Radar',          icon: <IcRadar />,         accent: PURPLE, iconColor: PURPLE },
+  { key: 'markets',        label: 'Markets',        icon: <IcMarkets />,       accent: MINT,   iconColor: MINT   },
+  { key: 'exchange-flow',  label: 'Exchange Flow',  icon: <IcExchangeFlow />,  accent: MINT,   iconColor: MINT   },
+  { key: 'pump-alerts',    label: 'Pump Alerts',    icon: <IcPumpAlerts />,    accent: PINK,   iconColor: PINK   },
 ]
 
 // ─── Section label ─────────────────────────────────────────────────────────
@@ -149,7 +151,7 @@ function SectionLabel({ children }: { children: ReactNode }) {
         fontWeight: 700,
         letterSpacing: '0.18em',
         textTransform: 'uppercase',
-        color: '#1e3040',
+        color: '#2d4a63',
         fontFamily: 'var(--font-plex-mono)',
         padding: '16px 4px 6px',
       }}
@@ -162,26 +164,38 @@ function SectionLabel({ children }: { children: ReactNode }) {
 // ─── NavItem ──────────────────────────────────────────────────────────────
 
 function NavItem({ item, active, onSelect }: { item: Item; active: string | null; onSelect: (k: string) => void }) {
-  const on     = active === item.key
-  const accent = item.accent ?? MINT
+  const on        = active === item.key
+  const accent    = item.accent
+  const iconColor = item.iconColor
 
-  // Derive bg/glow based on accent colour
-  const activeBg     = accent === PURPLE
-    ? 'linear-gradient(90deg, rgba(139,92,246,0.18), rgba(139,92,246,0.06))'
-    : accent === PINK
-    ? 'linear-gradient(90deg, rgba(236,72,153,0.16), rgba(236,72,153,0.05))'
-    : 'linear-gradient(90deg, rgba(45,212,191,0.15), rgba(45,212,191,0.04))'
+  // Per-accent active backgrounds
+  const activeBg =
+    accent === PURPLE ? 'linear-gradient(90deg, rgba(139,92,246,0.22), rgba(139,92,246,0.06))'
+    : accent === PINK ? 'linear-gradient(90deg, rgba(236,72,153,0.20), rgba(236,72,153,0.05))'
+    : accent === WHITE ? 'linear-gradient(90deg, rgba(226,232,240,0.10), rgba(226,232,240,0.02))'
+    : accent === SLATE ? 'linear-gradient(90deg, rgba(148,163,184,0.10), rgba(148,163,184,0.02))'
+    : /* MINT */ 'linear-gradient(90deg, rgba(45,212,191,0.18), rgba(45,212,191,0.04))'
 
-  const activeGlow   = accent === PURPLE
-    ? 'inset 0 1px 0 rgba(139,92,246,0.14)'
-    : accent === PINK
-    ? 'inset 0 1px 0 rgba(236,72,153,0.12)'
-    : 'inset 0 1px 0 rgba(45,212,191,0.12)'
+  // Per-accent active shadow (left glow + top inset shimmer)
+  const activeGlow =
+    accent === PURPLE ? `0 0 18px rgba(139,92,246,0.18), inset 0 1px 0 rgba(139,92,246,0.18)`
+    : accent === PINK ? `0 0 18px rgba(236,72,153,0.14), inset 0 1px 0 rgba(236,72,153,0.16)`
+    : accent === WHITE ? `inset 0 1px 0 rgba(226,232,240,0.12)`
+    : accent === SLATE ? `inset 0 1px 0 rgba(148,163,184,0.10)`
+    : /* MINT */ `0 0 18px rgba(45,212,191,0.14), inset 0 1px 0 rgba(45,212,191,0.16)`
+
+  // Idle icon colour — dim version of each accent
+  const idleIconColor =
+    accent === PURPLE ? '#3d2f68'
+    : accent === PINK  ? '#5e2040'
+    : accent === WHITE ? '#3d5268'
+    : accent === SLATE ? '#334155'
+    : /* MINT */ '#1e4040'
 
   return (
     <motion.button
       onClick={() => onSelect(item.key)}
-      className="w-full flex items-center gap-3 transition-colors relative"
+      className="w-full flex items-center gap-3 relative"
       style={{
         height: '40px',
         borderRadius: '10px',
@@ -193,31 +207,40 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
         borderRight:  '1px solid transparent',
         borderBottom: '1px solid transparent',
         boxShadow: on ? activeGlow : 'none',
-        color: on ? accent : '#3d556e',
+        color: on ? accent : '#4a6380',
         fontSize: '13px',
         fontWeight: on ? 600 : 500,
         fontFamily: 'var(--font-inter)',
         cursor: 'pointer',
         textAlign: 'left',
+        transition: 'color 0.12s, background 0.12s, box-shadow 0.12s',
       }}
       whileHover={!on ? { x: 2 } : {}}
       transition={{ duration: 0.1 }}
       onMouseEnter={e => {
         if (!on) {
           const el = e.currentTarget as HTMLButtonElement
-          el.style.color      = '#94a3b8'
-          el.style.background = 'rgba(255,255,255,0.04)'
+          el.style.color      = '#a0b4c8'
+          el.style.background = 'rgba(255,255,255,0.045)'
+          el.style.boxShadow  = 'inset 0 1px 0 rgba(255,255,255,0.04)'
         }
       }}
       onMouseLeave={e => {
         if (!on) {
           const el = e.currentTarget as HTMLButtonElement
-          el.style.color      = '#3d556e'
+          el.style.color      = '#4a6380'
           el.style.background = 'transparent'
+          el.style.boxShadow  = 'none'
         }
       }}
     >
-      <span style={{ color: on ? accent : '#2d4a63', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+      <span style={{
+        color: on ? iconColor : idleIconColor,
+        display: 'flex',
+        alignItems: 'center',
+        flexShrink: 0,
+        transition: 'color 0.12s',
+      }}>
         {item.icon}
       </span>
       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -315,28 +338,29 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
       >
         {/* Connect Wallet — full width, premium mint */}
         <button
-          className="w-full transition-all active:scale-[0.98]"
+          className="w-full active:scale-[0.98]"
           style={{
             height: '40px',
             borderRadius: '10px',
             background: 'linear-gradient(90deg, #2DD4BF 0%, #0d9488 100%)',
-            color: '#031211',
+            color: '#021a18',
             fontSize: '13px',
             fontWeight: 700,
-            letterSpacing: '0.02em',
+            letterSpacing: '0.025em',
             border: 'none',
             cursor: 'pointer',
             fontFamily: 'var(--font-inter)',
-            boxShadow: '0 0 24px rgba(45,212,191,0.3)',
+            boxShadow: '0 0 28px rgba(45,212,191,0.35), 0 2px 8px rgba(0,0,0,0.4)',
+            transition: 'box-shadow 0.15s, opacity 0.15s',
           }}
           onMouseEnter={e => {
             const el = e.currentTarget as HTMLButtonElement
-            el.style.boxShadow = '0 0 36px rgba(45,212,191,0.48)'
-            el.style.opacity   = '0.93'
+            el.style.boxShadow = '0 0 44px rgba(45,212,191,0.55), 0 2px 10px rgba(0,0,0,0.4)'
+            el.style.opacity   = '0.94'
           }}
           onMouseLeave={e => {
             const el = e.currentTarget as HTMLButtonElement
-            el.style.boxShadow = '0 0 24px rgba(45,212,191,0.3)'
+            el.style.boxShadow = '0 0 28px rgba(45,212,191,0.35), 0 2px 8px rgba(0,0,0,0.4)'
             el.style.opacity   = '1'
           }}
         >
@@ -345,57 +369,61 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
 
         {/* Sign In | Sign Up */}
         <div className="flex" style={{ gap: '6px' }}>
+          {/* Sign In — dark neutral ghost */}
           <button
-            className="flex-1 transition-all"
+            className="flex-1"
             style={{
               height: '34px',
               borderRadius: '8px',
-              background: 'transparent',
-              border: '1px solid rgba(255,255,255,0.09)',
-              color: '#4d6280',
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              color: '#4a6380',
               fontSize: '12px',
               fontWeight: 500,
               cursor: 'pointer',
               fontFamily: 'var(--font-inter)',
+              transition: 'color 0.12s, border-color 0.12s, background 0.12s',
             }}
             onMouseEnter={e => {
               const el = e.currentTarget as HTMLButtonElement
               el.style.color       = '#94a3b8'
-              el.style.borderColor = 'rgba(255,255,255,0.18)'
-              el.style.background  = 'rgba(255,255,255,0.04)'
+              el.style.borderColor = 'rgba(255,255,255,0.16)'
+              el.style.background  = 'rgba(255,255,255,0.06)'
             }}
             onMouseLeave={e => {
               const el = e.currentTarget as HTMLButtonElement
-              el.style.color       = '#4d6280'
-              el.style.borderColor = 'rgba(255,255,255,0.09)'
-              el.style.background  = 'transparent'
+              el.style.color       = '#4a6380'
+              el.style.borderColor = 'rgba(255,255,255,0.08)'
+              el.style.background  = 'rgba(255,255,255,0.03)'
             }}
           >
             Sign In
           </button>
+          {/* Sign Up — purple tint */}
           <button
-            className="flex-1 transition-all active:scale-[0.98]"
+            className="flex-1 active:scale-[0.98]"
             style={{
               height: '34px',
               borderRadius: '8px',
-              background: 'rgba(45,212,191,0.08)',
-              border: '1px solid rgba(45,212,191,0.22)',
-              color: '#2DD4BF',
+              background: 'rgba(139,92,246,0.12)',
+              border: '1px solid rgba(139,92,246,0.28)',
+              color: '#a78bfa',
               fontSize: '12px',
               fontWeight: 600,
               cursor: 'pointer',
               fontFamily: 'var(--font-inter)',
+              transition: 'background 0.12s, border-color 0.12s, box-shadow 0.12s',
             }}
             onMouseEnter={e => {
               const el = e.currentTarget as HTMLButtonElement
-              el.style.background  = 'rgba(45,212,191,0.15)'
-              el.style.borderColor = 'rgba(45,212,191,0.38)'
-              el.style.boxShadow   = '0 0 12px rgba(45,212,191,0.15)'
+              el.style.background  = 'rgba(139,92,246,0.22)'
+              el.style.borderColor = 'rgba(139,92,246,0.48)'
+              el.style.boxShadow   = '0 0 16px rgba(139,92,246,0.22)'
             }}
             onMouseLeave={e => {
               const el = e.currentTarget as HTMLButtonElement
-              el.style.background  = 'rgba(45,212,191,0.08)'
-              el.style.borderColor = 'rgba(45,212,191,0.22)'
+              el.style.background  = 'rgba(139,92,246,0.12)'
+              el.style.borderColor = 'rgba(139,92,246,0.28)'
               el.style.boxShadow   = 'none'
             }}
           >
