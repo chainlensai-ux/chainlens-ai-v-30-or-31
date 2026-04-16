@@ -44,13 +44,13 @@ function NavItem({ label, isActive, onClick }: NavItemProps) {
     <button
       onClick={onClick}
       className={[
-        'w-full flex items-center pl-3 pr-2 py-2 rounded-lg text-left border-l-2 transition-colors',
+        'w-full flex items-center pl-3.5 pr-2 py-2.5 rounded-xl text-left border-l-2 transition-all',
         isActive
-          ? 'bg-[#2DD4BF]/[0.08] text-[#2DD4BF] border-[#2DD4BF]'
-          : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.04] border-transparent',
+          ? 'bg-[#2DD4BF]/[0.1] text-[#2DD4BF] border-[#2DD4BF]'
+          : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.05] border-transparent',
       ].join(' ')}
     >
-      <span className="text-[13px] font-medium truncate">{label}</span>
+      <span className="text-[13px] font-semibold truncate">{label}</span>
     </button>
   )
 }
@@ -83,19 +83,19 @@ export default function FeatureBar({ active, onSelect }: Props) {
         <button
           onClick={() => onSelect('home')}
           className={[
-            'w-full flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-lg transition-colors border-l-2',
+            'w-full flex items-center gap-2.5 pl-3.5 pr-2 py-2.5 rounded-xl transition-all border-l-2',
             active === 'home'
-              ? 'bg-[#2DD4BF]/[0.08] text-[#2DD4BF] border-[#2DD4BF]'
-              : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.04] border-transparent',
+              ? 'bg-[#2DD4BF]/[0.1] text-[#2DD4BF] border-[#2DD4BF]'
+              : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.05] border-transparent',
           ].join(' ')}
         >
           <svg
-            width="13"
-            height="13"
+            width="15"
+            height="15"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.5"
             strokeLinecap="round"
             strokeLinejoin="round"
             className="shrink-0"
@@ -103,7 +103,7 @@ export default function FeatureBar({ active, onSelect }: Props) {
             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             <polyline points="9 22 9 12 15 12 15 22" />
           </svg>
-          <span className="text-[13px] font-medium">Home</span>
+          <span className="text-[13px] font-semibold">Home</span>
         </button>
       </div>
 
@@ -131,11 +131,11 @@ export default function FeatureBar({ active, onSelect }: Props) {
       </nav>
 
       {/* Bottom actions */}
-      <div className="px-3 py-4 border-t border-white/[0.06] space-y-2 shrink-0">
-        <button className="w-full flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-lg transition-colors text-[#475569] hover:text-[#64748b] hover:bg-white/[0.04]">
+      <div className="px-3 py-5 border-t border-white/[0.07] space-y-2 shrink-0">
+        <button className="w-full flex items-center gap-2.5 pl-3.5 pr-2 py-2.5 rounded-xl transition-all text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.05]">
           <svg
-            width="13"
-            height="13"
+            width="15"
+            height="15"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -147,9 +147,12 @@ export default function FeatureBar({ active, onSelect }: Props) {
             <circle cx="12" cy="12" r="3" />
             <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14" />
           </svg>
-          <span className="text-[13px] font-medium">Settings</span>
+          <span className="text-[13px] font-semibold">Settings</span>
         </button>
-        <button className="w-full flex items-center justify-center px-3 py-2 rounded-lg bg-[#2DD4BF]/[0.08] text-[#2DD4BF] font-semibold hover:bg-[#2DD4BF]/[0.13] border border-[#2DD4BF]/[0.2] transition-colors">
+        <button
+          className="w-full flex items-center justify-center px-3 py-2.5 rounded-xl bg-[#2DD4BF] text-[#06060a] font-bold hover:bg-[#25bfac] transition-colors"
+          style={{ boxShadow: '0 0 20px rgba(45,212,191,0.2)' }}
+        >
           <span className="text-[12px]">Connect Wallet</span>
         </button>
       </div>
