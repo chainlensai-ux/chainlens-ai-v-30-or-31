@@ -1,12 +1,65 @@
 'use client'
 
-const TOKENS = [
-  { sym: 'BRETT',   chain: 'Base',   price: '$0.142',    change: +24.7, vol: '$12.4M', color: '#3b82f6' },
-  { sym: 'TOSHI',   chain: 'Base',   price: '$0.00089',  change: +18.3, vol: '$8.2M',  color: '#0ea5e9' },
-  { sym: 'VIRTUAL', chain: 'Base',   price: '$2.89',     change: +12.1, vol: '$24.1M', color: '#8b5cf6' },
-  { sym: 'AERO',    chain: 'Base',   price: '$1.47',     change: -3.2,  vol: '$6.8M',  color: '#2DD4BF' },
-  { sym: 'BONK',    chain: 'Solana', price: '$0.000024', change: +8.9,  vol: '$15.3M', color: '#f97316' },
-]
+const COLS = ['TOKEN', 'CHAIN', 'PRICE', '24H', 'VOLUME']
+
+function SkeletonRow({ index }: { index: number }) {
+  const widths = [
+    ['60%', '50%', '55%', '40%', '45%'],
+    ['70%', '45%', '60%', '50%', '40%'],
+    ['55%', '55%', '50%', '45%', '55%'],
+    ['65%', '48%', '58%', '42%', '50%'],
+    ['75%', '52%', '45%', '48%', '42%'],
+  ][index]
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
+        padding: '12px 24px',
+        alignItems: 'center',
+        borderBottom: index < 4 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+      }}
+    >
+      {/* Token cell — circle + bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div
+          className="animate-pulse"
+          style={{
+            width: '30px',
+            height: '30px',
+            borderRadius: '50%',
+            background: 'rgba(255,255,255,0.06)',
+            flexShrink: 0,
+          }}
+        />
+        <div
+          className="animate-pulse"
+          style={{
+            height: '10px',
+            width: widths[0],
+            borderRadius: '4px',
+            background: 'rgba(255,255,255,0.06)',
+          }}
+        />
+      </div>
+
+      {/* Remaining cells */}
+      {widths.slice(1).map((w, i) => (
+        <div
+          key={i}
+          className="animate-pulse"
+          style={{
+            height: '10px',
+            width: w,
+            borderRadius: '4px',
+            background: 'rgba(255,255,255,0.06)',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
 
 export default function HomeTokenScreener() {
   return (
@@ -58,7 +111,6 @@ export default function HomeTokenScreener() {
             Token Screener
           </span>
 
-          {/* Single active tab — Trending only */}
           <div
             style={{
               padding: '5px 14px',
@@ -84,7 +136,7 @@ export default function HomeTokenScreener() {
             borderBottom: '1px solid rgba(255,255,255,0.05)',
           }}
         >
-          {['TOKEN', 'CHAIN', 'PRICE', '24H', 'VOLUME'].map((col) => (
+          {COLS.map((col) => (
             <span
               key={col}
               style={{
@@ -101,117 +153,54 @@ export default function HomeTokenScreener() {
           ))}
         </div>
 
-        {/* Rows */}
-        {TOKENS.map((token, i) => (
+        {/* Skeleton rows */}
+        {[0, 1, 2, 3, 4].map((i) => (
+          <SkeletonRow key={i} index={i} />
+        ))}
+
+        {/* Empty state overlay */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '10px',
+            padding: '28px 24px 32px',
+            borderTop: '1px solid rgba(255,255,255,0.05)',
+          }}
+        >
           <div
-            key={token.sym}
             style={{
-              display: 'grid',
-              gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
-              padding: '12px 24px',
+              width: '32px',
+              height: '32px',
+              borderRadius: '10px',
+              background: 'linear-gradient(135deg, rgba(45,212,191,0.14), rgba(139,92,246,0.10))',
+              border: '1px solid rgba(45,212,191,0.20)',
+              display: 'flex',
               alignItems: 'center',
-              borderBottom: i < TOKENS.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
-              cursor: 'pointer',
-              transition: 'background 0.12s',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255,255,255,0.025)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent'
+              justifyContent: 'center',
+              boxShadow: '0 0 12px rgba(45,212,191,0.10)',
             }}
           >
-            {/* Token */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div
-                style={{
-                  width: '30px',
-                  height: '30px',
-                  borderRadius: '50%',
-                  background: `${token.color}20`,
-                  border: `1px solid ${token.color}38`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  fontFamily: 'var(--font-plex-mono)',
-                  color: token.color,
-                  flexShrink: 0,
-                }}
-              >
-                {token.sym[0]}
-              </div>
-              <span
-                style={{
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  color: '#e2e8f0',
-                  fontFamily: 'var(--font-inter)',
-                }}
-              >
-                {token.sym}
-              </span>
-            </div>
-
-            {/* Chain */}
-            <span
-              style={{
-                fontSize: '12px',
-                color: '#4e6e88',
-                fontFamily: 'var(--font-inter)',
-              }}
-            >
-              {token.chain}
-            </span>
-
-            {/* Price */}
-            <span
-              style={{
-                fontSize: '13px',
-                fontWeight: 600,
-                color: '#e2e8f0',
-                fontFamily: 'var(--font-plex-mono)',
-              }}
-            >
-              {token.price}
-            </span>
-
-            {/* 24H */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              {token.change > 0 ? (
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                  <path d="M5 2L8.5 7H1.5L5 2Z" fill="#2DD4BF"/>
-                </svg>
-              ) : (
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                  <path d="M5 8L1.5 3H8.5L5 8Z" fill="#fb7185"/>
-                </svg>
-              )}
-              <span
-                style={{
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  fontFamily: 'var(--font-plex-mono)',
-                  color: token.change > 0 ? '#2DD4BF' : '#fb7185',
-                }}
-              >
-                {token.change > 0 ? '+' : ''}{token.change}%
-              </span>
-            </div>
-
-            {/* Volume */}
-            <span
-              style={{
-                fontSize: '12px',
-                color: '#7a90a8',
-                fontFamily: 'var(--font-plex-mono)',
-              }}
-            >
-              {token.vol}
-            </span>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path
+                d="M7 1.5L8.1 5.1H11.9L8.8 7.2L9.9 10.8L7 8.7L4.1 10.8L5.2 7.2L2.1 5.1H5.9L7 1.5Z"
+                fill="#2DD4BF"
+                fillOpacity="0.7"
+              />
+            </svg>
           </div>
-        ))}
+          <p
+            style={{
+              fontSize: '12px',
+              color: 'rgba(255,255,255,0.28)',
+              fontFamily: 'var(--font-inter)',
+              letterSpacing: '0.01em',
+            }}
+          >
+            Live trending tokens will appear here…
+          </p>
+        </div>
       </div>
     </section>
   )
