@@ -4,7 +4,7 @@ import Image from 'next/image'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 
-// ─── Icons (16×16, Lucide-style) ─────────────────────────────────────────
+// ─── Icons (16×16) ───────────────────────────────────────────────────────
 
 function IcHome() {
   return (
@@ -14,7 +14,7 @@ function IcHome() {
     </svg>
   )
 }
-function IcWalletScan() {
+function IcWalletScanner() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/>
@@ -31,47 +31,18 @@ function IcTokenScanner() {
     </svg>
   )
 }
-function IcTokenScreener() {
+function IcDevWallet() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="8" y1="6" x2="21" y2="6"/>
-      <line x1="8" y1="12" x2="21" y2="12"/>
-      <line x1="8" y1="18" x2="21" y2="18"/>
-      <line x1="3" y1="6" x2="3.01" y2="6" strokeWidth="2.5"/>
-      <line x1="3" y1="12" x2="3.01" y2="12" strokeWidth="2.5"/>
-      <line x1="3" y1="18" x2="3.01" y2="18" strokeWidth="2.5"/>
+      <polyline points="16 18 22 12 16 6"/>
+      <polyline points="8 6 2 12 8 18"/>
     </svg>
   )
 }
-function IcGhostTrade() {
+function IcLiquidity() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 10h.01M15 10h.01M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"/>
-    </svg>
-  )
-}
-function IcTradeCoach() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10"/>
-      <path d="M12 16v-4"/>
-      <path d="M12 8h.01" strokeWidth="2.5"/>
-    </svg>
-  )
-}
-function IcPumpAlert() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
-      <polyline points="17 6 23 6 23 12"/>
-    </svg>
-  )
-}
-function IcPortfolioTracker() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21.21 15.89A10 10 0 1 1 8 2.83"/>
-      <path d="M22 12A10 10 0 0 0 12 2v10z"/>
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
     </svg>
   )
 }
@@ -83,28 +54,20 @@ function IcWhaleAlerts() {
     </svg>
   )
 }
-function IcExchangeFlow() {
+function IcPumpAlerts() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="17 1 21 5 17 9"/>
-      <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
-      <polyline points="7 23 3 19 7 15"/>
-      <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+      <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+      <polyline points="17 6 23 6 23 12"/>
     </svg>
   )
 }
-function IcBearProof() {
+function IcBaseRadar() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-      <polyline points="9 12 11 14 15 10"/>
-    </svg>
-  )
-}
-function IcSentimentPulse() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      <path d="M5.64 17.36a9 9 0 1 1 12.72 0"/>
+      <path d="M8.46 14.54a5 5 0 1 1 7.07 0"/>
+      <circle cx="12" cy="12" r="1" fill="currentColor"/>
     </svg>
   )
 }
@@ -139,18 +102,14 @@ function IcSettings() {
 type Item = { key: string; label: string; icon: ReactNode }
 
 const TOOLS: Item[] = [
-  { key: 'wallet-scan',       label: 'Wallet Scan',       icon: <IcWalletScan />       },
-  { key: 'token-scanner',     label: 'Token Scanner',     icon: <IcTokenScanner />     },
-  { key: 'token-screener',    label: 'Token Screener',    icon: <IcTokenScreener />    },
-  { key: 'ghost-trade',       label: 'GhostTrade',        icon: <IcGhostTrade />       },
-  { key: 'trade-coach',       label: 'TradeCoach',        icon: <IcTradeCoach />       },
-  { key: 'pump-alert',        label: 'PumpAlert',         icon: <IcPumpAlert />        },
-  { key: 'portfolio-tracker', label: 'Portfolio Tracker', icon: <IcPortfolioTracker /> },
-  { key: 'whale-alerts',      label: 'Whale Alerts',      icon: <IcWhaleAlerts />      },
-  { key: 'exchange-flow',     label: 'Exchange Flow',     icon: <IcExchangeFlow />     },
-  { key: 'bear-proof',        label: 'BearProof Score',   icon: <IcBearProof />        },
-  { key: 'sentiment-pulse',   label: 'SentimentPulse',    icon: <IcSentimentPulse />   },
-  { key: 'clark-ai',          label: 'Clark AI',          icon: <IcClarkAI />          },
+  { key: 'wallet-scanner',    label: 'Wallet Scan',          icon: <IcWalletScanner /> },
+  { key: 'token-scanner',     label: 'Token Scanner',        icon: <IcTokenScanner />  },
+  { key: 'dev-wallet',        label: 'Dev Wallet Detector',  icon: <IcDevWallet />     },
+  { key: 'liquidity-scanner', label: 'Liquidity Safety',     icon: <IcLiquidity />     },
+  { key: 'whale-alerts',      label: 'Whale Alerts',         icon: <IcWhaleAlerts />   },
+  { key: 'pump-alerts',       label: 'Pump Alerts',          icon: <IcPumpAlerts />    },
+  { key: 'base-radar',        label: 'Base Radar',           icon: <IcBaseRadar />     },
+  { key: 'clark-ai',          label: 'Clark AI',             icon: <IcClarkAI />       },
 ]
 
 const SECONDARY: Item[] = [
@@ -168,39 +127,45 @@ interface NavItemProps {
 
 function NavItem({ item, active, onSelect }: NavItemProps) {
   const on = active === item.key
+
   return (
     <motion.button
       onClick={() => onSelect(item.key)}
-      className="w-full flex items-center gap-3 py-[11px] px-3.5 rounded-xl text-[13px] font-medium border-l-2 transition-colors"
-      style={
-        on
-          ? {
-              background: 'rgba(45,212,191,0.1)',
-              color: '#2DD4BF',
-              borderLeftColor: '#2DD4BF',
-              boxShadow: 'inset 0 0 0 1px rgba(45,212,191,0.1)',
-            }
-          : {
-              color: '#e2e8f0',
-              borderLeftColor: 'transparent',
-            }
-      }
-      whileHover={!on ? { x: 2 } : {}}
-      transition={{ duration: 0.12 }}
+      className="w-full flex items-center gap-3 px-3.5 text-[13px] font-medium transition-colors"
+      style={{
+        height: '44px',
+        borderRadius: '12px',
+        // Active: mint left indicator + tinted surface
+        // Default: always-visible dark card with soft border
+        borderTop:    on ? '1px solid rgba(45,212,191,0.18)' : '1px solid rgba(255,255,255,0.06)',
+        borderRight:  on ? '1px solid rgba(45,212,191,0.18)' : '1px solid rgba(255,255,255,0.06)',
+        borderBottom: on ? '1px solid rgba(45,212,191,0.18)' : '1px solid rgba(255,255,255,0.06)',
+        borderLeft:   on ? '3px solid #2DD4BF'               : '1px solid rgba(255,255,255,0.06)',
+        background:   on ? 'rgba(45,212,191,0.09)'           : 'rgba(255,255,255,0.04)',
+        color:        on ? '#2DD4BF'                          : '#e2e8f0',
+        boxShadow:    on ? '0 0 20px rgba(45,212,191,0.08)'  : 'none',
+      }}
+      whileHover={!on ? { y: -2 } : {}}
+      transition={{ duration: 0.14 }}
       onMouseEnter={e => {
         if (!on) {
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.05)'
-          ;(e.currentTarget as HTMLButtonElement).style.color = '#ffffff'
+          const el = e.currentTarget as HTMLButtonElement
+          el.style.borderColor = 'rgba(255,255,255,0.13)'
+          el.style.background  = 'rgba(255,255,255,0.07)'
+          el.style.boxShadow   = '0 4px 16px rgba(0,0,0,0.25)'
         }
       }}
       onMouseLeave={e => {
         if (!on) {
-          (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-          ;(e.currentTarget as HTMLButtonElement).style.color = '#e2e8f0'
+          const el = e.currentTarget as HTMLButtonElement
+          el.style.borderColor = 'rgba(255,255,255,0.06)'
+          el.style.background  = 'rgba(255,255,255,0.04)'
+          el.style.boxShadow   = 'none'
         }
       }}
     >
-      <span style={{ color: on ? '#2DD4BF' : '#64748b', flexShrink: 0 }}>
+      {/* Icon — always mint */}
+      <span className="shrink-0" style={{ color: '#2DD4BF' }}>
         {item.icon}
       </span>
       {item.label}
@@ -213,8 +178,8 @@ function NavItem({ item, active, onSelect }: NavItemProps) {
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
     <p
-      className="px-3.5 pt-1 pb-2 text-[10px] font-bold uppercase tracking-[0.16em]"
-      style={{ color: '#475569' }}
+      className="px-1 pt-2 pb-1.5 text-[10px] font-bold uppercase tracking-[0.18em]"
+      style={{ color: '#3d5268' }}
     >
       {children}
     </p>
@@ -231,42 +196,41 @@ interface Props {
 export default function FeatureBar({ active = 'home', onSelect = () => {} }: Props) {
   return (
     <aside
-      className="w-[260px] h-screen shrink-0 flex flex-col"
-      style={{ background: '#080d17', borderRight: '1px solid rgba(255,255,255,0.07)' }}
+      className="w-[250px] h-screen shrink-0 flex flex-col"
+      style={{ background: '#07090f', borderRight: '1px solid rgba(255,255,255,0.07)' }}
     >
 
       {/* ── Branding ─────────────────────────────────────────────── */}
       <div
-        className="relative px-5 pt-7 pb-6 shrink-0 overflow-hidden"
+        className="relative px-5 pt-6 pb-5 shrink-0 overflow-hidden"
         style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}
       >
         {/* Ambient glow */}
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
-            background: 'radial-gradient(ellipse at 15% 50%, rgba(45,212,191,0.09) 0%, transparent 70%)',
+            background: 'radial-gradient(ellipse at 10% 60%, rgba(45,212,191,0.1) 0%, transparent 65%)',
           }}
         />
-        <div className="relative flex items-center gap-3.5">
+        <div className="relative flex items-center gap-3">
           <div
-            className="shrink-0 rounded-2xl p-1.5"
+            className="shrink-0 rounded-xl p-1.5"
             style={{
               background: 'rgba(45,212,191,0.08)',
-              border: '1px solid rgba(45,212,191,0.18)',
-              boxShadow: '0 0 20px rgba(45,212,191,0.1)',
+              border: '1px solid rgba(45,212,191,0.2)',
+              boxShadow: '0 0 16px rgba(45,212,191,0.12)',
             }}
           >
-            <Image src="/cl-logo.png" alt="ChainLens AI" width={36} height={36} className="shrink-0" />
+            <Image src="/cl-logo.png" alt="ChainLens AI" width={34} height={34} className="shrink-0" />
           </div>
           <div>
             <p
-              className="text-[17px] font-extrabold leading-tight tracking-tight"
+              className="text-[16px] font-extrabold leading-tight tracking-tight"
               style={{ color: '#f8fafc' }}
             >
               Chain<span style={{ color: '#2DD4BF' }}>Lens</span>
-              <span style={{ color: '#94a3b8', fontWeight: 600 }}> AI</span>
             </p>
-            <p className="text-[10px] font-medium mt-0.5" style={{ color: '#475569' }}>
+            <p className="text-[10px] font-medium mt-0.5" style={{ color: '#3d5268' }}>
               Base Intelligence Terminal
             </p>
           </div>
@@ -274,7 +238,7 @@ export default function FeatureBar({ active = 'home', onSelect = () => {} }: Pro
       </div>
 
       {/* ── Navigation ───────────────────────────────────────────── */}
-      <nav className="flex-1 overflow-y-auto px-3.5 py-4 flex flex-col gap-1 scrollbar-none">
+      <nav className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-1.5">
 
         {/* Home */}
         <NavItem
@@ -283,9 +247,6 @@ export default function FeatureBar({ active = 'home', onSelect = () => {} }: Pro
           onSelect={onSelect}
         />
 
-        {/* Divider */}
-        <div className="h-px my-2" style={{ background: 'rgba(255,255,255,0.06)' }} />
-
         {/* Tools section */}
         <SectionLabel>Tools</SectionLabel>
         {TOOLS.map(item => (
@@ -293,7 +254,7 @@ export default function FeatureBar({ active = 'home', onSelect = () => {} }: Pro
         ))}
 
         {/* Divider */}
-        <div className="h-px my-2" style={{ background: 'rgba(255,255,255,0.06)' }} />
+        <div className="my-1 h-px" style={{ background: 'rgba(255,255,255,0.06)' }} />
 
         {/* Secondary */}
         {SECONDARY.map(item => (
@@ -302,29 +263,31 @@ export default function FeatureBar({ active = 'home', onSelect = () => {} }: Pro
 
       </nav>
 
-      {/* ── Bottom CTA ───────────────────────────────────────────── */}
+      {/* ── Bottom CTAs ──────────────────────────────────────────── */}
       <div
-        className="shrink-0 px-4 py-5 space-y-2"
+        className="shrink-0 px-3 py-4 flex flex-col gap-2"
         style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}
       >
 
         {/* Connect Wallet */}
         <button
-          className="w-full py-3 rounded-xl text-[13px] font-semibold transition-all"
+          className="w-full h-10 rounded-xl text-[13px] font-semibold transition-all"
           style={{
             color: '#2DD4BF',
-            border: '1px solid rgba(45,212,191,0.45)',
+            border: '1px solid rgba(45,212,191,0.4)',
             background: 'transparent',
           }}
           onMouseEnter={e => {
             const el = e.currentTarget as HTMLButtonElement
-            el.style.background = 'rgba(45,212,191,0.1)'
-            el.style.boxShadow = '0 0 20px rgba(45,212,191,0.15)'
+            el.style.background  = 'rgba(45,212,191,0.09)'
+            el.style.borderColor = 'rgba(45,212,191,0.6)'
+            el.style.boxShadow   = '0 0 22px rgba(45,212,191,0.18)'
           }}
           onMouseLeave={e => {
             const el = e.currentTarget as HTMLButtonElement
-            el.style.background = 'transparent'
-            el.style.boxShadow = 'none'
+            el.style.background  = 'transparent'
+            el.style.borderColor = 'rgba(45,212,191,0.4)'
+            el.style.boxShadow   = 'none'
           }}
         >
           Connect Wallet
@@ -332,23 +295,23 @@ export default function FeatureBar({ active = 'home', onSelect = () => {} }: Pro
 
         {/* Sign In */}
         <button
-          className="w-full py-3 rounded-xl text-[13px] font-medium transition-all"
+          className="w-full h-10 rounded-xl text-[13px] font-medium transition-all"
           style={{
             color: '#94a3b8',
-            border: '1px solid rgba(255,255,255,0.1)',
-            background: 'transparent',
+            border: '1px solid rgba(255,255,255,0.09)',
+            background: 'rgba(255,255,255,0.03)',
           }}
           onMouseEnter={e => {
             const el = e.currentTarget as HTMLButtonElement
-            el.style.color = '#e2e8f0'
-            el.style.background = 'rgba(255,255,255,0.05)'
-            el.style.borderColor = 'rgba(255,255,255,0.16)'
+            el.style.color       = '#e2e8f0'
+            el.style.background  = 'rgba(255,255,255,0.07)'
+            el.style.borderColor = 'rgba(255,255,255,0.14)'
           }}
           onMouseLeave={e => {
             const el = e.currentTarget as HTMLButtonElement
-            el.style.color = '#94a3b8'
-            el.style.background = 'transparent'
-            el.style.borderColor = 'rgba(255,255,255,0.1)'
+            el.style.color       = '#94a3b8'
+            el.style.background  = 'rgba(255,255,255,0.03)'
+            el.style.borderColor = 'rgba(255,255,255,0.09)'
           }}
         >
           Sign In
@@ -356,11 +319,17 @@ export default function FeatureBar({ active = 'home', onSelect = () => {} }: Pro
 
         {/* Sign Up */}
         <button
-          className="w-full py-3 rounded-xl text-[13px] font-bold transition-all hover:opacity-90 active:scale-[0.98]"
+          className="w-full h-10 rounded-xl text-[13px] font-bold transition-all active:scale-[0.98]"
           style={{
             background: 'linear-gradient(90deg, #2DD4BF 0%, #8B5CF6 100%)',
             color: '#ffffff',
-            boxShadow: '0 0 28px rgba(45,212,191,0.25), 0 0 28px rgba(139,92,246,0.15)',
+            boxShadow: '0 0 24px rgba(45,212,191,0.22), 0 0 24px rgba(139,92,246,0.12)',
+          }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLButtonElement).style.opacity = '0.9'
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLButtonElement).style.opacity = '1'
           }}
         >
           Sign Up — It&apos;s Free
