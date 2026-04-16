@@ -249,7 +249,7 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
 
         {/* Features */}
         <div>
-          <SectionLabel>Features</SectionLabel>
+          <SectionLabel>Tools</SectionLabel>
           <div className="space-y-1">
             {FEATURES.map(item => (
               <NavItem key={item.key} item={item} active={active} onSelect={onSelect} />
