@@ -41,7 +41,7 @@ function IcClarkAI() {
     </svg>
   )
 }
-function IcWalletScan() {
+function IcWalletScanner() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/>
@@ -58,15 +58,20 @@ function IcTokenScanner() {
     </svg>
   )
 }
-function IcTokenScreener() {
+function IcDevWalletDetector() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="8" y1="6"  x2="21" y2="6"/>
-      <line x1="8" y1="12" x2="21" y2="12"/>
-      <line x1="8" y1="18" x2="21" y2="18"/>
-      <line x1="3" y1="6"  x2="3.01" y2="6"/>
-      <line x1="3" y1="12" x2="3.01" y2="12"/>
-      <line x1="3" y1="18" x2="3.01" y2="18"/>
+      <polyline points="16 18 22 12 16 6"/>
+      <polyline points="8 6 2 12 8 18"/>
+      <line x1="12" y1="4" x2="12" y2="20" strokeWidth="1.2" strokeDasharray="2 2"/>
+    </svg>
+  )
+}
+function IcLiquiditySafety() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      <path d="M12 8c0 0-2.5 2.5-2.5 4.5a2.5 2.5 0 0 0 5 0C14.5 10.5 12 8 12 8z"/>
     </svg>
   )
 }
@@ -84,23 +89,6 @@ function IcRadar() {
       <path d="M5.64 17.36a9 9 0 1 1 12.72 0"/>
       <path d="M8.46 14.54a5 5 0 1 1 7.07 0"/>
       <circle cx="12" cy="12" r="1" fill="currentColor"/>
-    </svg>
-  )
-}
-function IcMarkets() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-    </svg>
-  )
-}
-function IcExchangeFlow() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="17 1 21 5 17 9"/>
-      <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
-      <polyline points="7 23 3 19 7 15"/>
-      <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
     </svg>
   )
 }
@@ -130,15 +118,14 @@ const MAIN_NAV: Item[] = [
 ]
 
 const TOOLS: Item[] = [
-  { key: 'clark-ai',       label: 'Clark AI',       icon: <IcClarkAI />,       accent: PURPLE, iconColor: PURPLE },
-  { key: 'wallet-scan',    label: 'Wallet Scan',    icon: <IcWalletScan />,    accent: MINT,   iconColor: MINT   },
-  { key: 'token-scanner',  label: 'Token Scanner',  icon: <IcTokenScanner />,  accent: MINT,   iconColor: MINT   },
-  { key: 'token-screener', label: 'Token Screener', icon: <IcTokenScreener />, accent: MINT,   iconColor: MINT   },
-  { key: 'whale-alerts',   label: 'Whale Alerts',   icon: <IcWhaleAlerts />,   accent: PINK,   iconColor: PINK   },
-  { key: 'radar',          label: 'Radar',          icon: <IcRadar />,         accent: PURPLE, iconColor: PURPLE },
-  { key: 'markets',        label: 'Markets',        icon: <IcMarkets />,       accent: MINT,   iconColor: MINT   },
-  { key: 'exchange-flow',  label: 'Exchange Flow',  icon: <IcExchangeFlow />,  accent: MINT,   iconColor: MINT   },
-  { key: 'pump-alerts',    label: 'Pump Alerts',    icon: <IcPumpAlerts />,    accent: PINK,   iconColor: PINK   },
+  { key: 'token-scanner',       label: 'Token Scanner',       icon: <IcTokenScanner />,       accent: MINT,   iconColor: MINT   },
+  { key: 'wallet-scanner',      label: 'Wallet Scanner',      icon: <IcWalletScanner />,      accent: MINT,   iconColor: MINT   },
+  { key: 'dev-wallet-detector', label: 'Dev Wallet Detector', icon: <IcDevWalletDetector />,  accent: PURPLE, iconColor: PURPLE },
+  { key: 'liquidity-safety',    label: 'Liquidity Safety',    icon: <IcLiquiditySafety />,    accent: MINT,   iconColor: MINT   },
+  { key: 'whale-alerts',        label: 'Whale Alerts',        icon: <IcWhaleAlerts />,        accent: PINK,   iconColor: PINK   },
+  { key: 'pump-alerts',         label: 'Pump Alerts',         icon: <IcPumpAlerts />,         accent: PINK,   iconColor: PINK   },
+  { key: 'base-radar',          label: 'Base Radar',          icon: <IcRadar />,              accent: PURPLE, iconColor: PURPLE },
+  { key: 'clark-ai',            label: 'Clark AI',            icon: <IcClarkAI />,            accent: PURPLE, iconColor: PURPLE },
 ]
 
 // ─── Section label ─────────────────────────────────────────────────────────
@@ -207,7 +194,7 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
         borderRight:  '1px solid transparent',
         borderBottom: '1px solid transparent',
         boxShadow: on ? activeGlow : 'none',
-        color: on ? accent : '#536e88',
+        color: on ? accent : '#6a8da8',
         fontSize: '13px',
         fontWeight: on ? 600 : 500,
         fontFamily: 'var(--font-inter)',
@@ -228,7 +215,7 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
       onMouseLeave={e => {
         if (!on) {
           const el = e.currentTarget as HTMLButtonElement
-          el.style.color      = '#536e88'
+          el.style.color      = '#6a8da8'
           el.style.background = 'transparent'
           el.style.boxShadow  = 'none'
         }
