@@ -2,7 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+/* Apply Inter as the default UI font — the CSS variable is set in layout.tsx
+   via next/font but Tailwind's Preflight doesn't consume it automatically. */
+html {
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 
 ::-webkit-scrollbar { width: 4px; }
