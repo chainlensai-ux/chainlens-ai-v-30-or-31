@@ -112,7 +112,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
         {/* LIVE indicator */}
         <div className="flex items-center gap-2">
           <div
-            className="rounded-full bg-[#2DD4BF]"
+            className="rounded-full bg-[#2DD4BF] animate-pulse"
             style={{ width: '7px', height: '7px', boxShadow: '0 0 8px rgba(45,212,191,0.9)' }}
           />
           <span
@@ -129,17 +129,31 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
 
         {/* ── Whale Alerts ─────────────────────────── */}
         <Section title="Whale Alerts" delay={0}>
-          <div className="space-y-2.5">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {WHALE_ALERTS.map((w, i) => (
               <div
                 key={i}
                 className="flex items-center gap-3 p-3 rounded-xl"
                 style={{
-                  background: 'rgba(255,255,255,0.025)',
-                  border: '1px solid rgba(255,255,255,0.05)',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.09)',
+                  transition: 'border-color 0.15s, background 0.15s, box-shadow 0.15s',
+                  cursor: 'default',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = w.up ? 'rgba(45,212,191,0.24)' : 'rgba(251,113,133,0.22)'
+                  el.style.background  = w.up ? 'rgba(45,212,191,0.04)' : 'rgba(251,113,133,0.04)'
+                  el.style.boxShadow   = w.up ? '0 2px 12px rgba(45,212,191,0.08)' : '0 2px 12px rgba(251,113,133,0.08)'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = 'rgba(255,255,255,0.09)'
+                  el.style.background  = 'rgba(255,255,255,0.03)'
+                  el.style.boxShadow   = 'none'
                 }}
               >
-                {/* Token icon — 38px, teal or rose tint */}
+                {/* Token icon */}
                 <div
                   className="flex items-center justify-center shrink-0 font-bold"
                   style={{
@@ -194,12 +208,31 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
 
         {/* ── AI Signals ───────────────────────────── */}
         <Section title="AI Signals" accent="CORTEX" delay={0.07}>
-          <div className="space-y-4">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {AI_SIGNALS.map((s, i) => (
-              <div key={i}>
+              <div
+                key={i}
+                style={{
+                  background: 'rgba(255,255,255,0.025)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: '12px',
+                  padding: '10px 12px',
+                  transition: 'border-color 0.15s, background 0.15s',
+                  cursor: 'default',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = `${s.color}38`
+                  el.style.background  = `${s.color}08`
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = 'rgba(255,255,255,0.08)'
+                  el.style.background  = 'rgba(255,255,255,0.025)'
+                }}
+              >
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    {/* Token icon */}
                     <div
                       className="flex items-center justify-center shrink-0 font-bold"
                       style={{
@@ -222,7 +255,6 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
                       {s.name}
                     </span>
                   </div>
-                  {/* Bullish/Neutral badge */}
                   <span
                     className="font-bold px-1.5 py-0.5 rounded border"
                     style={{
@@ -270,27 +302,61 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
 
         {/* ── Live Activity ────────────────────────── */}
         <Section title="Live Activity" accent="LIVE" delay={0.14}>
-          <div className="space-y-2.5">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
             {LIVE_ACTIVITY.map((a, i) => (
-              <div key={i} className="flex items-start gap-2.5">
-                {/* Teal dot with glow */}
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '10px',
+                  background: 'rgba(255,255,255,0.025)',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: '10px',
+                  padding: '8px 10px',
+                  transition: 'border-color 0.15s, background 0.15s',
+                  cursor: 'default',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = 'rgba(45,212,191,0.2)'
+                  el.style.background  = 'rgba(45,212,191,0.04)'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = 'rgba(255,255,255,0.07)'
+                  el.style.background  = 'rgba(255,255,255,0.025)'
+                }}
+              >
                 <div
-                  className="shrink-0 rounded-full bg-[#2DD4BF] mt-[5px]"
+                  className="shrink-0 rounded-full bg-[#2DD4BF]"
                   style={{
                     width: '6px',
                     height: '6px',
+                    marginTop: '4px',
                     boxShadow: '0 0 5px rgba(45,212,191,0.75)',
+                    flexShrink: 0,
                   }}
                 />
                 <p
-                  className="flex-1 leading-relaxed"
-                  style={{ fontSize: '11px', color: '#7a90a8', fontFamily: 'var(--font-inter)' }}
+                  style={{
+                    flex: 1,
+                    fontSize: '11px',
+                    lineHeight: 1.5,
+                    color: '#7a90a8',
+                    fontFamily: 'var(--font-inter)',
+                    margin: 0,
+                  }}
                 >
                   {a.text}
                 </p>
                 <span
-                  className="shrink-0 mt-0.5"
-                  style={{ fontSize: '9px', fontFamily: 'var(--font-plex-mono)', color: '#3e5c78' }}
+                  style={{
+                    flexShrink: 0,
+                    fontSize: '9px',
+                    fontFamily: 'var(--font-plex-mono)',
+                    color: '#3e5c78',
+                  }}
                 >
                   {a.time}
                 </span>

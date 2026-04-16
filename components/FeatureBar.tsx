@@ -161,7 +161,7 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
     : accent === PINK ? 'linear-gradient(90deg, rgba(236,72,153,0.20), rgba(236,72,153,0.05))'
     : accent === WHITE ? 'linear-gradient(90deg, rgba(226,232,240,0.10), rgba(226,232,240,0.02))'
     : accent === SLATE ? 'linear-gradient(90deg, rgba(148,163,184,0.10), rgba(148,163,184,0.02))'
-    : /* MINT */ 'linear-gradient(90deg, rgba(45,212,191,0.18), rgba(45,212,191,0.04))'
+    : /* MINT */ 'linear-gradient(90deg, rgba(45,212,191,0.26), rgba(45,212,191,0.06))'
 
   // Per-accent active shadow (left glow + top inset shimmer)
   const activeGlow =
@@ -169,7 +169,7 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
     : accent === PINK ? `0 0 22px rgba(236,72,153,0.22), inset 0 1px 0 rgba(236,72,153,0.20)`
     : accent === WHITE ? `inset 0 1px 0 rgba(226,232,240,0.16)`
     : accent === SLATE ? `inset 0 1px 0 rgba(148,163,184,0.14)`
-    : /* MINT */ `0 0 26px rgba(45,212,191,0.22), inset 0 1px 0 rgba(45,212,191,0.22)`
+    : /* MINT */ `0 0 36px rgba(45,212,191,0.42), 0 0 14px rgba(45,212,191,0.18), inset 0 1px 0 rgba(45,212,191,0.30)`
 
   // Idle icon colour — dim but readable version of each accent
   const idleIconColor =
