@@ -63,14 +63,12 @@ function SkeletonRow({ index }: { index: number }) {
 
 export default function HomeTokenScreener() {
   return (
-    <section style={{ padding: '0 24px 96px' }}>
+    <section style={{ padding: '0 0 96px' }}>
       <div
         style={{
-          maxWidth: '960px',
-          margin: '0 auto',
+          width: '100%',
           background: 'linear-gradient(160deg, #0a0f1e 0%, #070b16 100%)',
           border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: '16px',
           backdropFilter: 'blur(12px)',
           WebkitBackdropFilter: 'blur(12px)',
           overflow: 'hidden',
