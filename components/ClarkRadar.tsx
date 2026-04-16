@@ -37,13 +37,13 @@ const SIGNAL_BADGE: Record<string, string> = {
 // Card wrapper for each section
 function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="bg-[#06060a]/60 rounded-xl border border-white/[0.06] overflow-hidden">
-      <div className="px-4 py-3 border-b border-white/[0.05]">
-        <span className="text-[10px] font-semibold text-[#475569] uppercase tracking-[0.1em]">
+    <div className="bg-[#06060a] rounded-xl border border-white/[0.07] overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.015]">
+        <span className="text-[10px] font-bold text-[#64748b] uppercase tracking-[0.12em]">
           {title}
         </span>
       </div>
-      <div className="p-3">
+      <div className="p-3.5">
         {children}
       </div>
     </div>
@@ -55,16 +55,16 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
     <aside className="w-[280px] shrink-0 flex flex-col bg-[#080c14] rounded-xl border border-white/[0.08] overflow-hidden">
 
       {/* Panel header */}
-      <div className="shrink-0 flex items-center justify-between px-5 h-12 border-b border-white/[0.06]">
-        <span className="text-[13px] font-semibold text-[#64748b]">Radar</span>
+      <div className="shrink-0 flex items-center justify-between px-5 h-12 border-b border-white/[0.07]">
+        <span className="text-[13px] font-semibold text-[#94a3b8]">Radar</span>
         <div className="flex items-center gap-1.5">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF]" />
-          <span className="text-[12px] text-[#475569] font-medium">Live</span>
+          <div className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF]" style={{ boxShadow: '0 0 6px rgba(45,212,191,0.7)' }} />
+          <span className="text-[11px] text-[#475569] font-medium tracking-wide">LIVE</span>
         </div>
       </div>
 
       {/* Scrollable sections */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+      <div className="flex-1 overflow-y-auto px-3 py-3.5 space-y-3">
 
         {/* Live Signal */}
         <Card title="Live Signal">
@@ -116,7 +116,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
                       {w.addr}
                     </span>
                     <span
-                      className="text-[10px] text-[#3d5066] shrink-0"
+                      className="text-[10px] text-[#475569] shrink-0"
                       style={{ fontFamily: 'var(--font-plex-mono)' }}
                     >
                       {w.time}
@@ -155,7 +155,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
                   {t.pct}
                 </span>
                 <span
-                  className="text-[10px] text-[#3d5066] w-[34px] text-right shrink-0"
+                  className="text-[10px] text-[#475569] w-[34px] text-right shrink-0"
                   style={{ fontFamily: 'var(--font-plex-mono)' }}
                 >
                   {t.vol}
@@ -182,7 +182,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar: (val: str
           </div>
           <div className="mt-3 flex items-center gap-2 px-1">
             <div className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF]" />
-            <span className="text-[11px] text-[#3d5066]">CORTEX monitoring live</span>
+            <span className="text-[11px] text-[#475569]">CORTEX monitoring live</span>
           </div>
         </Card>
 

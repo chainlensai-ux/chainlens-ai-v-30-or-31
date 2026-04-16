@@ -60,20 +60,20 @@ export default function FeatureBar({ active, onSelect }: Props) {
     <aside className="w-[220px] shrink-0 h-screen flex flex-col bg-[#080c14] border-r border-white/[0.08] overflow-hidden">
 
       {/* Logo */}
-      <div className="px-5 pt-5 pb-4 border-b border-white/[0.06] shrink-0">
+      <div className="px-5 pt-5 pb-5 border-b border-white/[0.07] shrink-0">
         <div className="flex items-center gap-3">
           <Image
             src="/cl-logo.png"
             alt="ChainLens AI"
-            width={26}
-            height={26}
+            width={28}
+            height={28}
             className="shrink-0"
           />
           <div className="min-w-0">
-            <div className="text-[14px] font-bold text-white leading-tight tracking-tight">
+            <div className="text-[15px] font-bold text-white leading-tight tracking-tight">
               Chain<span className="text-[#2DD4BF]">Lens</span>
             </div>
-            <div className="text-[10px] text-[#475569] mt-0.5 font-medium">AI Terminal</div>
+            <div className="text-[10px] text-[#475569] mt-0.5 font-medium tracking-wide">AI Terminal</div>
           </div>
         </div>
       </div>
@@ -108,11 +108,11 @@ export default function FeatureBar({ active, onSelect }: Props) {
       </div>
 
       {/* Nav groups */}
-      <nav className="flex-1 overflow-y-auto px-3 pb-2">
+      <nav className="flex-1 overflow-y-auto px-3 pb-3">
         {NAV_GROUPS.map(group => (
           <div key={group.label} className="mb-1">
-            <div className="px-1 pt-4 pb-2">
-              <span className="text-[10px] font-semibold text-[#3d5066] uppercase tracking-[0.1em]">
+            <div className="px-1 pt-5 pb-2">
+              <span className="text-[10px] font-bold text-[#475569] uppercase tracking-[0.12em]">
                 {group.label}
               </span>
             </div>

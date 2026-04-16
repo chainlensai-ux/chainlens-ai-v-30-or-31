@@ -158,7 +158,7 @@ function NavItem({ item, active, onSelect }: NavItemProps) {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-[#475569]">
+    <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.12em] text-[#64748b]">
       {children}
     </p>
   )
@@ -176,21 +176,21 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
     <aside className="w-[240px] h-screen shrink-0 flex flex-col bg-[#080c14] border-r border-white/[0.08]">
 
       {/* ── Branding ─────────────────────────────────────────────────── */}
-      <div className="px-5 pt-7 pb-6 border-b border-white/[0.06]">
+      <div className="px-5 pt-7 pb-6 border-b border-white/[0.07]">
         <div className="flex items-center gap-3">
           <Image
             src="/cl-logo.png"
             alt="ChainLens AI"
-            width={34}
-            height={34}
+            width={36}
+            height={36}
             className="shrink-0"
           />
           <div>
-            <p className="text-[16px] font-bold text-white leading-tight tracking-tight">
+            <p className="text-[17px] font-bold text-white leading-tight tracking-tight">
               Chain<span className="text-[#2DD4BF]">Lens</span>
               <span className="text-[#94a3b8] font-semibold"> AI</span>
             </p>
-            <p className="text-[10px] text-[#475569] mt-[3px] font-medium">
+            <p className="text-[10px] text-[#64748b] mt-[3px] font-medium tracking-wide">
               Base Intelligence Terminal
             </p>
           </div>
@@ -230,11 +230,14 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
       </nav>
 
       {/* ── Auth ─────────────────────────────────────────────────────── */}
-      <div className="px-5 py-5 space-y-2 border-t border-white/[0.06]">
-        <button className="w-full py-2.5 rounded-xl bg-[#2DD4BF] text-[#06060a] text-[13px] font-bold tracking-tight hover:bg-[#25bfac] active:bg-[#1fa898] transition-colors duration-150">
+      <div className="px-5 py-5 space-y-2 border-t border-white/[0.07]">
+        <button
+          className="w-full py-2.5 rounded-xl bg-[#2DD4BF] text-[#06060a] text-[13px] font-bold tracking-tight hover:bg-[#25bfac] active:bg-[#1fa898] transition-all duration-150"
+          style={{ boxShadow: '0 0 20px rgba(45,212,191,0.2)' }}
+        >
           Sign Up
         </button>
-        <button className="w-full py-2.5 rounded-xl border border-white/[0.12] text-[#64748b] text-[13px] font-medium hover:text-[#94a3b8] hover:border-white/[0.18] hover:bg-white/[0.04] transition-colors duration-150">
+        <button className="w-full py-2.5 rounded-xl border border-white/[0.1] text-[#64748b] text-[13px] font-medium hover:text-[#94a3b8] hover:border-white/[0.17] hover:bg-white/[0.04] transition-colors duration-150">
           Sign In
         </button>
       </div>

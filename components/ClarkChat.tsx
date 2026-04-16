@@ -128,10 +128,13 @@ export default function ClarkChat({ active, toolLabel }: Props) {
         <div className="px-8 py-8 space-y-8 max-w-3xl mx-auto w-full">
 
           {/* ── Hero card ──────────────────────────────────────────── */}
-          <div className="bg-[#06060a] rounded-2xl border border-white/[0.08] p-8">
+          <div
+            className="bg-[#06060a] rounded-2xl border border-white/[0.08] p-10"
+            style={{ boxShadow: '0 0 60px rgba(45,212,191,0.05), 0 0 120px rgba(139,92,246,0.04)' }}
+          >
 
             {/* CORTEX eyebrow */}
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#8b5cf6]/10 border border-[#8b5cf6]/20 mb-6">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#8b5cf6]/10 border border-[#8b5cf6]/20 mb-7">
               <div className="w-1.5 h-1.5 rounded-full bg-[#8b5cf6]" />
               <span className="text-[11px] font-semibold text-[#8b5cf6] tracking-wide">
                 Powered by CORTEX
@@ -139,11 +142,11 @@ export default function ClarkChat({ active, toolLabel }: Props) {
             </div>
 
             {/* Heading */}
-            <h1 className="text-[28px] font-bold text-white leading-tight tracking-tight mb-2">
+            <h1 className="text-[32px] font-bold text-white leading-tight tracking-tight mb-2.5">
               Ask Clark anything{' '}
               <span className="text-[#2DD4BF]">on Base</span>
             </h1>
-            <p className="text-[14px] text-[#64748b] mb-7 leading-relaxed">
+            <p className="text-[15px] text-[#64748b] mb-8 leading-relaxed">
               Scan wallets, track whales, analyze tokens, detect momentum
             </p>
 
@@ -156,12 +159,12 @@ export default function ClarkChat({ active, toolLabel }: Props) {
                 onKeyDown={e => { if (e.key === 'Enter') handleAsk() }}
                 placeholder="Ask a question or paste a contract / wallet address..."
                 disabled={busy}
-                className="flex-1 min-w-0 bg-[#080c14] border border-white/[0.1] rounded-xl px-4 py-3 text-[14px] text-white placeholder:text-[#334155] outline-none focus:border-[#2DD4BF]/40 transition-colors disabled:opacity-50"
+                className="flex-1 min-w-0 bg-[#080c14] border border-white/[0.1] rounded-xl px-5 py-3.5 text-[14px] text-white placeholder:text-[#2d3f52] outline-none focus:border-[#2DD4BF]/50 focus:shadow-[0_0_0_3px_rgba(45,212,191,0.06)] transition-all disabled:opacity-50"
               />
               <button
                 onClick={handleAsk}
                 disabled={!query.trim() || busy}
-                className="shrink-0 px-6 py-3 rounded-xl bg-[#2DD4BF] text-[#06060a] text-[14px] font-bold hover:bg-[#25bfac] active:bg-[#1fa898] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                className="shrink-0 px-7 py-3.5 rounded-xl bg-[#2DD4BF] text-[#06060a] text-[14px] font-bold hover:bg-[#25bfac] active:bg-[#1fa898] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 Ask
               </button>
@@ -173,7 +176,7 @@ export default function ClarkChat({ active, toolLabel }: Props) {
                 <button
                   key={chip}
                   onClick={() => setQuery(chip)}
-                  className="text-[12px] text-[#64748b] hover:text-[#94a3b8] border border-white/[0.08] hover:border-white/[0.14] bg-white/[0.03] hover:bg-white/[0.06] px-3 py-1.5 rounded-lg font-medium transition-colors"
+                  className="text-[12px] text-[#64748b] hover:text-[#94a3b8] border border-white/[0.08] hover:border-white/[0.15] bg-white/[0.03] hover:bg-white/[0.07] px-3.5 py-2 rounded-lg font-medium transition-all"
                 >
                   {chip}
                 </button>
@@ -220,16 +223,16 @@ export default function ClarkChat({ active, toolLabel }: Props) {
             </div>
 
             {/* Tabs */}
-            <div className="flex gap-1 mb-4 bg-[#06060a] border border-white/[0.08] rounded-xl p-1 w-fit">
+            <div className="flex gap-1 mb-5 bg-[#06060a] border border-white/[0.08] rounded-xl p-1 w-fit">
               {TABS.map(t => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
                   className={[
-                    'px-4 py-2 rounded-lg text-[13px] font-medium transition-colors',
+                    'px-5 py-2 rounded-lg text-[13px] font-medium transition-all',
                     tab === t
-                      ? 'bg-[#080c14] text-white border border-white/[0.08]'
-                      : 'text-[#64748b] hover:text-[#94a3b8]',
+                      ? 'bg-[#080c14] text-white border border-white/[0.1] shadow-[0_1px_3px_rgba(0,0,0,0.4)]'
+                      : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.03]',
                   ].join(' ')}
                 >
                   {t}
@@ -263,8 +266,8 @@ export default function ClarkChat({ active, toolLabel }: Props) {
               {tokens.map((token, i) => (
                 <div
                   key={token.sym}
-                  className={`flex items-center px-5 py-3.5 hover:bg-white/[0.02] transition-colors cursor-pointer ${
-                    i < tokens.length - 1 ? 'border-b border-white/[0.05]' : ''
+                  className={`flex items-center px-5 py-4 hover:bg-white/[0.025] transition-colors cursor-pointer ${
+                    i < tokens.length - 1 ? 'border-b border-white/[0.04]' : ''
                   }`}
                 >
                   {/* Name */}
