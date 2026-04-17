@@ -3,10 +3,10 @@
 import { useState } from 'react'
 
 const HINT_CHIPS = [
-  'What are whales buying?',
-  'Scan a wallet',
-  'Trending on Base',
-  'Top pump signals',
+  "What's pumping on Base?",
+  'Scan a Base wallet',
+  'New Base deployments',
+  'Show Base whales',
 ]
 
 export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: string) => void }) {

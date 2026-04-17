@@ -7,29 +7,6 @@ const CHIPS = [
   'Trending on Base',
 ]
 
-const STATS = [
-  {
-    icon: (
-      <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 5px rgba(45,212,191,0.50)', flexShrink: 0 }} />
-    ),
-    label: '12,847 scans today',
-  },
-  {
-    icon: (
-      <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 5px rgba(45,212,191,0.50)', flexShrink: 0 }} />
-    ),
-    label: '98.7% AI accuracy',
-  },
-  {
-    icon: (
-      <svg width="11" height="11" viewBox="0 0 13 13" fill="none">
-        <path d="M2 9L5 6L7.5 8.5L11 4" stroke="#2DD4BF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-        <path d="M9 4H11V6" stroke="#2DD4BF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
-    ),
-    label: '150+ sources',
-  },
-]
 
 interface HeroSectionProps {
   onTyping?: (typing: boolean) => void
@@ -202,7 +179,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
             filter: 'drop-shadow(0 2px 20px rgba(139,92,246,0.24))',
           }}
         >
-          <span style={{ color: '#ffffff' }}>See The </span>
+          <span style={{ color: '#ffffff' }}>See the </span>
           <span style={{ color: '#2DD4BF' }}>Market</span>
           <br />
           <span style={{ background: 'linear-gradient(95deg, #9b72f7 0%, #ee60ad 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
@@ -368,30 +345,21 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
                   ))}
                 </div>
 
-                {/* Stats row */}
+                {/* Info footer */}
                 <div
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: '6px',
+                    gap: '7px',
                     paddingTop: '12px',
                     borderTop: '1px solid rgba(255,255,255,0.05)',
                   }}
                 >
-                  {STATS.map((stat, i) => (
-                    <>
-                      {i > 0 && (
-                        <span key={`sep-${i}`} style={{ color: 'rgba(255,255,255,0.12)', fontSize: '10px' }}>•</span>
-                      )}
-                      <div key={stat.label} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        {stat.icon}
-                        <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.38)', fontFamily: 'var(--font-inter)', letterSpacing: '0.01em' }}>
-                          {stat.label}
-                        </span>
-                      </div>
-                    </>
-                  ))}
+                  <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 5px rgba(45,212,191,0.55)', flexShrink: 0 }} />
+                  <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em' }}>
+                    POWERED BY CORTEX ENGINE&nbsp;&nbsp;•&nbsp;&nbsp;LIVE BASE DATA
+                  </span>
                 </div>
               </div>
             </div>

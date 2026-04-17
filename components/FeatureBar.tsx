@@ -61,9 +61,9 @@ function IcTokenScanner() {
 function IcDevWalletDetector() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="16 18 22 12 16 6"/>
-      <polyline points="8 6 2 12 8 18"/>
-      <line x1="12" y1="4" x2="12" y2="20" strokeWidth="1.2" strokeDasharray="2 2"/>
+      <path d="m18 16 4-4-4-4"/>
+      <path d="m6 8-4 4 4 4"/>
+      <path d="m14.5 4-5 16"/>
     </svg>
   )
 }
@@ -71,7 +71,7 @@ function IcLiquiditySafety() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-      <path d="M12 8c0 0-2.5 2.5-2.5 4.5a2.5 2.5 0 0 0 5 0C14.5 10.5 12 8 12 8z"/>
+      <path d="m9 12 2 2 4-4"/>
     </svg>
   )
 }
