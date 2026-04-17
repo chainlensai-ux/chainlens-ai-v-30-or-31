@@ -183,7 +183,7 @@ export default function Navbar() {
 
         {/* Auth buttons */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-          <Link href="/app" style={{
+          <Link href="/auth" style={{
             padding: '7px 16px',
             border: '1px solid rgba(139,92,246,0.28)',
             borderRadius: '8px',

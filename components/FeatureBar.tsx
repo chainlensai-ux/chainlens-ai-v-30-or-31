@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 
@@ -257,6 +258,7 @@ interface Props {
 }
 
 export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }: Props) {
+  const router = useRouter()
   return (
     <aside
       className="h-screen shrink-0 flex flex-col"
@@ -375,6 +377,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
           {/* Sign In — dark neutral ghost */}
           <button
             className="flex-1"
+            onClick={() => router.push('/auth')}
             style={{
               height: '30px',
               borderRadius: '8px',
@@ -405,6 +408,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
           {/* Sign Up — purple tint */}
           <button
             className="flex-1 active:scale-[0.98]"
+            onClick={() => router.push('/auth')}
             style={{
               height: '30px',
               borderRadius: '8px',
