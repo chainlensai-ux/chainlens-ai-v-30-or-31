@@ -10,17 +10,13 @@ const CHIPS = [
 const STATS = [
   {
     icon: (
-      <svg width="11" height="11" viewBox="0 0 13 13" fill="none">
-        <path d="M6.5 1L7.9 4.6H11.7L8.7 6.8L9.9 10.4L6.5 8.2L3.1 10.4L4.3 6.8L1.3 4.6H5.1L6.5 1Z" fill="#2DD4BF"/>
-      </svg>
+      <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 5px rgba(45,212,191,0.50)', flexShrink: 0 }} />
     ),
     label: '12,847 scans today',
   },
   {
     icon: (
-      <svg width="11" height="11" viewBox="0 0 13 13" fill="none">
-        <path d="M6.5 1.5L7.7 4.9H11.3L8.4 6.9L9.6 10.3L6.5 8.3L3.4 10.3L4.6 6.9L1.7 4.9H5.3L6.5 1.5Z" fill="#2DD4BF"/>
-      </svg>
+      <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 5px rgba(45,212,191,0.50)', flexShrink: 0 }} />
     ),
     label: '98.7% AI accuracy',
   },
@@ -196,19 +192,20 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
         {/* Headline */}
         <h1
           style={{
-            fontSize: 'clamp(30px, 4.2vw, 52px)',
-            fontWeight: 700,
-            lineHeight: 1.05,
-            letterSpacing: '-0.025em',
+            fontSize: 'clamp(22px, 3.1vw, 39px)',
+            fontWeight: 500,
+            lineHeight: 1.02,
+            letterSpacing: '-0.02em',
             marginBottom: '14px',
             maxWidth: '720px',
             fontFamily: 'var(--font-inter)',
+            filter: 'drop-shadow(0 2px 16px rgba(139,92,246,0.18))',
           }}
         >
           <span style={{ color: '#ffffff' }}>See The </span>
           <span style={{ color: '#2DD4BF' }}>Market</span>
           <br />
-          <span style={{ background: 'linear-gradient(95deg, #8b5cf6 0%, #ec4899 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+          <span style={{ background: 'linear-gradient(95deg, #a78bfa 0%, #f472b6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
             Before It Moves
           </span>
         </h1>
@@ -304,9 +301,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
                       boxShadow: '0 0 10px rgba(139,92,246,0.18)',
                     }}
                   >
-                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                      <path d="M8 2L9.2 6.8H14L10.4 9.4L11.6 14L8 11.4L4.4 14L5.6 9.4L2 6.8H6.8L8 2Z" fill="#a78bfa"/>
-                    </svg>
+                    <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#a78bfa', boxShadow: '0 0 8px rgba(139,92,246,0.70)' }} />
                   </div>
 
                   {/* Input */}

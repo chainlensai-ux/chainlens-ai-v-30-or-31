@@ -113,9 +113,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
                 flexShrink: 0,
               }}
             >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                <path d="M8 2L9.2 6.8H14L10.4 9.4L11.6 14L8 11.4L4.4 14L5.6 9.4L2 6.8H6.8L8 2Z" fill="#c084fc"/>
-              </svg>
+              <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 7px rgba(45,212,191,0.75)' }} />
             </div>
             <span
               style={{
@@ -203,9 +201,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
                 boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)',
               }}
             >
-              <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-                <path d="M8 2L9.2 6.8H14L10.4 9.4L11.6 14L8 11.4L4.4 14L5.6 9.4L2 6.8H6.8L8 2Z" fill="#c084fc"/>
-              </svg>
+              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 10px rgba(45,212,191,0.65)' }} />
             </div>
 
             <div>
