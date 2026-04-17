@@ -57,6 +57,24 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
           box-shadow: 0 0 10px rgba(139,92,246,0.12), 0 0 6px rgba(236,72,153,0.06);
         }
         .clark-panel-input::placeholder { color: rgba(255,255,255,0.40); }
+        @keyframes radarSendGlow {
+          0%, 100% { box-shadow: 0 0 10px rgba(236,72,153,0.42), 0 0 6px rgba(139,92,246,0.30); }
+          50%       { box-shadow: 0 0 22px rgba(236,72,153,0.72), 0 0 16px rgba(139,92,246,0.52), 0 0 30px rgba(236,72,153,0.20); }
+        }
+        @keyframes radarArrowPulse {
+          0%, 100% { opacity: 1; transform: translateX(0); }
+          50%       { opacity: 0.60; transform: translateX(1.5px); }
+        }
+        .clark-radar-send {
+          animation: radarSendGlow 3s ease-in-out infinite;
+          transition: transform 0.15s;
+        }
+        .clark-radar-send:hover {
+          transform: scale(1.12);
+          box-shadow: 0 0 28px rgba(236,72,153,0.82), 0 0 18px rgba(139,92,246,0.62) !important;
+          animation: none;
+        }
+        .clark-radar-arrow { animation: radarArrowPulse 2.5s ease-in-out infinite; display: inline-flex; }
       `}</style>
 
       <div
@@ -253,13 +271,13 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
               display: 'flex',
               alignItems: 'center',
               gap: '7px',
-              background: 'rgba(5,8,22,0.60)',
+              background: 'linear-gradient(135deg, rgba(5,8,22,0.65) 0%, rgba(45,212,191,0.04) 55%, rgba(139,92,246,0.03) 100%)',
               border: '1px solid rgba(255,255,255,0.10)',
               borderRadius: '11px',
               padding: '7px 7px 7px 12px',
               backdropFilter: 'blur(24px)',
               WebkitBackdropFilter: 'blur(24px)',
-              boxShadow: 'inset 0 0 16px rgba(139,92,246,0.07), inset 0 0 10px rgba(236,72,153,0.04), inset 0 1px 0 rgba(255,255,255,0.05)',
+              boxShadow: 'inset 0 0 20px rgba(45,212,191,0.08), inset 0 0 14px rgba(236,72,153,0.06), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(139,92,246,0.10), 0 0 8px rgba(45,212,191,0.06)',
             }}
           >
             <input
@@ -281,6 +299,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
               }}
             />
             <button
+              className={input.trim() ? 'clark-radar-send' : undefined}
               style={{
                 flexShrink: 0,
                 width: '28px',
@@ -296,35 +315,19 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: input.trim() ? 'pointer' : 'default',
-                transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.12s',
-                boxShadow: input.trim()
-                  ? '0 0 12px rgba(139,92,246,0.35), 0 0 5px rgba(236,72,153,0.18)'
-                  : 'none',
-              }}
-              onMouseEnter={e => {
-                if (input.trim()) {
-                  const el = e.currentTarget as HTMLButtonElement
-                  el.style.transform = 'scale(1.10)'
-                  el.style.boxShadow = '0 0 20px rgba(139,92,246,0.55), 0 0 10px rgba(236,72,153,0.30)'
-                }
-              }}
-              onMouseLeave={e => {
-                const el = e.currentTarget as HTMLButtonElement
-                el.style.transform = 'scale(1)'
-                el.style.boxShadow = input.trim()
-                  ? '0 0 12px rgba(139,92,246,0.35), 0 0 5px rgba(236,72,153,0.18)'
-                  : 'none'
               }}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M5 12h14M13 6l6 6-6 6"
-                  stroke={input.trim() ? '#fff' : 'rgba(255,255,255,0.22)'}
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <span className={input.trim() ? 'clark-radar-arrow' : undefined} style={{ display: 'inline-flex' }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M5 12h14M13 6l6 6-6 6"
+                    stroke={input.trim() ? '#fff' : 'rgba(255,255,255,0.22)'}
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
             </button>
           </div>
 
