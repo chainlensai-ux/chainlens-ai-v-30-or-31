@@ -49,6 +49,20 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
           0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(45,212,191,0.90); }
           50%       { opacity: 0.35; box-shadow: 0 0 3px rgba(45,212,191,0.25); }
         }
+        @keyframes heroBlobMint {
+          0%, 100% { transform: translate(0px, 0px) scale(1); }
+          30%       { transform: translate(28px, -18px) scale(1.06); }
+          65%       { transform: translate(-18px, 22px) scale(0.96); }
+        }
+        @keyframes heroBlobPink {
+          0%, 100% { transform: translate(0px, 0px) scale(1); }
+          40%       { transform: translate(-24px, 16px) scale(1.04); }
+          75%       { transform: translate(20px, -14px) scale(0.97); }
+        }
+        @keyframes heroBlobPurple {
+          0%, 100% { transform: translate(0px, 0px) scale(1); }
+          50%       { transform: translate(16px, 24px) scale(1.05); }
+        }
         @keyframes sendGlowPulse {
           0%, 100% { box-shadow: 0 0 10px rgba(236,72,153,0.40), 0 0 6px rgba(139,92,246,0.28); }
           50%       { box-shadow: 0 0 22px rgba(236,72,153,0.70), 0 0 16px rgba(139,92,246,0.50), 0 0 32px rgba(236,72,153,0.22); }
@@ -101,8 +115,54 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
           flexDirection: 'column',
           alignItems: 'center',
           textAlign: 'center',
+          position: 'relative',
+          overflow: 'hidden',
         }}
       >
+        {/* ── Gradient mesh blobs ── */}
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
+          {/* Mint blob — top-left */}
+          <div style={{
+            position: 'absolute',
+            top: '-40px',
+            left: '-60px',
+            width: '420px',
+            height: '320px',
+            borderRadius: '50%',
+            background: 'rgba(45,212,191,0.10)',
+            filter: 'blur(110px)',
+            animation: 'heroBlobMint 26s ease-in-out infinite',
+          }} />
+          {/* Pink blob — bottom-right */}
+          <div style={{
+            position: 'absolute',
+            bottom: '-30px',
+            right: '-50px',
+            width: '360px',
+            height: '280px',
+            borderRadius: '50%',
+            background: 'rgba(236,72,153,0.08)',
+            filter: 'blur(100px)',
+            animation: 'heroBlobPink 32s ease-in-out infinite',
+          }} />
+          {/* Purple blob — center */}
+          <div style={{
+            position: 'absolute',
+            top: '30%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: '400px',
+            height: '260px',
+            borderRadius: '50%',
+            background: 'rgba(139,92,246,0.07)',
+            filter: 'blur(120px)',
+            animation: 'heroBlobPurple 22s ease-in-out infinite',
+          }} />
+        </div>
+
+        {/* ── Content (above blobs) ── */}
+        <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
+
         {/* LIVE badge */}
         <div
           style={{
@@ -342,6 +402,8 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
             </div>
           </div>
         </div>
+
+        </div>{/* end content wrapper */}
       </section>
     </>
   )
