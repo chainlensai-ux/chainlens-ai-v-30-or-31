@@ -63,17 +63,20 @@ export default function ClarkChat({ active, onTyping, initialMessage }: ClarkCha
   // useState setters and refs are guaranteed stable by React, so [] deps is correct.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const executeSend = useCallback(async (text: string) => {
+    console.log('executeSend sending:', text)
     setMessages(prev => [...prev, { role: 'user', text }])
     setLoading(true)
     setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
 
     try {
       const body = parseMessage(text)
+      console.log('POST → /api/clark')
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
+      console.log('Response status:', res.status)
 
       const json = await res.json()
       const reply = json.ok
@@ -106,6 +109,7 @@ export default function ClarkChat({ active, onTyping, initialMessage }: ClarkCha
   }, [initialMessage, executeSend])
 
   function handleSend() {
+    console.log('handleSend fired with:', input)
     const text = input.trim()
     if (!text || loading) return
     setInput('')
