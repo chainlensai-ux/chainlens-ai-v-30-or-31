@@ -57,11 +57,11 @@ export default function HomePage() {
 
       <Navbar />
 
-      <div className="relative min-h-screen bg-[#07070f] overflow-hidden" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="relative min-h-screen bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* Scattered-star background */}
         <div style={{
-          position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
+          position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: -1,
           backgroundImage: [
             'radial-gradient(1px 1px at 12% 18%, rgba(255,255,255,0.18) 0%, transparent 100%)',
             'radial-gradient(1px 1px at 28% 55%, rgba(255,255,255,0.12) 0%, transparent 100%)',
