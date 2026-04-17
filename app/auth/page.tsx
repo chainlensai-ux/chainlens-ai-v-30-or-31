@@ -1,7 +1,7 @@
 'use client';
 
 import Image from 'next/image';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -10,6 +10,20 @@ type Mode = 'signin' | 'signup';
 export default function AuthPage() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>('signin');
+
+  useEffect(() => {
+    // Redirect immediately if already signed in
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) router.replace('/terminal');
+    });
+
+    // Redirect on any future sign-in event (OAuth callback, email confirm, etc.)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_IN') router.replace('/terminal');
+    });
+
+    return () => subscription.unsubscribe();
+  }, [router]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
