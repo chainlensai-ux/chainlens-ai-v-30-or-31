@@ -169,7 +169,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
             border: '1px solid rgba(45,212,191,0.16)',
             borderRadius: '100px',
             padding: '5px 12px',
-            marginBottom: '14px',
+            marginBottom: '20px',
           }}
         >
           <div
@@ -192,20 +192,20 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
         {/* Headline */}
         <h1
           style={{
-            fontSize: 'clamp(22px, 3.1vw, 39px)',
-            fontWeight: 500,
-            lineHeight: 1.02,
-            letterSpacing: '-0.02em',
-            marginBottom: '14px',
+            fontSize: 'clamp(25px, 3.5vw, 44px)',
+            fontWeight: 600,
+            lineHeight: 1.06,
+            letterSpacing: '-0.01em',
+            marginBottom: '20px',
             maxWidth: '720px',
             fontFamily: 'var(--font-inter)',
-            filter: 'drop-shadow(0 2px 16px rgba(139,92,246,0.18))',
+            filter: 'drop-shadow(0 2px 20px rgba(139,92,246,0.24))',
           }}
         >
           <span style={{ color: '#ffffff' }}>See The </span>
           <span style={{ color: '#2DD4BF' }}>Market</span>
           <br />
-          <span style={{ background: 'linear-gradient(95deg, #a78bfa 0%, #f472b6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+          <span style={{ background: 'linear-gradient(95deg, #9b72f7 0%, #ee60ad 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
             Before It Moves
           </span>
         </h1>
