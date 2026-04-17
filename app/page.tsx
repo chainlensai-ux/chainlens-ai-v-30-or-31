@@ -57,7 +57,7 @@ export default function HomePage() {
 
       <Navbar />
 
-      <div className="relative min-h-screen bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* Scattered-star background */}
         <div style={{
