@@ -8,6 +8,7 @@ import ClarkRadar from '@/components/ClarkRadar'
 export default function TerminalPage() {
   const [active, setActive] = useState('dashboard')
   const [isTyping, setIsTyping] = useState(false)
+  const [pendingMessage, setPendingMessage] = useState<string | null>(null)
 
   return (
     <>
@@ -49,7 +50,7 @@ export default function TerminalPage() {
           className="flex-1 overflow-y-auto min-w-0 flex flex-col"
           style={{ position: 'relative', zIndex: 1 }}
         >
-          <ClarkChat mode="full" active={active} onTyping={setIsTyping} />
+          <ClarkChat mode="hero" active={active} onTyping={setIsTyping} onSend={(msg) => setPendingMessage(msg)} />
         </main>
 
         <aside
@@ -63,7 +64,7 @@ export default function TerminalPage() {
             zIndex: 1,
           }}
         >
-          <ClarkRadar onSelectRadar={setActive} />
+          <ClarkRadar onSelectRadar={setActive} pendingMessage={pendingMessage} />
         </aside>
       </div>
     </>

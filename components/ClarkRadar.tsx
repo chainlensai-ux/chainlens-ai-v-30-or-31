@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 
 const HINT_CHIPS = [
   "What's pumping on Base?",
@@ -9,8 +9,106 @@ const HINT_CHIPS = [
   'Show Base whales',
 ]
 
-export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: string) => void }) {
+interface Message {
+  role: 'user' | 'clark'
+  text: string
+}
+
+function parseMessage(raw: string): Record<string, string> {
+  const t = raw.trim().toLowerCase()
+  const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
+  const address = addrMatch?.[0]
+
+  if (t.startsWith('scan token') && address)
+    return { feature: 'token-scanner', tokenAddress: address }
+  if (t.startsWith('scan wallet') && address)
+    return { feature: 'wallet-scanner', walletAddress: address }
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes('pumping') || t.includes('deployments') || t.includes('whales'))
+    return { feature: 'base-radar' }
+  if (t.startsWith('liquidity') && address)
+    return { feature: 'liquidity-safety', tokenAddress: address }
+  if (t.startsWith('dev wallet') && address)
+    return { feature: 'dev-wallet-detector', tokenAddress: address }
+  if (t.includes('whale') && address)
+    return { feature: 'whale-alerts', walletAddress: address }
+  if (t.includes('pump') && address)
+    return { feature: 'pump-alerts', tokenAddress: address }
+
+  return { feature: 'clark-ai', prompt: raw.trim() }
+}
+
+function formatResponse(data: Record<string, unknown>): string {
+  if (typeof data?.analysis === 'string') return data.analysis
+  return JSON.stringify(data, null, 2)
+}
+
+interface ClarkRadarProps {
+  onSelectRadar?: (val: string) => void
+  pendingMessage?: string | null
+}
+
+export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadarProps) {
+  const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const lastSentRef = useRef<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [messages])
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const sendToClark = useCallback(async (text: string) => {
+    setMessages(prev => [...prev, { role: 'user', text }])
+    setLoading(true)
+    setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
+
+    try {
+      const body = parseMessage(text)
+      const res = await fetch('/api/clark', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const json = await res.json()
+      const reply = json.ok
+        ? formatResponse(json.data as Record<string, unknown>)
+        : (json.error ?? 'Something went wrong.')
+
+      setMessages(prev => {
+        const next = [...prev]
+        next[next.length - 1] = { role: 'clark', text: reply }
+        return next
+      })
+    } catch {
+      setMessages(prev => {
+        const next = [...prev]
+        next[next.length - 1] = { role: 'clark', text: 'Clark backend unreachable.' }
+        return next
+      })
+    } finally {
+      setLoading(false)
+      inputRef.current?.focus()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (pendingMessage && pendingMessage !== lastSentRef.current) {
+      lastSentRef.current = pendingMessage
+      sendToClark(pendingMessage)
+    }
+  }, [pendingMessage, sendToClark])
+
+  function handleSend() {
+    const text = input.trim()
+    if (!text || loading) return
+    setInput('')
+    sendToClark(text)
+  }
 
   return (
     <>
@@ -75,6 +173,18 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
           animation: none;
         }
         .clark-radar-arrow { animation: radarArrowPulse 2.5s ease-in-out infinite; display: inline-flex; }
+        .clark-radar-scroll::-webkit-scrollbar { width: 3px; }
+        .clark-radar-scroll::-webkit-scrollbar-thumb {
+          background: rgba(123,92,255,0.30);
+          border-radius: 3px;
+        }
+        @keyframes radarThinkingDot {
+          0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
+          40%            { opacity: 1;   transform: translateY(-3px); }
+        }
+        .radar-dot { display: inline-block; animation: radarThinkingDot 1.2s ease-in-out infinite; }
+        .radar-dot:nth-child(2) { animation-delay: 0.15s; }
+        .radar-dot:nth-child(3) { animation-delay: 0.30s; }
       `}</style>
 
       <div
@@ -184,6 +294,8 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
 
         {/* ── Messages area ───────────────────────────────── */}
         <div
+          ref={scrollRef}
+          className="clark-radar-scroll"
           style={{
             flex: 1,
             overflowY: 'auto',
@@ -193,69 +305,137 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
             gap: '8px',
           }}
         >
-          {/* Empty state */}
-          <div
-            style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              textAlign: 'center',
-              padding: '24px 12px',
-              gap: '10px',
-            }}
-          >
-            {/* Orb */}
+          {messages.length === 0 ? (
+            /* Empty state */
             <div
               style={{
-                width: '44px',
-                height: '44px',
-                borderRadius: '14px',
-                background: 'linear-gradient(135deg, rgba(236,72,153,0.18), rgba(139,92,246,0.22))',
-                border: '1px solid rgba(139,92,246,0.28)',
+                flex: 1,
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)',
+                textAlign: 'center',
+                padding: '24px 12px',
+                gap: '10px',
               }}
             >
-              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 10px rgba(45,212,191,0.65)' }} />
-            </div>
-
-            <div>
-              <p
+              {/* Orb */}
+              <div
                 style={{
-                  fontSize: '12px',
-                  fontWeight: 500,
-                  color: 'rgba(255,255,255,0.55)',
-                  fontFamily: 'var(--font-inter)',
-                  marginBottom: '6px',
-                  lineHeight: 1.5,
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '14px',
+                  background: 'linear-gradient(135deg, rgba(236,72,153,0.18), rgba(139,92,246,0.22))',
+                  border: '1px solid rgba(139,92,246,0.28)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)',
                 }}
               >
-                Ask Clark anything about wallets,<br />
-                smart money, tokens, or market moves.
-              </p>
-              <p style={{ fontSize: '10px', color: 'rgba(255,255,255,0.24)', fontFamily: 'var(--font-inter)', lineHeight: 1.6 }}>
-                Responses will appear here
-              </p>
-            </div>
+                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 10px rgba(45,212,191,0.65)' }} />
+              </div>
 
-            {/* Hint chips */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', width: '100%', marginTop: '6px' }}>
-              {HINT_CHIPS.map((chip) => (
-                <button
-                  key={chip}
-                  className="clark-hint-chip"
-                  onClick={() => setInput(chip)}
+              <div>
+                <p
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: 'rgba(255,255,255,0.55)',
+                    fontFamily: 'var(--font-inter)',
+                    marginBottom: '6px',
+                    lineHeight: 1.5,
+                  }}
                 >
-                  <span style={{ color: 'rgba(192,132,252,0.65)', fontSize: '11px', flexShrink: 0 }}>→</span>
-                  {chip}
-                </button>
-              ))}
+                  Ask Clark anything about wallets,<br />
+                  smart money, tokens, or market moves.
+                </p>
+                <p style={{ fontSize: '10px', color: 'rgba(255,255,255,0.24)', fontFamily: 'var(--font-inter)', lineHeight: 1.6 }}>
+                  Responses will appear here
+                </p>
+              </div>
+
+              {/* Hint chips */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', width: '100%', marginTop: '6px' }}>
+                {HINT_CHIPS.map((chip) => (
+                  <button
+                    key={chip}
+                    className="clark-hint-chip"
+                    onClick={() => sendToClark(chip)}
+                  >
+                    <span style={{ color: 'rgba(192,132,252,0.65)', fontSize: '11px', flexShrink: 0 }}>→</span>
+                    {chip}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          ) : (
+            /* Message list */
+            <>
+              {messages.map((msg, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                  }}
+                >
+                  {msg.role === 'clark' && (
+                    <div style={{
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #7b5cff, #4ef2c5)',
+                      flexShrink: 0,
+                      marginRight: '6px',
+                      alignSelf: 'flex-end',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '8px',
+                      fontWeight: 800,
+                      color: '#050816',
+                      fontFamily: 'var(--font-plex-mono)',
+                    }}>C</div>
+                  )}
+                  <div style={{
+                    maxWidth: '82%',
+                    padding: '9px 12px',
+                    borderRadius: msg.role === 'user'
+                      ? '12px 12px 3px 12px'
+                      : '12px 12px 12px 3px',
+                    background: msg.role === 'user'
+                      ? 'rgba(45,212,191,0.10)'
+                      : 'rgba(123,92,255,0.10)',
+                    border: `1px solid ${msg.role === 'user'
+                      ? 'rgba(45,212,191,0.18)'
+                      : 'rgba(123,92,255,0.18)'}`,
+                    color: msg.text === 'Clark is thinking...'
+                      ? 'rgba(255,255,255,0.40)'
+                      : '#dde4f0',
+                    fontSize: '12px',
+                    lineHeight: 1.65,
+                    fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
+                      ? 'var(--font-plex-mono)'
+                      : 'var(--font-inter), Inter, sans-serif',
+                    whiteSpace: msg.text.startsWith('{') || msg.text.startsWith('[')
+                      ? 'pre-wrap'
+                      : 'normal',
+                    wordBreak: 'break-word',
+                  }}>
+                    {msg.text === 'Clark is thinking...' ? (
+                      <span>
+                        Clark is thinking
+                        <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
+                        <span className="radar-dot">.</span>
+                        <span className="radar-dot">.</span>
+                      </span>
+                    ) : msg.text}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
         </div>
 
         {/* ── Input footer ────────────────────────────────── */}
@@ -282,9 +462,12 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
             }}
           >
             <input
+              ref={inputRef}
               type="text"
               value={input}
               onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
+              disabled={loading}
               placeholder="Ask Clark..."
               className="clark-panel-input"
               style={{
@@ -297,32 +480,35 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
                 fontFamily: 'var(--font-inter)',
                 caretColor: '#a78bfa',
                 minWidth: 0,
+                opacity: loading ? 0.5 : 1,
               }}
             />
             <button
-              className={input.trim() ? 'clark-radar-send' : undefined}
+              onClick={handleSend}
+              disabled={loading || !input.trim()}
+              className={input.trim() && !loading ? 'clark-radar-send' : undefined}
               style={{
                 flexShrink: 0,
                 width: '28px',
                 height: '28px',
                 borderRadius: '50%',
-                background: input.trim()
+                background: input.trim() && !loading
                   ? 'linear-gradient(135deg, #ec4899, #8b5cf6)'
                   : 'rgba(255,255,255,0.05)',
-                border: input.trim()
+                border: input.trim() && !loading
                   ? '1px solid rgba(236,72,153,0.40)'
                   : '1px solid rgba(255,255,255,0.07)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                cursor: input.trim() ? 'pointer' : 'default',
+                cursor: input.trim() && !loading ? 'pointer' : 'default',
               }}
             >
-              <span className={input.trim() ? 'clark-radar-arrow' : undefined} style={{ display: 'inline-flex' }}>
+              <span className={input.trim() && !loading ? 'clark-radar-arrow' : undefined} style={{ display: 'inline-flex' }}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
                   <path
                     d="M5 12h14M13 6l6 6-6 6"
-                    stroke={input.trim() ? '#fff' : 'rgba(255,255,255,0.22)'}
+                    stroke={input.trim() && !loading ? '#fff' : 'rgba(255,255,255,0.22)'}
                     strokeWidth="2"
                     strokeLinecap="round"
                     strokeLinejoin="round"

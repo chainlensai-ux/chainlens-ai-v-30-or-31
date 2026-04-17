@@ -7,8 +7,9 @@ import HomeTokenScreener from '@/components/HomeTokenScreener'
 interface ClarkChatProps {
   active: string | null
   onTyping?: (typing: boolean) => void
+  onSend?: (text: string) => void
   initialMessage?: string | null
-  mode?: 'full' | 'panel'
+  mode?: 'full' | 'panel' | 'hero'
 }
 
 interface Message {
@@ -46,7 +47,7 @@ function formatResponse(data: Record<string, unknown>): string {
   return JSON.stringify(data, null, 2)
 }
 
-export default function ClarkChat({ active, onTyping, initialMessage, mode = 'full' }: ClarkChatProps) {
+export default function ClarkChat({ active, onTyping, onSend, initialMessage, mode = 'full' }: ClarkChatProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -188,11 +189,11 @@ export default function ClarkChat({ active, onTyping, initialMessage, mode = 'fu
         </div>
 
         {/* ── Existing content ─────────────────────────── */}
-        <HeroSection onTyping={onTyping} />
+        <HeroSection onTyping={onTyping} onSend={onSend} />
         <HomeTokenScreener />
 
         {/* ── Chat UI ──────────────────────────────────── */}
-        <div style={{
+        {mode !== 'hero' && <div style={{
           display: 'flex', flexDirection: 'column',
           borderTop: '1px solid rgba(123,92,255,0.14)',
           background: 'rgba(5,8,22,0.80)',
@@ -347,7 +348,7 @@ export default function ClarkChat({ active, onTyping, initialMessage, mode = 'fu
               </button>
             </div>
           )}
-        </div>
+        </div>}
 
       </div>
     </>

@@ -10,9 +10,10 @@ const CHIPS = [
 
 interface HeroSectionProps {
   onTyping?: (typing: boolean) => void
+  onSend?: (text: string) => void
 }
 
-export default function HeroSection({ onTyping }: HeroSectionProps) {
+export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
   const [query, setQuery] = useState('')
 
   return (
@@ -315,6 +316,13 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
                       onTyping?.(e.target.value.length > 0)
                     }}
                     onBlur={() => { if (!query) onTyping?.(false) }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && query.trim()) {
+                        onSend?.(query.trim())
+                        setQuery('')
+                        onTyping?.(false)
+                      }
+                    }}
                     placeholder="Ask Clark what whales are buying today..."
                     className="clark-box-input"
                     style={{
@@ -332,6 +340,13 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
                   {/* Send button */}
                   <button
                     className="clark-send-btn"
+                    onClick={() => {
+                      if (query.trim()) {
+                        onSend?.(query.trim())
+                        setQuery('')
+                        onTyping?.(false)
+                      }
+                    }}
                     style={{
                       flexShrink: 0,
                       width: '34px',
