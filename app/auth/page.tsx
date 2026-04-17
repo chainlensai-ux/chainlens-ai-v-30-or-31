@@ -63,15 +63,7 @@ export default function AuthPage() {
 
         {/* Logo */}
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '24px' }}>
-          <div style={{
-            width: '52px', height: '52px', borderRadius: '14px',
-            background: 'linear-gradient(135deg, rgba(45,212,191,0.15), rgba(139,92,246,0.18))',
-            border: '1px solid rgba(45,212,191,0.22)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 0 24px rgba(45,212,191,0.14), 0 0 14px rgba(139,92,246,0.10)',
-          }}>
-            <Image src="/cl-logo.png" alt="ChainLens" width={32} height={32} style={{ borderRadius: '6px' }} />
-          </div>
+          <Image src="/cl-logo.png" alt="ChainLens" width={72} height={72} />
         </div>
 
         {/* Heading */}
