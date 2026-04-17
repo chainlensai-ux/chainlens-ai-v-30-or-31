@@ -20,7 +20,7 @@ export default function AuthPage() {
     setError(null);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}/terminal` },
+      options: { redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/terminal` },
     });
     if (error) setError(error.message);
   }
@@ -42,7 +42,7 @@ export default function AuthPage() {
       const { error } = await supabase.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: `${window.location.origin}/terminal` },
+        options: { emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/terminal` },
       });
       if (error) {
         setError(error.message);
