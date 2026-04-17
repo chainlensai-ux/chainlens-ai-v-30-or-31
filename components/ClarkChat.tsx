@@ -297,7 +297,7 @@ export default function ClarkChat({ active, onTyping, initialMessage }: ClarkCha
               type="text"
               value={input}
               onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleSend() }}
+              onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
               disabled={loading}
               placeholder="scan token 0x…  ·  base radar  ·  clark ai: …"
               style={{
