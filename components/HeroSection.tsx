@@ -54,6 +54,15 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
           animation: none;
         }
         .clark-send-arrow { animation: arrowPulse 2.5s ease-in-out infinite; display: inline-block; }
+        @keyframes taglineFadeUp {
+          from { opacity: 0; transform: translateY(4px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .clark-tagline {
+          animation: taglineFadeUp 300ms ease-out 200ms both;
+          transition: opacity 0.25s ease;
+        }
+        .clark-tagline:hover { opacity: 0.85; }
         .clark-chip {
           background: rgba(255,255,255,0.04);
           border: 1px solid rgba(255,255,255,0.08);
@@ -202,6 +211,21 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
         >
           Track smart money, scan wallets, detect pumps, and discover Base
           opportunities in real time.
+        </p>
+
+        {/* Supporting tagline */}
+        <p
+          className="clark-tagline"
+          style={{
+            fontSize: '12px',
+            color: 'rgba(255,255,255,0.28)',
+            fontFamily: 'var(--font-inter)',
+            fontWeight: 400,
+            letterSpacing: '0.01em',
+            marginBottom: '16px',
+          }}
+        >
+          Clark processes the data. You press the buttons.
         </p>
 
         {/* Command box wrapper */}
