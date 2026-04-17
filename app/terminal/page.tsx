@@ -49,7 +49,7 @@ export default function TerminalPage() {
           className="flex-1 overflow-y-auto min-w-0 flex flex-col"
           style={{ position: 'relative', zIndex: 1 }}
         >
-          <ClarkChat active={active} onTyping={setIsTyping} />
+          <ClarkChat mode="full" active={active} onTyping={setIsTyping} />
         </main>
 
         <aside

@@ -65,7 +65,7 @@ export default function HomeClarkPanel({ open, initialMessage, onClose }: HomeCl
           flexDirection: 'column',
         }}
       >
-        <ClarkChat active={null} initialMessage={initialMessage} />
+        <ClarkChat mode="panel" active={null} initialMessage={initialMessage} />
       </div>
     </div>
   )

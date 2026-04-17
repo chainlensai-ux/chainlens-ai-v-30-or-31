@@ -8,6 +8,7 @@ interface ClarkChatProps {
   active: string | null
   onTyping?: (typing: boolean) => void
   initialMessage?: string | null
+  mode?: 'full' | 'panel'
 }
 
 interface Message {
@@ -45,7 +46,7 @@ function formatResponse(data: Record<string, unknown>): string {
   return JSON.stringify(data, null, 2)
 }
 
-export default function ClarkChat({ active, onTyping, initialMessage }: ClarkChatProps) {
+export default function ClarkChat({ active, onTyping, initialMessage, mode = 'full' }: ClarkChatProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -290,60 +291,62 @@ export default function ClarkChat({ active, onTyping, initialMessage }: ClarkCha
             ))}
           </div>
 
-          {/* Input row */}
-          <div style={{
-            padding: '10px 20px 18px',
-            borderTop: '1px solid rgba(255,255,255,0.05)',
-            display: 'flex', gap: '8px', alignItems: 'center',
-          }}>
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
-              disabled={loading}
-              placeholder="scan token 0x…  ·  base radar  ·  clark ai: …"
-              style={{
-                flex: 1,
-                padding: '10px 14px',
-                borderRadius: '10px',
-                background: 'rgba(5,8,22,0.70)',
-                border: '1px solid rgba(123,92,255,0.22)',
-                color: '#e2e8f0',
-                fontSize: '12.5px',
-                fontFamily: 'var(--font-inter), Inter, sans-serif',
-                outline: 'none',
-                opacity: loading ? 0.5 : 1,
-                transition: 'border-color 0.15s, opacity 0.15s',
-              }}
-              onFocus={e => { e.currentTarget.style.borderColor = 'rgba(78,242,197,0.40)' }}
-              onBlur={e => { e.currentTarget.style.borderColor = 'rgba(123,92,255,0.22)' }}
-            />
+          {/* Input row — full mode only */}
+          {mode === 'full' && (
+            <div style={{
+              padding: '10px 20px 18px',
+              borderTop: '1px solid rgba(255,255,255,0.05)',
+              display: 'flex', gap: '8px', alignItems: 'center',
+            }}>
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
+                disabled={loading}
+                placeholder="scan token 0x…  ·  base radar  ·  clark ai: …"
+                style={{
+                  flex: 1,
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  background: 'rgba(5,8,22,0.70)',
+                  border: '1px solid rgba(123,92,255,0.22)',
+                  color: '#e2e8f0',
+                  fontSize: '12.5px',
+                  fontFamily: 'var(--font-inter), Inter, sans-serif',
+                  outline: 'none',
+                  opacity: loading ? 0.5 : 1,
+                  transition: 'border-color 0.15s, opacity 0.15s',
+                }}
+                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(78,242,197,0.40)' }}
+                onBlur={e => { e.currentTarget.style.borderColor = 'rgba(123,92,255,0.22)' }}
+              />
 
-            <button
-              onClick={handleSend}
-              disabled={loading || !input.trim()}
-              style={{
-                padding: '10px 18px',
-                borderRadius: '10px',
-                border: 'none',
-                background: loading || !input.trim()
-                  ? 'rgba(123,92,255,0.20)'
-                  : 'linear-gradient(135deg, #4ef2c5 0%, #7b5cff 100%)',
-                color: loading || !input.trim() ? 'rgba(255,255,255,0.35)' : '#050816',
-                fontSize: '12px',
-                fontWeight: 700,
-                fontFamily: 'var(--font-plex-mono)',
-                cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
-                letterSpacing: '0.06em',
-                transition: 'background 0.15s, color 0.15s, opacity 0.15s',
-                flexShrink: 0,
-              }}
-            >
-              SEND
-            </button>
-          </div>
+              <button
+                onClick={handleSend}
+                disabled={loading || !input.trim()}
+                style={{
+                  padding: '10px 18px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  background: loading || !input.trim()
+                    ? 'rgba(123,92,255,0.20)'
+                    : 'linear-gradient(135deg, #4ef2c5 0%, #7b5cff 100%)',
+                  color: loading || !input.trim() ? 'rgba(255,255,255,0.35)' : '#050816',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  fontFamily: 'var(--font-plex-mono)',
+                  cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+                  letterSpacing: '0.06em',
+                  transition: 'background 0.15s, color 0.15s, opacity 0.15s',
+                  flexShrink: 0,
+                }}
+              >
+                SEND
+              </button>
+            </div>
+          )}
         </div>
 
       </div>
