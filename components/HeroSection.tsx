@@ -80,8 +80,8 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
 
       <section
         style={{
-          paddingTop: '64px',
-          paddingBottom: '28px',
+          paddingTop: '52px',
+          paddingBottom: '20px',
           paddingLeft: '24px',
           paddingRight: '24px',
           display: 'flex',
@@ -143,10 +143,11 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
             alignItems: 'center',
             gap: '7px',
             background: 'rgba(45,212,191,0.07)',
-            border: '1px solid rgba(45,212,191,0.16)',
+            border: '1px solid rgba(45,212,191,0.18)',
             borderRadius: '100px',
             padding: '5px 12px',
-            marginBottom: '20px',
+            marginBottom: '16px',
+            boxShadow: '0 0 16px rgba(45,212,191,0.14), inset 0 0 10px rgba(139,92,246,0.06)',
           }}
         >
           <div
@@ -158,7 +159,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
               animation: 'liveBlink 2.5s ease-in-out infinite',
             }}
           />
-          <span style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '0.14em', color: '#2DD4BF' }}>
+          <span style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '0.14em', color: '#2DD4BF', textShadow: '0 0 8px rgba(45,212,191,0.80)' }}>
             LIVE
           </span>
           <span style={{ fontSize: '9px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.1em', color: 'rgba(255,255,255,0.28)' }}>
@@ -171,9 +172,9 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
           style={{
             fontSize: 'clamp(25px, 3.5vw, 44px)',
             fontWeight: 600,
-            lineHeight: 1.06,
-            letterSpacing: '-0.01em',
-            marginBottom: '20px',
+            lineHeight: 1.04,
+            letterSpacing: '-0.015em',
+            marginBottom: '14px',
             maxWidth: '720px',
             fontFamily: 'var(--font-inter)',
             filter: 'drop-shadow(0 2px 20px rgba(139,92,246,0.24))',
@@ -182,7 +183,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
           <span style={{ color: '#ffffff' }}>See the </span>
           <span style={{ color: '#2DD4BF' }}>Market</span>
           <br />
-          <span style={{ background: 'linear-gradient(95deg, #9b72f7 0%, #ee60ad 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+          <span style={{ background: 'linear-gradient(95deg, #a274f8 0%, #e968b0 55%, #f472b6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
             Before It Moves
           </span>
         </h1>
@@ -367,6 +368,18 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
         </div>
 
         </div>{/* end content wrapper */}
+
+        {/* Base-themed accent line under hero */}
+        <div style={{
+          position: 'absolute',
+          bottom: 0,
+          left: '10%',
+          right: '10%',
+          height: '1px',
+          background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.10), rgba(139,92,246,0.10), transparent)',
+          pointerEvents: 'none',
+          zIndex: 1,
+        }} />
       </section>
     </>
   )

@@ -80,6 +80,7 @@ export default function ClarkChat({ active, onTyping }: ClarkChatProps) {
                 letterSpacing: '0.20em',
                 color: '#ff4b9a',
                 fontFamily: 'var(--font-plex-mono)',
+                textShadow: '0 0 10px rgba(255,75,154,0.70), 0 0 4px rgba(255,75,154,0.40)',
               }}
             >
               LIVE
@@ -104,6 +105,7 @@ export default function ClarkChat({ active, onTyping }: ClarkChatProps) {
                 letterSpacing: '0.16em',
                 color: '#4ef2c5',
                 fontFamily: 'var(--font-plex-mono)',
+                textShadow: '0 0 10px rgba(78,242,197,0.58), 0 0 4px rgba(139,92,246,0.22)',
               }}
             >
               CHAINLENS TERMINAL

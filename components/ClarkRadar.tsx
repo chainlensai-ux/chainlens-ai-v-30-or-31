@@ -106,8 +106,8 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '0 16px',
-            height: '48px',
+            padding: '0 12px',
+            height: '44px',
             background: 'rgba(8,10,20,0.90)',
             backdropFilter: 'blur(16px)',
             WebkitBackdropFilter: 'blur(16px)',
@@ -156,6 +156,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
               border: '1px solid rgba(139,92,246,0.22)',
               borderRadius: '100px',
               padding: '3px 9px',
+              boxShadow: '0 0 10px rgba(139,92,246,0.12)',
             }}
           >
             <div
@@ -186,7 +187,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
           style={{
             flex: 1,
             overflowY: 'auto',
-            padding: '16px 12px',
+            padding: '12px 10px',
             display: 'flex',
             flexDirection: 'column',
             gap: '8px',
@@ -261,7 +262,7 @@ export default function ClarkRadar({ onSelectRadar }: { onSelectRadar?: (val: st
         <div
           style={{
             flexShrink: 0,
-            padding: '8px 12px 12px',
+            padding: '6px 10px 10px',
             borderTop: '1px solid rgba(139,92,246,0.12)',
             background: 'rgba(8,10,20,0.80)',
           }}
