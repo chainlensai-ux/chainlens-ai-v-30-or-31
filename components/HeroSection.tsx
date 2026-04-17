@@ -113,7 +113,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
             border: '1px solid rgba(45,212,191,0.16)',
             borderRadius: '100px',
             padding: '5px 12px',
-            marginBottom: '20px',
+            marginBottom: '14px',
           }}
         >
           <div
@@ -140,7 +140,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
             fontWeight: 700,
             lineHeight: 1.05,
             letterSpacing: '-0.025em',
-            marginBottom: '16px',
+            marginBottom: '14px',
             maxWidth: '720px',
             fontFamily: 'var(--font-inter)',
           }}
@@ -160,7 +160,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
             lineHeight: 1.6,
             color: 'rgba(255,255,255,0.38)',
             maxWidth: '460px',
-            marginBottom: '14px',
+            marginBottom: '10px',
             fontFamily: 'var(--font-inter)',
             fontWeight: 400,
           }}
@@ -177,7 +177,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
             style={{
               position: 'absolute',
               inset: '-48px',
-              background: 'radial-gradient(ellipse 62% 52% at 50% 58%, rgba(236,72,153,0.10) 0%, rgba(139,92,246,0.10) 45%, transparent 100%)',
+              background: 'radial-gradient(ellipse 62% 52% at 50% 58%, rgba(236,72,153,0.07) 0%, rgba(139,92,246,0.07) 45%, transparent 100%)',
               pointerEvents: 'none',
               zIndex: 0,
             }}
@@ -190,7 +190,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
               zIndex: 1,
               padding: '1.5px',
               borderRadius: '17px',
-              background: 'linear-gradient(135deg, rgba(236,72,153,0.55) 0%, rgba(139,92,246,0.55) 50%, rgba(45,212,191,0.40) 100%)',
+              background: 'linear-gradient(135deg, rgba(236,72,153,0.38) 0%, rgba(139,92,246,0.38) 50%, rgba(45,212,191,0.28) 100%)',
               boxShadow: [
                 '0 0 18px rgba(236,72,153,0.10)',
                 '0 0 14px rgba(139,92,246,0.10)',
