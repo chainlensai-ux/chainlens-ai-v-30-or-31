@@ -1,9 +1,9 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
-import HomeClarkPanel from '@/components/HomeClarkPanel'
 
 // ─── Action chips inside the prompt box ───────────────────────────────────
 
@@ -43,9 +43,8 @@ const TICKER = [
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function HomePage() {
+  const router = useRouter()
   const [query, setQuery] = useState('')
-  const [showClarkPanel, setShowClarkPanel] = useState(false)
-  const [initialClarkMessage, setInitialClarkMessage] = useState<string | null>(null)
 
   return (
     <>
@@ -230,10 +229,7 @@ export default function HomePage() {
                 onChange={e => setQuery(e.target.value)}
                 onKeyDown={e => {
                   if (e.key === 'Enter' && query.trim()) {
-                    setInitialClarkMessage(query.trim())
-                    setShowClarkPanel(true)
-                    setQuery('')
-                    e.preventDefault()
+                    router.push('/terminal')
                   }
                 }}
                 placeholder="Ask Clark — scan a wallet, find early pumps, track smart money..."
@@ -248,33 +244,22 @@ export default function HomePage() {
                   minWidth: 0,
                 }}
               />
-              <button
-                onClick={() => {
-                  if (query.trim()) {
-                    setInitialClarkMessage(query.trim())
-                    setShowClarkPanel(true)
-                    setQuery('')
-                  }
-                }}
-                style={{
-                  width: '34px',
-                  height: '34px',
-                  borderRadius: '50%',
-                  background: '#8b5cf6',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  boxShadow: '0 0 16px rgba(139,92,246,0.5)',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: 0,
-                }}
-              >
+              <Link href="/terminal" style={{
+                width: '34px',
+                height: '34px',
+                borderRadius: '50%',
+                background: '#8b5cf6',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                boxShadow: '0 0 16px rgba(139,92,246,0.5)',
+                textDecoration: 'none',
+              }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                   <path d="M5 12h14M13 6l6 6-6 6" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
-              </button>
+              </Link>
             </div>
 
             {/* Box footer */}
@@ -455,12 +440,6 @@ export default function HomePage() {
 
       </div>
 
-      {/* Sliding Clark panel — triggered by Enter in the hero input */}
-      <HomeClarkPanel
-        open={showClarkPanel}
-        initialMessage={initialClarkMessage}
-        onClose={() => setShowClarkPanel(false)}
-      />
     </>
   )
 }
