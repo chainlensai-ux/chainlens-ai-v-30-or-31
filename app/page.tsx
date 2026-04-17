@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import HomeClarkPanel from '@/components/HomeClarkPanel'
 
 // ─── Action chips inside the prompt box ───────────────────────────────────
 
@@ -43,6 +44,8 @@ const TICKER = [
 
 export default function HomePage() {
   const [query, setQuery] = useState('')
+  const [showClarkPanel, setShowClarkPanel] = useState(false)
+  const [initialClarkMessage, setInitialClarkMessage] = useState<string | null>(null)
 
   return (
     <>
@@ -225,6 +228,14 @@ export default function HomePage() {
                 type="text"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && query.trim()) {
+                    setInitialClarkMessage(query.trim())
+                    setShowClarkPanel(true)
+                    setQuery('')
+                    e.preventDefault()
+                  }
+                }}
                 placeholder="Ask Clark — scan a wallet, find early pumps, track smart money..."
                 style={{
                   flex: 1,
@@ -432,6 +443,13 @@ export default function HomePage() {
         </div>
 
       </div>
+
+      {/* Sliding Clark panel — triggered by Enter in the hero input */}
+      <HomeClarkPanel
+        open={showClarkPanel}
+        initialMessage={initialClarkMessage}
+        onClose={() => setShowClarkPanel(false)}
+      />
     </>
   )
 }

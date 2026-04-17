@@ -1,12 +1,13 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import HeroSection from '@/components/HeroSection'
 import HomeTokenScreener from '@/components/HomeTokenScreener'
 
 interface ClarkChatProps {
   active: string | null
   onTyping?: (typing: boolean) => void
+  initialMessage?: string | null
 }
 
 interface Message {
@@ -44,12 +45,13 @@ function formatResponse(data: Record<string, unknown>): string {
   return JSON.stringify(data, null, 2)
 }
 
-export default function ClarkChat({ active, onTyping }: ClarkChatProps) {
+export default function ClarkChat({ active, onTyping, initialMessage }: ClarkChatProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const lastSentInitialRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -57,12 +59,11 @@ export default function ClarkChat({ active, onTyping }: ClarkChatProps) {
     }
   }, [messages])
 
-  async function handleSend() {
-    const text = input.trim()
-    if (!text || loading) return
-
+  // Stable send function — callable from both the UI and the initialMessage effect.
+  // useState setters and refs are guaranteed stable by React, so [] deps is correct.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const executeSend = useCallback(async (text: string) => {
     setMessages(prev => [...prev, { role: 'user', text }])
-    setInput('')
     setLoading(true)
     setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
 
@@ -94,6 +95,21 @@ export default function ClarkChat({ active, onTyping }: ClarkChatProps) {
       setLoading(false)
       inputRef.current?.focus()
     }
+  }, [])
+
+  // Fire once per unique initialMessage value — lets the homepage panel pre-send a query.
+  useEffect(() => {
+    if (initialMessage && initialMessage !== lastSentInitialRef.current) {
+      lastSentInitialRef.current = initialMessage
+      executeSend(initialMessage)
+    }
+  }, [initialMessage, executeSend])
+
+  function handleSend() {
+    const text = input.trim()
+    if (!text || loading) return
+    setInput('')
+    executeSend(text)
   }
 
   return (
