@@ -86,6 +86,7 @@ export default function Navbar() {
 
   return (
     <nav style={{
+      width: '100%',
       position: 'sticky',
       top: 0,
       zIndex: 100,
