@@ -55,7 +55,9 @@ export default function HomePage() {
         ::placeholder { color: rgba(255,255,255,0.3); }
       `}</style>
 
-      <div style={{ minHeight: '100vh', background: '#07070f', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Navbar />
+
+      <div className="relative min-h-screen bg-[#07070f] overflow-hidden" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* Scattered-star background */}
         <div style={{
@@ -75,11 +77,6 @@ export default function HomePage() {
             'radial-gradient(1px 1px at 70% 88%, rgba(255,255,255,0.10) 0%, transparent 100%)',
           ].join(', '),
         }} />
-
-        {/* Navbar */}
-        <div style={{ position: 'relative', zIndex: 10 }}>
-          <Navbar />
-        </div>
 
         {/* Hero */}
         <main style={{
