@@ -3,7 +3,12 @@
 import HeroSection from '@/components/HeroSection'
 import HomeTokenScreener from '@/components/HomeTokenScreener'
 
-export default function ClarkChat({ active }: { active: string | null }) {
+interface ClarkChatProps {
+  active: string | null
+  onTyping?: (typing: boolean) => void
+}
+
+export default function ClarkChat({ active, onTyping }: ClarkChatProps) {
   return (
     <>
       <style>{`
@@ -121,7 +126,7 @@ export default function ClarkChat({ active }: { active: string | null }) {
         </div>
 
         {/* ── Content ─────────────────────────────────── */}
-        <HeroSection />
+        <HeroSection onTyping={onTyping} />
         <HomeTokenScreener />
 
       </div>

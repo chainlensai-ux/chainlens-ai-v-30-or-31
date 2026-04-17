@@ -7,6 +7,7 @@ import ClarkRadar from '@/components/ClarkRadar'
 
 export default function TerminalPage() {
   const [active, setActive] = useState('dashboard')
+  const [isTyping, setIsTyping] = useState(false)
 
   return (
     <>
@@ -48,12 +49,14 @@ export default function TerminalPage() {
           className="flex-1 overflow-y-auto min-w-0 flex flex-col"
           style={{ position: 'relative', zIndex: 1 }}
         >
-          <ClarkChat active={active} />
+          <ClarkChat active={active} onTyping={setIsTyping} />
         </main>
 
         <aside
-          className="w-[310px] shrink-0 overflow-y-auto"
+          className="shrink-0 overflow-y-auto"
           style={{
+            width: isTyping ? '465px' : '310px',
+            transition: 'width 300ms ease',
             borderLeft: '1px solid rgba(123,92,255,0.18)',
             background: '#050816',
             position: 'relative',
