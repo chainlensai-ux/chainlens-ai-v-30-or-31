@@ -86,3 +86,8 @@ html { scroll-behavior: smooth; }
   0%, 100% { opacity: 0.7; }
   50% { opacity: 1; }
 }
+
+*:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
