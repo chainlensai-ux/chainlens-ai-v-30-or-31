@@ -25,7 +25,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${ibmPlexMono.variable}`}>
-      <body style={{ background: '#06060a', color: '#fff', fontFamily: 'var(--font-inter), Inter, sans-serif', overflowX: 'hidden' }}>
+      <body>
         <SupabaseProvider>
           {children}
         </SupabaseProvider>
