@@ -248,22 +248,33 @@ export default function HomePage() {
                   minWidth: 0,
                 }}
               />
-              <Link href="/terminal" style={{
-                width: '34px',
-                height: '34px',
-                borderRadius: '50%',
-                background: '#8b5cf6',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                boxShadow: '0 0 16px rgba(139,92,246,0.5)',
-                textDecoration: 'none',
-              }}>
+              <button
+                onClick={() => {
+                  if (query.trim()) {
+                    setInitialClarkMessage(query.trim())
+                    setShowClarkPanel(true)
+                    setQuery('')
+                  }
+                }}
+                style={{
+                  width: '34px',
+                  height: '34px',
+                  borderRadius: '50%',
+                  background: '#8b5cf6',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  boxShadow: '0 0 16px rgba(139,92,246,0.5)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                   <path d="M5 12h14M13 6l6 6-6 6" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
-              </Link>
+              </button>
             </div>
 
             {/* Box footer */}
