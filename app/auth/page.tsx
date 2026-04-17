@@ -63,6 +63,43 @@ export default function AuthPage() {
           </button>
         </div>
 
+        {/* Email input */}
+        <div className="mt-5">
+          <input
+            type="email"
+            placeholder="Enter your email"
+            className="w-full rounded-xl border border-white/10 bg-[#0b0b12] px-4 py-3 text-sm text-white placeholder-white/40 focus:ring-2 focus:ring-purple-500/40 focus:outline-none transition"
+          />
+        </div>
+
+        {/* Forgot password */}
+        <div className="flex justify-end mt-2">
+          <button
+            className="text-xs transition"
+            style={{ color: 'rgba(255,255,255,0.40)' }}
+            onMouseEnter={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.70)')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.40)')}
+          >
+            Forgot password?
+          </button>
+        </div>
+
+        {/* Sign Up link */}
+        <p className="text-center text-xs mt-5" style={{ color: 'rgba(255,255,255,0.35)' }}>
+          {"Don't have an account? "}
+          <span
+            className="cursor-pointer font-medium"
+            style={{
+              background: 'linear-gradient(95deg, #a274f8 0%, #f472b6 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
+            }}
+          >
+            Sign Up
+          </span>
+        </p>
+
         {/* Footer */}
         <p className="text-center text-xs mt-6" style={{ color: 'rgba(255,255,255,0.22)' }}>
           By continuing you agree to our{' '}
