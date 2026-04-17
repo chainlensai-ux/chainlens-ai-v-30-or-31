@@ -50,14 +50,23 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
           50%       { opacity: 0.35; box-shadow: 0 0 3px rgba(45,212,191,0.25); }
         }
         @keyframes sendGlowPulse {
-          0%, 100% { box-shadow: 0 0 12px rgba(45,212,191,0.28); }
-          50%       { box-shadow: 0 0 22px rgba(45,212,191,0.58), 0 0 8px rgba(45,212,191,0.35); }
+          0%, 100% { box-shadow: 0 0 10px rgba(236,72,153,0.40), 0 0 6px rgba(139,92,246,0.28); }
+          50%       { box-shadow: 0 0 22px rgba(236,72,153,0.70), 0 0 16px rgba(139,92,246,0.50), 0 0 32px rgba(236,72,153,0.22); }
+        }
+        @keyframes arrowPulse {
+          0%, 100% { opacity: 1; transform: translateX(0); }
+          50%       { opacity: 0.70; transform: translateX(1.5px); }
         }
         .clark-send-btn {
-          animation: sendGlowPulse 4s ease-in-out infinite;
-          transition: opacity 0.15s, transform 0.12s;
+          animation: sendGlowPulse 3s ease-in-out infinite;
+          transition: transform 0.15s, box-shadow 0.15s;
         }
-        .clark-send-btn:hover { opacity: 0.85; transform: scale(1.03); }
+        .clark-send-btn:hover {
+          transform: scale(1.12);
+          box-shadow: 0 0 30px rgba(236,72,153,0.80), 0 0 20px rgba(139,92,246,0.60) !important;
+          animation: none;
+        }
+        .clark-send-arrow { animation: arrowPulse 2.5s ease-in-out infinite; display: inline-block; }
         .clark-chip {
           background: rgba(255,255,255,0.04);
           border: 1px solid rgba(255,255,255,0.08);
@@ -79,7 +88,7 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
           box-shadow: 0 0 8px rgba(139,92,246,0.14), 0 0 5px rgba(236,72,153,0.07);
           transform: translateY(-1px);
         }
-        .clark-box-input::placeholder { color: rgba(255,255,255,0.28); }
+        .clark-box-input::placeholder { color: rgba(255,255,255,0.40); }
       `}</style>
 
       <section
@@ -210,11 +219,14 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
                     display: 'flex',
                     alignItems: 'center',
                     gap: '10px',
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.08)',
+                    background: 'rgba(5,8,22,0.60)',
+                    border: '1px solid rgba(255,255,255,0.10)',
                     borderRadius: '11px',
                     padding: '8px 8px 8px 12px',
                     marginBottom: '10px',
+                    backdropFilter: 'blur(24px)',
+                    WebkitBackdropFilter: 'blur(24px)',
+                    boxShadow: 'inset 0 0 18px rgba(236,72,153,0.06), inset 0 0 12px rgba(45,212,191,0.05), inset 0 1px 0 rgba(255,255,255,0.06)',
                   }}
                 >
                   {/* Sparkle orb */}
@@ -265,19 +277,18 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
                     className="clark-send-btn"
                     style={{
                       flexShrink: 0,
-                      background: 'linear-gradient(135deg, #2DD4BF, #14b8a6)',
-                      border: 'none',
-                      borderRadius: '8px',
-                      padding: '7px 14px',
-                      color: '#030f0e',
-                      fontSize: '12px',
-                      fontWeight: 700,
-                      fontFamily: 'var(--font-inter)',
+                      width: '34px',
+                      height: '34px',
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%)',
+                      border: '1px solid rgba(236,72,153,0.50)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                       cursor: 'pointer',
-                      letterSpacing: '0.02em',
                     }}
                   >
-                    Send →
+                    <span className="clark-send-arrow" style={{ color: '#fff', fontSize: '14px', lineHeight: 1 }}>→</span>
                   </button>
                 </div>
 
