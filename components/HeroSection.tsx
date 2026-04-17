@@ -276,14 +276,14 @@ export default function HeroSection({ onTyping }: HeroSectionProps) {
                     display: 'flex',
                     alignItems: 'center',
                     gap: '10px',
-                    background: 'rgba(5,8,22,0.60)',
+                    background: 'linear-gradient(135deg, rgba(5,8,22,0.65) 0%, rgba(45,212,191,0.04) 55%, rgba(139,92,246,0.03) 100%)',
                     border: '1px solid rgba(255,255,255,0.10)',
                     borderRadius: '11px',
                     padding: '8px 8px 8px 12px',
                     marginBottom: '10px',
                     backdropFilter: 'blur(24px)',
                     WebkitBackdropFilter: 'blur(24px)',
-                    boxShadow: 'inset 0 0 18px rgba(236,72,153,0.06), inset 0 0 12px rgba(45,212,191,0.05), inset 0 1px 0 rgba(255,255,255,0.06)',
+                    boxShadow: 'inset 0 0 20px rgba(45,212,191,0.08), inset 0 0 14px rgba(236,72,153,0.06), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(139,92,246,0.10), 0 0 8px rgba(45,212,191,0.06)',
                   }}
                 >
                   {/* Sparkle orb */}
