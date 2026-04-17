@@ -6,9 +6,12 @@ const COLS = ['TOKEN', 'CHAIN', 'PRICE', '24H', 'VOLUME']
 export default function HomeTokenScreener() {
   return (
     <>
-      <section style={{ padding: '0 0 64px' }}>
+      <section style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0 }}>
         <div
           style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
             width: '100%',
             background: 'linear-gradient(160deg, #080d1c 0%, #060a14 100%)',
             border: '1px solid rgba(255,255,255,0.06)',
@@ -61,12 +64,13 @@ export default function HomeTokenScreener() {
 
           {/* Empty state */}
           <div style={{
+            flex: 1,
             padding: '36px 20px',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
+            justifyContent: 'center',
             gap: '8px',
-            borderBottom: '1px solid rgba(255,255,255,0.04)',
           }}>
             <span style={{
               fontSize: '11px',
