@@ -10,6 +10,7 @@ const {
   COVALENT_API_KEY,
   ANTHROPIC_API_KEY,
   NEXT_PUBLIC_PROXY_URL,
+  BASESCAN_API_KEY,
 } = process.env;
 
 // ---------- Types ----------
@@ -35,7 +36,7 @@ interface ClarkRequestBody {
   prompt?: string;
 }
 
-// ---------- Chain name map ----------
+// ---------- Chain name maps ----------
 
 // GoldRush / Covalent require specific chain slugs
 const GOLDRUSH_CHAIN: Record<SupportedChain, string> = {
@@ -43,6 +44,14 @@ const GOLDRUSH_CHAIN: Record<SupportedChain, string> = {
   ethereum: "eth-mainnet",
   polygon: "matic-mainnet",
   bnb: "bsc-mainnet",
+};
+
+// GoPlus uses numeric chain IDs
+const GOPLUS_CHAIN_ID: Record<SupportedChain, string> = {
+  base: "8453",
+  ethereum: "1",
+  polygon: "137",
+  bnb: "56",
 };
 
 // ---------- Helpers ----------
@@ -60,6 +69,12 @@ function getAlchemyKey(chain: SupportedChain | undefined) {
 function requireEnv(name: string, value: string | undefined): string {
   if (!value) throw new Error(`Missing required env var: ${name}`);
   return value;
+}
+
+// Extract the first 0x address found in a string
+function extractAddress(text: string): string | null {
+  const match = text.match(/0x[a-fA-F0-9]{40}/);
+  return match ? match[0] : null;
 }
 
 // ---------- API clients ----------
@@ -160,9 +175,52 @@ async function callDexScreener(
   return res.json();
 }
 
+// Basescan — Etherscan-compatible API for Base chain
+async function callBasescan(params: Record<string, string> = {}) {
+  const url = new URL("https://api.basescan.org/api");
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  if (BASESCAN_API_KEY) url.searchParams.set("apikey", BASESCAN_API_KEY);
+
+  const res = await fetch(url.toString(), {
+    headers: { Accept: "application/json" },
+    next: { revalidate: 30 },
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Basescan ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  return res.json();
+}
+
+// GoPlus — free token security API, no auth required
+async function callGoPlus(address: string, chain: SupportedChain = "base") {
+  const chainId = GOPLUS_CHAIN_ID[chain];
+  const url = new URL(`https://api.gopluslabs.io/api/v1/token_security/${chainId}`);
+  url.searchParams.set("contract_addresses", address);
+
+  const res = await fetch(url.toString(), {
+    headers: { Accept: "application/json" },
+    next: { revalidate: 60 },
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`GoPlus ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  return res.json();
+}
+
 // Anthropic — system field separate from user message; latest model
 async function callAnthropic(prompt: string, context: unknown) {
   const apiKey = requireEnv("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY);
+
+  // Embed live data directly in the user message so the model sees it as current context
+  const userContent = context
+    ? `${prompt}\n\nLive on-chain data:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\``
+    : prompt;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -177,11 +235,14 @@ async function callAnthropic(prompt: string, context: unknown) {
       system:
         "You are Clark, an on-chain AI analyst for Base and EVM chains. " +
         "You receive raw on-chain and market data as JSON and return concise, " +
-        "actionable analysis for degen traders. Be direct. No filler.",
+        "actionable analysis for degen traders. Be direct. No filler. " +
+        "When given JSON data, extract the key insights: current price, liquidity depth, " +
+        "holder concentration, security flags (honeypot, mint authority, high tax), " +
+        "and recent large transactions. Always highlight the biggest risk or opportunity first.",
       messages: [
         {
           role: "user",
-          content: `${prompt}\n\nContext:\n${JSON.stringify(context, null, 2)}`,
+          content: userContent,
         },
       ],
     }),
@@ -194,6 +255,181 @@ async function callAnthropic(prompt: string, context: unknown) {
 
   const data = await res.json();
   return data?.content?.[0]?.text ?? JSON.stringify(data);
+}
+
+// ---------- Scanner functions (fetch structured data for LLM context) ----------
+
+async function scanTokenData(address: string, chain: SupportedChain = "base") {
+  const chainName = GOLDRUSH_CHAIN[chain];
+
+  const results = await Promise.allSettled([
+    callDexScreener(`latest/dex/tokens/${address}`),
+    callGoPlus(address, chain),
+    callGoldrush(`${chainName}/tokens/${address}/token_holders_v2/`, { "page-size": "50" }),
+    callBasescan({ module: "token", action: "tokeninfo", contractaddress: address }),
+  ]);
+
+  return {
+    type: "token-scan",
+    address,
+    chain,
+    dexscreener:     results[0].status === "fulfilled" ? results[0].value : null,
+    goplus_security: results[1].status === "fulfilled" ? results[1].value : null,
+    holders:         results[2].status === "fulfilled" ? results[2].value : null,
+    basescan_info:   results[3].status === "fulfilled" ? results[3].value : null,
+  };
+}
+
+async function scanWalletData(address: string, chain: SupportedChain = "base") {
+  const chainName = GOLDRUSH_CHAIN[chain];
+
+  const results = await Promise.allSettled([
+    callCovalent(`${chainName}/address/${address}/balances_v2/`),
+    callCovalent(`${chainName}/address/${address}/transactions_v3/`, { "page-size": "20" }),
+    callZerion(`wallets/${address}/positions/`, {
+      currency: "usd",
+      "filter[positions]": "only_simple",
+      "filter[trash]": "only_non_trash",
+    }),
+  ]);
+
+  return {
+    type: "wallet-scan",
+    address,
+    chain,
+    balances:          results[0].status === "fulfilled" ? results[0].value : null,
+    transactions:      results[1].status === "fulfilled" ? results[1].value : null,
+    zerion_positions:  results[2].status === "fulfilled" ? results[2].value : null,
+  };
+}
+
+async function scanLiquidityData(address: string, chain: SupportedChain = "base") {
+  const chainName = GOLDRUSH_CHAIN[chain];
+
+  const results = await Promise.allSettled([
+    callDexScreener(`latest/dex/tokens/${address}`),
+    callGoldrush(`${chainName}/xy=k/address/${address}/pools/`),
+    callGoPlus(address, chain),
+  ]);
+
+  return {
+    type: "liquidity-scan",
+    address,
+    chain,
+    dexscreener_pairs: results[0].status === "fulfilled" ? results[0].value : null,
+    goldrush_pools:    results[1].status === "fulfilled" ? results[1].value : null,
+    goplus_security:   results[2].status === "fulfilled" ? results[2].value : null,
+  };
+}
+
+async function scanDevWalletData(address: string, chain: SupportedChain = "base") {
+  const chainName = GOLDRUSH_CHAIN[chain];
+
+  const results = await Promise.allSettled([
+    callGoldrush(`${chainName}/tokens/${address}/token_holders_v2/`, { "page-size": "200" }),
+    callGoPlus(address, chain),
+    callBasescan({ module: "contract", action: "getsourcecode", address }),
+  ]);
+
+  return {
+    type: "dev-wallet-scan",
+    address,
+    chain,
+    top_holders:     results[0].status === "fulfilled" ? results[0].value : null,
+    goplus_security: results[1].status === "fulfilled" ? results[1].value : null,
+    contract_source: results[2].status === "fulfilled" ? results[2].value : null,
+  };
+}
+
+async function scanBaseRadarData() {
+  const results = await Promise.allSettled([
+    callDexScreener("token-boosts/top/v1"),
+    callDexScreener("token-profiles/latest/v1"),
+  ]);
+
+  return {
+    type: "base-radar",
+    chain: "base",
+    boosted_tokens:   results[0].status === "fulfilled" ? results[0].value : null,
+    latest_profiles:  results[1].status === "fulfilled" ? results[1].value : null,
+  };
+}
+
+async function scanWhaleData(address: string, chain: SupportedChain = "base") {
+  const chainName = GOLDRUSH_CHAIN[chain];
+
+  const results = await Promise.allSettled([
+    callCovalent(`${chainName}/address/${address}/transactions_v3/`, { "page-size": "50" }),
+    callZerion(`wallets/${address}/positions/`, {
+      currency: "usd",
+      "filter[positions]": "only_simple",
+    }),
+    callBasescan({
+      module: "account", action: "txlist",
+      address, page: "1", offset: "20", sort: "desc",
+    }),
+  ]);
+
+  return {
+    type: "whale-scan",
+    address,
+    chain,
+    transactions:      results[0].status === "fulfilled" ? results[0].value : null,
+    zerion_positions:  results[1].status === "fulfilled" ? results[1].value : null,
+    basescan_txs:      results[2].status === "fulfilled" ? results[2].value : null,
+  };
+}
+
+async function scanPumpData(address: string, chain: SupportedChain = "base") {
+  const results = await Promise.allSettled([
+    callDexScreener(`latest/dex/tokens/${address}`),
+    callGoPlus(address, chain),
+  ]);
+
+  return {
+    type: "pump-scan",
+    address,
+    chain,
+    market_data: results[0].status === "fulfilled" ? results[0].value : null,
+    security:    results[1].status === "fulfilled" ? results[1].value : null,
+  };
+}
+
+// ---------- Command router ----------
+
+// Inspects the user's prompt and runs the appropriate scanner.
+// Returns structured on-chain data to inject as LLM context, or null for plain AI.
+async function routeCommand(
+  prompt: string,
+  chain: SupportedChain = "base"
+): Promise<Record<string, unknown> | null> {
+  const t = prompt.toLowerCase();
+  const address = extractAddress(prompt);
+
+  if (t.includes("base radar") || t.includes("trending") || t.includes("what's hot")) {
+    return scanBaseRadarData();
+  }
+  if ((t.includes("scan wallet") || t.includes("wallet scan")) && address) {
+    return scanWalletData(address, chain);
+  }
+  if ((t.includes("dev wallet") || t.includes("dev wallets")) && address) {
+    return scanDevWalletData(address, chain);
+  }
+  if (t.includes("liquidity") && address) {
+    return scanLiquidityData(address, chain);
+  }
+  if (t.includes("whale") && address) {
+    return scanWhaleData(address, chain);
+  }
+  if (t.includes("pump") && address) {
+    return scanPumpData(address, chain);
+  }
+  // Any prompt containing a token address defaults to a full token scan
+  if (address) {
+    return scanTokenData(address, chain);
+  }
+
+  return null;
 }
 
 // ---------- Feature handlers ----------
@@ -306,14 +542,16 @@ async function handleClarkAI(body: ClarkRequestBody) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
 
-  const context = {
-    chain,
-    addressOrToken: body.addressOrToken,
-    walletAddress: body.walletAddress,
-    tokenAddress: body.tokenAddress,
-  };
+  // Route the prompt to the appropriate scanner to gather live on-chain context.
+  // Scanner failures are non-fatal — the LLM still responds without data.
+  let scannerData: Record<string, unknown> | null = null;
+  try {
+    scannerData = await routeCommand(prompt, chain);
+  } catch (err) {
+    console.error("[Clark router]", err instanceof Error ? err.message : err);
+  }
 
-  const analysis = await callAnthropic(prompt, context);
+  const analysis = await callAnthropic(prompt, scannerData);
 
   return { feature: "clark-ai", chain, analysis };
 }
