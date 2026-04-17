@@ -2,91 +2,10 @@
 
 const COLS = ['TOKEN', 'CHAIN', 'PRICE', '24H', 'VOLUME']
 
-const TOKENS = [
-  { ticker: 'BRETT',  name: 'Brett',   abbr: 'BR', price: '$0.1247',   change: '+8.4%',  vol: '$2.1M',  pos: true  },
-  { ticker: 'TOSHI',  name: 'Toshi',   abbr: 'TO', price: '$0.000041', change: '+12.3%', vol: '$890K',  pos: true  },
-  { ticker: 'DEGEN',  name: 'Degen',   abbr: 'DG', price: '$0.01831',  change: '-3.2%',  vol: '$1.4M',  pos: false },
-  { ticker: 'NORMIE', name: 'Normie',  abbr: 'NR', price: '$0.00891',  change: '+2.1%',  vol: '$320K',  pos: true  },
-  { ticker: 'HIGHER', name: 'Higher',  abbr: 'HI', price: '$0.05234',  change: '+5.7%',  vol: '$740K',  pos: true  },
-]
-
-function TokenRow({ token, last }: { token: typeof TOKENS[number]; last: boolean }) {
-  return (
-    <div
-      className="screener-row"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
-        padding: '9px 20px',
-        alignItems: 'center',
-        borderBottom: !last ? '1px solid rgba(255,255,255,0.03)' : 'none',
-        transition: 'background 0.12s',
-      }}
-    >
-      {/* Token */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <div style={{
-          width: '26px', height: '26px', borderRadius: '50%',
-          background: 'rgba(255,255,255,0.06)', flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <span style={{ fontSize: '8px', fontWeight: 700, color: 'rgba(255,255,255,0.38)', fontFamily: 'var(--font-plex-mono)' }}>
-            {token.abbr}
-          </span>
-        </div>
-        <div>
-          <div style={{ fontSize: '12px', fontWeight: 600, color: '#f1f5f9', fontFamily: 'var(--font-inter)' }}>
-            {token.ticker}
-          </div>
-          <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-inter)' }}>
-            {token.name}
-          </div>
-        </div>
-      </div>
-
-      {/* Chain — Base highlighted */}
-      <div>
-        <span style={{
-          fontSize: '9px', fontWeight: 700, color: '#ffffff',
-          background: '#0052FF', borderRadius: '4px',
-          padding: '2px 6px', fontFamily: 'var(--font-inter)',
-          letterSpacing: '0.04em',
-        }}>
-          Base
-        </span>
-      </div>
-
-      {/* Price */}
-      <div style={{ fontSize: '11px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
-        {token.price}
-      </div>
-
-      {/* 24H */}
-      <div style={{
-        fontSize: '11px', fontWeight: 500,
-        color: token.pos ? '#22c55e' : '#ef4444',
-        fontFamily: 'var(--font-plex-mono)',
-      }}>
-        {token.change}
-      </div>
-
-      {/* Volume */}
-      <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono)' }}>
-        {token.vol}
-      </div>
-    </div>
-  )
-}
 
 export default function HomeTokenScreener() {
   return (
     <>
-      <style>{`
-        .screener-row:hover {
-          background: rgba(0,82,255,0.04);
-          box-shadow: inset 0 0 20px rgba(45,212,191,0.03);
-        }
-      `}</style>
       <section style={{ padding: '0 0 64px' }}>
         <div
           style={{
@@ -140,10 +59,24 @@ export default function HomeTokenScreener() {
             ))}
           </div>
 
-          {/* Token rows */}
-          {TOKENS.map((t, i) => (
-            <TokenRow key={t.ticker} token={t} last={i === TOKENS.length - 1} />
-          ))}
+          {/* Empty state */}
+          <div style={{
+            padding: '36px 20px',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '8px',
+            borderBottom: '1px solid rgba(255,255,255,0.04)',
+          }}>
+            <span style={{
+              fontSize: '11px',
+              color: 'rgba(255,255,255,0.22)',
+              fontFamily: 'var(--font-inter)',
+              letterSpacing: '0.01em',
+            }}>
+              No tokens yet — live Base data will appear here
+            </span>
+          </div>
 
           {/* Footer */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '10px 20px', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
