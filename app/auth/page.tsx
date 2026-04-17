@@ -3,7 +3,7 @@
 export default function AuthPage() {
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-[#07070f] px-4">
-      <div className="w-full max-w-sm bg-[#0d0d14] border border-white/10 rounded-2xl p-8 shadow-xl">
+      <div className="w-full max-w-sm bg-[#0d0d14] border border-white/10 rounded-2xl p-8 shadow-[0_0_40px_rgba(0,0,0,0.45)]">
 
         {/* Logo mark */}
         <div className="flex justify-center mb-6">
@@ -63,8 +63,11 @@ export default function AuthPage() {
           </button>
         </div>
 
+        {/* Divider */}
+        <div className="h-px w-full bg-white/10 mt-6 mb-6" />
+
         {/* Email input */}
-        <div className="mt-5">
+        <div className="mt-0">
           <input
             type="email"
             placeholder="Enter your email"
@@ -85,7 +88,7 @@ export default function AuthPage() {
         </div>
 
         {/* Sign Up link */}
-        <p className="text-center text-xs mt-5" style={{ color: 'rgba(255,255,255,0.35)' }}>
+        <p className="text-center text-xs mt-6" style={{ color: 'rgba(255,255,255,0.35)' }}>
           {"Don't have an account? "}
           <span
             className="cursor-pointer font-medium"
@@ -107,6 +110,9 @@ export default function AuthPage() {
           {' '}and{' '}
           <span style={{ color: 'rgba(167,139,250,0.70)', cursor: 'pointer' }}>Privacy Policy</span>
         </p>
+
+        {/* Gradient accent line */}
+        <div className="h-px w-full bg-gradient-to-r from-teal-400 to-purple-500 mt-6" />
 
       </div>
     </div>
