@@ -24,7 +24,7 @@ export default function AuthForm() {
   }
 
   return (
-    <div className="w-full max-w-sm mx-auto p-6 rounded-xl bg-black/30 backdrop-blur border border-white/10 shadow-xl">
+    <div className="w-full max-w-sm mx-auto p-6 rounded-xl bg-[#0f0f0f] border border-white/10 shadow-xl">
       <div className="flex justify-center mb-4">
         <Image src="/chainlens-logo.png" alt="ChainLens" width={48} height={48} />
       </div>
