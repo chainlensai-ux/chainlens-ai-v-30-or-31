@@ -70,7 +70,7 @@ export default function HomeTokenScreener() {
       try {
         // GoldRush trending tokens (Base chain)
         const goldrushRes = await fetch(
-          'https://api.goldrushhq.io/v1/tokens/trending?chain=base',
+          'https://goldrush-api.io/v1/tokens/trending?chain=base',
           {
             headers: {
               'x-api-key': process.env.NEXT_PUBLIC_GOLDRUSH_API_KEY ?? '',
