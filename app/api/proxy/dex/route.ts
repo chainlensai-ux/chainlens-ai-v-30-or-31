@@ -2,16 +2,9 @@ import { NextResponse } from "next/server";
 
 export async function GET() {
   try {
-    const res = await fetch(
-      "https://api.dexscreener.com/latest/dex/pairs/base",
-      {
-        cache: "no-store",
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-          "Accept": "application/json"
-        }
-      }
-    );
+    const res = await fetch("https://devworker.chainlensai.workers.dev/", {
+      cache: "no-store"
+    });
 
     if (!res.ok) {
       return NextResponse.json(
