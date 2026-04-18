@@ -127,7 +127,7 @@ type Item = { key: string; label: string; icon: ReactNode; accent: string; iconC
 const MAIN_NAV: Item[] = [
   { key: 'dashboard', label: 'Dashboard', icon: <IcDashboard />,    accent: MINT,   iconColor: MINT   },
   { key: 'portfolio', label: 'Portfolio', icon: <IcPortfolio />,    accent: WHITE,  iconColor: WHITE  },
-  { key: 'settings',  label: 'Settings',  icon: <IcSettings />,     accent: SLATE,  iconColor: SLATE  },
+  { key: 'settings',  label: 'Settings',  icon: <IcSettings />,     accent: SLATE,  iconColor: SLATE,  href: '/terminal/settings' },
 ]
 
 const TOOLS: Item[] = [

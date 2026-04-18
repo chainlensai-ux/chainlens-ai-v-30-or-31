@@ -13,6 +13,7 @@ const PATH_TO_KEY: Record<string, string> = {
   '/terminal/pump-alerts':      'pump-alerts',
   '/terminal/base-radar':       'base-radar',
   '/terminal/clark-ai':         'clark-ai',
+  '/terminal/settings':         'settings',
 }
 
 export default function TerminalLayout({ children }: { children: React.ReactNode }) {
