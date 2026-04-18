@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import FeatureBar from '@/components/FeatureBar'
 import ClarkChat from '@/components/ClarkChat'
 import ClarkRadar from '@/components/ClarkRadar'
 
@@ -24,8 +23,8 @@ export default function TerminalPage() {
       `}</style>
 
       <div
-        className="flex h-screen text-white overflow-hidden"
-        style={{ background: '#050816', position: 'relative' }}
+        className="flex h-full overflow-hidden"
+        style={{ position: 'relative' }}
       >
         {/* Neon ambient glow — fixed, behind everything */}
         <div
@@ -43,8 +42,6 @@ export default function TerminalPage() {
             zIndex: 0,
           }}
         />
-
-        <FeatureBar active={active} onSelect={setActive} />
 
         <main
           className="flex-1 overflow-y-auto min-w-0 flex flex-col"

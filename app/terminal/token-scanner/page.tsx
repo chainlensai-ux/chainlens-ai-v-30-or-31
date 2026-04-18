@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import Sidebar from '@/components/Sidebar'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -121,10 +120,7 @@ export default function TerminalTokenScanner() {
   }
 
   return (
-    <div className="flex min-h-screen" style={{ background: '#06060a', color: '#e2e8f0' }}>
-      <Sidebar active="token-scanner" />
-
-      <main className="flex-1 overflow-y-auto" style={{ padding: '40px 48px' }}>
+    <main className="flex-1 overflow-y-auto h-full" style={{ color: '#e2e8f0', padding: '40px 48px' }}>
 
         {/* ── Header ─────────────────────────────────────────────────── */}
         <div style={{ marginBottom: '32px' }}>
@@ -313,7 +309,6 @@ export default function TerminalTokenScanner() {
           </div>
         )}
 
-      </main>
-    </div>
+    </main>
   )
 }
