@@ -56,7 +56,7 @@ export default function TerminalPage() {
         <aside
           className="shrink-0 overflow-y-auto"
           style={{
-            width: isTyping ? '465px' : '310px',
+            width: isTyping ? '750px' : '500px',
             transition: 'width 300ms ease',
             borderLeft: '1px solid rgba(123,92,255,0.18)',
             background: '#050816',
