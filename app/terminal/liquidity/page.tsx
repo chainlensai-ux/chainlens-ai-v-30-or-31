@@ -57,7 +57,7 @@ export default function LiquiditySafetyPage() {
       `}</style>
 
       <div style={{
-        flex: 1, minWidth: 0, overflowY: 'auto',
+        height: '100%', minWidth: 0, overflowY: 'auto',
         padding: '44px 52px',
         color: '#e2e8f0',
       }}>
