@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import clsx from "clsx";
+import CortexVerdictCard from "@/components/CortexVerdictCard";
+import type { CortexVerdict } from "@/app/api/cortex-token-verdict/route";
 
 
 function shorten(str: string, start = 6, end = 4): string {
@@ -280,6 +282,10 @@ export default function TokenScannerPage() {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>("Overview");
 
+  const [cortexVerdict, setCortexVerdict] = useState<CortexVerdict | null>(null);
+  const [cortexLoading, setCortexLoading] = useState(false);
+  const [cortexError, setCortexError] = useState<string | null>(null);
+
   async function scanToken(contract: string) {
     try {
       const res = await fetch(`/api/scan-token?query=${encodeURIComponent(contract)}`, {
@@ -294,14 +300,42 @@ export default function TokenScannerPage() {
     }
   }
 
+  async function fetchCortexVerdict(tokenData: ScanResult) {
+    setCortexLoading(true);
+    setCortexVerdict(null);
+    setCortexError(null);
+    try {
+      const res = await fetch("/api/cortex-token-verdict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tokenData }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setCortexError(json.error ?? "CORTEX analysis failed");
+      } else {
+        setCortexVerdict(json.verdict as CortexVerdict);
+      }
+    } catch {
+      setCortexError("Network error — CORTEX unavailable");
+    } finally {
+      setCortexLoading(false);
+    }
+  }
+
   async function handleScan() {
     if (!contract) return;
     setLoading(true);
     setData(null);
+    setCortexVerdict(null);
+    setCortexError(null);
     const result = await scanToken(contract);
     setData(result);
     setActiveTab("Overview");
     setLoading(false);
+    if (result) {
+      fetchCortexVerdict(result);
+    }
   }
 
   const riskLevel = getRiskLevel(data);
@@ -389,6 +423,17 @@ export default function TokenScannerPage() {
                 <IssuesCard issues={data.issues} />
               </div>
             </div>
+          </div>
+        )}
+
+        {/* CORTEX verdict — shown after any scan attempt */}
+        {(cortexLoading || cortexVerdict || cortexError) && (
+          <div className="mt-4">
+            <CortexVerdictCard
+              verdict={cortexVerdict}
+              loading={cortexLoading}
+              error={cortexError}
+            />
           </div>
         )}
 
