@@ -352,7 +352,8 @@ export default function PricingPage() {
                 </div>
 
                 {/* Price */}
-                <div style={{ fontSize:'clamp(44px,5vw,64px)', fontWeight:900, lineHeight:1, color:'#ffffff', letterSpacing:'-0.03em', marginBottom:'6px' }}>
+                <div style={{ fontSize:'clamp(44px,5vw,64px)', fontWeight:300, lineHeight:1, color:'#ffffff', letterSpacing:'-0.01em', marginBottom:'6px',
+                  fontFamily:'var(--font-inter,Inter,sans-serif)' }}>
                   {plan.price}
                 </div>
 
