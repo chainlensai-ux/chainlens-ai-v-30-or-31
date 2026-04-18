@@ -11,20 +11,27 @@ function shorten(str: string, start = 6, end = 4): string {
 
 
 type ScanResult = {
-  chain?: string;
-  contract?: string;
-  goldrush?: any;
-  gtPools?: any[];
-  gtRaw?: any;
-  gmgn?: any;
-  analysis?: any;
-  cortex?: any;
-  issues?: string[];
   name?: string;
   symbol?: string;
-  decimals?: number;
+  contract?: string;
+  chain?: string;
+  price?: number | null;
+  liquidity?: number | null;
+  volume24h?: number | null;
+  priceChange24h?: number | null;
+  pools?: Array<{
+    name?: string;
+    address?: string;
+    price?: number | null;
+    liquidity?: number | null;
+    volume24h?: number | null;
+    priceChange24h?: number | null;
+  }>;
+  // retained for AI Summary / Issues tabs
+  analysis?: any;
+  issues?: string[];
   aiSummary?: string;
-  pairs?: any[];
+  decimals?: number;
   tokenInfo?: {
     name?: string;
     symbol?: string;
@@ -131,7 +138,7 @@ function OverviewPanel({ data }: { data: ScanResult }) {
   const name = data.name ?? "Unknown";
   const symbol = data.symbol ?? "?";
   const decimals = data.decimals ?? "?";
-  const poolsCount = data.gtPools?.length ?? data.pairs?.length ?? 0;
+  const poolsCount = data.pools?.length ?? 0;
 
 
   return (
@@ -175,34 +182,29 @@ function formatPrice(value: number | string): string {
 
 
 function MarketPanel({ data }: { data: ScanResult }) {
-  const pools = data.gtPools || data.pairs || [];
+  const pools    = data.pools ?? [];
+  const mainPool = pools[0] ?? null;
 
-  const mainPool = [...pools].sort(
-    (a, b) =>
-      parseFloat(b.attributes?.reserve_in_usd || "0") -
-      parseFloat(a.attributes?.reserve_in_usd || "0")
-  )[0] ?? null;
-
-  const price = mainPool?.attributes?.base_token_price_usd ?? "Unknown";
-  const liquidity = mainPool?.attributes?.reserve_in_usd ?? "Unknown";
-  const volume24h = mainPool?.attributes?.volume_usd?.h24 ?? "Unknown";
-  const change24h = mainPool?.attributes?.price_change_percentage?.h24 ?? "Unknown";
-  const poolName = mainPool?.attributes?.name ?? "Unknown";
+  const price     = data.price;
+  const liquidity = data.liquidity;
+  const volume24h = data.volume24h;
+  const change24h = data.priceChange24h;
+  const poolName  = mainPool?.name ?? "Unknown";
 
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-4">
         <h2 className="text-sm font-semibold text-neutral-100">Market snapshot</h2>
         <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
-          <InfoRow label="Price" value={formatPrice(price)} />
-          <InfoRow label="Liquidity (USD)" value={formatNumber(liquidity)} />
-          <InfoRow label="Volume 24h" value={formatNumber(volume24h)} />
-          <InfoRow label="24h Change" value={change24h !== "Unknown" ? `${Number(change24h).toFixed(2)}%` : "Unknown"} />
-          <InfoRow label="Top Pool" value={poolName} />
-          <InfoRow label="Pools tracked" value={String(pools.length)} />
+          <InfoRow label="Price"           value={price     != null ? formatPrice(price)        : "Unknown"} />
+          <InfoRow label="Liquidity (USD)" value={liquidity != null ? formatNumber(liquidity)   : "Unknown"} />
+          <InfoRow label="Volume 24h"      value={volume24h != null ? formatNumber(volume24h)   : "Unknown"} />
+          <InfoRow label="24h Change"      value={change24h != null ? `${change24h.toFixed(2)}%` : "Unknown"} />
+          <InfoRow label="Top Pool"        value={poolName} />
+          <InfoRow label="Pools tracked"   value={String(pools.length)} />
         </div>
       </div>
-      <CodeBlock title="GeckoTerminal pools" payload={data.gtPools ?? data.pairs} />
+      <CodeBlock title="Pools" payload={data.pools} />
     </div>
   );
 }
@@ -280,13 +282,12 @@ export default function TokenScannerPage() {
 
   async function scanToken(contract: string) {
     try {
-      const res = await fetch(`/api/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contract }),
+      const res = await fetch(`/api/scan-token?query=${encodeURIComponent(contract)}`, {
+        method: "GET",
       });
       if (!res.ok) return null;
-      return (await res.json()) as ScanResult;
+      const json = await res.json();
+      return (json.ok ? json.data : null) as ScanResult | null;
     } catch (err) {
       console.error("Frontend scan error:", err);
       return null;
