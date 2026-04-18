@@ -9,7 +9,7 @@ interface ClarkChatProps {
   onTyping?: (typing: boolean) => void
   onSend?: (text: string) => void
   initialMessage?: string | null
-  mode?: 'full' | 'panel' | 'hero'
+  mode?: 'full' | 'panel' | 'hero' | 'chat-only'
 }
 
 interface Message {
@@ -180,10 +180,10 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
         }
       `}</style>
 
-      <div className="flex-1 flex flex-col" style={{ background: '#050816' }}>
+      <div className="flex-1 flex flex-col" style={{ background: '#050816', minHeight: 0 }}>
 
         {/* ── Terminal header bar ─────────────────────── */}
-        <div style={{ position: 'sticky', top: 0, zIndex: 10, flexShrink: 0 }}>
+        <div style={{ flexShrink: 0, zIndex: 10 }}>
           <div style={{
             height: '1.5px',
             background: 'linear-gradient(90deg, transparent 0%, #ff4b9a 25%, #7b5cff 55%, #4ef2c5 80%, transparent 100%)',
@@ -213,7 +213,7 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
               fontSize: '10px', fontWeight: 600, letterSpacing: '0.16em',
               color: '#4ef2c5', fontFamily: 'var(--font-plex-mono)',
               textShadow: '0 0 10px rgba(78,242,197,0.58), 0 0 4px rgba(139,92,246,0.22)',
-            }}>CHAINLENS TERMINAL</span>
+            }}>CLARK AI</span>
             <div style={{ flex: 1 }} />
             <span style={{
               fontSize: '9px', color: 'rgba(123,92,255,0.55)',
@@ -222,20 +222,26 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
           </div>
         </div>
 
-        {/* ── Existing content ─────────────────────────── */}
-        <HeroSection onTyping={onTyping} onSend={onSend} />
-        <HomeTokenScreener />
+        {/* ── Hero + screener — hidden in chat-only mode ── */}
+        {mode !== 'hero' && mode !== 'chat-only' && (
+          <>
+            <HeroSection onTyping={onTyping} onSend={onSend} />
+            <HomeTokenScreener />
+          </>
+        )}
 
         {/* ── Chat UI ──────────────────────────────────── */}
         {mode !== 'hero' && <div style={{
           display: 'flex', flexDirection: 'column',
-          borderTop: '1px solid rgba(123,92,255,0.14)',
+          flex: mode === 'chat-only' ? 1 : 'none',
+          minHeight: 0,
+          borderTop: mode !== 'chat-only' ? '1px solid rgba(123,92,255,0.14)' : 'none',
           background: 'rgba(5,8,22,0.80)',
         }}>
 
           {/* Chat label */}
           <div style={{
-            padding: '10px 20px 0',
+            padding: '10px 20px 0', flexShrink: 0,
             display: 'flex', alignItems: 'center', gap: '8px',
           }}>
             <span style={{
@@ -251,9 +257,12 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
             ref={scrollRef}
             className="clark-msg-scroll"
             style={{
-              height: '380px', overflowY: 'auto',
+              flex: mode === 'chat-only' ? 1 : 'none',
+              height: mode === 'chat-only' ? undefined : '380px',
+              overflowY: 'auto',
               padding: '16px 20px',
               display: 'flex', flexDirection: 'column', gap: '14px',
+              minHeight: 0,
             }}
           >
             {messages.length === 0 && (
@@ -344,8 +353,8 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
             })}
           </div>
 
-          {/* Input row — full mode only */}
-          {mode === 'full' && (
+          {/* Input row — full and chat-only modes */}
+          {(mode === 'full' || mode === 'chat-only') && (
             <div style={{
               padding: '10px 20px 18px',
               borderTop: '1px solid rgba(255,255,255,0.05)',

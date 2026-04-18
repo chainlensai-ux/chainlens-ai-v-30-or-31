@@ -59,13 +59,12 @@ export default function HomeClarkPanel({ open, initialMessage, onClose }: HomeCl
         style={{
           width: '380px',
           height: '100%',
-          overflowY: 'auto',
-          overflowX: 'hidden',
+          overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
         }}
       >
-        <ClarkChat mode="panel" active={null} initialMessage={initialMessage} />
+        <ClarkChat mode="chat-only" active={null} initialMessage={initialMessage} />
       </div>
     </div>
   )
