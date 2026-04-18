@@ -239,17 +239,17 @@ export default function PricingPage() {
         <div style={{ position:'absolute', pointerEvents:'none', zIndex:0, width:'600px', height:'300px', borderRadius:'50%', top:'50px', left:'50%', transform:'translateX(-50%)', background:'radial-gradient(ellipse,rgba(139,92,246,0.10) 0%,transparent 70%)', filter:'blur(60px)' }} />
         <div style={{ position:'absolute', pointerEvents:'none', zIndex:0, width:'400px', height:'400px', borderRadius:'50%', top:'100px', right:'5%', background:'radial-gradient(ellipse,rgba(251,191,36,0.07) 0%,transparent 70%)', filter:'blur(80px)' }} />
 
-        <div style={{ position:'relative', zIndex:1, maxWidth:'1160px', margin:'0 auto', padding:'64px 24px 100px', display:'flex', flexDirection:'column', alignItems:'center' }}>
+        <div style={{ position:'relative', zIndex:1, maxWidth:'1020px', margin:'0 auto', padding:'48px 24px 72px', display:'flex', flexDirection:'column', alignItems:'center' }}>
 
-          <h1 style={{ fontSize:'clamp(36px,5.5vw,68px)', fontWeight:900, lineHeight:1.0, letterSpacing:'-0.03em', color:'#fff', textAlign:'center', margin:'0 0 16px' }}>
+          <h1 style={{ fontSize:'clamp(22px,3vw,40px)', fontWeight:900, lineHeight:1.0, letterSpacing:'-0.03em', color:'#fff', textAlign:'center', margin:'0 0 10px' }}>
             One price. Worldwide.
           </h1>
-          <p style={{ fontSize:'15px', color:'rgba(255,255,255,0.42)', textAlign:'center', lineHeight:1.65, maxWidth:'400px', margin:'0 0 56px' }}>
+          <p style={{ fontSize:'13px', color:'rgba(255,255,255,0.38)', textAlign:'center', lineHeight:1.65, maxWidth:'360px', margin:'0 0 40px' }}>
             No dark patterns. No regional pricing. Cancel any time. Your data stays yours.
           </p>
 
           {/* Cards — Elite gets 1.28× width */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1.28fr', gap:'18px', width:'100%', alignItems:'start' }}>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1.28fr', gap:'14px', width:'100%', alignItems:'start' }}>
 
             {PLANS.map(plan => {
               const isElite = plan.id === 'elite'
@@ -266,10 +266,10 @@ export default function PricingPage() {
                       : isPro
                         ? 'rgba(12,10,26,0.92)'
                         : 'rgba(10,10,18,0.72)',
-                    borderRadius: isElite ? '24px' : '20px',
-                    padding: isElite ? '36px 30px 30px' : '28px 22px 24px',
+                    borderRadius: isElite ? '18px' : '14px',
+                    padding: isElite ? '24px 22px 20px' : '20px 16px 18px',
                     display:'flex', flexDirection:'column',
-                    marginTop: isPro ? '-10px' : isElite ? '-18px' : '0',
+                    marginTop: isPro ? '-8px' : isElite ? '-14px' : '0',
                     ...((!isPro && !isElite) ? { border:`1px solid ${plan.border}` } : {}),
                   }}
                 >
@@ -280,8 +280,8 @@ export default function PricingPage() {
                       background: isElite
                         ? 'linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)'
                         : 'linear-gradient(90deg,#8b5cf6,#ec4899)',
-                      borderRadius:'999px', padding:'4px 18px',
-                      fontSize:'9px', fontWeight:800, letterSpacing:'0.18em',
+                      borderRadius:'999px', padding:'3px 12px',
+                      fontSize:'8px', fontWeight:800, letterSpacing:'0.18em',
                       color: isElite ? '#0a0800' : '#fff',
                       whiteSpace:'nowrap', fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)',
                       boxShadow: isElite ? '0 0 14px rgba(251,191,36,0.50)' : undefined,
@@ -289,7 +289,7 @@ export default function PricingPage() {
                   )}
 
                   {/* Tier label */}
-                  <div style={{ fontSize: isElite ? '11px' : '10px', fontWeight:700, letterSpacing:'0.18em', color:plan.labelColor, fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)', marginBottom:'10px' }}>
+                  <div style={{ fontSize:'9px', fontWeight:700, letterSpacing:'0.18em', color:plan.labelColor, fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)', marginBottom:'7px' }}>
                     {plan.label}
                   </div>
 
@@ -297,9 +297,9 @@ export default function PricingPage() {
                   <div
                     className={isElite ? 'elite-price' : ''}
                     style={{
-                      fontSize: isElite ? 'clamp(52px,6vw,76px)' : 'clamp(44px,5vw,64px)',
+                      fontSize: isElite ? 'clamp(34px,3.8vw,48px)' : 'clamp(30px,3.2vw,42px)',
                       fontWeight:300, lineHeight:1, color:'#fff',
-                      letterSpacing:'-0.01em', marginBottom:'6px',
+                      letterSpacing:'-0.01em', marginBottom:'4px',
                       fontFamily:'var(--font-inter,Inter,sans-serif)',
                     }}
                   >
@@ -307,38 +307,38 @@ export default function PricingPage() {
                   </div>
 
                   {/* Billing */}
-                  <div style={{ fontSize:'10px', color:'rgba(255,255,255,0.32)', marginBottom:'20px', fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)' }}>
+                  <div style={{ fontSize:'9px', color:'rgba(255,255,255,0.30)', marginBottom:'12px', fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)' }}>
                     {plan.billing}
                   </div>
 
                   {/* Engine badge */}
-                  <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'20px' }}>
-                    <div style={{ width:'5px', height:'5px', borderRadius:'50%', background:plan.engineColor, flexShrink:0,
-                      boxShadow: isElite ? '0 0 6px rgba(251,191,36,0.80)' : undefined }} />
-                    <span style={{ fontSize:'8px', fontWeight:700, letterSpacing:'0.16em', color:plan.engineColor, fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:'5px', marginBottom:'12px' }}>
+                    <div style={{ width:'4px', height:'4px', borderRadius:'50%', background:plan.engineColor, flexShrink:0,
+                      boxShadow: isElite ? '0 0 5px rgba(251,191,36,0.80)' : undefined }} />
+                    <span style={{ fontSize:'7px', fontWeight:700, letterSpacing:'0.16em', color:plan.engineColor, fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)' }}>
                       {plan.engine}
                     </span>
                   </div>
 
                   {/* Divider */}
-                  <div style={{ height:'1px', background: isElite ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.07)', marginBottom:'20px' }} />
+                  <div style={{ height:'1px', background: isElite ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.07)', marginBottom:'14px' }} />
 
                   {/* Feature sections */}
-                  <div style={{ display:'flex', flexDirection:'column', gap:'16px', marginBottom:'24px', flex:1 }}>
+                  <div style={{ display:'flex', flexDirection:'column', gap:'10px', marginBottom:'16px', flex:1 }}>
                     {plan.sections.map(sec => (
                       <div key={sec.title}>
-                        <div style={{ fontSize:'8px', fontWeight:700, letterSpacing:'0.16em', color:SECTION_COLOR[plan.id], fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)', textTransform:'uppercase', marginBottom:'8px' }}>
+                        <div style={{ fontSize:'7px', fontWeight:700, letterSpacing:'0.16em', color:SECTION_COLOR[plan.id], fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)', textTransform:'uppercase', marginBottom:'5px' }}>
                           {sec.title}
                         </div>
-                        <div style={{ display:'flex', flexDirection:'column', gap:'5px' }}>
+                        <div style={{ display:'flex', flexDirection:'column', gap:'3px' }}>
                           {sec.items.map(item => {
                             const isNo = item.startsWith('No ')
                             return (
-                              <div key={item} style={{ display:'flex', alignItems:'flex-start', gap:'8px' }}>
-                                <span style={{ fontSize:'10px', flexShrink:0, marginTop:'1px', color: isNo ? 'rgba(255,255,255,0.18)' : CHECK_COLOR[plan.id], lineHeight:1.2 }}>
+                              <div key={item} style={{ display:'flex', alignItems:'flex-start', gap:'7px' }}>
+                                <span style={{ fontSize:'9px', flexShrink:0, marginTop:'1px', color: isNo ? 'rgba(255,255,255,0.18)' : CHECK_COLOR[plan.id], lineHeight:1.2 }}>
                                   {isNo ? '✕' : '✓'}
                                 </span>
-                                <span style={{ fontSize: isElite ? '12px' : '11px', lineHeight:1.5, color: isNo ? 'rgba(255,255,255,0.28)' : isElite ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.70)', fontFamily:'var(--font-inter,Inter,sans-serif)' }}>
+                                <span style={{ fontSize:'11px', lineHeight:1.45, color: isNo ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.72)', fontFamily:'var(--font-inter,Inter,sans-serif)' }}>
                                   {item}
                                 </span>
                               </div>
@@ -356,8 +356,8 @@ export default function PricingPage() {
                       background: 'rgba(251,191,36,0.07)',
                       border: '1px solid rgba(251,191,36,0.18)',
                       borderRadius: '10px',
-                      padding: '10px 14px',
-                      marginBottom: '16px',
+                      padding: '8px 12px',
+                      marginBottom: '12px',
                     }}>
                       <span style={{ fontSize: '13px', flexShrink: 0 }}>⭐</span>
                       <span style={{
@@ -377,9 +377,9 @@ export default function PricingPage() {
                     className={`cta-${plan.ctaStyle}`}
                     style={{
                       display:'block', textAlign:'center',
-                      padding: isElite ? '14px 20px' : '12px 20px',
-                      borderRadius:'10px',
-                      fontSize: isElite ? '12px' : '11px',
+                      padding: isElite ? '10px 16px' : '9px 14px',
+                      borderRadius:'8px',
+                      fontSize:'10px',
                       fontWeight:700, letterSpacing:'0.10em',
                       textTransform:'uppercase', textDecoration:'none',
                       fontFamily:'var(--font-inter,Inter,sans-serif)',
