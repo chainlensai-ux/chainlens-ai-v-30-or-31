@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 
 export default function AISummaryCard({ data }: { data: any }) {
-  const { chain, contract, goldrush, dexscreener, cortex, gmgn, bytecode } = data;
+  const { chain, contract, goldrush, gtPools, cortex, gmgn, bytecode } = data;
 
   const [activeTab, setActiveTab] = useState<
     "overview" | "market" | "contract" | "ai" | "raw"
@@ -82,8 +82,8 @@ export default function AISummaryCard({ data }: { data: any }) {
                 {goldrush?.decimals ?? gmgn?.decimals ?? "?"}
               </p>
               <p>
-                <span className="text-[#777]">Pairs (DexScreener):</span>{" "}
-                {dexscreener?.pairs?.length ?? 0}
+                <span className="text-[#777]">Pools (GeckoTerminal):</span>{" "}
+                {Array.isArray(gtPools) ? gtPools.length : 0}
               </p>
             </div>
           </div>
@@ -111,33 +111,39 @@ export default function AISummaryCard({ data }: { data: any }) {
               </p>
             </div>
 
-            {dexscreener?.pairs?.length ? (
+            {Array.isArray(gtPools) && gtPools.length > 0 ? (
               <div className="mt-3">
                 <p className="text-xs text-[#9ca3af] mb-1">
-                  Top DexScreener pair:
+                  Top GeckoTerminal pool:
                 </p>
                 <div className="bg-[#0b0b16] border border-[#26223f] rounded-xl p-3 text-xs space-y-1">
                   <p>
-                    <span className="text-[#777]">DEX:</span>{" "}
-                    {dexscreener.pairs[0]?.dexId || "Unknown"}
+                    <span className="text-[#777]">Pool:</span>{" "}
+                    {gtPools[0]?.attributes?.name || "Unknown"}
                   </p>
                   <p>
-                    <span className="text-[#777]">Pair:</span>{" "}
-                    {dexscreener.pairs[0]?.pairAddress || "Unknown"}
+                    <span className="text-[#777]">Price USD:</span>{" "}
+                    {gtPools[0]?.attributes?.base_token_price_usd
+                      ? `$${Number(gtPools[0].attributes.base_token_price_usd).toFixed(6)}`
+                      : "Unknown"}
                   </p>
                   <p>
-                    <span className="text-[#777]">Base Token:</span>{" "}
-                    {dexscreener.pairs[0]?.baseToken?.symbol || "Unknown"}
+                    <span className="text-[#777]">Liquidity:</span>{" "}
+                    {gtPools[0]?.attributes?.reserve_in_usd
+                      ? `$${Number(gtPools[0].attributes.reserve_in_usd).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                      : "Unknown"}
                   </p>
                   <p>
-                    <span className="text-[#777]">Quote Token:</span>{" "}
-                    {dexscreener.pairs[0]?.quoteToken?.symbol || "Unknown"}
+                    <span className="text-[#777]">24h Volume:</span>{" "}
+                    {gtPools[0]?.attributes?.volume_usd?.h24
+                      ? `$${Number(gtPools[0].attributes.volume_usd.h24).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                      : "Unknown"}
                   </p>
                 </div>
               </div>
             ) : (
               <p className="text-xs text-[#6b7280]">
-                No DexScreener pairs detected for this contract.
+                No GeckoTerminal pools found for this contract.
               </p>
             )}
           </div>

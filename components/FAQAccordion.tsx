@@ -13,11 +13,11 @@ const FAQS = [
   },
   {
     q: 'Is GhostTrade using real prices?',
-    a: "Yes. GhostTrade pulls live prices from DexScreener so your simulated trades reflect actual market conditions. There's no spread manipulation or artificial pricing — it's as close to real trading as paper trading gets.",
+    a: "Yes. GhostTrade pulls live prices from GeckoTerminal so your simulated trades reflect actual market conditions. There's no spread manipulation or artificial pricing — it's as close to real trading as paper trading gets.",
   },
   {
     q: 'How does PumpAlert detect pumps early?',
-    a: "PumpAlert queries DexScreener's live pairs API every 60 seconds, filtering for tokens showing unusual volume spikes and price action above your configured thresholds. It scores each alert for rug risk so you can separate genuine momentum from manufactured pumps.",
+    a: "PumpAlert queries GeckoTerminal's live pools API every 60 seconds, filtering for tokens showing unusual volume spikes and price action above your configured thresholds. It scores each alert for rug risk so you can separate genuine momentum from manufactured pumps.",
   },
   {
     q: 'Can I cancel my subscription any time?',

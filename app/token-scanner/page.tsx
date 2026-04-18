@@ -14,7 +14,8 @@ type ScanResult = {
   chain?: string;
   contract?: string;
   goldrush?: any;
-  dexscreener?: any;
+  gtPools?: any[];
+  gtRaw?: any;
   gmgn?: any;
   analysis?: any;
   cortex?: any;
@@ -22,7 +23,7 @@ type ScanResult = {
   name?: string;
   symbol?: string;
   decimals?: number;
-  aiSummary?: string; // correct field name
+  aiSummary?: string;
   pairs?: any[];
   tokenInfo?: {
     name?: string;
@@ -130,7 +131,7 @@ function OverviewPanel({ data }: { data: ScanResult }) {
   const name = data.name ?? "Unknown";
   const symbol = data.symbol ?? "?";
   const decimals = data.decimals ?? "?";
-  const pairsCount = data.dexscreener?.pairs?.length ?? 0;
+  const poolsCount = data.gtPools?.length ?? data.pairs?.length ?? 0;
 
 
   return (
@@ -141,7 +142,7 @@ function OverviewPanel({ data }: { data: ScanResult }) {
           <InfoRow label="Name" value={name} />
           <InfoRow label="Symbol" value={symbol} />
           <InfoRow label="Decimals" value={String(decimals)} />
-          <InfoRow label="Pairs (DexScreener)" value={String(pairsCount)} />
+          <InfoRow label="Pools (GeckoTerminal)" value={String(poolsCount)} />
         </div>
       </div>
     </div>
@@ -174,21 +175,19 @@ function formatPrice(value: number | string): string {
 
 
 function MarketPanel({ data }: { data: ScanResult }) {
-  const pairs = data.pairs || [];
+  const pools = data.gtPools || data.pairs || [];
 
+  const mainPool = [...pools].sort(
+    (a, b) =>
+      parseFloat(b.attributes?.reserve_in_usd || "0") -
+      parseFloat(a.attributes?.reserve_in_usd || "0")
+  )[0] ?? null;
 
-  const mainPair = pairs.reduce((best: any, p: any) => {
-    if (!best) return p;
-    return (p.liquidity?.usd || 0) > (best.liquidity?.usd || 0) ? p : best;
-  }, null);
-
-
-  const price = mainPair?.priceUsd ?? mainPair?.priceNative ?? "Unknown";
-  const liquidity = mainPair?.liquidity?.usd ?? "Unknown";
-  const volume24h = mainPair?.volume?.h24 ?? "Unknown";
-  const buys24h = mainPair?.txns?.h24?.buys ?? 0;
-  const sells24h = mainPair?.txns?.h24?.sells ?? 0;
-
+  const price = mainPool?.attributes?.base_token_price_usd ?? "Unknown";
+  const liquidity = mainPool?.attributes?.reserve_in_usd ?? "Unknown";
+  const volume24h = mainPool?.attributes?.volume_usd?.h24 ?? "Unknown";
+  const change24h = mainPool?.attributes?.price_change_percentage?.h24 ?? "Unknown";
+  const poolName = mainPool?.attributes?.name ?? "Unknown";
 
   return (
     <div className="space-y-4">
@@ -198,12 +197,12 @@ function MarketPanel({ data }: { data: ScanResult }) {
           <InfoRow label="Price" value={formatPrice(price)} />
           <InfoRow label="Liquidity (USD)" value={formatNumber(liquidity)} />
           <InfoRow label="Volume 24h" value={formatNumber(volume24h)} />
-          <InfoRow label="24h Buys" value={String(buys24h)} />
-          <InfoRow label="24h Sells" value={String(sells24h)} />
-          <InfoRow label="Pairs tracked" value={String(pairs.length)} />
+          <InfoRow label="24h Change" value={change24h !== "Unknown" ? `${Number(change24h).toFixed(2)}%` : "Unknown"} />
+          <InfoRow label="Top Pool" value={poolName} />
+          <InfoRow label="Pools tracked" value={String(pools.length)} />
         </div>
       </div>
-      <CodeBlock title="DexScreener raw" payload={data.dexscreener} />
+      <CodeBlock title="GeckoTerminal pools" payload={data.gtPools ?? data.pairs} />
     </div>
   );
 }

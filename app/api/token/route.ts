@@ -50,12 +50,14 @@ async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
   }
 }
 
-async function fetchDexScreener(contract: string): Promise<any> {
+async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<any> {
   try {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${contract}`);
+    const network = chain === "ethereum" ? "eth" : "base";
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "";
+    const res = await fetch(`${baseUrl}/api/proxy/gt?network=${network}`, { cache: "no-store" });
     return res.ok ? await res.json() : null;
   } catch (err) {
-    console.error("Error fetching DexScreener:", err);
+    console.error("Error fetching GeckoTerminal:", err);
     return null;
   }
 }
@@ -155,15 +157,36 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Could not detect chain" }, { status: 400 });
     }
 
-    const [bytecode, goldrush, dexscreener, gmgn, metadata] = await Promise.all([
+    const [bytecode, goldrush, gtData, gmgn, metadata] = await Promise.all([
       fetchBytecode(chain, contract),
       fetchGoldRush(chain, contract),
-      fetchDexScreener(contract),
+      fetchGeckoTerminal(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
     ]);
 
     const analysis = analyzeContract(bytecode);
+
+    // Match GT pools to this contract via included[] token entries
+    const gtIncluded: any[] = Array.isArray(gtData?.included) ? gtData.included : [];
+    const gtAllPools: any[] = Array.isArray(gtData?.data) ? gtData.data : [];
+
+    const matchingTokenEntry = gtIncluded.find((i: any) =>
+      i.attributes?.address?.toLowerCase() === contract.toLowerCase()
+    );
+    const matchingTokenId = matchingTokenEntry?.id;
+
+    const matchingPools = matchingTokenId
+      ? gtAllPools.filter((p: any) => p.relationships?.base_token?.data?.id === matchingTokenId)
+      : gtAllPools;
+
+    const mainPool = [...matchingPools].sort(
+      (a, b) =>
+        parseFloat(b.attributes?.reserve_in_usd || "0") -
+        parseFloat(a.attributes?.reserve_in_usd || "0")
+    )[0] ?? null;
+
+    const analysis2 = analyzeContract(bytecode);
 
     // ------------------------------
     // REAL CLAUDE AI SUMMARY
@@ -176,25 +199,20 @@ Output plain text only, no markdown, no tables.
 
 CHAIN: ${chain}
 CONTRACT: ${contract}
-DEXSCREENER:
-${JSON.stringify(dexscreener, null, 2)}
+GECKOTERMINAL POOLS:
+${JSON.stringify(matchingPools.slice(0, 3), null, 2)}
 GOLDRUSH:
 ${JSON.stringify(goldrush, null, 2)}
 BYTECODE ANALYSIS:
-${JSON.stringify(analysis, null, 2)}
+${JSON.stringify(analysis2, null, 2)}
 `;
 
-   const aiResponse = await anthropic.messages.create({
-  model: "claude-sonnet-4-6", // ✅ correct model name
-  max_tokens: 1100,
-  messages: [
-    {
-      role: "user",
-      content: aiPrompt,
-    },
-  ],
-});
-console.log("AI response:", aiResponse); // ✅ add this to debug
+    const aiResponse = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1100,
+      messages: [{ role: "user", content: aiPrompt }],
+    });
+    console.log("AI response:", aiResponse);
 
     const aiSummary =
       (aiResponse?.content?.[0]?.type === "text" ? aiResponse.content[0].text : null) ||
@@ -207,31 +225,25 @@ console.log("AI response:", aiResponse); // ✅ add this to debug
     const goldItem = goldrush?.data?.items?.[0];
     const gmgnItem = gmgn?.data;
 
-    const mainPair = dexscreener?.pairs?.reduce((best: any, p: any) => {
-      if (!best) return p;
-      return (p.liquidity?.usd || 0) > (best.liquidity?.usd || 0) ? p : best;
-    }, null);
-
     const resolvedName =
       metaItem?.contract_name ||
       goldItem?.contract_name ||
-      mainPair?.baseToken?.name ||
+      matchingTokenEntry?.attributes?.name ||
       gmgnItem?.name ||
       "Unknown";
 
     const resolvedSymbol =
       metaItem?.contract_ticker_symbol ||
       goldItem?.contract_ticker_symbol ||
-      mainPair?.baseToken?.symbol ||
+      matchingTokenEntry?.attributes?.symbol ||
       gmgnItem?.symbol ||
       "?";
 
     const resolvedDecimals =
       metaItem?.contract_decimals ||
       goldItem?.contract_decimals ||
-      mainPair?.baseToken?.decimals ||
       gmgnItem?.decimals ||
-      (contract.toLowerCase() === "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" ? 6 : 18);
+      18;
 
     // ------------------------------
     // Final JSON response
@@ -247,32 +259,33 @@ console.log("AI response:", aiResponse); // ✅ add this to debug
 
       // Extra data
       holders: goldrush?.holders || null,
-      liquidity: mainPair?.liquidity?.usd || goldrush?.liquidity || null,
-      pairs: dexscreener?.pairs || [],
+      liquidity: mainPool?.attributes?.reserve_in_usd || goldrush?.liquidity || null,
+
+      // GT pools replacing DexScreener pairs
+      pairs: matchingPools,
+      gtPools: matchingPools,
+      gtRaw: gtData || null,
+
       gmgn: gmgn?.data || null,
 
       // Contract analysis
       analysis,
 
-      // ✅ AI summary from Cortex Engine
+      // AI summary from Cortex Engine
       aiSummary,
 
-      // ✅ Token info object for frontend panels
+      // Token info object for frontend panels
       tokenInfo: {
         name: resolvedName,
         symbol: resolvedSymbol,
         decimals: resolvedDecimals,
       },
-
-      // Full DexScreener raw payload
-      dexscreenerRaw: dexscreener || null,
     });
-    } catch (err) {
+  } catch (err) {
     console.error("Fatal backend error:", err);
     return NextResponse.json(
-      { error: "Internal server error" }, // body
-      { status: 500 }                     // response init
+      { error: "Internal server error" },
+      { status: 500 }
     );
   }
-} // <-- this closes the POST function
-
+}

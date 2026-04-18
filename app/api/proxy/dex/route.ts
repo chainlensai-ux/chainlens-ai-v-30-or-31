@@ -1,17 +1,8 @@
 import { NextResponse } from "next/server";
 
 export async function GET() {
-  try {
-    const wsUrl = "wss://io.dexscreener.com/dex/screener/pairs/base";
-
-    return NextResponse.json({
-      websocket: wsUrl,
-      message: "Connect to this WebSocket from the frontend to get live Base chain pairs."
-    });
-  } catch (e) {
-    return NextResponse.json(
-      { error: "WebSocket setup failed", details: String(e) },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json({
+    proxy: "/api/proxy/gt?network=base",
+    message: "Use /api/proxy/gt?network=base to fetch live Base chain pool data from GeckoTerminal."
+  });
 }
