@@ -13,6 +13,17 @@ interface DexPair {
   volume?: { h24?: number }
 }
 
+interface MergedToken {
+  address: string
+  symbol: string
+  name: string
+  price: number | null
+  liquidity: number | null
+  volume24h: number | null
+  change24h: number | null
+  source: string
+}
+
 function TokenCard({ data }: { data: DexPair }) {
   const change = data.priceChange?.h24 ?? 0
   const changeColor = change > 0 ? '#2DD4BF' : change < 0 ? '#f87171' : 'rgba(255,255,255,0.40)'
@@ -51,30 +62,95 @@ function TokenCard({ data }: { data: DexPair }) {
 }
 
 export default function HomeTokenScreener() {
-  const [trending, setTrending] = useState<DexPair[]>([])
+  const [trending, setTrending] = useState<MergedToken[]>([])
   const [lastUpdate, setLastUpdate] = useState<number | null>(null)
 
   useEffect(() => {
-    async function fetchTrending() {
+    async function fetchTrending(): Promise<MergedToken[]> {
       try {
-        const res = await fetch('https://flat-recipe-8b72.chainlensai.workers.dev')
-        const json = await res.json()
+        // GoldRush trending tokens (Base chain)
+        const goldrushRes = await fetch(
+          'https://api.goldrushhq.io/v1/tokens/trending?chain=base',
+          {
+            headers: {
+              'x-api-key': process.env.NEXT_PUBLIC_GOLDRUSH_API_KEY ?? '',
+            },
+          }
+        )
+        const goldrushData = await goldrushRes.json()
 
-        if (Array.isArray(json.pairs)) {
-          const sorted = [...json.pairs]
-            .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
-            .slice(0, 20)
+        // CoinGecko Terminal trending
+        const geckoRes = await fetch(
+          'https://api.coingecko.com/api/v3/search/trending'
+        )
+        const geckoData = await geckoRes.json()
 
-          setTrending(sorted)
-          setLastUpdate(Date.now())
-        }
+        // Normalize GoldRush tokens
+        const goldrushTokens: MergedToken[] = (goldrushData?.data || []).map((t: {
+          address: string; symbol: string; name: string
+          price_usd: number; liquidity_usd: number; volume_24h_usd: number; price_change_24h: number
+        }) => ({
+          address: t.address,
+          symbol: t.symbol,
+          name: t.name,
+          price: t.price_usd,
+          liquidity: t.liquidity_usd,
+          volume24h: t.volume_24h_usd,
+          change24h: t.price_change_24h,
+          source: 'goldrush',
+        }))
+
+        // Normalize Gecko trending
+        const geckoTokens: MergedToken[] = (geckoData?.coins || []).map((c: {
+          item: { id: string; symbol: string; name: string; data?: { price?: number; total_volume?: number; price_change_24h?: number } }
+        }) => ({
+          address: c.item.id,
+          symbol: c.item.symbol,
+          name: c.item.name,
+          price: c.item.data?.price || null,
+          liquidity: null,
+          volume24h: c.item.data?.total_volume || null,
+          change24h: c.item.data?.price_change_24h || null,
+          source: 'gecko',
+        }))
+
+        // Merge + dedupe by symbol
+        const merged = [...goldrushTokens, ...geckoTokens]
+        const deduped = Object.values(
+          merged.reduce<Record<string, MergedToken>>((acc, token) => {
+            if (!acc[token.symbol]) acc[token.symbol] = token
+            return acc
+          }, {})
+        )
+
+        // Sort by liquidity first, then volume
+        deduped.sort((a, b) => {
+          const liqA = a.liquidity || 0
+          const liqB = b.liquidity || 0
+          if (liqA !== liqB) return liqB - liqA
+
+          const volA = a.volume24h || 0
+          const volB = b.volume24h || 0
+          return volB - volA
+        })
+
+        return deduped
       } catch (err) {
-        console.error('REST fetch error:', err)
+        console.error('Trending fetch error:', err)
+        return []
       }
     }
 
-    fetchTrending()
-    const interval = setInterval(fetchTrending, 30000)
+    async function poll() {
+      const result = await fetchTrending()
+      if (result.length > 0) {
+        setTrending(result)
+        setLastUpdate(Date.now())
+      }
+    }
+
+    poll()
+    const interval = setInterval(poll, 30000)
     return () => clearInterval(interval)
   }, [])
 
@@ -190,8 +266,18 @@ export default function HomeTokenScreener() {
                 </span>
               </div>
             ) : (
-              trending.map(pair => (
-                <TokenCard key={pair.pairAddress} data={pair} />
+              trending.map(token => (
+                <TokenCard
+                  key={token.address}
+                  data={{
+                    pairAddress: token.address,
+                    baseToken: { symbol: token.symbol, name: token.name },
+                    chainId: 'base',
+                    priceUsd: token.price != null ? String(token.price) : undefined,
+                    priceChange: { h24: token.change24h ?? undefined },
+                    volume: { h24: token.volume24h ?? undefined },
+                  }}
+                />
               ))
             )}
           </div>
