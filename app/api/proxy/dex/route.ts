@@ -8,12 +8,18 @@ export async function GET() {
     );
 
     if (!res.ok) {
-      return NextResponse.json({ error: "DexScreener fetch failed" }, { status: 500 });
+      return NextResponse.json(
+        { error: "DexScreener fetch failed" },
+        { status: 500 }
+      );
     }
 
     const data = await res.json();
     return NextResponse.json(data);
-  } catch (err) {
-    return NextResponse.json({ error: "Proxy error", details: (err as Error).message }, { status: 500 });
+  } catch (err: unknown) {
+    return NextResponse.json(
+      { error: "Proxy error", details: (err as Error)?.message ?? "Unknown error" },
+      { status: 500 }
+    );
   }
 }
