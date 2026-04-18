@@ -98,19 +98,19 @@ export default function TerminalTokenScanner() {
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkError, setClarkError]     = useState<string | null>(null)
 
-  async function fetchClarkVerdict(q: string) {
+  async function fetchClarkVerdict(tokenData: ScanResult) {
     setClarkLoading(true)
     setClarkVerdict(null)
     setClarkError(null)
     try {
-      const isContract = /^0x[a-fA-F0-9]{40}$/.test(q)
-      const body = isContract
-        ? { feature: 'scan-token', tokenAddress: q }
-        : { feature: 'scan-token', query: q }
-      const res  = await fetch('/api/clark', {
+      const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          feature: 'scan-token',
+          tokenData,
+          tokenAddress: tokenData.contract,
+        }),
       })
       const json = await res.json()
       if (!res.ok || !json.ok) {
@@ -144,7 +144,7 @@ export default function TerminalTokenScanner() {
         setError(json.error ?? 'Token not found on Base.')
       } else {
         setResult(json.data)
-        fetchClarkVerdict(q)
+        fetchClarkVerdict(json.data)
       }
     } catch {
       setError('Network error — check your connection.')
@@ -154,7 +154,7 @@ export default function TerminalTokenScanner() {
   }
 
   return (
-    <main className="flex-1 overflow-y-auto h-full" style={{ color: '#e2e8f0', padding: '40px 48px' }}>
+    <>
       <style>{`
         @keyframes clarkDot {
           0%, 80%, 100% { opacity: 0.25; transform: scale(0.75); }
@@ -162,252 +162,271 @@ export default function TerminalTokenScanner() {
         }
       `}</style>
 
-        {/* ── Header ─────────────────────────────────────────────────── */}
-        <div style={{ marginBottom: '32px' }}>
-          <div style={{
-            display: 'inline-flex', alignItems: 'center', gap: '8px',
-            background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.25)',
-            borderRadius: '99px', padding: '4px 12px', marginBottom: '16px',
-            fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-            color: '#a78bfa', fontFamily: 'var(--font-plex-mono)',
-          }}>
-            <span style={{
-              width: '6px', height: '6px', borderRadius: '50%',
-              background: '#8b5cf6', boxShadow: '0 0 8px rgba(139,92,246,0.80)',
-              flexShrink: 0,
-            }} />
-            TOKEN SCANNER
-          </div>
+      <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
 
-          <h1 style={{ fontSize: '26px', fontWeight: 700, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>
-            Token Scanner{' '}
-            <span style={{ color: '#2DD4BF' }}>Elite</span>
-          </h1>
-        </div>
+        {/* ── Left: scrollable scan area ──────────────────────────── */}
+        <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '40px 48px' }}>
 
-        {/* ── Input row ──────────────────────────────────────────────── */}
-        <div style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '28px' }}>
-          <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
-            disabled={loading}
-            placeholder="0x… or token name (brett, doginme, toshi…)"
-            style={{
-              flex: 1, padding: '12px 16px',
-              background: 'rgba(255,255,255,0.04)',
-              border: '1px solid rgba(255,255,255,0.10)',
-              borderRadius: '10px',
-              color: '#e2e8f0', fontSize: '14px',
-              fontFamily: 'var(--font-plex-mono)',
-              outline: 'none',
-              opacity: loading ? 0.6 : 1,
-              transition: 'border-color 0.15s',
-            }}
-            onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.45)' }}
-            onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)' }}
-          />
-          <button
-            onClick={handleScan}
-            disabled={loading || !input.trim()}
-            style={{
-              padding: '12px 28px', borderRadius: '10px', border: 'none',
-              background: loading || !input.trim()
-                ? 'rgba(45,212,191,0.12)'
-                : 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
-              color: loading || !input.trim() ? 'rgba(255,255,255,0.25)' : '#06060a',
-              fontSize: '12px', fontWeight: 700,
-              fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em',
-              cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
-              flexShrink: 0, transition: 'all 0.15s',
-            }}
-          >
-            {loading ? 'SCANNING…' : 'SCAN'}
-          </button>
-        </div>
-
-        {/* ── Error ──────────────────────────────────────────────────── */}
-        {error && (
-          <div style={{
-            maxWidth: '680px', padding: '13px 18px',
-            background: 'rgba(248,113,113,0.07)',
-            border: '1px solid rgba(248,113,113,0.22)',
-            borderRadius: '10px', color: '#fca5a5',
-            fontSize: '13px', fontFamily: 'var(--font-plex-mono)',
-            marginBottom: '24px',
-          }}>
-            {error}
-          </div>
-        )}
-
-        {/* ── Empty state ─────────────────────────────────────────────── */}
-        {!loading && !result && !error && (
-          <div style={{ maxWidth: '680px', padding: '48px 0', textAlign: 'center' }}>
-            <p style={{
-              fontFamily: 'var(--font-plex-mono)', fontSize: '12px',
-              letterSpacing: '0.08em', color: '#1e2e38',
-            }}>
-              no token scanned yet
-            </p>
-          </div>
-        )}
-
-        {/* ── Results ─────────────────────────────────────────────────── */}
-        {result && (
-          <div style={{ maxWidth: '820px' }}>
-
-            {/* Token identity */}
-            <div style={{ marginBottom: '24px' }}>
-              <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#f8fafc', margin: '0 0 4px' }}>
-                {result.name ?? 'Unknown'}
-                {result.symbol && (
-                  <span style={{
-                    marginLeft: '10px', fontSize: '14px',
-                    color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
-                  }}>
-                    {result.symbol}
-                  </span>
-                )}
-              </h2>
-              {result.contract && (
-                <p style={{
-                  fontSize: '11px', color: '#3a5268',
-                  fontFamily: 'var(--font-plex-mono)', margin: 0,
-                }}>
-                  {result.contract}
-                </p>
-              )}
-            </div>
-
-            {/* Stat cards */}
+          {/* Header */}
+          <div style={{ marginBottom: '32px' }}>
             <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
-              gap: '10px', marginBottom: '28px',
+              display: 'inline-flex', alignItems: 'center', gap: '8px',
+              background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.25)',
+              borderRadius: '99px', padding: '4px 12px', marginBottom: '16px',
+              fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+              color: '#a78bfa', fontFamily: 'var(--font-plex-mono)',
             }}>
-              <StatCard label="Price"     value={fmtPrice(result.price)}          accent="#2DD4BF" />
-              <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} />
-              <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} />
-              <StatCard
-                label="24h Change"
-                value={fmtPct(result.priceChange24h)}
-                accent={pctColor(result.priceChange24h)}
-              />
+              <span style={{
+                width: '6px', height: '6px', borderRadius: '50%',
+                background: '#8b5cf6', boxShadow: '0 0 8px rgba(139,92,246,0.80)',
+                flexShrink: 0,
+              }} />
+              TOKEN SCANNER
             </div>
+            <h1 style={{ fontSize: '26px', fontWeight: 700, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>
+              Token Scanner{' '}
+              <span style={{ color: '#2DD4BF' }}>Elite</span>
+            </h1>
+          </div>
 
-            {/* Pools */}
-            {result.pools && result.pools.length > 0 && (
-              <>
-                <p style={{
-                  fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                  color: '#3a5268', textTransform: 'uppercase',
-                  marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
-                }}>
-                  Pools · {result.pools.length}
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {result.pools.map((pool, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '1fr repeat(4, auto)',
-                        alignItems: 'center', gap: '20px',
-                        padding: '12px 18px',
-                        background: 'rgba(255,255,255,0.025)',
-                        border: '1px solid rgba(255,255,255,0.06)',
-                        borderRadius: '10px',
-                        fontSize: '12px', fontFamily: 'var(--font-plex-mono)',
-                      }}
-                    >
-                      <span style={{
-                        color: '#94a3b8', overflow: 'hidden',
-                        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>
-                        {pool.name ?? shorten(pool.address ?? '')}
-                      </span>
-                      <span style={{ color: '#2DD4BF', whiteSpace: 'nowrap' }}>
-                        {fmtPrice(pool.price)}
-                      </span>
-                      <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
-                        Liq {fmtLarge(pool.liquidity)}
-                      </span>
-                      <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
-                        Vol {fmtLarge(pool.volume24h)}
-                      </span>
-                      <span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>
-                        {fmtPct(pool.priceChange24h)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+          {/* Input row */}
+          <div style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '28px' }}>
+            <input
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
+              disabled={loading}
+              placeholder="0x… or token name (brett, doginme, toshi…)"
+              style={{
+                flex: 1, padding: '12px 16px',
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                borderRadius: '10px',
+                color: '#e2e8f0', fontSize: '14px',
+                fontFamily: 'var(--font-plex-mono)',
+                outline: 'none',
+                opacity: loading ? 0.6 : 1,
+                transition: 'border-color 0.15s',
+              }}
+              onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.45)' }}
+              onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)' }}
+            />
+            <button
+              onClick={handleScan}
+              disabled={loading || !input.trim()}
+              style={{
+                padding: '12px 28px', borderRadius: '10px', border: 'none',
+                background: loading || !input.trim()
+                  ? 'rgba(45,212,191,0.12)'
+                  : 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                color: loading || !input.trim() ? 'rgba(255,255,255,0.25)' : '#06060a',
+                fontSize: '12px', fontWeight: 700,
+                fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em',
+                cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+                flexShrink: 0, transition: 'all 0.15s',
+              }}
+            >
+              {loading ? 'SCANNING…' : 'SCAN'}
+            </button>
+          </div>
 
-            {/* ── Clark Verdict ──────────────────────────────────────────── */}
-            {(clarkLoading || clarkVerdict || clarkError) && (
-              <div style={{
-                marginTop: '28px',
-                background: '#080c14',
-                border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: '14px',
-                padding: '20px 24px',
+          {/* Error */}
+          {error && (
+            <div style={{
+              maxWidth: '680px', padding: '13px 18px',
+              background: 'rgba(248,113,113,0.07)',
+              border: '1px solid rgba(248,113,113,0.22)',
+              borderRadius: '10px', color: '#fca5a5',
+              fontSize: '13px', fontFamily: 'var(--font-plex-mono)',
+              marginBottom: '24px',
+            }}>
+              {error}
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!loading && !result && !error && (
+            <div style={{ maxWidth: '680px', padding: '48px 0', textAlign: 'center' }}>
+              <p style={{
+                fontFamily: 'var(--font-plex-mono)', fontSize: '12px',
+                letterSpacing: '0.08em', color: '#1e2e38',
               }}>
-                {/* Label */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-                  <span style={{
-                    width: '6px', height: '6px', borderRadius: '50%',
-                    background: '#2DD4BF',
-                    boxShadow: '0 0 8px rgba(45,212,191,0.8)',
-                    flexShrink: 0,
-                  }} />
-                  <p style={{
-                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
-                    color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
-                    textTransform: 'uppercase', margin: 0,
-                  }}>
-                    Clark Verdict
-                  </p>
-                </div>
+                no token scanned yet
+              </p>
+            </div>
+          )}
 
-                {/* Loading dots */}
-                {clarkLoading && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '2px 0' }}>
-                    {[0, 1, 2].map(i => (
-                      <span key={i} style={{
-                        width: '5px', height: '5px', borderRadius: '50%',
-                        background: '#2DD4BF', display: 'inline-block',
-                        animation: `clarkDot 1.2s ease-in-out ${i * 0.2}s infinite`,
-                      }} />
-                    ))}
-                  </div>
-                )}
+          {/* Results */}
+          {result && (
+            <div style={{ maxWidth: '820px' }}>
 
-                {/* Error */}
-                {clarkError && (
+              {/* Token identity */}
+              <div style={{ marginBottom: '24px' }}>
+                <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#f8fafc', margin: '0 0 4px' }}>
+                  {result.name ?? 'Unknown'}
+                  {result.symbol && (
+                    <span style={{
+                      marginLeft: '10px', fontSize: '14px',
+                      color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
+                    }}>
+                      {result.symbol}
+                    </span>
+                  )}
+                </h2>
+                {result.contract && (
                   <p style={{
-                    fontSize: '12px', color: '#fca5a5',
+                    fontSize: '11px', color: '#3a5268',
                     fontFamily: 'var(--font-plex-mono)', margin: 0,
                   }}>
-                    {clarkError}
-                  </p>
-                )}
-
-                {/* Verdict text */}
-                {clarkVerdict && (
-                  <p style={{
-                    fontSize: '13px', lineHeight: 1.75,
-                    color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)',
-                    whiteSpace: 'pre-wrap', margin: 0,
-                  }}>
-                    {clarkVerdict}
+                    {result.contract}
                   </p>
                 )}
               </div>
-            )}
-          </div>
-        )}
 
-    </main>
+              {/* Stat cards */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+                gap: '10px', marginBottom: '28px',
+              }}>
+                <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
+                <StatCard label="Liquidity"  value={fmtLarge(result.liquidity)} />
+                <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} />
+                <StatCard
+                  label="24h Change"
+                  value={fmtPct(result.priceChange24h)}
+                  accent={pctColor(result.priceChange24h)}
+                />
+              </div>
+
+              {/* Pools */}
+              {result.pools && result.pools.length > 0 && (
+                <>
+                  <p style={{
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                    color: '#3a5268', textTransform: 'uppercase',
+                    marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
+                  }}>
+                    Pools · {result.pools.length}
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {result.pools.map((pool, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1fr repeat(4, auto)',
+                          alignItems: 'center', gap: '20px',
+                          padding: '12px 18px',
+                          background: 'rgba(255,255,255,0.025)',
+                          border: '1px solid rgba(255,255,255,0.06)',
+                          borderRadius: '10px',
+                          fontSize: '12px', fontFamily: 'var(--font-plex-mono)',
+                        }}
+                      >
+                        <span style={{
+                          color: '#94a3b8', overflow: 'hidden',
+                          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {pool.name ?? shorten(pool.address ?? '')}
+                        </span>
+                        <span style={{ color: '#2DD4BF', whiteSpace: 'nowrap' }}>
+                          {fmtPrice(pool.price)}
+                        </span>
+                        <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
+                          Liq {fmtLarge(pool.liquidity)}
+                        </span>
+                        <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
+                          Vol {fmtLarge(pool.volume24h)}
+                        </span>
+                        <span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>
+                          {fmtPct(pool.priceChange24h)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
+        <aside style={{
+          width: '288px',
+          flexShrink: 0,
+          borderLeft: '1px solid rgba(255,255,255,0.08)',
+          background: '#080c14',
+          overflowY: 'auto',
+          padding: '28px 20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '16px',
+        }}>
+          {/* Label */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{
+              width: '6px', height: '6px', borderRadius: '50%',
+              background: clarkLoading ? '#2DD4BF' : clarkVerdict ? '#2DD4BF' : '#1e3a44',
+              boxShadow: (clarkLoading || clarkVerdict) ? '0 0 8px rgba(45,212,191,0.8)' : 'none',
+              flexShrink: 0,
+              transition: 'all 0.3s',
+            }} />
+            <p style={{
+              fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
+              color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
+              textTransform: 'uppercase', margin: 0,
+            }}>
+              Clark Verdict
+            </p>
+          </div>
+
+          {/* Idle */}
+          {!clarkLoading && !clarkVerdict && !clarkError && (
+            <p style={{
+              fontSize: '11px', color: '#1e3a44',
+              fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
+            }}>
+              scan a token to see Clark's verdict
+            </p>
+          )}
+
+          {/* Loading dots */}
+          {clarkLoading && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 0' }}>
+              {[0, 1, 2].map(i => (
+                <span key={i} style={{
+                  width: '5px', height: '5px', borderRadius: '50%',
+                  background: '#2DD4BF', display: 'inline-block',
+                  animation: `clarkDot 1.2s ease-in-out ${i * 0.2}s infinite`,
+                }} />
+              ))}
+            </div>
+          )}
+
+          {/* Error */}
+          {clarkError && (
+            <p style={{
+              fontSize: '12px', color: '#fca5a5',
+              fontFamily: 'var(--font-plex-mono)', margin: 0, lineHeight: 1.6,
+            }}>
+              {clarkError}
+            </p>
+          )}
+
+          {/* Verdict */}
+          {clarkVerdict && (
+            <p style={{
+              fontSize: '12px', lineHeight: 1.8,
+              color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)',
+              whiteSpace: 'pre-wrap', margin: 0,
+            }}>
+              {clarkVerdict}
+            </p>
+          )}
+        </aside>
+
+      </div>
+    </>
   )
 }

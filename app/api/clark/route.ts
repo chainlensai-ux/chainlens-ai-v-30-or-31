@@ -31,6 +31,7 @@ interface ClarkRequestBody {
   chain?: SupportedChain;
   prompt?: string;
   query?: string;
+  tokenData?: unknown;
 }
 
 interface ClarkContext {
@@ -670,19 +671,22 @@ async function handlePumpAlerts(body: ClarkRequestBody, origin: string) {
 }
 
 async function handleScanToken(body: ClarkRequestBody, origin: string) {
-  const contract = body.tokenAddress ?? body.addressOrToken;
-  const nameQuery = body.query ?? body.prompt;
+  // Use pre-fetched token data if the caller already has it (avoids redundant fetch)
+  let scanData: unknown = body.tokenData ?? null;
 
-  let scanData: unknown = null;
+  if (!scanData) {
+    const contract = body.tokenAddress ?? body.addressOrToken;
+    const nameQuery = body.query ?? body.prompt;
 
-  if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
-    scanData = await callScanToken(contract, "contract", origin);
-  } else if (nameQuery) {
-    scanData = await callScanToken(nameQuery.trim(), "query", origin);
+    if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
+      scanData = await callScanToken(contract, "contract", origin);
+    } else if (nameQuery) {
+      scanData = await callScanToken(nameQuery.trim(), "query", origin);
+    }
   }
 
   if (!scanData) {
-    const label = contract ?? nameQuery ?? "unknown";
+    const label = body.tokenAddress ?? body.addressOrToken ?? body.query ?? body.prompt ?? "unknown";
     return {
       feature: "scan-token",
       analysis: `Token "${label}" was not found on GeckoTerminal Base data. Check the name or contract and try again.`,
@@ -692,8 +696,8 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
   const context: ClarkContext = { tokenData: scanData };
   const prompt =
     `Use the SCAN-TOKEN format from your system prompt. Analyze the token in <token_data>. ` +
-    `Follow the format exactly: sentiment tag, Market Overview, Key Signals (24h), Risk Flags, Verdict, Follow-up. ` +
-    `Max 12 lines. No paragraphs. No filler.` +
+    `Follow the format exactly: Analysis, Market, Signals, Risks, Verdict (Send/Mid/Avoid). ` +
+    `Max 12 lines. Dot points only. Bold keywords. No paragraphs. No filler.` +
     (body.prompt ? ` User asked: ${body.prompt}` : "");
 
   const analysis = await callAnthropic(prompt, context);
