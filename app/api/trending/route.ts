@@ -68,7 +68,7 @@ export async function GET() {
     const gtEthData = await gtEth.json();
 
     // Helper: extract token metadata from included[]
-    function extractTokenMeta(included: GTIncluded[], tokenId: string) {
+    function extractTokenMeta(included: any[], tokenId: string) {
       const item = included.find(i => i.id === tokenId);
       if (!item) return null;
       return {
@@ -79,7 +79,7 @@ export async function GET() {
     }
 
     // Normalize GeckoTerminal pools (BASE token only)
-    function normalizeGT(pool: GTPool, included: GTIncluded[]): MergedToken | null {
+    function normalizeGT(pool: any, included: any[]): MergedToken | null {
       const baseTokenId = pool.relationships.base_token.data.id;
       const meta = extractTokenMeta(included, baseTokenId);
       if (!meta) return null;
