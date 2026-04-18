@@ -71,17 +71,36 @@ export default function Navbar() {
         .tools-btn.open   { color: #fff; }
 
         .tools-item {
-          display: flex; align-items: center; gap: 10px;
+          display: flex; align-items: center; justify-content: space-between;
           padding: 9px 12px; border-radius: 10px;
           text-decoration: none; color: rgba(255,255,255,0.70);
           font-size: 12px; font-weight: 600;
-          transition: background 0.15s, color 0.15s;
+          transition: background 0.15s, color 0.15s, transform 0.15s;
           border: 1px solid transparent;
         }
         .tools-item:hover {
           background: rgba(45,212,191,0.07);
           border-color: rgba(45,212,191,0.14);
           color: #fff;
+          transform: translateX(3px);
+        }
+
+        /* Dropdown slide animation */
+        @keyframes tools-slide-in {
+          from { opacity: 0; transform: translateY(-6px) scaleY(0.97); }
+          to   { opacity: 1; transform: translateY(0)   scaleY(1); }
+        }
+        @keyframes tools-item-in {
+          from { opacity: 0; transform: translateX(-6px); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        .tools-dropdown {
+          transform-origin: top center;
+          animation: tools-slide-in 0.18s cubic-bezier(0.22,1,0.36,1) both;
+        }
+        .tools-dropdown-item {
+          opacity: 0;
+          animation: tools-item-in 0.18s cubic-bezier(0.22,1,0.36,1) both;
         }
 
         .btn-signin {
@@ -210,42 +229,48 @@ export default function Navbar() {
 
               {open && (
                 <div
+                  className="tools-dropdown"
                   style={{
                     position: 'absolute',
-                    top: 'calc(100% + 12px)',
+                    top: 'calc(100% + 10px)',
                     left: '50%',
                     transform: 'translateX(-50%)',
                     background: '#080c14',
                     border: '1px solid rgba(255,255,255,0.08)',
-                    borderRadius: '16px',
-                    padding: '16px',
-                    width: '480px',
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr',
-                    gap: '6px',
-                    boxShadow: '0 20px 60px rgba(0,0,0,0.75), 0 0 0 0.5px rgba(45,212,191,0.08)',
+                    borderRadius: '14px',
+                    padding: '10px',
+                    width: '260px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                    boxShadow: '0 16px 48px rgba(0,0,0,0.80), 0 0 0 0.5px rgba(45,212,191,0.08)',
+                    zIndex: 200,
                   }}
                   onMouseDown={e => e.preventDefault()}
                 >
                   {/* Gradient accent top */}
                   <div style={{
-                    position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px',
-                    background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.35), transparent)',
+                    position: 'absolute', top: 0, left: '15%', right: '15%', height: '1px',
+                    background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.40), transparent)',
                     borderRadius: '1px',
                   }} />
 
-                  {TERMINAL_TOOLS.map(t => (
-                    <Link key={t.name} href={t.href} className="tools-item"
+                  {TERMINAL_TOOLS.map((t, i) => (
+                    <Link
+                      key={t.name}
+                      href={t.href}
+                      className="tools-item tools-dropdown-item"
                       onClick={() => setOpen(false)}
-                      style={{ justifyContent: 'space-between' }}>
+                      style={{ animationDelay: `${i * 0.04}s` }}
+                    >
                       <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                         <span style={{ fontSize: '14px', lineHeight: 1 }}>{t.icon}</span>
                         <span>{t.name}</span>
                       </span>
-                      <span style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                      <span style={{ display: 'flex', gap: '3px', flexShrink: 0 }}>
                         {TIER_BADGE[t.tier].map(b => (
                           <span key={b.label} style={{
-                            fontSize: '7px', fontWeight: 700, letterSpacing: '0.14em',
+                            fontSize: '7px', fontWeight: 700, letterSpacing: '0.12em',
                             color: b.color, background: b.bg,
                             border: `1px solid ${b.color}30`,
                             borderRadius: '4px', padding: '2px 5px',
