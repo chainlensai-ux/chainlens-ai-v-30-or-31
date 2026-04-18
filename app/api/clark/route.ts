@@ -34,8 +34,9 @@ interface ClarkRequestBody {
 interface ClarkContext {
   trending?: unknown[];
   gtPools?: unknown[];
-  tokenScan?: unknown;
+  tokenData?: unknown;
   walletScan?: unknown;
+  analysis?: unknown;
 }
 
 // ---------- Chain name maps ----------
@@ -215,17 +216,18 @@ async function callTrending(): Promise<unknown[]> {
 async function callAnthropic(prompt: string, context: ClarkContext | null) {
   const apiKey = requireEnv("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY);
 
-  // Explicitly name each variable so the injection block is unambiguous
   const trending: unknown[]  = Array.isArray(context?.trending)  ? context!.trending  : [];
   const gtPools:  unknown[]  = Array.isArray(context?.gtPools)   ? context!.gtPools   : [];
-  const tokenScan: unknown   = context?.tokenScan  ?? {};
+  const tokenData: unknown   = context?.tokenData  ?? {};
   const walletScan: unknown  = context?.walletScan ?? {};
+  const analysis: unknown    = context?.analysis   ?? {};
 
   const userContent =
     `${prompt}\n\n` +
     `<trending_tokens>\n${JSON.stringify(trending)}\n</trending_tokens>\n\n` +
     `<gt_pools>\n${JSON.stringify(gtPools)}\n</gt_pools>\n\n` +
-    `<token_scan>\n${JSON.stringify(tokenScan)}\n</token_scan>\n\n` +
+    `<token_data>\n${JSON.stringify(tokenData)}\n</token_data>\n\n` +
+    `<analysis>\n${JSON.stringify(analysis)}\n</analysis>\n\n` +
     `<wallet_scan>\n${JSON.stringify(walletScan)}\n</wallet_scan>`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -236,20 +238,22 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1024,
+      model: "claude-opus-4-7",
+      max_tokens: 4096,
+      thinking: { type: "adaptive" },
       system:
         "You are Clark — an onchain AI analyst for ChainLens AI.\n\n" +
 
         "DATA SOURCES (these are your ONLY sources — no exceptions):\n" +
         "- <trending_tokens>: powered by /api/trending, which merges CoinGecko + GeckoTerminal. Fields: contract, symbol, name, chain, price, liquidity, volume, change24h, source.\n" +
         "- <gt_pools>: GeckoTerminal pools via /api/proxy/gt. Authoritative source for liquidity, volume, and pool-level data.\n" +
-        "- <token_scan>: token metadata, holders, contract functions, risks, whales, deployer info — from GoldRush + GeckoTerminal backend.\n" +
+        "- <token_data>: token metadata, holders, contract functions, risks, whales, deployer info — from GoldRush + GeckoTerminal backend.\n" +
+        "- <analysis>: contract analysis results — owner status, liquidity status, honeypot check, suspicious functions — from the backend.\n" +
         "- <wallet_scan>: wallet holdings, inflows/outflows, risk patterns — from GoldRush + Zerion backend.\n\n" +
 
         "HARD RULES:\n" +
-        "1. Clark must NEVER reference DexScreener. All onchain data comes from GeckoTerminal via the backend.\n" +
-        "2. Clark must ONLY use the data provided in the XML blocks. No external APIs. No DexScreener. No assumptions.\n" +
+        "1. Clark must ONLY use the data provided in the XML blocks above. No external APIs. No assumptions.\n" +
+        "2. All onchain data comes exclusively from the ChainLens backend: /api/trending, /api/token, /api/proxy/gt.\n" +
         "3. Trending analysis is powered ONLY by /api/trending, which merges CoinGecko + GeckoTerminal.\n" +
         "4. Clark must treat <gt_pools> as the authoritative source for liquidity, volume, and pool-level data.\n" +
         "5. If a field is missing (liquidity, volume, price change), Clark must say \"data unavailable\" instead of guessing.\n" +
@@ -268,7 +272,7 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
 
         "Behavior rules:\n" +
         "TRENDING: use <trending_tokens>. Format as a numbered list. For each token show: name (symbol), price, 24h change, volume, liquidity, chain, and contract if available. If the array is empty, say \"No trending data available right now.\"\n" +
-        "TOKEN: use <token_scan> first, then <trending_tokens>, then say \"No data available.\"\n" +
+        "TOKEN: use <token_data> first, then <analysis>, then <trending_tokens>, then say \"No data available.\"\n" +
         "WALLET: use <wallet_scan> only. Identify patterns, risks, top tokens, inflows/outflows.\n" +
         "COMPARISONS: use available data only. If one token lacks data, say so explicitly.\n" +
         "RISK SCORING: use liquidity, volume, age, holders, deployer, contract functions from provided data. Never invent numbers.\n\n" +
@@ -294,7 +298,8 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
   }
 
   const data = await res.json();
-  return data?.content?.[0]?.text ?? JSON.stringify(data);
+  const textBlock = (data?.content ?? []).find((b: { type: string }) => b.type === "text");
+  return textBlock?.text ?? JSON.stringify(data);
 }
 
 // ---------- Scanner functions ----------
@@ -312,7 +317,7 @@ async function scanTokenData(address: string, chain: SupportedChain = "base"): P
   ]);
 
   return {
-    tokenScan: {
+    tokenData: {
       type: "token-scan",
       address,
       chain,
@@ -361,7 +366,7 @@ async function scanLiquidityData(address: string, chain: SupportedChain = "base"
   ]);
 
   return {
-    tokenScan: {
+    tokenData: {
       type: "liquidity-scan",
       address,
       chain,
@@ -382,7 +387,7 @@ async function scanDevWalletData(address: string, chain: SupportedChain = "base"
   ]);
 
   return {
-    tokenScan: {
+    tokenData: {
       type: "dev-wallet-scan",
       address,
       chain,
@@ -445,7 +450,7 @@ async function scanPumpData(address: string, chain: SupportedChain = "base"): Pr
   ]);
 
   return {
-    tokenScan: {
+    tokenData: {
       type: "pump-scan",
       address,
       chain,
@@ -508,7 +513,7 @@ async function handleTokenScanner(body: ClarkRequestBody) {
     feature: "token-scanner",
     chain,
     tokenAddress,
-    tokenScan: { holders },
+    tokenData: { holders },
     gtPools: (gtData as { data?: unknown[] })?.data ?? [],
     trending: trending ?? [],
   };
@@ -552,7 +557,7 @@ async function handleDevWalletDetector(body: ClarkRequestBody) {
     feature: "dev-wallet-detector",
     chain,
     tokenAddress,
-    tokenScan: { holders },
+    tokenData: { holders },
   };
 }
 
@@ -572,7 +577,7 @@ async function handleLiquiditySafety(body: ClarkRequestBody) {
     feature: "liquidity-safety",
     chain,
     tokenAddress,
-    tokenScan: { goldrush_pools: goldrushPools },
+    tokenData: { goldrush_pools: goldrushPools },
     gtPools: (gtData as { data?: unknown[] })?.data ?? [],
   };
 }
@@ -611,7 +616,7 @@ async function handlePumpAlerts(body: ClarkRequestBody) {
     feature: "pump-alerts",
     chain,
     tokenAddress,
-    tokenScan: { security },
+    tokenData: { security },
     gtPools: (gtData as { data?: unknown[] })?.data ?? [],
   };
 }
@@ -632,7 +637,7 @@ async function handleBaseRadar(_body: ClarkRequestBody) {
   const context: ClarkContext = {
     trending: trendingData,
     gtPools,
-    tokenScan: {},
+    tokenData: {},
     walletScan: {},
   };
 
@@ -665,14 +670,16 @@ async function handleClarkAI(body: ClarkRequestBody) {
         : [])
     : [];
 
-  // Route-specific context — non-fatal if unavailable; enriches all four context fields
-  let tokenScan: unknown = {};
+  // Route-specific context — non-fatal if unavailable; enriches all context fields
+  let tokenData: unknown = {};
   let walletScan: unknown = {};
+  let contractAnalysis: unknown = {};
 
   try {
     const routeCtx = await routeCommand(prompt, chain);
-    if (routeCtx?.tokenScan  != null) tokenScan  = routeCtx.tokenScan;
-    if (routeCtx?.walletScan != null) walletScan = routeCtx.walletScan;
+    if (routeCtx?.tokenData  != null) tokenData        = routeCtx.tokenData;
+    if (routeCtx?.walletScan != null) walletScan        = routeCtx.walletScan;
+    if (routeCtx?.analysis   != null) contractAnalysis  = routeCtx.analysis;
     if (Array.isArray(routeCtx?.trending)  && (routeCtx.trending  as unknown[]).length > 0)
       trending = routeCtx.trending  as unknown[];
     if (Array.isArray(routeCtx?.gtPools)   && (routeCtx.gtPools   as unknown[]).length > 0)
@@ -684,8 +691,9 @@ async function handleClarkAI(body: ClarkRequestBody) {
   const context: ClarkContext = {
     trending,
     gtPools,
-    tokenScan:  tokenScan  ?? {},
-    walletScan: walletScan ?? {},
+    tokenData:  tokenData        ?? {},
+    walletScan: walletScan        ?? {},
+    analysis:   contractAnalysis  ?? {},
   };
 
   const analysis = await callAnthropic(prompt, context);
