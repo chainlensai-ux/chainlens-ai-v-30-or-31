@@ -14,25 +14,51 @@ interface Message {
   text: string
 }
 
+// Try to pull a token name from a message like "is brett safe?" or "toshi price"
+function extractTokenQuery(text: string): string | null {
+  const t = text.toLowerCase()
+  const STOP = new Set(['a', 'an', 'the', 'this', 'that', 'it', 'is', 'are', 'be', 'me', 'my',
+    'on', 'in', 'of', 'to', 'and', 'or', 'so', 'do', 'for', 'going', 'doing', 'there', 'here'])
+
+  const cmd = t.match(/\b(?:scan|check|analyze|info\s+on|about)\s+([a-z][a-z0-9]{1,15})\b/)
+  if (cmd && !STOP.has(cmd[1])) return cmd[1]
+
+  const before = t.match(/\b([a-z][a-z0-9]{1,15})\s+(?:price|liquidity|volume|safe|safety|pools?|rug|chart|cap|analysis|pumping)\b/)
+  if (before && !STOP.has(before[1])) return before[1]
+
+  const afterIs = t.match(/\bis\s+([a-z][a-z0-9]{1,15})\b/)
+  if (afterIs && !STOP.has(afterIs[1])) return afterIs[1]
+
+  return null
+}
+
 function parseMessage(raw: string): Record<string, string> {
   const t = raw.trim().toLowerCase()
   const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
   const address = addrMatch?.[0]
 
-  if (t.startsWith('scan token') && address)
-    return { feature: 'token-scanner', tokenAddress: address }
+  // Wallet / chain-level features (keep as-is)
   if (t.startsWith('scan wallet') && address)
     return { feature: 'wallet-scanner', walletAddress: address }
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes('pumping') || t.includes('deployments') || t.includes('whales'))
-    return { feature: 'base-radar' }
-  if (t.startsWith('liquidity') && address)
-    return { feature: 'liquidity-safety', tokenAddress: address }
   if (t.startsWith('dev wallet') && address)
     return { feature: 'dev-wallet-detector', tokenAddress: address }
   if (t.includes('whale') && address)
     return { feature: 'whale-alerts', walletAddress: address }
-  if (t.includes('pump') && address)
-    return { feature: 'pump-alerts', tokenAddress: address }
+
+  // Trending / base radar
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || t.includes('whales'))
+    return { feature: 'base-radar' }
+
+  // Contract address → scan-token (preferred over old token-scanner)
+  if (address)
+    return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
+
+  // Token name + signal keyword → scan-token
+  const TOKEN_SIGNALS = /\b(price|liquidity|volume|safe|safety|pools?|rug|trap|pump|pumping|dump|degen|volatile|volatility|risk|cap|chart|scan|check|analyze|analysis|verdict)\b/i
+  if (TOKEN_SIGNALS.test(t)) {
+    const name = extractTokenQuery(t)
+    if (name) return { feature: 'scan-token', query: name, prompt: raw.trim() }
+  }
 
   return { feature: 'clark-ai', prompt: raw.trim() }
 }

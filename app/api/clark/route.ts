@@ -20,7 +20,8 @@ type ClarkFeature =
   | "whale-alerts"
   | "pump-alerts"
   | "base-radar"
-  | "clark-ai";
+  | "clark-ai"
+  | "scan-token";
 
 interface ClarkRequestBody {
   feature: ClarkFeature;
@@ -29,6 +30,7 @@ interface ClarkRequestBody {
   tokenAddress?: string;
   chain?: SupportedChain;
   prompt?: string;
+  query?: string;
 }
 
 interface ClarkContext {
@@ -210,6 +212,25 @@ async function callTrending(origin: string): Promise<unknown[]> {
   return json.data ?? [];
 }
 
+// Calls the new /api/scan-token endpoint — GeckoTerminal only, no external keys needed
+async function callScanToken(
+  value: string,
+  type: "query" | "contract",
+  origin: string
+): Promise<unknown> {
+  const param = type === "contract"
+    ? `contract=${encodeURIComponent(value)}`
+    : `query=${encodeURIComponent(value)}`;
+  try {
+    const res = await fetch(`${origin}/api/scan-token?${param}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.ok ? json.data : null;
+  } catch {
+    return null;
+  }
+}
+
 // Anthropic — injects context as XML blocks so Clark sees structured data
 async function callAnthropic(prompt: string, context: ClarkContext | null) {
   const apiKey = requireEnv("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY);
@@ -269,6 +290,7 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
 
         "Behavior rules:\n" +
         "TRENDING: use <trending_tokens>. Format as a numbered list. For each token show: name (symbol), price, 24h change, volume, liquidity, chain, and contract if available. If the array is empty, say \"No trending data available right now.\"\n" +
+        "SCAN-TOKEN: when <token_data> contains a scan result (fields: name, symbol, contract, price, liquidity, volume24h, priceChange24h, pools), perform CORTEX analysis covering: price, liquidity depth (flag <$100k as HIGH RISK, <$50k as EXTREME RISK), 24h volume, price change, pool count, slippage risk, degen vs stable profile, momentum signal, and a final safety verdict. Never guess — use only what is in <token_data>.\n" +
         "TOKEN: use <token_data> first, then <analysis>, then <trending_tokens>, then say \"No data available.\"\n" +
         "WALLET: use <wallet_scan> only. Identify patterns, risks, top tokens, inflows/outflows.\n" +
         "COMPARISONS: use available data only. If one token lacks data, say so explicitly.\n" +
@@ -619,6 +641,38 @@ async function handlePumpAlerts(body: ClarkRequestBody, origin: string) {
   };
 }
 
+async function handleScanToken(body: ClarkRequestBody, origin: string) {
+  const contract = body.tokenAddress ?? body.addressOrToken;
+  const nameQuery = body.query ?? body.prompt;
+
+  let scanData: unknown = null;
+
+  if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
+    scanData = await callScanToken(contract, "contract", origin);
+  } else if (nameQuery) {
+    scanData = await callScanToken(nameQuery.trim(), "query", origin);
+  }
+
+  if (!scanData) {
+    const label = contract ?? nameQuery ?? "unknown";
+    return {
+      feature: "scan-token",
+      analysis: `Token "${label}" was not found on GeckoTerminal Base data. Check the name or contract and try again.`,
+    };
+  }
+
+  const context: ClarkContext = { tokenData: scanData };
+  const prompt =
+    `Analyze this Base token using the data in <token_data>. Cover: ` +
+    `price, liquidity depth (flag anything under $100k as HIGH RISK), 24h volume, ` +
+    `24h price change, pool count, slippage risk, degen vs stable profile, momentum, ` +
+    `and a clear safety verdict. Be direct and concise.` +
+    (body.prompt ? `\n\nUser asked: ${body.prompt}` : "");
+
+  const analysis = await callAnthropic(prompt, context);
+  return { feature: "scan-token", data: scanData, analysis };
+}
+
 async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
   const [trending, gtBase, gtEth] = await Promise.all([
     callTrending(origin),
@@ -734,6 +788,9 @@ export async function POST(req: NextRequest) {
         break;
       case "pump-alerts":
         result = await handlePumpAlerts(body, origin);
+        break;
+      case "scan-token":
+        result = await handleScanToken(body, origin);
         break;
       case "base-radar":
         result = await handleBaseRadar(body, origin);
