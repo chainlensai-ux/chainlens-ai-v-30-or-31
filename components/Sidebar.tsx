@@ -258,9 +258,10 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
                 key={item.key}
                 item={item}
                 active={active}
-                onSelect={item.key === 'token-scanner'
-                  ? () => router.push('/token-scanner')
-                  : onSelect}
+                onSelect={() => {
+                  if (item.key === 'token-scanner') router.push('/token-scanner');
+                  else router.push('/' + item.key);
+                }}
               />
             ))}
           </div>
