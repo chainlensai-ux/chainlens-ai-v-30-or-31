@@ -1,7 +1,19 @@
 import { NextResponse } from "next/server";
 
+interface MergedToken {
+  address: string;
+  symbol: string;
+  name: string;
+  price: number | string | null;
+  liquidity: number | string | null;
+  volume24h: number | string | null;
+  change24h: number | string | null;
+  source: string;
+}
+
 export async function GET() {
   try {
+    /*
     // GoldRush trending (Base)
     const gr = await fetch(
       "https://api.goldrushhq.io/v1/tokens/search?query=base",
@@ -12,10 +24,6 @@ export async function GET() {
       }
     );
     const grData = await gr.json();
-
-    // CoinGecko trending
-    const cg = await fetch("https://api.coingecko.com/api/v3/search/trending");
-    const cgData = await cg.json();
 
     // Normalize GoldRush
     const goldrushTokens = (grData?.results || []).map((t: {
@@ -31,9 +39,53 @@ export async function GET() {
       change24h: t.price_change_24h,
       source: "goldrush"
     }));
+    */
 
-    // Normalize Gecko
-    const geckoTokens = (cgData?.coins || []).map((c: {
+    // GeckoTerminal Base + Ethereum pools
+    const gtBase = await fetch(
+      "https://api.geckoterminal.com/api/v2/networks/base/pools?page=1"
+    );
+    const gtEth = await fetch(
+      "https://api.geckoterminal.com/api/v2/networks/eth/pools?page=1"
+    );
+
+    const gtBaseData = await gtBase.json();
+    const gtEthData = await gtEth.json();
+
+    // Normalize GeckoTerminal pools
+    function normalizeGT(pool: {
+      attributes: {
+        token_address: string;
+        token_symbol: string;
+        token_name: string;
+        price_usd: string | null;
+        reserve_in_usd: string | null;
+        volume_usd: { h24: string | null };
+        price_change_percentage: { h24: string | null };
+      };
+    }): MergedToken {
+      return {
+        address: pool.attributes.token_address,
+        symbol: pool.attributes.token_symbol,
+        name: pool.attributes.token_name,
+        price: pool.attributes.price_usd,
+        liquidity: pool.attributes.reserve_in_usd,
+        volume24h: pool.attributes.volume_usd.h24,
+        change24h: pool.attributes.price_change_percentage.h24,
+        source: "geckoterminal"
+      };
+    }
+
+    const gtTokens: MergedToken[] = [
+      ...(gtBaseData?.data || []).map(normalizeGT),
+      ...(gtEthData?.data || []).map(normalizeGT)
+    ];
+
+    // CoinGecko trending
+    const cg = await fetch("https://api.coingecko.com/api/v3/search/trending");
+    const cgData = await cg.json();
+
+    const cgTokens: MergedToken[] = (cgData?.coins || []).map((c: {
       item: { id: string; symbol: string; name: string; data?: { price?: number; total_volume?: number; price_change_24h?: number } }
     }) => ({
       address: c.item.id,
@@ -43,26 +95,26 @@ export async function GET() {
       liquidity: null,
       volume24h: c.item.data?.total_volume || null,
       change24h: c.item.data?.price_change_24h || null,
-      source: "gecko"
+      source: "coingecko"
     }));
 
     // Merge + dedupe
-    const merged = [...goldrushTokens, ...geckoTokens];
+    const merged = [...gtTokens, ...cgTokens];
     const deduped = Object.values(
-      merged.reduce<Record<string, typeof merged[0]>>((acc, t) => {
+      merged.reduce<Record<string, MergedToken>>((acc, t) => {
         if (!acc[t.symbol]) acc[t.symbol] = t;
         return acc;
       }, {})
     );
 
-    // Sort
+    // Sort by liquidity → volume
     deduped.sort((a, b) => {
-      const liqA = (a as { liquidity: number | null }).liquidity || 0;
-      const liqB = (b as { liquidity: number | null }).liquidity || 0;
+      const liqA = Number(a.liquidity) || 0;
+      const liqB = Number(b.liquidity) || 0;
       if (liqA !== liqB) return liqB - liqA;
 
-      const volA = (a as { volume24h: number | null }).volume24h || 0;
-      const volB = (b as { volume24h: number | null }).volume24h || 0;
+      const volA = Number(a.volume24h) || 0;
+      const volB = Number(b.volume24h) || 0;
       return volB - volA;
     });
 
