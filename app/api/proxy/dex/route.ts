@@ -1,7 +1,19 @@
 import { NextResponse } from "next/server";
 
 export async function GET() {
-  const res = await fetch("https://api.dexscreener.com/latest/dex/pairs/base");
-  const data = await res.json();
-  return NextResponse.json(data);
+  try {
+    const res = await fetch(
+      "https://api.dexscreener.com/latest/dex/pairs/base",
+      { cache: "no-store" }
+    );
+
+    if (!res.ok) {
+      return NextResponse.json({ error: "DexScreener fetch failed" }, { status: 500 });
+    }
+
+    const data = await res.json();
+    return NextResponse.json(data);
+  } catch (err) {
+    return NextResponse.json({ error: "Proxy error", details: (err as Error).message }, { status: 500 });
+  }
 }

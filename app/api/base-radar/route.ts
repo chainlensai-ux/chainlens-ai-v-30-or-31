@@ -1,28 +1,25 @@
-import { NextResponse } from 'next/server'
+import { NextResponse } from "next/server";
 
 export async function GET() {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
-    const res = await fetch(`${baseUrl}/api/proxy/dex`, {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 30 },
-    })
+    const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/proxy/dex`, {
+      cache: "no-store"
+    });
 
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `Proxy error: ${res.status}` },
-        { status: 502 }
-      )
-    }
+    const data = await res.json();
 
-    const data = await res.json()
-    const baseOnly = data.pairs?.filter((p: { chainId: string }) => p.chainId === 'base') || []
+    const baseOnly = data.pairs?.filter((p: { chainId: string }) => p.chainId === "base") || [];
 
-    return NextResponse.json({ chain: 'base', trending: baseOnly })
+    return NextResponse.json({
+      chain: "base",
+      trending: baseOnly
+    });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Unknown error' },
-      { status: 500 }
-    )
+    return NextResponse.json({
+      chain: "base",
+      trending: [],
+      error: "Base Radar failed",
+      details: (err as Error).message
+    });
   }
 }
