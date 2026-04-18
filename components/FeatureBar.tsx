@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
@@ -291,11 +292,14 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
     >
 
       {/* ── Branding ──────────────────────────────────────────── */}
-      <div
+      <Link
+        href="/"
         className="shrink-0 flex items-center gap-3"
         style={{
           padding: '20px 20px 18px',
           borderBottom: '1px solid rgba(255,255,255,0.07)',
+          textDecoration: 'none',
+          cursor: 'pointer',
         }}
       >
         {/* Logo — unboxed, large, clean */}
@@ -329,7 +333,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
             Lens
           </span>
         </span>
-      </div>
+      </Link>
 
       {/* ── Navigation ────────────────────────────────────────── */}
       <nav
