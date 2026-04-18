@@ -3,13 +3,13 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 interface MergedToken {
-  address: string;
+  contract: string;
   symbol: string;
   name: string;
   chain: string;
   price: number | null;
   liquidity: number | null;
-  volume24h: number | null;
+  volume: number | null;
   change24h: number | null;
   source: string;
 }
@@ -48,13 +48,13 @@ function normalizeGT(pool: any, included: any[]): MergedToken | null {
     const meta = extractTokenMeta(included, baseTokenId);
     if (!meta || !meta.symbol) return null;
     return {
-      address: meta.address,
+      contract: meta.address,
       symbol: meta.symbol,
       name: meta.name,
       chain: "base",
       price: Number(pool.attributes?.base_token_price_usd) || null,
       liquidity: Number(pool.attributes?.reserve_in_usd) || null,
-      volume24h: Number(pool.attributes?.volume_usd?.h24) || null,
+      volume: Number(pool.attributes?.volume_usd?.h24) || null,
       change24h: Number(pool.attributes?.price_change_percentage?.h24) || null,
       source: "geckoterminal",
     };
@@ -90,13 +90,13 @@ async function fetchCoinGecko(): Promise<MergedToken[]> {
           ? parseFloat(rawPrice.replace(/[^0-9.]/g, "")) || null
           : null;
       return {
-        address: c?.item?.id ?? "",
+        contract: c?.item?.id ?? "",
         symbol: c?.item?.symbol ?? "",
         name: c?.item?.name ?? "",
         chain: "coingecko",
         price,
         liquidity: null,
-        volume24h: c?.item?.data?.total_volume ?? null,
+        volume: c?.item?.data?.total_volume ?? null,
         change24h: c?.item?.data?.price_change_percentage_24h?.usd ?? null,
         source: "coingecko",
       };
@@ -127,7 +127,7 @@ export async function GET() {
     deduped.sort((a, b) => {
       const liqDiff = (b.liquidity ?? 0) - (a.liquidity ?? 0);
       if (liqDiff !== 0) return liqDiff;
-      return (b.volume24h ?? 0) - (a.volume24h ?? 0);
+      return (b.volume ?? 0) - (a.volume ?? 0);
     });
 
     return NextResponse.json({ data: deduped });

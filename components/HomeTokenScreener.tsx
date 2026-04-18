@@ -14,12 +14,13 @@ interface DexPair {
 }
 
 interface MergedToken {
-  address: string
+  contract: string
   symbol: string
   name: string
+  chain: string
   price: number | null
   liquidity: number | null
-  volume24h: number | null
+  volume: number | null
   change24h: number | null
   source: string
 }
@@ -199,14 +200,14 @@ export default function HomeTokenScreener() {
             ) : (
               trending.map(token => (
                 <TokenCard
-                  key={token.address}
+                  key={token.contract}
                   data={{
-                    pairAddress: token.address,
+                    pairAddress: token.contract,
                     baseToken: { symbol: token.symbol, name: token.name },
                     chainId: 'base',
                     priceUsd: token.price != null ? String(token.price) : undefined,
                     priceChange: { h24: token.change24h ?? undefined },
-                    volume: { h24: token.volume24h ?? undefined },
+                    volume: { h24: token.volume ?? undefined },
                   }}
                 />
               ))
