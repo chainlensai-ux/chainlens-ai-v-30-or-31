@@ -96,14 +96,15 @@ export async function GET() {
       };
     }
 
-    const gtTokens: MergedToken[] = [
-      ...(gtBaseData?.data || [])
-        .map((pool: GTPool) => normalizeGT(pool, gtBaseData?.included || []))
-        .filter(Boolean),
-      ...(gtEthData?.data || [])
-        .map((pool: GTPool) => normalizeGT(pool, gtEthData?.included || []))
-        .filter(Boolean)
-    ];
+    const gtBaseTokens = (gtBaseData?.data || [])
+      .map((pool: GTPool) => normalizeGT(pool, gtBaseData?.included || []))
+      .filter(Boolean);
+
+    const gtEthTokens = (gtEthData?.data || [])
+      .map((pool: GTPool) => normalizeGT(pool, gtEthData?.included || []))
+      .filter(Boolean);
+
+    const gtTokens: MergedToken[] = [...gtBaseTokens, ...gtEthTokens];
 
     // CoinGecko trending
     const cg = await fetch("https://api.coingecko.com/api/v3/search/trending");
