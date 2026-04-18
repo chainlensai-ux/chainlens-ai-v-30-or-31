@@ -2,22 +2,15 @@ import { NextResponse } from "next/server";
 
 export async function GET() {
   try {
-    const res = await fetch("https://devworker.chainlensai.workers.dev", {
-      cache: "no-store"
+    const wsUrl = "wss://io.dexscreener.com/dex/screener/pairs/base";
+
+    return NextResponse.json({
+      websocket: wsUrl,
+      message: "Connect to this WebSocket from the frontend to get live Base chain pairs."
     });
-
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: "DexScreener fetch failed" },
-        { status: 500 }
-      );
-    }
-
-    const data = await res.json();
-    return NextResponse.json(data);
-  } catch (err: unknown) {
+  } catch (e) {
     return NextResponse.json(
-      { error: "Proxy error", details: (err as Error)?.message ?? "Unknown error" },
+      { error: "WebSocket setup failed", details: String(e) },
       { status: 500 }
     );
   }
