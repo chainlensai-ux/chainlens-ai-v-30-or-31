@@ -182,45 +182,47 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
 
       <div className="flex-1 flex flex-col" style={{ background: '#050816', minHeight: 0 }}>
 
-        {/* ── Terminal header bar ─────────────────────── */}
-        <div style={{ flexShrink: 0, zIndex: 10 }}>
-          <div style={{
-            height: '1.5px',
-            background: 'linear-gradient(90deg, transparent 0%, #ff4b9a 25%, #7b5cff 55%, #4ef2c5 80%, transparent 100%)',
-          }} />
-          <div
-            className="terminal-header-bar"
-            style={{
-              display: 'flex', alignItems: 'center', gap: '10px',
-              padding: '0 24px', height: '44px',
-              background: 'rgba(5,8,22,0.94)',
-              backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
-              borderBottom: '1px solid rgba(123,92,255,0.13)',
-            }}
-          >
+        {/* ── Terminal header bar — hidden in chat-only (panel has its own) ── */}
+        {mode !== 'chat-only' && (
+          <div style={{ flexShrink: 0, zIndex: 10 }}>
             <div style={{
-              width: '6px', height: '6px', borderRadius: '50%',
-              background: '#4ef2c5', flexShrink: 0,
-              animation: 'terminalDotBlink 3s ease-in-out infinite',
+              height: '1.5px',
+              background: 'linear-gradient(90deg, transparent 0%, #ff4b9a 25%, #7b5cff 55%, #4ef2c5 80%, transparent 100%)',
             }} />
-            <span style={{
-              fontSize: '10px', fontWeight: 800, letterSpacing: '0.20em',
-              color: '#ff4b9a', fontFamily: 'var(--font-plex-mono)',
-              textShadow: '0 0 10px rgba(255,75,154,0.70), 0 0 4px rgba(255,75,154,0.40)',
-            }}>LIVE</span>
-            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.18)', fontFamily: 'var(--font-plex-mono)' }}>/</span>
-            <span style={{
-              fontSize: '10px', fontWeight: 600, letterSpacing: '0.16em',
-              color: '#4ef2c5', fontFamily: 'var(--font-plex-mono)',
-              textShadow: '0 0 10px rgba(78,242,197,0.58), 0 0 4px rgba(139,92,246,0.22)',
-            }}>CLARK AI</span>
-            <div style={{ flex: 1 }} />
-            <span style={{
-              fontSize: '9px', color: 'rgba(123,92,255,0.55)',
-              fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.14em',
-            }}>CORTEX v2</span>
+            <div
+              className="terminal-header-bar"
+              style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '0 24px', height: '44px',
+                background: 'rgba(5,8,22,0.94)',
+                backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
+                borderBottom: '1px solid rgba(123,92,255,0.13)',
+              }}
+            >
+              <div style={{
+                width: '6px', height: '6px', borderRadius: '50%',
+                background: '#4ef2c5', flexShrink: 0,
+                animation: 'terminalDotBlink 3s ease-in-out infinite',
+              }} />
+              <span style={{
+                fontSize: '10px', fontWeight: 800, letterSpacing: '0.20em',
+                color: '#ff4b9a', fontFamily: 'var(--font-plex-mono)',
+                textShadow: '0 0 10px rgba(255,75,154,0.70), 0 0 4px rgba(255,75,154,0.40)',
+              }}>LIVE</span>
+              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.18)', fontFamily: 'var(--font-plex-mono)' }}>/</span>
+              <span style={{
+                fontSize: '10px', fontWeight: 600, letterSpacing: '0.16em',
+                color: '#4ef2c5', fontFamily: 'var(--font-plex-mono)',
+                textShadow: '0 0 10px rgba(78,242,197,0.58), 0 0 4px rgba(139,92,246,0.22)',
+              }}>CLARK AI</span>
+              <div style={{ flex: 1 }} />
+              <span style={{
+                fontSize: '9px', color: 'rgba(123,92,255,0.55)',
+                fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.14em',
+              }}>CORTEX v2</span>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* ── Hero + screener — hidden in chat-only mode ── */}
         {mode !== 'chat-only' && (
