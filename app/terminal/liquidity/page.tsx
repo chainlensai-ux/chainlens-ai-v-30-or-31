@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import LiquiditySafetyVerdictCard, {
   type LiquiditySafetyResult,
 } from '@/components/LiquiditySafetyVerdictCard'
@@ -55,6 +56,23 @@ export default function LiquiditySafetyPage() {
 
         {/* ── Left: scrollable main content ─────────────────────────── */}
         <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '40px 48px' }}>
+
+          {/* Back button */}
+          <Link href="/terminal" style={{
+            display: 'inline-flex', alignItems: 'center', gap: '6px',
+            color: 'rgba(255,255,255,0.35)', fontSize: '12px', fontWeight: 500,
+            textDecoration: 'none', marginBottom: '24px',
+            fontFamily: 'var(--font-inter, Inter, sans-serif)',
+            transition: 'color 0.15s',
+          }}
+            onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.75)' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.35)' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            Back
+          </Link>
 
           {/* Page header */}
           <div style={{ marginBottom: '32px' }}>
