@@ -267,8 +267,8 @@ export default function Navbar() {
                   style={{
                     position: 'absolute',
                     top: 'calc(100% + 10px)',
-                    left: '50%',
-                    transform: 'translateX(-50%)',
+                    left: '0',
+                    transform: 'none',
                     background: '#06060e',
                     border: '1px solid rgba(255,255,255,0.08)',
                     borderRadius: '16px',
