@@ -5,10 +5,10 @@ import Link from 'next/link'
 import Image from 'next/image'
 
 const TERMINAL_TOOLS = [
-  { icon: '🧪', name: 'Token Scanner', href: '/terminal?tab=scanner' },
+  { icon: '🧪', name: 'Token Scanner', href: '/terminal/token-scanner' },
   { icon: '👛', name: 'Wallet Scanner', href: '/terminal?tab=wallet' },
   { icon: '🧬', name: 'Dev Wallets', href: '/terminal?tab=devs' },
-  { icon: '💧', name: 'Liquidity Safety', href: '/terminal?tab=liquidity' },
+  { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity' },
   { icon: '🐋', name: 'Whale Alerts', href: '/terminal?tab=whales' },
   { icon: '🚨', name: 'Pump Alerts', href: '/terminal?tab=pumps' },
   { icon: '📡', name: 'Base Radar', href: '/terminal?tab=radar' },
