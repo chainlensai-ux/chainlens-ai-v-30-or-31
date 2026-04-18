@@ -14,7 +14,8 @@ export default function TokenScanner() {
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/token`, {
         method: "POST",
-        body: JSON.stringify({ address: token }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contract: token }),
       });
 
       const data = await res.json();
@@ -65,18 +66,29 @@ export default function TokenScanner() {
           </div>
 
           <div className="p-6 bg-white/5 border border-white/10 rounded-xl">
-            <p className="text-white/60 text-sm">Price</p>
+            <p className="text-white/60 text-sm">Price (top pool)</p>
             <p className="text-2xl font-bold">
-              ${result.price?.toFixed(6)}
+              {result.gtPools?.[0]?.attributes?.base_token_price_usd
+                ? `$${Number(result.gtPools[0].attributes.base_token_price_usd).toFixed(6)}`
+                : "N/A"}
             </p>
           </div>
 
           <div className="p-6 bg-white/5 border border-white/10 rounded-xl">
-            <p className="text-white/60 text-sm">Market Cap</p>
+            <p className="text-white/60 text-sm">Liquidity (top pool)</p>
             <p className="text-2xl font-bold">
-              ${result.marketCap?.toLocaleString()}
+              {result.liquidity
+                ? `$${Number(result.liquidity).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                : "N/A"}
             </p>
           </div>
+
+          {result.aiSummary && (
+            <div className="p-6 bg-white/5 border border-white/10 rounded-xl">
+              <p className="text-white/60 text-sm mb-2">AI Summary</p>
+              <p className="text-white/80 text-sm leading-relaxed">{result.aiSummary}</p>
+            </div>
+          )}
         </div>
       )}
     </div>

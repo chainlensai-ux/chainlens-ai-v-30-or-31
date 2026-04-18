@@ -8,9 +8,9 @@ export default function LiveFeed() {
 
   const loadData = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/live`);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/trending`);
       const data = await res.json();
-      setTokens(data || []);
+      setTokens(data?.data || []);
     } catch (err) {
       console.error("Live feed error:", err);
     }
@@ -43,13 +43,15 @@ export default function LiveFeed() {
             </div>
 
             <div className="text-right">
-              <p className="font-semibold">${t.price?.toFixed(6)}</p>
+              <p className="font-semibold">
+                {t.price != null ? `$${Number(t.price).toFixed(6)}` : "N/A"}
+              </p>
               <p
                 className={`text-sm ${
-                  t.change1h >= 0 ? "text-green-400" : "text-red-400"
+                  (t.change24h ?? 0) >= 0 ? "text-green-400" : "text-red-400"
                 }`}
               >
-                {t.change1h}% (1h)
+                {t.change24h != null ? `${t.change24h.toFixed(2)}% (24h)` : "—"}
               </p>
             </div>
           </div>

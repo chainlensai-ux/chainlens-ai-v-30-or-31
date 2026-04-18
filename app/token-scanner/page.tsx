@@ -228,32 +228,34 @@ function AISummaryPanel({ data }: { data: ScanResult }) {
     <div className="space-y-4">
       {/* Cortex Engine narrative */}
       {data.aiSummary && (
-  <div className="animate-fadeIn animate-pulseGlow rounded-2xl border border-purple-500/30 bg-purple-500/5 p-4">
-    <h2 className="text-sm font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-fuchsia-500">
-      🧠 Cortex Engine
-    </h2>
-    <p className="mt-2 text-sm text-neutral-200">{data.aiSummary}</p>
-  </div>
-)}
+        <div className="animate-fadeIn animate-pulseGlow rounded-2xl border border-purple-500/30 bg-purple-500/5 p-4">
+          <h2 className="text-sm font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-fuchsia-500">
+            🧠 Cortex Engine
+          </h2>
+          <p className="mt-2 text-sm text-neutral-200">{data.aiSummary}</p>
+        </div>
+      )}
 
       {/* Structured contract analysis */}
-      <div className="rounded-2xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-4">
-        <h2 className="text-sm font-semibold text-neutral-100">AI Summary</h2>
-        <div className="mt-3 space-y-2 text-sm text-neutral-200">
-          <p>🔑 <strong>Owner Status:</strong> {analysis.ownerStatus}</p>
-          <p>💧 <strong>Liquidity:</strong> {analysis.liquidityStatus}</p>
-          <p>🚫 <strong>Honeypot Check:</strong> {analysis.honeypot}</p>
-          <p>
-            ⚠️ <strong>Suspicious Functions:</strong>{" "}
-            {analysis.suspiciousFunctions?.length === 0
-              ? "None detected"
-              : analysis.suspiciousFunctions.join(", ")}
-          </p>
-          <p>🏷️ <strong>Token Name:</strong> {tokenInfo?.name}</p>
-          <p>🔣 <strong>Symbol:</strong> {tokenInfo?.symbol}</p>
-          <p>🔢 <strong>Decimals:</strong> {tokenInfo?.decimals}</p>
+      {analysis && (
+        <div className="rounded-2xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-4">
+          <h2 className="text-sm font-semibold text-neutral-100">AI Summary</h2>
+          <div className="mt-3 space-y-2 text-sm text-neutral-200">
+            <p>🔑 <strong>Owner Status:</strong> {analysis.ownerStatus ?? "Unknown"}</p>
+            <p>💧 <strong>Liquidity:</strong> {analysis.liquidityStatus ?? "Unknown"}</p>
+            <p>🚫 <strong>Honeypot Check:</strong> {analysis.honeypot ?? "Unknown"}</p>
+            <p>
+              ⚠️ <strong>Suspicious Functions:</strong>{" "}
+              {!analysis.suspiciousFunctions?.length
+                ? "None detected"
+                : analysis.suspiciousFunctions.join(", ")}
+            </p>
+            <p>🏷️ <strong>Token Name:</strong> {tokenInfo?.name}</p>
+            <p>🔣 <strong>Symbol:</strong> {tokenInfo?.symbol}</p>
+            <p>🔢 <strong>Decimals:</strong> {tokenInfo?.decimals}</p>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -375,12 +377,8 @@ export default function TokenScannerPage() {
               <div className="md:col-span-2 space-y-4">
                 {activeTab === "Overview" && <OverviewPanel data={data} />}
                 {activeTab === "Market" && <MarketPanel data={data} />}
-                {activeTab === "Contract" && (
-                  <>
-                    <AISummaryPanel data={data} />
-                    <ContractPanel data={data} />
-                  </>
-                )}
+                {activeTab === "AI Summary" && <AISummaryPanel data={data} />}
+                {activeTab === "Contract" && <ContractPanel data={data} />}
                 {activeTab === "Raw Data" && <RawDataPanel data={data} />}
               </div>
 
