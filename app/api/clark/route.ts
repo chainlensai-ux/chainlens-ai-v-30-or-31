@@ -231,12 +231,18 @@ async function callTrending(): Promise<unknown[]> {
 async function callAnthropic(prompt: string, context: ClarkContext | null) {
   const apiKey = requireEnv("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY);
 
+  // Explicitly name each variable so the injection block is unambiguous
+  const trending: unknown[]  = Array.isArray(context?.trending)  ? context!.trending  : [];
+  const gtPools:  unknown[]  = Array.isArray(context?.gtPools)   ? context!.gtPools   : [];
+  const tokenScan: unknown   = context?.tokenScan  ?? {};
+  const walletScan: unknown  = context?.walletScan ?? {};
+
   const userContent =
     `${prompt}\n\n` +
-    `<trending_tokens>\n${JSON.stringify(context?.trending ?? [])}\n</trending_tokens>\n\n` +
-    `<gt_pools>\n${JSON.stringify(context?.gtPools ?? [])}\n</gt_pools>\n\n` +
-    `<token_scan>\n${JSON.stringify(context?.tokenScan ?? {})}\n</token_scan>\n\n` +
-    `<wallet_scan>\n${JSON.stringify(context?.walletScan ?? {})}\n</wallet_scan>`;
+    `<trending_tokens>\n${JSON.stringify(trending)}\n</trending_tokens>\n\n` +
+    `<gt_pools>\n${JSON.stringify(gtPools)}\n</gt_pools>\n\n` +
+    `<token_scan>\n${JSON.stringify(tokenScan)}\n</token_scan>\n\n` +
+    `<wallet_scan>\n${JSON.stringify(walletScan)}\n</wallet_scan>`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
