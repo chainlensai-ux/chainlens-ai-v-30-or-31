@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+console.log("TRENDING ROUTE LOADED");
+
 interface MergedToken {
   address: string;
   symbol: string;
@@ -26,8 +28,10 @@ interface GTPool {
   };
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  console.log("TRENDING ROUTE EXECUTED");
   try {
+    console.log("GET START");
     /*
     // GoldRush trending (Base)
     const gr = await fetch(
