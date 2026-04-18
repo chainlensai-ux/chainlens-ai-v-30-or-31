@@ -178,6 +178,18 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
           0%, 100% { background: rgba(0,0,0,0.30); box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
           50%       { background: rgba(123,92,255,0.08); box-shadow: 0 8px 40px rgba(123,92,255,0.18); }
         }
+        @keyframes chat-orb-teal {
+          0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.18; }
+          50%       { transform: translate(18px, -24px) scale(1.12); opacity: 0.28; }
+        }
+        @keyframes chat-orb-purple {
+          0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.14; }
+          50%       { transform: translate(-14px, 18px) scale(1.10); opacity: 0.22; }
+        }
+        @keyframes clark-dot-pulse {
+          0%, 100% { box-shadow: 0 0 6px rgba(45,212,191,0.80), 0 0 14px rgba(45,212,191,0.40); opacity: 1; }
+          50%       { box-shadow: 0 0 12px rgba(45,212,191,1.0), 0 0 24px rgba(45,212,191,0.65); opacity: 0.85; }
+        }
       `}</style>
 
       <div className="flex-1 flex flex-col" style={{ background: '#050816', minHeight: 0 }}>
@@ -237,22 +249,46 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
           display: 'flex', flexDirection: 'column',
           flex: mode === 'chat-only' ? 1 : 'none',
           minHeight: 0,
+          position: 'relative',
           borderTop: mode !== 'chat-only' ? '1px solid rgba(123,92,255,0.14)' : 'none',
-          background: 'rgba(5,8,22,0.80)',
+          background: mode === 'chat-only' ? '#06060e' : 'rgba(5,8,22,0.80)',
+          overflow: 'hidden',
         }}>
 
-          {/* Chat label */}
-          <div style={{
-            padding: '10px 20px 0', flexShrink: 0,
-            display: 'flex', alignItems: 'center', gap: '8px',
-          }}>
-            <span style={{
-              fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em',
-              color: 'rgba(123,92,255,0.50)', fontFamily: 'var(--font-plex-mono)',
-              textTransform: 'uppercase',
-            }}>Clark Chat</span>
-            <div style={{ flex: 1, height: '1px', background: 'rgba(123,92,255,0.10)' }} />
-          </div>
+          {/* Animated background orbs — chat-only panel */}
+          {mode === 'chat-only' && <>
+            <div style={{
+              position: 'absolute', pointerEvents: 'none', zIndex: 0,
+              width: '300px', height: '300px', borderRadius: '50%',
+              top: '-60px', left: '-60px',
+              background: 'radial-gradient(circle, rgba(45,212,191,0.16) 0%, transparent 70%)',
+              filter: 'blur(40px)',
+              animation: 'chat-orb-teal 12s ease-in-out infinite',
+            }} />
+            <div style={{
+              position: 'absolute', pointerEvents: 'none', zIndex: 0,
+              width: '360px', height: '360px', borderRadius: '50%',
+              bottom: '60px', right: '-80px',
+              background: 'radial-gradient(circle, rgba(139,92,246,0.14) 0%, transparent 70%)',
+              filter: 'blur(50px)',
+              animation: 'chat-orb-purple 16s ease-in-out infinite',
+            }} />
+          </>}
+
+          {/* Chat label — only in non-panel modes */}
+          {mode !== 'chat-only' && (
+            <div style={{
+              padding: '10px 20px 0', flexShrink: 0,
+              display: 'flex', alignItems: 'center', gap: '8px',
+            }}>
+              <span style={{
+                fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em',
+                color: 'rgba(123,92,255,0.50)', fontFamily: 'var(--font-plex-mono)',
+                textTransform: 'uppercase',
+              }}>Clark Chat</span>
+              <div style={{ flex: 1, height: '1px', background: 'rgba(123,92,255,0.10)' }} />
+            </div>
+          )}
 
           {/* Message list */}
           <div
@@ -262,9 +298,10 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
               flex: mode === 'chat-only' ? 1 : 'none',
               height: mode === 'chat-only' ? undefined : '380px',
               overflowY: 'auto',
-              padding: '16px 20px',
+              padding: mode === 'chat-only' ? '20px 16px' : '16px 20px',
               display: 'flex', flexDirection: 'column', gap: '14px',
               minHeight: 0,
+              position: 'relative', zIndex: 1,
             }}
           >
             {messages.length === 0 && (
@@ -292,13 +329,11 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
                 >
                   {msg.role === 'clark' && (
                     <div style={{
-                      width: '22px', height: '22px', borderRadius: '50%',
-                      background: 'linear-gradient(135deg, #7b5cff, #4ef2c5)',
-                      flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: '9px', fontWeight: 800, color: '#050816',
-                      fontFamily: 'var(--font-plex-mono)',
-                    }}>C</div>
+                      width: '9px', height: '9px', borderRadius: '50%',
+                      background: '#2DD4BF',
+                      flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end', marginBottom: '6px',
+                      animation: 'clark-dot-pulse 3s ease-in-out infinite',
+                    }} />
                   )}
 
                   {isThinking ? (
@@ -358,57 +393,68 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
           {/* Input row — full and chat-only modes */}
           {(mode === 'full' || mode === 'chat-only') && (
             <div style={{
-              padding: '10px 20px 18px',
+              padding: '10px 14px 14px',
               borderTop: '1px solid rgba(255,255,255,0.05)',
-              display: 'flex', gap: '8px', alignItems: 'center',
+              position: 'relative', zIndex: 1,
+              flexShrink: 0,
             }}>
-              <input
-                ref={inputRef}
-                type="text"
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
-                disabled={loading}
-                placeholder="scan token 0x…  ·  base radar  ·  clark ai: …"
-                style={{
-                  flex: 1,
-                  padding: '10px 14px',
-                  borderRadius: '10px',
-                  background: 'rgba(5,8,22,0.70)',
-                  border: '1px solid rgba(123,92,255,0.22)',
-                  color: '#e2e8f0',
-                  fontSize: '12.5px',
-                  fontFamily: 'var(--font-inter), Inter, sans-serif',
-                  outline: 'none',
-                  opacity: loading ? 0.5 : 1,
-                  transition: 'border-color 0.15s, opacity 0.15s',
-                }}
-                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(78,242,197,0.40)' }}
-                onBlur={e => { e.currentTarget.style.borderColor = 'rgba(123,92,255,0.22)' }}
-              />
-
-              <button
-                onClick={handleSend}
-                disabled={loading || !input.trim()}
-                style={{
-                  padding: '10px 18px',
-                  borderRadius: '10px',
-                  border: 'none',
-                  background: loading || !input.trim()
-                    ? 'rgba(123,92,255,0.20)'
-                    : 'linear-gradient(135deg, #4ef2c5 0%, #7b5cff 100%)',
-                  color: loading || !input.trim() ? 'rgba(255,255,255,0.35)' : '#050816',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  fontFamily: 'var(--font-plex-mono)',
-                  cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
-                  letterSpacing: '0.06em',
-                  transition: 'background 0.15s, color 0.15s, opacity 0.15s',
-                  flexShrink: 0,
-                }}
+              <div style={{
+                display: 'flex', alignItems: 'center',
+                background: 'rgba(8,8,20,0.85)',
+                border: `1px solid ${input.trim() ? 'rgba(45,212,191,0.30)' : 'rgba(255,255,255,0.10)'}`,
+                borderRadius: '999px',
+                padding: '5px 5px 5px 14px',
+                gap: '8px',
+                transition: 'border-color 0.2s',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+              }}
+                onFocus={() => {}}
               >
-                SEND
-              </button>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
+                  disabled={loading}
+                  placeholder="Ask Clark anything…"
+                  style={{
+                    flex: 1,
+                    background: 'transparent',
+                    border: 'none',
+                    outline: 'none',
+                    color: '#e2e8f0',
+                    fontSize: '12px',
+                    fontFamily: 'var(--font-inter), Inter, sans-serif',
+                    opacity: loading ? 0.5 : 1,
+                    minWidth: 0,
+                  }}
+                />
+                <button
+                  onClick={handleSend}
+                  disabled={loading || !input.trim()}
+                  style={{
+                    width: '30px', height: '30px',
+                    borderRadius: '50%',
+                    border: 'none',
+                    background: loading || !input.trim()
+                      ? 'rgba(45,212,191,0.12)'
+                      : '#2DD4BF',
+                    color: loading || !input.trim() ? 'rgba(45,212,191,0.35)' : '#04101a',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+                    transition: 'background 0.15s, color 0.15s',
+                    flexShrink: 0,
+                    boxShadow: input.trim() ? '0 0 12px rgba(45,212,191,0.40)' : 'none',
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                    <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2"
+                      strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+              </div>
             </div>
           )}
         </div>}
