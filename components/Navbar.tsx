@@ -215,8 +215,7 @@ export default function Navbar() {
           height: '60px',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '24px',
+          gap: '32px',
         }}>
 
           {/* ── Logo ───────────────────────────────────────── */}
@@ -240,8 +239,8 @@ export default function Navbar() {
             </div>
           </Link>
 
-          {/* ── Nav links ──────────────────────────────────── */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '32px' }}>
+          {/* ── Nav links (grouped left with logo) ────────── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '32px', flex: 1 }}>
 
             {/* Tools dropdown */}
             <div style={{ position: 'relative' }}>
