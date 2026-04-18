@@ -26,55 +26,6 @@ export default function Navbar() {
   const [open, setOpen] = useState(false)
 
   return (
-    <nav
-      style={{
-        position: 'sticky',
-        top: 0,
-        zIndex: 100,
-        background: 'rgba(6,6,10,0.92)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
-        borderBottom: '1px solid rgba(139,92,246,0.14)',
-      }}
-    >
-      <div
-        style={{
-          maxWidth: '1200px',
-          margin: '0 auto',
-          padding: '0 24px',
-          height: '64px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '24px',
-        }}
-      >
-        {/* Logo */}
-        <Link
-          href="/"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            textDecoration: 'none',
-            flexShrink: 0,
-          }}
-        >
-          <span style={{ fontSize: '16px', flexShrink: 0 }}>{t.icon}</span>
-          <div>
-            <div style={{ fontSize: '12px', fontWeight: 600, color: '#fff', lineHeight: 1.2 }}>{t.name}</div>
-            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)', marginTop: '1px' }}>{t.desc}</div>
-          </div>
-        </Link>
-      ))}
-    </div>
-  )
-}
-
-export default function Navbar() {
-  const [megaOpen, setMegaOpen] = useState(false)
-
-  return (
     <nav style={{
       width: '100%',
       position: 'sticky',
@@ -202,21 +153,14 @@ export default function Navbar() {
                       transition: 'background 0.15s',
                     }}
                     onMouseEnter={e =>
-                      (e.currentTarget.style.background =
-                        'rgba(139,92,246,0.1)')
+                      (e.currentTarget.style.background = 'rgba(139,92,246,0.1)')
                     }
                     onMouseLeave={e =>
                       (e.currentTarget.style.background = 'transparent')
                     }
                   >
                     <span style={{ fontSize: '16px' }}>{t.icon}</span>
-                    <span
-                      style={{
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        color: '#fff',
-                      }}
-                    >
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: '#fff' }}>
                       {t.name}
                     </span>
                   </Link>
