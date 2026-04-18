@@ -354,10 +354,6 @@ export default function TokenScannerPage() {
             <h1 className="mt-3 text-3xl font-semibold tracking-tight md:text-4xl">
               Token Scanner Elite
             </h1>
-            <p className="mt-2 max-w-xl text-sm text-neutral-400">
-              Paste any contract — ChainLens AI detects the chain, pulls on‑chain + market data,
-              analyzes the contract, and compresses everything into an AI‑powered summary.
-            </p>
           </div>
           {riskLevel && <RiskPill level={riskLevel} />}
         </header>
