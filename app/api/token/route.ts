@@ -261,7 +261,6 @@ ${JSON.stringify(analysis2, null, 2)}
       holders: goldrush?.holders || null,
       liquidity: mainPool?.attributes?.reserve_in_usd || goldrush?.liquidity || null,
 
-      // GT pools replacing DexScreener pairs
       pairs: matchingPools,
       gtPools: matchingPools,
       gtRaw: gtData || null,

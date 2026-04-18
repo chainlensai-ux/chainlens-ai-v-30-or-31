@@ -10,7 +10,6 @@ const {
   COVALENT_API_KEY,
   ANTHROPIC_API_KEY,
   NEXT_PUBLIC_PROXY_URL,
-  NEXT_PUBLIC_BASE_URL,
   BASESCAN_API_KEY,
 } = process.env;
 
@@ -198,7 +197,7 @@ async function callGoPlus(address: string, chain: SupportedChain = "base") {
 
 // GeckoTerminal via internal proxy (avoids direct server-side blocking)
 async function callGeckoTerminal(network: "base" | "eth") {
-  const baseUrl = NEXT_PUBLIC_BASE_URL ?? "";
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
   const res = await fetch(`${baseUrl}/api/proxy/gt?network=${network}`, {
     next: { revalidate: 30 },
   });
@@ -213,7 +212,7 @@ async function callGeckoTerminal(network: "base" | "eth") {
 
 // Trending via internal endpoint (merges CoinGecko + GeckoTerminal)
 async function callTrending(): Promise<unknown[]> {
-  const baseUrl = NEXT_PUBLIC_BASE_URL ?? "";
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
   const res = await fetch(`${baseUrl}/api/trending`, {
     next: { revalidate: 30 },
   });

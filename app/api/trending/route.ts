@@ -97,7 +97,7 @@ async function fetchCoinGecko(): Promise<MergedToken[]> {
 
 export async function GET() {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "";
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
     const [gtTokens, cgTokens] = await Promise.all([
       fetchGT(baseUrl),
