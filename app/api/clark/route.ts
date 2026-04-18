@@ -350,17 +350,11 @@ async function scanDevWalletData(address: string, chain: SupportedChain = "base"
 }
 
 async function scanBaseRadarData() {
-  const results = await Promise.allSettled([
-    callDexScreener("token-boosts/top/v1"),
-    callDexScreener("token-profiles/latest/v1"),
-  ]);
-
-  return {
-    type: "base-radar",
-    chain: "base",
-    boosted_tokens:   results[0].status === "fulfilled" ? results[0].value : null,
-    latest_profiles:  results[1].status === "fulfilled" ? results[1].value : null,
-  };
+  const data = await callDexScreener("latest/dex/tokens", { chain: "base" });
+  const baseOnly = (data?.pairs ?? []).filter(
+    (p: Record<string, unknown>) => p.chainId === "base"
+  );
+  return { type: "base-radar", chain: "base", trending: baseOnly };
 }
 
 async function scanWhaleData(address: string, chain: SupportedChain = "base") {
@@ -536,14 +530,11 @@ async function handlePumpAlerts(body: ClarkRequestBody) {
 }
 
 async function handleBaseRadar(_body: ClarkRequestBody) {
-  const chain: SupportedChain = "base";
-
-  const [boosted, latest] = await Promise.all([
-    callDexScreener("token-boosts/top/v1"),
-    callDexScreener("token-profiles/latest/v1"),
-  ]);
-
-  return { feature: "base-radar", chain, boosted, latest };
+  const data = await callDexScreener("latest/dex/tokens", { chain: "base" });
+  const baseOnly = (data?.pairs ?? []).filter(
+    (p: Record<string, unknown>) => p.chainId === "base"
+  );
+  return { feature: "base-radar", chain: "base", trending: baseOnly };
 }
 
 async function handleClarkAI(body: ClarkRequestBody) {
