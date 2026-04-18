@@ -223,7 +223,7 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
         </div>
 
         {/* ── Hero + screener — hidden in chat-only mode ── */}
-        {mode !== 'hero' && mode !== 'chat-only' && (
+        {mode !== 'chat-only' && (
           <>
             <HeroSection onTyping={onTyping} onSend={onSend} />
             <HomeTokenScreener />
