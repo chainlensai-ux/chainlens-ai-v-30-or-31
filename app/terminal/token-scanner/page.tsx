@@ -89,10 +89,41 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function TerminalTokenScanner() {
-  const [input, setInput]   = useState('')
-  const [loading, setLoading] = useState(false)
-  const [result, setResult]  = useState<ScanResult | null>(null)
-  const [error, setError]    = useState<string | null>(null)
+  const [input, setInput]       = useState('')
+  const [loading, setLoading]   = useState(false)
+  const [result, setResult]     = useState<ScanResult | null>(null)
+  const [error, setError]       = useState<string | null>(null)
+
+  const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
+  const [clarkLoading, setClarkLoading] = useState(false)
+  const [clarkError, setClarkError]     = useState<string | null>(null)
+
+  async function fetchClarkVerdict(q: string) {
+    setClarkLoading(true)
+    setClarkVerdict(null)
+    setClarkError(null)
+    try {
+      const isContract = /^0x[a-fA-F0-9]{40}$/.test(q)
+      const body = isContract
+        ? { feature: 'scan-token', tokenAddress: q }
+        : { feature: 'scan-token', query: q }
+      const res  = await fetch('/api/clark', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const json = await res.json()
+      if (!res.ok || !json.ok) {
+        setClarkError(json.error ?? 'Clark analysis failed.')
+      } else {
+        setClarkVerdict(json.data?.analysis ?? 'No verdict returned.')
+      }
+    } catch {
+      setClarkError('Network error — Clark unavailable.')
+    } finally {
+      setClarkLoading(false)
+    }
+  }
 
   async function handleScan() {
     const q = input.trim()
@@ -100,6 +131,8 @@ export default function TerminalTokenScanner() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setClarkVerdict(null)
+    setClarkError(null)
     try {
       const isContract = /^0x[a-fA-F0-9]{40}$/.test(q)
       const param = isContract
@@ -111,6 +144,7 @@ export default function TerminalTokenScanner() {
         setError(json.error ?? 'Token not found on Base.')
       } else {
         setResult(json.data)
+        fetchClarkVerdict(q)
       }
     } catch {
       setError('Network error — check your connection.')
@@ -121,6 +155,12 @@ export default function TerminalTokenScanner() {
 
   return (
     <main className="flex-1 overflow-y-auto h-full" style={{ color: '#e2e8f0', padding: '40px 48px' }}>
+      <style>{`
+        @keyframes clarkDot {
+          0%, 80%, 100% { opacity: 0.25; transform: scale(0.75); }
+          40%            { opacity: 1;    transform: scale(1);    }
+        }
+      `}</style>
 
         {/* ── Header ─────────────────────────────────────────────────── */}
         <div style={{ marginBottom: '32px' }}>
@@ -143,9 +183,6 @@ export default function TerminalTokenScanner() {
             Token Scanner{' '}
             <span style={{ color: '#2DD4BF' }}>Elite</span>
           </h1>
-          <p style={{ marginTop: '8px', fontSize: '13px', color: '#3a5268', margin: '8px 0 0' }}>
-            Paste a contract address or token name — live GeckoTerminal data on Base.
-          </p>
         </div>
 
         {/* ── Input row ──────────────────────────────────────────────── */}
@@ -305,6 +342,68 @@ export default function TerminalTokenScanner() {
                   ))}
                 </div>
               </>
+            )}
+
+            {/* ── Clark Verdict ──────────────────────────────────────────── */}
+            {(clarkLoading || clarkVerdict || clarkError) && (
+              <div style={{
+                marginTop: '28px',
+                background: '#080c14',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: '14px',
+                padding: '20px 24px',
+              }}>
+                {/* Label */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                  <span style={{
+                    width: '6px', height: '6px', borderRadius: '50%',
+                    background: '#2DD4BF',
+                    boxShadow: '0 0 8px rgba(45,212,191,0.8)',
+                    flexShrink: 0,
+                  }} />
+                  <p style={{
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
+                    color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
+                    textTransform: 'uppercase', margin: 0,
+                  }}>
+                    Clark Verdict
+                  </p>
+                </div>
+
+                {/* Loading dots */}
+                {clarkLoading && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '2px 0' }}>
+                    {[0, 1, 2].map(i => (
+                      <span key={i} style={{
+                        width: '5px', height: '5px', borderRadius: '50%',
+                        background: '#2DD4BF', display: 'inline-block',
+                        animation: `clarkDot 1.2s ease-in-out ${i * 0.2}s infinite`,
+                      }} />
+                    ))}
+                  </div>
+                )}
+
+                {/* Error */}
+                {clarkError && (
+                  <p style={{
+                    fontSize: '12px', color: '#fca5a5',
+                    fontFamily: 'var(--font-plex-mono)', margin: 0,
+                  }}>
+                    {clarkError}
+                  </p>
+                )}
+
+                {/* Verdict text */}
+                {clarkVerdict && (
+                  <p style={{
+                    fontSize: '13px', lineHeight: 1.75,
+                    color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)',
+                    whiteSpace: 'pre-wrap', margin: 0,
+                  }}>
+                    {clarkVerdict}
+                  </p>
+                )}
+              </div>
             )}
           </div>
         )}
