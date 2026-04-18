@@ -164,7 +164,7 @@ export default function HomeTokenScreener() {
               flexDirection: 'column',
             }}
           >
-            <div className="text-xs text-green-400 mb-2">
+            <div style={{ padding: '4px 16px', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em', color: lastUpdate ? '#2DD4BF' : 'rgba(255,255,255,0.22)', flexShrink: 0 }}>
               {lastUpdate
                 ? `LIVE — Updated at ${new Date(lastUpdate).toLocaleTimeString()}`
                 : 'Waiting for live data…'}
