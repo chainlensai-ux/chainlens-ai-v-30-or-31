@@ -2,23 +2,15 @@ import { NextResponse } from "next/server";
 
 export async function GET() {
   try {
-    const res = await fetch(
-      "https://api.dexscreener.com/latest/dex/pairs/base",
-      { cache: "no-store" }
-    );
+    const wsUrl = "wss://io.dexscreener.com/dex/screener/pairs/base";
 
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: "DexScreener fetch failed" },
-        { status: 500 }
-      );
-    }
-
-    const data = await res.json();
-    return NextResponse.json(data);
-  } catch (err: unknown) {
+    return NextResponse.json({
+      websocket: wsUrl,
+      message: "Connect to this WebSocket from the frontend to get live Base chain pairs."
+    });
+  } catch (e) {
     return NextResponse.json(
-      { error: "Proxy error", details: (err as Error)?.message ?? "Unknown error" },
+      { error: "WebSocket setup failed", details: String(e) },
       { status: 500 }
     );
   }
