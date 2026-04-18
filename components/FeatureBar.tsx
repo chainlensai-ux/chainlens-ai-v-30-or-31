@@ -121,7 +121,7 @@ const PINK   = '#ec4899'
 const WHITE  = '#e2e8f0'
 const SLATE  = '#94a3b8'
 
-type Item = { key: string; label: string; icon: ReactNode; accent: string; iconColor: string }
+type Item = { key: string; label: string; icon: ReactNode; accent: string; iconColor: string; href?: string }
 
 const MAIN_NAV: Item[] = [
   { key: 'dashboard', label: 'Dashboard', icon: <IcDashboard />,    accent: MINT,   iconColor: MINT   },
@@ -130,14 +130,14 @@ const MAIN_NAV: Item[] = [
 ]
 
 const TOOLS: Item[] = [
-  { key: 'token-scanner',       label: 'Token Scanner',       icon: <IcTokenScanner />,       accent: MINT,   iconColor: MINT   },
-  { key: 'wallet-scanner',      label: 'Wallet Scanner',      icon: <IcWalletScanner />,      accent: MINT,   iconColor: MINT   },
-  { key: 'dev-wallet-detector', label: 'Dev Wallet Detector', icon: <IcDevWalletDetector />,  accent: PURPLE, iconColor: PURPLE },
-  { key: 'liquidity-safety',    label: 'Liquidity Safety',    icon: <IcLiquiditySafety />,    accent: MINT,   iconColor: MINT   },
-  { key: 'whale-alerts',        label: 'Whale Alerts',        icon: <IcWhaleAlerts />,        accent: PINK,   iconColor: PINK   },
-  { key: 'pump-alerts',         label: 'Pump Alerts',         icon: <IcPumpAlerts />,         accent: PINK,   iconColor: PINK   },
-  { key: 'base-radar',          label: 'Base Radar',          icon: <IcRadar />,              accent: PURPLE, iconColor: PURPLE },
-  { key: 'clark-ai',            label: 'Clark AI',            icon: <IcClarkAI />,            accent: PURPLE, iconColor: PURPLE },
+  { key: 'token-scanner',       label: 'Token Scanner',       icon: <IcTokenScanner />,       accent: MINT,   iconColor: MINT,   href: '/terminal/token-scanner'  },
+  { key: 'wallet-scanner',      label: 'Wallet Scanner',      icon: <IcWalletScanner />,      accent: MINT,   iconColor: MINT,   href: '/terminal/wallet-scanner' },
+  { key: 'dev-wallet-detector', label: 'Dev Wallet Detector', icon: <IcDevWalletDetector />,  accent: PURPLE, iconColor: PURPLE, href: '/terminal/dev-wallet'     },
+  { key: 'liquidity-safety',    label: 'Liquidity Safety',    icon: <IcLiquiditySafety />,    accent: MINT,   iconColor: MINT,   href: '/terminal/liquidity'      },
+  { key: 'whale-alerts',        label: 'Whale Alerts',        icon: <IcWhaleAlerts />,        accent: PINK,   iconColor: PINK,   href: '/terminal/whale-alerts'   },
+  { key: 'pump-alerts',         label: 'Pump Alerts',         icon: <IcPumpAlerts />,         accent: PINK,   iconColor: PINK,   href: '/terminal/pump-alerts'    },
+  { key: 'base-radar',          label: 'Base Radar',          icon: <IcRadar />,              accent: PURPLE, iconColor: PURPLE, href: '/terminal/base-radar'     },
+  { key: 'clark-ai',            label: 'Clark AI',            icon: <IcClarkAI />,            accent: PURPLE, iconColor: PURPLE, href: '/terminal/clark-ai'       },
 ]
 
 // ─── Section label ─────────────────────────────────────────────────────────
@@ -163,6 +163,7 @@ function SectionLabel({ children }: { children: ReactNode }) {
 // ─── NavItem ──────────────────────────────────────────────────────────────
 
 function NavItem({ item, active, onSelect }: { item: Item; active: string | null; onSelect: (k: string) => void }) {
+  const router    = useRouter()
   const on        = active === item.key
   const accent    = item.accent
   const iconColor = item.iconColor
@@ -193,7 +194,7 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
 
   return (
     <motion.button
-      onClick={() => onSelect(item.key)}
+      onClick={() => item.href ? router.push(item.href) : onSelect(item.key)}
 
       className="w-full flex items-center gap-3 relative"
       style={{
