@@ -201,12 +201,12 @@ export default function LiquiditySafetyPage() {
 
         {/* ── Right: Extended LP Safety panel (420px) ───────────────── */}
         <aside style={{
-          width: '420px',
+          width: '520px',
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           background: '#080c14',
           overflowY: 'auto',
-          padding: '28px 20px',
+          padding: '28px 16px',
           display: 'flex',
           flexDirection: 'column',
           gap: '16px',

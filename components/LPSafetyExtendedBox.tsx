@@ -326,7 +326,7 @@ export default function LPSafetyExtendedBox({ data }: Props) {
         }}
       />
 
-      <div style={{ padding: "28px 32px", display: "flex", flexDirection: "column", gap: "26px" }}>
+      <div style={{ padding: "24px 20px", display: "flex", flexDirection: "column", gap: "22px" }}>
 
         {/* ── Header ─────────────────────────────────────────────────── */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
