@@ -1,7 +1,7 @@
 'use client'
 
 import Image from 'next/image'
-import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 // ─── Icons (18×18, Lucide-style) ─────────────────────────────────────────
 
@@ -107,17 +107,17 @@ function IcConnectWallet() {
 
 // ─── Data ─────────────────────────────────────────────────────────────────
 
-type Item = { key: string; label: string; icon: React.ReactNode }
+type Item = { key: string; label: string; icon: React.ReactNode; href?: string }
 
 const FEATURES: Item[] = [
-  { key: 'token-scanner',     label: 'Token Scanner',       icon: <IcTokenScanner />  },
-  { key: 'wallet-scanner',    label: 'Wallet Scanner',      icon: <IcWalletScanner /> },
-  { key: 'dev-wallet',        label: 'Dev Wallet Detector', icon: <IcDevWallet />     },
-  { key: 'liquidity-scanner', label: 'Liquidity Safety',    icon: <IcLiquidity />     },
-  { key: 'whale-alerts',      label: 'Whale Alerts',        icon: <IcWhaleAlerts />   },
-  { key: 'pump-alerts',       label: 'Pump Alerts',         icon: <IcPumpAlerts />    },
-  { key: 'base-radar',        label: 'Base Radar',          icon: <IcBaseRadar />     },
-  { key: 'clark-ai',          label: 'Clark AI',            icon: <IcClarkAI />       },
+  { key: 'token-scanner',     label: 'Token Scanner',       icon: <IcTokenScanner />,  href: '/terminal/token-scanner'  },
+  { key: 'wallet-scanner',    label: 'Wallet Scanner',      icon: <IcWalletScanner />, href: '/terminal/wallet-scanner' },
+  { key: 'dev-wallet',        label: 'Dev Wallet Detector', icon: <IcDevWallet />,     href: '/terminal/dev-wallet'     },
+  { key: 'liquidity-scanner', label: 'Liquidity Safety',    icon: <IcLiquidity />,     href: '/terminal/liquidity'      },
+  { key: 'whale-alerts',      label: 'Whale Alerts',        icon: <IcWhaleAlerts />,   href: '/terminal/whale-alerts'   },
+  { key: 'pump-alerts',       label: 'Pump Alerts',         icon: <IcPumpAlerts />,    href: '/terminal/pump-alerts'    },
+  { key: 'base-radar',        label: 'Base Radar',          icon: <IcBaseRadar />,     href: '/terminal/base-radar'     },
+  { key: 'clark-ai',          label: 'Clark AI',            icon: <IcClarkAI />,       href: '/terminal/clark-ai'       },
 ]
 
 const SECONDARY: Item[] = [
@@ -136,40 +136,61 @@ interface NavItemProps {
 
 function NavItem({ item, active, onSelect }: NavItemProps) {
   const on = active === item.key
-  return (
-    <button
-      onClick={() => onSelect(item.key)}
-      className="w-full flex items-center gap-3 py-3 px-3.5 rounded-xl text-[13px] font-medium transition-all duration-150 border-l-2"
-      style={
-        on
-          ? {
-              background: 'rgba(45,212,191,0.1)',
-              color: '#2DD4BF',
-              borderLeftColor: '#2DD4BF',
-              boxShadow: 'inset 0 0 0 1px rgba(45,212,191,0.12)',
-            }
-          : {
-              color: '#6d8299',
-              borderLeftColor: 'transparent',
-            }
-      }
-      onMouseEnter={e => {
-        if (!on) {
-          (e.currentTarget as HTMLButtonElement).style.color = '#a0b4c8';
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.05)';
-        }
-      }}
-      onMouseLeave={e => {
-        if (!on) {
-          (e.currentTarget as HTMLButtonElement).style.color = '#6d8299';
-          (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-        }
-      }}
-    >
+
+  const sharedClassName = "w-full flex items-center gap-3 py-3 px-3.5 rounded-xl text-[13px] font-medium transition-all duration-150 border-l-2"
+  const activeStyle = {
+    background: 'rgba(45,212,191,0.1)',
+    color: '#2DD4BF',
+    borderLeftColor: '#2DD4BF',
+    boxShadow: 'inset 0 0 0 1px rgba(45,212,191,0.12)',
+  }
+  const inactiveStyle = { color: '#6d8299', borderLeftColor: 'transparent' }
+
+  const handleMouseEnter = (e: React.MouseEvent<HTMLElement>) => {
+    if (!on) {
+      (e.currentTarget as HTMLElement).style.color = '#a0b4c8';
+      (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)';
+    }
+  }
+  const handleMouseLeave = (e: React.MouseEvent<HTMLElement>) => {
+    if (!on) {
+      (e.currentTarget as HTMLElement).style.color = '#6d8299';
+      (e.currentTarget as HTMLElement).style.background = 'transparent';
+    }
+  }
+
+  const inner = (
+    <>
       <span style={{ color: on ? '#2DD4BF' : '#556880', flexShrink: 0 }}>
         {item.icon}
       </span>
       {item.label}
+    </>
+  )
+
+  if (item.href) {
+    return (
+      <Link
+        href={item.href}
+        className={sharedClassName}
+        style={on ? activeStyle : inactiveStyle}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        {inner}
+      </Link>
+    )
+  }
+
+  return (
+    <button
+      onClick={() => onSelect(item.key)}
+      className={sharedClassName}
+      style={on ? activeStyle : inactiveStyle}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      {inner}
     </button>
   )
 }
@@ -192,7 +213,6 @@ interface Props {
 }
 
 export default function Sidebar({ active = 'home', onSelect = () => {} }: Props) {
-  const router = useRouter()
   return (
     <aside
       className="w-[272px] h-screen shrink-0 flex flex-col"
@@ -258,9 +278,7 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
                 key={item.key}
                 item={item}
                 active={active}
-                onSelect={item.key === 'token-scanner'
-                  ? () => router.push('/terminal/token-scanner')
-                  : onSelect}
+                onSelect={onSelect}
               />
             ))}
           </div>
