@@ -4,6 +4,7 @@ import { useState } from 'react'
 import FeatureBar from '@/components/FeatureBar'
 import ClarkChat from '@/components/ClarkChat'
 import ClarkRadar from '@/components/ClarkRadar'
+import TokenScannerPage from '@/app/token-scanner/page'
 
 export default function TerminalPage() {
   const [active, setActive] = useState('dashboard')
@@ -51,6 +52,7 @@ export default function TerminalPage() {
           style={{ position: 'relative', zIndex: 1 }}
         >
           <ClarkChat mode="hero" active={active} onTyping={setIsTyping} onSend={(msg) => setPendingMessage(msg)} />
+          {active === 'token-scanner' && <TokenScannerPage />}
         </main>
 
         <aside
