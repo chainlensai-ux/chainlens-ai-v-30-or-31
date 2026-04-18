@@ -18,7 +18,7 @@ export async function GET() {
     const cgData = await cg.json();
 
     // Normalize GoldRush
-    const goldrushTokens = (grData?.tokens || []).map((t: {
+    const goldrushTokens = (grData?.results || []).map((t: {
       address: string; symbol: string; name: string;
       price_usd: number; liquidity_usd: number; volume_24h_usd: number; price_change_24h: number;
     }) => ({
