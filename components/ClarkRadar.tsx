@@ -69,7 +69,7 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
 
     try {
       const body = parseMessage(text)
-      const res = await fetch('/api/clark', {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

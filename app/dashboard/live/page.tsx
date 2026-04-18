@@ -8,7 +8,7 @@ export default function LiveFeed() {
 
   const loadData = async () => {
     try {
-      const res = await fetch("/api/live");
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/live`);
       const data = await res.json();
       setTokens(data || []);
     } catch (err) {

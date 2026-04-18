@@ -12,7 +12,7 @@ export default function TokenScanner() {
     setResult(null);
 
     try {
-      const res = await fetch("/api/token", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/token`, {
         method: "POST",
         body: JSON.stringify({ address: token }),
       });

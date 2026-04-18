@@ -43,7 +43,7 @@ export default function HeroChat() {
     setMsgs(prev => [...prev, { role: 'user', text: q }])
     setBusy(true)
     try {
-      const res = await fetch('/api/claude', {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/claude`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -67,7 +67,7 @@ export default function HomeTokenScreener() {
 
   useEffect(() => {
     async function fetchTrending(): Promise<MergedToken[]> {
-      const res = await fetch('/api/trending')
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/trending`)
       const json = await res.json()
       return json.data || []
     }
