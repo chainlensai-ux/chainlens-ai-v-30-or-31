@@ -9,6 +9,10 @@ export async function GET(req: Request) {
     return Response.json({ error: "Missing network param" }, { status: 400 });
   }
 
+  if (network !== "base" && network !== "eth") {
+    return Response.json({ error: "Invalid network. Must be 'base' or 'eth'" }, { status: 400 });
+  }
+
   const url = `https://api.geckoterminal.com/api/v2/networks/${network}/pools?page=1&include=base_token,quote_token`;
 
   try {

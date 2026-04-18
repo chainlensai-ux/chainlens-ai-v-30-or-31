@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const {
-  ALCHEMY_BNB_KEY,
-  ALCHEMY_POLYGON_KEY,
-  ALCHEMY_BASE_KEY,
-  ALCHEMY_ETHEREUM_KEY,
   GOLDRUSH_API_KEY,
   ZERION_KEY,
   COVALENT_API_KEY,
   ANTHROPIC_API_KEY,
-  NEXT_PUBLIC_PROXY_URL,
   BASESCAN_API_KEY,
 } = process.env;
 
@@ -60,16 +55,6 @@ const GOPLUS_CHAIN_ID: Record<SupportedChain, string> = {
 };
 
 // ---------- Helpers ----------
-
-function getAlchemyKey(chain: SupportedChain | undefined) {
-  switch (chain) {
-    case "base":     return ALCHEMY_BASE_KEY;
-    case "ethereum": return ALCHEMY_ETHEREUM_KEY;
-    case "polygon":  return ALCHEMY_POLYGON_KEY;
-    case "bnb":      return ALCHEMY_BNB_KEY;
-    default:         return ALCHEMY_BASE_KEY;
-  }
-}
 
 function requireEnv(name: string, value: string | undefined): string {
   if (!value) throw new Error(`Missing required env var: ${name}`);

@@ -186,8 +186,6 @@ export async function POST(req: Request) {
         parseFloat(a.attributes?.reserve_in_usd || "0")
     )[0] ?? null;
 
-    const analysis2 = analyzeContract(bytecode);
-
     // ------------------------------
     // REAL CLAUDE AI SUMMARY
     // ------------------------------
@@ -204,7 +202,7 @@ ${JSON.stringify(matchingPools.slice(0, 3), null, 2)}
 GOLDRUSH:
 ${JSON.stringify(goldrush, null, 2)}
 BYTECODE ANALYSIS:
-${JSON.stringify(analysis2, null, 2)}
+${JSON.stringify(analysis, null, 2)}
 `;
 
     const aiResponse = await anthropic.messages.create({
