@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 
+
+
 // ─── Icons ────────────────────────────────────────────────────────────────
 
 function IcDashboard() {
@@ -39,6 +41,7 @@ function IcClarkAI() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>
       <path d="M19 3v4m2-2h-4"/>
+
     </svg>
   )
 }
@@ -59,6 +62,8 @@ function IcTokenScanner() {
     </svg>
   )
 }
+
+
 function IcDevWalletDetector() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -84,6 +89,8 @@ function IcWhaleAlerts() {
     </svg>
   )
 }
+
+
 function IcRadar() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -93,16 +100,20 @@ function IcRadar() {
     </svg>
   )
 }
+
+
 function IcPumpAlerts() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
       <polyline points="17 6 23 6 23 12"/>
+
     </svg>
   )
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────
+
 
 const MINT   = '#2DD4BF'
 const PURPLE = '#8b5cf6'
@@ -183,6 +194,7 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
   return (
     <motion.button
       onClick={() => onSelect(item.key)}
+
       className="w-full flex items-center gap-3 relative"
       style={{
         height: '36px',
@@ -228,6 +240,8 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
       onMouseLeave={e => {
         if (!on) {
           const el = e.currentTarget as HTMLButtonElement
+
+
           el.style.color      = '#6a8da8'
           el.style.background = 'transparent'
           el.style.boxShadow  = 'none'
@@ -246,16 +260,22 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {item.label}
       </span>
+
     </motion.button>
   )
 }
 
+
+
+ 
 // ─── Component ────────────────────────────────────────────────────────────
 
 interface Props {
   active?:   string | null
   onSelect?: (key: string) => void
 }
+
+
 
 export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }: Props) {
   const router = useRouter()
@@ -367,11 +387,14 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
             const el = e.currentTarget as HTMLButtonElement
             el.style.boxShadow = '0 0 28px rgba(45,212,191,0.35), 0 2px 8px rgba(0,0,0,0.4)'
             el.style.opacity   = '1'
+
           }}
         >
           Connect Wallet
         </button>
 
+
+=======
         {/* Sign In | Sign Up */}
         <div className="flex" style={{ gap: '6px' }}>
           {/* Sign In — dark neutral ghost */}
@@ -437,8 +460,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
             Sign Up
           </button>
         </div>
-      </div>
-
+            </div>
     </aside>
   )
 }

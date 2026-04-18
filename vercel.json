@@ -1,4 +1,12 @@
 {
+<<<<<<< HEAD
+  "rewrites": [
+    { "source": "/manifest.json", "destination": "/manifest.json" },
+    { "source": "/sw.js", "destination": "/sw.js" },
+    { "source": "/cl-logo.png", "destination": "/cl-logo.png" }
+  ],
+=======
+>>>>>>> claude-session
   "headers": [
     {
       "source": "/sw.js",

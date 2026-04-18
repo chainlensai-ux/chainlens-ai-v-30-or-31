@@ -18,11 +18,16 @@ const ibmPlexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: 'ChainLens AI — Crypto Intelligence Platform',
-  description: 'AI-powered crypto intelligence — wallet scanner, bear market scoring, paper trading and more.',
+  description:
+    'AI-powered crypto intelligence — wallet scanner, bear market scoring, paper trading and more.',
   themeColor: '#06060a',
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
   return (
     <html lang="en" className={`${inter.variable} ${ibmPlexMono.variable}`}>
       <body className="w-full h-full">
@@ -33,3 +38,4 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   )
 }
+

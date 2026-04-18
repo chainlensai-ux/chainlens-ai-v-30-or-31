@@ -4,29 +4,15 @@ import { useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 
-const FREE_TOOLS = [
-  { icon: '🛡', name: 'BearProof Score™', desc: 'Portfolio crash resilience' },
-  { icon: '🏆', name: 'GlobalRank™', desc: 'Prediction leaderboard' },
-]
-
-const PRO_TOOLS = [
-  { icon: '🔍', name: 'EdgeScan™ AI', desc: 'Live AI crypto analysis' },
-  { icon: '👻', name: 'GhostTrade™', desc: '$50K paper trading' },
-  { icon: '📡', name: 'DipRadar™', desc: 'AI dip scanner' },
-  { icon: '🎯', name: 'TradeCoach™', desc: 'AI pattern coaching' },
-  { icon: '📊', name: 'SentimentPulse™', desc: 'Fear & Greed + AI' },
-  { icon: '🧾', name: 'TaxMate™', desc: 'Crypto tax AI guidance' },
-  { icon: '🔔', name: 'Price Alerts', desc: 'In-browser notifications' },
-  { icon: '🔓', name: 'Token Unlocks™', desc: 'Unlock risk AI scoring' },
-]
-
-const ELITE_TOOLS = [
-  { icon: '🔭', name: 'WalletScan™', desc: 'Multi-chain wallet intel' },
-  { icon: '⚡', name: 'SignalBreaker™', desc: 'AI buy/sell signals' },
-  { icon: '🚨', name: 'PumpAlert™', desc: 'Early pump detection' },
-  { icon: '🌊', name: 'NarrativeRank™', desc: 'Sector momentum' },
-  { icon: '💎', name: 'Smart Wallets™', desc: 'Track elite wallets' },
-  { icon: '⛓', name: 'ProofVault™', desc: 'On-chain prediction proof' },
+const TERMINAL_TOOLS = [
+  { icon: '🧪', name: 'Token Scanner', href: '/terminal?tab=scanner' },
+  { icon: '👛', name: 'Wallet Scanner', href: '/terminal?tab=wallet' },
+  { icon: '🧬', name: 'Dev Wallets', href: '/terminal?tab=devs' },
+  { icon: '💧', name: 'Liquidity Safety', href: '/terminal?tab=liquidity' },
+  { icon: '🐋', name: 'Whale Alerts', href: '/terminal?tab=whales' },
+  { icon: '🚨', name: 'Pump Alerts', href: '/terminal?tab=pumps' },
+  { icon: '📡', name: 'Base Radar', href: '/terminal?tab=radar' },
+  { icon: '🤖', name: 'Clark AI', href: '/terminal?tab=clark' },
 ]
 
 const gradText: React.CSSProperties = {
@@ -36,39 +22,43 @@ const gradText: React.CSSProperties = {
   backgroundClip: 'text',
 }
 
-type Tool = { icon: string; name: string; desc: string }
+export default function Navbar() {
+  const [open, setOpen] = useState(false)
 
-function MegaCol({ label, color, tools }: { label: string; color: string; tools: Tool[] }) {
   return (
-    <div style={{ flex: 1 }}>
-      <div style={{
-        fontFamily: 'var(--font-mono, IBM Plex Mono, monospace)',
-        fontSize: '10px',
-        fontWeight: 700,
-        color,
-        letterSpacing: '0.12em',
-        textTransform: 'uppercase',
-        marginBottom: '12px',
-      }}>
-        {label}
-      </div>
-      {tools.map(t => (
+    <nav
+      style={{
+        position: 'sticky',
+        top: 0,
+        zIndex: 100,
+        background: 'rgba(6,6,10,0.92)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        borderBottom: '1px solid rgba(139,92,246,0.14)',
+      }}
+    >
+      <div
+        style={{
+          maxWidth: '1200px',
+          margin: '0 auto',
+          padding: '0 24px',
+          height: '64px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '24px',
+        }}
+      >
+        {/* Logo */}
         <Link
-          key={t.name}
-          href="/app"
+          href="/"
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: '10px',
-            padding: '7px 8px',
-            borderRadius: '8px',
             textDecoration: 'none',
-            color: 'inherit',
-            marginBottom: '2px',
-            transition: 'background 0.15s',
+            flexShrink: 0,
           }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(139,92,246,0.1)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
         >
           <span style={{ fontSize: '16px', flexShrink: 0 }}>{t.icon}</span>
           <div>
@@ -110,11 +100,25 @@ export default function Navbar() {
         <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none', flexShrink: 0 }}>
           <Image src="/cl-logo.png" alt="ChainLens AI" width={40} height={40} />
           <div>
-            <div style={{ fontFamily: 'var(--font-mono, IBM Plex Mono, monospace)', fontWeight: 700, fontSize: '15px', lineHeight: 1.2 }}>
+            <div
+              style={{
+                fontFamily: 'var(--font-mono, IBM Plex Mono, monospace)',
+                fontWeight: 700,
+                fontSize: '15px',
+                lineHeight: 1.2,
+              }}
+            >
               <span style={{ color: '#fff' }}>Chain</span>
               <span style={gradText}>Lens</span>
             </div>
-            <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+            <div
+              style={{
+                fontSize: '9px',
+                color: 'rgba(255,255,255,0.35)',
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+              }}
+            >
               AI Intelligence
             </div>
           </div>
@@ -122,16 +126,18 @@ export default function Navbar() {
 
         {/* Nav links */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '28px' }}>
-
           {/* Tools dropdown */}
           <div style={{ position: 'relative' }}>
             <button
-              onClick={() => setMegaOpen(o => !o)}
-              onBlur={e => { if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node)) setMegaOpen(false) }}
+              onClick={() => setOpen(o => !o)}
+              onBlur={e => {
+                if (!e.currentTarget.parentElement?.contains(e.relatedTarget as Node))
+                  setOpen(false)
+              }}
               style={{
                 background: 'none',
                 border: 'none',
-                color: megaOpen ? '#fff' : 'rgba(255,255,255,0.65)',
+                color: open ? '#fff' : 'rgba(255,255,255,0.65)',
                 cursor: 'pointer',
                 fontSize: '14px',
                 display: 'flex',
@@ -143,14 +149,26 @@ export default function Navbar() {
             >
               Tools
               <svg
-                width="10" height="6" viewBox="0 0 10 6" fill="none"
-                style={{ transition: 'transform 0.2s', transform: megaOpen ? 'rotate(180deg)' : 'none' }}
+                width="10"
+                height="6"
+                viewBox="0 0 10 6"
+                fill="none"
+                style={{
+                  transition: 'transform 0.2s',
+                  transform: open ? 'rotate(180deg)' : 'none',
+                }}
               >
-                <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path
+                  d="M1 1l4 4 4-4"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
               </svg>
             </button>
 
-            {megaOpen && (
+            {open && (
               <div
                 style={{
                   position: 'absolute',
@@ -161,25 +179,62 @@ export default function Navbar() {
                   border: '1px solid rgba(139,92,246,0.28)',
                   borderRadius: '16px',
                   padding: '20px',
-                  width: '660px',
-                  display: 'flex',
-                  gap: '20px',
+                  width: '500px',
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '16px',
                   boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
                 }}
                 onMouseDown={e => e.preventDefault()}
               >
-                <MegaCol label="Free"  color="#64ffda" tools={FREE_TOOLS} />
-                <div style={{ width: '1px', background: 'rgba(139,92,246,0.15)', flexShrink: 0 }} />
-                <MegaCol label="Pro"   color="#2DD4BF" tools={PRO_TOOLS} />
-                <div style={{ width: '1px', background: 'rgba(139,92,246,0.15)', flexShrink: 0 }} />
-                <MegaCol label="Elite" color="#8b5cf6" tools={ELITE_TOOLS} />
+                {TERMINAL_TOOLS.map(t => (
+                  <Link
+                    key={t.name}
+                    href={t.href}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      textDecoration: 'none',
+                      color: 'inherit',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={e =>
+                      (e.currentTarget.style.background =
+                        'rgba(139,92,246,0.1)')
+                    }
+                    onMouseLeave={e =>
+                      (e.currentTarget.style.background = 'transparent')
+                    }
+                  >
+                    <span style={{ fontSize: '16px' }}>{t.icon}</span>
+                    <span
+                      style={{
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        color: '#fff',
+                      }}
+                    >
+                      {t.name}
+                    </span>
+                  </Link>
+                ))}
               </div>
             )}
           </div>
 
-          <Link href="/app" style={{ color: 'rgba(255,255,255,0.65)', textDecoration: 'none', fontSize: '14px' }}>Signals</Link>
-          <Link href="/app" style={{ color: 'rgba(255,255,255,0.65)', textDecoration: 'none', fontSize: '14px' }}>Pricing</Link>
-          <Link href="/app" style={{ color: 'rgba(255,255,255,0.65)', textDecoration: 'none', fontSize: '14px' }}>Wallets</Link>
+          <Link
+            href="/terminal"
+            style={{
+              color: 'rgba(255,255,255,0.65)',
+              textDecoration: 'none',
+              fontSize: '14px',
+            }}
+          >
+            Terminal
+          </Link>
         </div>
 
         {/* Auth buttons */}
@@ -228,7 +283,6 @@ export default function Navbar() {
             Enter Terminal
           </Link>
         </div>
-
       </div>
     </nav>
   )
