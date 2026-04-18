@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 export async function GET() {
   try {
-    const res = await fetch("https://devworker.chainlensai.workers.dev/", {
+    const res = await fetch("https://devworker.chainlensai.workers.dev", {
       cache: "no-store"
     });
 
