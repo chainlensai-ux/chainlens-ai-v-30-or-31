@@ -60,16 +60,28 @@ export async function GET(req: Request) {
     }));
     */
 
-    // GeckoTerminal Base + Ethereum pools
-    const gtBase = await fetch(
-      "https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token"
-    );
-    const gtEth = await fetch(
-      "https://api.geckoterminal.com/api/v2/networks/eth/pools?page=1&include=base_token,quote_token"
-    );
+    console.log("FETCHING BASE POOLS...");
+    console.log("FETCHING ETH POOLS...");
 
-    const gtBaseData = await gtBase.json();
-    const gtEthData = await gtEth.json();
+    let gtBaseData = null;
+    try {
+      const res = await fetch("https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token");
+      console.log("BASE FETCH STATUS:", res.status);
+      gtBaseData = await res.json();
+      console.log("BASE DATA KEYS:", Object.keys(gtBaseData));
+    } catch (e) {
+      console.log("BASE FETCH ERROR:", e);
+    }
+
+    let gtEthData = null;
+    try {
+      const res = await fetch("https://api.geckoterminal.com/api/v2/networks/eth/pools?page=1&include=base_token,quote_token");
+      console.log("ETH FETCH STATUS:", res.status);
+      gtEthData = await res.json();
+      console.log("ETH DATA KEYS:", Object.keys(gtEthData));
+    } catch (e) {
+      console.log("ETH FETCH ERROR:", e);
+    }
 
     // Helper: extract token metadata from included[]
     function extractTokenMeta(included: any[], tokenId: string) {
