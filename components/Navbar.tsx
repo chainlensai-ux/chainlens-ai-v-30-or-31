@@ -236,6 +236,7 @@ export default function Navbar() {
             </div>
 
             <Link href="/terminal" className="nav-link">Terminal</Link>
+            <Link href="/pricing"  className="nav-link">Pricing</Link>
           </div>
 
           {/* ── Auth buttons ───────────────────────────────── */}
