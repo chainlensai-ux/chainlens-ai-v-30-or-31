@@ -52,6 +52,7 @@ function TokenCard({ data }: { data: DexPair }) {
 
 export default function HomeTokenScreener() {
   const [trending, setTrending] = useState<DexPair[]>([])
+  const [lastUpdate, setLastUpdate] = useState<number | null>(null)
 
   useEffect(() => {
     const ws = new WebSocket('wss://io.dexscreener.com/dex/screener/pairs/base')
@@ -71,6 +72,7 @@ export default function HomeTokenScreener() {
             .slice(0, 20)
 
           setTrending(sorted)
+          setLastUpdate(Date.now())
         }
       } catch (e) {
         console.error('WS parse error:', e)
@@ -170,6 +172,12 @@ export default function HomeTokenScreener() {
               flexDirection: 'column',
             }}
           >
+            <div className="text-xs text-green-400 mb-2">
+              {lastUpdate
+                ? `LIVE — Updated at ${new Date(lastUpdate).toLocaleTimeString()}`
+                : 'Waiting for live data…'}
+            </div>
+
             {trending.length === 0 ? (
               <div style={{
                 flex: 1,
