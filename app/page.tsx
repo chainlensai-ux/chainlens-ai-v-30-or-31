@@ -69,8 +69,8 @@ export default function HomePage() {
           66%      { transform: translate(70px, -30px) scale(0.92); opacity: 0.38; }
         }
         @keyframes input-glow {
-          0%,100% { box-shadow: 0 0 0 0 rgba(45,212,191,0), 0 8px 40px rgba(0,0,0,0.4); }
-          50%      { box-shadow: 0 0 28px 6px rgba(45,212,191,0.12), 0 8px 40px rgba(0,0,0,0.4); }
+          0%,100% { box-shadow: 0 0 0 0 rgba(45,212,191,0), inset 0 0 0 1px rgba(139,92,246,0.28); }
+          50%      { box-shadow: 0 0 18px 4px rgba(45,212,191,0.18), inset 0 0 0 1px rgba(45,212,191,0.45); }
         }
         .clark-input-box {
           animation: input-glow 3s ease-in-out infinite;
@@ -81,25 +81,25 @@ export default function HomePage() {
 
       <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
-        {/* Atmospheric glow — teal (left) */}
+        {/* Animated orb — teal */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '900px', height: '900px',
+          width: '600px', height: '600px',
           borderRadius: '50%',
-          top: '-200px', left: '-5%',
-          background: 'radial-gradient(circle, rgba(45,212,191,0.14) 0%, rgba(45,212,191,0.04) 45%, transparent 70%)',
-          filter: 'blur(80px)',
+          top: '-120px', left: '10%',
+          background: 'radial-gradient(circle, rgba(45,212,191,0.18) 0%, transparent 70%)',
+          filter: 'blur(60px)',
           animation: 'orb-teal 14s ease-in-out infinite',
         }} />
 
-        {/* Atmospheric glow — purple (right) */}
+        {/* Animated orb — purple */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '1000px', height: '1000px',
+          width: '700px', height: '700px',
           borderRadius: '50%',
-          top: '-250px', right: '-8%',
-          background: 'radial-gradient(circle, rgba(139,92,246,0.13) 0%, rgba(139,92,246,0.04) 45%, transparent 70%)',
-          filter: 'blur(100px)',
+          top: '-80px', right: '5%',
+          background: 'radial-gradient(circle, rgba(139,92,246,0.16) 0%, transparent 70%)',
+          filter: 'blur(80px)',
           animation: 'orb-purple 18s ease-in-out infinite',
         }} />
 
@@ -229,12 +229,10 @@ export default function HomePage() {
             width: '100%',
             maxWidth: '520px',
             background: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.12)',
+            border: '1px solid rgba(139,92,246,0.28)',
             borderRadius: '16px',
             padding: '20px 20px 16px',
             marginBottom: '28px',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
           }}>
 
             {/* Action chips — 3 rows */}
@@ -244,29 +242,29 @@ export default function HomePage() {
                   key={chip}
                   onClick={() => setQuery(chip)}
                   style={{
-                    background: 'rgba(255,255,255,0.06)',
-                    border: '1px solid rgba(255,255,255,0.10)',
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.15)',
                     borderRadius: '999px',
                     padding: '5px 13px',
                     fontSize: '9.5px',
                     fontWeight: 600,
                     letterSpacing: '0.10em',
-                    color: '#fff',
+                    color: 'rgba(255,255,255,0.7)',
                     cursor: 'pointer',
                     textTransform: 'uppercase',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                    transition: 'border-color 0.15s, background 0.15s',
+                    transition: 'border-color 0.15s, color 0.15s',
                     whiteSpace: 'nowrap',
                   }}
                   onMouseEnter={e => {
                     const el = e.currentTarget as HTMLButtonElement
-                    el.style.borderColor = 'rgba(45,212,191,0.45)'
-                    el.style.background = 'rgba(45,212,191,0.08)'
+                    el.style.borderColor = 'rgba(139,92,246,0.6)'
+                    el.style.color = '#fff'
                   }}
                   onMouseLeave={e => {
                     const el = e.currentTarget as HTMLButtonElement
-                    el.style.borderColor = 'rgba(255,255,255,0.10)'
-                    el.style.background = 'rgba(255,255,255,0.06)'
+                    el.style.borderColor = 'rgba(255,255,255,0.15)'
+                    el.style.color = 'rgba(255,255,255,0.7)'
                   }}
                 >
                   {chip}
@@ -371,31 +369,38 @@ export default function HomePage() {
             <Link href="/terminal" style={{
               display: 'inline-flex',
               alignItems: 'center',
+              gap: '10px',
               padding: '16px 40px',
               borderRadius: '12px',
-              background: '#2DD4BF',
-              color: '#04101a',
+              background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
+              color: '#fff',
               fontSize: '14px',
               fontWeight: 800,
               letterSpacing: '0.12em',
               textTransform: 'uppercase',
               textDecoration: 'none',
-              boxShadow: '0 0 32px rgba(45,212,191,0.45)',
+              boxShadow: '0 0 36px rgba(45,212,191,0.5), 0 0 36px rgba(139,92,246,0.3)',
               transition: 'opacity 0.15s, box-shadow 0.15s, transform 0.15s',
             }}
               onMouseEnter={e => {
                 const el = e.currentTarget as HTMLAnchorElement
-                el.style.opacity   = '0.90'
-                el.style.transform = 'translateY(-2px)'
-                el.style.boxShadow = '0 0 48px rgba(45,212,191,0.65)'
+                el.style.opacity    = '0.92'
+                el.style.transform  = 'translateY(-2px)'
+                el.style.boxShadow  = '0 0 52px rgba(45,212,191,0.65), 0 0 52px rgba(139,92,246,0.4)'
               }}
               onMouseLeave={e => {
                 const el = e.currentTarget as HTMLAnchorElement
-                el.style.opacity   = '1'
-                el.style.transform = 'translateY(0)'
-                el.style.boxShadow = '0 0 32px rgba(45,212,191,0.45)'
+                el.style.opacity    = '1'
+                el.style.transform  = 'translateY(0)'
+                el.style.boxShadow  = '0 0 36px rgba(45,212,191,0.5), 0 0 36px rgba(139,92,246,0.3)'
               }}
             >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="2"/>
+                <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                <path d="M7 8l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                <line x1="13" y1="11" x2="17" y2="11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              </svg>
               Enter Terminal
             </Link>
 
