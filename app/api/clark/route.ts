@@ -181,10 +181,9 @@ async function callGoPlus(address: string, chain: SupportedChain = "base") {
   return res.json();
 }
 
-// GeckoTerminal via internal proxy (avoids direct server-side blocking)
-async function callGeckoTerminal(network: "base" | "eth") {
-  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
-  const res = await fetch(`${baseUrl}/api/proxy/gt?network=${network}`, {
+// Uses req.nextUrl.origin so the call always targets the same deployment
+async function callGeckoTerminal(network: "base" | "eth", origin: string) {
+  const res = await fetch(`${origin}/api/proxy/gt?network=${network}`, {
     next: { revalidate: 30 },
   });
 
@@ -196,10 +195,9 @@ async function callGeckoTerminal(network: "base" | "eth") {
   return res.json();
 }
 
-// Trending via internal endpoint (merges CoinGecko + GeckoTerminal)
-async function callTrending(): Promise<unknown[]> {
-  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
-  const res = await fetch(`${baseUrl}/api/trending`, {
+// Uses req.nextUrl.origin so the call always targets the same deployment
+async function callTrending(origin: string): Promise<unknown[]> {
+  const res = await fetch(`${origin}/api/trending`, {
     next: { revalidate: 30 },
   });
 
@@ -303,7 +301,7 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
 
 // ---------- Scanner functions ----------
 
-async function scanTokenData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
+async function scanTokenData(address: string, chain: SupportedChain = "base", origin: string): Promise<ClarkContext> {
   const chainName = GOLDRUSH_CHAIN[chain];
   const network = gtNetwork(chain);
 
@@ -311,8 +309,8 @@ async function scanTokenData(address: string, chain: SupportedChain = "base"): P
     callGoPlus(address, chain),
     callGoldrush(`${chainName}/tokens/${address}/token_holders_v2/`, { "page-size": "50" }),
     callBasescan({ module: "token", action: "tokeninfo", contractaddress: address }),
-    callGeckoTerminal(network),
-    callTrending(),
+    callGeckoTerminal(network, origin),
+    callTrending(origin),
   ]);
 
   return {
@@ -354,14 +352,14 @@ async function scanWalletData(address: string, chain: SupportedChain = "base"): 
   };
 }
 
-async function scanLiquidityData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
+async function scanLiquidityData(address: string, chain: SupportedChain = "base", origin: string): Promise<ClarkContext> {
   const chainName = GOLDRUSH_CHAIN[chain];
   const network = gtNetwork(chain);
 
   const results = await Promise.allSettled([
     callGoldrush(`${chainName}/xy=k/address/${address}/pools/`),
     callGoPlus(address, chain),
-    callGeckoTerminal(network),
+    callGeckoTerminal(network, origin),
   ]);
 
   return {
@@ -397,11 +395,11 @@ async function scanDevWalletData(address: string, chain: SupportedChain = "base"
   };
 }
 
-async function scanBaseRadarData(): Promise<ClarkContext> {
+async function scanBaseRadarData(origin: string): Promise<ClarkContext> {
   const results = await Promise.allSettled([
-    callTrending(),
-    callGeckoTerminal("base"),
-    callGeckoTerminal("eth"),
+    callTrending(origin),
+    callGeckoTerminal("base", origin),
+    callGeckoTerminal("eth", origin),
   ]);
 
   return {
@@ -440,12 +438,12 @@ async function scanWhaleData(address: string, chain: SupportedChain = "base"): P
   };
 }
 
-async function scanPumpData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
+async function scanPumpData(address: string, chain: SupportedChain = "base", origin: string): Promise<ClarkContext> {
   const network = gtNetwork(chain);
 
   const results = await Promise.allSettled([
     callGoPlus(address, chain),
-    callGeckoTerminal(network),
+    callGeckoTerminal(network, origin),
   ]);
 
   return {
@@ -463,13 +461,14 @@ async function scanPumpData(address: string, chain: SupportedChain = "base"): Pr
 
 async function routeCommand(
   prompt: string,
-  chain: SupportedChain = "base"
+  chain: SupportedChain = "base",
+  origin: string
 ): Promise<ClarkContext | null> {
   const t = prompt.toLowerCase();
   const address = extractAddress(prompt);
 
   if (t.includes("base radar") || t.includes("trending") || t.includes("what's hot")) {
-    return scanBaseRadarData();
+    return scanBaseRadarData(origin);
   }
   if ((t.includes("scan wallet") || t.includes("wallet scan")) && address) {
     return scanWalletData(address, chain);
@@ -478,16 +477,16 @@ async function routeCommand(
     return scanDevWalletData(address, chain);
   }
   if (t.includes("liquidity") && address) {
-    return scanLiquidityData(address, chain);
+    return scanLiquidityData(address, chain, origin);
   }
   if (t.includes("whale") && address) {
     return scanWhaleData(address, chain);
   }
   if (t.includes("pump") && address) {
-    return scanPumpData(address, chain);
+    return scanPumpData(address, chain, origin);
   }
   if (address) {
-    return scanTokenData(address, chain);
+    return scanTokenData(address, chain, origin);
   }
 
   return null;
@@ -495,7 +494,7 @@ async function routeCommand(
 
 // ---------- Feature handlers ----------
 
-async function handleTokenScanner(body: ClarkRequestBody) {
+async function handleTokenScanner(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
   const network = gtNetwork(chain);
@@ -504,8 +503,8 @@ async function handleTokenScanner(body: ClarkRequestBody) {
 
   const [holders, gtData, trending] = await Promise.all([
     callGoldrush(`${chainName}/tokens/${tokenAddress}/token_holders_v2/`, { "page-size": "100" }),
-    callGeckoTerminal(network),
-    callTrending(),
+    callGeckoTerminal(network, origin),
+    callTrending(origin),
   ]);
 
   return {
@@ -560,7 +559,7 @@ async function handleDevWalletDetector(body: ClarkRequestBody) {
   };
 }
 
-async function handleLiquiditySafety(body: ClarkRequestBody) {
+async function handleLiquiditySafety(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
   const network = gtNetwork(chain);
@@ -569,7 +568,7 @@ async function handleLiquiditySafety(body: ClarkRequestBody) {
 
   const [goldrushPools, gtData] = await Promise.all([
     callGoldrush(`${chainName}/xy=k/address/${tokenAddress}/pools/`),
-    callGeckoTerminal(network),
+    callGeckoTerminal(network, origin),
   ]);
 
   return {
@@ -600,7 +599,7 @@ async function handleWhaleAlerts(body: ClarkRequestBody) {
   };
 }
 
-async function handlePumpAlerts(body: ClarkRequestBody) {
+async function handlePumpAlerts(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const network = gtNetwork(chain);
   const tokenAddress = body.tokenAddress ?? body.addressOrToken;
@@ -608,7 +607,7 @@ async function handlePumpAlerts(body: ClarkRequestBody) {
 
   const [security, gtData] = await Promise.all([
     callGoPlus(tokenAddress, chain),
-    callGeckoTerminal(network),
+    callGeckoTerminal(network, origin),
   ]);
 
   return {
@@ -620,11 +619,11 @@ async function handlePumpAlerts(body: ClarkRequestBody) {
   };
 }
 
-async function handleBaseRadar(_body: ClarkRequestBody) {
+async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
   const [trending, gtBase, gtEth] = await Promise.all([
-    callTrending(),
-    callGeckoTerminal("base"),
-    callGeckoTerminal("eth"),
+    callTrending(origin),
+    callGeckoTerminal("base", origin),
+    callGeckoTerminal("eth", origin),
   ]);
 
   const trendingData: unknown[] = Array.isArray(trending) ? trending : [];
@@ -648,15 +647,15 @@ async function handleBaseRadar(_body: ClarkRequestBody) {
   return { feature: "base-radar", chain: "base", analysis };
 }
 
-async function handleClarkAI(body: ClarkRequestBody) {
+async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const network = gtNetwork(chain);
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
 
   // Always fetch baseline sources in parallel — never rely on routeCommand alone
   const [trendingResult, gtRawResult] = await Promise.allSettled([
-    callTrending(),
-    callGeckoTerminal(network),
+    callTrending(origin),
+    callGeckoTerminal(network, origin),
   ]);
 
   let trending: unknown[] = trendingResult.status === "fulfilled" && Array.isArray(trendingResult.value)
@@ -675,7 +674,7 @@ async function handleClarkAI(body: ClarkRequestBody) {
   let contractAnalysis: unknown = {};
 
   try {
-    const routeCtx = await routeCommand(prompt, chain);
+    const routeCtx = await routeCommand(prompt, chain, origin);
     if (routeCtx?.tokenData  != null) tokenData        = routeCtx.tokenData;
     if (routeCtx?.walletScan != null) walletScan        = routeCtx.walletScan;
     if (routeCtx?.analysis   != null) contractAnalysis  = routeCtx.analysis;
@@ -705,6 +704,8 @@ async function handleClarkAI(body: ClarkRequestBody) {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as ClarkRequestBody;
+    // Derive origin from the incoming request — always correct for any deployment
+    const origin = req.nextUrl.origin;
 
     if (!body.feature) {
       return NextResponse.json(
@@ -717,7 +718,7 @@ export async function POST(req: NextRequest) {
 
     switch (body.feature) {
       case "token-scanner":
-        result = await handleTokenScanner(body);
+        result = await handleTokenScanner(body, origin);
         break;
       case "wallet-scanner":
         result = await handleWalletScanner(body);
@@ -726,19 +727,19 @@ export async function POST(req: NextRequest) {
         result = await handleDevWalletDetector(body);
         break;
       case "liquidity-safety":
-        result = await handleLiquiditySafety(body);
+        result = await handleLiquiditySafety(body, origin);
         break;
       case "whale-alerts":
         result = await handleWhaleAlerts(body);
         break;
       case "pump-alerts":
-        result = await handlePumpAlerts(body);
+        result = await handlePumpAlerts(body, origin);
         break;
       case "base-radar":
-        result = await handleBaseRadar(body);
+        result = await handleBaseRadar(body, origin);
         break;
       case "clark-ai":
-        result = await handleClarkAI(body);
+        result = await handleClarkAI(body, origin);
         break;
       default:
         return NextResponse.json(
