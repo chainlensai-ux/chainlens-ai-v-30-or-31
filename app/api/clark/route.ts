@@ -350,7 +350,7 @@ async function scanDevWalletData(address: string, chain: SupportedChain = "base"
 }
 
 async function scanBaseRadarData() {
-  const data = await callDexScreener("latest/dex/tokens", { chain: "base" });
+  const data = await callDexScreener("latest/dex/pairs/base");
   const baseOnly = (data?.pairs ?? []).filter(
     (p: Record<string, unknown>) => p.chainId === "base"
   );
@@ -530,7 +530,7 @@ async function handlePumpAlerts(body: ClarkRequestBody) {
 }
 
 async function handleBaseRadar(_body: ClarkRequestBody) {
-  const data = await callDexScreener("latest/dex/tokens", { chain: "base" });
+  const data = await callDexScreener("latest/dex/pairs/base");
   const baseOnly = (data?.pairs ?? []).filter(
     (p: Record<string, unknown>) => p.chainId === "base"
   );
