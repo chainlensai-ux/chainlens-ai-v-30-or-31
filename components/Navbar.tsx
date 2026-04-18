@@ -60,6 +60,44 @@ export default function Navbar() {
             flexShrink: 0,
           }}
         >
+          <span style={{ fontSize: '16px', flexShrink: 0 }}>{t.icon}</span>
+          <div>
+            <div style={{ fontSize: '12px', fontWeight: 600, color: '#fff', lineHeight: 1.2 }}>{t.name}</div>
+            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)', marginTop: '1px' }}>{t.desc}</div>
+          </div>
+        </Link>
+      ))}
+    </div>
+  )
+}
+
+export default function Navbar() {
+  const [megaOpen, setMegaOpen] = useState(false)
+
+  return (
+    <nav style={{
+      width: '100%',
+      position: 'sticky',
+      top: 0,
+      zIndex: 100,
+      background: 'rgba(6,6,10,0.92)',
+      backdropFilter: 'blur(20px)',
+      WebkitBackdropFilter: 'blur(20px)',
+      borderBottom: '1px solid rgba(139,92,246,0.14)',
+    }}>
+      <div style={{
+        maxWidth: '1200px',
+        margin: '0 auto',
+        padding: '0 24px',
+        height: '64px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '24px',
+      }}>
+
+        {/* Logo */}
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none', flexShrink: 0 }}>
           <Image src="/cl-logo.png" alt="ChainLens AI" width={40} height={40} />
           <div>
             <div
@@ -200,25 +238,48 @@ export default function Navbar() {
         </div>
 
         {/* Auth buttons */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Link
-            href="/app"
-            style={{
-              padding: '7px 18px',
-              borderRadius: '8px',
-              background:
-                'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
-              color: '#fff',
-              fontSize: '12px',
-              fontWeight: 700,
-              textDecoration: 'none',
-              letterSpacing: '0.06em',
-              textTransform: 'uppercase',
-              boxShadow:
-                '0 0 22px rgba(45,212,191,0.45), 0 0 22px rgba(139,92,246,0.25)',
-              whiteSpace: 'nowrap',
-            }}
-          >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <Link href="/auth" style={{
+            padding: '7px 16px',
+            border: '1px solid rgba(139,92,246,0.28)',
+            borderRadius: '8px',
+            background: 'transparent',
+            color: 'rgba(255,255,255,0.65)',
+            fontSize: '12px',
+            fontWeight: 700,
+            textDecoration: 'none',
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+          }}>
+            Sign In
+          </Link>
+          <Link href="/app" style={{
+            padding: '7px 16px',
+            borderRadius: '8px',
+            background: '#8b5cf6',
+            color: '#fff',
+            fontSize: '12px',
+            fontWeight: 700,
+            textDecoration: 'none',
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            boxShadow: '0 0 20px rgba(139,92,246,0.35)',
+          }}>
+            Get Access
+          </Link>
+          <Link href="/terminal" style={{
+            padding: '7px 18px',
+            borderRadius: '8px',
+            background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
+            color: '#fff',
+            fontSize: '12px',
+            fontWeight: 700,
+            textDecoration: 'none',
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            boxShadow: '0 0 22px rgba(45,212,191,0.45), 0 0 22px rgba(139,92,246,0.25)',
+            whiteSpace: 'nowrap',
+          }}>
             Enter Terminal
           </Link>
         </div>

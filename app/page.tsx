@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import HomeClarkPanel from '@/components/HomeClarkPanel'
 
 // ─── Action chips inside the prompt box ───────────────────────────────────
 
@@ -44,6 +45,8 @@ const TICKER = [
 
 export default function HomePage() {
   const [query, setQuery] = useState('')
+  const [showClarkPanel, setShowClarkPanel] = useState(false)
+  const [initialClarkMessage, setInitialClarkMessage] = useState<string | null>(null)
 
   return (
     <>
@@ -56,11 +59,13 @@ export default function HomePage() {
         ::placeholder { color: rgba(255,255,255,0.3); }
       `}</style>
 
-      <div style={{ minHeight: '100vh', background: '#07070f', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Navbar />
+
+      <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* Scattered-star background */}
         <div style={{
-          position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
+          position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: -1,
           backgroundImage: [
             'radial-gradient(1px 1px at 12% 18%, rgba(255,255,255,0.18) 0%, transparent 100%)',
             'radial-gradient(1px 1px at 28% 55%, rgba(255,255,255,0.12) 0%, transparent 100%)',
@@ -76,11 +81,6 @@ export default function HomePage() {
             'radial-gradient(1px 1px at 70% 88%, rgba(255,255,255,0.10) 0%, transparent 100%)',
           ].join(', '),
         }} />
-
-        {/* Navbar */}
-        <div style={{ position: 'relative', zIndex: 10 }}>
-          <Navbar />
-        </div>
 
         {/* Hero */}
         <main style={{
@@ -229,6 +229,14 @@ export default function HomePage() {
                 type="text"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && query.trim()) {
+                    setInitialClarkMessage(query.trim())
+                    setShowClarkPanel(true)
+                    setQuery('')
+                    e.preventDefault()
+                  }
+                }}
                 placeholder="Ask Clark — scan a wallet, find early pumps, track smart money..."
                 style={{
                   flex: 1,
@@ -241,22 +249,33 @@ export default function HomePage() {
                   minWidth: 0,
                 }}
               />
-              <Link href="/terminal" style={{
-                width: '34px',
-                height: '34px',
-                borderRadius: '50%',
-                background: '#8b5cf6',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                boxShadow: '0 0 16px rgba(139,92,246,0.5)',
-                textDecoration: 'none',
-              }}>
+              <button
+                onClick={() => {
+                  if (query.trim()) {
+                    setInitialClarkMessage(query.trim())
+                    setShowClarkPanel(true)
+                    setQuery('')
+                  }
+                }}
+                style={{
+                  width: '34px',
+                  height: '34px',
+                  borderRadius: '50%',
+                  background: '#8b5cf6',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  boxShadow: '0 0 16px rgba(139,92,246,0.5)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                   <path d="M5 12h14M13 6l6 6-6 6" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
-              </Link>
+              </button>
             </div>
 
             {/* Box footer */}
@@ -436,6 +455,13 @@ export default function HomePage() {
         </div>
 
       </div>
+
+      {/* Sliding Clark panel — triggered by Enter in the hero input */}
+      <HomeClarkPanel
+        open={showClarkPanel}
+        initialMessage={initialClarkMessage}
+        onClose={() => setShowClarkPanel(false)}
+      />
     </>
  
   )

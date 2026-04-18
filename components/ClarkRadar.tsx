@@ -1,258 +1,538 @@
 'use client'
 
-import { motion } from 'framer-motion'
-import type { ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 
-// ─── Mock data ────────────────────────────────────────────────────────────
-
-const WHALE_ALERTS = [
-  { token: 'ETH', amount: '$2.4M', action: 'Large transfer detected', severity: 'HIGH', up: true },
-  { token: 'SOL', amount: '$890K', action: 'Whale accumulation signal', severity: 'MEDIUM', up: true },
-  { token: 'UNI', amount: '$1.8M', action: 'Large sell pressure', severity: 'HIGH', up: false },
+const HINT_CHIPS = [
+  "What's pumping on Base?",
+  'Scan a Base wallet',
+  'New Base deployments',
+  'Show Base whales',
 ]
 
-const AI_SIGNALS = [
-  { name: 'Bitcoin', sym: 'BTC', bar: 78, label: 'BULLISH', color: '#f59e0b' },
-  { name: 'Ethereum', sym: 'ETH', bar: 62, label: 'BULLISH', color: '#627EEA' },
-  { name: 'Base Eco', sym: 'BASE', bar: 44, label: 'NEUTRAL', color: '#2DD4BF' },
-]
-
-const LIVE_ACTIVITY = [
-  { text: '0x7a25…88D bought $12K BRETT on Base', time: '30s' },
-  { text: 'New pair BONK/WETH deployed on Base', time: '1m' },
-  { text: '0xd8dA…6045 sold 50K TOSHI', time: '4m' },
-  { text: 'Whale bridged 18 ETH → Base chain', time: '9m' },
-  { text: 'Smart wallet added $80K LP on AERO', time: '14m' },
-]
-
-// ─── Section card ─────────────────────────────────────────────────────────
-
-function Section({
-  title,
-  accent,
-  delay = 0,
-  children,
-}: {
-  title: string
-  accent?: string
-  delay?: number
-  children: ReactNode
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, delay, ease: 'easeOut' }}
-      className="rounded-2xl overflow-hidden"
-      style={{
-        background: '#070d1a',
-        border: '1px solid rgba(255,255,255,0.10)',
-        boxShadow:
-          '0 8px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)',
-      }}
-    >
-      {/* Section header row */}
-      <div
-        className="flex items-center justify-between px-4 py-3"
-        style={{
-          borderBottom: '1px solid rgba(255,255,255,0.09)',
-          background: 'rgba(255,255,255,0.035)',
-        }}
-      >
-        <span
-          className="uppercase"
-          style={{
-            fontSize: '10px',
-            fontWeight: 800,
-            letterSpacing: '0.15em',
-            color: '#4a7494',
-            fontFamily: 'var(--font-plex-mono)',
-          }}
-        >
-          {title}
-        </span>
-
-        {accent && (
-          <span
-            className="font-bold tracking-wider"
-            style={{
-              fontSize: '9px',
-              fontFamily: 'var(--font-plex-mono)',
-              color: accent,
-            }}
-          >
-            {accent}
-          </span>
-        )}
-      </div>
-
-      <div className="p-4">{children}</div>
-    </motion.div>
-  )
+interface Message {
+  role: 'user' | 'clark'
+  text: string
 }
 
-// ─── Component ────────────────────────────────────────────────────────────
+function parseMessage(raw: string): Record<string, string> {
+  const t = raw.trim().toLowerCase()
+  const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
+  const address = addrMatch?.[0]
 
-export default function ClarkRadar({
-  onSelectRadar,
-}: {
-  onSelectRadar?: (key: string) => void
-}) {
+  if (t.startsWith('scan token') && address)
+    return { feature: 'token-scanner', tokenAddress: address }
+  if (t.startsWith('scan wallet') && address)
+    return { feature: 'wallet-scanner', walletAddress: address }
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes('pumping') || t.includes('deployments') || t.includes('whales'))
+    return { feature: 'base-radar' }
+  if (t.startsWith('liquidity') && address)
+    return { feature: 'liquidity-safety', tokenAddress: address }
+  if (t.startsWith('dev wallet') && address)
+    return { feature: 'dev-wallet-detector', tokenAddress: address }
+  if (t.includes('whale') && address)
+    return { feature: 'whale-alerts', walletAddress: address }
+  if (t.includes('pump') && address)
+    return { feature: 'pump-alerts', tokenAddress: address }
+
+  return { feature: 'clark-ai', prompt: raw.trim() }
+}
+
+function formatResponse(data: Record<string, unknown>): string {
+  if (typeof data?.analysis === 'string') return data.analysis
+  return JSON.stringify(data, null, 2)
+}
+
+interface ClarkRadarProps {
+  onSelectRadar?: (val: string) => void
+  pendingMessage?: string | null
+}
+
+export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadarProps) {
+  const [messages, setMessages] = useState<Message[]>([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const lastSentRef = useRef<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [messages])
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const sendToClark = useCallback(async (text: string) => {
+    setMessages(prev => [...prev, { role: 'user', text }])
+    setLoading(true)
+    setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
+
+    try {
+      const body = parseMessage(text)
+      const res = await fetch('/api/clark', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const json = await res.json()
+      const reply = json.ok
+        ? formatResponse(json.data as Record<string, unknown>)
+        : (json.error ?? 'Something went wrong.')
+
+      setMessages(prev => {
+        const next = [...prev]
+        next[next.length - 1] = { role: 'clark', text: reply }
+        return next
+      })
+    } catch {
+      setMessages(prev => {
+        const next = [...prev]
+        next[next.length - 1] = { role: 'clark', text: 'Clark backend unreachable.' }
+        return next
+      })
+    } finally {
+      setLoading(false)
+      inputRef.current?.focus()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (pendingMessage && pendingMessage !== lastSentRef.current) {
+      lastSentRef.current = pendingMessage
+      sendToClark(pendingMessage)
+    }
+  }, [pendingMessage, sendToClark])
+
+  function handleSend() {
+    const text = input.trim()
+    if (!text || loading) return
+    setInput('')
+    sendToClark(text)
+  }
+
   return (
-    <div className="flex flex-col h-full p-4 space-y-4">
-      {/* ── Whale Alerts ───────────────────────────── */}
-      <Section title="Whale Alerts" accent="LIVE" delay={0.05}>
-        <div className="space-y-3">
-          {WHALE_ALERTS.map((w, i) => (
+    <>
+      <style>{`
+        @keyframes clarkOnlinePulse {
+          0%, 100% { opacity: 1; box-shadow: 0 0 6px rgba(139,92,246,0.9); }
+          50%       { opacity: 0.5; box-shadow: 0 0 3px rgba(139,92,246,0.4); }
+        }
+        @keyframes clarkPanelGlow {
+          0%, 100% {
+            box-shadow:
+              inset 0 0 50px rgba(139,92,246,0.09),
+              inset 0 0 26px rgba(236,72,153,0.05);
+          }
+          50% {
+            box-shadow:
+              inset 0 0 80px rgba(139,92,246,0.18),
+              inset 0 0 42px rgba(236,72,153,0.10);
+          }
+        }
+        .clark-panel-glow {
+          animation: clarkPanelGlow 4s ease-in-out infinite;
+        }
+        .clark-hint-chip {
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.06);
+          border-radius: 8px;
+          padding: 7px 10px;
+          color: rgba(255,255,255,0.40);
+          font-size: 11px;
+          font-family: var(--font-inter);
+          cursor: pointer;
+          text-align: left;
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          width: 100%;
+          transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
+        }
+        .clark-hint-chip:hover {
+          border-color: rgba(139,92,246,0.32);
+          color: rgba(255,255,255,0.80);
+          background: rgba(139,92,246,0.08);
+          box-shadow: 0 0 10px rgba(139,92,246,0.12), 0 0 6px rgba(236,72,153,0.06);
+        }
+        .clark-panel-input::placeholder { color: rgba(255,255,255,0.40); }
+        @keyframes radarSendGlow {
+          0%, 100% { box-shadow: 0 0 10px rgba(236,72,153,0.42), 0 0 6px rgba(139,92,246,0.30); }
+          50%       { box-shadow: 0 0 22px rgba(236,72,153,0.72), 0 0 16px rgba(139,92,246,0.52), 0 0 30px rgba(236,72,153,0.20); }
+        }
+        @keyframes radarArrowPulse {
+          0%, 100% { opacity: 1; transform: translateX(0); }
+          50%       { opacity: 0.60; transform: translateX(1.5px); }
+        }
+        .clark-radar-send {
+          animation: radarSendGlow 3s ease-in-out infinite;
+          transition: transform 0.15s;
+        }
+        .clark-radar-send:hover {
+          transform: scale(1.12);
+          box-shadow: 0 0 28px rgba(236,72,153,0.82), 0 0 18px rgba(139,92,246,0.62) !important;
+          animation: none;
+        }
+        .clark-radar-arrow { animation: radarArrowPulse 2.5s ease-in-out infinite; display: inline-flex; }
+        .clark-radar-scroll::-webkit-scrollbar { width: 3px; }
+        .clark-radar-scroll::-webkit-scrollbar-thumb {
+          background: rgba(123,92,255,0.30);
+          border-radius: 3px;
+        }
+        @keyframes radarThinkingDot {
+          0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
+          40%            { opacity: 1;   transform: translateY(-3px); }
+        }
+        .radar-dot { display: inline-block; animation: radarThinkingDot 1.2s ease-in-out infinite; }
+        .radar-dot:nth-child(2) { animation-delay: 0.15s; }
+        .radar-dot:nth-child(3) { animation-delay: 0.30s; }
+      `}</style>
+
+      <div
+        className="clark-panel-glow"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          background: 'rgba(5,8,22,0.72)',
+          backdropFilter: 'blur(20px)',
+          WebkitBackdropFilter: 'blur(20px)',
+        }}
+      >
+        {/* Top gradient accent line */}
+        <div
+          style={{
+            height: '1.5px',
+            background: 'linear-gradient(90deg, transparent 0%, #ff4b9a 25%, #7b5cff 55%, #4ef2c5 80%, transparent 100%)',
+            flexShrink: 0,
+          }}
+        />
+
+        {/* ── Header ──────────────────────────────────────── */}
+        <div
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0 12px',
+            height: '44px',
+            background: 'rgba(8,10,20,0.90)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            flexShrink: 0,
+          }}
+        >
+          {/* Left — icon + title */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
             <div
-              key={i}
-              className="flex items-center justify-between px-3 py-2 rounded-lg"
               style={{
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid rgba(255,255,255,0.06)',
+                width: '26px',
+                height: '26px',
+                borderRadius: '8px',
+                background: 'linear-gradient(135deg, rgba(236,72,153,0.25), rgba(139,92,246,0.30))',
+                border: '1px solid rgba(139,92,246,0.40)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 0 12px rgba(139,92,246,0.24), 0 0 5px rgba(236,72,153,0.10)',
+                flexShrink: 0,
               }}
             >
-              <div className="flex items-center gap-3">
-                <span
-                  style={{
-                    fontSize: '11px',
-                    fontFamily: 'var(--font-plex-mono)',
-                    color: '#7a90a8',
-                  }}
-                >
-                  {w.token}
-                </span>
-                <span
-                  style={{
-                    fontSize: '11px',
-                    fontFamily: 'var(--font-inter)',
-                    color: '#9fb4c9',
-                  }}
-                >
-                  {w.action}
-                </span>
-              </div>
-
-              <span
-                style={{
-                  fontSize: '11px',
-                  fontFamily: 'var(--font-plex-mono)',
-                  color: w.up ? '#2DD4BF' : '#f43f5e',
-                }}
-              >
-                {w.amount}
-              </span>
+              <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 7px rgba(45,212,191,0.75)' }} />
             </div>
-          ))}
-        </div>
-      </Section>
+            <span
+              style={{
+                fontSize: '13px',
+                fontWeight: 600,
+                color: '#f1f5f9',
+                fontFamily: 'var(--font-inter)',
+                letterSpacing: '-0.01em',
+              }}
+            >
+              Clark AI
+            </span>
+          </div>
 
-      {/* ── AI Signals ─────────────────────────────── */}
-      <Section title="AI Signals" accent="AI" delay={0.1}>
-        <div className="space-y-3">
-          {AI_SIGNALS.map((s, i) => (
-            <div key={i}>
-              <div className="flex items-center justify-between mb-1">
-                <span
-                  style={{
-                    fontSize: '11px',
-                    fontFamily: 'var(--font-inter)',
-                    color: '#9fb4c9',
-                  }}
-                >
-                  {s.name}
-                </span>
-                <span
-                  style={{
-                    fontSize: '10px',
-                    fontFamily: 'var(--font-plex-mono)',
-                    color: s.color,
-                  }}
-                >
-                  {s.label}
-                </span>
-              </div>
-
-              <div
-                className="rounded-full overflow-hidden"
-                style={{
-                  height: '6px',
-                  background: 'rgba(255,255,255,0.06)',
-                }}
-              >
-                <div
-                  style={{
-                    width: `${s.bar}%`,
-                    height: '100%',
-                    background: s.color,
-                  }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      </Section>
-
-      {/* ── Live Activity ──────────────────────────── */}
-      <Section title="Live Activity" accent="LIVE" delay={0.14}>
-        <div className="space-y-2.5">
-          {LIVE_ACTIVITY.map((a, i) => (
-            <div key={i} className="flex items-start gap-2.5">
-              <div
-                className="shrink-0 rounded-full bg-[#2DD4BF] mt-[5px]"
-                style={{
-                  width: '6px',
-                  height: '6px',
-                  boxShadow: '0 0 5px rgba(45,212,191,0.75)',
-                }}
-              />
-              <p
-                className="flex-1 leading-relaxed"
-                style={{
-                  fontSize: '11px',
-                  color: '#7a90a8',
-                  fontFamily: 'var(--font-inter)',
-                }}
-              >
-                {a.text}
-              </p>
-              <span
-                className="shrink-0 mt-0.5"
-                style={{
-                  fontSize: '9px',
-                  fontFamily: 'var(--font-plex-mono)',
-                  color: '#3e5c78',
-                }}
-              >
-                {a.time}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        <div
-          className="mt-4 flex items-center gap-2 pt-3"
-          style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
-        >
+          {/* Right — Online badge */}
           <div
-            className="rounded-full bg-[#2DD4BF] animate-pulse"
             style={{
-              width: '6px',
-              height: '6px',
-              boxShadow: '0 0 5px rgba(45,212,191,0.8)',
-            }}
-          />
-          <span
-            style={{
-              fontSize: '11px',
-              color: '#4e6e88',
-              fontFamily: 'var(--font-inter)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              background: 'rgba(139,92,246,0.09)',
+              border: '1px solid rgba(139,92,246,0.22)',
+              borderRadius: '100px',
+              padding: '3px 9px',
+              boxShadow: '0 0 10px rgba(139,92,246,0.12)',
             }}
           >
-            CORTEX monitoring live
-          </span>
+            <div
+              style={{
+                width: '5px',
+                height: '5px',
+                borderRadius: '50%',
+                background: '#a78bfa',
+                animation: 'clarkOnlinePulse 3s ease-in-out infinite',
+              }}
+            />
+            <span
+              style={{
+                fontSize: '9px',
+                fontWeight: 700,
+                letterSpacing: '0.10em',
+                color: '#a78bfa',
+                fontFamily: 'var(--font-plex-mono)',
+              }}
+            >
+              ONLINE
+            </span>
+          </div>
         </div>
-      </Section>
-    </div>
+
+        {/* ── Messages area ───────────────────────────────── */}
+        <div
+          ref={scrollRef}
+          className="clark-radar-scroll"
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: '12px 10px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+          }}
+        >
+          {messages.length === 0 ? (
+            /* Empty state */
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                textAlign: 'center',
+                padding: '24px 12px',
+                gap: '10px',
+              }}
+            >
+              {/* Orb */}
+              <div
+                style={{
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '14px',
+                  background: 'linear-gradient(135deg, rgba(236,72,153,0.18), rgba(139,92,246,0.22))',
+                  border: '1px solid rgba(139,92,246,0.28)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)',
+                }}
+              >
+                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 10px rgba(45,212,191,0.65)' }} />
+              </div>
+
+              <div>
+                <p
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: 'rgba(255,255,255,0.55)',
+                    fontFamily: 'var(--font-inter)',
+                    marginBottom: '6px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Ask Clark anything about wallets,<br />
+                  smart money, tokens, or market moves.
+                </p>
+                <p style={{ fontSize: '10px', color: 'rgba(255,255,255,0.24)', fontFamily: 'var(--font-inter)', lineHeight: 1.6 }}>
+                  Responses will appear here
+                </p>
+              </div>
+
+              {/* Hint chips */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', width: '100%', marginTop: '6px' }}>
+                {HINT_CHIPS.map((chip) => (
+                  <button
+                    key={chip}
+                    className="clark-hint-chip"
+                    onClick={() => sendToClark(chip)}
+                  >
+                    <span style={{ color: 'rgba(192,132,252,0.65)', fontSize: '11px', flexShrink: 0 }}>→</span>
+                    {chip}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* Message list */
+            <>
+              {messages.map((msg, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                  }}
+                >
+                  {msg.role === 'clark' && (
+                    <div style={{
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #7b5cff, #4ef2c5)',
+                      flexShrink: 0,
+                      marginRight: '6px',
+                      alignSelf: 'flex-end',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '8px',
+                      fontWeight: 800,
+                      color: '#050816',
+                      fontFamily: 'var(--font-plex-mono)',
+                    }}>C</div>
+                  )}
+                  <div style={{
+                    maxWidth: '82%',
+                    padding: '9px 12px',
+                    borderRadius: msg.role === 'user'
+                      ? '12px 12px 3px 12px'
+                      : '12px 12px 12px 3px',
+                    background: msg.role === 'user'
+                      ? 'rgba(45,212,191,0.10)'
+                      : 'rgba(123,92,255,0.10)',
+                    border: `1px solid ${msg.role === 'user'
+                      ? 'rgba(45,212,191,0.18)'
+                      : 'rgba(123,92,255,0.18)'}`,
+                    color: msg.text === 'Clark is thinking...'
+                      ? 'rgba(255,255,255,0.40)'
+                      : '#dde4f0',
+                    fontSize: '12px',
+                    lineHeight: 1.65,
+                    fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
+                      ? 'var(--font-plex-mono)'
+                      : 'var(--font-inter), Inter, sans-serif',
+                    whiteSpace: msg.text.startsWith('{') || msg.text.startsWith('[')
+                      ? 'pre-wrap'
+                      : 'normal',
+                    wordBreak: 'break-word',
+                  }}>
+                    {msg.text === 'Clark is thinking...' ? (
+                      <span>
+                        Clark is thinking
+                        <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
+                        <span className="radar-dot">.</span>
+                        <span className="radar-dot">.</span>
+                      </span>
+                    ) : msg.text}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+
+        {/* ── Input footer ────────────────────────────────── */}
+        <div
+          style={{
+            flexShrink: 0,
+            padding: '6px 10px 10px',
+            borderTop: '1px solid rgba(139,92,246,0.12)',
+            background: 'rgba(8,10,20,0.80)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '7px',
+              background: 'linear-gradient(135deg, rgba(5,8,22,0.65) 0%, rgba(45,212,191,0.04) 55%, rgba(139,92,246,0.03) 100%)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              borderRadius: '11px',
+              padding: '7px 7px 7px 12px',
+              backdropFilter: 'blur(24px)',
+              WebkitBackdropFilter: 'blur(24px)',
+              boxShadow: 'inset 0 0 20px rgba(45,212,191,0.08), inset 0 0 14px rgba(236,72,153,0.06), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(139,92,246,0.10), 0 0 8px rgba(45,212,191,0.06)',
+            }}
+          >
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
+              disabled={loading}
+              placeholder="Ask Clark..."
+              className="clark-panel-input"
+              style={{
+                flex: 1,
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                color: '#e2e8f0',
+                fontSize: '12px',
+                fontFamily: 'var(--font-inter)',
+                caretColor: '#a78bfa',
+                minWidth: 0,
+                opacity: loading ? 0.5 : 1,
+              }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={loading || !input.trim()}
+              className={input.trim() && !loading ? 'clark-radar-send' : undefined}
+              style={{
+                flexShrink: 0,
+                width: '28px',
+                height: '28px',
+                borderRadius: '50%',
+                background: input.trim() && !loading
+                  ? 'linear-gradient(135deg, #ec4899, #8b5cf6)'
+                  : 'rgba(255,255,255,0.05)',
+                border: input.trim() && !loading
+                  ? '1px solid rgba(236,72,153,0.40)'
+                  : '1px solid rgba(255,255,255,0.07)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: input.trim() && !loading ? 'pointer' : 'default',
+              }}
+            >
+              <span className={input.trim() && !loading ? 'clark-radar-arrow' : undefined} style={{ display: 'inline-flex' }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M5 12h14M13 6l6 6-6 6"
+                    stroke={input.trim() && !loading ? '#fff' : 'rgba(255,255,255,0.22)'}
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            </button>
+          </div>
+
+          <p
+            style={{
+              marginTop: '6px',
+              fontSize: '9px',
+              color: 'rgba(255,255,255,0.15)',
+              fontFamily: 'var(--font-plex-mono)',
+              textAlign: 'center',
+              letterSpacing: '0.08em',
+            }}
+          >
+            POWERED BY CORTEX ENGINE
+          </p>
+        </div>
+
+      </div>
+    </>
   )
 }

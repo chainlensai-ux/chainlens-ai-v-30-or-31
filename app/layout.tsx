@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Inter, IBM_Plex_Mono } from 'next/font/google'
 import './globals.css'
+import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
 
 const inter = Inter({
   subsets: ['latin'],
@@ -29,15 +30,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${inter.variable} ${ibmPlexMono.variable}`}>
-      <body
-        style={{
-          background: '#06060a',
-          color: '#fff',
-          fontFamily: 'var(--font-inter), Inter, sans-serif',
-          overflowX: 'hidden',
-        }}
-      >
-        {children}
+      <body className="w-full h-full">
+        <SupabaseProvider>
+          {children}
+        </SupabaseProvider>
       </body>
     </html>
   )
