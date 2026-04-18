@@ -52,8 +52,8 @@ async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
 
 async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<any> {
   try {
-    const network = chain === "ethereum" ? "eth" : "base";
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "";
+    const network = chain === "eth" ? "eth" : "base";
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
     const res = await fetch(`${baseUrl}/api/proxy/gt?network=${network}`, { cache: "no-store" });
     return res.ok ? await res.json() : null;
   } catch (err) {
