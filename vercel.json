@@ -1,18 +1,12 @@
 {
-<<<<<<< HEAD
   "rewrites": [
-    { "source": "/manifest.json", "destination": "/manifest.json" },
-    { "source": "/sw.js", "destination": "/sw.js" },
-    { "source": "/cl-logo.png", "destination": "/cl-logo.png" }
+    { "source": "/api/(.*)", "destination": "/api/$1" }
   ],
-=======
->>>>>>> claude-session
   "headers": [
     {
-      "source": "/sw.js",
+      "source": "/(.*)",
       "headers": [
-        { "key": "Service-Worker-Allowed", "value": "/" },
-        { "key": "Cache-Control", "value": "no-cache" }
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
       ]
     }
   ]
