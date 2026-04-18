@@ -29,57 +29,18 @@ interface Props {
 
 // ─── Tier config ──────────────────────────────────────────────────────────────
 
-const TIER: Record<
-  LiquiditySafetyResult["lp_risk_tier"],
-  {
-    glow: string;
-    border: string;
-    badgeBg: string;
-    badgeText: string;
-    scoreColor: string;
-    barColor: string;
-    dot: string;
-  }
-> = {
-  low: {
-    glow:       "shadow-[0_0_32px_rgba(52,211,153,0.22)]",
-    border:     "border-emerald-400/25",
-    badgeBg:    "bg-emerald-500/15 border-emerald-400/30",
-    badgeText:  "text-emerald-300",
-    scoreColor: "text-emerald-300",
-    barColor:   "#34d399",
-    dot:        "bg-emerald-400",
-  },
-  medium: {
-    glow:       "shadow-[0_0_32px_rgba(251,191,36,0.20)]",
-    border:     "border-amber-400/25",
-    badgeBg:    "bg-amber-500/15 border-amber-400/30",
-    badgeText:  "text-amber-300",
-    scoreColor: "text-amber-300",
-    barColor:   "#fbbf24",
-    dot:        "bg-amber-400",
-  },
-  high: {
-    glow:       "shadow-[0_0_32px_rgba(251,146,60,0.22)]",
-    border:     "border-orange-400/25",
-    badgeBg:    "bg-orange-500/15 border-orange-400/30",
-    badgeText:  "text-orange-300",
-    scoreColor: "text-orange-300",
-    barColor:   "#fb923c",
-    dot:        "bg-orange-400",
-  },
-  extreme: {
-    glow:       "shadow-[0_0_32px_rgba(248,113,113,0.28)]",
-    border:     "border-red-400/30",
-    badgeBg:    "bg-red-500/15 border-red-400/30",
-    badgeText:  "text-red-300",
-    scoreColor: "text-red-300",
-    barColor:   "#f87171",
-    dot:        "bg-red-400",
-  },
+const TIER_COLOR: Record<LiquiditySafetyResult["lp_risk_tier"], { ring: string; glow: string; badge: string; label: string }> = {
+  low:     { ring: "#2DD4BF", glow: "rgba(45,212,191,0.30)",  badge: "rgba(45,212,191,0.12)",  label: "#2DD4BF" },
+  medium:  { ring: "#fbbf24", glow: "rgba(251,191,36,0.28)",  badge: "rgba(251,191,36,0.12)",  label: "#fbbf24" },
+  high:    { ring: "#fb923c", glow: "rgba(251,146,60,0.28)",  badge: "rgba(251,146,60,0.12)",  label: "#fb923c" },
+  extreme: { ring: "#f43f5e", glow: "rgba(244,63,94,0.32)",   badge: "rgba(244,63,94,0.12)",   label: "#f43f5e" },
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const TIER_LABEL: Record<LiquiditySafetyResult["lp_risk_tier"], string> = {
+  low: "LOW RISK", medium: "MEDIUM RISK", high: "HIGH RISK", extreme: "EXTREME RISK",
+};
+
+// ─── Formatters ───────────────────────────────────────────────────────────────
 
 function fmtLarge(v: number | null | undefined): string {
   if (v == null) return "N/A";
@@ -90,13 +51,13 @@ function fmtLarge(v: number | null | undefined): string {
 }
 
 function fmtPct(v: number | null | undefined): string {
-  if (v == null) return "N/A";
+  if (v == null) return "—";
   return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 }
 
 function pctColor(v: number | null | undefined): string {
-  if (v == null) return "#94a3b8";
-  return v >= 0 ? "#2DD4BF" : "#f87171";
+  if (v == null) return "#4a6272";
+  return v >= 0 ? "#2DD4BF" : "#f43f5e";
 }
 
 function shorten(addr: string): string {
@@ -104,80 +65,173 @@ function shorten(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Score ring (SVG arc) ─────────────────────────────────────────────────────
 
-function ScoreBar({ score, color }: { score: number; color: string }) {
+function ScoreRing({ score, tier }: { score: number; tier: LiquiditySafetyResult["lp_risk_tier"] }) {
+  const c = TIER_COLOR[tier];
+  const r = 52;
+  const cx = 64;
+  const cy = 64;
+  const circumference = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, score));
+  const filled = (pct / 100) * circumference;
+
   return (
-    <div className="relative h-2 w-full overflow-hidden rounded-full bg-white/[0.06]">
-      <div
-        className="absolute inset-y-0 left-0 rounded-full transition-all duration-700"
-        style={{
-          width: `${pct}%`,
-          background: `linear-gradient(90deg, ${color}99 0%, ${color} 100%)`,
-          boxShadow: `0 0 12px ${color}88`,
-        }}
-      />
+    <div style={{ position: "relative", width: 128, height: 128, flexShrink: 0 }}>
+      <svg width="128" height="128" style={{ transform: "rotate(-90deg)" }}>
+        {/* Track */}
+        <circle
+          cx={cx} cy={cy} r={r}
+          fill="none"
+          stroke="rgba(255,255,255,0.06)"
+          strokeWidth="8"
+        />
+        {/* Score arc */}
+        <circle
+          cx={cx} cy={cy} r={r}
+          fill="none"
+          stroke={c.ring}
+          strokeWidth="8"
+          strokeLinecap="round"
+          strokeDasharray={`${filled} ${circumference}`}
+          style={{
+            filter: `drop-shadow(0 0 8px ${c.ring}cc)`,
+            transition: "stroke-dasharray 0.8s cubic-bezier(0.4,0,0.2,1)",
+          }}
+        />
+      </svg>
+      {/* Center content */}
+      <div style={{
+        position: "absolute", inset: 0,
+        display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center",
+      }}>
+        <span style={{
+          fontSize: "36px", fontWeight: 900, lineHeight: 1,
+          color: c.ring,
+          textShadow: `0 0 24px ${c.glow}`,
+          fontFamily: "var(--font-plex-mono)",
+        }}>
+          {score}
+        </span>
+        <span style={{
+          fontSize: "9px", color: "#3a5268", letterSpacing: "0.12em",
+          fontFamily: "var(--font-plex-mono)", marginTop: "2px",
+        }}>
+          / 100
+        </span>
+      </div>
     </div>
   );
 }
 
-function Label({ children }: { children: React.ReactNode }) {
+// ─── Stat card ────────────────────────────────────────────────────────────────
+
+function StatCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
   return (
-    <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+    <div style={{
+      background: "rgba(255,255,255,0.03)",
+      border: "1px solid rgba(255,255,255,0.08)",
+      borderRadius: "12px",
+      padding: "16px 20px",
+    }}>
+      <p style={{
+        fontSize: "9px", fontWeight: 700, letterSpacing: "0.16em",
+        color: "#3a5268", textTransform: "uppercase", marginBottom: "8px",
+        fontFamily: "var(--font-plex-mono)",
+      }}>
+        {label}
+      </p>
+      <p style={{
+        fontSize: "20px", fontWeight: 700,
+        color: accent ?? "#e2e8f0",
+        fontFamily: "var(--font-plex-mono)",
+        margin: 0,
+      }}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+// ─── Section header ───────────────────────────────────────────────────────────
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p style={{
+      fontSize: "9px", fontWeight: 700, letterSpacing: "0.18em",
+      color: "#3a5268", textTransform: "uppercase",
+      fontFamily: "var(--font-plex-mono)",
+      marginBottom: "12px", margin: "0 0 12px",
+    }}>
       {children}
     </p>
   );
 }
 
 function Divider() {
-  return <div className="h-px w-full bg-white/[0.06]" />;
+  return <div style={{ height: "1px", background: "rgba(255,255,255,0.06)", width: "100%" }} />;
 }
 
-function BulletItem({ text, positive }: { text: string; positive: boolean }) {
+// ─── Checkmark icon ───────────────────────────────────────────────────────────
+
+function IconCheck() {
   return (
-    <li className="flex items-start gap-2 text-[12px] leading-relaxed text-neutral-300">
-      <span
-        className={`mt-[3px] h-1.5 w-1.5 shrink-0 rounded-full ${
-          positive ? "bg-emerald-400" : "bg-red-400"
-        }`}
-        style={{
-          boxShadow: positive
-            ? "0 0 6px rgba(52,211,153,0.8)"
-            : "0 0 6px rgba(248,113,113,0.8)",
-        }}
-      />
-      {text}
-    </li>
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0, marginTop: "2px" }}>
+      <circle cx="7" cy="7" r="6.5" stroke="#2DD4BF" strokeOpacity="0.25" />
+      <path d="M4 7L6.2 9.5L10 5" stroke="#2DD4BF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 
+// ─── Warning icon ─────────────────────────────────────────────────────────────
+
+function IconWarn() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0, marginTop: "2px" }}>
+      <path d="M7 1.5L12.8 11.5H1.2L7 1.5Z" stroke="#f43f5e" strokeOpacity="0.35" strokeWidth="1.2" strokeLinejoin="round" />
+      <path d="M7 5.5V8" stroke="#f43f5e" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="7" cy="10" r="0.75" fill="#f43f5e" />
+    </svg>
+  );
+}
+
+// ─── Skeleton ─────────────────────────────────────────────────────────────────
+
 function Skeleton() {
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#0a0a0f]/60 p-5 backdrop-blur-xl shadow-[0_0_25px_rgba(0,200,255,0.12)] md:p-6">
-      <div className="absolute inset-0 -translate-x-full animate-[shimmer_1.6s_infinite] bg-gradient-to-r from-transparent via-white/[0.04] to-transparent" />
-      <div className="space-y-5">
-        <div className="flex items-center justify-between">
-          <div className="h-3 w-40 rounded-full bg-white/10" />
-          <div className="h-6 w-16 rounded-full bg-white/10" />
+    <div style={{
+      background: "#080c14",
+      border: "1px solid rgba(255,255,255,0.08)",
+      borderRadius: "16px",
+      padding: "32px",
+      overflow: "hidden",
+      position: "relative",
+    }}>
+      <style>{`@keyframes lp-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }`}</style>
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.03), transparent)",
+        animation: "lp-shimmer 1.8s ease-in-out infinite",
+      }} />
+      <div style={{ display: "flex", gap: "32px", alignItems: "center", marginBottom: "32px" }}>
+        <div style={{ width: 128, height: 128, borderRadius: "50%", background: "rgba(255,255,255,0.06)" }} />
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div style={{ height: 12, width: "60%", borderRadius: 6, background: "rgba(255,255,255,0.08)" }} />
+          <div style={{ height: 8,  width: "40%", borderRadius: 4, background: "rgba(255,255,255,0.05)" }} />
+          <div style={{ height: 32, width: 100, borderRadius: 8, background: "rgba(255,255,255,0.06)", marginTop: 8 }} />
         </div>
-        <div className="h-2 w-full rounded-full bg-white/10" />
-        <div className="space-y-2 rounded-xl border border-white/[0.06] bg-white/[0.025] p-4">
-          <div className="h-2.5 w-24 rounded-full bg-white/10" />
-          <div className="h-3.5 w-full rounded-full bg-white/10" />
-          <div className="h-3.5 w-4/5 rounded-full bg-white/10" />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="space-y-2">
-              <div className="h-2 w-14 rounded-full bg-white/10" />
-              <div className="h-3 w-full rounded-full bg-white/10" />
-            </div>
-          ))}
-        </div>
-        <div className="h-3 w-36 rounded-full bg-white/[0.06]" />
       </div>
-      <style>{`@keyframes shimmer { to { transform: translateX(200%); } }`}</style>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 24 }}>
+        {[0, 1].map(i => (
+          <div key={i} style={{ height: 80, borderRadius: 12, background: "rgba(255,255,255,0.04)" }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {[0, 1, 2].map(i => (
+          <div key={i} style={{ height: 44, borderRadius: 10, background: "rgba(255,255,255,0.03)" }} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -189,158 +243,218 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
 
   if (error) {
     return (
-      <div className="rounded-2xl border border-red-500/25 bg-[#0a0a0f]/60 p-5 backdrop-blur-xl shadow-[0_0_28px_rgba(248,113,113,0.18)] md:p-6">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="h-1.5 w-1.5 rounded-full bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.9)]" />
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-red-400">
+      <div style={{
+        background: "rgba(244,63,94,0.06)",
+        border: "1px solid rgba(244,63,94,0.20)",
+        borderRadius: "16px",
+        padding: "24px",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: "#f43f5e",
+            boxShadow: "0 0 8px rgba(244,63,94,0.9)",
+            flexShrink: 0,
+          }} />
+          <p style={{
+            fontSize: "10px", fontWeight: 700, letterSpacing: "0.18em",
+            color: "#f43f5e", fontFamily: "var(--font-plex-mono)",
+            textTransform: "uppercase", margin: 0,
+          }}>
             Scan Error
           </p>
         </div>
-        <p className="text-[12px] text-red-300/80 leading-relaxed">{error}</p>
+        <p style={{ fontSize: "13px", color: "rgba(244,63,94,0.8)", fontFamily: "var(--font-plex-mono)", margin: 0 }}>
+          {error}
+        </p>
       </div>
     );
   }
 
   if (!result) return null;
 
-  const t = TIER[result.lp_risk_tier] ?? TIER.high;
-  const pct = Math.max(0, Math.min(100, result.lp_stability_score));
+  const tc = TIER_COLOR[result.lp_risk_tier] ?? TIER_COLOR.high;
+  const tierLabel = TIER_LABEL[result.lp_risk_tier];
 
   return (
-    <div
-      className={`relative rounded-2xl border ${t.border} bg-[#0a0a0f]/60 backdrop-blur-xl ${t.glow}
-                  shadow-[0_0_25px_rgba(0,200,255,0.10)] overflow-hidden`}
-    >
-      {/* Gradient top accent */}
-      <div
-        className="absolute inset-x-0 top-0 h-px"
-        style={{
-          background:
-            "linear-gradient(90deg, transparent 0%, rgba(0,200,255,0.4) 40%, rgba(99,102,241,0.4) 70%, transparent 100%)",
-        }}
-      />
+    <div style={{
+      background: "#080c14",
+      border: "1px solid rgba(255,255,255,0.08)",
+      borderRadius: "16px",
+      overflow: "hidden",
+      boxShadow: `0 0 40px ${tc.glow}`,
+      position: "relative",
+    }}>
+      {/* Top accent line */}
+      <div style={{
+        position: "absolute", top: 0, left: 0, right: 0, height: "1px",
+        background: `linear-gradient(90deg, transparent 0%, ${tc.ring}66 40%, ${tc.ring}44 70%, transparent 100%)`,
+      }} />
 
-      <div className="p-5 md:p-6 space-y-5">
+      <div style={{ padding: "32px", display: "flex", flexDirection: "column", gap: "28px" }}>
 
-        {/* ── Header ────────────────────────────────────────────────── */}
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${t.dot} animate-pulse`}
-                style={{ boxShadow: `0 0 8px ${t.barColor}cc` }}
-              />
-              <p className="text-[10px] font-bold uppercase tracking-[0.20em] text-neutral-400">
-                LP Safety Analysis
-              </p>
+        {/* ── Score + identity ────────────────────────────────────── */}
+        <div style={{ display: "flex", gap: "32px", alignItems: "center" }}>
+          <ScoreRing score={result.lp_stability_score} tier={result.lp_risk_tier} />
+
+          <div style={{ flex: 1 }}>
+            <p style={{
+              fontSize: "10px", fontWeight: 700, letterSpacing: "0.18em",
+              color: "#2DD4BF", fontFamily: "var(--font-plex-mono)",
+              textTransform: "uppercase", marginBottom: "6px",
+            }}>
+              LP SAFETY ANALYSIS
+            </p>
+            <p style={{
+              fontSize: "11px", color: "#4a6272",
+              fontFamily: "var(--font-plex-mono)",
+              marginBottom: "16px",
+            }}>
+              On-chain liquidity risk assessment · not financial advice
+            </p>
+
+            {/* Tier badge */}
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "7px" }}>
+              <span style={{
+                display: "inline-block",
+                padding: "5px 14px",
+                borderRadius: "99px",
+                background: tc.badge,
+                border: `1px solid ${tc.ring}40`,
+                fontSize: "10px", fontWeight: 700, letterSpacing: "0.14em",
+                color: tc.label,
+                fontFamily: "var(--font-plex-mono)",
+                textTransform: "uppercase",
+              }}>
+                {tierLabel}
+              </span>
             </div>
-            <p className="text-[11px] text-neutral-600">
-              On-chain liquidity risk assessment — not financial advice.
-            </p>
           </div>
-
-          {/* Score + tier */}
-          <div className="shrink-0 text-right">
-            <p
-              className={`text-3xl font-black leading-none ${t.scoreColor}`}
-              style={{ textShadow: `0 0 20px ${t.barColor}66` }}
-            >
-              {result.lp_stability_score}
-            </p>
-            <p className="mt-0.5 text-[9px] text-neutral-600 uppercase tracking-widest">/ 100</p>
-            <span
-              className={`mt-2 inline-block rounded-full border px-2.5 py-0.5
-                          text-[9px] font-bold uppercase tracking-wider ${t.badgeBg} ${t.badgeText}`}
-            >
-              {result.lp_risk_tier} risk
-            </span>
-          </div>
-        </div>
-
-        {/* ── Score bar ──────────────────────────────────────────────── */}
-        <div>
-          <div className="flex justify-between text-[9px] text-neutral-600 mb-1.5">
-            <span>SAFE</span>
-            <span>{pct}% RISK</span>
-            <span>EXTREME</span>
-          </div>
-          <ScoreBar score={result.lp_stability_score} color={t.barColor} />
         </div>
 
         <Divider />
 
-        {/* ── LP metrics grid ────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
-            <Label>Total Liquidity</Label>
-            <p className="text-[20px] font-bold text-[#2DD4BF]" style={{ fontFamily: "var(--font-plex-mono)" }}>
-              {fmtLarge(result.lp_total_liquidity_usd)}
-            </p>
-          </div>
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
-            <Label>Pool Count</Label>
-            <p className="text-[20px] font-bold text-neutral-200" style={{ fontFamily: "var(--font-plex-mono)" }}>
-              {result.lp_fragments}
-            </p>
-          </div>
+        {/* ── Stats ───────────────────────────────────────────────── */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+          <StatCard label="Total Liquidity" value={fmtLarge(result.lp_total_liquidity_usd)} accent="#2DD4BF" />
+          <StatCard label="Pool Count"       value={String(result.lp_fragments)} />
         </div>
 
-        {/* ── Positives / Negatives ──────────────────────────────────── */}
-        {(result.positives.length > 0 || result.negatives.length > 0) && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {result.positives.length > 0 && (
-              <div>
-                <Label>Positives</Label>
-                <ul className="space-y-2">
-                  {result.positives.map((p, i) => (
-                    <BulletItem key={i} text={p} positive={true} />
-                  ))}
-                </ul>
-              </div>
-            )}
-            {result.negatives.length > 0 && (
-              <div>
-                <Label>Negatives</Label>
-                <ul className="space-y-2">
-                  {result.negatives.map((n, i) => (
-                    <BulletItem key={i} text={n} positive={false} />
-                  ))}
-                </ul>
-              </div>
-            )}
+        <Divider />
+
+        {/* ── Positives ───────────────────────────────────────────── */}
+        {result.positives.length > 0 && (
+          <div>
+            <SectionLabel>Positives</SectionLabel>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {result.positives.map((text, i) => (
+                <div key={i} style={{
+                  display: "flex", alignItems: "flex-start", gap: "10px",
+                  background: "rgba(45,212,191,0.04)",
+                  border: "1px solid rgba(45,212,191,0.12)",
+                  borderRadius: "10px",
+                  padding: "12px 14px",
+                }}>
+                  <IconCheck />
+                  <p style={{
+                    fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+                    fontFamily: "var(--font-plex-mono)", margin: 0,
+                  }}>
+                    {text}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Negatives ───────────────────────────────────────────── */}
+        {result.negatives.length > 0 && (
+          <div>
+            <SectionLabel>Negatives</SectionLabel>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {result.negatives.map((text, i) => (
+                <div key={i} style={{
+                  display: "flex", alignItems: "flex-start", gap: "10px",
+                  background: "rgba(244,63,94,0.04)",
+                  border: "1px solid rgba(244,63,94,0.14)",
+                  borderRadius: "10px",
+                  padding: "12px 14px",
+                }}>
+                  <IconWarn />
+                  <p style={{
+                    fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+                    fontFamily: "var(--font-plex-mono)", margin: 0,
+                  }}>
+                    {text}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
         <Divider />
 
-        {/* ── Pool breakdown ─────────────────────────────────────────── */}
+        {/* ── Pool breakdown table ─────────────────────────────────── */}
         {result.pool_breakdown.length > 0 && (
           <div>
-            <Label>Pool Breakdown · {result.pool_breakdown.length}</Label>
-            <div className="flex flex-col gap-1.5">
+            <SectionLabel>Pool Breakdown · {result.pool_breakdown.length}</SectionLabel>
+
+            {/* Table header */}
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 120px 120px 80px",
+              padding: "0 14px 8px",
+              borderBottom: "1px solid rgba(255,255,255,0.06)",
+              marginBottom: "4px",
+            }}>
+              {["Pool", "Liquidity", "Vol 24h", "24h"].map(h => (
+                <span key={h} style={{
+                  fontSize: "9px", fontWeight: 700, letterSpacing: "0.16em",
+                  color: "#3a5268", textTransform: "uppercase",
+                  fontFamily: "var(--font-plex-mono)",
+                  textAlign: h === "24h" ? "right" : "left",
+                }}>
+                  {h}
+                </span>
+              ))}
+            </div>
+
+            {/* Table rows */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
               {result.pool_breakdown.slice(0, 8).map((pool, i) => (
                 <div
                   key={i}
-                  className="grid items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.025] px-4 py-2.5"
                   style={{
-                    gridTemplateColumns: "1fr repeat(3, auto)",
-                    fontSize: "12px",
+                    display: "grid",
+                    gridTemplateColumns: "1fr 120px 120px 80px",
+                    alignItems: "center",
+                    padding: "10px 14px",
+                    borderRadius: "8px",
+                    background: i % 2 === 0 ? "rgba(255,255,255,0.02)" : "transparent",
                     fontFamily: "var(--font-plex-mono)",
+                    fontSize: "12px",
+                    transition: "background 0.12s",
                   }}
                 >
-                  <span className="overflow-hidden text-ellipsis whitespace-nowrap text-neutral-400">
+                  <span style={{
+                    color: "#64748b",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    paddingRight: "12px",
+                  }}>
                     {pool.name ?? shorten(pool.address)}
                   </span>
-                  <span className="whitespace-nowrap text-[#2DD4BF]">
+                  <span style={{ color: "#2DD4BF", whiteSpace: "nowrap" }}>
                     {fmtLarge(pool.liquidity)}
                   </span>
-                  <span className="whitespace-nowrap text-neutral-600">
-                    Vol {fmtLarge(pool.volume24h)}
+                  <span style={{ color: "#4a6272", whiteSpace: "nowrap" }}>
+                    {fmtLarge(pool.volume24h)}
                   </span>
-                  <span
-                    className="whitespace-nowrap"
-                    style={{ color: pctColor(pool.priceChange24h) }}
-                  >
+                  <span style={{
+                    color: pctColor(pool.priceChange24h),
+                    whiteSpace: "nowrap", textAlign: "right",
+                  }}>
                     {fmtPct(pool.priceChange24h)}
                   </span>
                 </div>
@@ -349,8 +463,12 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
           </div>
         )}
 
-        {/* ── Disclaimer ─────────────────────────────────────────────── */}
-        <p className="text-[9px] uppercase tracking-[0.14em] text-neutral-700 text-center">
+        {/* ── Disclaimer ───────────────────────────────────────────── */}
+        <p style={{
+          fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
+          color: "#1e2e38", textAlign: "center", fontFamily: "var(--font-plex-mono)",
+          margin: 0,
+        }}>
           LP risk analysis only · Not financial advice · ChainLens AI
         </p>
 
