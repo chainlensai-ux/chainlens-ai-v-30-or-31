@@ -1,0 +1,319 @@
+'use client'
+
+import { useState } from 'react'
+import Sidebar from '@/components/Sidebar'
+
+// ─── Types ────────────────────────────────────────────────────────────────
+
+type Pool = {
+  name?: string
+  address?: string
+  price?: number | null
+  liquidity?: number | null
+  volume24h?: number | null
+  priceChange24h?: number | null
+}
+
+type ScanResult = {
+  name?: string
+  symbol?: string
+  contract?: string
+  price?: number | null
+  liquidity?: number | null
+  volume24h?: number | null
+  priceChange24h?: number | null
+  pools?: Pool[]
+}
+
+// ─── Formatters ───────────────────────────────────────────────────────────
+
+function fmtPrice(v: number | null | undefined): string {
+  if (v == null) return 'N/A'
+  if (v < 0.000001) return `$${v.toExponential(2)}`
+  if (v < 0.001)    return `$${v.toFixed(8)}`
+  if (v < 1)        return `$${v.toFixed(6)}`
+  return `$${v.toFixed(4)}`
+}
+
+function fmtLarge(v: number | null | undefined): string {
+  if (v == null) return 'N/A'
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`
+  if (v >= 1_000_000)     return `$${(v / 1_000_000).toFixed(2)}M`
+  if (v >= 1_000)         return `$${(v / 1_000).toFixed(2)}K`
+  return `$${v.toFixed(2)}`
+}
+
+function fmtPct(v: number | null | undefined): string {
+  if (v == null) return 'N/A'
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+}
+
+function pctColor(v: number | null | undefined): string {
+  if (v == null) return '#94a3b8'
+  return v >= 0 ? '#2DD4BF' : '#f87171'
+}
+
+function shorten(addr: string): string {
+  if (addr.length <= 12) return addr
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+// ─── StatCard ─────────────────────────────────────────────────────────────
+
+function StatCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.03)',
+      border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: '12px',
+      padding: '16px 20px',
+    }}>
+      <p style={{
+        fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+        color: '#3a5268', textTransform: 'uppercase',
+        marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
+      }}>
+        {label}
+      </p>
+      <p style={{
+        fontSize: '20px', fontWeight: 700,
+        color: accent ?? '#e2e8f0',
+        fontFamily: 'var(--font-plex-mono)',
+        margin: 0,
+      }}>
+        {value}
+      </p>
+    </div>
+  )
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────
+
+export default function TerminalTokenScanner() {
+  const [input, setInput]   = useState('')
+  const [loading, setLoading] = useState(false)
+  const [result, setResult]  = useState<ScanResult | null>(null)
+  const [error, setError]    = useState<string | null>(null)
+
+  async function handleScan() {
+    const q = input.trim()
+    if (!q || loading) return
+    setLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const isContract = /^0x[a-fA-F0-9]{40}$/.test(q)
+      const param = isContract
+        ? `contract=${encodeURIComponent(q)}`
+        : `query=${encodeURIComponent(q)}`
+      const res  = await fetch(`/api/scan-token?${param}`, { cache: 'no-store' })
+      const json = await res.json()
+      if (!res.ok || !json.ok) {
+        setError(json.error ?? 'Token not found on Base.')
+      } else {
+        setResult(json.data)
+      }
+    } catch {
+      setError('Network error — check your connection.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex min-h-screen" style={{ background: '#06060a', color: '#e2e8f0' }}>
+      <Sidebar active="token-scanner" />
+
+      <main className="flex-1 overflow-y-auto" style={{ padding: '40px 48px' }}>
+
+        {/* ── Header ─────────────────────────────────────────────────── */}
+        <div style={{ marginBottom: '32px' }}>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: '8px',
+            background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.25)',
+            borderRadius: '99px', padding: '4px 12px', marginBottom: '16px',
+            fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+            color: '#a78bfa', fontFamily: 'var(--font-plex-mono)',
+          }}>
+            <span style={{
+              width: '6px', height: '6px', borderRadius: '50%',
+              background: '#8b5cf6', boxShadow: '0 0 8px rgba(139,92,246,0.80)',
+              flexShrink: 0,
+            }} />
+            TOKEN SCANNER
+          </div>
+
+          <h1 style={{ fontSize: '26px', fontWeight: 700, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>
+            Token Scanner{' '}
+            <span style={{ color: '#2DD4BF' }}>Elite</span>
+          </h1>
+          <p style={{ marginTop: '8px', fontSize: '13px', color: '#3a5268', margin: '8px 0 0' }}>
+            Paste a contract address or token name — live GeckoTerminal data on Base.
+          </p>
+        </div>
+
+        {/* ── Input row ──────────────────────────────────────────────── */}
+        <div style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '28px' }}>
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
+            disabled={loading}
+            placeholder="0x… or token name (brett, doginme, toshi…)"
+            style={{
+              flex: 1, padding: '12px 16px',
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              borderRadius: '10px',
+              color: '#e2e8f0', fontSize: '14px',
+              fontFamily: 'var(--font-plex-mono)',
+              outline: 'none',
+              opacity: loading ? 0.6 : 1,
+              transition: 'border-color 0.15s',
+            }}
+            onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.45)' }}
+            onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)' }}
+          />
+          <button
+            onClick={handleScan}
+            disabled={loading || !input.trim()}
+            style={{
+              padding: '12px 28px', borderRadius: '10px', border: 'none',
+              background: loading || !input.trim()
+                ? 'rgba(45,212,191,0.12)'
+                : 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+              color: loading || !input.trim() ? 'rgba(255,255,255,0.25)' : '#06060a',
+              fontSize: '12px', fontWeight: 700,
+              fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em',
+              cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+              flexShrink: 0, transition: 'all 0.15s',
+            }}
+          >
+            {loading ? 'SCANNING…' : 'SCAN'}
+          </button>
+        </div>
+
+        {/* ── Error ──────────────────────────────────────────────────── */}
+        {error && (
+          <div style={{
+            maxWidth: '680px', padding: '13px 18px',
+            background: 'rgba(248,113,113,0.07)',
+            border: '1px solid rgba(248,113,113,0.22)',
+            borderRadius: '10px', color: '#fca5a5',
+            fontSize: '13px', fontFamily: 'var(--font-plex-mono)',
+            marginBottom: '24px',
+          }}>
+            {error}
+          </div>
+        )}
+
+        {/* ── Empty state ─────────────────────────────────────────────── */}
+        {!loading && !result && !error && (
+          <div style={{ maxWidth: '680px', padding: '48px 0', textAlign: 'center' }}>
+            <p style={{
+              fontFamily: 'var(--font-plex-mono)', fontSize: '12px',
+              letterSpacing: '0.08em', color: '#1e2e38',
+            }}>
+              no token scanned yet
+            </p>
+          </div>
+        )}
+
+        {/* ── Results ─────────────────────────────────────────────────── */}
+        {result && (
+          <div style={{ maxWidth: '820px' }}>
+
+            {/* Token identity */}
+            <div style={{ marginBottom: '24px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#f8fafc', margin: '0 0 4px' }}>
+                {result.name ?? 'Unknown'}
+                {result.symbol && (
+                  <span style={{
+                    marginLeft: '10px', fontSize: '14px',
+                    color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
+                  }}>
+                    {result.symbol}
+                  </span>
+                )}
+              </h2>
+              {result.contract && (
+                <p style={{
+                  fontSize: '11px', color: '#3a5268',
+                  fontFamily: 'var(--font-plex-mono)', margin: 0,
+                }}>
+                  {result.contract}
+                </p>
+              )}
+            </div>
+
+            {/* Stat cards */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+              gap: '10px', marginBottom: '28px',
+            }}>
+              <StatCard label="Price"     value={fmtPrice(result.price)}          accent="#2DD4BF" />
+              <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} />
+              <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} />
+              <StatCard
+                label="24h Change"
+                value={fmtPct(result.priceChange24h)}
+                accent={pctColor(result.priceChange24h)}
+              />
+            </div>
+
+            {/* Pools */}
+            {result.pools && result.pools.length > 0 && (
+              <>
+                <p style={{
+                  fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                  color: '#3a5268', textTransform: 'uppercase',
+                  marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
+                }}>
+                  Pools · {result.pools.length}
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {result.pools.map((pool, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr repeat(4, auto)',
+                        alignItems: 'center', gap: '20px',
+                        padding: '12px 18px',
+                        background: 'rgba(255,255,255,0.025)',
+                        border: '1px solid rgba(255,255,255,0.06)',
+                        borderRadius: '10px',
+                        fontSize: '12px', fontFamily: 'var(--font-plex-mono)',
+                      }}
+                    >
+                      <span style={{
+                        color: '#94a3b8', overflow: 'hidden',
+                        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        {pool.name ?? shorten(pool.address ?? '')}
+                      </span>
+                      <span style={{ color: '#2DD4BF', whiteSpace: 'nowrap' }}>
+                        {fmtPrice(pool.price)}
+                      </span>
+                      <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
+                        Liq {fmtLarge(pool.liquidity)}
+                      </span>
+                      <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
+                        Vol {fmtLarge(pool.volume24h)}
+                      </span>
+                      <span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>
+                        {fmtPct(pool.priceChange24h)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+      </main>
+    </div>
+  )
+}
