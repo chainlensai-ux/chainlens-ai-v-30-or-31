@@ -177,7 +177,6 @@ export default function LiquiditySafetyPage() {
           {/* Result card */}
           {result && (
             <div style={{ maxWidth: '760px' }}>
-              {/* Token identity */}
               <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '20px' }}>
                 <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#f8fafc', margin: 0 }}>
                   {result.name}
@@ -200,9 +199,9 @@ export default function LiquiditySafetyPage() {
 
         </div>
 
-        {/* ── Right: Extended LP Safety panel (320px) ───────────────── */}
+        {/* ── Right: Extended LP Safety panel (420px) ───────────────── */}
         <aside style={{
-          width: '320px',
+          width: '420px',
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           background: '#080c14',
