@@ -68,8 +68,8 @@ export default function HomeTokenScreener() {
           setTrending(sorted)
           setLastUpdate(Date.now())
         }
-      } catch (e) {
-        console.error('REST fetch error:', e)
+      } catch (err) {
+        console.error('REST fetch error:', err)
       }
     }
 
