@@ -4,6 +4,7 @@ import { useState } from 'react'
 import LiquiditySafetyVerdictCard, {
   type LiquiditySafetyResult,
 } from '@/components/LiquiditySafetyVerdictCard'
+import LPSafetyExtendedBox from '@/components/LPSafetyExtendedBox'
 
 export default function LiquiditySafetyPage() {
   const [input, setInput]     = useState('')
@@ -249,6 +250,10 @@ export default function LiquiditySafetyPage() {
               loading={false}
               error={null}
             />
+
+            <div style={{ marginTop: '20px' }}>
+              <LPSafetyExtendedBox data={result} />
+            </div>
           </div>
         )}
 
