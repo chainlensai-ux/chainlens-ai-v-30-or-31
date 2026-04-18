@@ -26,7 +26,7 @@ function parseMessage(raw: string): Record<string, string> {
     return { feature: 'token-scanner', tokenAddress: address }
   if (t.startsWith('scan wallet') && address)
     return { feature: 'wallet-scanner', walletAddress: address }
-  if (t.startsWith('base radar'))
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes('what\'s hot') || t.includes('pumping'))
     return { feature: 'base-radar' }
   if (t.startsWith('liquidity') && address)
     return { feature: 'liquidity-safety', tokenAddress: address }

@@ -242,7 +242,7 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "You are Clark — an onchain AI analyst for ChainLens AI.\n\n" +
 
         "DATA SOURCES (these are your ONLY sources — no exceptions):\n" +
-        "- <trending_tokens>: powered by /api/trending, which merges CoinGecko + GeckoTerminal. Fields: address, symbol, name, price, liquidity, volume24h, change24h, source.\n" +
+        "- <trending_tokens>: powered by /api/trending, which merges CoinGecko + GeckoTerminal. Fields: address, symbol, name, chain, price, liquidity, volume24h, change24h, source.\n" +
         "- <gt_pools>: GeckoTerminal pools via /api/proxy/gt. Authoritative source for liquidity, volume, and pool-level data.\n" +
         "- <token_scan>: token metadata, holders, contract functions, risks, whales, deployer info — from GoldRush + GeckoTerminal backend.\n" +
         "- <wallet_scan>: wallet holdings, inflows/outflows, risk patterns — from GoldRush + Zerion backend.\n\n" +
@@ -267,16 +267,20 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "- Base-native tone: degen-aware but professional.\n\n" +
 
         "Behavior rules:\n" +
-        "TRENDING: use <trending_tokens>. If token not found, say \"Not in trending data.\"\n" +
+        "TRENDING: use <trending_tokens>. Format as a numbered list. For each token show: name (symbol), price, 24h change, volume, liquidity, chain, and contract address if available. If the array is empty, say \"No trending data available right now.\"\n" +
         "TOKEN: use <token_scan> first, then <trending_tokens>, then say \"No data available.\"\n" +
         "WALLET: use <wallet_scan> only. Identify patterns, risks, top tokens, inflows/outflows.\n" +
         "COMPARISONS: use available data only. If one token lacks data, say so explicitly.\n" +
         "RISK SCORING: use liquidity, volume, age, holders, deployer, contract functions from provided data. Never invent numbers.\n\n" +
 
         "Output formats:\n" +
+        "- Trending query → numbered list, one token per line, plain text.\n" +
         "- JSON requested → return JSON only.\n" +
         "- Summary requested → short, sharp summary.\n" +
         "- Verdict requested → give a verdict.\n\n" +
+
+        "Trending token line format (use exactly this):\n" +
+        "1. TOKEN_NAME (SYMBOL) | Price: $X.XX | 24h: +X.XX% | Vol: $XM | Liq: $XM | Chain: base | 0xADDRESS\n\n" +
 
         "Fallback: if backend provides no data, say \"No data available.\" Offer no speculation.\n\n" +
         "You must ALWAYS follow these rules.",
@@ -619,15 +623,25 @@ async function handleBaseRadar(_body: ClarkRequestBody) {
     callGeckoTerminal("eth"),
   ]);
 
-  return {
-    feature: "base-radar",
-    chain: "base",
-    trending: trending ?? [],
-    gtPools: [
-      ...((gtBase as { data?: unknown[] })?.data ?? []),
-      ...((gtEth as { data?: unknown[] })?.data ?? []),
-    ],
+  const trendingData: unknown[] = Array.isArray(trending) ? trending : [];
+  const gtPools: unknown[] = [
+    ...((gtBase as { data?: unknown[] })?.data ?? []),
+    ...((gtEth as { data?: unknown[] })?.data ?? []),
+  ];
+
+  const context: ClarkContext = {
+    trending: trendingData,
+    gtPools,
+    tokenScan: {},
+    walletScan: {},
   };
+
+  const analysis = await callAnthropic(
+    "What's trending on Base right now? List the top tokens with their symbol, price, 24h change, volume, and liquidity. Be concise.",
+    context
+  );
+
+  return { feature: "base-radar", chain: "base", analysis };
 }
 
 async function handleClarkAI(body: ClarkRequestBody) {
@@ -641,17 +655,17 @@ async function handleClarkAI(body: ClarkRequestBody) {
     callGeckoTerminal(network),
   ]);
 
-  const trending: unknown[] = trendingResult.status === "fulfilled" && Array.isArray(trendingResult.value)
+  let trending: unknown[] = trendingResult.status === "fulfilled" && Array.isArray(trendingResult.value)
     ? trendingResult.value
     : [];
 
-  const gtPools: unknown[] = gtRawResult.status === "fulfilled"
+  let gtPools: unknown[] = gtRawResult.status === "fulfilled"
     ? (Array.isArray((gtRawResult.value as { data?: unknown[] })?.data)
         ? (gtRawResult.value as { data: unknown[] }).data
         : [])
     : [];
 
-  // Route-specific context (tokenScan / walletScan) — non-fatal if unavailable
+  // Route-specific context — non-fatal if unavailable; enriches all four context fields
   let tokenScan: unknown = {};
   let walletScan: unknown = {};
 
@@ -659,6 +673,10 @@ async function handleClarkAI(body: ClarkRequestBody) {
     const routeCtx = await routeCommand(prompt, chain);
     if (routeCtx?.tokenScan  != null) tokenScan  = routeCtx.tokenScan;
     if (routeCtx?.walletScan != null) walletScan = routeCtx.walletScan;
+    if (Array.isArray(routeCtx?.trending)  && (routeCtx.trending  as unknown[]).length > 0)
+      trending = routeCtx.trending  as unknown[];
+    if (Array.isArray(routeCtx?.gtPools)   && (routeCtx.gtPools   as unknown[]).length > 0)
+      gtPools  = routeCtx.gtPools   as unknown[];
   } catch (err) {
     console.error("[Clark router]", err instanceof Error ? err.message : err);
   }

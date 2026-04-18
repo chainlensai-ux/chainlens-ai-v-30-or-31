@@ -6,6 +6,7 @@ interface MergedToken {
   address: string;
   symbol: string;
   name: string;
+  chain: string;
   price: number | null;
   liquidity: number | null;
   volume24h: number | null;
@@ -50,6 +51,7 @@ function normalizeGT(pool: any, included: any[]): MergedToken | null {
       address: meta.address,
       symbol: meta.symbol,
       name: meta.name,
+      chain: "base",
       price: Number(pool.attributes?.base_token_price_usd) || null,
       liquidity: Number(pool.attributes?.reserve_in_usd) || null,
       volume24h: Number(pool.attributes?.volume_usd?.h24) || null,
@@ -80,16 +82,25 @@ async function fetchCoinGecko(): Promise<MergedToken[]> {
     const res = await fetch("https://api.coingecko.com/api/v3/search/trending", { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
-    return (Array.isArray(data?.coins) ? data.coins : []).map((c: any) => ({
-      address: c?.item?.id ?? "",
-      symbol: c?.item?.symbol ?? "",
-      name: c?.item?.name ?? "",
-      price: c?.item?.data?.price ?? null,
-      liquidity: null,
-      volume24h: c?.item?.data?.total_volume ?? null,
-      change24h: c?.item?.data?.price_change_24h ?? null,
-      source: "coingecko",
-    }));
+    return (Array.isArray(data?.coins) ? data.coins : []).map((c: any) => {
+      const rawPrice = c?.item?.data?.price;
+      const price = typeof rawPrice === "number"
+        ? rawPrice
+        : typeof rawPrice === "string"
+          ? parseFloat(rawPrice.replace(/[^0-9.]/g, "")) || null
+          : null;
+      return {
+        address: c?.item?.id ?? "",
+        symbol: c?.item?.symbol ?? "",
+        name: c?.item?.name ?? "",
+        chain: "coingecko",
+        price,
+        liquidity: null,
+        volume24h: c?.item?.data?.total_volume ?? null,
+        change24h: c?.item?.data?.price_change_percentage_24h?.usd ?? null,
+        source: "coingecko",
+      };
+    });
   } catch {
     return [];
   }
