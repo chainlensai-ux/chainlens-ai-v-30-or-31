@@ -57,11 +57,63 @@ export default function HomePage() {
           100% { transform: translateX(-50%); }
         }
         ::placeholder { color: rgba(255,255,255,0.3); }
+
+        @keyframes orb-teal {
+          0%,100% { transform: translate(0, 0) scale(1); opacity: 0.55; }
+          33%      { transform: translate(60px, -40px) scale(1.12); opacity: 0.70; }
+          66%      { transform: translate(-40px, 30px) scale(0.90); opacity: 0.45; }
+        }
+        @keyframes orb-purple {
+          0%,100% { transform: translate(0, 0) scale(1); opacity: 0.45; }
+          33%      { transform: translate(-50px, 50px) scale(1.08); opacity: 0.60; }
+          66%      { transform: translate(70px, -30px) scale(0.92); opacity: 0.38; }
+        }
+        @keyframes input-glow {
+          0%,100% { box-shadow: 0 0 0 0 rgba(45,212,191,0), inset 0 0 0 1px rgba(139,92,246,0.28); }
+          50%      { box-shadow: 0 0 18px 4px rgba(45,212,191,0.18), inset 0 0 0 1px rgba(45,212,191,0.45); }
+        }
+        .clark-input-box {
+          animation: input-glow 3s ease-in-out infinite;
+        }
       `}</style>
 
       <Navbar />
 
       <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
+
+        {/* Animated orb — teal */}
+        <div style={{
+          position: 'absolute', pointerEvents: 'none', zIndex: 0,
+          width: '600px', height: '600px',
+          borderRadius: '50%',
+          top: '-120px', left: '10%',
+          background: 'radial-gradient(circle, rgba(45,212,191,0.18) 0%, transparent 70%)',
+          filter: 'blur(60px)',
+          animation: 'orb-teal 14s ease-in-out infinite',
+        }} />
+
+        {/* Animated orb — purple */}
+        <div style={{
+          position: 'absolute', pointerEvents: 'none', zIndex: 0,
+          width: '700px', height: '700px',
+          borderRadius: '50%',
+          top: '-80px', right: '5%',
+          background: 'radial-gradient(circle, rgba(139,92,246,0.16) 0%, transparent 70%)',
+          filter: 'blur(80px)',
+          animation: 'orb-purple 18s ease-in-out infinite',
+        }} />
+
+        {/* Subtle grid overlay */}
+        <div style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
+          backgroundImage: `
+            linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px)
+          `,
+          backgroundSize: '60px 60px',
+          maskImage: 'radial-gradient(ellipse 80% 60% at 50% 30%, black 20%, transparent 80%)',
+          WebkitMaskImage: 'radial-gradient(ellipse 80% 60% at 50% 30%, black 20%, transparent 80%)',
+        }} />
 
         {/* Scattered-star background */}
         <div style={{
@@ -173,7 +225,7 @@ export default function HomePage() {
           </p>
 
           {/* Prompt box */}
-          <div style={{
+          <div className="clark-input-box" style={{
             width: '100%',
             maxWidth: '520px',
             background: 'rgba(255,255,255,0.03)',
