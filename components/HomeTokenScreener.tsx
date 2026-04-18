@@ -57,7 +57,7 @@ export default function HomeTokenScreener() {
   useEffect(() => {
     async function fetchTrending() {
       try {
-        const res = await fetch('https://api.dexscreener.com/latest/dex/pairs/base')
+        const res = await fetch('https://flat-recipe-8b72.chainlensai.workers.dev')
         const json = await res.json()
 
         if (Array.isArray(json.pairs)) {
