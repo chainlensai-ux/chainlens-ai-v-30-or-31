@@ -15,15 +15,49 @@ const TERMINAL_TOOLS = [
   { icon: '📡', name: 'Base Radar',      href: '/terminal?tab=radar',     tier: 'pro'   },
 ]
 
-const TIER_BADGE: Record<string, { label: string; color: string; bg: string }[]> = {
-  free:  [{ label: 'FREE',  color: '#ec4899', bg: 'rgba(236,72,153,0.12)' }],
-  pro:   [{ label: 'PRO',   color: '#2DD4BF', bg: 'rgba(45,212,191,0.12)' }],
-  elite: [
-    { label: 'FREE',  color: '#ec4899', bg: 'rgba(236,72,153,0.10)' },
-    { label: 'PRO',   color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)' },
-    { label: 'ELITE', color: '#fbbf24', bg: 'rgba(251,191,36,0.12)'  },
-  ],
-}
+const TIER_COLUMNS = [
+  {
+    tier: 'FREE',
+    color: '#ec4899',
+    bg: 'rgba(236,72,153,0.10)',
+    border: 'rgba(236,72,153,0.20)',
+    tools: [
+      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Basic' },
+      { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity',      note: 'Basic score' },
+      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '3 prompts/day' },
+    ],
+  },
+  {
+    tier: 'PRO',
+    color: '#2DD4BF',
+    bg: 'rgba(45,212,191,0.08)',
+    border: 'rgba(45,212,191,0.20)',
+    tools: [
+      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Full' },
+      { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity',      note: 'Full analysis' },
+      { icon: '👛', name: 'Wallet Scanner',   href: '/terminal?tab=wallet',     note: '' },
+      { icon: '🧬', name: 'Dev Wallets',      href: '/terminal?tab=devs',       note: '' },
+      { icon: '🐋', name: 'Whale Alerts',     href: '/terminal?tab=whales',     note: '' },
+      { icon: '🚨', name: 'Pump Alerts',      href: '/terminal?tab=pumps',      note: '' },
+      { icon: '📡', name: 'Base Radar',       href: '/terminal?tab=radar',      note: '' },
+      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '50 prompts/day' },
+    ],
+  },
+  {
+    tier: 'ELITE',
+    color: '#fbbf24',
+    bg: 'rgba(251,191,36,0.08)',
+    border: 'rgba(251,191,36,0.22)',
+    tools: [
+      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: 'Unlimited' },
+      { icon: '⚡', name: 'Auto Verdicts',     href: '/terminal?tab=clark',      note: 'Every scan' },
+      { icon: '🧠', name: 'Smart Money',       href: '/terminal?tab=wallet',     note: 'Tracking' },
+      { icon: '🐋', name: 'Whale Alerts',      href: '/terminal?tab=whales',     note: 'Advanced' },
+      { icon: '🔮', name: 'Priority CORTEX',   href: '/terminal?tab=clark',      note: 'Full engine' },
+      { icon: '🚀', name: 'Early Access',      href: '/app',                     note: 'New features' },
+    ],
+  },
+]
 
 export default function Navbar() {
   const [open, setOpen] = useState(false)
@@ -235,50 +269,80 @@ export default function Navbar() {
                     top: 'calc(100% + 10px)',
                     left: '50%',
                     transform: 'translateX(-50%)',
-                    background: '#080c14',
+                    background: '#06060e',
                     border: '1px solid rgba(255,255,255,0.08)',
-                    borderRadius: '14px',
-                    padding: '10px',
-                    width: '260px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '2px',
-                    boxShadow: '0 16px 48px rgba(0,0,0,0.80), 0 0 0 0.5px rgba(45,212,191,0.08)',
+                    borderRadius: '16px',
+                    padding: '14px',
+                    width: '580px',
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr 1fr',
+                    gap: '10px',
+                    boxShadow: '0 20px 60px rgba(0,0,0,0.85), 0 0 0 0.5px rgba(45,212,191,0.06)',
                     zIndex: 200,
                   }}
                   onMouseDown={e => e.preventDefault()}
                 >
                   {/* Gradient accent top */}
                   <div style={{
-                    position: 'absolute', top: 0, left: '15%', right: '15%', height: '1px',
-                    background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.40), transparent)',
+                    position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px',
+                    background: 'linear-gradient(90deg, transparent, rgba(236,72,153,0.35), rgba(45,212,191,0.35), rgba(251,191,36,0.35), transparent)',
                     borderRadius: '1px',
                   }} />
 
-                  {TERMINAL_TOOLS.map((t, i) => (
-                    <Link
-                      key={t.name}
-                      href={t.href}
-                      className="tools-item tools-dropdown-item"
-                      onClick={() => setOpen(false)}
-                      style={{ animationDelay: `${i * 0.04}s` }}
+                  {TIER_COLUMNS.map((col, ci) => (
+                    <div
+                      key={col.tier}
+                      className="tools-dropdown-item"
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: '2px',
+                        animationDelay: `${ci * 0.06}s`,
+                      }}
                     >
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span style={{ fontSize: '14px', lineHeight: 1 }}>{t.icon}</span>
-                        <span>{t.name}</span>
-                      </span>
-                      <span style={{ display: 'flex', gap: '3px', flexShrink: 0 }}>
-                        {TIER_BADGE[t.tier].map(b => (
-                          <span key={b.label} style={{
-                            fontSize: '7px', fontWeight: 700, letterSpacing: '0.12em',
-                            color: b.color, background: b.bg,
-                            border: `1px solid ${b.color}30`,
-                            borderRadius: '4px', padding: '2px 5px',
-                            fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                          }}>{b.label}</span>
-                        ))}
-                      </span>
-                    </Link>
+                      {/* Column header */}
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: '6px',
+                        padding: '6px 8px 8px',
+                        borderBottom: `1px solid ${col.border}`,
+                        marginBottom: '4px',
+                      }}>
+                        <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: col.color, boxShadow: `0 0 6px ${col.color}` }} />
+                        <span style={{
+                          fontSize: '9px', fontWeight: 800, letterSpacing: '0.18em',
+                          color: col.color,
+                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                        }}>{col.tier}</span>
+                      </div>
+
+                      {/* Tools in this tier */}
+                      {col.tools.map((t, ti) => (
+                        <Link
+                          key={`${col.tier}-${t.name}`}
+                          href={t.href}
+                          className="tools-item tools-dropdown-item"
+                          onClick={() => setOpen(false)}
+                          style={{
+                            animationDelay: `${ci * 0.06 + ti * 0.03}s`,
+                            padding: '7px 8px',
+                            flexDirection: 'column',
+                            alignItems: 'flex-start',
+                            gap: '1px',
+                          }}
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                            <span style={{ fontSize: '12px', lineHeight: 1 }}>{t.icon}</span>
+                            <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(255,255,255,0.80)' }}>{t.name}</span>
+                          </span>
+                          {t.note && (
+                            <span style={{
+                              fontSize: '9px', color: col.color, opacity: 0.70,
+                              paddingLeft: '19px',
+                              fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                              letterSpacing: '0.06em',
+                            }}>{t.note}</span>
+                          )}
+                        </Link>
+                      ))}
+                    </div>
                   ))}
                 </div>
               )}
