@@ -314,17 +314,9 @@ export default function LPSafetyExtendedBox({ data }: Props) {
 
   return (
     <div
-      className={`relative rounded-2xl border ${TIER_BORDER[tier]} bg-[#0a0a0f]/60 backdrop-blur-xl
-                  ${TIER_GLOW[tier]} shadow-[0_0_25px_rgba(0,200,255,0.10)] overflow-hidden`}
+      className={`relative border-0 border-b ${TIER_BORDER[tier]} bg-[#0a0a0f]/60 backdrop-blur-xl
+                  overflow-hidden`}
     >
-      {/* Gradient top-edge accent */}
-      <div
-        className="absolute inset-x-0 top-0 h-px"
-        style={{
-          background:
-            "linear-gradient(90deg, transparent 0%, rgba(0,200,255,0.35) 40%, rgba(99,102,241,0.35) 70%, transparent 100%)",
-        }}
-      />
 
       <div style={{ padding: "24px 20px", display: "flex", flexDirection: "column", gap: "22px" }}>
 

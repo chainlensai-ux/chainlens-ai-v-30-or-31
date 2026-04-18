@@ -206,41 +206,25 @@ export default function LiquiditySafetyPage() {
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           background: '#080c14',
           overflowY: 'auto',
-          padding: '28px 16px',
+          padding: '0',
           display: 'flex',
           flexDirection: 'column',
-          gap: '16px',
         }}>
-          {/* Panel label */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%',
-              background: result ? '#2DD4BF' : '#1e3a44',
-              boxShadow: result ? '0 0 8px rgba(45,212,191,0.8)' : 'none',
-              flexShrink: 0, transition: 'all 0.3s',
-            }} />
-            <p style={{
-              fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
-              color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
-              textTransform: 'uppercase', margin: 0,
-            }}>
-              Extended Report
-            </p>
-          </div>
-
           {/* Idle */}
           {!loading && !result && (
-            <p style={{
-              fontSize: '11px', color: '#1e3a44',
-              fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
-            }}>
-              scan a token to see the extended LP safety report
-            </p>
+            <div style={{ padding: '28px 16px' }}>
+              <p style={{
+                fontSize: '11px', color: '#1e3a44',
+                fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
+              }}>
+                scan a token to see the extended LP safety report
+              </p>
+            </div>
           )}
 
           {/* Loading dots */}
           {loading && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 0' }}>
+            <div style={{ padding: '28px 16px', display: 'flex', alignItems: 'center', gap: '5px' }}>
               {[0, 1, 2].map(i => (
                 <span key={i} style={{
                   width: 5, height: 5, borderRadius: '50%', background: '#2DD4BF',
@@ -251,8 +235,12 @@ export default function LiquiditySafetyPage() {
             </div>
           )}
 
-          {/* Extended box */}
-          {result && <LPSafetyExtendedBox data={result} />}
+          {/* Extended box — flush to top, full width, scrollable */}
+          {result && (
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              <LPSafetyExtendedBox data={result} />
+            </div>
+          )}
         </aside>
 
       </div>
