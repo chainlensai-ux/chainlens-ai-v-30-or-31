@@ -290,7 +290,31 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
 
         "Behavior rules:\n" +
         "TRENDING: use <trending_tokens>. Format as a numbered list. For each token show: name (symbol), price, 24h change, volume, liquidity, chain, and contract if available. If the array is empty, say \"No trending data available right now.\"\n" +
-        "SCAN-TOKEN: when <token_data> contains a scan result (fields: name, symbol, contract, price, liquidity, volume24h, priceChange24h, pools), perform CORTEX analysis covering: price, liquidity depth (flag <$100k as HIGH RISK, <$50k as EXTREME RISK), 24h volume, price change, pool count, slippage risk, degen vs stable profile, momentum signal, and a final safety verdict. Never guess — use only what is in <token_data>.\n" +
+        "SCAN-TOKEN: when <token_data> contains a scan result (fields: name, symbol, contract, price, liquidity, volume24h, priceChange24h, pools), respond using ONLY this exact format — no deviations:\n" +
+        "\n" +
+        "Analysis\n" +
+        "⚠️ {sentiment tag} — {1-line reason}\n" +
+        "\n" +
+        "Market Overview:\n" +
+        "Market Cap: {estimate or N/A} | Liquidity: ${liquidity} | Price: ${price}\n" +
+        "\n" +
+        "Key Signals (24h):\n" +
+        "• Volume: ${volume24h} — {1-word interpretation}\n" +
+        "• Price Change: {priceChange24h}% — {1-word interpretation}\n" +
+        "• Liquidity Quality: {1-line summary}\n" +
+        "• Pool Structure: {1-line summary}\n" +
+        "\n" +
+        "Risk Flags:\n" +
+        "• {flag 1 — short, direct}\n" +
+        "• {flag 2 — short, direct, or omit if none}\n" +
+        "\n" +
+        "Verdict:\n" +
+        "{1–2 sentences MAX. Clear, blunt, actionable.}\n" +
+        "\n" +
+        "Follow-up:\n" +
+        "{One short question to the user, e.g. 'Want trending Base tokens with real volume instead?'}\n" +
+        "\n" +
+        "STRICT RULES for SCAN-TOKEN output: max 12 lines total; no paragraphs; no storytelling; no filler; no repeating pool lists; no disclaimers; no explaining reasoning. Flag liquidity <$100k as HIGH RISK, <$50k as EXTREME RISK.\n" +
         "TOKEN: use <token_data> first, then <analysis>, then <trending_tokens>, then say \"No data available.\"\n" +
         "WALLET: use <wallet_scan> only. Identify patterns, risks, top tokens, inflows/outflows.\n" +
         "COMPARISONS: use available data only. If one token lacks data, say so explicitly.\n" +
@@ -663,11 +687,10 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
 
   const context: ClarkContext = { tokenData: scanData };
   const prompt =
-    `Analyze this Base token using the data in <token_data>. Cover: ` +
-    `price, liquidity depth (flag anything under $100k as HIGH RISK), 24h volume, ` +
-    `24h price change, pool count, slippage risk, degen vs stable profile, momentum, ` +
-    `and a clear safety verdict. Be direct and concise.` +
-    (body.prompt ? `\n\nUser asked: ${body.prompt}` : "");
+    `Use the SCAN-TOKEN format from your system prompt. Analyze the token in <token_data>. ` +
+    `Follow the format exactly: sentiment tag, Market Overview, Key Signals (24h), Risk Flags, Verdict, Follow-up. ` +
+    `Max 12 lines. No paragraphs. No filler.` +
+    (body.prompt ? ` User asked: ${body.prompt}` : "");
 
   const analysis = await callAnthropic(prompt, context);
   return { feature: "scan-token", data: scanData, analysis };
