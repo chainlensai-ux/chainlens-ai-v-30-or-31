@@ -648,14 +648,43 @@ async function handleBaseRadar(_body: ClarkRequestBody) {
 
 async function handleClarkAI(body: ClarkRequestBody) {
   const chain = body.chain ?? "base";
+  const network = gtNetwork(chain);
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
 
-  let context: ClarkContext | null = null;
+  // Always fetch baseline sources in parallel — never rely on routeCommand alone
+  const [trendingResult, gtRawResult] = await Promise.allSettled([
+    callTrending(),
+    callGeckoTerminal(network),
+  ]);
+
+  const trending: unknown[] = trendingResult.status === "fulfilled" && Array.isArray(trendingResult.value)
+    ? trendingResult.value
+    : [];
+
+  const gtPools: unknown[] = gtRawResult.status === "fulfilled"
+    ? (Array.isArray((gtRawResult.value as { data?: unknown[] })?.data)
+        ? (gtRawResult.value as { data: unknown[] }).data
+        : [])
+    : [];
+
+  // Route-specific context (tokenScan / walletScan) — non-fatal if unavailable
+  let tokenScan: unknown = {};
+  let walletScan: unknown = {};
+
   try {
-    context = await routeCommand(prompt, chain);
+    const routeCtx = await routeCommand(prompt, chain);
+    if (routeCtx?.tokenScan  != null) tokenScan  = routeCtx.tokenScan;
+    if (routeCtx?.walletScan != null) walletScan = routeCtx.walletScan;
   } catch (err) {
     console.error("[Clark router]", err instanceof Error ? err.message : err);
   }
+
+  const context: ClarkContext = {
+    trending,
+    gtPools,
+    tokenScan:  tokenScan  ?? {},
+    walletScan: walletScan ?? {},
+  };
 
   const analysis = await callAnthropic(prompt, context);
 
