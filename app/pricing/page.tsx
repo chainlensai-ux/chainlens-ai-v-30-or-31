@@ -154,8 +154,43 @@ export default function PricingPage() {
           0%,100% { box-shadow: 0 0 50px rgba(251,191,36,0.18), 0 0 100px rgba(251,191,36,0.08), inset 0 0 0 1px rgba(251,191,36,0.40); }
           50%      { box-shadow: 0 0 80px rgba(251,191,36,0.32), 0 0 140px rgba(251,191,36,0.14), inset 0 0 0 1px rgba(251,191,36,0.70); }
         }
+        @keyframes shine-sweep {
+          0%   { transform: translateX(-100%) skewX(-15deg); }
+          100% { transform: translateX(300%) skewX(-15deg); }
+        }
         .card-pro   { animation: pro-glow   4s ease-in-out infinite; }
         .card-elite { animation: elite-glow 3.5s ease-in-out infinite; }
+
+        /* ── Hover lift for all cards ── */
+        .pricing-card {
+          transition: transform 0.28s cubic-bezier(0.22,1,0.36,1), box-shadow 0.28s ease;
+          overflow: hidden;
+        }
+        .pricing-card::before {
+          content: '';
+          position: absolute;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.04) 50%, transparent 60%);
+          opacity: 0;
+          transition: opacity 0.3s;
+          pointer-events: none;
+          z-index: 2;
+        }
+        .pricing-card:hover { transform: translateY(-8px); }
+        .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
+
+        .pricing-card.card-free:hover {
+          box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 40px rgba(236,72,153,0.18);
+          border-color: rgba(236,72,153,0.35) !important;
+        }
+        .pricing-card.card-pro:hover {
+          box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 80px rgba(139,92,246,0.40), inset 0 0 0 1px rgba(139,92,246,0.90);
+          animation-play-state: paused;
+        }
+        .pricing-card.card-elite:hover {
+          box-shadow: 0 24px 70px rgba(0,0,0,0.60), 0 0 100px rgba(251,191,36,0.45), 0 0 160px rgba(251,191,36,0.18), inset 0 0 0 1px rgba(251,191,36,0.85);
+          animation-play-state: paused;
+        }
 
         .cta-outline {
           background:transparent; border:1px solid rgba(255,255,255,0.18);
@@ -223,7 +258,7 @@ export default function PricingPage() {
               return (
                 <div
                   key={plan.id}
-                  className={isElite ? 'card-elite' : isPro ? 'card-pro' : ''}
+                  className={`pricing-card ${isElite ? 'card-elite' : isPro ? 'card-pro' : 'card-free'}`}
                   style={{
                     position:'relative',
                     background: isElite
@@ -313,6 +348,28 @@ export default function PricingPage() {
                       </div>
                     ))}
                   </div>
+
+                  {/* Elite — Pro included note */}
+                  {isElite && (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: '8px',
+                      background: 'rgba(251,191,36,0.07)',
+                      border: '1px solid rgba(251,191,36,0.18)',
+                      borderRadius: '10px',
+                      padding: '10px 14px',
+                      marginBottom: '16px',
+                    }}>
+                      <span style={{ fontSize: '13px', flexShrink: 0 }}>⭐</span>
+                      <span style={{
+                        fontSize: '11px', fontWeight: 600,
+                        color: 'rgba(251,191,36,0.85)',
+                        fontFamily: 'var(--font-inter,Inter,sans-serif)',
+                        lineHeight: 1.4,
+                      }}>
+                        Everything in Pro included — plus full CORTEX intelligence.
+                      </span>
+                    </div>
+                  )}
 
                   {/* CTA */}
                   <Link
