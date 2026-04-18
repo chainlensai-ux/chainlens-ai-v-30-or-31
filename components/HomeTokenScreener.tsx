@@ -1,9 +1,88 @@
 'use client'
 
+import { useEffect, useState } from 'react'
+
 const COLS = ['TOKEN', 'CHAIN', 'PRICE', '24H', 'VOLUME']
 
+interface DexPair {
+  pairAddress: string
+  baseToken?: { symbol?: string; name?: string }
+  chainId?: string
+  priceUsd?: string
+  priceChange?: { h24?: number }
+  volume?: { h24?: number }
+}
+
+function TokenCard({ data }: { data: DexPair }) {
+  const change = data.priceChange?.h24 ?? 0
+  const changeColor = change > 0 ? '#2DD4BF' : change < 0 ? '#f87171' : 'rgba(255,255,255,0.40)'
+  const price = data.priceUsd ? `$${Number(data.priceUsd).toFixed(6)}` : '—'
+  const vol = data.volume?.h24
+    ? `$${Number(data.volume.h24).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+    : '—'
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
+        padding: '8px 16px',
+        borderBottom: '1px solid rgba(255,255,255,0.03)',
+        alignItems: 'center',
+      }}
+    >
+      <span style={{ fontSize: '12px', fontWeight: 600, color: '#f1f5f9', fontFamily: 'var(--font-inter)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {data.baseToken?.symbol ?? data.pairAddress?.slice(0, 8) ?? '—'}
+      </span>
+      <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.06em' }}>
+        {data.chainId ?? 'base'}
+      </span>
+      <span style={{ fontSize: '11px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
+        {price}
+      </span>
+      <span style={{ fontSize: '11px', color: changeColor, fontFamily: 'var(--font-plex-mono)' }}>
+        {change !== 0 ? `${change > 0 ? '+' : ''}${change.toFixed(2)}%` : '—'}
+      </span>
+      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-plex-mono)' }}>
+        {vol}
+      </span>
+    </div>
+  )
+}
 
 export default function HomeTokenScreener() {
+  const [trending, setTrending] = useState<DexPair[]>([])
+
+  useEffect(() => {
+    const ws = new WebSocket('wss://io.dexscreener.com/dex/screener/pairs/base')
+
+    ws.onopen = () => {
+      console.log('Connected to DexScreener WebSocket')
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+
+        if (Array.isArray(data.pairs)) {
+          const sorted = [...data.pairs]
+            .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
+            .slice(0, 20)
+
+          setTrending(sorted)
+        }
+      } catch (e) {
+        console.error('WS parse error:', e)
+      }
+    }
+
+    ws.onerror = (err) => {
+      console.error('WebSocket error:', err)
+    }
+
+    return () => ws.close()
+  }, [])
+
   return (
     <>
       <style>{`
@@ -90,25 +169,30 @@ export default function HomeTokenScreener() {
               flexDirection: 'column',
             }}
           >
-            {/* Empty state */}
-            <div style={{
-              flex: 1,
-              padding: '36px 16px',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px',
-            }}>
-              <span style={{
-                fontSize: '11px',
-                color: 'rgba(255,255,255,0.22)',
-                fontFamily: 'var(--font-inter)',
-                letterSpacing: '0.01em',
+            {trending.length === 0 ? (
+              <div style={{
+                flex: 1,
+                padding: '36px 16px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
               }}>
-                No tokens yet — live Base data will appear here
-              </span>
-            </div>
+                <span style={{
+                  fontSize: '11px',
+                  color: 'rgba(255,255,255,0.22)',
+                  fontFamily: 'var(--font-inter)',
+                  letterSpacing: '0.01em',
+                }}>
+                  Connecting to live Base feed…
+                </span>
+              </div>
+            ) : (
+              trending.map(pair => (
+                <TokenCard key={pair.pairAddress} data={pair} />
+              ))
+            )}
           </div>
 
           {/* Footer */}
