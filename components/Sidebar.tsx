@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import { useRouter } from 'next/navigation'
 
 // ─── Icons (18×18, Lucide-style) ─────────────────────────────────────────
 
@@ -191,6 +192,7 @@ interface Props {
 }
 
 export default function Sidebar({ active = 'home', onSelect = () => {} }: Props) {
+  const router = useRouter()
   return (
     <aside
       className="w-[272px] h-screen shrink-0 flex flex-col"
@@ -252,7 +254,14 @@ export default function Sidebar({ active = 'home', onSelect = () => {} }: Props)
           <SectionLabel>Tools</SectionLabel>
           <div className="space-y-1">
             {FEATURES.map(item => (
-              <NavItem key={item.key} item={item} active={active} onSelect={onSelect} />
+              <NavItem
+                key={item.key}
+                item={item}
+                active={active}
+                onSelect={item.key === 'token-scanner'
+                  ? () => router.push('/token-scanner')
+                  : onSelect}
+              />
             ))}
           </div>
         </div>
