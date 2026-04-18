@@ -4,7 +4,13 @@ export async function GET() {
   try {
     const res = await fetch(
       "https://api.dexscreener.com/latest/dex/pairs/base",
-      { cache: "no-store" }
+      {
+        cache: "no-store",
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          "Accept": "application/json"
+        }
+      }
     );
 
     if (!res.ok) {
