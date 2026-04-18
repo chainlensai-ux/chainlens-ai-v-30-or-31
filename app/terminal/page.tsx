@@ -5,6 +5,7 @@ import FeatureBar from '@/components/FeatureBar'
 import ClarkChat from '@/components/ClarkChat'
 import ClarkRadar from '@/components/ClarkRadar'
 import TokenScannerPage from '@/app/token-scanner/page'
+import Sidebar from '@/components/Sidebar'
 
 export default function TerminalPage() {
   const [active, setActive] = useState('dashboard')
@@ -45,6 +46,7 @@ export default function TerminalPage() {
           }}
         />
 
+        <Sidebar active={active} onSelect={setActive} />
         <FeatureBar active={active} onSelect={setActive} />
 
         <main
