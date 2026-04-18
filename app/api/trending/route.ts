@@ -4,7 +4,7 @@ export async function GET() {
   try {
     // GoldRush trending (Base)
     const gr = await fetch(
-      "https://api.goldrushhq.io/v1/tokens/trending?chain=base",
+      "https://api.goldrushhq.io/v1/tokens/search?query=base",
       {
         headers: {
           "x-api-key": process.env.NEXT_PUBLIC_GOLDRUSH_API_KEY || ""
@@ -18,7 +18,7 @@ export async function GET() {
     const cgData = await cg.json();
 
     // Normalize GoldRush
-    const goldrushTokens = (grData?.data || []).map((t: {
+    const goldrushTokens = (grData?.tokens || []).map((t: {
       address: string; symbol: string; name: string;
       price_usd: number; liquidity_usd: number; volume_24h_usd: number; price_change_24h: number;
     }) => ({
