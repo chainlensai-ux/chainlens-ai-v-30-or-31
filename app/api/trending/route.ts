@@ -4,11 +4,26 @@ interface MergedToken {
   address: string;
   symbol: string;
   name: string;
-  price: number | string | null;
-  liquidity: number | string | null;
-  volume24h: number | string | null;
-  change24h: number | string | null;
+  price: number | null;
+  liquidity: number | null;
+  volume24h: number | null;
+  change24h: number | null;
   source: string;
+}
+
+interface GTIncluded {
+  id: string;
+  attributes: { address: string; symbol: string; name: string };
+}
+
+interface GTPool {
+  relationships: { base_token: { data: { id: string } } };
+  attributes: {
+    price_usd: string | null;
+    reserve_in_usd: string | null;
+    volume_usd: { h24: string | null };
+    price_change_percentage: { h24: string | null };
+  };
 }
 
 export async function GET() {
@@ -43,42 +58,51 @@ export async function GET() {
 
     // GeckoTerminal Base + Ethereum pools
     const gtBase = await fetch(
-      "https://api.geckoterminal.com/api/v2/networks/base/pools?page=1"
+      "https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token"
     );
     const gtEth = await fetch(
-      "https://api.geckoterminal.com/api/v2/networks/eth/pools?page=1"
+      "https://api.geckoterminal.com/api/v2/networks/eth/pools?page=1&include=base_token,quote_token"
     );
 
     const gtBaseData = await gtBase.json();
     const gtEthData = await gtEth.json();
 
-    // Normalize GeckoTerminal pools
-    function normalizeGT(pool: {
-      attributes: {
-        token_address: string;
-        token_symbol: string;
-        token_name: string;
-        price_usd: string | null;
-        reserve_in_usd: string | null;
-        volume_usd: { h24: string | null };
-        price_change_percentage: { h24: string | null };
-      };
-    }): MergedToken {
+    // Helper: extract token metadata from included[]
+    function extractTokenMeta(included: GTIncluded[], tokenId: string) {
+      const item = included.find(i => i.id === tokenId);
+      if (!item) return null;
       return {
-        address: pool.attributes.token_address,
-        symbol: pool.attributes.token_symbol,
-        name: pool.attributes.token_name,
-        price: pool.attributes.price_usd,
-        liquidity: pool.attributes.reserve_in_usd,
-        volume24h: pool.attributes.volume_usd.h24,
-        change24h: pool.attributes.price_change_percentage.h24,
+        address: item.attributes.address,
+        symbol: item.attributes.symbol,
+        name: item.attributes.name
+      };
+    }
+
+    // Normalize GeckoTerminal pools (BASE token only)
+    function normalizeGT(pool: GTPool, included: GTIncluded[]): MergedToken | null {
+      const baseTokenId = pool.relationships.base_token.data.id;
+      const meta = extractTokenMeta(included, baseTokenId);
+      if (!meta) return null;
+
+      return {
+        address: meta.address,
+        symbol: meta.symbol,
+        name: meta.name,
+        price: Number(pool.attributes.price_usd),
+        liquidity: Number(pool.attributes.reserve_in_usd),
+        volume24h: Number(pool.attributes.volume_usd.h24),
+        change24h: Number(pool.attributes.price_change_percentage.h24),
         source: "geckoterminal"
       };
     }
 
     const gtTokens: MergedToken[] = [
-      ...(gtBaseData?.data || []).map(normalizeGT),
-      ...(gtEthData?.data || []).map(normalizeGT)
+      ...(gtBaseData?.data || [])
+        .map((pool: GTPool) => normalizeGT(pool, gtBaseData?.included || []))
+        .filter(Boolean),
+      ...(gtEthData?.data || [])
+        .map((pool: GTPool) => normalizeGT(pool, gtEthData?.included || []))
+        .filter(Boolean)
     ];
 
     // CoinGecko trending
@@ -109,12 +133,12 @@ export async function GET() {
 
     // Sort by liquidity → volume
     deduped.sort((a, b) => {
-      const liqA = Number(a.liquidity) || 0;
-      const liqB = Number(b.liquidity) || 0;
+      const liqA = a.liquidity || 0;
+      const liqB = b.liquidity || 0;
       if (liqA !== liqB) return liqB - liqA;
 
-      const volA = Number(a.volume24h) || 0;
-      const volB = Number(b.volume24h) || 0;
+      const volA = a.volume24h || 0;
+      const volB = b.volume24h || 0;
       return volB - volA;
     });
 
