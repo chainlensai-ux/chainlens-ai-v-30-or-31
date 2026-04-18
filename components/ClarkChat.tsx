@@ -174,6 +174,10 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
         .clark-dot { display: inline-block; animation: clarkThinkingDot 1.2s ease-in-out infinite; }
         .clark-dot:nth-child(2) { animation-delay: 0.15s; }
         .clark-dot:nth-child(3) { animation-delay: 0.30s; }
+        @keyframes clarkThinkingShimmer {
+          0%, 100% { background: rgba(0,0,0,0.30); box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+          50%       { background: rgba(123,92,255,0.08); box-shadow: 0 8px 40px rgba(123,92,255,0.18); }
+        }
       `}</style>
 
       <div className="flex-1 flex flex-col" style={{ background: '#050816' }}>
@@ -247,9 +251,9 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
             ref={scrollRef}
             className="clark-msg-scroll"
             style={{
-              height: '320px', overflowY: 'auto',
-              padding: '14px 20px',
-              display: 'flex', flexDirection: 'column', gap: '10px',
+              height: '380px', overflowY: 'auto',
+              padding: '16px 20px',
+              display: 'flex', flexDirection: 'column', gap: '14px',
             }}
           >
             {messages.length === 0 && (
@@ -265,61 +269,79 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
               </div>
             )}
 
-            {messages.map((msg, i) => (
-              <div
-                key={i}
-                style={{
-                  display: 'flex',
-                  justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                }}
-              >
-                {msg.role === 'clark' && (
-                  <div style={{
-                    width: '22px', height: '22px', borderRadius: '50%',
-                    background: 'linear-gradient(135deg, #7b5cff, #4ef2c5)',
-                    flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: '9px', fontWeight: 800, color: '#050816',
-                    fontFamily: 'var(--font-plex-mono)',
-                  }}>C</div>
-                )}
+            {messages.map((msg, i) => {
+              const isThinking = msg.role === 'clark' && msg.text === 'Clark is thinking...'
+              return (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                  }}
+                >
+                  {msg.role === 'clark' && (
+                    <div style={{
+                      width: '22px', height: '22px', borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #7b5cff, #4ef2c5)',
+                      flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '9px', fontWeight: 800, color: '#050816',
+                      fontFamily: 'var(--font-plex-mono)',
+                    }}>C</div>
+                  )}
 
-                <div style={{
-                  maxWidth: '78%',
-                  padding: '10px 14px',
-                  borderRadius: msg.role === 'user'
-                    ? '14px 14px 3px 14px'
-                    : '14px 14px 14px 3px',
-                  background: msg.role === 'user'
-                    ? 'rgba(45,212,191,0.10)'
-                    : 'rgba(123,92,255,0.10)',
-                  border: `1px solid ${msg.role === 'user'
-                    ? 'rgba(45,212,191,0.18)'
-                    : 'rgba(123,92,255,0.18)'}`,
-                  color: msg.text === 'Clark is thinking...'
-                    ? 'rgba(255,255,255,0.40)'
-                    : '#dde4f0',
-                  fontSize: '12.5px',
-                  lineHeight: 1.65,
-                  fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
-                    ? 'var(--font-plex-mono)'
-                    : 'var(--font-inter), Inter, sans-serif',
-                  whiteSpace: msg.text.startsWith('{') || msg.text.startsWith('[')
-                    ? 'pre-wrap'
-                    : 'normal',
-                  wordBreak: 'break-word',
-                }}>
-                  {msg.text === 'Clark is thinking...' ? (
-                    <span>
-                      Clark is thinking
-                      <span className="clark-dot" style={{ marginLeft: '2px' }}>.</span>
-                      <span className="clark-dot">.</span>
-                      <span className="clark-dot">.</span>
-                    </span>
-                  ) : msg.text}
+                  {isThinking ? (
+                    <div style={{
+                      backdropFilter: 'blur(12px)',
+                      WebkitBackdropFilter: 'blur(12px)',
+                      border: '1px solid rgba(255,255,255,0.10)',
+                      borderRadius: '12px',
+                      padding: '10px 16px',
+                      display: 'flex', alignItems: 'center', gap: '2px',
+                      animation: 'clarkThinkingShimmer 2s ease-in-out infinite',
+                    }}>
+                      <span style={{
+                        fontSize: '12px', color: 'rgba(255,255,255,0.45)',
+                        fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em',
+                      }}>Clark is thinking</span>
+                      <span className="clark-dot" style={{ marginLeft: '2px', color: 'rgba(78,242,197,0.70)' }}>.</span>
+                      <span className="clark-dot" style={{ color: 'rgba(78,242,197,0.70)' }}>.</span>
+                      <span className="clark-dot" style={{ color: 'rgba(78,242,197,0.70)' }}>.</span>
+                    </div>
+                  ) : (
+                    <div style={{
+                      maxWidth: '88%',
+                      paddingTop: '10px',
+                      paddingBottom: '10px',
+                      paddingRight: '14px',
+                      paddingLeft: msg.role === 'clark' ? '12px' : '14px',
+                      borderRadius: msg.role === 'user'
+                        ? '14px 14px 3px 14px'
+                        : '14px 14px 14px 3px',
+                      background: msg.role === 'user'
+                        ? 'rgba(45,212,191,0.10)'
+                        : 'rgba(123,92,255,0.10)',
+                      borderTop: `1px solid ${msg.role === 'user' ? 'rgba(45,212,191,0.18)' : 'rgba(123,92,255,0.18)'}`,
+                      borderRight: `1px solid ${msg.role === 'user' ? 'rgba(45,212,191,0.18)' : 'rgba(123,92,255,0.18)'}`,
+                      borderBottom: `1px solid ${msg.role === 'user' ? 'rgba(45,212,191,0.18)' : 'rgba(123,92,255,0.18)'}`,
+                      borderLeft: msg.role === 'clark'
+                        ? '2px solid rgba(0,82,255,0.40)'
+                        : '1px solid rgba(45,212,191,0.18)',
+                      color: '#dde4f0',
+                      fontSize: msg.role === 'clark' ? '15px' : '12.5px',
+                      lineHeight: msg.role === 'clark' ? 1.75 : 1.65,
+                      fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
+                        ? 'var(--font-plex-mono)'
+                        : 'var(--font-inter), Inter, sans-serif',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}>
+                      {msg.text}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           {/* Input row — full mode only */}
