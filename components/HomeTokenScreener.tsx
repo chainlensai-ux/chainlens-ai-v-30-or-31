@@ -55,11 +55,11 @@ export default function HomeTokenScreener() {
   const [lastUpdate, setLastUpdate] = useState<number | null>(null)
 
   useEffect(() => {
-    const ws = new WebSocket('wss://io.dexscreener.com/dex/screener/pairs/base')
+    const ws = new WebSocket('wss://io.dexscreener.com/dex/ws')
 
     ws.onopen = () => {
       console.log('Connected to DexScreener WebSocket')
-      ws.send(JSON.stringify({ type: 'subscribe', topic: 'pairs', chain: 'base' }))
+      ws.send(JSON.stringify({ type: 'subscribe', channels: ['pairs:base'] }))
     }
 
     ws.onmessage = (event) => {
