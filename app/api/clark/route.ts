@@ -10,6 +10,7 @@ const {
   COVALENT_API_KEY,
   ANTHROPIC_API_KEY,
   NEXT_PUBLIC_PROXY_URL,
+  NEXT_PUBLIC_BASE_URL,
   BASESCAN_API_KEY,
 } = process.env;
 
@@ -36,9 +37,15 @@ interface ClarkRequestBody {
   prompt?: string;
 }
 
+interface ClarkContext {
+  trending?: unknown[];
+  gtPools?: unknown[];
+  tokenScan?: unknown;
+  walletScan?: unknown;
+}
+
 // ---------- Chain name maps ----------
 
-// GoldRush / Covalent require specific chain slugs
 const GOLDRUSH_CHAIN: Record<SupportedChain, string> = {
   base: "base-mainnet",
   ethereum: "eth-mainnet",
@@ -46,7 +53,6 @@ const GOLDRUSH_CHAIN: Record<SupportedChain, string> = {
   bnb: "bsc-mainnet",
 };
 
-// GoPlus uses numeric chain IDs
 const GOPLUS_CHAIN_ID: Record<SupportedChain, string> = {
   base: "8453",
   ethereum: "1",
@@ -71,15 +77,17 @@ function requireEnv(name: string, value: string | undefined): string {
   return value;
 }
 
-// Extract the first 0x address found in a string
 function extractAddress(text: string): string | null {
   const match = text.match(/0x[a-fA-F0-9]{40}/);
   return match ? match[0] : null;
 }
 
+function gtNetwork(chain: SupportedChain): "base" | "eth" {
+  return chain === "ethereum" ? "eth" : "base";
+}
+
 // ---------- API clients ----------
 
-// GoldRush (rebranded Covalent) — https://api.covalenthq.com/v1/
 async function callGoldrush(
   path: string,
   params: Record<string, string> = {}
@@ -104,7 +112,6 @@ async function callGoldrush(
   return res.json();
 }
 
-// Covalent — same service as GoldRush; uses Bearer auth, not query-param key
 async function callCovalent(
   path: string,
   params: Record<string, string> = {}
@@ -129,7 +136,6 @@ async function callCovalent(
   return res.json();
 }
 
-// Zerion — Basic auth with "apiKey:" (colon, no password)
 async function callZerion(
   path: string,
   params: Record<string, string> = {}
@@ -154,28 +160,6 @@ async function callZerion(
   return res.json();
 }
 
-// DexScreener — no auth required; call directly from server (no CORS on server-side)
-async function callDexScreener(
-  path: string,
-  params: Record<string, string> = {}
-) {
-  const url = new URL(`https://api.dexscreener.com/${path}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-
-  const res = await fetch(url.toString(), {
-    headers: { Accept: "application/json" },
-    next: { revalidate: 15 },
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`DexScreener ${res.status}: ${body.slice(0, 200)}`);
-  }
-
-  return res.json();
-}
-
-// Basescan — Etherscan-compatible API for Base chain
 async function callBasescan(params: Record<string, string> = {}) {
   const url = new URL("https://api.basescan.org/api");
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -194,7 +178,6 @@ async function callBasescan(params: Record<string, string> = {}) {
   return res.json();
 }
 
-// GoPlus — free token security API, no auth required
 async function callGoPlus(address: string, chain: SupportedChain = "base") {
   const chainId = GOPLUS_CHAIN_ID[chain];
   const url = new URL(`https://api.gopluslabs.io/api/v1/token_security/${chainId}`);
@@ -213,14 +196,47 @@ async function callGoPlus(address: string, chain: SupportedChain = "base") {
   return res.json();
 }
 
-// Anthropic — system field separate from user message; latest model
-async function callAnthropic(prompt: string, context: unknown) {
+// GeckoTerminal via internal proxy (avoids direct server-side blocking)
+async function callGeckoTerminal(network: "base" | "eth") {
+  const baseUrl = NEXT_PUBLIC_BASE_URL ?? "";
+  const res = await fetch(`${baseUrl}/api/proxy/gt?network=${network}`, {
+    next: { revalidate: 30 },
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`GeckoTerminal proxy ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  return res.json();
+}
+
+// Trending via internal endpoint (merges CoinGecko + GeckoTerminal)
+async function callTrending(): Promise<unknown[]> {
+  const baseUrl = NEXT_PUBLIC_BASE_URL ?? "";
+  const res = await fetch(`${baseUrl}/api/trending`, {
+    next: { revalidate: 30 },
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Trending ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  const json = await res.json();
+  return json.data ?? [];
+}
+
+// Anthropic — injects context as XML blocks so Clark sees structured data
+async function callAnthropic(prompt: string, context: ClarkContext | null) {
   const apiKey = requireEnv("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY);
 
-  // Embed live data directly in the user message so the model sees it as current context
-  const userContent = context
-    ? `${prompt}\n\nLive on-chain data:\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\``
-    : prompt;
+  const userContent =
+    `${prompt}\n\n` +
+    `<trending_tokens>\n${JSON.stringify(context?.trending ?? [])}\n</trending_tokens>\n\n` +
+    `<gt_pools>\n${JSON.stringify(context?.gtPools ?? [])}\n</gt_pools>\n\n` +
+    `<token_scan>\n${JSON.stringify(context?.tokenScan ?? {})}\n</token_scan>\n\n` +
+    `<wallet_scan>\n${JSON.stringify(context?.walletScan ?? {})}\n</wallet_scan>`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -274,12 +290,7 @@ async function callAnthropic(prompt: string, context: unknown) {
 
         "Fallback: if backend provides no data, say \"No data available.\" Offer no speculation.\n\n" +
         "You must ALWAYS follow these rules.",
-      messages: [
-        {
-          role: "user",
-          content: userContent,
-        },
-      ],
+      messages: [{ role: "user", content: userContent }],
     }),
   });
 
@@ -292,30 +303,35 @@ async function callAnthropic(prompt: string, context: unknown) {
   return data?.content?.[0]?.text ?? JSON.stringify(data);
 }
 
-// ---------- Scanner functions (fetch structured data for LLM context) ----------
+// ---------- Scanner functions ----------
 
-async function scanTokenData(address: string, chain: SupportedChain = "base") {
+async function scanTokenData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
   const chainName = GOLDRUSH_CHAIN[chain];
+  const network = gtNetwork(chain);
 
   const results = await Promise.allSettled([
-    callDexScreener(`latest/dex/tokens/${address}`),
     callGoPlus(address, chain),
     callGoldrush(`${chainName}/tokens/${address}/token_holders_v2/`, { "page-size": "50" }),
     callBasescan({ module: "token", action: "tokeninfo", contractaddress: address }),
+    callGeckoTerminal(network),
+    callTrending(),
   ]);
 
   return {
-    type: "token-scan",
-    address,
-    chain,
-    dexscreener:     results[0].status === "fulfilled" ? results[0].value : null,
-    goplus_security: results[1].status === "fulfilled" ? results[1].value : null,
-    holders:         results[2].status === "fulfilled" ? results[2].value : null,
-    basescan_info:   results[3].status === "fulfilled" ? results[3].value : null,
+    tokenScan: {
+      type: "token-scan",
+      address,
+      chain,
+      goplus_security: results[0].status === "fulfilled" ? results[0].value : null,
+      holders:         results[1].status === "fulfilled" ? results[1].value : null,
+      basescan_info:   results[2].status === "fulfilled" ? results[2].value : null,
+    },
+    gtPools:  results[3].status === "fulfilled" ? ((results[3].value as { data?: unknown[] })?.data ?? []) : [],
+    trending: results[4].status === "fulfilled" ? (results[4].value as unknown[]) : [],
   };
 }
 
-async function scanWalletData(address: string, chain: SupportedChain = "base") {
+async function scanWalletData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
   const chainName = GOLDRUSH_CHAIN[chain];
 
   const results = await Promise.allSettled([
@@ -329,35 +345,40 @@ async function scanWalletData(address: string, chain: SupportedChain = "base") {
   ]);
 
   return {
-    type: "wallet-scan",
-    address,
-    chain,
-    balances:          results[0].status === "fulfilled" ? results[0].value : null,
-    transactions:      results[1].status === "fulfilled" ? results[1].value : null,
-    zerion_positions:  results[2].status === "fulfilled" ? results[2].value : null,
+    walletScan: {
+      type: "wallet-scan",
+      address,
+      chain,
+      balances:         results[0].status === "fulfilled" ? results[0].value : null,
+      transactions:     results[1].status === "fulfilled" ? results[1].value : null,
+      zerion_positions: results[2].status === "fulfilled" ? results[2].value : null,
+    },
   };
 }
 
-async function scanLiquidityData(address: string, chain: SupportedChain = "base") {
+async function scanLiquidityData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
   const chainName = GOLDRUSH_CHAIN[chain];
+  const network = gtNetwork(chain);
 
   const results = await Promise.allSettled([
-    callDexScreener(`latest/dex/tokens/${address}`),
     callGoldrush(`${chainName}/xy=k/address/${address}/pools/`),
     callGoPlus(address, chain),
+    callGeckoTerminal(network),
   ]);
 
   return {
-    type: "liquidity-scan",
-    address,
-    chain,
-    dexscreener_pairs: results[0].status === "fulfilled" ? results[0].value : null,
-    goldrush_pools:    results[1].status === "fulfilled" ? results[1].value : null,
-    goplus_security:   results[2].status === "fulfilled" ? results[2].value : null,
+    tokenScan: {
+      type: "liquidity-scan",
+      address,
+      chain,
+      goldrush_pools:  results[0].status === "fulfilled" ? results[0].value : null,
+      goplus_security: results[1].status === "fulfilled" ? results[1].value : null,
+    },
+    gtPools: results[2].status === "fulfilled" ? ((results[2].value as { data?: unknown[] })?.data ?? []) : [],
   };
 }
 
-async function scanDevWalletData(address: string, chain: SupportedChain = "base") {
+async function scanDevWalletData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
   const chainName = GOLDRUSH_CHAIN[chain];
 
   const results = await Promise.allSettled([
@@ -367,24 +388,34 @@ async function scanDevWalletData(address: string, chain: SupportedChain = "base"
   ]);
 
   return {
-    type: "dev-wallet-scan",
-    address,
-    chain,
-    top_holders:     results[0].status === "fulfilled" ? results[0].value : null,
-    goplus_security: results[1].status === "fulfilled" ? results[1].value : null,
-    contract_source: results[2].status === "fulfilled" ? results[2].value : null,
+    tokenScan: {
+      type: "dev-wallet-scan",
+      address,
+      chain,
+      top_holders:     results[0].status === "fulfilled" ? results[0].value : null,
+      goplus_security: results[1].status === "fulfilled" ? results[1].value : null,
+      contract_source: results[2].status === "fulfilled" ? results[2].value : null,
+    },
   };
 }
 
-async function scanBaseRadarData() {
-  const data = await callDexScreener("latest/dex/pairs/base");
-  const baseOnly = (data?.pairs ?? []).filter(
-    (p: Record<string, unknown>) => p.chainId === "base"
-  );
-  return { type: "base-radar", chain: "base", trending: baseOnly };
+async function scanBaseRadarData(): Promise<ClarkContext> {
+  const results = await Promise.allSettled([
+    callTrending(),
+    callGeckoTerminal("base"),
+    callGeckoTerminal("eth"),
+  ]);
+
+  return {
+    trending: results[0].status === "fulfilled" ? (results[0].value as unknown[]) : [],
+    gtPools: [
+      ...(results[1].status === "fulfilled" ? ((results[1].value as { data?: unknown[] })?.data ?? []) : []),
+      ...(results[2].status === "fulfilled" ? ((results[2].value as { data?: unknown[] })?.data ?? []) : []),
+    ],
+  };
 }
 
-async function scanWhaleData(address: string, chain: SupportedChain = "base") {
+async function scanWhaleData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
   const chainName = GOLDRUSH_CHAIN[chain];
 
   const results = await Promise.allSettled([
@@ -400,38 +431,42 @@ async function scanWhaleData(address: string, chain: SupportedChain = "base") {
   ]);
 
   return {
-    type: "whale-scan",
-    address,
-    chain,
-    transactions:      results[0].status === "fulfilled" ? results[0].value : null,
-    zerion_positions:  results[1].status === "fulfilled" ? results[1].value : null,
-    basescan_txs:      results[2].status === "fulfilled" ? results[2].value : null,
+    walletScan: {
+      type: "whale-scan",
+      address,
+      chain,
+      transactions:     results[0].status === "fulfilled" ? results[0].value : null,
+      zerion_positions: results[1].status === "fulfilled" ? results[1].value : null,
+      basescan_txs:     results[2].status === "fulfilled" ? results[2].value : null,
+    },
   };
 }
 
-async function scanPumpData(address: string, chain: SupportedChain = "base") {
+async function scanPumpData(address: string, chain: SupportedChain = "base"): Promise<ClarkContext> {
+  const network = gtNetwork(chain);
+
   const results = await Promise.allSettled([
-    callDexScreener(`latest/dex/tokens/${address}`),
     callGoPlus(address, chain),
+    callGeckoTerminal(network),
   ]);
 
   return {
-    type: "pump-scan",
-    address,
-    chain,
-    market_data: results[0].status === "fulfilled" ? results[0].value : null,
-    security:    results[1].status === "fulfilled" ? results[1].value : null,
+    tokenScan: {
+      type: "pump-scan",
+      address,
+      chain,
+      security: results[0].status === "fulfilled" ? results[0].value : null,
+    },
+    gtPools: results[1].status === "fulfilled" ? ((results[1].value as { data?: unknown[] })?.data ?? []) : [],
   };
 }
 
 // ---------- Command router ----------
 
-// Inspects the user's prompt and runs the appropriate scanner.
-// Returns structured on-chain data to inject as LLM context, or null for plain AI.
 async function routeCommand(
   prompt: string,
   chain: SupportedChain = "base"
-): Promise<Record<string, unknown> | null> {
+): Promise<ClarkContext | null> {
   const t = prompt.toLowerCase();
   const address = extractAddress(prompt);
 
@@ -453,7 +488,6 @@ async function routeCommand(
   if (t.includes("pump") && address) {
     return scanPumpData(address, chain);
   }
-  // Any prompt containing a token address defaults to a full token scan
   if (address) {
     return scanTokenData(address, chain);
   }
@@ -466,17 +500,24 @@ async function routeCommand(
 async function handleTokenScanner(body: ClarkRequestBody) {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
+  const network = gtNetwork(chain);
   const tokenAddress = body.tokenAddress ?? body.addressOrToken;
   if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
 
-  const [holders, marketData] = await Promise.all([
-    callGoldrush(`${chainName}/tokens/${tokenAddress}/token_holders_v2/`, {
-      "page-size": "100",
-    }),
-    callDexScreener(`latest/dex/tokens/${tokenAddress}`),
+  const [holders, gtData, trending] = await Promise.all([
+    callGoldrush(`${chainName}/tokens/${tokenAddress}/token_holders_v2/`, { "page-size": "100" }),
+    callGeckoTerminal(network),
+    callTrending(),
   ]);
 
-  return { feature: "token-scanner", chain, tokenAddress, holders, marketData };
+  return {
+    feature: "token-scanner",
+    chain,
+    tokenAddress,
+    tokenScan: { holders },
+    gtPools: (gtData as { data?: unknown[] })?.data ?? [],
+    trending: trending ?? [],
+  };
 }
 
 async function handleWalletScanner(body: ClarkRequestBody) {
@@ -498,8 +539,7 @@ async function handleWalletScanner(body: ClarkRequestBody) {
     feature: "wallet-scanner",
     chain,
     walletAddress,
-    covalentBalances,
-    zerionPositions,
+    walletScan: { covalentBalances, zerionPositions },
   };
 }
 
@@ -514,22 +554,33 @@ async function handleDevWalletDetector(body: ClarkRequestBody) {
     { "page-size": "200" }
   );
 
-  return { feature: "dev-wallet-detector", chain, tokenAddress, holders };
+  return {
+    feature: "dev-wallet-detector",
+    chain,
+    tokenAddress,
+    tokenScan: { holders },
+  };
 }
 
 async function handleLiquiditySafety(body: ClarkRequestBody) {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
+  const network = gtNetwork(chain);
   const tokenAddress = body.tokenAddress ?? body.addressOrToken;
   if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
 
-  // xy=k is Covalent's constant-product AMM (Uniswap-style) DEX endpoint
-  const [pools, pairs] = await Promise.all([
+  const [goldrushPools, gtData] = await Promise.all([
     callGoldrush(`${chainName}/xy=k/address/${tokenAddress}/pools/`),
-    callDexScreener(`latest/dex/tokens/${tokenAddress}`),
+    callGeckoTerminal(network),
   ]);
 
-  return { feature: "liquidity-safety", chain, tokenAddress, pools, pairs };
+  return {
+    feature: "liquidity-safety",
+    chain,
+    tokenAddress,
+    tokenScan: { goldrush_pools: goldrushPools },
+    gtPools: (gtData as { data?: unknown[] })?.data ?? [],
+  };
 }
 
 async function handleWhaleAlerts(body: ClarkRequestBody) {
@@ -543,41 +594,64 @@ async function handleWhaleAlerts(body: ClarkRequestBody) {
     { "page-size": "50" }
   );
 
-  return { feature: "whale-alerts", chain, walletAddress, txs };
+  return {
+    feature: "whale-alerts",
+    chain,
+    walletAddress,
+    walletScan: { transactions: txs },
+  };
 }
 
 async function handlePumpAlerts(body: ClarkRequestBody) {
   const chain = body.chain ?? "base";
+  const network = gtNetwork(chain);
   const tokenAddress = body.tokenAddress ?? body.addressOrToken;
   if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
 
-  const marketData = await callDexScreener(`latest/dex/tokens/${tokenAddress}`);
+  const [security, gtData] = await Promise.all([
+    callGoPlus(tokenAddress, chain),
+    callGeckoTerminal(network),
+  ]);
 
-  return { feature: "pump-alerts", chain, tokenAddress, marketData };
+  return {
+    feature: "pump-alerts",
+    chain,
+    tokenAddress,
+    tokenScan: { security },
+    gtPools: (gtData as { data?: unknown[] })?.data ?? [],
+  };
 }
 
 async function handleBaseRadar(_body: ClarkRequestBody) {
-  const data = await callDexScreener("latest/dex/pairs/base");
-  const baseOnly = (data?.pairs ?? []).filter(
-    (p: Record<string, unknown>) => p.chainId === "base"
-  );
-  return { feature: "base-radar", chain: "base", trending: baseOnly };
+  const [trending, gtBase, gtEth] = await Promise.all([
+    callTrending(),
+    callGeckoTerminal("base"),
+    callGeckoTerminal("eth"),
+  ]);
+
+  return {
+    feature: "base-radar",
+    chain: "base",
+    trending: trending ?? [],
+    gtPools: [
+      ...((gtBase as { data?: unknown[] })?.data ?? []),
+      ...((gtEth as { data?: unknown[] })?.data ?? []),
+    ],
+  };
 }
 
 async function handleClarkAI(body: ClarkRequestBody) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
 
-  // Route the prompt to the appropriate scanner to gather live on-chain context.
-  // Scanner failures are non-fatal — the LLM still responds without data.
-  let scannerData: Record<string, unknown> | null = null;
+  let context: ClarkContext | null = null;
   try {
-    scannerData = await routeCommand(prompt, chain);
+    context = await routeCommand(prompt, chain);
   } catch (err) {
     console.error("[Clark router]", err instanceof Error ? err.message : err);
   }
 
-  const analysis = await callAnthropic(prompt, scannerData);
+  const analysis = await callAnthropic(prompt, context);
 
   return { feature: "clark-ai", chain, analysis };
 }
