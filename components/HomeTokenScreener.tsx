@@ -55,19 +55,13 @@ export default function HomeTokenScreener() {
   const [lastUpdate, setLastUpdate] = useState<number | null>(null)
 
   useEffect(() => {
-    const ws = new WebSocket('wss://io.dexscreener.com/dex/ws')
-
-    ws.onopen = () => {
-      console.log('Connected to DexScreener WebSocket')
-      ws.send(JSON.stringify({ type: 'subscribe', channels: ['pairs:base:realtime'] }))
-    }
-
-    ws.onmessage = (event) => {
+    async function fetchTrending() {
       try {
-        const data = JSON.parse(event.data)
+        const res = await fetch('https://api.dexscreener.com/latest/dex/pairs/base')
+        const json = await res.json()
 
-        if (Array.isArray(data.pairs)) {
-          const sorted = [...data.pairs]
+        if (Array.isArray(json.pairs)) {
+          const sorted = [...json.pairs]
             .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
             .slice(0, 20)
 
@@ -75,15 +69,13 @@ export default function HomeTokenScreener() {
           setLastUpdate(Date.now())
         }
       } catch (e) {
-        console.error('WS parse error:', e)
+        console.error('REST fetch error:', e)
       }
     }
 
-    ws.onerror = (err) => {
-      console.error('WebSocket error:', err)
-    }
-
-    return () => ws.close()
+    fetchTrending()
+    const interval = setInterval(fetchTrending, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   return (
