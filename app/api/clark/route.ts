@@ -238,9 +238,8 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-opus-4-7",
-      max_tokens: 4096,
-      thinking: { type: "adaptive" },
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
       system:
         "You are Clark — an onchain AI analyst for ChainLens AI.\n\n" +
 
