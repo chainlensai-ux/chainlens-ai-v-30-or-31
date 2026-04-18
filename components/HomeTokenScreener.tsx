@@ -59,7 +59,7 @@ export default function HomeTokenScreener() {
 
     ws.onopen = () => {
       console.log('Connected to DexScreener WebSocket')
-      ws.send(JSON.stringify({ type: 'subscribe', channels: ['pairs:base'] }))
+      ws.send(JSON.stringify({ type: 'subscribe', channels: ['dex.pairs:base'] }))
     }
 
     ws.onmessage = (event) => {
