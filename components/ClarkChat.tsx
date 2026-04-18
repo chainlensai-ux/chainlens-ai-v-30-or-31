@@ -73,7 +73,7 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
     try {
       const body = parseMessage(text)
       console.log('POST → /api/clark')
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/clark`, {
+      const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

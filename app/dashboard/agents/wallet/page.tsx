@@ -11,7 +11,7 @@ export default function WalletAgent() {
     setLoading(true);
     setResult(null);
 
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/wallet`, {
+    const res = await fetch(`/api/wallet`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ address }),

@@ -8,7 +8,7 @@ export default function LiveFeed() {
 
   const loadData = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/trending`);
+      const res = await fetch(`/api/trending`);
       const data = await res.json();
       setTokens(data?.data || []);
     } catch (err) {

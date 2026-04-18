@@ -18,7 +18,7 @@ export default function Balances({ address }: { address: string }) {
     async function fetchBalances() {
       try {
         const res = await fetch(
-          `${process.env.NEXT_PUBLIC_API_BASE_URL}/api/proxy/goldrush?path=v1/1/address/${address}/balances_v2/`
+          `/api/proxy/goldrush?path=v1/1/address/${address}/balances_v2/`
         );
         const json = await res.json();
 
