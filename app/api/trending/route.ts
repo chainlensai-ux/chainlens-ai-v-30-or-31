@@ -88,7 +88,7 @@ export async function GET() {
         address: meta.address,
         symbol: meta.symbol,
         name: meta.name,
-        price: Number(pool.attributes.price_usd),
+        price: Number(pool.attributes.base_token_price_usd),
         liquidity: Number(pool.attributes.reserve_in_usd),
         volume24h: Number(pool.attributes.volume_usd.h24),
         change24h: Number(pool.attributes.price_change_percentage.h24),
