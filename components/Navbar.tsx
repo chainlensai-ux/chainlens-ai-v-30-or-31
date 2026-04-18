@@ -5,15 +5,24 @@ import Link from 'next/link'
 import Image from 'next/image'
 
 const TERMINAL_TOOLS = [
-  { icon: '🧪', name: 'Token Scanner',   href: '/terminal/token-scanner' },
-  { icon: '👛', name: 'Wallet Scanner',  href: '/terminal?tab=wallet'    },
-  { icon: '🧬', name: 'Dev Wallets',     href: '/terminal?tab=devs'      },
-  { icon: '💧', name: 'Liquidity Safety',href: '/terminal/liquidity'     },
-  { icon: '🐋', name: 'Whale Alerts',    href: '/terminal?tab=whales'    },
-  { icon: '🚨', name: 'Pump Alerts',     href: '/terminal?tab=pumps'     },
-  { icon: '📡', name: 'Base Radar',      href: '/terminal?tab=radar'     },
-  { icon: '🤖', name: 'Clark AI',        href: '/terminal?tab=clark'     },
+  { icon: '🧪', name: 'Token Scanner',   href: '/terminal/token-scanner', tier: 'free'  },
+  { icon: '💧', name: 'Liquidity Safety',href: '/terminal/liquidity',     tier: 'free'  },
+  { icon: '🤖', name: 'Clark AI',        href: '/terminal?tab=clark',     tier: 'elite' },
+  { icon: '👛', name: 'Wallet Scanner',  href: '/terminal?tab=wallet',    tier: 'pro'   },
+  { icon: '🧬', name: 'Dev Wallets',     href: '/terminal?tab=devs',      tier: 'pro'   },
+  { icon: '🐋', name: 'Whale Alerts',    href: '/terminal?tab=whales',    tier: 'pro'   },
+  { icon: '🚨', name: 'Pump Alerts',     href: '/terminal?tab=pumps',     tier: 'pro'   },
+  { icon: '📡', name: 'Base Radar',      href: '/terminal?tab=radar',     tier: 'pro'   },
 ]
+
+const TIER_BADGE: Record<string, { label: string; color: string; bg: string }[]> = {
+  free:  [{ label: 'FREE',  color: '#ec4899', bg: 'rgba(236,72,153,0.12)' }],
+  pro:   [{ label: 'PRO',   color: '#2DD4BF', bg: 'rgba(45,212,191,0.12)' }],
+  elite: [
+    { label: 'PRO',   color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)' },
+    { label: 'ELITE', color: '#fbbf24', bg: 'rgba(251,191,36,0.12)'  },
+  ],
+}
 
 export default function Navbar() {
   const [open, setOpen] = useState(false)
@@ -226,9 +235,23 @@ export default function Navbar() {
 
                   {TERMINAL_TOOLS.map(t => (
                     <Link key={t.name} href={t.href} className="tools-item"
-                      onClick={() => setOpen(false)}>
-                      <span style={{ fontSize: '15px', lineHeight: 1 }}>{t.icon}</span>
-                      <span>{t.name}</span>
+                      onClick={() => setOpen(false)}
+                      style={{ justifyContent: 'space-between' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontSize: '14px', lineHeight: 1 }}>{t.icon}</span>
+                        <span>{t.name}</span>
+                      </span>
+                      <span style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                        {TIER_BADGE[t.tier].map(b => (
+                          <span key={b.label} style={{
+                            fontSize: '7px', fontWeight: 700, letterSpacing: '0.14em',
+                            color: b.color, background: b.bg,
+                            border: `1px solid ${b.color}30`,
+                            borderRadius: '4px', padding: '2px 5px',
+                            fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                          }}>{b.label}</span>
+                        ))}
+                      </span>
                     </Link>
                   ))}
                 </div>
