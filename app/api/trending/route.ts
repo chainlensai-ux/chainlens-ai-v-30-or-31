@@ -80,8 +80,12 @@ export async function GET() {
 
     // Normalize GeckoTerminal pools (BASE token only)
     function normalizeGT(pool: any, included: any[]): MergedToken | null {
+      console.log("POOL ATTRIBUTES:", pool.attributes);
       const baseTokenId = pool.relationships.base_token.data.id;
+      console.log("BASE TOKEN ID:", baseTokenId);
+      console.log("INCLUDED LENGTH:", included.length);
       const meta = extractTokenMeta(included, baseTokenId);
+      console.log("META:", meta);
       if (!meta) return null;
 
       return {
