@@ -65,7 +65,7 @@ export async function GET(req: Request) {
 
     let gtBaseData = null;
     try {
-      const res = await fetch("https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token");
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/proxy/gt?network=base`);
       console.log("BASE FETCH STATUS:", res.status);
       gtBaseData = await res.json();
       console.log("BASE DATA KEYS:", Object.keys(gtBaseData));
@@ -75,7 +75,7 @@ export async function GET(req: Request) {
 
     let gtEthData = null;
     try {
-      const res = await fetch("https://api.geckoterminal.com/api/v2/networks/eth/pools?page=1&include=base_token,quote_token");
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/proxy/gt?network=eth`);
       console.log("ETH FETCH STATUS:", res.status);
       gtEthData = await res.json();
       console.log("ETH DATA KEYS:", Object.keys(gtEthData));
