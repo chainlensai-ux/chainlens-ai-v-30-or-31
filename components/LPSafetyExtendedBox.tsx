@@ -47,11 +47,31 @@ function deriveVolatility(pools: LiquiditySafetyResult["pool_breakdown"]) {
   return                      { label: "Highly Unstable",color: "#f43f5e", bg: "rgba(244,63,94,0.08)",   border: "rgba(244,63,94,0.20)",  score: 12, maxAbs };
 }
 
+function fmtUnlock(ts: number | null): string {
+  if (!ts) return "";
+  const now = Date.now() / 1000;
+  const diff = ts - now;
+  if (diff <= 0) return "Expired";
+  const days = Math.floor(diff / 86400);
+  if (days > 365) return `${Math.floor(days / 365)}y ${Math.floor((days % 365) / 30)}mo`;
+  if (days > 30) return `${Math.floor(days / 30)}mo ${days % 30}d`;
+  return `${days}d`;
+}
+
+function fmtAddr(addr: string | null): string {
+  if (!addr) return "";
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
 function deriveRugSignals(data: LiquiditySafetyResult): string[] {
   const sigs: string[] = [];
   const liq = data.lp_total_liquidity_usd;
 
-  sigs.push("No lock data surfaced — treat as unlocked until proven otherwise. Verify via a lock explorer before trading.");
+  if (!data.lp_lock_pct || data.lp_lock_pct === 0) {
+    sigs.push("No lock data surfaced — treat as unlocked until proven otherwise. Verify via a lock explorer before trading.");
+  } else if (data.lp_lock_pct < 80) {
+    sigs.push(`Only ${data.lp_lock_pct}% of LP is locked — remaining liquidity is freely removable.`);
+  }
 
   if (data.lp_fragments > 5)
     sigs.push(`LP split across ${data.lp_fragments} pools — fragmented depth increases rug-exit ease.`);
@@ -103,7 +123,11 @@ function deriveExpandedNegatives(data: LiquiditySafetyResult): string[] {
   const neg: string[] = [];
   const liq = data.lp_total_liquidity_usd;
 
-  neg.push("No lock data surfaced — liquidity is either unlocked or not using a standard lock provider. Treat as high-risk until verified.");
+  if (!data.lp_lock_pct || data.lp_lock_pct === 0) {
+    neg.push("No lock data surfaced — liquidity is either unlocked or not using a standard lock provider. Treat as high-risk until verified.");
+  } else if (data.lp_lock_pct < 80) {
+    neg.push(`Only ${data.lp_lock_pct}% of LP locked via ${data.lp_lock_provider ?? "unknown provider"} — remaining portion is withdrawable.`);
+  }
 
   if (liq != null && liq < 100_000)
     neg.push(`LP depth of ${liq < 1_000 ? `$${liq.toFixed(0)}` : `$${(liq / 1_000).toFixed(1)}K`} is below the $100K safety threshold.`);
@@ -346,22 +370,67 @@ export default function LPSafetyExtendedBox({ data }: Props) {
             {/* LP Lock Status */}
             <IndicatorCard
               label="LP Lock Status"
-              badge={<RiskReasonBadge label="Not Detected" />}
-              note="No lock data surfaced — likely unlocked or not using a standard lock provider. Treat as high-risk."
+              badge={
+                data.lp_lock_pct != null && data.lp_lock_pct > 0 ? (
+                  <StatusBadge
+                    label={`${data.lp_lock_pct}% Locked`}
+                    color={data.lp_lock_pct >= 80 ? "#34d399" : "#fbbf24"}
+                    bg={data.lp_lock_pct >= 80 ? "rgba(52,211,153,0.08)" : "rgba(251,191,36,0.08)"}
+                    border={data.lp_lock_pct >= 80 ? "rgba(52,211,153,0.22)" : "rgba(251,191,36,0.22)"}
+                  />
+                ) : (
+                  <RiskReasonBadge label="Not Detected" />
+                )
+              }
+              note={
+                data.lp_lock_pct != null && data.lp_lock_pct > 0
+                  ? `Locked via ${data.lp_lock_provider ?? "lock contract"}${data.lp_lock_pct < 100 ? ` — ${100 - data.lp_lock_pct}% freely withdrawable` : ""}`
+                  : "No lock data surfaced — treat as unlocked until proven otherwise. Verify via a lock explorer."
+              }
             />
 
             {/* LP Owner */}
             <IndicatorCard
               label="LP Owner"
-              badge={<RiskReasonBadge label="Unverified" />}
-              note="Owner not surfaced — likely EOA or unverified contract. Increases rug-exit risk."
+              badge={
+                data.lp_owner ? (
+                  <StatusBadge
+                    label={fmtAddr(data.lp_owner)}
+                    color="#94a3b8"
+                    bg="rgba(148,163,184,0.08)"
+                    border="rgba(148,163,184,0.20)"
+                  />
+                ) : (
+                  <RiskReasonBadge label="Unverified" />
+                )
+              }
+              note={
+                data.lp_owner
+                  ? "Largest unlocked LP holder — monitor for removal activity."
+                  : "Owner not surfaced — likely EOA or unverified contract. Increases rug-exit risk."
+              }
             />
 
             {/* LP Unlock Countdown */}
             <IndicatorCard
               label="Unlock Countdown"
-              badge={<RiskReasonBadge label="No Timestamp" />}
-              note="No unlock timestamp — either unlocked, burned, or not using a known lock provider."
+              badge={
+                data.lp_unlock_ts ? (
+                  <StatusBadge
+                    label={fmtUnlock(data.lp_unlock_ts) === "Expired" ? "Expired" : `${fmtUnlock(data.lp_unlock_ts)} left`}
+                    color={fmtUnlock(data.lp_unlock_ts) === "Expired" ? "#f43f5e" : "#2DD4BF"}
+                    bg={fmtUnlock(data.lp_unlock_ts) === "Expired" ? "rgba(244,63,94,0.08)" : "rgba(45,212,191,0.08)"}
+                    border={fmtUnlock(data.lp_unlock_ts) === "Expired" ? "rgba(244,63,94,0.22)" : "rgba(45,212,191,0.22)"}
+                  />
+                ) : (
+                  <RiskReasonBadge label="No Timestamp" />
+                )
+              }
+              note={
+                data.lp_unlock_ts
+                  ? `Lock expires ${new Date(data.lp_unlock_ts * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+                  : "No unlock timestamp — either unlocked, burned, or not using a known lock provider."
+              }
             />
 
             {/* Depth */}
@@ -428,8 +497,22 @@ export default function LPSafetyExtendedBox({ data }: Props) {
           <SubScoreBar label="LP Depth Score"         score={depth.score}      color={depth.color}      />
           <SubScoreBar label="Fragmentation Score"    score={frag.score}       color={frag.color}       />
           <SubScoreBar label="Volatility Score"       score={volatility.score} color={volatility.color} />
-          <SubScoreBar label="Lock Score"             score={0}  color="#4a6272" unavailable />
-          <SubScoreBar label="Owner Score"            score={0}  color="#4a6272" unavailable />
+          <SubScoreBar
+            label="Lock Score"
+            score={data.lp_lock_pct ?? 0}
+            color={
+              (data.lp_lock_pct ?? 0) >= 80 ? "#34d399"
+              : (data.lp_lock_pct ?? 0) > 0 ? "#fbbf24"
+              : "#4a6272"
+            }
+            unavailable={data.lp_lock_pct == null}
+          />
+          <SubScoreBar
+            label="Owner Score"
+            score={data.lp_owner ? 50 : 0}
+            color="#94a3b8"
+            unavailable={data.lp_owner == null}
+          />
         </div>
 
         <Divider />
@@ -437,7 +520,14 @@ export default function LPSafetyExtendedBox({ data }: Props) {
         {/* ── LP Unlock Timeline Bar ───────────────────────────────────── */}
         <div>
           <SectionLabel>LP Unlock Timeline</SectionLabel>
-          <TimelineBar pct={0} color="#34d399" />
+          <TimelineBar
+            pct={data.lp_lock_pct ?? 0}
+            color={
+              (data.lp_lock_pct ?? 0) >= 80 ? "#34d399"
+              : (data.lp_lock_pct ?? 0) > 0 ? "#fbbf24"
+              : "#4a6272"
+            }
+          />
         </div>
 
         <Divider />

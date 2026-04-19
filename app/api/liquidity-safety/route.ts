@@ -83,6 +83,67 @@ async function fetchPools(
   };
 }
 
+// ─── GoPlus LP lock data ──────────────────────────────────────────────────────
+
+interface GoPlusHolder {
+  address?: string;
+  tag?: string;
+  is_contract?: number;
+  balance?: string;
+  percent?: string;
+  is_locked?: number;
+  locked_detail?: Array<{ amount?: string; end_time?: string; opt_time?: string }>;
+}
+
+interface GoPlusLockData {
+  lp_lock_pct: number | null;
+  lp_owner: string | null;
+  lp_lock_provider: string | null;
+  lp_unlock_ts: number | null;
+}
+
+async function fetchGoPlusLockData(contract: string): Promise<GoPlusLockData> {
+  const empty: GoPlusLockData = { lp_lock_pct: null, lp_owner: null, lp_lock_provider: null, lp_unlock_ts: null };
+  try {
+    const url = `https://api.gopluslabs.io/api/v1/token_security/8453?contract_addresses=${contract.toLowerCase()}`;
+    const res = await fetch(url, { headers: { accept: "application/json" }, cache: "no-store" });
+    if (!res.ok) return empty;
+
+    const json = await res.json();
+    const tokenData = json?.result?.[contract.toLowerCase()] ?? json?.result?.[Object.keys(json?.result ?? {})[0]];
+    if (!tokenData) return empty;
+
+    const holders: GoPlusHolder[] = Array.isArray(tokenData.lp_holders) ? tokenData.lp_holders : [];
+    if (!holders.length) return empty;
+
+    // Total lock % = sum of percent for locked holders
+    const lockedHolders = holders.filter(h => h.is_locked === 1);
+    const lp_lock_pct = lockedHolders.length
+      ? Math.round(lockedHolders.reduce((s, h) => s + parseFloat(h.percent ?? "0"), 0) * 100)
+      : 0;
+
+    // Lock provider = tag of first locked holder
+    const lp_lock_provider = lockedHolders[0]?.tag?.trim() || null;
+
+    // Earliest unlock timestamp across all locked holders
+    let lp_unlock_ts: number | null = null;
+    for (const h of lockedHolders) {
+      for (const d of h.locked_detail ?? []) {
+        const ts = d.end_time ? parseInt(d.end_time, 10) : null;
+        if (ts && (!lp_unlock_ts || ts < lp_unlock_ts)) lp_unlock_ts = ts;
+      }
+    }
+
+    // LP owner = largest non-locked, non-zero holder (likely deployer or treasury)
+    const unlockedHolders = holders.filter(h => !h.is_locked || h.is_locked === 0);
+    const lp_owner = unlockedHolders[0]?.address ?? null;
+
+    return { lp_lock_pct, lp_owner, lp_lock_provider, lp_unlock_ts };
+  } catch {
+    return empty;
+  }
+}
+
 // ─── LP scoring heuristics ────────────────────────────────────────────────────
 
 function scoreLiquidity(pools: GTPool[]): {
@@ -268,7 +329,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Token not found." }, { status: 404 });
     }
 
-    const { pools, included } = await fetchPools(resolvedContract);
+    const [{ pools, included }, lockData] = await Promise.all([
+      fetchPools(resolvedContract),
+      fetchGoPlusLockData(resolvedContract),
+    ]);
 
     if (pools.length === 0) {
       return NextResponse.json(
@@ -297,6 +361,7 @@ export async function POST(req: NextRequest) {
         symbol,
         contract: resolvedContract,
         ...analysis,
+        ...lockData,
       },
     });
   } catch (err) {

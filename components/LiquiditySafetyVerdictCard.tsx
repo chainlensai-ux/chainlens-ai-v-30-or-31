@@ -19,6 +19,11 @@ export interface LiquiditySafetyResult {
     volume24h: number | null;
     priceChange24h: number | null;
   }>;
+  // GoPlus LP lock fields
+  lp_lock_pct: number | null;
+  lp_owner: string | null;
+  lp_lock_provider: string | null;
+  lp_unlock_ts: number | null;
 }
 
 interface Props {
