@@ -23,6 +23,7 @@ type ScanResult = {
   volume24h?: number | null
   priceChange24h?: number | null
   pools?: Pool[]
+  goplus?: Record<string, Record<string, unknown>> | null
 }
 
 // ─── Formatters ───────────────────────────────────────────────────────────
@@ -83,6 +84,119 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
       }}>
         {value}
       </p>
+    </div>
+  )
+}
+
+// ─── Contract Risk (GoPlus) ───────────────────────────────────────────────
+
+function riskVal(gp: Record<string, unknown>, key: string): string {
+  const v = gp[key]
+  if (v == null) return 'N/A'
+  return String(v)
+}
+
+function riskFlag(v: string): { label: string; color: string; bg: string; border: string } {
+  if (v === '1') return { label: 'YES', color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.25)' }
+  if (v === '0') return { label: 'NO',  color: '#34d399', bg: 'rgba(52,211,153,0.08)',  border: 'rgba(52,211,153,0.20)' }
+  if (v === 'N/A') return { label: 'N/A', color: '#3a5268', bg: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.07)' }
+  return { label: v, color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.15)' }
+}
+
+function RiskBadge({ value }: { value: string }) {
+  const s = riskFlag(value)
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 10px',
+      borderRadius: '99px', fontSize: '9px', fontWeight: 700,
+      letterSpacing: '0.12em', textTransform: 'uppercase',
+      color: s.color, background: s.bg, border: `1px solid ${s.border}`,
+      fontFamily: 'var(--font-plex-mono)',
+    }}>
+      {s.label}
+    </span>
+  )
+}
+
+function TaxBadge({ value }: { value: string }) {
+  const n = parseFloat(value)
+  const high = !isNaN(n) && n > 5
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 10px',
+      borderRadius: '99px', fontSize: '9px', fontWeight: 700,
+      letterSpacing: '0.10em',
+      color: high ? '#f87171' : value === 'N/A' ? '#3a5268' : '#34d399',
+      background: high ? 'rgba(248,113,113,0.10)' : value === 'N/A' ? 'rgba(255,255,255,0.03)' : 'rgba(52,211,153,0.08)',
+      border: `1px solid ${high ? 'rgba(248,113,113,0.25)' : value === 'N/A' ? 'rgba(255,255,255,0.07)' : 'rgba(52,211,153,0.20)'}`,
+      fontFamily: 'var(--font-plex-mono)',
+    }}>
+      {value === 'N/A' ? 'N/A' : `${(isNaN(n) ? 0 : n * 100).toFixed(1)}%`}
+    </span>
+  )
+}
+
+function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
+  const FIELDS: { label: string; key: string; type: 'flag' | 'tax' }[] = [
+    { label: 'Honeypot',            key: 'is_honeypot',            type: 'flag' },
+    { label: 'Blacklist Function',  key: 'is_blacklisted',         type: 'flag' },
+    { label: 'Mintable',            key: 'is_mintable',            type: 'flag' },
+    { label: 'Owner Can Change',    key: 'can_take_back_ownership', type: 'flag' },
+    { label: 'Cooldown',            key: 'trading_cooldown',       type: 'flag' },
+    { label: 'Anti-Whale',          key: 'is_anti_whale',          type: 'flag' },
+    { label: 'Buy Tax',             key: 'buy_tax',                type: 'tax'  },
+    { label: 'Sell Tax',            key: 'sell_tax',               type: 'tax'  },
+  ]
+
+  return (
+    <div style={{ marginTop: '28px' }}>
+      <p style={{
+        fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+        color: '#3a5268', textTransform: 'uppercase',
+        marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
+      }}>
+        Contract Risk Signals · GoPlus
+      </p>
+
+      {!gp ? (
+        <div style={{
+          padding: '14px 18px',
+          background: 'rgba(255,255,255,0.02)',
+          border: '1px solid rgba(255,255,255,0.06)',
+          borderRadius: '10px',
+          fontSize: '11px', color: '#3a5268',
+          fontFamily: 'var(--font-plex-mono)',
+        }}>
+          No contract risk data surfaced — verify manually.
+        </div>
+      ) : (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+          gap: '8px',
+        }}>
+          {FIELDS.map(f => (
+            <div key={f.key} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '10px 14px',
+              background: 'rgba(255,255,255,0.025)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: '10px', gap: '10px',
+            }}>
+              <span style={{
+                fontSize: '10px', color: '#4a6272',
+                fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+              }}>
+                {f.label}
+              </span>
+              {f.type === 'flag'
+                ? <RiskBadge value={riskVal(gp, f.key)} />
+                : <TaxBadge  value={riskVal(gp, f.key)} />
+              }
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -316,6 +430,13 @@ export default function TerminalTokenScanner() {
                   accent={pctColor(result.priceChange24h)}
                 />
               </div>
+
+              {/* Contract Risk Signals */}
+              <ContractRiskSection
+                gp={result.goplus && result.contract
+                  ? (result.goplus[result.contract.toLowerCase()] ?? null)
+                  : null}
+              />
 
               {/* Pools */}
               {result.pools && result.pools.length > 0 && (
