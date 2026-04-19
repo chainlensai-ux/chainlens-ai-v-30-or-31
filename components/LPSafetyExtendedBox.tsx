@@ -51,7 +51,7 @@ function deriveRugSignals(data: LiquiditySafetyResult): string[] {
   const sigs: string[] = [];
   const liq = data.lp_total_liquidity_usd;
 
-  sigs.push("LP lock and burn status unavailable from this scan — verify via a lock explorer before trading.");
+  sigs.push("No lock data surfaced — treat as unlocked until proven otherwise. Verify via a lock explorer before trading.");
 
   if (data.lp_fragments > 5)
     sigs.push(`LP split across ${data.lp_fragments} pools — fragmented depth increases rug-exit ease.`);
@@ -103,7 +103,7 @@ function deriveExpandedNegatives(data: LiquiditySafetyResult): string[] {
   const neg: string[] = [];
   const liq = data.lp_total_liquidity_usd;
 
-  neg.push("LP lock/burn data not verifiable from this scan — always check a lock explorer before entering.");
+  neg.push("No lock data surfaced — liquidity is either unlocked or not using a standard lock provider. Treat as high-risk until verified.");
 
   if (liq != null && liq < 100_000)
     neg.push(`LP depth of ${liq < 1_000 ? `$${liq.toFixed(0)}` : `$${(liq / 1_000).toFixed(1)}K`} is below the $100K safety threshold.`);
@@ -151,17 +151,17 @@ function StatusBadge({ label, color, bg, border }: { label: string; color: strin
   );
 }
 
-function UnavailableBadge() {
+function RiskReasonBadge({ label }: { label: string }) {
   return (
     <span style={{
       display: "inline-block", padding: "4px 12px",
       borderRadius: "99px", fontSize: "10px", fontWeight: 700,
-      letterSpacing: "0.12em", textTransform: "uppercase",
-      color: "#3a5268", background: "rgba(255,255,255,0.03)",
-      border: "1px solid rgba(255,255,255,0.07)",
+      letterSpacing: "0.10em", textTransform: "uppercase",
+      color: "#fb923c", background: "rgba(251,146,60,0.08)",
+      border: "1px solid rgba(251,146,60,0.22)",
       fontFamily: "var(--font-plex-mono)",
     }}>
-      UNAVAILABLE
+      {label}
     </span>
   );
 }
@@ -260,10 +260,10 @@ function TimelineBar({ pct, color }: { pct: number; color: string }) {
       </div>
       {filled === 0 && (
         <p style={{
-          fontSize: "10px", color: "#2a3f50", fontFamily: "var(--font-plex-mono)",
-          marginTop: "6px",
+          fontSize: "10px", color: "#fb923c", fontFamily: "var(--font-plex-mono)",
+          marginTop: "6px", opacity: 0.75,
         }}>
-          Lock data not available — verify via a third-party lock explorer.
+          No lock data surfaced — treat as unlocked until verified via a lock explorer. Cannot confirm safety without manual check.
         </p>
       )}
     </div>
@@ -346,22 +346,22 @@ export default function LPSafetyExtendedBox({ data }: Props) {
             {/* LP Lock Status */}
             <IndicatorCard
               label="LP Lock Status"
-              badge={<UnavailableBadge />}
-              note="Verify via lock explorer"
+              badge={<RiskReasonBadge label="Not Detected" />}
+              note="No lock data surfaced — likely unlocked or not using a standard lock provider. Treat as high-risk."
             />
 
             {/* LP Owner */}
             <IndicatorCard
               label="LP Owner"
-              badge={<UnavailableBadge />}
-              note="Not available from scan"
+              badge={<RiskReasonBadge label="Unverified" />}
+              note="Owner not surfaced — likely EOA or unverified contract. Increases rug-exit risk."
             />
 
             {/* LP Unlock Countdown */}
             <IndicatorCard
               label="Unlock Countdown"
-              badge={<UnavailableBadge />}
-              note="No lock date available"
+              badge={<RiskReasonBadge label="No Timestamp" />}
+              note="No unlock timestamp — either unlocked, burned, or not using a known lock provider."
             />
 
             {/* Depth */}
