@@ -40,6 +40,7 @@ interface ClarkContext {
   tokenData?: unknown;
   walletScan?: unknown;
   analysis?: unknown;
+  holderScan?: unknown;
 }
 
 // ---------- Chain name maps ----------
@@ -242,9 +243,15 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
   const walletScan: unknown  = context?.walletScan ?? {};
   const analysis: unknown    = context?.analysis   ?? {};
 
+  const holderScan   = context?.holderScan ?? null;
   const goPlusSecurity = (tokenData as Record<string, unknown>)?.goplus_security ?? null;
+
   const contractRiskBlock = goPlusSecurity
     ? `<contract_risk>\n${JSON.stringify(goPlusSecurity)}\n</contract_risk>\n\n`
+    : "";
+
+  const holderScanBlock = holderScan
+    ? `<holder_contract_analysis>\n${JSON.stringify(holderScan)}\n</holder_contract_analysis>\n\n`
     : "";
 
   const userContent =
@@ -254,7 +261,8 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
     `<token_data>\n${JSON.stringify(tokenData)}\n</token_data>\n\n` +
     `<analysis>\n${JSON.stringify(analysis)}\n</analysis>\n\n` +
     `<wallet_scan>\n${JSON.stringify(walletScan)}\n</wallet_scan>\n\n` +
-    contractRiskBlock;
+    contractRiskBlock +
+    holderScanBlock;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -346,6 +354,17 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "1. TOKEN_NAME (SYMBOL) | Price: $X.XX | 24h: +X.XX% | Vol: $XM | Liq: $XM | Chain: base | contract: 0xADDRESS\n\n" +
 
         "Fallback: if backend provides no data, say \"No data available.\" Offer no speculation.\n\n" +
+
+        "HOLDER CONTRACT ANALYSIS: When <holder_contract_analysis> data is present, incorporate it into your analysis.\n" +
+        "- If is_proxy=true: note the contract delegates to an implementation — behavior may change without notice.\n" +
+        "- If is_upgradeable=true: flag as high-risk — owner can silently modify contract logic.\n" +
+        "- If is_locker=true: this is likely an LP or token lock contract — positive signal.\n" +
+        "- If is_router=true: this is a DEX router — normal infrastructure, low risk.\n" +
+        "- If is_lp_manager=true: this manages liquidity positions — neutral to positive.\n" +
+        "- If has_withdraw/has_sweep/has_rescue=true: privileged fund-movement functions exist — flag risk.\n" +
+        "- If has_mint=true: tokens can be created at will — inflation risk.\n" +
+        "- If has_external_calls=true: contract can call arbitrary external addresses — elevated risk.\n" +
+        "- If data is absent: say 'No holder contract analysis available.'\n\n" +
 
         "CONTRACT RISK (GoPlus): When <contract_risk> data is present, you must incorporate it into your analysis.\n" +
         "- <contract_risk> is sourced from GoPlus Security and contains on-chain contract risk flags.\n" +
