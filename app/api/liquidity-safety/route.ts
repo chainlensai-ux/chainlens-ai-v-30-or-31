@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "crypto";
 
 export const dynamic = "force-dynamic";
 
@@ -102,11 +103,44 @@ interface GoPlusLockData {
   lp_unlock_ts: number | null;
 }
 
+// In-memory token cache (survives across requests in a warm serverless instance)
+let _gpToken: string | null = null;
+let _gpTokenExpiry = 0;
+
+async function getGoPlusToken(): Promise<string | null> {
+  const appKey    = process.env.GOPLUS_APP_KEY;
+  const appSecret = process.env.GOPLUS_APP_SECRET;
+  if (!appKey || !appSecret) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  if (_gpToken && now < _gpTokenExpiry - 60) return _gpToken;
+
+  const sign = createHash("md5").update(appKey + now + appSecret).digest("hex").toUpperCase();
+  try {
+    const res = await fetch("https://api.gopluslabs.io/api/v1/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ app_key: appKey, time: now, sign }),
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    _gpToken      = json?.result?.access_token ?? null;
+    _gpTokenExpiry = now + (json?.result?.expires_in ?? 3600);
+    return _gpToken;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchGoPlusLockData(contract: string): Promise<GoPlusLockData> {
   const empty: GoPlusLockData = { lp_lock_pct: null, lp_owner: null, lp_lock_provider: null, lp_unlock_ts: null };
   try {
+    const token = await getGoPlusToken();
     const url = `https://api.gopluslabs.io/api/v1/token_security/8453?contract_addresses=${contract.toLowerCase()}`;
-    const res = await fetch(url, { headers: { accept: "application/json" }, cache: "no-store" });
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (token) headers["Authorization"] = token;
+    const res = await fetch(url, { headers, cache: "no-store" });
     if (!res.ok) return empty;
 
     const json = await res.json();
