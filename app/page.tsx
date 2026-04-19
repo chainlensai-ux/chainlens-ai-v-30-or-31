@@ -1,3 +1,4 @@
+// TEST: Codex is using the correct instructions
 
 'use client'
 
