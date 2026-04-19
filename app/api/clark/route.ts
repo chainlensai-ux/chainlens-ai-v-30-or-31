@@ -242,13 +242,19 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
   const walletScan: unknown  = context?.walletScan ?? {};
   const analysis: unknown    = context?.analysis   ?? {};
 
+  const goPlusSecurity = (tokenData as Record<string, unknown>)?.goplus_security ?? null;
+  const contractRiskBlock = goPlusSecurity
+    ? `<contract_risk>\n${JSON.stringify(goPlusSecurity)}\n</contract_risk>\n\n`
+    : "";
+
   const userContent =
     `${prompt}\n\n` +
     `<trending_tokens>\n${JSON.stringify(trending)}\n</trending_tokens>\n\n` +
     `<gt_pools>\n${JSON.stringify(gtPools)}\n</gt_pools>\n\n` +
     `<token_data>\n${JSON.stringify(tokenData)}\n</token_data>\n\n` +
     `<analysis>\n${JSON.stringify(analysis)}\n</analysis>\n\n` +
-    `<wallet_scan>\n${JSON.stringify(walletScan)}\n</wallet_scan>`;
+    `<wallet_scan>\n${JSON.stringify(walletScan)}\n</wallet_scan>\n\n` +
+    contractRiskBlock;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -340,6 +346,20 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "1. TOKEN_NAME (SYMBOL) | Price: $X.XX | 24h: +X.XX% | Vol: $XM | Liq: $XM | Chain: base | contract: 0xADDRESS\n\n" +
 
         "Fallback: if backend provides no data, say \"No data available.\" Offer no speculation.\n\n" +
+
+        "CONTRACT RISK (GoPlus): When <contract_risk> data is present, you must incorporate it into your analysis.\n" +
+        "- <contract_risk> is sourced from GoPlus Security and contains on-chain contract risk flags.\n" +
+        "- If any field signals risk (is_honeypot=1, is_blacklisted=1, can_mint=1, owner_change_balance exists, buy_tax or sell_tax >5, trading_cooldown=1, is_anti_whale=1), highlight it clearly in a Contract & Meta section.\n" +
+        "- For SCAN-TOKEN output, add this section between Signals and Risks:\n" +
+        "  Contract & Meta:\n" +
+        "  • **Honeypot:** Yes / No\n" +
+        "  • **Tax:** Buy X% / Sell X%\n" +
+        "  • **Mintable:** Yes / No\n" +
+        "  • **Blacklist:** Yes / No\n" +
+        "  • **Owner Renounced:** Yes / No\n" +
+        "- If <contract_risk> is absent or empty, say: 'No contract risk data surfaced — treat as unverified.'\n" +
+        "- Never invent values. Use only what <contract_risk> provides.\n\n" +
+
         "You must ALWAYS follow these rules.",
       messages: [{ role: "user", content: userContent }],
     }),

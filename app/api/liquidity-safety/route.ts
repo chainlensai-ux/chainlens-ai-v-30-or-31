@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
+import { fetchGoPlus } from "@/lib/goplus";
 
 export const dynamic = "force-dynamic";
 
@@ -363,9 +364,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Token not found." }, { status: 404 });
     }
 
-    const [{ pools, included }, lockData] = await Promise.all([
+    const origin = req.nextUrl.origin;
+    const [{ pools, included }, lockData, goPlusRes] = await Promise.all([
       fetchPools(resolvedContract),
       fetchGoPlusLockData(resolvedContract),
+      fetchGoPlus(resolvedContract, origin),
     ]);
 
     if (pools.length === 0) {
@@ -396,6 +399,7 @@ export async function POST(req: NextRequest) {
         contract: resolvedContract,
         ...analysis,
         ...lockData,
+        goplus: goPlusRes.ok ? goPlusRes.data : null,
       },
     });
   } catch (err) {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fetchGoPlus } from "@/lib/goplus";
 
 export const dynamic = "force-dynamic";
 
@@ -163,7 +164,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Token not found", query }, { status: 404 });
     }
 
-    const { pools, included } = await fetchPools(resolvedContract);
+    const origin = req.nextUrl.origin;
+    const [{ pools, included }, goPlusRes] = await Promise.all([
+      fetchPools(resolvedContract),
+      fetchGoPlus(resolvedContract, origin),
+    ]);
 
     if (pools.length === 0) {
       return NextResponse.json(
@@ -173,7 +178,10 @@ export async function GET(req: NextRequest) {
     }
 
     const token = buildToken(resolvedContract, pools, included);
-    return NextResponse.json({ ok: true, data: token });
+    return NextResponse.json({
+      ok: true,
+      data: { ...token, goplus: goPlusRes.ok ? goPlusRes.data : null },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Scan failed";
     console.error("[scan-token]", message);
