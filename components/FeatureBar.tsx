@@ -125,7 +125,7 @@ const SLATE  = '#94a3b8'
 type Item = { key: string; label: string; icon: ReactNode; accent: string; iconColor: string; href?: string }
 
 const MAIN_NAV: Item[] = [
-  { key: 'dashboard', label: 'Dashboard', icon: <IcDashboard />,    accent: MINT,   iconColor: MINT   },
+  { key: 'dashboard', label: 'Dashboard', icon: <IcDashboard />,    accent: MINT,   iconColor: MINT,   href: '/terminal' },
   { key: 'portfolio', label: 'Portfolio', icon: <IcPortfolio />,    accent: WHITE,  iconColor: WHITE  },
   { key: 'settings',  label: 'Settings',  icon: <IcSettings />,     accent: SLATE,  iconColor: SLATE,  href: '/terminal/settings' },
 ]
