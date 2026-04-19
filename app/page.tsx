@@ -1,4 +1,4 @@
-// TEST: Codex is using the correct instructions
+// TEMP: remove me after test
 
 'use client'
 
