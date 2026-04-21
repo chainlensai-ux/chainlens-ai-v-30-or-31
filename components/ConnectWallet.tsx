@@ -1,7 +1,7 @@
 'use client'
 
 import { useWeb3Modal } from '@web3modal/wagmi/react'
-import { useAccount } from '@wagmi/react'
+import { useAccount } from 'wagmi'
 
 export default function ConnectWallet() {
   const { open } = useWeb3Modal()
