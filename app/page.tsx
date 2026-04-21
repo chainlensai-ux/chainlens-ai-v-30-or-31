@@ -146,7 +146,7 @@ export default function HomePage() {
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: '60px 24px 40px',
+          padding: '76px 24px 52px',
           position: 'relative',
           zIndex: 1,
           textAlign: 'center',
@@ -156,25 +156,26 @@ export default function HomePage() {
           <div style={{
             display: 'inline-flex',
             alignItems: 'center',
-            gap: '7px',
-            background: 'rgba(255,255,255,0.05)',
-            border: '1px solid rgba(139,92,246,0.28)',
+            gap: '8px',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(139,92,246,0.30)',
             borderRadius: '999px',
-            padding: '5px 14px',
-            marginBottom: '28px',
+            padding: '6px 18px',
+            marginBottom: '24px',
+            boxShadow: '0 0 24px rgba(139,92,246,0.10), 0 1px 0 rgba(255,255,255,0.04) inset',
           }}>
             <span style={{
               width: '6px', height: '6px', borderRadius: '50%',
               background: '#4ade80',
-              boxShadow: '0 0 7px #4ade80',
+              boxShadow: '0 0 8px rgba(74,222,128,0.8)',
               display: 'inline-block',
               flexShrink: 0,
             }} />
             <span style={{
               fontSize: '10px',
               fontWeight: 700,
-              letterSpacing: '0.15em',
-              color: 'rgba(255,255,255,0.75)',
+              letterSpacing: '0.16em',
+              color: 'rgba(255,255,255,0.70)',
               fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               textTransform: 'uppercase',
             }}>
@@ -184,46 +185,37 @@ export default function HomePage() {
 
           {/* Headline */}
           <h1 style={{
-            fontSize: 'clamp(52px, 7vw, 80px)',
+            fontSize: 'clamp(48px, 6.5vw, 76px)',
             fontWeight: 800,
-            lineHeight: 1.08,
-            letterSpacing: '-0.02em',
-            margin: '0 0 24px',
-            maxWidth: '820px',
+            lineHeight: 1.06,
+            letterSpacing: '-0.025em',
+            margin: '0 0 20px',
+            maxWidth: '780px',
           }}>
             {/* Line 1 — white */}
-            <span style={{ color: '#ffffff', display: 'block' }}>
+            <span style={{ color: '#f8fafc', display: 'block' }}>
               See what whales do
             </span>
-            {/* Line 2 — pink → purple gradient */}
+            {/* Line 2 — pink → indigo gradient (merged with "does") */}
             <span style={{
               display: 'block',
-              background: 'linear-gradient(90deg, #ec4899 0%, #a855f7 50%, #818cf8 100%)',
+              background: 'linear-gradient(95deg, #ec4899 0%, #a855f7 45%, #818cf8 80%, #6366f1 100%)',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
               backgroundClip: 'text',
             }}>
-              before everyone else
-            </span>
-            {/* Line 3 — purple */}
-            <span style={{
-              display: 'block',
-              background: 'linear-gradient(90deg, #a855f7 0%, #8b5cf6 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              backgroundClip: 'text',
-            }}>
-              does
+              before everyone else does
             </span>
           </h1>
 
           {/* Subtext */}
           <p style={{
-            fontSize: '16px',
-            color: 'rgba(255,255,255,0.55)',
-            lineHeight: 1.65,
-            maxWidth: '480px',
-            margin: '0 0 36px',
+            fontSize: '17px',
+            color: 'rgba(255,255,255,0.48)',
+            lineHeight: 1.7,
+            maxWidth: '520px',
+            margin: '0 0 32px',
+            fontWeight: 400,
           }}>
             Ask Clark anything — scan wallets, find early pumps, track
             smart money, and get real-time onchain intelligence.
@@ -232,44 +224,47 @@ export default function HomePage() {
           {/* Prompt box */}
           <div className="clark-input-box" style={{
             width: '100%',
-            maxWidth: '520px',
-            background: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(139,92,246,0.28)',
-            borderRadius: '16px',
-            padding: '20px 20px 16px',
-            marginBottom: '28px',
+            maxWidth: '600px',
+            background: 'rgba(255,255,255,0.025)',
+            border: '1px solid rgba(139,92,246,0.25)',
+            borderRadius: '18px',
+            padding: '20px 20px 18px',
+            marginBottom: '32px',
+            boxShadow: '0 4px 40px rgba(0,0,0,0.3), 0 1px 0 rgba(255,255,255,0.04) inset',
           }}>
 
-            {/* Action chips — 3 rows */}
-            <div className="mob-hero-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginBottom: '18px' }}>
+            {/* Action chips */}
+            <div className="mob-hero-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', justifyContent: 'center', marginBottom: '18px' }}>
               {CHIPS.map(chip => (
                 <button
                   key={chip}
                   onClick={() => setQuery(chip)}
                   style={{
-                    background: 'rgba(255,255,255,0.05)',
-                    border: '1px solid rgba(255,255,255,0.15)',
+                    background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(255,255,255,0.10)',
                     borderRadius: '999px',
-                    padding: '5px 13px',
-                    fontSize: '9.5px',
+                    padding: '6px 14px',
+                    fontSize: '10px',
                     fontWeight: 600,
-                    letterSpacing: '0.10em',
-                    color: 'rgba(255,255,255,0.7)',
+                    letterSpacing: '0.08em',
+                    color: 'rgba(255,255,255,0.60)',
                     cursor: 'pointer',
                     textTransform: 'uppercase',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                    transition: 'border-color 0.15s, color 0.15s',
+                    transition: 'border-color 0.15s, color 0.15s, background 0.15s',
                     whiteSpace: 'nowrap',
                   }}
                   onMouseEnter={e => {
                     const el = e.currentTarget as HTMLButtonElement
-                    el.style.borderColor = 'rgba(139,92,246,0.6)'
-                    el.style.color = '#fff'
+                    el.style.borderColor = 'rgba(139,92,246,0.45)'
+                    el.style.color = 'rgba(255,255,255,0.90)'
+                    el.style.background = 'rgba(139,92,246,0.08)'
                   }}
                   onMouseLeave={e => {
                     const el = e.currentTarget as HTMLButtonElement
-                    el.style.borderColor = 'rgba(255,255,255,0.15)'
-                    el.style.color = 'rgba(255,255,255,0.7)'
+                    el.style.borderColor = 'rgba(255,255,255,0.10)'
+                    el.style.color = 'rgba(255,255,255,0.60)'
+                    el.style.background = 'rgba(255,255,255,0.04)'
                   }}
                 >
                   {chip}
@@ -278,10 +273,16 @@ export default function HomePage() {
             </div>
 
             {/* Divider */}
-            <div style={{ height: '1px', background: 'rgba(255,255,255,0.07)', marginBottom: '14px' }} />
+            <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', marginBottom: '14px' }} />
 
             {/* Input row */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '10px',
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px solid rgba(255,255,255,0.07)',
+              borderRadius: '10px',
+              padding: '8px 8px 8px 14px',
+            }}>
               <input
                 type="text"
                 value={query}
@@ -300,7 +301,7 @@ export default function HomePage() {
                   background: 'transparent',
                   border: 'none',
                   outline: 'none',
-                  color: 'rgba(255,255,255,0.75)',
+                  color: 'rgba(255,255,255,0.80)',
                   fontSize: '13px',
                   fontFamily: 'inherit',
                   minWidth: 0,
@@ -315,18 +316,19 @@ export default function HomePage() {
                   }
                 }}
                 style={{
-                  width: '34px',
-                  height: '34px',
+                  width: '36px',
+                  height: '36px',
                   borderRadius: '50%',
-                  background: '#8b5cf6',
+                  background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   flexShrink: 0,
-                  boxShadow: '0 0 16px rgba(139,92,246,0.5)',
-                  border: 'none',
+                  boxShadow: '0 0 18px rgba(139,92,246,0.55)',
+                  border: '1px solid rgba(139,92,246,0.50)',
                   cursor: 'pointer',
                   padding: 0,
+                  transition: 'box-shadow 0.15s, transform 0.15s',
                 }}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -338,37 +340,32 @@ export default function HomePage() {
             {/* Box footer */}
             <div style={{
               display: 'flex',
-              justifyContent: 'space-between',
               alignItems: 'center',
+              gap: '6px',
               marginTop: '12px',
             }}>
               <span style={{
+                width: '5px', height: '5px', borderRadius: '50%',
+                background: '#4ade80',
+                boxShadow: '0 0 5px rgba(74,222,128,0.7)',
+                flexShrink: 0,
+              }} />
+              <span style={{
                 fontSize: '9px',
                 fontWeight: 600,
-                color: 'rgba(255,255,255,0.25)',
+                color: 'rgba(255,255,255,0.22)',
                 letterSpacing: '0.13em',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 textTransform: 'uppercase',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '5px',
               }}>
-                <span style={{ fontSize: '11px', opacity: 0.5 }}>⊙</span>
-                CORTEX
-              </span>
-              <span style={{
-                fontSize: '9px',
-                color: 'rgba(255,255,255,0.2)',
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-              }}>
-                Ask anything — powered by CORTEX
+                Live · Powered by CORTEX
               </span>
             </div>
 
           </div>
 
           {/* CTA buttons */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
 
             {/* Primary — Enter Terminal */}
             <Link href="/terminal" className="mob-cta-primary" style={{
@@ -410,31 +407,35 @@ export default function HomePage() {
             </Link>
 
             {/* Secondary pair */}
-            <div className="mob-cta-secondary" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+            <div className="mob-cta-secondary" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
               <ConnectWallet />
               <Link href="/app" style={{
-                display: 'inline-block',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 padding: '11px 28px',
                 borderRadius: '10px',
-                background: 'rgba(139,92,246,0.18)',
-                color: 'rgba(255,255,255,0.75)',
+                background: 'rgba(139,92,246,0.12)',
+                color: 'rgba(255,255,255,0.72)',
                 fontSize: '12px',
                 fontWeight: 700,
                 letterSpacing: '0.10em',
                 textTransform: 'uppercase',
                 textDecoration: 'none',
-                border: '1px solid rgba(139,92,246,0.35)',
-                transition: 'background 0.15s, color 0.15s',
+                border: '1px solid rgba(139,92,246,0.28)',
+                transition: 'background 0.15s, color 0.15s, border-color 0.15s',
               }}
                 onMouseEnter={e => {
                   const el = e.currentTarget as HTMLAnchorElement
-                  el.style.background = 'rgba(139,92,246,0.28)'
-                  el.style.color      = '#fff'
+                  el.style.background   = 'rgba(139,92,246,0.24)'
+                  el.style.color        = '#fff'
+                  el.style.borderColor  = 'rgba(139,92,246,0.50)'
                 }}
                 onMouseLeave={e => {
                   const el = e.currentTarget as HTMLAnchorElement
-                  el.style.background = 'rgba(139,92,246,0.18)'
-                  el.style.color      = 'rgba(255,255,255,0.75)'
+                  el.style.background   = 'rgba(139,92,246,0.12)'
+                  el.style.color        = 'rgba(255,255,255,0.72)'
+                  el.style.borderColor  = 'rgba(139,92,246,0.28)'
                 }}
               >
                 Start Free
@@ -448,19 +449,31 @@ export default function HomePage() {
         <div style={{
           position: 'relative',
           zIndex: 1,
-          borderTop: '1px solid rgba(255,255,255,0.07)',
-          background: '#05050c',
-          height: '40px',
+          borderTop: '1px solid rgba(255,255,255,0.06)',
+          background: 'linear-gradient(180deg, #04040b 0%, #05050c 100%)',
+          height: '44px',
           overflow: 'hidden',
           display: 'flex',
           alignItems: 'center',
         }}>
+          {/* Edge fade — left */}
+          <div style={{
+            position: 'absolute', left: 0, top: 0, bottom: 0, width: '80px',
+            background: 'linear-gradient(90deg, #05050c 0%, transparent 100%)',
+            zIndex: 2, pointerEvents: 'none',
+          }} />
+          {/* Edge fade — right */}
+          <div style={{
+            position: 'absolute', right: 0, top: 0, bottom: 0, width: '80px',
+            background: 'linear-gradient(270deg, #05050c 0%, transparent 100%)',
+            zIndex: 2, pointerEvents: 'none',
+          }} />
           {/* Double the list so the scroll loops seamlessly */}
           <div style={{
             display: 'flex',
             gap: '0',
             whiteSpace: 'nowrap',
-            animation: 'ticker-scroll 40s linear infinite',
+            animation: 'ticker-scroll 44s linear infinite',
             willChange: 'transform',
           }}>
             {[...TICKER, ...TICKER].map((t, i) => (
@@ -469,16 +482,16 @@ export default function HomePage() {
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '6px',
-                  padding: '0 28px',
-                  fontSize: '12px',
-                  color: 'rgba(255,255,255,0.55)',
+                  gap: '7px',
+                  padding: '0 32px',
+                  fontSize: '11.5px',
+                  color: 'rgba(255,255,255,0.45)',
                   fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                  borderRight: '1px solid rgba(255,255,255,0.07)',
+                  borderRight: '1px solid rgba(255,255,255,0.05)',
                 }}
               >
-                <span style={{ fontWeight: 600, color: 'rgba(255,255,255,0.8)' }}>{t.sym}</span>
-                <span>{t.price}</span>
+                <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
+                <span style={{ color: 'rgba(255,255,255,0.40)' }}>{t.price}</span>
                 <span style={{ color: '#4ade80', fontWeight: 600 }}>{t.pct}</span>
               </span>
             ))}
