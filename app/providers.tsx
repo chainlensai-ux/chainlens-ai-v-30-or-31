@@ -9,7 +9,7 @@ const queryClient = new QueryClient()
 
 createWeb3Modal({
   wagmiConfig,
-  projectId,
+  projectId
 })
 
 export function Providers({ children }: { children: React.ReactNode }) {
