@@ -103,6 +103,29 @@ const FEATURES = [
   },
 ]
 
+const PREVIEWS = [
+  {
+    accent: '#2DD4BF',
+    title: 'Trending Tokens',
+    desc: "A clean overview of what's moving on-chain. Shows which tokens are gaining attention, volume, or momentum.",
+  },
+  {
+    accent: '#ec4899',
+    title: 'Smart Money Moves',
+    desc: 'A preview of how ChainLens will track high-value wallets and their actions in real time.',
+  },
+  {
+    accent: '#8b5cf6',
+    title: 'Liquidity Scanner',
+    desc: 'An overview of how ChainLens will analyze liquidity health, LP status, and contract safety.',
+  },
+  {
+    accent: '#60a5fa',
+    title: 'Token Scan + Clark AI',
+    desc: 'A preview of how ChainLens AI will break down any token and provide insights, risks, and context.',
+  },
+]
+
 export default function HomePage() {
   const [query, setQuery] = useState('')
   const [showClarkPanel, setShowClarkPanel] = useState(false)
@@ -634,6 +657,165 @@ export default function HomePage() {
                 }}>
                   {f.body}
                 </p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ── Live Intelligence Preview ─────────────────────────────────────── */}
+        <section style={{
+          position: 'relative', zIndex: 1,
+          padding: '0 24px 96px',
+          maxWidth: '1120px',
+          margin: '0 auto',
+          width: '100%',
+        }}>
+          {/* Section header */}
+          <div style={{ textAlign: 'center', marginBottom: '52px' }}>
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: '7px',
+              marginBottom: '16px',
+            }}>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #ec4899)' }} />
+              <span style={{
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em',
+                color: '#ec4899', textTransform: 'uppercase',
+                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+              }}>Live Preview</span>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #ec4899, transparent)' }} />
+            </div>
+            <h2 style={{
+              fontSize: 'clamp(28px, 3.8vw, 42px)', fontWeight: 800,
+              letterSpacing: '-0.02em', lineHeight: 1.1,
+              color: '#f8fafc', margin: '0 0 14px',
+            }}>
+              Live Intelligence Preview
+            </h2>
+            <p style={{
+              fontSize: '15px', color: 'rgba(255,255,255,0.38)',
+              maxWidth: '420px', margin: '0 auto', lineHeight: 1.65,
+            }}>
+              A glimpse of the intelligence ChainLens surfaces — live, onchain, and AI-powered.
+            </p>
+          </div>
+
+          {/* 2 × 2 grid */}
+          <div className="feat-grid" style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: '20px',
+          }}>
+            {PREVIEWS.map((p, i) => (
+              <div
+                key={p.title}
+                className="feat-card"
+                style={{
+                  background: 'linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: '20px',
+                  padding: '28px',
+                  backdropFilter: 'blur(12px)',
+                  WebkitBackdropFilter: 'blur(12px)',
+                  boxShadow: '0 4px 24px rgba(0,0,0,0.28)',
+                  animationDelay: `${i * 0.10}s`,
+                  position: 'relative',
+                  overflow: 'hidden',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = `${p.accent}44`
+                  el.style.boxShadow = `0 16px 48px ${p.accent}12, 0 4px 16px rgba(0,0,0,0.40)`
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = 'rgba(255,255,255,0.07)'
+                  el.style.boxShadow = '0 4px 24px rgba(0,0,0,0.28)'
+                }}
+              >
+                {/* Top accent line */}
+                <div style={{
+                  position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
+                  background: `linear-gradient(90deg, transparent, ${p.accent}44, transparent)`,
+                }} />
+
+                {/* Card header */}
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '6px',
+                    marginBottom: '8px',
+                  }}>
+                    <div style={{
+                      width: '6px', height: '6px', borderRadius: '50%',
+                      background: p.accent,
+                      boxShadow: `0 0 8px ${p.accent}99`,
+                    }} />
+                    <span style={{
+                      fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em',
+                      color: p.accent, textTransform: 'uppercase',
+                      fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    }}>Preview</span>
+                  </div>
+                  <h3 style={{
+                    fontSize: '16px', fontWeight: 700,
+                    color: '#f1f5f9', margin: '0 0 8px',
+                    letterSpacing: '-0.01em',
+                  }}>
+                    {p.title}
+                  </h3>
+                  <p style={{
+                    fontSize: '13px', lineHeight: 1.65,
+                    color: 'rgba(255,255,255,0.38)',
+                    margin: 0,
+                  }}>
+                    {p.desc}
+                  </p>
+                </div>
+
+                {/* Placeholder box */}
+                <div style={{
+                  height: '180px',
+                  borderRadius: '12px',
+                  background: 'linear-gradient(160deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.008) 100%)',
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '10px',
+                  position: 'relative',
+                  overflow: 'hidden',
+                }}>
+                  {/* Faint dot grid */}
+                  <div style={{
+                    position: 'absolute', inset: 0, pointerEvents: 'none',
+                    backgroundImage: 'radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)',
+                    backgroundSize: '20px 20px',
+                  }} />
+                  {/* Center label */}
+                  <div style={{
+                    position: 'relative', zIndex: 1,
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px',
+                  }}>
+                    <div style={{
+                      padding: '5px 14px', borderRadius: '999px',
+                      background: `${p.accent}12`,
+                      border: `1px solid ${p.accent}30`,
+                      fontSize: '9px', fontWeight: 700,
+                      letterSpacing: '0.16em', textTransform: 'uppercase',
+                      color: p.accent, opacity: 0.85,
+                      fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    }}>
+                      Coming Live
+                    </div>
+                    <span style={{
+                      fontSize: '11px', color: 'rgba(255,255,255,0.18)',
+                      fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                      letterSpacing: '0.06em',
+                    }}>
+                      Intelligence loading…
+                    </span>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
