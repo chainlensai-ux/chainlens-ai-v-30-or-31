@@ -76,6 +76,10 @@ export default function HomePage() {
         .clark-input-box {
           animation: input-glow 3s ease-in-out infinite;
         }
+        @media (max-width: 767px) {
+          .mob-hero-main { padding: 40px 16px 28px !important; }
+          .mob-hero-chips { justify-content: flex-start !important; overflow-x: auto !important; flex-wrap: nowrap !important; padding-bottom: 4px !important; -webkit-overflow-scrolling: touch !important; }
+        }
       `}</style>
 
       <Navbar />
@@ -136,7 +140,7 @@ export default function HomePage() {
         }} />
 
         {/* Hero */}
-        <main style={{
+        <main className="mob-hero-main" style={{
           flex: 1,
           display: 'flex',
           flexDirection: 'column',
@@ -237,7 +241,7 @@ export default function HomePage() {
           }}>
 
             {/* Action chips — 3 rows */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginBottom: '18px' }}>
+            <div className="mob-hero-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginBottom: '18px' }}>
               {CHIPS.map(chip => (
                 <button
                   key={chip}
@@ -367,7 +371,7 @@ export default function HomePage() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
 
             {/* Primary — Enter Terminal */}
-            <Link href="/terminal" style={{
+            <Link href="/terminal" className="mob-cta-primary" style={{
               display: 'inline-flex',
               alignItems: 'center',
               gap: '10px',
@@ -406,7 +410,7 @@ export default function HomePage() {
             </Link>
 
             {/* Secondary pair */}
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+            <div className="mob-cta-secondary" style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
               <ConnectWallet />
               <Link href="/app" style={{
                 display: 'inline-block',

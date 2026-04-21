@@ -284,7 +284,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
   const router = useRouter()
   return (
     <aside
-      className="h-screen shrink-0 flex flex-col"
+      className="h-screen shrink-0 flex flex-col mob-featurebar"
       style={{
         width: '240px',
         background: '#06060a',

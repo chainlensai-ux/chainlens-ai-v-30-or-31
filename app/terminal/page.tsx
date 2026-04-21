@@ -44,14 +44,14 @@ export default function TerminalPage() {
         />
 
         <main
-          className="flex-1 overflow-y-auto min-w-0 flex flex-col"
+          className="flex-1 overflow-y-auto min-w-0 flex flex-col mob-terminal-main"
           style={{ position: 'relative', zIndex: 1 }}
         >
           <ClarkChat mode="hero" active={active} onTyping={setIsTyping} onSend={(msg) => setPendingMessage(msg)} />
         </main>
 
         <aside
-          className="shrink-0 overflow-y-auto"
+          className="shrink-0 overflow-y-auto mob-radar"
           style={{
             width: isTyping ? '750px' : '500px',
             transition: 'width 300ms ease',

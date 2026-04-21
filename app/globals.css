@@ -98,3 +98,48 @@ html, body {
   height: 100%;
   overflow-x: hidden !important;
 }
+
+/* ── Mobile layout helpers (≤ 767px) ─────────────────────────────────────── */
+
+/* Safe-area padding for iPhone notches */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  body { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* Hamburger — hidden on desktop, shown on mobile */
+.mob-ham { display: none; }
+
+@media (max-width: 767px) {
+  /* Navbar: hide desktop links/auth, show hamburger */
+  .mob-nav-links { display: none !important; }
+  .mob-auth-wrap  { display: none !important; }
+  .mob-ham        { display: flex !important; }
+
+  /* Terminal: hide FeatureBar sidebar */
+  .mob-featurebar { display: none !important; }
+
+  /* Terminal: hide ClarkRadar right panel */
+  .mob-radar { display: none !important; }
+
+  /* Ensure terminal main fills viewport when sidebar is hidden */
+  .mob-terminal-main { height: 100vh !important; overflow-y: auto !important; }
+
+  /* Homepage CTA: stretch primary button full-width */
+  .mob-cta-primary {
+    width: 100% !important;
+    justify-content: center !important;
+    padding-left: 20px !important;
+    padding-right: 20px !important;
+  }
+  .mob-cta-secondary {
+    width: 100% !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .mob-cta-secondary > * {
+    width: 100% !important;
+    justify-content: center !important;
+    text-align: center !important;
+  }
+}

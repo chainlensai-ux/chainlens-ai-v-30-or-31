@@ -61,6 +61,7 @@ const TIER_COLUMNS = [
 
 export default function Navbar() {
   const [open, setOpen] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
 
   return (
     <>
@@ -184,6 +185,38 @@ export default function Navbar() {
           transform: translateY(-1px);
           box-shadow: 0 0 28px rgba(45,212,191,0.55), 0 0 28px rgba(139,92,246,0.35);
         }
+
+        /* ── Mobile hamburger ── */
+        .mob-ham {
+          width: 36px; height: 36px; border-radius: 8px;
+          background: none; border: 1px solid rgba(255,255,255,0.10);
+          cursor: pointer; flex-shrink: 0; margin-left: auto;
+          align-items: center; justify-content: center;
+          flex-direction: column; gap: 5px; padding: 0;
+        }
+        .mob-ham span {
+          display: block; width: 18px; height: 1.5px;
+          background: rgba(255,255,255,0.65); border-radius: 1px;
+          transition: transform 0.2s, opacity 0.2s;
+        }
+        .mob-ham.is-open span:nth-child(1) { transform: translateY(6.5px) rotate(45deg); }
+        .mob-ham.is-open span:nth-child(2) { opacity: 0; transform: scaleX(0); }
+        .mob-ham.is-open span:nth-child(3) { transform: translateY(-6.5px) rotate(-45deg); }
+
+        .mob-nav-menu-link {
+          display: flex; align-items: center;
+          padding: 15px 4px;
+          font-size: 16px; font-weight: 600;
+          color: rgba(255,255,255,0.65); text-decoration: none;
+          border-bottom: 1px solid rgba(255,255,255,0.05);
+          transition: color 0.15s;
+          font-family: var(--font-inter, Inter, sans-serif);
+        }
+        .mob-nav-menu-link:hover { color: #fff; }
+
+        @media (max-width: 767px) {
+          .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
+        }
       `}</style>
 
       <nav style={{
@@ -235,7 +268,16 @@ export default function Navbar() {
             </div>
           </Link>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '32px', flex: 1 }}>
+          {/* ── Mobile hamburger (hidden on desktop) ── */}
+          <button
+            className={`mob-ham${mobileOpen ? ' is-open' : ''}`}
+            onClick={() => setMobileOpen(o => !o)}
+            aria-label="Toggle navigation"
+          >
+            <span /><span /><span />
+          </button>
+
+          <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '32px', flex: 1 }}>
             <div style={{ position: 'relative' }}>
               <button
                 className={`tools-btn${open ? ' open' : ''}`}
@@ -343,7 +385,7 @@ export default function Navbar() {
           </div>
 
           {/* ── Auth buttons ───────────────────────────────── */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
             <Link href="/auth"     className="btn-signin">Sign In</Link>
             <Link href="/app"      className="btn-access">Get Access</Link>
             <Link href="/terminal" className="btn-terminal">Enter Terminal</Link>
@@ -351,6 +393,58 @@ export default function Navbar() {
 
         </div>
       </nav>
+
+      {/* ── Mobile menu overlay ─────────────────────────────────────────── */}
+      {mobileOpen && (
+        <div style={{
+          position: 'fixed',
+          top: '60px', left: 0, right: 0, bottom: 0,
+          background: 'rgba(8,12,20,0.97)',
+          backdropFilter: 'blur(20px)',
+          WebkitBackdropFilter: 'blur(20px)',
+          zIndex: 199,
+          display: 'flex',
+          flexDirection: 'column',
+          padding: '8px 20px 32px',
+          overflowY: 'auto',
+          borderTop: '1px solid rgba(255,255,255,0.06)',
+        }}>
+          <Link href="/terminal" className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Terminal</Link>
+          <Link href="/pricing"  className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Pricing</Link>
+          <Link href="/about"    className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
+
+          <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '16px 0' }} />
+
+          <Link href="/auth" onClick={() => setMobileOpen(false)} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '13px 20px', borderRadius: '10px',
+            border: '1px solid rgba(255,255,255,0.12)',
+            color: 'rgba(255,255,255,0.70)', fontSize: '14px', fontWeight: 600,
+            textDecoration: 'none', marginBottom: '8px',
+            fontFamily: 'var(--font-inter, Inter, sans-serif)',
+          }}>Sign In</Link>
+
+          <Link href="/app" onClick={() => setMobileOpen(false)} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '13px 20px', borderRadius: '10px',
+            background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.30)',
+            color: 'rgba(255,255,255,0.75)', fontSize: '14px', fontWeight: 600,
+            textDecoration: 'none', marginBottom: '8px',
+            fontFamily: 'var(--font-inter, Inter, sans-serif)',
+          }}>Get Access</Link>
+
+          <Link href="/terminal" onClick={() => setMobileOpen(false)} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '15px 20px', borderRadius: '10px',
+            background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
+            color: '#04101a', fontSize: '14px', fontWeight: 800,
+            letterSpacing: '0.08em', textTransform: 'uppercase',
+            textDecoration: 'none',
+            boxShadow: '0 0 18px rgba(45,212,191,0.35)',
+            fontFamily: 'var(--font-inter, Inter, sans-serif)',
+          }}>Enter Terminal</Link>
+        </div>
+      )}
     </>
   )
 }
