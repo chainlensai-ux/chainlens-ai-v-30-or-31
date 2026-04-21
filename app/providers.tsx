@@ -1,6 +1,6 @@
 'use client'
 
-import { WagmiProvider } from '@wagmi/react'
+import { WagmiProvider } from 'wagmi'
 import { createWeb3Modal } from '@web3modal/wagmi/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig, projectId } from '@/lib/wallet'
