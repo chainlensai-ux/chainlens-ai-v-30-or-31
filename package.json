@@ -12,7 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
     "@web3modal/wagmi": "4.1.0",
-    "@wagmi/core": "2.10.5",
+    "@wagmi/core": "2.6.5",
     "@wagmi/connectors": "4.1.14",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
