@@ -19,7 +19,9 @@
       }
     ],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "wagmi": ["./node_modules/@wagmi/react"],
+      "wagmi/*": ["./node_modules/@wagmi/react/*"]
     }
   },
   "include": [
