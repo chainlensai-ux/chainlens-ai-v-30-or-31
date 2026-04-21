@@ -5,6 +5,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import HomeClarkPanel from '@/components/HomeClarkPanel'
+import ConnectWallet from '@/components/ConnectWallet'
 
 // ─── Action chips inside the prompt box ───────────────────────────────────
 
@@ -406,33 +407,7 @@ export default function HomePage() {
 
             {/* Secondary pair */}
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
-              <button
-                style={{
-                  padding: '11px 28px',
-                  borderRadius: '10px',
-                  background: 'transparent',
-                  color: 'rgba(255,255,255,0.65)',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  letterSpacing: '0.10em',
-                  textTransform: 'uppercase',
-                  border: '1px solid rgba(255,255,255,0.18)',
-                  cursor: 'pointer',
-                  transition: 'border-color 0.15s, color 0.15s',
-                }}
-                onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLButtonElement
-                  el.style.borderColor = 'rgba(255,255,255,0.38)'
-                  el.style.color       = '#fff'
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLButtonElement
-                  el.style.borderColor = 'rgba(255,255,255,0.18)'
-                  el.style.color       = 'rgba(255,255,255,0.65)'
-                }}
-              >
-                Connect Wallet
-              </button>
+              <ConnectWallet />
               <Link href="/app" style={{
                 display: 'inline-block',
                 padding: '11px 28px',
