@@ -3,7 +3,6 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import ConnectWallet from '@/components/ConnectWallet'
 
 const TERMINAL_TOOLS = [
   { icon: '🧪', name: 'Token Scanner',   href: '/terminal/token-scanner', tier: 'free'  },
@@ -355,7 +354,6 @@ export default function Navbar() {
 
           {/* ── Auth buttons ───────────────────────────────── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-            <ConnectWallet />
             <Link href="/auth"     className="btn-signin">Sign In</Link>
             <Link href="/app"      className="btn-access">Get Access</Link>
             <Link href="/terminal" className="btn-terminal">Enter Terminal</Link>
