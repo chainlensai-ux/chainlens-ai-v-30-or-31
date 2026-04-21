@@ -120,7 +120,6 @@ export default function Navbar() {
           transform: translateX(3px);
         }
 
-        /* Dropdown slide animation */
         @keyframes tools-slide-in {
           from { opacity: 0; transform: translateY(-6px) scaleY(0.97); }
           to   { opacity: 1; transform: translateY(0)   scaleY(1); }
@@ -197,12 +196,10 @@ export default function Navbar() {
         backdropFilter: 'blur(24px)',
         WebkitBackdropFilter: 'blur(24px)',
         borderBottom: '1px solid rgba(255,255,255,0.06)',
-        /* subtle teal glow peeking from under the bar */
         boxShadow: '0 1px 0 rgba(255,255,255,0.04), 0 4px 32px rgba(45,212,191,0.06)',
         overflow: 'visible',
       }}>
 
-        {/* Very thin teal gradient line at the very top */}
         <div style={{
           position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
           background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.50) 30%, rgba(139,92,246,0.40) 65%, transparent 100%)',
@@ -219,7 +216,6 @@ export default function Navbar() {
           gap: '32px',
         }}>
 
-          {/* ── Logo ───────────────────────────────────────── */}
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none', flexShrink: 0 }}>
             <Image src="/cl-logo.png" alt="ChainLens AI" width={36} height={36} />
             <div>
@@ -240,10 +236,7 @@ export default function Navbar() {
             </div>
           </Link>
 
-          {/* ── Nav links (grouped left with logo) ────────── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '32px', flex: 1 }}>
-
-            {/* Tools dropdown */}
             <div style={{ position: 'relative' }}>
               <button
                 className={`tools-btn${open ? ' open' : ''}`}
@@ -282,7 +275,6 @@ export default function Navbar() {
                   }}
                   onMouseDown={e => e.preventDefault()}
                 >
-                  {/* Gradient accent top */}
                   <div style={{
                     position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px',
                     background: 'linear-gradient(90deg, transparent, rgba(236,72,153,0.35), rgba(45,212,191,0.35), rgba(251,191,36,0.35), transparent)',
@@ -298,7 +290,6 @@ export default function Navbar() {
                         animationDelay: `${ci * 0.06}s`,
                       }}
                     >
-                      {/* Column header */}
                       <div style={{
                         display: 'flex', alignItems: 'center', gap: '6px',
                         padding: '6px 8px 8px',
@@ -313,7 +304,6 @@ export default function Navbar() {
                         }}>{col.tier}</span>
                       </div>
 
-                      {/* Tools in this tier */}
                       {col.tools.map((t, ti) => (
                         <Link
                           key={`${col.tier}-${t.name}`}
