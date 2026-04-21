@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
+import ConnectWallet from '@/components/ConnectWallet'
 
 
 
@@ -366,40 +367,9 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
           gap: '6px',
         }}
       >
-        {/* Connect Wallet — full width, premium mint */}
-        <button
-          className="w-full active:scale-[0.98]"
-          style={{
-            height: '36px',
-            borderRadius: '10px',
-            background: 'linear-gradient(90deg, #2DD4BF 0%, #0d9488 100%)',
-            color: '#021a18',
-            fontSize: '13px',
-            fontWeight: 700,
-            letterSpacing: '0.025em',
-            border: 'none',
-            cursor: 'pointer',
-            fontFamily: 'var(--font-inter)',
-            boxShadow: '0 0 28px rgba(45,212,191,0.35), 0 2px 8px rgba(0,0,0,0.4)',
-            transition: 'box-shadow 0.15s, opacity 0.15s',
-          }}
-          onMouseEnter={e => {
-            const el = e.currentTarget as HTMLButtonElement
-            el.style.boxShadow = '0 0 44px rgba(45,212,191,0.55), 0 2px 10px rgba(0,0,0,0.4)'
-            el.style.opacity   = '0.94'
-          }}
-          onMouseLeave={e => {
-            const el = e.currentTarget as HTMLButtonElement
-            el.style.boxShadow = '0 0 28px rgba(45,212,191,0.35), 0 2px 8px rgba(0,0,0,0.4)'
-            el.style.opacity   = '1'
+        {/* Connect Wallet — full width */}
+        <ConnectWallet className="w-full active:scale-[0.98]" />
 
-          }}
-        >
-          Connect Wallet
-        </button>
-
-
-=======
         {/* Sign In | Sign Up */}
         <div className="flex" style={{ gap: '6px' }}>
           {/* Sign In — dark neutral ghost */}
