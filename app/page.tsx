@@ -42,7 +42,66 @@ const TICKER = [
   { sym: 'FTM',  price: '$0.0471', pct: '+3.84%' },
 ]
 
-// ─── Page ─────────────────────────────────────────────────────────────────
+// ─── Feature cards ────────────────────────────────────────────────────────────
+
+const FEATURES = [
+  {
+    accent: '#2DD4BF',
+    grad: 'linear-gradient(90deg, #2DD4BF 0%, #22d3ee 100%)',
+    borderColor: 'rgba(45,212,191,0.16)',
+    hoverBorder: 'rgba(45,212,191,0.42)',
+    hoverShadow: '0 16px 56px rgba(45,212,191,0.14), 0 4px 20px rgba(0,0,0,0.45)',
+    title: 'Scan Wallets Instantly',
+    body: 'See everything inside any wallet — tokens, positions, PnL, behavior patterns, smart money tags, and chain activity.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="16" cy="15" r="1.5"/>
+      </svg>
+    ),
+  },
+  {
+    accent: '#ec4899',
+    grad: 'linear-gradient(90deg, #ec4899 0%, #f472b6 100%)',
+    borderColor: 'rgba(236,72,153,0.16)',
+    hoverBorder: 'rgba(236,72,153,0.42)',
+    hoverShadow: '0 16px 56px rgba(236,72,153,0.12), 0 4px 20px rgba(0,0,0,0.45)',
+    title: 'Real-Time Onchain Intelligence',
+    body: 'Track whale movements, early pumps, deployer activity, and market shifts as they happen — not after.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+    ),
+  },
+  {
+    accent: '#8b5cf6',
+    grad: 'linear-gradient(90deg, #8b5cf6 0%, #a78bfa 100%)',
+    borderColor: 'rgba(139,92,246,0.16)',
+    hoverBorder: 'rgba(139,92,246,0.42)',
+    hoverShadow: '0 16px 56px rgba(139,92,246,0.14), 0 4px 20px rgba(0,0,0,0.45)',
+    title: 'Advanced Token Scanner',
+    body: 'Paste any contract and get instant AI analysis: price, liquidity, holders, deployer history, risk score, bytecode flags, and social momentum.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
+      </svg>
+    ),
+  },
+  {
+    accent: '#60a5fa',
+    grad: 'linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%)',
+    borderColor: 'rgba(96,165,250,0.16)',
+    hoverBorder: 'rgba(96,165,250,0.42)',
+    hoverShadow: '0 16px 56px rgba(96,165,250,0.12), 0 4px 20px rgba(0,0,0,0.45)',
+    title: 'Liquidity Safety Engine',
+    body: 'Detect rugs before they happen. ChainLens checks LP locks, ownership, burns, mint functions, suspicious patterns, and contract risks.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>
+      </svg>
+    ),
+  },
+]
 
 export default function HomePage() {
   const [query, setQuery] = useState('')
@@ -76,9 +135,21 @@ export default function HomePage() {
         .clark-input-box {
           animation: input-glow 3s ease-in-out infinite;
         }
+        @keyframes feat-in {
+          from { opacity: 0; transform: translateY(22px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .feat-card {
+          transition: transform 0.24s cubic-bezier(0.22,1,0.36,1),
+                      box-shadow 0.24s ease, border-color 0.24s ease;
+          animation: feat-in 0.55s ease-out both;
+        }
+        .feat-card:hover { transform: translateY(-6px); }
         @media (max-width: 767px) {
           .mob-hero-main { padding: 40px 16px 28px !important; }
           .mob-hero-chips { justify-content: flex-start !important; overflow-x: auto !important; flex-wrap: nowrap !important; padding-bottom: 4px !important; -webkit-overflow-scrolling: touch !important; }
+          .feat-grid { grid-template-columns: 1fr !important; }
+          .feat-section { padding: 56px 16px 64px !important; }
         }
       `}</style>
 
@@ -444,6 +515,129 @@ export default function HomePage() {
           </div>
 
         </main>
+
+        {/* ── What ChainLens Does ──────────────────────────────────────────── */}
+        <section className="feat-section" style={{
+          position: 'relative', zIndex: 1,
+          padding: '88px 24px 96px',
+          maxWidth: '1120px',
+          margin: '0 auto',
+          width: '100%',
+        }}>
+          {/* Top separator */}
+          <div style={{
+            position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px',
+            background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.25), rgba(139,92,246,0.25), transparent)',
+          }} />
+
+          {/* Section header */}
+          <div style={{ textAlign: 'center', marginBottom: '60px' }}>
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: '7px',
+              marginBottom: '16px',
+            }}>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
+              <span style={{
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em',
+                color: '#2DD4BF', textTransform: 'uppercase',
+                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+              }}>Capabilities</span>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
+            </div>
+            <h2 style={{
+              fontSize: 'clamp(30px, 4vw, 44px)', fontWeight: 800,
+              letterSpacing: '-0.02em', lineHeight: 1.1,
+              color: '#f8fafc', margin: '0 0 16px',
+            }}>
+              What ChainLens Does
+            </h2>
+            <p style={{
+              fontSize: '16px', color: 'rgba(255,255,255,0.42)',
+              maxWidth: '460px', margin: '0 auto', lineHeight: 1.65,
+            }}>
+              Four engines. One platform. Built natively on Base.
+            </p>
+          </div>
+
+          {/* 2 × 2 grid */}
+          <div className="feat-grid" style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: '20px',
+          }}>
+            {FEATURES.map((f, i) => (
+              <div
+                key={f.title}
+                className="feat-card"
+                style={{
+                  background: 'linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%)',
+                  border: `1px solid ${f.borderColor}`,
+                  borderRadius: '20px',
+                  padding: '32px 28px',
+                  backdropFilter: 'blur(12px)',
+                  WebkitBackdropFilter: 'blur(12px)',
+                  boxShadow: '0 4px 24px rgba(0,0,0,0.30)',
+                  animationDelay: `${i * 0.10}s`,
+                  position: 'relative',
+                  overflow: 'hidden',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = f.hoverBorder
+                  el.style.boxShadow   = f.hoverShadow
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = f.borderColor
+                  el.style.boxShadow   = '0 4px 24px rgba(0,0,0,0.30)'
+                }}
+              >
+                {/* Top accent line */}
+                <div style={{
+                  position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
+                  background: `linear-gradient(90deg, transparent 0%, ${f.accent}55 50%, transparent 100%)`,
+                }} />
+
+                {/* Icon */}
+                <div style={{
+                  width: '48px', height: '48px', borderRadius: '14px',
+                  background: `rgba(${f.accent === '#2DD4BF' ? '45,212,191' : f.accent === '#ec4899' ? '236,72,153' : f.accent === '#8b5cf6' ? '139,92,246' : '96,165,250'}, 0.10)`,
+                  border: `1px solid ${f.borderColor}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: f.accent,
+                  marginBottom: '20px',
+                  boxShadow: `0 0 20px ${f.accent}22`,
+                  flexShrink: 0,
+                }}>
+                  {f.icon}
+                </div>
+
+                {/* Title */}
+                <h3 style={{
+                  fontSize: '17px', fontWeight: 700,
+                  letterSpacing: '-0.01em', lineHeight: 1.2,
+                  margin: '0 0 10px',
+                  background: f.grad,
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
+                }}>
+                  {f.title}
+                </h3>
+
+                {/* Body */}
+                <p style={{
+                  fontSize: '14px', lineHeight: 1.7,
+                  color: 'rgba(255,255,255,0.45)',
+                  margin: 0,
+                  fontWeight: 400,
+                }}>
+                  {f.body}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
 
         {/* Bottom token ticker */}
         <div style={{
