@@ -1279,7 +1279,8 @@ export default function HomePage() {
       <footer style={{
         background: '#080c14',
         position: 'relative', zIndex: 1,
-        padding: '56px 32px 40px',
+        padding: '80px 32px 72px',
+        borderTop: '1px solid rgba(255,255,255,0.06)',
       }}>
         {/* Full-width teal gradient top border */}
         <div style={{
@@ -1304,8 +1305,11 @@ export default function HomePage() {
               <span style={{ fontSize: '19px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.02em' }}>ChainLens AI</span>
             </div>
             {/* Tagline */}
-            <div style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.65, marginBottom: '24px', position: 'relative' }}>
+            <div style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.65, marginBottom: '8px', position: 'relative' }}>
               onchain intelligence for Base traders
+            </div>
+            <div style={{ fontSize: '13px', color: '#475569', lineHeight: 1.65, marginBottom: '24px', position: 'relative', maxWidth: '280px' }}>
+              Scan wallets, track whales, detect pumps, and get AI-powered analysis from Clark — all in one terminal.
             </div>
             {/* Social pills */}
             <div style={{ display: 'flex', gap: '10px', position: 'relative' }}>
@@ -1321,7 +1325,7 @@ export default function HomePage() {
                   textDecoration: 'none',
                   transition: 'border-color 150ms, color 150ms, background 150ms',
                 }}
-                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(45,212,191,0.45)'; el.style.color = '#2DD4BF'; el.style.background = 'rgba(45,212,191,0.06)' }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = '#2DD4BF'; el.style.color = '#2DD4BF'; el.style.background = 'rgba(45,212,191,0.06)' }}
                 onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(255,255,255,0.12)'; el.style.color = 'rgba(255,255,255,0.65)'; el.style.background = 'rgba(255,255,255,0.05)' }}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -1341,7 +1345,7 @@ export default function HomePage() {
                   textDecoration: 'none',
                   transition: 'border-color 150ms, color 150ms, background 150ms',
                 }}
-                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(45,212,191,0.45)'; el.style.color = '#2DD4BF'; el.style.background = 'rgba(45,212,191,0.06)' }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = '#2DD4BF'; el.style.color = '#2DD4BF'; el.style.background = 'rgba(45,212,191,0.06)' }}
                 onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(255,255,255,0.12)'; el.style.color = 'rgba(255,255,255,0.65)'; el.style.background = 'rgba(255,255,255,0.05)' }}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -1354,7 +1358,7 @@ export default function HomePage() {
 
           {/* Center — nav links */}
           <div>
-            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '18px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '18px' }}>
               Navigation
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -1376,7 +1380,7 @@ export default function HomePage() {
 
           {/* Right — Built on Base + copyright */}
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '18px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '18px' }}>
               Infrastructure
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '9px', marginBottom: '16px' }}>
