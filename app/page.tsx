@@ -766,6 +766,122 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* ── Stats bar ────────────────────────────────────────────────────── */}
+        <div style={{
+          position: 'relative', zIndex: 1,
+          borderTop: '1px solid rgba(255,255,255,0.06)',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          background: 'linear-gradient(180deg, rgba(45,212,191,0.03) 0%, transparent 100%)',
+          padding: '40px 24px',
+        }}>
+          <div style={{
+            maxWidth: '900px', margin: '0 auto',
+            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
+            gap: '0',
+          }}>
+            {[
+              { label: '8',                        sub: 'Intelligence Features' },
+              { label: 'Base',                     sub: 'Built Natively On' },
+              { label: 'CORTEX',                   sub: 'Powered by Engine' },
+            ].map((s, i) => (
+              <div key={i} style={{
+                textAlign: 'center',
+                borderRight: i < 2 ? '1px solid rgba(255,255,255,0.07)' : 'none',
+                padding: '0 24px',
+              }}>
+                <div style={{
+                  fontSize: 'clamp(28px, 4vw, 42px)', fontWeight: 800,
+                  letterSpacing: '-0.02em', lineHeight: 1,
+                  color: '#2DD4BF',
+                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  marginBottom: '8px',
+                  textShadow: '0 0 28px rgba(45,212,191,0.45)',
+                }}>
+                  {s.label}
+                </div>
+                <div style={{
+                  fontSize: '13px', color: 'rgba(255,255,255,0.38)',
+                  fontWeight: 500, letterSpacing: '0.04em',
+                }}>
+                  {s.sub}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── How It Works ─────────────────────────────────────────────────── */}
+        <section style={{
+          position: 'relative', zIndex: 1,
+          padding: '88px 24px 96px',
+          maxWidth: '1120px', margin: '0 auto', width: '100%',
+        }}>
+          {/* Section header */}
+          <div style={{ textAlign: 'center', marginBottom: '56px' }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>How It Works</span>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
+            </div>
+            <h2 className="section-heading" style={{
+              fontSize: 'clamp(28px, 3.8vw, 42px)', fontWeight: 800,
+              letterSpacing: '-0.02em', lineHeight: 1.1,
+              color: '#f8fafc', margin: 0,
+            }}>
+              Three steps. Total clarity.
+            </h2>
+          </div>
+
+          {/* Steps row */}
+          <div className="feat-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px' }}>
+            {[
+              { step: '01', title: 'Paste any wallet or token',       desc: 'Drop in any address, contract, or token — Clark handles the rest.' },
+              { step: '02', title: 'CORTEX analyses the data',        desc: 'Our engine pulls onchain data, scores risk, and maps smart money in seconds.' },
+              { step: '03', title: 'Clark tells you what it means',   desc: 'No charts to decode. Clark gives you clear, plain-English intelligence.' },
+            ].map((s, i) => (
+              <div key={i} style={{
+                background: 'linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%)',
+                border: '1px solid rgba(255,255,255,0.07)',
+                borderRadius: '20px', padding: '32px 28px',
+                backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+                boxShadow: '0 4px 24px rgba(0,0,0,0.30)',
+                position: 'relative', overflow: 'hidden',
+                transition: 'border-color 300ms ease, box-shadow 300ms ease',
+              }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(45,212,191,0.40)'; el.style.boxShadow = '0 0 28px rgba(45,212,191,0.14), 0 8px 40px rgba(0,0,0,0.40)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.07)'; el.style.boxShadow = '0 4px 24px rgba(0,0,0,0.30)' }}
+              >
+                {/* Top teal line */}
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.40), transparent)' }} />
+
+                <div style={{
+                  fontSize: 'clamp(36px, 4vw, 48px)', fontWeight: 800,
+                  color: '#2DD4BF', lineHeight: 1, marginBottom: '20px',
+                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  textShadow: '0 0 24px rgba(45,212,191,0.40)',
+                  letterSpacing: '-0.02em',
+                }}>
+                  {s.step}
+                </div>
+                <h3 style={{
+                  fontSize: '16px', fontWeight: 700,
+                  color: '#f1f5f9', margin: '0 0 10px',
+                  letterSpacing: '-0.01em', lineHeight: 1.3,
+                }}>
+                  {s.title}
+                </h3>
+                <p style={{
+                  fontSize: '14px', lineHeight: 1.65,
+                  color: 'rgba(255,255,255,0.42)',
+                  margin: 0, fontWeight: 400,
+                }}>
+                  {s.desc}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {/* ── Live Intelligence Preview ─────────────────────────────────────── */}
         <section style={{ position: 'relative', zIndex: 1, padding: '0 24px 96px', maxWidth: '1120px', margin: '0 auto', width: '100%' }}>
           {/* Section header */}
