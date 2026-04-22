@@ -1090,7 +1090,163 @@ export default function HomePage() {
           </Link>
         </section>
 
+        {/* ── Pricing ──────────────────────────────────────────────────────── */}
+        <section style={{
+          position: 'relative', zIndex: 1,
+          padding: '88px 24px 96px',
+          maxWidth: '1120px', margin: '0 auto', width: '100%',
+        }}>
+          {/* Top separator */}
+          <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.25), rgba(139,92,246,0.25), transparent)' }} />
+
+          {/* Header */}
+          <div style={{ textAlign: 'center', marginBottom: '60px' }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Pricing</span>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
+            </div>
+            <h2 className="section-heading" style={{ fontSize: 'clamp(28px, 3.8vw, 42px)', fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.1, color: '#f8fafc', margin: 0 }}>
+              Simple Pricing. No Surprises.
+            </h2>
+          </div>
+
+          {/* Three cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px', alignItems: 'start' }}>
+
+            {/* Free */}
+            <div style={{
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.18)',
+              borderRadius: '20px', padding: '36px 28px',
+              backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.30)',
+              display: 'flex', flexDirection: 'column', gap: '0',
+            }}>
+              <div style={{ marginBottom: '6px', fontSize: '13px', fontWeight: 600, color: 'rgba(255,255,255,0.45)', letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Free</div>
+              <div style={{ fontSize: '42px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.03em', lineHeight: 1, marginBottom: '6px' }}>$0</div>
+              <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.30)', marginBottom: '32px' }}>forever</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '36px' }}>
+                {['Token Scanner basic', 'Liquidity Safety basic', '3 Clark AI prompts per day'].map(f => (
+                  <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: 'rgba(255,255,255,0.65)' }}>
+                    <span style={{ color: '#2DD4BF', flexShrink: 0, fontSize: '16px', lineHeight: 1 }}>✓</span>{f}
+                  </div>
+                ))}
+              </div>
+              <Link href="/app" style={{ display: 'block', textAlign: 'center', padding: '13px 0', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.30)', background: 'transparent', color: '#fff', fontSize: '13px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', textDecoration: 'none', transition: 'border-color 200ms, background 200ms' }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(255,255,255,0.60)'; el.style.background = 'rgba(255,255,255,0.06)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(255,255,255,0.30)'; el.style.background = 'transparent' }}
+              >Get Started Free</Link>
+            </div>
+
+            {/* Pro */}
+            <div style={{
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(139,92,246,0.55)',
+              borderRadius: '20px', padding: '36px 28px',
+              backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+              boxShadow: '0 0 40px rgba(139,92,246,0.20), 0 4px 24px rgba(0,0,0,0.40)',
+              display: 'flex', flexDirection: 'column', gap: '0',
+              position: 'relative', overflow: 'hidden',
+            }}>
+              {/* Top glow line */}
+              <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: 'linear-gradient(90deg, transparent, #8b5cf6, transparent)' }} />
+              {/* Most Popular badge */}
+              <div style={{ position: 'absolute', top: '18px', right: '18px', padding: '4px 10px', borderRadius: '999px', background: 'rgba(236,72,153,0.18)', border: '1px solid rgba(236,72,153,0.40)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Most Popular</div>
+              <div style={{ marginBottom: '6px', fontSize: '13px', fontWeight: 600, color: '#8b5cf6', letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Pro</div>
+              <div style={{ fontSize: '42px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.03em', lineHeight: 1, marginBottom: '6px' }}>$30</div>
+              <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.30)', marginBottom: '32px' }}>per month</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '36px' }}>
+                {['Everything in Free', 'Full Token Scanner', 'Wallet Scanner', 'Dev Wallet Detector', 'Pump Alerts', 'Whale Alerts', 'Base Radar', '50 Clark AI prompts'].map(f => (
+                  <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: 'rgba(255,255,255,0.65)' }}>
+                    <span style={{ color: '#8b5cf6', flexShrink: 0, fontSize: '16px', lineHeight: 1 }}>✓</span>{f}
+                  </div>
+                ))}
+              </div>
+              <Link href="/app" style={{ display: 'block', textAlign: 'center', padding: '13px 0', borderRadius: '10px', background: 'linear-gradient(90deg, #8b5cf6, #7c3aed)', border: '1px solid rgba(139,92,246,0.50)', color: '#fff', fontSize: '13px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', textDecoration: 'none', boxShadow: '0 0 24px rgba(139,92,246,0.40)', transition: 'opacity 200ms, box-shadow 200ms' }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.opacity = '0.88'; el.style.boxShadow = '0 0 36px rgba(139,92,246,0.60)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.opacity = '1'; el.style.boxShadow = '0 0 24px rgba(139,92,246,0.40)' }}
+              >Start Pro</Link>
+            </div>
+
+            {/* Elite */}
+            <div style={{
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(45,212,191,0.50)',
+              borderRadius: '20px', padding: '36px 28px',
+              backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+              boxShadow: '0 0 40px rgba(45,212,191,0.16), 0 4px 24px rgba(0,0,0,0.40)',
+              display: 'flex', flexDirection: 'column', gap: '0',
+              position: 'relative', overflow: 'hidden',
+            }}>
+              {/* Top glow line */}
+              <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: 'linear-gradient(90deg, transparent, #2DD4BF, transparent)' }} />
+              <div style={{ marginBottom: '6px', fontSize: '13px', fontWeight: 600, color: '#2DD4BF', letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Elite</div>
+              <div style={{ fontSize: '42px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.03em', lineHeight: 1, marginBottom: '6px' }}>$60</div>
+              <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.30)', marginBottom: '32px' }}>per month</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '36px' }}>
+                {['Everything in Pro unlimited', 'Unlimited Clark AI', 'Automatic Clark verdicts on every scan', 'Smart money tracking', 'Priority CORTEX', 'Early access to new features'].map(f => (
+                  <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: 'rgba(255,255,255,0.65)' }}>
+                    <span style={{ color: '#2DD4BF', flexShrink: 0, fontSize: '16px', lineHeight: 1 }}>✓</span>{f}
+                  </div>
+                ))}
+              </div>
+              <Link href="/app" style={{ display: 'block', textAlign: 'center', padding: '13px 0', borderRadius: '10px', background: 'linear-gradient(90deg, #2DD4BF, #0ea5e9)', border: '1px solid rgba(45,212,191,0.50)', color: '#07070f', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', textDecoration: 'none', boxShadow: '0 0 28px rgba(45,212,191,0.45)', transition: 'opacity 200ms, box-shadow 200ms' }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.opacity = '0.88'; el.style.boxShadow = '0 0 44px rgba(45,212,191,0.65)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.opacity = '1'; el.style.boxShadow = '0 0 28px rgba(45,212,191,0.45)' }}
+              >Start Elite</Link>
+            </div>
+
+          </div>
+        </section>
+
       </div>
+
+      {/* ── Footer ───────────────────────────────────────────────────────────── */}
+      <footer style={{
+        background: '#080c14',
+        borderTop: '1px solid rgba(255,255,255,0.08)',
+        padding: '48px 32px 36px',
+        position: 'relative', zIndex: 1,
+      }}>
+        <div style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '40px', alignItems: 'start' }}>
+
+          {/* Left — brand */}
+          <div>
+            <div style={{ fontSize: '18px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.01em', marginBottom: '8px' }}>ChainLens AI</div>
+            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.35)', lineHeight: 1.6 }}>
+              onchain intelligence for Base traders
+            </div>
+          </div>
+
+          {/* Center — links */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {[
+              { label: 'Terminal',  href: '/terminal' },
+              { label: 'Pricing',   href: '/pricing'  },
+              { label: 'About',     href: '/about'    },
+              { label: 'Twitter',   href: '/twitter'  },
+              { label: 'Telegram',  href: '/telegram' },
+            ].map(l => (
+              <Link key={l.label} href={l.href} style={{ fontSize: '13px', color: 'rgba(255,255,255,0.40)', textDecoration: 'none', transition: 'color 150ms', fontWeight: 500 }}
+                onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.40)' }}
+              >{l.label}</Link>
+            ))}
+          </div>
+
+          {/* Right — tagline + copyright */}
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'rgba(255,255,255,0.45)', marginBottom: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
+              Built on Base. Powered by CORTEX.
+            </div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.22)' }}>
+              © 2026 ChainLens AI
+            </div>
+          </div>
+
+        </div>
+      </footer>
 
       {/* Sliding Clark panel — triggered by Enter in the hero input */}
       <HomeClarkPanel
