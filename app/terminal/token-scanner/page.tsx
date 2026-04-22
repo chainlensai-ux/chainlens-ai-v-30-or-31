@@ -1,8 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabaseClient'
+import { useState } from 'react'
 import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -206,29 +204,6 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function TerminalTokenScanner() {
-  const router = useRouter()
-  const [sessionChecked, setSessionChecked] = useState(false)
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        router.replace('/auth')
-      } else {
-        setSessionChecked(true)
-      }
-    })
-
-    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT') {
-        router.replace('/auth')
-      } else if (session) {
-        setSessionChecked(true)
-      }
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [router])
-
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
@@ -297,8 +272,6 @@ export default function TerminalTokenScanner() {
       setLoading(false)
     }
   }
-
-  if (!sessionChecked) return null
 
   return (
     <>
