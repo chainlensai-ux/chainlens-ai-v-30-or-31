@@ -641,6 +641,60 @@ export default function HomePage() {
 
         </main>
 
+        {/* Token price ticker — live prices bar */}
+        <div style={{
+          position: 'relative',
+          zIndex: 1,
+          borderTop: '1px solid rgba(255,255,255,0.06)',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          background: 'linear-gradient(180deg, #04040b 0%, #05050c 100%)',
+          height: '44px',
+          overflow: 'hidden',
+          display: 'flex',
+          alignItems: 'center',
+        }}>
+          {/* Edge fade — left */}
+          <div style={{
+            position: 'absolute', left: 0, top: 0, bottom: 0, width: '80px',
+            background: 'linear-gradient(90deg, #05050c 0%, transparent 100%)',
+            zIndex: 2, pointerEvents: 'none',
+          }} />
+          {/* Edge fade — right */}
+          <div style={{
+            position: 'absolute', right: 0, top: 0, bottom: 0, width: '80px',
+            background: 'linear-gradient(270deg, #05050c 0%, transparent 100%)',
+            zIndex: 2, pointerEvents: 'none',
+          }} />
+          {/* Double the list so the scroll loops seamlessly */}
+          <div style={{
+            display: 'flex',
+            gap: '0',
+            whiteSpace: 'nowrap',
+            animation: 'ticker-scroll 44s linear infinite',
+            willChange: 'transform',
+          }}>
+            {[...TICKER, ...TICKER].map((t, i) => (
+              <span
+                key={i}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '7px',
+                  padding: '0 32px',
+                  fontSize: '11.5px',
+                  color: 'rgba(255,255,255,0.45)',
+                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  borderRight: '1px solid rgba(255,255,255,0.05)',
+                }}
+              >
+                <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
+                <span style={{ color: 'rgba(255,255,255,0.40)' }}>{t.price}</span>
+                <span style={{ color: '#4ade80', fontWeight: 600 }}>{t.pct}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+
         {/* ── What ChainLens Does ──────────────────────────────────────────── */}
         <section className="feat-section" style={{
           position: 'relative', zIndex: 1,
@@ -917,59 +971,6 @@ export default function HomePage() {
             ))}
           </div>
         </section>
-
-        {/* Bottom token ticker */}
-        <div style={{
-          position: 'relative',
-          zIndex: 1,
-          borderTop: '1px solid rgba(255,255,255,0.06)',
-          background: 'linear-gradient(180deg, #04040b 0%, #05050c 100%)',
-          height: '44px',
-          overflow: 'hidden',
-          display: 'flex',
-          alignItems: 'center',
-        }}>
-          {/* Edge fade — left */}
-          <div style={{
-            position: 'absolute', left: 0, top: 0, bottom: 0, width: '80px',
-            background: 'linear-gradient(90deg, #05050c 0%, transparent 100%)',
-            zIndex: 2, pointerEvents: 'none',
-          }} />
-          {/* Edge fade — right */}
-          <div style={{
-            position: 'absolute', right: 0, top: 0, bottom: 0, width: '80px',
-            background: 'linear-gradient(270deg, #05050c 0%, transparent 100%)',
-            zIndex: 2, pointerEvents: 'none',
-          }} />
-          {/* Double the list so the scroll loops seamlessly */}
-          <div style={{
-            display: 'flex',
-            gap: '0',
-            whiteSpace: 'nowrap',
-            animation: 'ticker-scroll 44s linear infinite',
-            willChange: 'transform',
-          }}>
-            {[...TICKER, ...TICKER].map((t, i) => (
-              <span
-                key={i}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '7px',
-                  padding: '0 32px',
-                  fontSize: '11.5px',
-                  color: 'rgba(255,255,255,0.45)',
-                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                  borderRight: '1px solid rgba(255,255,255,0.05)',
-                }}
-              >
-                <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
-                <span style={{ color: 'rgba(255,255,255,0.40)' }}>{t.price}</span>
-                <span style={{ color: '#4ade80', fontWeight: 600 }}>{t.pct}</span>
-              </span>
-            ))}
-          </div>
-        </div>
 
       </div>
 
