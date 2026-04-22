@@ -814,25 +814,20 @@ export default function HomePage() {
                   {/* Center label */}
                   <div style={{
                     position: 'relative', zIndex: 1,
-                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px',
                   }}>
                     <div style={{
-                      padding: '5px 14px', borderRadius: '999px',
-                      background: `${p.accent}12`,
-                      border: `1px solid ${p.accent}30`,
-                      fontSize: '9px', fontWeight: 700,
-                      letterSpacing: '0.16em', textTransform: 'uppercase',
-                      color: p.accent, opacity: 0.85,
-                      fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                    }}>
-                      Coming Live
-                    </div>
+                      width: '8px', height: '8px', borderRadius: '50%',
+                      background: '#2DD4BF',
+                      boxShadow: '0 0 8px rgba(45,212,191,0.6)',
+                      animation: 'cl-pulse 2s ease-in-out infinite',
+                    }} />
                     <span style={{
-                      fontSize: '11px', color: 'rgba(255,255,255,0.18)',
+                      fontSize: '12px', color: '#475569',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                      letterSpacing: '0.06em',
+                      letterSpacing: '0.04em',
                     }}>
-                      Intelligence loading…
+                      Coming Soon
                     </span>
                   </div>
                 </div>
