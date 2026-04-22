@@ -766,6 +766,95 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* ── Testimonials ─────────────────────────────────────────────────── */}
+        <section style={{
+          position: 'relative', zIndex: 1,
+          padding: '88px 24px 96px',
+          maxWidth: '1120px', margin: '0 auto', width: '100%',
+        }}>
+          {/* Section header */}
+          <div style={{ textAlign: 'center', marginBottom: '56px' }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Traders</span>
+              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
+            </div>
+            <h2 className="section-heading" style={{
+              fontSize: 'clamp(28px, 3.8vw, 42px)', fontWeight: 800,
+              letterSpacing: '-0.02em', lineHeight: 1.1,
+              color: '#f8fafc', margin: 0,
+            }}>
+              What Base traders are saying.
+            </h2>
+          </div>
+
+          {/* 3 × 2 grid */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: '20px',
+          }}>
+            {[
+              { handle: '@0xdegen_base',     quote: 'clark called the rug before it happened. saved me $4k. nothing else on base does this.' },
+              { handle: '@basewhale_eth',    quote: 'scanned a wallet and clark literally described my trading personality. eerie accurate.' },
+              { handle: '@virtualsmaxi',     quote: 'been using nansen for 2 years. chainlens does more for base at $30. not even close.' },
+              { handle: '@defi_lurker',      quote: 'base radar found a gem 40 minutes before it hit ct. already 8x.' },
+              { handle: '@0xalphahunter',    quote: 'the liquidity scanner flagged an unlocked lp. token rugged 3 hours later. this thing works.' },
+              { handle: '@basedegen99',      quote: 'clark ai is the real deal. asked about a token and got a full breakdown in 5 seconds. insane.' },
+            ].map((t, i) => (
+              <div
+                key={i}
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: '18px',
+                  padding: '28px',
+                  backdropFilter: 'blur(12px)',
+                  WebkitBackdropFilter: 'blur(12px)',
+                  boxShadow: '0 4px 24px rgba(0,0,0,0.28)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '16px',
+                  transition: 'border-color 300ms ease, box-shadow 300ms ease',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = 'rgba(45,212,191,0.35)'
+                  el.style.boxShadow = '0 0 28px rgba(45,212,191,0.12), 0 8px 40px rgba(0,0,0,0.40)'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLDivElement
+                  el.style.borderColor = 'rgba(255,255,255,0.08)'
+                  el.style.boxShadow = '0 4px 24px rgba(0,0,0,0.28)'
+                }}
+              >
+                {/* Quote mark */}
+                <div style={{ fontSize: '32px', lineHeight: 1, color: 'rgba(45,212,191,0.30)', fontFamily: 'Georgia, serif', marginBottom: '-6px' }}>&ldquo;</div>
+                {/* Quote text */}
+                <p style={{
+                  fontSize: '14px', lineHeight: 1.7,
+                  color: 'rgba(255,255,255,0.88)',
+                  margin: 0, fontWeight: 400,
+                  flex: 1,
+                }}>
+                  {t.quote}
+                </p>
+                {/* Username */}
+                <div style={{
+                  fontSize: '12px', fontWeight: 700,
+                  color: '#2DD4BF',
+                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  letterSpacing: '0.06em',
+                  borderTop: '1px solid rgba(255,255,255,0.06)',
+                  paddingTop: '14px',
+                }}>
+                  {t.handle}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {/* ── Stats bar ────────────────────────────────────────────────────── */}
         <div style={{
           position: 'relative', zIndex: 1,
