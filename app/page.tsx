@@ -871,7 +871,7 @@ export default function HomePage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
                       <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
                       {/* Verified blue tick */}
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" flexShrink="0" style={{ flexShrink: 0 }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
                         <circle cx="12" cy="12" r="12" fill="#1d9bf0"/>
                         <path d="M9.5 16.5l-3.5-3.5 1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z" fill="#fff"/>
                       </svg>
