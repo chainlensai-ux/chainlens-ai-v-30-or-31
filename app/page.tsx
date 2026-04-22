@@ -1307,7 +1307,7 @@ export default function HomePage() {
               { label: 'Pricing',   href: '/pricing',  icon: null },
               { label: 'About',     href: '/about',    icon: null },
               {
-                label: 'Twitter', href: '/twitter',
+                label: 'Twitter', href: 'https://x.com/chainlens__ai', external: true,
                 icon: (
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.261 5.632zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
@@ -1315,7 +1315,7 @@ export default function HomePage() {
                 ),
               },
               {
-                label: 'Telegram', href: '/telegram',
+                label: 'Telegram', href: 'https://t.me/chainlensaigroup', external: true,
                 icon: (
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L7.17 13.947l-2.965-.924c-.643-.204-.658-.643.136-.953l11.57-4.461c.537-.194 1.006.131.983.612z"/>
@@ -1323,7 +1323,7 @@ export default function HomePage() {
                 ),
               },
             ].map(l => (
-              <Link key={l.label} href={l.href} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', fontSize: '13px', color: 'rgba(255,255,255,0.40)', textDecoration: 'none', transition: 'color 150ms', fontWeight: 500 }}
+              <Link key={l.label} href={l.href} {...('external' in l && l.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', fontSize: '13px', color: 'rgba(255,255,255,0.40)', textDecoration: 'none', transition: 'color 150ms', fontWeight: 500 }}
                 onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF' }}
                 onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.40)' }}
               >
