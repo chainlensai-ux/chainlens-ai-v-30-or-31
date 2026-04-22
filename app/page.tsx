@@ -50,7 +50,7 @@ const FEATURES = [
     grad: 'linear-gradient(90deg, #2DD4BF 0%, #22d3ee 100%)',
     borderColor: 'rgba(45,212,191,0.16)',
     hoverBorder: 'rgba(45,212,191,0.42)',
-    hoverShadow: '0 16px 56px rgba(45,212,191,0.14), 0 4px 20px rgba(0,0,0,0.45)',
+    hoverShadow: '0 16px 56px rgba(45,212,191,0.18), 0 0 32px rgba(45,212,191,0.12), 0 4px 20px rgba(0,0,0,0.45)',
     title: 'Scan Wallets Instantly',
     body: 'See everything inside any wallet — tokens, positions, PnL, behavior patterns, smart money tags, and chain activity.',
     icon: (
@@ -64,7 +64,7 @@ const FEATURES = [
     grad: 'linear-gradient(90deg, #ec4899 0%, #f472b6 100%)',
     borderColor: 'rgba(236,72,153,0.16)',
     hoverBorder: 'rgba(236,72,153,0.42)',
-    hoverShadow: '0 16px 56px rgba(236,72,153,0.12), 0 4px 20px rgba(0,0,0,0.45)',
+    hoverShadow: '0 16px 56px rgba(236,72,153,0.12), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
     title: 'Real-Time Onchain Intelligence',
     body: 'Track whale movements, early pumps, deployer activity, and market shifts as they happen — not after.',
     icon: (
@@ -78,7 +78,7 @@ const FEATURES = [
     grad: 'linear-gradient(90deg, #8b5cf6 0%, #a78bfa 100%)',
     borderColor: 'rgba(139,92,246,0.16)',
     hoverBorder: 'rgba(139,92,246,0.42)',
-    hoverShadow: '0 16px 56px rgba(139,92,246,0.14), 0 4px 20px rgba(0,0,0,0.45)',
+    hoverShadow: '0 16px 56px rgba(139,92,246,0.14), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
     title: 'Advanced Token Scanner',
     body: 'Paste any contract and get instant AI analysis: price, liquidity, holders, deployer history, risk score, bytecode flags, and social momentum.',
     icon: (
@@ -92,7 +92,7 @@ const FEATURES = [
     grad: 'linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%)',
     borderColor: 'rgba(96,165,250,0.16)',
     hoverBorder: 'rgba(96,165,250,0.42)',
-    hoverShadow: '0 16px 56px rgba(96,165,250,0.12), 0 4px 20px rgba(0,0,0,0.45)',
+    hoverShadow: '0 16px 56px rgba(96,165,250,0.12), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
     title: 'Liquidity Safety Engine',
     body: 'Detect rugs before they happen. ChainLens checks LP locks, ownership, burns, mint functions, suspicious patterns, and contract risks.',
     icon: (
@@ -598,7 +598,7 @@ export default function HomePage() {
               fontSize: '16px', color: 'rgba(255,255,255,0.42)',
               maxWidth: '460px', margin: '0 auto', lineHeight: 1.65,
             }}>
-              Four engines. One platform. Built natively on Base.
+              Eight features. One terminal. Built natively on Base.
             </p>
           </div>
 
