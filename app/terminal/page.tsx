@@ -1,39 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabaseClient'
+import { useState } from 'react'
 import ClarkChat from '@/components/ClarkChat'
 import ClarkRadar from '@/components/ClarkRadar'
 
 export default function TerminalPage() {
-  const router = useRouter()
-  const [sessionChecked, setSessionChecked] = useState(false)
   const [active, setActive] = useState('dashboard')
   const [isTyping, setIsTyping] = useState(false)
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session) {
-        router.replace('/auth')
-      } else {
-        setSessionChecked(true)
-      }
-    })
-
-    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT') {
-        router.replace('/auth')
-      } else if (session) {
-        setSessionChecked(true)
-      }
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [router])
-
-  if (!sessionChecked) return null
 
   return (
     <>
