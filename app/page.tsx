@@ -174,31 +174,83 @@ export default function HomePage() {
           .feat-grid { grid-template-columns: 1fr !important; }
           .feat-section { padding: 56px 16px 64px !important; }
         }
+
+        /* CRT scanline sweep */
+        @keyframes scanlines-move {
+          from { background-position: 0 0; }
+          to   { background-position: 0 80px; }
+        }
+        .scanline-overlay {
+          position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+          background-image: repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 3px,
+            rgba(255,255,255,0.016) 3px,
+            rgba(255,255,255,0.016) 4px
+          );
+          animation: scanlines-move 14s linear infinite;
+        }
+
+        /* CORTEX badge teal pulse */
+        @keyframes cortex-pulse {
+          0%,100% {
+            box-shadow: 0 0 12px rgba(45,212,191,0.16), 0 1px 0 rgba(255,255,255,0.04) inset;
+            border-color: rgba(45,212,191,0.32);
+          }
+          50% {
+            box-shadow: 0 0 38px rgba(45,212,191,0.52), 0 0 76px rgba(45,212,191,0.20), 0 1px 0 rgba(255,255,255,0.04) inset;
+            border-color: rgba(45,212,191,0.68);
+          }
+        }
+        .cortex-badge { animation: cortex-pulse 2.8s ease-in-out infinite; }
+
+        /* Particle twinkle */
+        @keyframes particle-twinkle {
+          0%,100% { opacity: 0.10; transform: scale(1); }
+          50%      { opacity: 0.38; transform: scale(1.9); }
+        }
+
+        /* Section heading teal glow */
+        .section-heading {
+          text-shadow: 0 0 40px rgba(45,212,191,0.30), 0 0 80px rgba(45,212,191,0.12);
+        }
+
+        /* Capability card top border slides in on hover */
+        .feat-top-line {
+          transform: scaleX(0);
+          transform-origin: left center;
+          transition: transform 0.34s cubic-bezier(0.22,1,0.36,1);
+        }
+        .feat-card:hover .feat-top-line { transform: scaleX(1); }
       `}</style>
 
       <Navbar />
 
+      {/* CRT scanline overlay — covers entire page */}
+      <div className="scanline-overlay" />
+
       <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
-        {/* Animated orb — teal top */}
+        {/* Animated orb — teal left */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '600px', height: '600px',
+          width: '900px', height: '900px',
           borderRadius: '50%',
-          top: '-120px', left: '10%',
-          background: 'radial-gradient(circle, rgba(45,212,191,0.18) 0%, transparent 70%)',
-          filter: 'blur(60px)',
+          top: '-200px', left: '-5%',
+          background: 'radial-gradient(circle, rgba(45,212,191,0.10) 0%, transparent 68%)',
+          filter: 'blur(70px)',
           animation: 'orb-teal 14s ease-in-out infinite',
         }} />
 
-        {/* Animated orb — purple top */}
+        {/* Animated orb — purple right */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '700px', height: '700px',
+          width: '1000px', height: '1000px',
           borderRadius: '50%',
-          top: '-80px', right: '5%',
-          background: 'radial-gradient(circle, rgba(139,92,246,0.16) 0%, transparent 70%)',
-          filter: 'blur(80px)',
+          top: '-150px', right: '-8%',
+          background: 'radial-gradient(circle, rgba(139,92,246,0.10) 0%, transparent 68%)',
+          filter: 'blur(90px)',
           animation: 'orb-purple 18s ease-in-out infinite',
         }} />
 
@@ -222,16 +274,14 @@ export default function HomePage() {
           filter: 'blur(100px)',
         }} />
 
-        {/* Subtle grid overlay */}
+        {/* Terminal grid overlay — fixed, full page */}
         <div style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
+          position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
           backgroundImage: `
-            linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px)
+            linear-gradient(rgba(45,212,191,0.028) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(45,212,191,0.028) 1px, transparent 1px)
           `,
           backgroundSize: '60px 60px',
-          maskImage: 'radial-gradient(ellipse 80% 60% at 50% 30%, black 20%, transparent 80%)',
-          WebkitMaskImage: 'radial-gradient(ellipse 80% 60% at 50% 30%, black 20%, transparent 80%)',
         }} />
 
         {/* Scattered-star background */}
@@ -266,17 +316,49 @@ export default function HomePage() {
           textAlign: 'center',
         }}>
 
+          {/* Animated particle field */}
+          {[
+            { x: '7%',  y: '14%', dur: '6.2s', del: '0s',   sz: 1.5 },
+            { x: '17%', y: '44%', dur: '9.1s', del: '1.3s', sz: 1   },
+            { x: '31%', y: '21%', dur: '7.4s', del: '2.6s', sz: 2   },
+            { x: '46%', y: '70%', dur: '11s',  del: '0.9s', sz: 1.5 },
+            { x: '57%', y: '11%', dur: '8.2s', del: '3.2s', sz: 1   },
+            { x: '70%', y: '37%', dur: '10.3s',del: '1.8s', sz: 2   },
+            { x: '81%', y: '76%', dur: '6.8s', del: '4.3s', sz: 1   },
+            { x: '91%', y: '27%', dur: '9.7s', del: '0.5s', sz: 1.5 },
+            { x: '24%', y: '86%', dur: '7.8s', del: '2.1s', sz: 1   },
+            { x: '63%', y: '54%', dur: '8.7s', del: '3.7s', sz: 2   },
+            { x: '39%', y: '31%', dur: '12s',  del: '1.1s', sz: 1   },
+            { x: '14%', y: '63%', dur: '9.4s', del: '5.1s', sz: 1.5 },
+            { x: '75%', y: '17%', dur: '7.2s', del: '2.9s', sz: 1   },
+            { x: '51%', y: '89%', dur: '10.6s',del: '0.7s', sz: 2   },
+            { x: '87%', y: '51%', dur: '8.4s', del: '4.9s', sz: 1   },
+            { x: '3%',  y: '50%', dur: '11.2s',del: '1.5s', sz: 1.5 },
+            { x: '95%', y: '72%', dur: '7.0s', del: '3.4s', sz: 1   },
+            { x: '42%', y: '6%',  dur: '9.8s', del: '6.0s', sz: 1.5 },
+          ].map((p, i) => (
+            <div key={i} style={{
+              position: 'absolute',
+              left: p.x, top: p.y,
+              width: `${p.sz}px`, height: `${p.sz}px`,
+              borderRadius: '50%',
+              background: '#fff',
+              pointerEvents: 'none',
+              animation: `particle-twinkle ${p.dur} ease-in-out infinite ${p.del}`,
+            }} />
+          ))}
+
           {/* POWERED BY CORTEX ENGINE badge */}
-          <div style={{
+          <div className="cortex-badge" style={{
             display: 'inline-flex',
             alignItems: 'center',
             gap: '8px',
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(139,92,246,0.30)',
+            background: 'rgba(45,212,191,0.05)',
+            border: '1px solid rgba(45,212,191,0.32)',
             borderRadius: '999px',
             padding: '6px 18px',
             marginBottom: '24px',
-            boxShadow: '0 0 24px rgba(139,92,246,0.10), 0 1px 0 rgba(255,255,255,0.04) inset',
+            boxShadow: '0 0 12px rgba(45,212,191,0.16), 0 1px 0 rgba(255,255,255,0.04) inset',
           }}>
             <span style={{
               width: '6px', height: '6px', borderRadius: '50%',
@@ -587,7 +669,7 @@ export default function HomePage() {
               }}>Capabilities</span>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
             </div>
-            <h2 style={{
+            <h2 className="section-heading" style={{
               fontSize: 'clamp(30px, 4vw, 44px)', fontWeight: 800,
               letterSpacing: '-0.02em', lineHeight: 1.1,
               color: '#f8fafc', margin: '0 0 16px',
@@ -635,10 +717,10 @@ export default function HomePage() {
                   el.style.boxShadow   = '0 4px 24px rgba(0,0,0,0.30)'
                 }}
               >
-                {/* Top accent line */}
-                <div style={{
-                  position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
-                  background: `linear-gradient(90deg, transparent 0%, ${f.accent}55 50%, transparent 100%)`,
+                {/* Top accent line — slides in on hover */}
+                <div className="feat-top-line" style={{
+                  position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
+                  background: `linear-gradient(90deg, transparent 0%, ${f.accent}88 50%, transparent 100%)`,
                 }} />
 
                 {/* Icon */}
@@ -704,7 +786,7 @@ export default function HomePage() {
               }}>Live Preview</span>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #ec4899, transparent)' }} />
             </div>
-            <h2 style={{
+            <h2 className="section-heading" style={{
               fontSize: 'clamp(28px, 3.8vw, 42px)', fontWeight: 800,
               letterSpacing: '-0.02em', lineHeight: 1.1,
               color: '#f8fafc', margin: '0 0 14px',
@@ -752,10 +834,10 @@ export default function HomePage() {
                   el.style.boxShadow = '0 4px 24px rgba(0,0,0,0.28)'
                 }}
               >
-                {/* Top accent line */}
-                <div style={{
-                  position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
-                  background: `linear-gradient(90deg, transparent, ${p.accent}44, transparent)`,
+                {/* Top accent line — slides in on hover */}
+                <div className="feat-top-line" style={{
+                  position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
+                  background: `linear-gradient(90deg, transparent, ${p.accent}88, transparent)`,
                 }} />
 
                 {/* Card header */}
