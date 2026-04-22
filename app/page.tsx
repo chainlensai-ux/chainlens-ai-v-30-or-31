@@ -618,7 +618,7 @@ export default function HomePage() {
             {/* Secondary pair */}
             <div className="mob-cta-secondary" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
               <ConnectWallet />
-              <Link href="/app" style={{
+              <Link href="/pricing" style={{
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -1265,7 +1265,7 @@ export default function HomePage() {
                     </div>
                   )}
                   {/* CTA */}
-                  <Link href="/app" className={`cta-${plan.ctaStyle}`} style={{ display: 'block', textAlign: 'center', padding: isElite ? '10px 16px' : '9px 14px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', textDecoration: 'none', cursor: 'pointer' }}>{plan.cta}</Link>
+                  <Link href="/pricing" className={`cta-${plan.ctaStyle}`} style={{ display: 'block', textAlign: 'center', padding: isElite ? '10px 16px' : '9px 14px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', textDecoration: 'none', cursor: 'pointer' }}>{plan.cta}</Link>
                 </div>
               )
             })}

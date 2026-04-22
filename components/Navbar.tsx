@@ -387,7 +387,7 @@ export default function Navbar() {
           {/* ── Auth buttons ───────────────────────────────── */}
           <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
             <Link href="/auth"     className="btn-signin">Sign In</Link>
-            <Link href="/app"      className="btn-access">Get Access</Link>
+            <Link href="/pricing"  className="btn-access">Get Access</Link>
             <Link href="/terminal" className="btn-terminal">Enter Terminal</Link>
           </div>
 
@@ -424,7 +424,7 @@ export default function Navbar() {
             fontFamily: 'var(--font-inter, Inter, sans-serif)',
           }}>Sign In</Link>
 
-          <Link href="/app" onClick={() => setMobileOpen(false)} style={{
+          <Link href="/pricing" onClick={() => setMobileOpen(false)} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             padding: '13px 20px', borderRadius: '10px',
             background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.30)',
