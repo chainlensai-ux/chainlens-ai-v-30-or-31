@@ -1277,16 +1277,25 @@ export default function HomePage() {
       {/* ── Footer ───────────────────────────────────────────────────────────── */}
       <footer style={{
         background: '#080c14',
-        borderTop: '1px solid rgba(255,255,255,0.08)',
-        padding: '48px 32px 36px',
         position: 'relative', zIndex: 1,
+        padding: '48px 32px 36px',
       }}>
+        {/* Teal gradient top border */}
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
+          background: 'linear-gradient(90deg, transparent 0%, #2DD4BF 50%, transparent 100%)',
+          opacity: 0.45,
+        }} />
+
         <div style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '40px', alignItems: 'start' }}>
 
           {/* Left — brand */}
           <div>
-            <div style={{ fontSize: '18px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.01em', marginBottom: '8px' }}>ChainLens AI</div>
-            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.35)', lineHeight: 1.6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+              <img src="/cl-logo.png" alt="ChainLens" style={{ width: '32px', height: '32px', objectFit: 'contain' }} />
+              <span style={{ fontSize: '18px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.01em' }}>ChainLens AI</span>
+            </div>
+            <div style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.6 }}>
               onchain intelligence for Base traders
             </div>
           </div>
@@ -1294,23 +1303,50 @@ export default function HomePage() {
           {/* Center — links */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {[
-              { label: 'Terminal',  href: '/terminal' },
-              { label: 'Pricing',   href: '/pricing'  },
-              { label: 'About',     href: '/about'    },
-              { label: 'Twitter',   href: '/twitter'  },
-              { label: 'Telegram',  href: '/telegram' },
+              { label: 'Terminal',  href: '/terminal', icon: null },
+              { label: 'Pricing',   href: '/pricing',  icon: null },
+              { label: 'About',     href: '/about',    icon: null },
+              {
+                label: 'Twitter', href: '/twitter',
+                icon: (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.261 5.632zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                  </svg>
+                ),
+              },
+              {
+                label: 'Telegram', href: '/telegram',
+                icon: (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L7.17 13.947l-2.965-.924c-.643-.204-.658-.643.136-.953l11.57-4.461c.537-.194 1.006.131.983.612z"/>
+                  </svg>
+                ),
+              },
             ].map(l => (
-              <Link key={l.label} href={l.href} style={{ fontSize: '13px', color: 'rgba(255,255,255,0.40)', textDecoration: 'none', transition: 'color 150ms', fontWeight: 500 }}
+              <Link key={l.label} href={l.href} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', fontSize: '13px', color: 'rgba(255,255,255,0.40)', textDecoration: 'none', transition: 'color 150ms', fontWeight: 500 }}
                 onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF' }}
                 onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.40)' }}
-              >{l.label}</Link>
+              >
+                {l.icon}
+                {l.label}
+              </Link>
             ))}
           </div>
 
           {/* Right — tagline + copyright */}
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600, color: 'rgba(255,255,255,0.45)', marginBottom: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
-              Built on Base. Powered by CORTEX.
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', marginBottom: '10px' }}>
+              {/* Pulsing teal dot */}
+              <div style={{
+                width: '7px', height: '7px', borderRadius: '50%',
+                background: '#2DD4BF',
+                boxShadow: '0 0 8px rgba(45,212,191,0.7)',
+                animation: 'cl-pulse 2s ease-in-out infinite',
+                flexShrink: 0,
+              }} />
+              <div style={{ fontSize: '13px', fontWeight: 600, color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
+                Built on Base. Powered by CORTEX.
+              </div>
             </div>
             <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.22)' }}>
               © 2026 ChainLens AI
