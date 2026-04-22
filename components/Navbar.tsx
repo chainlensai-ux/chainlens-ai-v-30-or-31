@@ -379,9 +379,10 @@ export default function Navbar() {
               )}
             </div>
 
-            <Link href="/terminal" className="nav-link">Terminal</Link>
-            <Link href="/pricing"  className="nav-link">Pricing</Link>
-            <Link href="/about"    className="nav-link">About</Link>
+            <Link href="/terminal"  className="nav-link">Terminal</Link>
+            <Link href="/pricing"   className="nav-link">Pricing</Link>
+            <Link href="/affiliate" className="nav-link">Affiliate</Link>
+            <Link href="/about"     className="nav-link">About</Link>
           </div>
 
           {/* ── Auth buttons ───────────────────────────────── */}
@@ -409,9 +410,10 @@ export default function Navbar() {
           overflowY: 'auto',
           borderTop: '1px solid rgba(255,255,255,0.06)',
         }}>
-          <Link href="/terminal" className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Terminal</Link>
-          <Link href="/pricing"  className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Pricing</Link>
-          <Link href="/about"    className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
+          <Link href="/terminal"  className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Terminal</Link>
+          <Link href="/pricing"   className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Pricing</Link>
+          <Link href="/affiliate" className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Affiliate</Link>
+          <Link href="/about"     className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
 
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '16px 0' }} />
 

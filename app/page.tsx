@@ -1363,10 +1363,11 @@ export default function HomePage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               {[
-                { label: 'Terminal', href: '/terminal' },
-                { label: 'Pricing',  href: '/pricing'  },
-                { label: 'About',    href: '/about'    },
-                { label: 'Terms',    href: '/terms'    },
+                { label: 'Terminal',  href: '/terminal'  },
+                { label: 'Pricing',   href: '/pricing'   },
+                { label: 'Affiliate', href: '/affiliate' },
+                { label: 'About',     href: '/about'     },
+                { label: 'Terms',     href: '/terms'     },
               ].map(l => (
                 <Link key={l.label} href={l.href} style={{ fontSize: '14px', fontWeight: 500, color: '#fff', textDecoration: 'none', transition: 'color 150ms' }}
                   onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF' }}
