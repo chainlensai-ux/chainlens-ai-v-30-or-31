@@ -759,16 +759,19 @@ export default function HomePage() {
                   animationDelay: `${i * 0.10}s`,
                   position: 'relative',
                   overflow: 'hidden',
+                  transition: 'border-color 300ms ease, box-shadow 300ms ease, background 300ms ease',
                 }}
                 onMouseEnter={e => {
                   const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = f.hoverBorder
-                  el.style.boxShadow   = f.hoverShadow
+                  el.style.borderColor = 'rgba(45,212,191,0.55)'
+                  el.style.boxShadow   = '0 0 32px rgba(45,212,191,0.18), 0 8px 40px rgba(0,0,0,0.40)'
+                  el.style.background  = 'linear-gradient(145deg, rgba(255,255,255,0.05) 0%, rgba(45,212,191,0.03) 100%)'
                 }}
                 onMouseLeave={e => {
                   const el = e.currentTarget as HTMLDivElement
                   el.style.borderColor = f.borderColor
                   el.style.boxShadow   = '0 4px 24px rgba(0,0,0,0.30)'
+                  el.style.background  = 'linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%)'
                 }}
               >
                 {/* Top accent line — slides in on hover */}
