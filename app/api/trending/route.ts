@@ -63,9 +63,12 @@ function normalizeGT(pool: any, included: any[]): MergedToken | null {
   }
 }
 
-async function fetchGT(baseUrl: string): Promise<MergedToken[]> {
+async function fetchGT(): Promise<MergedToken[]> {
   try {
-    const res = await fetch(`${baseUrl}/api/proxy/gt?network=base`, { cache: "no-store" });
+    const res = await fetch(
+      'https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token',
+      { headers: { accept: 'application/json' }, cache: 'no-store' }
+    );
     if (!res.ok) return [];
     const data = await res.json();
     const included: any[] = Array.isArray(data?.included) ? data.included : [];
@@ -108,10 +111,8 @@ async function fetchCoinGecko(): Promise<MergedToken[]> {
 
 export async function GET() {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
-
     const [gtTokens, cgTokens] = await Promise.all([
-      fetchGT(baseUrl),
+      fetchGT(),
       fetchCoinGecko(),
     ]);
 

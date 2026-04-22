@@ -165,105 +165,121 @@ function SectionLabel({ children }: { children: ReactNode }) {
 // ─── NavItem ──────────────────────────────────────────────────────────────
 
 function NavItem({ item, active, onSelect }: { item: Item; active: string | null; onSelect: (k: string) => void }) {
-  const router    = useRouter()
   const on        = active === item.key
   const accent    = item.accent
   const iconColor = item.iconColor
 
-  // Per-accent active backgrounds
   const activeBg =
     accent === PURPLE ? 'linear-gradient(90deg, rgba(139,92,246,0.22), rgba(139,92,246,0.06))'
     : accent === PINK ? 'linear-gradient(90deg, rgba(236,72,153,0.20), rgba(236,72,153,0.05))'
     : accent === WHITE ? 'linear-gradient(90deg, rgba(226,232,240,0.10), rgba(226,232,240,0.02))'
     : accent === SLATE ? 'linear-gradient(90deg, rgba(148,163,184,0.10), rgba(148,163,184,0.02))'
-    : /* MINT */ 'linear-gradient(90deg, rgba(45,212,191,0.26), rgba(45,212,191,0.06))'
+    : 'linear-gradient(90deg, rgba(45,212,191,0.26), rgba(45,212,191,0.06))'
 
-  // Per-accent active shadow (left glow + top inset shimmer)
   const activeGlow =
     accent === PURPLE ? `0 0 24px rgba(139,92,246,0.26), inset 0 1px 0 rgba(139,92,246,0.22)`
     : accent === PINK ? `0 0 22px rgba(236,72,153,0.22), inset 0 1px 0 rgba(236,72,153,0.20)`
     : accent === WHITE ? `inset 0 1px 0 rgba(226,232,240,0.16)`
     : accent === SLATE ? `inset 0 1px 0 rgba(148,163,184,0.14)`
-    : /* MINT */ `0 0 36px rgba(45,212,191,0.42), 0 0 14px rgba(45,212,191,0.18), inset 0 1px 0 rgba(45,212,191,0.30)`
+    : `0 0 36px rgba(45,212,191,0.42), 0 0 14px rgba(45,212,191,0.18), inset 0 1px 0 rgba(45,212,191,0.30)`
 
-  // Idle icon colour — dim but readable version of each accent
   const idleIconColor =
     accent === PURPLE ? '#5a4492'
     : accent === PINK  ? '#7e3060'
     : accent === WHITE ? '#4e6880'
     : accent === SLATE ? '#445870'
-    : /* MINT */ '#286060'
+    : '#286060'
 
-  return (
-    <motion.button
-      onClick={() => item.href ? router.push(item.href) : onSelect(item.key)}
+  const sharedStyle: React.CSSProperties = {
+    height: '36px',
+    borderRadius: '10px',
+    paddingLeft: on ? '11px' : '12px',
+    paddingRight: '12px',
+    background: on ? activeBg : 'transparent',
+    borderLeft:   on ? `2.5px solid ${accent}` : '2.5px solid transparent',
+    borderTop:    '1px solid transparent',
+    borderRight:  '1px solid transparent',
+    borderBottom: '1px solid transparent',
+    boxShadow: on ? activeGlow : 'none',
+    color: on ? accent : '#6a8da8',
+    fontSize: '12px',
+    fontWeight: on ? 600 : 500,
+    fontFamily: 'var(--font-inter)',
+    cursor: 'pointer',
+    textAlign: 'left',
+    transition: 'color 0.12s, background 0.12s, box-shadow 0.12s, transform 0.1s',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    width: '100%',
+    position: 'relative',
+    textDecoration: 'none',
+    boxSizing: 'border-box',
+  }
 
-      className="w-full flex items-center gap-3 relative"
-      style={{
-        height: '36px',
-        borderRadius: '10px',
-        paddingLeft: on ? '11px' : '12px',
-        paddingRight: '12px',
-        background: on ? activeBg : 'transparent',
-        borderLeft:   on ? `2.5px solid ${accent}` : '2.5px solid transparent',
-        borderTop:    '1px solid transparent',
-        borderRight:  '1px solid transparent',
-        borderBottom: '1px solid transparent',
-        boxShadow: on ? activeGlow : 'none',
-        color: on ? accent : '#6a8da8',
-        fontSize: '12px',
-        fontWeight: on ? 600 : 500,
-        fontFamily: 'var(--font-inter)',
-        cursor: 'pointer',
-        textAlign: 'left',
-        transition: 'color 0.12s, background 0.12s, box-shadow 0.12s',
-      }}
-      whileHover={!on ? { x: 2 } : {}}
-      transition={{ duration: 0.1 }}
-      onMouseEnter={e => {
-        if (!on) {
-          const el = e.currentTarget as HTMLButtonElement
-          const hoverGlow =
-            accent === PURPLE ? '0 0 12px rgba(139,92,246,0.18), inset 0 1px 0 rgba(139,92,246,0.10)'
-            : accent === PINK  ? '0 0 12px rgba(236,72,153,0.16), inset 0 1px 0 rgba(236,72,153,0.10)'
-            : accent === WHITE ? 'inset 0 1px 0 rgba(255,255,255,0.06)'
-            : accent === SLATE ? 'inset 0 1px 0 rgba(148,163,184,0.08)'
-            : '0 0 14px rgba(45,212,191,0.16), inset 0 1px 0 rgba(45,212,191,0.12)'
-          const hoverColor =
-            accent === PURPLE ? '#a78bfa'
-            : accent === PINK  ? '#f472b6'
-            : accent === WHITE ? '#b0c4d8'
-            : accent === SLATE ? '#94a3b8'
-            : '#5eead4'
-          el.style.color      = hoverColor
-          el.style.background = `rgba(255,255,255,0.04)`
-          el.style.boxShadow  = hoverGlow
-        }
-      }}
-      onMouseLeave={e => {
-        if (!on) {
-          const el = e.currentTarget as HTMLButtonElement
+  const hoverColor =
+    accent === PURPLE ? '#a78bfa'
+    : accent === PINK  ? '#f472b6'
+    : accent === WHITE ? '#b0c4d8'
+    : accent === SLATE ? '#94a3b8'
+    : '#5eead4'
 
+  const hoverGlow =
+    accent === PURPLE ? '0 0 12px rgba(139,92,246,0.18), inset 0 1px 0 rgba(139,92,246,0.10)'
+    : accent === PINK  ? '0 0 12px rgba(236,72,153,0.16), inset 0 1px 0 rgba(236,72,153,0.10)'
+    : accent === WHITE ? 'inset 0 1px 0 rgba(255,255,255,0.06)'
+    : accent === SLATE ? 'inset 0 1px 0 rgba(148,163,184,0.08)'
+    : '0 0 14px rgba(45,212,191,0.16), inset 0 1px 0 rgba(45,212,191,0.12)'
 
-          el.style.color      = '#6a8da8'
-          el.style.background = 'transparent'
-          el.style.boxShadow  = 'none'
-        }
-      }}
-    >
-      <span style={{
-        color: on ? iconColor : idleIconColor,
-        display: 'flex',
-        alignItems: 'center',
-        flexShrink: 0,
-        transition: 'color 0.12s',
-      }}>
+  function onMouseEnter(e: React.MouseEvent) {
+    if (!on) {
+      const el = e.currentTarget as HTMLElement
+      el.style.color      = hoverColor
+      el.style.background = 'rgba(255,255,255,0.04)'
+      el.style.boxShadow  = hoverGlow
+      el.style.transform  = 'translateX(2px)'
+    }
+  }
+
+  function onMouseLeave(e: React.MouseEvent) {
+    if (!on) {
+      const el = e.currentTarget as HTMLElement
+      el.style.color      = '#6a8da8'
+      el.style.background = 'transparent'
+      el.style.boxShadow  = 'none'
+      el.style.transform  = ''
+    }
+  }
+
+  const itemContent = (
+    <>
+      <span style={{ color: on ? iconColor : idleIconColor, display: 'flex', alignItems: 'center', flexShrink: 0, transition: 'color 0.12s' }}>
         {item.icon}
       </span>
       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {item.label}
       </span>
+    </>
+  )
 
+  if (item.href) {
+    return (
+      <Link href={item.href} style={sharedStyle} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
+        {itemContent}
+      </Link>
+    )
+  }
+
+  return (
+    <motion.button
+      onClick={() => onSelect(item.key)}
+      style={sharedStyle}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      whileHover={!on ? { x: 2 } : {}}
+      transition={{ duration: 0.1 }}
+    >
+      {itemContent}
     </motion.button>
   )
 }
