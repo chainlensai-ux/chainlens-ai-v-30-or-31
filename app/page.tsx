@@ -257,21 +257,21 @@ export default function HomePage() {
         {/* Static orb — teal bottom-left */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '800px', height: '800px',
+          width: '750px', height: '750px',
           borderRadius: '50%',
-          bottom: '-200px', left: '-100px',
-          background: 'radial-gradient(circle, rgba(45,212,191,0.15) 0%, transparent 65%)',
-          filter: 'blur(90px)',
+          bottom: '-120px', left: '-80px',
+          background: 'radial-gradient(circle, rgba(45,212,191,0.12) 0%, transparent 68%)',
+          filter: 'blur(80px)',
         }} />
 
         {/* Static orb — purple bottom-right */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '900px', height: '900px',
+          width: '800px', height: '800px',
           borderRadius: '50%',
-          bottom: '-250px', right: '-150px',
-          background: 'radial-gradient(circle, rgba(139,92,246,0.10) 0%, transparent 65%)',
-          filter: 'blur(100px)',
+          bottom: '-140px', right: '-80px',
+          background: 'radial-gradient(circle, rgba(139,92,246,0.10) 0%, transparent 68%)',
+          filter: 'blur(90px)',
         }} />
 
         {/* Terminal grid overlay — fixed, full page */}
