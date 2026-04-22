@@ -1287,7 +1287,7 @@ export default function HomePage() {
           background: 'linear-gradient(90deg, transparent 0%, #2DD4BF 50%, transparent 100%)',
         }} />
 
-        <div style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr', gap: '48px', alignItems: 'start' }}>
+        <div style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '48px', alignItems: 'start' }}>
 
           {/* Left — brand + socials */}
           <div style={{ position: 'relative' }}>
@@ -1362,6 +1362,7 @@ export default function HomePage() {
                 { label: 'Terminal', href: '/terminal' },
                 { label: 'Pricing',  href: '/pricing'  },
                 { label: 'About',    href: '/about'    },
+                { label: 'Terms',    href: '/terms'    },
               ].map(l => (
                 <Link key={l.label} href={l.href} style={{ fontSize: '14px', fontWeight: 500, color: '#fff', textDecoration: 'none', transition: 'color 150ms' }}
                   onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF' }}
