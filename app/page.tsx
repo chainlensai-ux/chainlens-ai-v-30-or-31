@@ -152,8 +152,8 @@ export default function HomePage() {
           66%      { transform: translate(70px, -30px) scale(0.92); opacity: 0.38; }
         }
         @keyframes input-glow {
-          0%,100% { box-shadow: 0 0 0 0 rgba(45,212,191,0), inset 0 0 0 1px rgba(139,92,246,0.28); }
-          50%      { box-shadow: 0 0 18px 4px rgba(45,212,191,0.18), inset 0 0 0 1px rgba(45,212,191,0.45); }
+          0%,100% { box-shadow: 0 0 0 0 rgba(45,212,191,0), 0 0 0 1px rgba(139,92,246,0.28); }
+          50%      { box-shadow: 0 0 22px 5px rgba(45,212,191,0.20), 0 0 0 1px rgba(45,212,191,0.55); }
         }
         .clark-input-box {
           animation: input-glow 3s ease-in-out infinite;
@@ -180,7 +180,7 @@ export default function HomePage() {
 
       <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
-        {/* Animated orb — teal */}
+        {/* Animated orb — teal top */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
           width: '600px', height: '600px',
@@ -191,7 +191,7 @@ export default function HomePage() {
           animation: 'orb-teal 14s ease-in-out infinite',
         }} />
 
-        {/* Animated orb — purple */}
+        {/* Animated orb — purple top */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
           width: '700px', height: '700px',
@@ -200,6 +200,26 @@ export default function HomePage() {
           background: 'radial-gradient(circle, rgba(139,92,246,0.16) 0%, transparent 70%)',
           filter: 'blur(80px)',
           animation: 'orb-purple 18s ease-in-out infinite',
+        }} />
+
+        {/* Static orb — teal bottom-left */}
+        <div style={{
+          position: 'absolute', pointerEvents: 'none', zIndex: 0,
+          width: '800px', height: '800px',
+          borderRadius: '50%',
+          bottom: '-200px', left: '-100px',
+          background: 'radial-gradient(circle, rgba(45,212,191,0.15) 0%, transparent 65%)',
+          filter: 'blur(90px)',
+        }} />
+
+        {/* Static orb — purple bottom-right */}
+        <div style={{
+          position: 'absolute', pointerEvents: 'none', zIndex: 0,
+          width: '900px', height: '900px',
+          borderRadius: '50%',
+          bottom: '-250px', right: '-150px',
+          background: 'radial-gradient(circle, rgba(139,92,246,0.10) 0%, transparent 65%)',
+          filter: 'blur(100px)',
         }} />
 
         {/* Subtle grid overlay */}
@@ -334,14 +354,14 @@ export default function HomePage() {
                   key={chip}
                   onClick={() => setQuery(chip)}
                   style={{
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.10)',
+                    background: 'rgba(255,255,255,0.08)',
+                    border: '1px solid rgba(255,255,255,0.12)',
                     borderRadius: '999px',
                     padding: '6px 14px',
                     fontSize: '10px',
                     fontWeight: 600,
                     letterSpacing: '0.08em',
-                    color: 'rgba(255,255,255,0.60)',
+                    color: 'rgba(255,255,255,0.90)',
                     cursor: 'pointer',
                     textTransform: 'uppercase',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
