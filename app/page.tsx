@@ -825,67 +825,78 @@ export default function HomePage() {
           </div>
 
           {/* 3 × 2 grid */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: '20px',
-          }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {[
-              { handle: '@0xdegen_base',     quote: 'clark called the rug before it happened. saved me $4k. nothing else on base does this.' },
-              { handle: '@basewhale_eth',    quote: 'scanned a wallet and clark literally described my trading personality. eerie accurate.' },
-              { handle: '@virtualsmaxi',     quote: 'been using nansen for 2 years. chainlens does more for base at $30. not even close.' },
-              { handle: '@defi_lurker',      quote: 'base radar found a gem 40 minutes before it hit ct. already 8x.' },
-              { handle: '@0xalphahunter',    quote: 'the liquidity scanner flagged an unlocked lp. token rugged 3 hours later. this thing works.' },
-              { handle: '@basedegen99',      quote: 'clark ai is the real deal. asked about a token and got a full breakdown in 5 seconds. insane.' },
+              { handle: '@0xdegen_base',   name: '0xDegen',        initials: '0D', grad: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', quote: 'clark called the rug before it happened. saved me $4k. nothing else on base does this.' },
+              { handle: '@basewhale_eth',  name: 'BaseWhale.eth',  initials: 'BW', grad: 'linear-gradient(135deg,#3b82f6,#2DD4BF)', quote: 'scanned a wallet and clark literally described my trading personality. eerie accurate.' },
+              { handle: '@virtualsmaxi',   name: 'VirtualsMaxi',   initials: 'VM', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', quote: 'been using nansen for 2 years. chainlens does more for base at $30. not even close.' },
+              { handle: '@defi_lurker',    name: 'DeFi Lurker',    initials: 'DL', grad: 'linear-gradient(135deg,#ec4899,#f97316)', quote: 'base radar found a gem 40 minutes before it hit ct. already 8x.' },
+              { handle: '@0xalphahunter', name: '0xAlphaHunter',  initials: '0A', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', quote: 'the liquidity scanner flagged an unlocked lp. token rugged 3 hours later. this thing works.' },
+              { handle: '@basedegen99',    name: 'BaseDegen99',    initials: 'BD', grad: 'linear-gradient(135deg,#a78bfa,#3b82f6)', quote: 'clark ai is the real deal. asked about a token and got a full breakdown in 5 seconds. insane.' },
             ].map((t, i) => (
               <div
                 key={i}
                 style={{
                   background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: '18px',
-                  padding: '28px',
+                  borderRadius: '16px',
+                  padding: '20px',
                   backdropFilter: 'blur(12px)',
                   WebkitBackdropFilter: 'blur(12px)',
                   boxShadow: '0 4px 24px rgba(0,0,0,0.28)',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '16px',
+                  gap: '14px',
+                  position: 'relative',
                   transition: 'border-color 300ms ease, box-shadow 300ms ease',
                 }}
-                onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = 'rgba(45,212,191,0.35)'
-                  el.style.boxShadow = '0 0 28px rgba(45,212,191,0.12), 0 8px 40px rgba(0,0,0,0.40)'
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = 'rgba(255,255,255,0.08)'
-                  el.style.boxShadow = '0 4px 24px rgba(0,0,0,0.28)'
-                }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.16)'; el.style.boxShadow = '0 0 28px rgba(0,0,0,0.45), 0 8px 40px rgba(0,0,0,0.30)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.08)'; el.style.boxShadow = '0 4px 24px rgba(0,0,0,0.28)' }}
               >
-                {/* Quote mark */}
-                <div style={{ fontSize: '32px', lineHeight: 1, color: 'rgba(45,212,191,0.30)', fontFamily: 'Georgia, serif', marginBottom: '-6px' }}>&ldquo;</div>
-                {/* Quote text */}
-                <p style={{
-                  fontSize: '14px', lineHeight: 1.7,
-                  color: 'rgba(255,255,255,0.88)',
-                  margin: 0, fontWeight: 400,
-                  flex: 1,
-                }}>
+                {/* Header row: avatar + name/handle */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  {/* Avatar */}
+                  <div style={{
+                    width: '44px', height: '44px', borderRadius: '50%',
+                    background: t.grad,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0,
+                    fontSize: '14px', fontWeight: 800, color: '#fff',
+                    letterSpacing: '-0.02em',
+                  }}>
+                    {t.initials}
+                  </div>
+                  {/* Name + handle */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
+                      <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
+                      {/* Verified blue tick */}
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" flexShrink="0" style={{ flexShrink: 0 }}>
+                        <circle cx="12" cy="12" r="12" fill="#1d9bf0"/>
+                        <path d="M9.5 16.5l-3.5-3.5 1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z" fill="#fff"/>
+                      </svg>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#2DD4BF', fontWeight: 500 }}>{t.handle}</div>
+                  </div>
+                  {/* X/Twitter logo top right */}
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="rgba(255,255,255,0.25)" style={{ flexShrink: 0 }}>
+                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.261 5.632zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                  </svg>
+                </div>
+
+                {/* Stars */}
+                <div style={{ display: 'flex', gap: '2px' }}>
+                  {[...Array(5)].map((_, s) => (
+                    <svg key={s} width="14" height="14" viewBox="0 0 24 24" fill="#fbbf24">
+                      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
+                    </svg>
+                  ))}
+                </div>
+
+                {/* Quote */}
+                <p style={{ fontSize: '14px', lineHeight: 1.65, color: 'rgba(255,255,255,0.85)', margin: 0, fontWeight: 400, flex: 1 }}>
                   {t.quote}
                 </p>
-                {/* Username */}
-                <div style={{
-                  fontSize: '12px', fontWeight: 700,
-                  color: '#2DD4BF',
-                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                  letterSpacing: '0.06em',
-                  borderTop: '1px solid rgba(255,255,255,0.06)',
-                  paddingTop: '14px',
-                }}>
-                  {t.handle}
-                </div>
               </div>
             ))}
           </div>
