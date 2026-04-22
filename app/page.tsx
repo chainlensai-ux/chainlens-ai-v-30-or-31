@@ -362,7 +362,7 @@ export default function HomePage() {
           ))}
 
           {/* POWERED BY CORTEX ENGINE badge */}
-          <div className="cortex-badge" style={{
+          <div style={{
             display: 'inline-flex',
             alignItems: 'center',
             gap: '8px',
@@ -371,7 +371,7 @@ export default function HomePage() {
             borderRadius: '999px',
             padding: '6px 18px',
             marginBottom: '24px',
-            boxShadow: '0 0 12px rgba(45,212,191,0.16), 0 1px 0 rgba(255,255,255,0.04) inset',
+            boxShadow: '0 0 12px rgba(45,212,191,0.10), 0 1px 0 rgba(255,255,255,0.04) inset',
           }}>
             <span style={{
               width: '6px', height: '6px', borderRadius: '50%',
@@ -379,12 +379,13 @@ export default function HomePage() {
               boxShadow: '0 0 8px rgba(74,222,128,0.8)',
               display: 'inline-block',
               flexShrink: 0,
+              animation: 'cl-pulse 2s ease-in-out infinite',
             }} />
             <span style={{
               fontSize: '10px',
               fontWeight: 700,
               letterSpacing: '0.16em',
-              color: 'rgba(255,255,255,0.70)',
+              color: '#2DD4BF',
               fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               textTransform: 'uppercase',
             }}>
