@@ -1,6 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { supabase } from '@/lib/supabaseClient'
 import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -204,6 +206,29 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function TerminalTokenScanner() {
+  const router = useRouter()
+  const [sessionChecked, setSessionChecked] = useState(false)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (!data.session) {
+        router.replace('/auth')
+      } else {
+        setSessionChecked(true)
+      }
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        router.replace('/auth')
+      } else if (session) {
+        setSessionChecked(true)
+      }
+    })
+
+    return () => listener.subscription.unsubscribe()
+  }, [router])
+
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
@@ -213,60 +238,67 @@ export default function TerminalTokenScanner() {
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkError, setClarkError]     = useState<string | null>(null)
 
-  async function fetchClarkVerdict(tokenData: ScanResult) {
-    setClarkLoading(true)
-    setClarkVerdict(null)
-    setClarkError(null)
-    try {
-      const res = await fetch('/api/clark', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          feature: 'scan-token',
-          tokenData,
-          tokenAddress: tokenData.contract,
-        }),
-      })
-      const json = await res.json()
-      if (!res.ok || !json.ok) {
-        setClarkError(json.error ?? 'Clark analysis failed.')
-      } else {
-        setClarkVerdict(json.data?.analysis ?? 'No verdict returned.')
-      }
-    } catch {
-      setClarkError('Network error — Clark unavailable.')
-    } finally {
-      setClarkLoading(false)
-    }
-  }
-
   async function handleScan() {
     const q = input.trim()
     if (!q || loading) return
+    if (!/^0x[a-fA-F0-9]{40}$/.test(q)) {
+      setError('Please enter a valid contract address (0x…)')
+      return
+    }
     setLoading(true)
+    setClarkLoading(true)
     setError(null)
     setResult(null)
     setClarkVerdict(null)
     setClarkError(null)
     try {
-      const isContract = /^0x[a-fA-F0-9]{40}$/.test(q)
-      const param = isContract
-        ? `contract=${encodeURIComponent(q)}`
-        : `query=${encodeURIComponent(q)}`
-      const res  = await fetch(`/api/scan-token?${param}`, { cache: 'no-store' })
+      const res  = await fetch('/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contract: q }),
+      })
       const json = await res.json()
-      if (!res.ok || !json.ok) {
+      if (!res.ok || json.error) {
         setError(json.error ?? 'Token not found on Base.')
+        setClarkLoading(false)
       } else {
-        setResult(json.data)
-        fetchClarkVerdict(json.data)
+        const pairs: any[] = Array.isArray(json.pairs) ? json.pairs : []
+        const mainPool = pairs[0] ?? null
+        const mapped: ScanResult = {
+          name:           json.name,
+          symbol:         json.symbol,
+          contract:       json.contract,
+          price:          mainPool ? parseFloat(mainPool.attributes?.price_native ?? '0') || null : null,
+          liquidity:      mainPool ? parseFloat(mainPool.attributes?.reserve_in_usd ?? '0') || null : (json.liquidity ? parseFloat(json.liquidity) || null : null),
+          volume24h:      mainPool ? parseFloat(mainPool.attributes?.volume_usd?.h24 ?? '0') || null : null,
+          priceChange24h: mainPool ? parseFloat(mainPool.attributes?.price_change_percentage?.h24 ?? '0') || null : null,
+          pools: pairs.map((p: any) => ({
+            name:           p.attributes?.name,
+            address:        p.attributes?.address,
+            price:          parseFloat(p.attributes?.price_native ?? '0') || null,
+            liquidity:      parseFloat(p.attributes?.reserve_in_usd ?? '0') || null,
+            volume24h:      parseFloat(p.attributes?.volume_usd?.h24 ?? '0') || null,
+            priceChange24h: parseFloat(p.attributes?.price_change_percentage?.h24 ?? '0') || null,
+          })),
+          goplus: null,
+        }
+        setResult(mapped)
+        if (json.aiSummary) {
+          setClarkVerdict(json.aiSummary)
+        } else {
+          setClarkError('No AI verdict returned.')
+        }
+        setClarkLoading(false)
       }
     } catch {
       setError('Network error — check your connection.')
+      setClarkLoading(false)
     } finally {
       setLoading(false)
     }
   }
+
+  if (!sessionChecked) return null
 
   return (
     <>
@@ -328,7 +360,7 @@ export default function TerminalTokenScanner() {
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="0x… or token name (brett, doginme, toshi…)"
+              placeholder="0x… contract address"
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',

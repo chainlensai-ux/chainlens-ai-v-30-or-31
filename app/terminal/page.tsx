@@ -22,10 +22,10 @@ export default function TerminalPage() {
       }
     })
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!session) {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
         router.replace('/auth')
-      } else {
+      } else if (session) {
         setSessionChecked(true)
       }
     })
