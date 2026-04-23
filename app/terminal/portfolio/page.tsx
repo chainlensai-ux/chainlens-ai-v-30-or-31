@@ -220,7 +220,7 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
 
           {/* ── Holdings table ────────────────────────────────────── */}
-          <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+          <div className="mob-terminal-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
 
             {/* Table header */}
             {walletConnected && (
@@ -368,7 +368,7 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
           </div>
 
           {/* ── Clark verdict panel ───────────────────────────────── */}
-          <aside style={{
+          <aside className="mob-verdict-panel" style={{
             width: '300px',
             flexShrink: 0,
             borderLeft: '1px solid rgba(255,255,255,0.08)',

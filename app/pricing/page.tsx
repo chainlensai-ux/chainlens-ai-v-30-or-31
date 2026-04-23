@@ -249,7 +249,7 @@ export default function PricingPage() {
           </p>
 
           {/* Cards — Elite gets 1.28× width */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1.28fr', gap:'14px', width:'100%', alignItems:'start' }}>
+          <div className="mob-pricing-grid" style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1.28fr', gap:'14px', width:'100%', alignItems:'start' }}>
 
             {PLANS.map(plan => {
               const isElite = plan.id === 'elite'

@@ -110,20 +110,84 @@ html, body {
 /* Hamburger — hidden on desktop, shown on mobile */
 .mob-ham { display: none; }
 
+/* Terminal sidebar toggle — hidden on desktop */
+.mob-sidebar-btn { display: none; }
+
+/* Sidebar backdrop — hidden on desktop */
+.mob-sidebar-overlay { display: none; }
+
 @media (max-width: 767px) {
   /* Navbar: hide desktop links/auth, show hamburger */
   .mob-nav-links { display: none !important; }
   .mob-auth-wrap  { display: none !important; }
   .mob-ham        { display: flex !important; }
 
-  /* Terminal: hide FeatureBar sidebar */
+  /* Terminal: hide FeatureBar sidebar by default */
   .mob-featurebar { display: none !important; }
+
+  /* Terminal: show sidebar as fixed overlay when open */
+  .mob-sidebar-open .mob-featurebar {
+    display: flex !important;
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    z-index: 300 !important;
+    overflow-y: auto !important;
+  }
+
+  /* Terminal: sidebar overlay backdrop */
+  .mob-sidebar-overlay {
+    display: block !important;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    z-index: 299;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+
+  /* Terminal: sidebar toggle button */
+  .mob-sidebar-btn {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 200;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: rgba(6,6,10,0.92);
+    border: 1px solid rgba(255,255,255,0.12);
+    cursor: pointer;
+    color: #2DD4BF;
+    padding: 0;
+  }
 
   /* Terminal: hide ClarkRadar right panel */
   .mob-radar { display: none !important; }
 
+  /* Terminal: hide right verdict panels on feature pages */
+  .mob-verdict-panel { display: none !important; }
+
   /* Ensure terminal main fills viewport when sidebar is hidden */
   .mob-terminal-main { height: 100vh !important; overflow-y: auto !important; }
+
+  /* Homepage: single-column grids */
+  .mob-grid-1         { grid-template-columns: 1fr !important; }
+  .mob-pricing-grid   { grid-template-columns: 1fr !important; max-width: 400px !important; margin-left: auto !important; margin-right: auto !important; }
+  .mob-footer-grid    { grid-template-columns: 1fr !important; gap: 40px !important; }
+  .mob-footer-grid > div:last-child { text-align: left !important; }
+  .mob-footer-grid > div:last-child > div { justify-content: flex-start !important; }
+
+  /* Token scanner: reduce padding */
+  .mob-scan-main { padding: 24px 16px !important; }
+
+  /* Portfolio: hide multi-col table, show single col */
+  .mob-holdings-table { grid-template-columns: 1fr auto auto !important; }
+  .mob-holdings-col-hide { display: none !important; }
 
   /* Homepage CTA: stretch primary button full-width */
   .mob-cta-primary {
@@ -142,4 +206,8 @@ html, body {
     justify-content: center !important;
     text-align: center !important;
   }
+
+  /* General: prevent horizontal overflow on all pages */
+  body { overflow-x: hidden !important; }
+  main, section, footer, header { max-width: 100vw !important; overflow-x: hidden !important; }
 }

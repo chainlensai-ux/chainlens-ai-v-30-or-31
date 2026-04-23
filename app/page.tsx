@@ -826,7 +826,7 @@ export default function HomePage() {
           </div>
 
           {/* 3 × 2 grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+          <div className="mob-grid-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {[
               { handle: '@0xdegen_base',   name: '0xDegen',        initials: '0D', grad: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', quote: 'clark called the rug before it happened. saved me $4k. nothing else on base does this.' },
               { handle: '@basewhale_eth',  name: 'BaseWhale.eth',  initials: 'BW', grad: 'linear-gradient(135deg,#3b82f6,#2DD4BF)', quote: 'scanned a wallet and clark literally described my trading personality. eerie accurate.' },
@@ -911,7 +911,7 @@ export default function HomePage() {
           background: 'linear-gradient(180deg, rgba(45,212,191,0.03) 0%, transparent 100%)',
           padding: '40px 24px',
         }}>
-          <div style={{
+          <div className="mob-grid-1" style={{
             maxWidth: '900px', margin: '0 auto',
             display: 'grid', gridTemplateColumns: '1fr 1fr 1fr',
             gap: '0',
@@ -970,7 +970,7 @@ export default function HomePage() {
           </div>
 
           {/* Steps row */}
-          <div className="feat-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px' }}>
+          <div className="feat-grid mob-grid-1" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px' }}>
             {[
               { step: '01', title: 'Paste any wallet or token',       desc: 'Drop in any address, contract, or token — Clark handles the rest.' },
               { step: '02', title: 'CORTEX analyses the data',        desc: 'Our engine pulls onchain data, scores risk, and maps smart money in seconds.' },
@@ -1037,7 +1037,7 @@ export default function HomePage() {
           </div>
 
           {/* 2 × 2 grid */}
-          <div className="feat-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          <div className="feat-grid mob-grid-1" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             {[
               { accent: '#2DD4BF', title: 'Trending Tokens',    desc: "A clean overview of what's moving on-chain. Shows which tokens are gaining attention, volume, or momentum." },
               { accent: '#ec4899', title: 'Smart Money Moves',  desc: 'A preview of how ChainLens will track high-value wallets and their actions in real time.' },
@@ -1159,7 +1159,7 @@ export default function HomePage() {
           </div>
 
           {/* Cards — Elite gets 1.28× width */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.28fr', gap: '14px', maxWidth: '1020px', margin: '0 auto', alignItems: 'start' }}>
+          <div className="mob-pricing-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.28fr', gap: '14px', maxWidth: '1020px', margin: '0 auto', alignItems: 'start' }}>
             {[
               {
                 id: 'free', label: 'FREE', labelColor: '#ec4899', price: '$0',
@@ -1288,7 +1288,7 @@ export default function HomePage() {
           background: 'linear-gradient(90deg, transparent 0%, #2DD4BF 50%, transparent 100%)',
         }} />
 
-        <div style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '48px', alignItems: 'start' }}>
+        <div className="mob-footer-grid" style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '48px', alignItems: 'start' }}>
 
           {/* Left — brand + socials */}
           <div style={{ position: 'relative' }}>

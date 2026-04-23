@@ -285,7 +285,7 @@ export default function TerminalTokenScanner() {
       <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
 
         {/* ── Left: scrollable scan area ──────────────────────────── */}
-        <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '40px 48px' }}>
+        <div className="mob-scan-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '40px 48px' }}>
 
           {/* Back button */}
           <Link href="/terminal" style={{
@@ -496,7 +496,7 @@ export default function TerminalTokenScanner() {
         </div>
 
         {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
-        <aside style={{
+        <aside className="mob-verdict-panel" style={{
           width: '288px',
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
