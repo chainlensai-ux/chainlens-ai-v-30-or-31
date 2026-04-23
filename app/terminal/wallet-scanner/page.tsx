@@ -313,49 +313,50 @@ export default function WalletScannerPage() {
           {result && !loading && (() => {
             const sorted = [...result.holdings].sort((a, b) => b.value - a.value)
             return (
-            <div style={{ maxWidth: '680px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ maxWidth: '720px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
               {/* Hero: portfolio value */}
               <div style={{
-                background: 'linear-gradient(135deg, rgba(45,212,191,0.08) 0%, rgba(139,92,246,0.06) 100%)',
-                border: '1px solid rgba(45,212,191,0.18)',
-                borderRadius: '16px', padding: '24px 28px',
+                background: 'linear-gradient(135deg, rgba(45,212,191,0.10) 0%, rgba(139,92,246,0.07) 100%)',
+                border: '1px solid rgba(45,212,191,0.22)',
+                borderRadius: '18px', padding: '32px 36px',
                 position: 'relative', overflow: 'hidden',
+                boxShadow: '0 0 40px rgba(45,212,191,0.06)',
               }}>
                 <div style={{
-                  position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
+                  position: 'absolute', top: 0, left: 0, right: 0, height: '3px',
                   background: 'linear-gradient(90deg, #2DD4BF, #8b5cf6)',
                 }} />
                 <div style={{
-                  fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                  color: 'rgba(45,212,191,0.70)', textTransform: 'uppercase',
+                  fontSize: '11px', fontWeight: 700, letterSpacing: '0.16em',
+                  color: 'rgba(45,212,191,0.75)', textTransform: 'uppercase',
                   fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                  marginBottom: '10px',
+                  marginBottom: '12px',
                 }}>
                   Portfolio Value
                 </div>
                 <div style={{
-                  fontSize: '42px', fontWeight: 900, color: '#f1f5f9',
+                  fontSize: '56px', fontWeight: 900, color: '#f1f5f9',
                   fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                  letterSpacing: '-0.02em', lineHeight: 1,
-                  marginBottom: '10px',
+                  letterSpacing: '-0.03em', lineHeight: 1,
+                  marginBottom: '16px',
                 }}>
                   {fmtUSD(result.totalValue)}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
                   <span style={{
-                    fontSize: '11px', color: 'rgba(255,255,255,0.35)',
+                    fontSize: '13px', color: 'rgba(255,255,255,0.40)',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                   }}>
                     {shortAddr(result.address)}
                   </span>
                   {totalPnlPct !== null && (
                     <span style={{
-                      display: 'inline-flex', alignItems: 'center', gap: '5px',
-                      padding: '3px 10px', borderRadius: '99px',
-                      background: totalPnlPct >= 0 ? 'rgba(45,212,191,0.12)' : 'rgba(239,68,68,0.12)',
-                      border: `1px solid ${totalPnlPct >= 0 ? 'rgba(45,212,191,0.30)' : 'rgba(239,68,68,0.30)'}`,
-                      fontSize: '11px', fontWeight: 700,
+                      display: 'inline-flex', alignItems: 'center', gap: '6px',
+                      padding: '5px 14px', borderRadius: '99px',
+                      background: totalPnlPct >= 0 ? 'rgba(45,212,191,0.14)' : 'rgba(239,68,68,0.14)',
+                      border: `1px solid ${totalPnlPct >= 0 ? 'rgba(45,212,191,0.35)' : 'rgba(239,68,68,0.35)'}`,
+                      fontSize: '13px', fontWeight: 700,
                       color: totalPnlPct >= 0 ? '#2DD4BF' : '#ef4444',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     }}>
@@ -366,7 +367,7 @@ export default function WalletScannerPage() {
               </div>
 
               {/* Stats row */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                 {[
                   {
                     label: 'Wallet Age',
@@ -385,26 +386,26 @@ export default function WalletScannerPage() {
                 ].map(card => (
                   <div key={card.label} style={{
                     background: '#080c14',
-                    border: '1px solid rgba(255,255,255,0.07)',
-                    borderRadius: '12px', padding: '16px 18px',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: '14px', padding: '22px 24px',
                   }}>
                     <div style={{
-                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em',
-                      color: 'rgba(255,255,255,0.30)', textTransform: 'uppercase',
+                      fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em',
+                      color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                      marginBottom: '8px',
+                      marginBottom: '10px',
                     }}>
                       {card.label}
                     </div>
                     <div style={{
-                      fontSize: '26px', fontWeight: 800, color: card.color,
+                      fontSize: '32px', fontWeight: 800, color: card.color,
                       fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                      marginBottom: '4px', letterSpacing: '-0.01em',
+                      marginBottom: '6px', letterSpacing: '-0.01em',
                     }}>
                       {card.value}
                     </div>
                     <div style={{
-                      fontSize: '11px', color: 'rgba(255,255,255,0.25)',
+                      fontSize: '13px', color: 'rgba(255,255,255,0.30)',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     }}>
                       {card.sub}
@@ -422,11 +423,11 @@ export default function WalletScannerPage() {
                 }}>
                   {/* Table header */}
                   <div style={{
-                    display: 'grid', gridTemplateColumns: '1fr 100px 110px 88px',
-                    padding: '10px 18px',
+                    display: 'grid', gridTemplateColumns: '1fr 110px 120px 96px',
+                    padding: '13px 22px',
                     borderBottom: '1px solid rgba(255,255,255,0.06)',
-                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em',
-                    color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase',
+                    fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em',
+                    color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                   }}>
                     <span>Token</span>
@@ -435,7 +436,7 @@ export default function WalletScannerPage() {
                     <span style={{ textAlign: 'right' }}>24h</span>
                   </div>
 
-                  {/* Rows — already sorted by value desc */}
+                  {/* Rows — sorted by value desc */}
                   {sorted.map((h, i) => {
                     const up = (h.change24h ?? 0) >= 0
                     const chainLabel = h.chain
@@ -446,52 +447,52 @@ export default function WalletScannerPage() {
                         key={i}
                         className="ws-row"
                         style={{
-                          display: 'grid', gridTemplateColumns: '1fr 100px 110px 88px',
-                          padding: '11px 18px',
+                          display: 'grid', gridTemplateColumns: '1fr 110px 120px 96px',
+                          padding: '16px 22px',
                           borderBottom: i < sorted.length - 1
                             ? '1px solid rgba(255,255,255,0.04)' : 'none',
                           transition: 'background 0.12s',
                         }}
                       >
                         {/* Token */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
                           {h.icon ? (
-                            <img src={h.icon} alt={h.symbol} width={28} height={28}
+                            <img src={h.icon} alt={h.symbol} width={36} height={36}
                               style={{ borderRadius: '50%', flexShrink: 0 }}
                               onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                             />
                           ) : (
                             <div style={{
-                              width: '28px', height: '28px', borderRadius: '50%', flexShrink: 0,
+                              width: '36px', height: '36px', borderRadius: '50%', flexShrink: 0,
                               background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)',
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontSize: '9px', fontWeight: 800, color: '#04101a',
+                              fontSize: '11px', fontWeight: 800, color: '#04101a',
                             }}>
                               {h.symbol.slice(0, 2).toUpperCase()}
                             </div>
                           )}
                           <div style={{ minWidth: 0 }}>
                             <div style={{
-                              fontSize: '13px', fontWeight: 600, color: '#f1f5f9',
+                              fontSize: '15px', fontWeight: 600, color: '#f1f5f9',
                               fontFamily: 'var(--font-inter, Inter, sans-serif)',
                               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                              marginBottom: '3px',
+                              marginBottom: '4px',
                             }}>
                               {h.symbol}
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                               <span style={{
-                                fontSize: '10px', color: 'rgba(255,255,255,0.30)',
+                                fontSize: '11px', color: 'rgba(255,255,255,0.32)',
                                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                maxWidth: '90px',
+                                maxWidth: '100px',
                               }}>
                                 {h.name}
                               </span>
                               {chainLabel && (
                                 <span style={{
-                                  fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em',
-                                  padding: '1px 6px', borderRadius: '99px',
+                                  fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
+                                  padding: '2px 7px', borderRadius: '99px',
                                   background: chainLabel === 'base'
                                     ? 'rgba(0,82,255,0.15)'
                                     : chainLabel === 'ethereum'
@@ -520,7 +521,7 @@ export default function WalletScannerPage() {
 
                         {/* Balance */}
                         <div style={{
-                          textAlign: 'right', fontSize: '12px', color: 'rgba(255,255,255,0.50)',
+                          textAlign: 'right', fontSize: '14px', color: 'rgba(255,255,255,0.55)',
                           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                           alignSelf: 'center',
                         }}>
@@ -529,7 +530,7 @@ export default function WalletScannerPage() {
 
                         {/* Value */}
                         <div style={{
-                          textAlign: 'right', fontSize: '13px', fontWeight: 600, color: '#e2e8f0',
+                          textAlign: 'right', fontSize: '15px', fontWeight: 600, color: '#e2e8f0',
                           fontFamily: 'var(--font-inter, Inter, sans-serif)',
                           alignSelf: 'center',
                         }}>
@@ -538,7 +539,7 @@ export default function WalletScannerPage() {
 
                         {/* 24h PnL */}
                         <div style={{
-                          textAlign: 'right', fontSize: '12px', fontWeight: 600,
+                          textAlign: 'right', fontSize: '14px', fontWeight: 600,
                           color: h.change24h === null ? 'rgba(255,255,255,0.20)'
                             : up ? '#2DD4BF' : '#ef4444',
                           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
@@ -567,7 +568,7 @@ export default function WalletScannerPage() {
 
         {/* ── Right: Clark verdict panel ───────────────────────────────── */}
         <aside className="mob-verdict-panel" style={{
-          width: '288px', flexShrink: 0,
+          width: '360px', flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           background: '#080c14', overflowY: 'auto',
           display: 'flex', flexDirection: 'column',
@@ -580,7 +581,7 @@ export default function WalletScannerPage() {
             transition: 'opacity 0.4s',
           }} />
 
-          <div style={{ padding: '24px 20px', flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ padding: '28px 24px', flex: 1, display: 'flex', flexDirection: 'column', gap: '20px' }}>
             {/* Label */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <div style={{
@@ -591,7 +592,7 @@ export default function WalletScannerPage() {
                 flexShrink: 0,
               }} />
               <span style={{
-                fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
+                fontSize: '11px', fontWeight: 700, letterSpacing: '0.18em',
                 color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               }}>
@@ -602,7 +603,7 @@ export default function WalletScannerPage() {
             {/* Idle */}
             {!result && !clarkLoading && !clarkVerdict && !clarkError && (
               <p style={{
-                fontSize: '12px', color: 'rgba(255,255,255,0.25)', lineHeight: 1.65,
+                fontSize: '14px', color: 'rgba(255,255,255,0.25)', lineHeight: 1.65,
                 fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
               }}>
                 Scan a wallet and Clark will analyse the portfolio — personality read, risk flags, and a full verdict.
@@ -615,7 +616,7 @@ export default function WalletScannerPage() {
             {/* Error */}
             {clarkError && !clarkLoading && (
               <p style={{
-                fontSize: '12px', color: '#fca5a5', lineHeight: 1.65,
+                fontSize: '14px', color: '#fca5a5', lineHeight: 1.6,
                 fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
               }}>
                 {clarkError}
@@ -625,26 +626,23 @@ export default function WalletScannerPage() {
             {/* Verdict */}
             {clarkVerdict && !clarkLoading && (() => {
               const lines = clarkVerdict.split('\n').filter(l => l.trim())
-              // First non-heading line used as the summary card
               const isHeadingLine = (l: string) => /^(#{1,3} |[A-Z][A-Z\s]{3,}:|[\d]+\.)/.test(l.trim())
               const summaryIdx = lines.findIndex(l => !isHeadingLine(l))
               const summaryLine = summaryIdx !== -1 ? lines[summaryIdx] : null
               const restLines = summaryIdx !== -1 ? lines.filter((_, i) => i !== summaryIdx) : lines
               return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {/* One-line summary card */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {/* Summary card */}
                   {summaryLine && (
                     <div style={{
                       borderLeft: '3px solid #2DD4BF',
-                      paddingLeft: '12px',
-                      paddingTop: '6px',
-                      paddingBottom: '6px',
+                      paddingLeft: '14px', paddingTop: '8px', paddingBottom: '8px',
                       background: 'rgba(45,212,191,0.06)',
-                      borderRadius: '0 6px 6px 0',
+                      borderRadius: '0 8px 8px 0',
                     }}>
                       <p style={{
-                        fontSize: '13px', fontWeight: 500, fontStyle: 'italic',
-                        color: '#ffffff', lineHeight: 1.55, margin: 0,
+                        fontSize: '14px', fontWeight: 500, fontStyle: 'italic',
+                        color: '#ffffff', lineHeight: 1.6, margin: 0,
                         fontFamily: 'var(--font-inter, Inter, sans-serif)',
                       }}>
                         {summaryLine.replace(/^#{1,3} /, '')}
@@ -659,9 +657,9 @@ export default function WalletScannerPage() {
                         fontSize: isHeading ? '11px' : '14px',
                         fontWeight: isHeading ? 700 : 400,
                         color: isHeading ? '#2DD4BF' : '#ffffff',
-                        lineHeight: isHeading ? 1.4 : 1.7,
+                        lineHeight: isHeading ? 1.4 : 1.6,
                         margin: 0,
-                        letterSpacing: isHeading ? '0.10em' : 'normal',
+                        letterSpacing: isHeading ? '0.12em' : 'normal',
                         textTransform: isHeading ? 'uppercase' : 'none',
                         fontFamily: isHeading
                           ? 'var(--font-plex-mono, IBM Plex Mono, monospace)'
