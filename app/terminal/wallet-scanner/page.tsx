@@ -180,16 +180,27 @@ export default function WalletScannerPage() {
 
           {/* Back */}
           <Link href="/terminal" style={{
-            display: 'inline-flex', alignItems: 'center', gap: '6px',
-            color: 'rgba(255,255,255,0.35)', fontSize: '12px', fontWeight: 500,
-            textDecoration: 'none', marginBottom: '24px',
-            fontFamily: 'var(--font-inter, Inter, sans-serif)', transition: 'color 0.15s',
+            display: 'inline-flex', alignItems: 'center', gap: '7px',
+            background: '#080c14',
+            border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: '8px',
+            padding: '7px 14px',
+            color: '#f1f5f9', fontSize: '12px', fontWeight: 500,
+            textDecoration: 'none', marginBottom: '28px',
+            fontFamily: 'var(--font-inter, Inter, sans-serif)',
+            transition: 'border-color 0.15s, color 0.15s',
           }}
-            onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.75)' }}
-            onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.35)' }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(45,212,191,0.45)'
+              ;(e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF'
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(255,255,255,0.08)'
+              ;(e.currentTarget as HTMLAnchorElement).style.color = '#f1f5f9'
+            }}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 12H5M11 6l-6 6 6 6"/>
             </svg>
             Back
           </Link>
@@ -612,28 +623,57 @@ export default function WalletScannerPage() {
             )}
 
             {/* Verdict */}
-            {clarkVerdict && !clarkLoading && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                {clarkVerdict.split('\n').filter(l => l.trim()).map((line, i) => {
-                  const isHeading = /^(#{1,3} |[A-Z][A-Z\s]{3,}:|[\d]+\.)/.test(line.trim())
-                  return (
-                    <p key={i} style={{
-                      fontSize: isHeading ? '10px' : '12px',
-                      fontWeight: isHeading ? 700 : 400,
-                      color: isHeading ? '#2DD4BF' : 'rgba(255,255,255,0.75)',
-                      lineHeight: 1.65, margin: 0,
-                      letterSpacing: isHeading ? '0.10em' : 'normal',
-                      textTransform: isHeading ? 'uppercase' : 'none',
-                      fontFamily: isHeading
-                        ? 'var(--font-plex-mono, IBM Plex Mono, monospace)'
-                        : 'var(--font-inter, Inter, sans-serif)',
+            {clarkVerdict && !clarkLoading && (() => {
+              const lines = clarkVerdict.split('\n').filter(l => l.trim())
+              // First non-heading line used as the summary card
+              const isHeadingLine = (l: string) => /^(#{1,3} |[A-Z][A-Z\s]{3,}:|[\d]+\.)/.test(l.trim())
+              const summaryIdx = lines.findIndex(l => !isHeadingLine(l))
+              const summaryLine = summaryIdx !== -1 ? lines[summaryIdx] : null
+              const restLines = summaryIdx !== -1 ? lines.filter((_, i) => i !== summaryIdx) : lines
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {/* One-line summary card */}
+                  {summaryLine && (
+                    <div style={{
+                      borderLeft: '3px solid #2DD4BF',
+                      paddingLeft: '12px',
+                      paddingTop: '6px',
+                      paddingBottom: '6px',
+                      background: 'rgba(45,212,191,0.06)',
+                      borderRadius: '0 6px 6px 0',
                     }}>
-                      {line.replace(/^#{1,3} /, '')}
-                    </p>
-                  )
-                })}
-              </div>
-            )}
+                      <p style={{
+                        fontSize: '13px', fontWeight: 500, fontStyle: 'italic',
+                        color: '#ffffff', lineHeight: 1.55, margin: 0,
+                        fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                      }}>
+                        {summaryLine.replace(/^#{1,3} /, '')}
+                      </p>
+                    </div>
+                  )}
+                  {/* Remaining lines */}
+                  {restLines.map((line, i) => {
+                    const isHeading = isHeadingLine(line)
+                    return (
+                      <p key={i} style={{
+                        fontSize: isHeading ? '11px' : '14px',
+                        fontWeight: isHeading ? 700 : 400,
+                        color: isHeading ? '#2DD4BF' : '#ffffff',
+                        lineHeight: isHeading ? 1.4 : 1.7,
+                        margin: 0,
+                        letterSpacing: isHeading ? '0.10em' : 'normal',
+                        textTransform: isHeading ? 'uppercase' : 'none',
+                        fontFamily: isHeading
+                          ? 'var(--font-plex-mono, IBM Plex Mono, monospace)'
+                          : 'var(--font-inter, Inter, sans-serif)',
+                      }}>
+                        {line.replace(/^#{1,3} /, '')}
+                      </p>
+                    )
+                  })}
+                </div>
+              )
+            })()}
           </div>
         </aside>
       </div>
