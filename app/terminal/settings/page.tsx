@@ -1,7 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { supabase } from '@/lib/supabaseClient'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -124,16 +126,30 @@ function StatusBadge({ connected }: { connected: boolean }) {
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
+  const router = useRouter()
   const [displayName, setDisplayName] = useState('')
-  const [email, setEmail] = useState('user@example.com')
+  const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [signingOut, setSigningOut] = useState(false)
 
   const [darkMode, setDarkMode] = useState(true)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setUserEmail(data.session?.user?.email ?? null)
+    })
+  }, [])
 
   const [notifWhale, setNotifWhale]   = useState(true)
   const [notifPump, setNotifPump]     = useState(true)
   const [notifRadar, setNotifRadar]   = useState(false)
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
+  async function handleSignOut() {
+    setSigningOut(true)
+    await supabase.auth.signOut()
+    router.replace('/')
+  }
 
   const APIS = [
     { name: 'GeckoTerminal',  sub: 'Token & pool data',         connected: true  },
@@ -193,7 +209,7 @@ export default function SettingsPage() {
                 cursor: 'pointer',
                 border: '2px solid rgba(45,212,191,0.20)',
               }}>
-                {displayName ? displayName[0].toUpperCase() : 'U'}
+                {(displayName || userEmail || 'U')[0].toUpperCase()}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', marginBottom: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.06em' }}>
@@ -217,23 +233,61 @@ export default function SettingsPage() {
               </div>
               <div>
                 <Label>Email Address</Label>
-                <Input value={email} onChange={setEmail} placeholder="your@email.com" />
+                <div style={{
+                  width: '100%', padding: '9px 13px',
+                  background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: '9px', color: 'rgba(255,255,255,0.45)',
+                  fontSize: '13px', fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                  boxSizing: 'border-box',
+                  userSelect: 'none',
+                }}>
+                  {userEmail ?? '—'}
+                </div>
+                <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.25)', marginTop: '5px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                  Email is managed by your sign-in provider.
+                </div>
               </div>
             </div>
 
-            <button style={{
-              marginTop: '20px',
-              padding: '9px 22px', borderRadius: '9px',
-              background: 'rgba(45,212,191,0.12)',
-              border: '1px solid rgba(45,212,191,0.25)',
-              color: '#2DD4BF', fontSize: '12px', fontWeight: 700,
-              cursor: 'pointer', fontFamily: 'var(--font-inter, Inter, sans-serif)',
-              letterSpacing: '0.08em', textTransform: 'uppercase',
-              transition: 'background 0.15s',
-            }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(45,212,191,0.20)' }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(45,212,191,0.12)' }}
-            >Save Changes</button>
+            <div style={{ marginTop: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <button style={{
+                padding: '9px 22px', borderRadius: '9px',
+                background: 'rgba(45,212,191,0.12)',
+                border: '1px solid rgba(45,212,191,0.25)',
+                color: '#2DD4BF', fontSize: '12px', fontWeight: 700,
+                cursor: 'pointer', fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                letterSpacing: '0.08em', textTransform: 'uppercase',
+                transition: 'background 0.15s',
+              }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(45,212,191,0.20)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(45,212,191,0.12)' }}
+              >Save Changes</button>
+
+              <button
+                onClick={handleSignOut}
+                disabled={signingOut}
+                style={{
+                  padding: '9px 22px', borderRadius: '9px',
+                  background: 'transparent',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  color: signingOut ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.55)',
+                  fontSize: '12px', fontWeight: 600,
+                  cursor: signingOut ? 'not-allowed' : 'pointer',
+                  fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                  letterSpacing: '0.06em', textTransform: 'uppercase',
+                  transition: 'border-color 0.15s, color 0.15s',
+                  display: 'flex', alignItems: 'center', gap: '7px',
+                }}
+                onMouseEnter={e => { if (!signingOut) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.28)'; e.currentTarget.style.color = 'rgba(255,255,255,0.80)' } }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)'; e.currentTarget.style.color = signingOut ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.55)' }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {signingOut ? 'Signing out…' : 'Sign Out'}
+              </button>
+            </div>
           </Card>
 
           {/* ── Appearance ──────────────────────────────── */}
