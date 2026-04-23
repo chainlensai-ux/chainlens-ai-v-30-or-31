@@ -339,100 +339,125 @@ export default function WalletScannerPage() {
           {/* Results */}
           {result && !loading && (() => {
             const sorted = [...result.holdings].sort((a, b) => b.value - a.value)
+            const withChange = result.holdings.filter(h => h.change24h !== null)
+            const winRate = withChange.length > 0
+              ? (withChange.filter(h => (h.change24h ?? 0) >= 0).length / withChange.length) * 100
+              : null
             return (
-            <div style={{ maxWidth: '720px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ maxWidth: '720px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-              {/* Hero: portfolio value */}
+              {/* Portfolio value card */}
               <div style={{
-                background: 'linear-gradient(135deg, rgba(45,212,191,0.10) 0%, rgba(139,92,246,0.07) 100%)',
-                border: '1px solid rgba(45,212,191,0.22)',
-                borderRadius: '18px', padding: '32px 36px',
+                background: '#080c14',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: '18px',
                 position: 'relative', overflow: 'hidden',
-                boxShadow: '0 0 40px rgba(45,212,191,0.06)',
               }}>
+                {/* Top gradient line */}
                 <div style={{
-                  position: 'absolute', top: 0, left: 0, right: 0, height: '3px',
-                  background: 'linear-gradient(90deg, #2DD4BF, #8b5cf6)',
+                  position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
+                  background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
                 }} />
-                <div style={{
-                  fontSize: '11px', fontWeight: 700, letterSpacing: '0.16em',
-                  color: 'rgba(45,212,191,0.75)', textTransform: 'uppercase',
-                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                  marginBottom: '12px',
-                }}>
-                  Portfolio Value
-                </div>
-                <div style={{
-                  fontSize: '56px', fontWeight: 900, color: '#f1f5f9',
-                  fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                  letterSpacing: '-0.03em', lineHeight: 1,
-                  marginBottom: '16px',
-                }}>
-                  {fmtUSD(result.totalValue)}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
-                  <span style={{
-                    fontSize: '13px', color: 'rgba(255,255,255,0.40)',
+                <div style={{ padding: '28px 32px' }}>
+                  {/* Label */}
+                  <div style={{
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
+                    color: '#2DD4BF', textTransform: 'uppercase',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    marginBottom: '10px',
                   }}>
-                    {shortAddr(result.address)}
-                  </span>
-                  {totalPnlPct !== null && (
+                    Portfolio Value
+                  </div>
+                  {/* Value */}
+                  <div style={{
+                    fontSize: '52px', fontWeight: 900, color: '#f1f5f9',
+                    fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                    letterSpacing: '-0.03em', lineHeight: 1,
+                    marginBottom: '14px',
+                  }}>
+                    {fmtUSD(result.totalValue)}
+                  </div>
+                  {/* 24h PnL row */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <span style={{
-                      display: 'inline-flex', alignItems: 'center', gap: '6px',
-                      padding: '5px 14px', borderRadius: '99px',
-                      background: totalPnlPct >= 0 ? 'rgba(45,212,191,0.14)' : 'rgba(239,68,68,0.14)',
-                      border: `1px solid ${totalPnlPct >= 0 ? 'rgba(45,212,191,0.35)' : 'rgba(239,68,68,0.35)'}`,
-                      fontSize: '13px', fontWeight: 700,
-                      color: totalPnlPct >= 0 ? '#2DD4BF' : '#ef4444',
+                      fontSize: '12px', color: 'rgba(255,255,255,0.32)',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     }}>
-                      {totalPnlPct >= 0 ? '▲' : '▼'} {fmtPct(totalPnlPct)} 24h
+                      {shortAddr(result.address)}
                     </span>
-                  )}
+                    {totalPnlPct !== null && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{
+                          fontSize: '13px', fontWeight: 700,
+                          color: totalPnlPct >= 0 ? '#2DD4BF' : '#ef4444',
+                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                        }}>
+                          {totalPnlPct >= 0 ? '▲' : '▼'} {fmtPct(totalPnlPct)}
+                        </span>
+                        <span style={{
+                          fontSize: '11px', color: 'rgba(255,255,255,0.30)',
+                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                        }}>
+                          24h
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {/* Stats row */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+              {/* Four stat cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                 {[
                   {
                     label: 'Wallet Age',
                     value: fmtAge(result.walletAgeDays),
                     sub: result.firstTxDate
-                      ? `First tx ${new Date(result.firstTxDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`
-                      : 'First tx unknown',
+                      ? new Date(result.firstTxDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+                      : 'Unknown',
                     color: '#a78bfa',
                   },
                   {
                     label: 'Transactions',
                     value: result.txCount.toLocaleString(),
                     sub: `${sorted.length} token${sorted.length !== 1 ? 's' : ''} held`,
-                    color: '#f59e0b',
+                    color: '#2DD4BF',
+                  },
+                  {
+                    label: 'Profit / Loss',
+                    value: totalPnlPct !== null ? fmtPct(totalPnlPct) : '—',
+                    sub: '24h weighted',
+                    color: totalPnlPct === null ? 'rgba(255,255,255,0.35)' : totalPnlPct >= 0 ? '#2DD4BF' : '#ef4444',
+                  },
+                  {
+                    label: 'Win Rate',
+                    value: winRate !== null ? `${winRate.toFixed(0)}%` : '—',
+                    sub: `of ${withChange.length} tokens`,
+                    color: winRate === null ? 'rgba(255,255,255,0.35)' : winRate >= 50 ? '#2DD4BF' : '#a78bfa',
                   },
                 ].map(card => (
                   <div key={card.label} style={{
                     background: '#080c14',
                     border: '1px solid rgba(255,255,255,0.08)',
-                    borderRadius: '14px', padding: '22px 24px',
+                    borderRadius: '14px', padding: '18px 20px',
                   }}>
                     <div style={{
-                      fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em',
-                      color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase',
+                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.13em',
+                      color: 'rgba(255,255,255,0.32)', textTransform: 'uppercase',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                      marginBottom: '10px',
+                      marginBottom: '8px',
                     }}>
                       {card.label}
                     </div>
                     <div style={{
-                      fontSize: '32px', fontWeight: 800, color: card.color,
+                      fontSize: '24px', fontWeight: 800, color: card.color,
                       fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                      marginBottom: '6px', letterSpacing: '-0.01em',
+                      marginBottom: '5px', letterSpacing: '-0.01em', lineHeight: 1.1,
                     }}>
                       {card.value}
                     </div>
                     <div style={{
-                      fontSize: '13px', color: 'rgba(255,255,255,0.30)',
+                      fontSize: '11px', color: 'rgba(255,255,255,0.25)',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     }}>
                       {card.sub}
