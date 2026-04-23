@@ -115,26 +115,37 @@ export default function WalletScannerPage() {
   async function triggerClark(address: string, data: WalletResult) {
     setClarkLoading(true)
     try {
-      const top5 = data.holdings.slice(0, 5).map(h => `${h.symbol} $${h.value.toFixed(0)}`).join(', ')
-      const prompt =
-        `Wallet: ${address}\n` +
-        `Total value: ${fmtUSD(data.totalValue)}\n` +
-        `Token count: ${data.holdings.length}\n` +
-        `Transaction count: ${data.txCount}\n` +
-        `Wallet age: ${fmtAge(data.walletAgeDays)}\n` +
-        `Top holdings: ${top5 || 'none'}`
+      const sorted = [...data.holdings].sort((a, b) => b.value - a.value)
+      const holdingLines = sorted.slice(0, 10).map(h =>
+        `  - ${h.symbol} (${h.name}): balance=${fmtBalance(h.balance)}, value=${fmtUSD(h.value)}, 24h=${fmtPct(h.change24h)}, chain=${h.chain ?? 'unknown'}`
+      ).join('\n')
 
-      const clarkRes  = await fetch('/api/clark', {
+      const prompt =
+        `Scan this wallet and give me a personality read + risk verdict.\n\n` +
+        `Wallet address: ${address}\n` +
+        `Total portfolio value: ${fmtUSD(data.totalValue)}\n` +
+        `Token count: ${data.holdings.length}\n` +
+        `Transaction count (Ethereum nonce): ${data.txCount}\n` +
+        `Wallet age: ${fmtAge(data.walletAgeDays)}` +
+        (data.firstTxDate ? ` (first tx: ${new Date(data.firstTxDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })})` : '') + '\n\n' +
+        `Top holdings:\n${holdingLines || '  none'}\n\n` +
+        `Using only the wallet data above, give:\n` +
+        `1. PERSONALITY TYPE — one punchy label (e.g. Diamond Hand Degen, Yield Farmer, NFT Flipper, Airdrop Hunter)\n` +
+        `2. RISK SCORE — 1–10 with one sentence why\n` +
+        `3. BIGGEST FLAG — top risk pattern you see\n` +
+        `4. VERDICT — 2–3 lines, direct, Base-native tone`
+
+      const clarkRes = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feature: 'wallet-scanner', walletAddress: address, prompt }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt, walletAddress: address }),
       })
       const clarkJson = await clarkRes.json()
-      const text = clarkJson.data?.analysis ?? clarkJson.data?.response ?? clarkJson.analysis ?? null
+      const text = clarkJson.data?.analysis ?? clarkJson.data?.response ?? null
       if (text) {
         setClarkVerdict(text)
       } else {
-        setClarkError('No verdict returned.')
+        setClarkError(clarkJson.error ?? 'No verdict returned.')
       }
     } catch {
       setClarkError('Clark analysis failed.')
@@ -288,30 +299,76 @@ export default function WalletScannerPage() {
           )}
 
           {/* Results */}
-          {result && !loading && (
-            <div style={{ maxWidth: '680px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          {result && !loading && (() => {
+            const sorted = [...result.holdings].sort((a, b) => b.value - a.value)
+            return (
+            <div style={{ maxWidth: '680px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
-              {/* Summary cards */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+              {/* Hero: portfolio value */}
+              <div style={{
+                background: 'linear-gradient(135deg, rgba(45,212,191,0.08) 0%, rgba(139,92,246,0.06) 100%)',
+                border: '1px solid rgba(45,212,191,0.18)',
+                borderRadius: '16px', padding: '24px 28px',
+                position: 'relative', overflow: 'hidden',
+              }}>
+                <div style={{
+                  position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
+                  background: 'linear-gradient(90deg, #2DD4BF, #8b5cf6)',
+                }} />
+                <div style={{
+                  fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                  color: 'rgba(45,212,191,0.70)', textTransform: 'uppercase',
+                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  marginBottom: '10px',
+                }}>
+                  Portfolio Value
+                </div>
+                <div style={{
+                  fontSize: '42px', fontWeight: 900, color: '#f1f5f9',
+                  fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                  letterSpacing: '-0.02em', lineHeight: 1,
+                  marginBottom: '10px',
+                }}>
+                  {fmtUSD(result.totalValue)}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                  <span style={{
+                    fontSize: '11px', color: 'rgba(255,255,255,0.35)',
+                    fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  }}>
+                    {shortAddr(result.address)}
+                  </span>
+                  {totalPnlPct !== null && (
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '5px',
+                      padding: '3px 10px', borderRadius: '99px',
+                      background: totalPnlPct >= 0 ? 'rgba(45,212,191,0.12)' : 'rgba(239,68,68,0.12)',
+                      border: `1px solid ${totalPnlPct >= 0 ? 'rgba(45,212,191,0.30)' : 'rgba(239,68,68,0.30)'}`,
+                      fontSize: '11px', fontWeight: 700,
+                      color: totalPnlPct >= 0 ? '#2DD4BF' : '#ef4444',
+                      fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    }}>
+                      {totalPnlPct >= 0 ? '▲' : '▼'} {fmtPct(totalPnlPct)} 24h
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Stats row */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 {[
-                  {
-                    label: 'Portfolio Value',
-                    value: fmtUSD(result.totalValue),
-                    sub: result.address ? shortAddr(result.address) : '',
-                    color: '#2DD4BF',
-                  },
                   {
                     label: 'Wallet Age',
                     value: fmtAge(result.walletAgeDays),
                     sub: result.firstTxDate
-                      ? new Date(result.firstTxDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+                      ? `First tx ${new Date(result.firstTxDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`
                       : 'First tx unknown',
                     color: '#a78bfa',
                   },
                   {
                     label: 'Transactions',
                     value: result.txCount.toLocaleString(),
-                    sub: 'Ethereum mainnet',
+                    sub: `${sorted.length} token${sorted.length !== 1 ? 's' : ''} held`,
                     color: '#f59e0b',
                   },
                 ].map(card => (
@@ -322,21 +379,21 @@ export default function WalletScannerPage() {
                   }}>
                     <div style={{
                       fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em',
-                      color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase',
+                      color: 'rgba(255,255,255,0.30)', textTransform: 'uppercase',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                       marginBottom: '8px',
                     }}>
                       {card.label}
                     </div>
                     <div style={{
-                      fontSize: '22px', fontWeight: 800, color: card.color,
+                      fontSize: '26px', fontWeight: 800, color: card.color,
                       fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                      marginBottom: '4px',
+                      marginBottom: '4px', letterSpacing: '-0.01em',
                     }}>
                       {card.value}
                     </div>
                     <div style={{
-                      fontSize: '11px', color: 'rgba(255,255,255,0.28)',
+                      fontSize: '11px', color: 'rgba(255,255,255,0.25)',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     }}>
                       {card.sub}
@@ -345,27 +402,8 @@ export default function WalletScannerPage() {
                 ))}
               </div>
 
-              {/* 24h PnL banner if available */}
-              {totalPnlPct !== null && (
-                <div style={{
-                  padding: '10px 16px', borderRadius: '10px',
-                  background: totalPnlPct >= 0 ? 'rgba(45,212,191,0.07)' : 'rgba(239,68,68,0.07)',
-                  border: `1px solid ${totalPnlPct >= 0 ? 'rgba(45,212,191,0.18)' : 'rgba(239,68,68,0.18)'}`,
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  fontSize: '13px', fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                }}>
-                  <span style={{ color: 'rgba(255,255,255,0.40)' }}>24h weighted PnL</span>
-                  <span style={{
-                    fontWeight: 700, fontSize: '14px',
-                    color: totalPnlPct >= 0 ? '#2DD4BF' : '#ef4444',
-                  }}>
-                    {fmtPct(totalPnlPct)}
-                  </span>
-                </div>
-              )}
-
               {/* Holdings table */}
-              {result.holdings.length > 0 ? (
+              {sorted.length > 0 ? (
                 <div style={{
                   background: '#080c14',
                   border: '1px solid rgba(255,255,255,0.07)',
@@ -373,51 +411,52 @@ export default function WalletScannerPage() {
                 }}>
                   {/* Table header */}
                   <div style={{
-                    display: 'grid', gridTemplateColumns: '1fr 110px 110px 90px',
+                    display: 'grid', gridTemplateColumns: '1fr 100px 110px 88px',
                     padding: '10px 18px',
                     borderBottom: '1px solid rgba(255,255,255,0.06)',
                     fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em',
-                    color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase',
+                    color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                   }}>
                     <span>Token</span>
                     <span style={{ textAlign: 'right' }}>Balance</span>
                     <span style={{ textAlign: 'right' }}>Value (USD)</span>
-                    <span style={{ textAlign: 'right' }}>24h PnL</span>
+                    <span style={{ textAlign: 'right' }}>24h</span>
                   </div>
 
-                  {/* Rows */}
-                  {result.holdings.map((h, i) => {
+                  {/* Rows — already sorted by value desc */}
+                  {sorted.map((h, i) => {
                     const up = (h.change24h ?? 0) >= 0
+                    const chainLabel = h.chain
+                      ? h.chain.replace(/-mainnet$/, '').replace(/-/, ' ')
+                      : null
                     return (
                       <div
                         key={i}
                         className="ws-row"
                         style={{
-                          display: 'grid', gridTemplateColumns: '1fr 110px 110px 90px',
+                          display: 'grid', gridTemplateColumns: '1fr 100px 110px 88px',
                           padding: '11px 18px',
-                          borderBottom: i < result.holdings.length - 1
+                          borderBottom: i < sorted.length - 1
                             ? '1px solid rgba(255,255,255,0.04)' : 'none',
                           transition: 'background 0.12s',
                         }}
                       >
-                        {/* Token name */}
+                        {/* Token */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
                           {h.icon ? (
-                            <img
-                              src={h.icon} alt={h.symbol}
-                              width={26} height={26}
+                            <img src={h.icon} alt={h.symbol} width={28} height={28}
                               style={{ borderRadius: '50%', flexShrink: 0 }}
                               onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                             />
                           ) : (
                             <div style={{
-                              width: '26px', height: '26px', borderRadius: '50%', flexShrink: 0,
+                              width: '28px', height: '28px', borderRadius: '50%', flexShrink: 0,
                               background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)',
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
                               fontSize: '9px', fontWeight: 800, color: '#04101a',
                             }}>
-                              {h.symbol.slice(0, 2)}
+                              {h.symbol.slice(0, 2).toUpperCase()}
                             </div>
                           )}
                           <div style={{ minWidth: 0 }}>
@@ -425,21 +464,52 @@ export default function WalletScannerPage() {
                               fontSize: '13px', fontWeight: 600, color: '#f1f5f9',
                               fontFamily: 'var(--font-inter, Inter, sans-serif)',
                               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              marginBottom: '3px',
                             }}>
-                              {h.name}
+                              {h.symbol}
                             </div>
-                            <div style={{
-                              fontSize: '10px', color: 'rgba(255,255,255,0.35)',
-                              fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                            }}>
-                              {h.symbol}{h.chain ? ` · ${h.chain}` : ''}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                              <span style={{
+                                fontSize: '10px', color: 'rgba(255,255,255,0.30)',
+                                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                maxWidth: '90px',
+                              }}>
+                                {h.name}
+                              </span>
+                              {chainLabel && (
+                                <span style={{
+                                  fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em',
+                                  padding: '1px 6px', borderRadius: '99px',
+                                  background: chainLabel === 'base'
+                                    ? 'rgba(0,82,255,0.15)'
+                                    : chainLabel === 'ethereum'
+                                      ? 'rgba(98,126,234,0.15)'
+                                      : 'rgba(139,92,246,0.15)',
+                                  border: chainLabel === 'base'
+                                    ? '1px solid rgba(0,82,255,0.30)'
+                                    : chainLabel === 'ethereum'
+                                      ? '1px solid rgba(98,126,234,0.30)'
+                                      : '1px solid rgba(139,92,246,0.30)',
+                                  color: chainLabel === 'base'
+                                    ? '#6ea8ff'
+                                    : chainLabel === 'ethereum'
+                                      ? '#a3b4f7'
+                                      : '#c4b5fd',
+                                  textTransform: 'uppercase',
+                                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                                  flexShrink: 0,
+                                }}>
+                                  {chainLabel}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
 
                         {/* Balance */}
                         <div style={{
-                          textAlign: 'right', fontSize: '12px', color: 'rgba(255,255,255,0.55)',
+                          textAlign: 'right', fontSize: '12px', color: 'rgba(255,255,255,0.50)',
                           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                           alignSelf: 'center',
                         }}>
@@ -458,7 +528,7 @@ export default function WalletScannerPage() {
                         {/* 24h PnL */}
                         <div style={{
                           textAlign: 'right', fontSize: '12px', fontWeight: 600,
-                          color: h.change24h === null ? 'rgba(255,255,255,0.25)'
+                          color: h.change24h === null ? 'rgba(255,255,255,0.20)'
                             : up ? '#2DD4BF' : '#ef4444',
                           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                           alignSelf: 'center',
@@ -480,7 +550,8 @@ export default function WalletScannerPage() {
                 </div>
               )}
             </div>
-          )}
+            )
+          })()}
         </div>
 
         {/* ── Right: Clark verdict panel ───────────────────────────────── */}
