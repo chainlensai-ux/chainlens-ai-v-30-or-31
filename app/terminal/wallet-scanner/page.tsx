@@ -58,6 +58,41 @@ function shortAddr(a: string): string {
   return `${a.slice(0, 6)}…${a.slice(-4)}`
 }
 
+// ── Clark verdict parser ─────────────────────────────────────────────────────
+
+type ClarkSections = {
+  'PERSONALITY TYPE': string
+  'RISK SCORE': string
+  'BIGGEST FLAG': string
+  'VERDICT': string
+  riskNum: number | null
+}
+
+function parseClarkSections(text: string): ClarkSections {
+  const out: ClarkSections = {
+    'PERSONALITY TYPE': '', 'RISK SCORE': '', 'BIGGEST FLAG': '', 'VERDICT': '', riskNum: null,
+  }
+  const keys = ['PERSONALITY TYPE', 'RISK SCORE', 'BIGGEST FLAG', 'VERDICT'] as const
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  let cur: typeof keys[number] | null = null
+
+  for (const line of lines) {
+    const clean = line.replace(/^\*{1,2}|^\#+\s*|\d+[.)]\s*/g, '').replace(/\*{1,2}$/, '').trim()
+    const matched = keys.find(k => clean.toUpperCase().startsWith(k))
+    if (matched) {
+      cur = matched
+      const rest = clean.slice(matched.length).replace(/^[\s—:\-]+/, '').trim()
+      if (rest) out[cur] = rest
+    } else if (cur) {
+      out[cur] = out[cur] ? out[cur] + ' ' + line : line
+    }
+  }
+
+  const m = out['RISK SCORE'].match(/(\d+)/)
+  if (m) out.riskNum = Math.min(10, Math.max(1, parseInt(m[1])))
+  return out
+}
+
 // ── Loading dots ─────────────────────────────────────────────────────────────
 
 function ClarkDots() {
@@ -167,6 +202,10 @@ export default function WalletScannerPage() {
         @keyframes clarkDot {
           0%,60%,100% { transform:translateY(0);  opacity:0.35; }
           30%          { transform:translateY(-5px); opacity:1; }
+        }
+        @keyframes clarkPulse {
+          0%,100% { opacity:1; box-shadow:0 0 6px rgba(45,212,191,0.70); }
+          50%      { opacity:0.4; box-shadow:0 0 2px rgba(45,212,191,0.20); }
         }
         .ws-row:hover { background: rgba(255,255,255,0.025) !important; }
         .ws-scan-btn:hover:not(:disabled) {
@@ -664,42 +703,58 @@ export default function WalletScannerPage() {
 
         {/* ── Right: Clark verdict panel ───────────────────────────────── */}
         <aside className="mob-verdict-panel" style={{
-          width: '360px', flexShrink: 0,
+          width: '380px', flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
-          background: '#080c14', overflowY: 'auto',
+          background: '#080c14',
           display: 'flex', flexDirection: 'column',
         }}>
-          {/* Accent line */}
+          {/* Top gradient accent */}
           <div style={{
             height: '2px', flexShrink: 0,
-            background: 'linear-gradient(90deg,#2DD4BF,#8b5cf6)',
-            opacity: (clarkLoading || clarkVerdict) ? 1 : 0.2,
+            background: 'linear-gradient(90deg, #2DD4BF, #8b5cf6)',
+            opacity: (clarkLoading || clarkVerdict) ? 1 : 0.18,
             transition: 'opacity 0.4s',
           }} />
 
-          <div style={{ padding: '28px 24px', flex: 1, display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            {/* Label */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* Header */}
+          <div style={{
+            padding: '20px 24px 16px', flexShrink: 0,
+            borderBottom: '1px solid rgba(255,255,255,0.06)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: result ? '10px' : 0 }}>
               <div style={{
-                width: '8px', height: '8px', borderRadius: '50%',
-                background: clarkLoading ? '#2DD4BF' : clarkVerdict ? '#2DD4BF' : '#1e3a44',
-                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 8px rgba(45,212,191,0.80)' : 'none',
+                width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
+                background: (clarkLoading || clarkVerdict) ? '#2DD4BF' : 'rgba(45,212,191,0.22)',
+                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 8px rgba(45,212,191,0.70)' : 'none',
+                animation: clarkLoading ? 'clarkPulse 1.2s ease-in-out infinite' : 'none',
                 transition: 'background 0.3s, box-shadow 0.3s',
-                flexShrink: 0,
               }} />
               <span style={{
                 fontSize: '11px', fontWeight: 700, letterSpacing: '0.18em',
-                color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase',
+                color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               }}>
                 Clark AI Verdict
               </span>
             </div>
+            {result && (
+              <div style={{
+                fontSize: '11px', color: 'rgba(255,255,255,0.28)',
+                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                {result.address.slice(0, 10)}…{result.address.slice(-8)}
+              </div>
+            )}
+          </div>
+
+          {/* Body */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
 
             {/* Idle */}
             {!result && !clarkLoading && !clarkVerdict && !clarkError && (
               <p style={{
-                fontSize: '14px', color: 'rgba(255,255,255,0.25)', lineHeight: 1.65,
+                fontSize: '13px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.7,
                 fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
               }}>
                 Scan a wallet and Clark will analyse the portfolio — personality read, risk flags, and a full verdict.
@@ -712,62 +767,194 @@ export default function WalletScannerPage() {
             {/* Error */}
             {clarkError && !clarkLoading && (
               <p style={{
-                fontSize: '14px', color: '#fca5a5', lineHeight: 1.6,
+                fontSize: '13px', color: '#fca5a5', lineHeight: 1.6,
                 fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
               }}>
                 {clarkError}
               </p>
             )}
 
-            {/* Verdict */}
+            {/* Structured verdict */}
             {clarkVerdict && !clarkLoading && (() => {
-              const lines = clarkVerdict.split('\n').filter(l => l.trim())
-              const isHeadingLine = (l: string) => /^(#{1,3} |[A-Z][A-Z\s]{3,}:|[\d]+\.)/.test(l.trim())
-              const summaryIdx = lines.findIndex(l => !isHeadingLine(l))
-              const summaryLine = summaryIdx !== -1 ? lines[summaryIdx] : null
-              const restLines = summaryIdx !== -1 ? lines.filter((_, i) => i !== summaryIdx) : lines
+              const p = parseClarkSections(clarkVerdict)
+              const rn = p.riskNum
+              const riskColor = !rn ? '#2DD4BF' : rn <= 3 ? '#2DD4BF' : rn <= 6 ? '#f59e0b' : '#ef4444'
+              const riskLabel = !rn ? '—'        : rn <= 3 ? 'LOW'      : rn <= 6 ? 'MEDIUM'   : 'HIGH'
+              const R = 44
+              const C = 2 * Math.PI * R
+              const filled = rn ? (rn / 10) * C : 0
+
               return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  {/* Summary card */}
-                  {summaryLine && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+                  {/* Risk gauge card */}
+                  <div style={{
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.07)',
+                    borderRadius: '14px', padding: '18px 20px',
+                    display: 'flex', alignItems: 'center', gap: '18px',
+                  }}>
+                    {/* SVG gauge */}
+                    <svg width="90" height="90" viewBox="0 0 120 120" style={{ flexShrink: 0 }}>
+                      <circle cx="60" cy="60" r={R} fill="none"
+                        stroke="rgba(255,255,255,0.07)" strokeWidth="9" />
+                      {rn && (
+                        <circle cx="60" cy="60" r={R} fill="none"
+                          stroke={riskColor} strokeWidth="9" strokeLinecap="round"
+                          strokeDasharray={`${filled} ${C}`}
+                          strokeDashoffset={C / 4}
+                          style={{ filter: `drop-shadow(0 0 5px ${riskColor}99)`, transition: 'stroke-dasharray 0.6s ease' }}
+                        />
+                      )}
+                      <text x="60" y="54" textAnchor="middle" dominantBaseline="middle"
+                        fill="#f1f5f9" fontSize="24" fontWeight="800" fontFamily="Inter,sans-serif">
+                        {rn ?? '—'}
+                      </text>
+                      <text x="60" y="74" textAnchor="middle" dominantBaseline="middle"
+                        fill="rgba(255,255,255,0.30)" fontSize="11" fontFamily="IBM Plex Mono,monospace">
+                        /10
+                      </text>
+                    </svg>
+                    {/* Risk label + reason */}
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{
+                        fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                        color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase',
+                        fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                        marginBottom: '5px',
+                      }}>
+                        Risk Level
+                      </div>
+                      <div style={{
+                        fontSize: '20px', fontWeight: 800, color: riskColor,
+                        fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                        letterSpacing: '-0.01em', marginBottom: '6px',
+                      }}>
+                        {riskLabel}
+                      </div>
+                      {p['RISK SCORE'] && (
+                        <div style={{
+                          fontSize: '11px', color: 'rgba(255,255,255,0.38)', lineHeight: 1.5,
+                          fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                          overflow: 'hidden', display: '-webkit-box',
+                          WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
+                        }}>
+                          {p['RISK SCORE'].replace(/^\d+(?:\/\d+)?[\s—\-:]+/, '')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Personality type */}
+                  {p['PERSONALITY TYPE'] && (
                     <div style={{
-                      borderLeft: '3px solid #2DD4BF',
-                      paddingLeft: '14px', paddingTop: '8px', paddingBottom: '8px',
-                      background: 'rgba(45,212,191,0.06)',
-                      borderRadius: '0 8px 8px 0',
+                      background: 'rgba(255,255,255,0.03)',
+                      border: '1px solid rgba(255,255,255,0.07)',
+                      borderRadius: '12px', padding: '14px 16px',
                     }}>
-                      <p style={{
-                        fontSize: '14px', fontWeight: 500, fontStyle: 'italic',
-                        color: '#ffffff', lineHeight: 1.6, margin: 0,
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '7px' }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        <span style={{
+                          fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                          color: '#2DD4BF', textTransform: 'uppercase',
+                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                        }}>
+                          Personality Type
+                        </span>
+                      </div>
+                      <div style={{
+                        fontSize: '14px', fontWeight: 600, color: '#f1f5f9', lineHeight: 1.5,
                         fontFamily: 'var(--font-inter, Inter, sans-serif)',
                       }}>
-                        {summaryLine.replace(/^#{1,3} /, '')}
+                        {p['PERSONALITY TYPE']}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Biggest flag */}
+                  {p['BIGGEST FLAG'] && (
+                    <div style={{
+                      background: 'rgba(239,68,68,0.05)',
+                      border: '1px solid rgba(239,68,68,0.18)',
+                      borderRadius: '12px', padding: '14px 16px',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '7px' }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                        <span style={{
+                          fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                          color: '#f87171', textTransform: 'uppercase',
+                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                        }}>
+                          Biggest Flag
+                        </span>
+                      </div>
+                      <div style={{
+                        fontSize: '13px', color: 'rgba(255,255,255,0.72)', lineHeight: 1.6,
+                        fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                      }}>
+                        {p['BIGGEST FLAG']}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Verdict */}
+                  {p['VERDICT'] && (
+                    <div style={{
+                      borderLeft: '3px solid #2DD4BF',
+                      paddingLeft: '14px', paddingTop: '10px', paddingBottom: '10px',
+                      background: 'rgba(45,212,191,0.04)',
+                      borderRadius: '0 10px 10px 0',
+                    }}>
+                      <div style={{
+                        fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                        color: '#2DD4BF', textTransform: 'uppercase',
+                        fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                        marginBottom: '7px',
+                      }}>
+                        Verdict
+                      </div>
+                      <p style={{
+                        fontSize: '13px', fontStyle: 'italic',
+                        color: '#ffffff', lineHeight: 1.65, margin: 0,
+                        fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                      }}>
+                        {p['VERDICT']}
                       </p>
                     </div>
                   )}
-                  {/* Remaining lines */}
-                  {restLines.map((line, i) => {
-                    const isHeading = isHeadingLine(line)
-                    return (
-                      <p key={i} style={{
-                        fontSize: isHeading ? '11px' : '14px',
-                        fontWeight: isHeading ? 700 : 400,
-                        color: isHeading ? '#2DD4BF' : '#ffffff',
-                        lineHeight: isHeading ? 1.4 : 1.6,
-                        margin: 0,
-                        letterSpacing: isHeading ? '0.12em' : 'normal',
-                        textTransform: isHeading ? 'uppercase' : 'none',
-                        fontFamily: isHeading
-                          ? 'var(--font-plex-mono, IBM Plex Mono, monospace)'
-                          : 'var(--font-inter, Inter, sans-serif)',
-                      }}>
-                        {line.replace(/^#{1,3} /, '')}
-                      </p>
-                    )
-                  })}
+
+                  {/* Fallback: raw text if parsing found nothing */}
+                  {!p['PERSONALITY TYPE'] && !p['BIGGEST FLAG'] && !p['VERDICT'] && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {clarkVerdict.split('\n').filter(l => l.trim()).map((line, i) => (
+                        <p key={i} style={{
+                          fontSize: '13px', color: '#ffffff', lineHeight: 1.6,
+                          fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
+                        }}>
+                          {line.replace(/^#{1,3} /, '')}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )
             })()}
+          </div>
+
+          {/* Footer */}
+          <div style={{
+            flexShrink: 0, padding: '12px 24px',
+            borderTop: '1px solid rgba(255,255,255,0.06)',
+            fontSize: '10px', color: 'rgba(255,255,255,0.20)',
+            letterSpacing: '0.05em', lineHeight: 1.5,
+            fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+          }}>
+            Powered by CORTEX — Real-time onchain analysis
           </div>
         </aside>
       </div>
