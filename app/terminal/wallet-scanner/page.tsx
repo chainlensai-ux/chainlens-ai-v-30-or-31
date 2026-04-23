@@ -82,9 +82,10 @@ export default function WalletScannerPage() {
   const [loading, setLoading]           = useState(false)
   const [error, setError]               = useState<string | null>(null)
   const [result, setResult]             = useState<WalletResult | null>(null)
-  const [clarkLoading, setClarkLoading] = useState(false)
-  const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
-  const [clarkError, setClarkError]     = useState<string | null>(null)
+  const [clarkLoading, setClarkLoading]       = useState(false)
+  const [clarkVerdict, setClarkVerdict]       = useState<string | null>(null)
+  const [clarkError, setClarkError]           = useState<string | null>(null)
+  const [showAllHoldings, setShowAllHoldings] = useState(false)
 
   async function handleScan() {
     const q = input.trim()
@@ -94,6 +95,7 @@ export default function WalletScannerPage() {
     setResult(null)
     setClarkVerdict(null)
     setClarkError(null)
+    setShowAllHoldings(false)
 
     try {
       const res  = await fetch('/api/wallet', {
@@ -467,143 +469,185 @@ export default function WalletScannerPage() {
               </div>
 
               {/* Holdings table */}
-              {sorted.length > 0 ? (
-                <div style={{
-                  background: '#080c14',
-                  border: '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: '14px', overflow: 'hidden',
-                }}>
-                  {/* Table header */}
+              {sorted.length > 0 ? (() => {
+                const PREVIEW = 5
+                const visible = showAllHoldings ? sorted : sorted.slice(0, PREVIEW)
+                const hidden  = sorted.length - PREVIEW
+                return (
                   <div style={{
-                    display: 'grid', gridTemplateColumns: '1fr 110px 120px 96px',
-                    padding: '13px 22px',
-                    borderBottom: '1px solid rgba(255,255,255,0.06)',
-                    fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em',
-                    color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase',
-                    fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    background: '#080c14',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: '16px', overflow: 'hidden',
                   }}>
-                    <span>Token</span>
-                    <span style={{ textAlign: 'right' }}>Balance</span>
-                    <span style={{ textAlign: 'right' }}>Value (USD)</span>
-                    <span style={{ textAlign: 'right' }}>24h</span>
-                  </div>
+                    {/* Table header */}
+                    <div style={{
+                      display: 'grid', gridTemplateColumns: '1fr 110px 120px 88px',
+                      padding: '12px 20px',
+                      borderBottom: '1px solid rgba(255,255,255,0.06)',
+                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                      color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase',
+                      fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    }}>
+                      <span>Token</span>
+                      <span style={{ textAlign: 'right' }}>Balance</span>
+                      <span style={{ textAlign: 'right' }}>Value USD</span>
+                      <span style={{ textAlign: 'right' }}>24h</span>
+                    </div>
 
-                  {/* Rows — sorted by value desc */}
-                  {sorted.map((h, i) => {
-                    const up = (h.change24h ?? 0) >= 0
-                    const chainLabel = h.chain
-                      ? h.chain.replace(/-mainnet$/, '').replace(/-/, ' ')
-                      : null
-                    return (
-                      <div
-                        key={i}
-                        className="ws-row"
-                        style={{
-                          display: 'grid', gridTemplateColumns: '1fr 110px 120px 96px',
-                          padding: '16px 22px',
-                          borderBottom: i < sorted.length - 1
-                            ? '1px solid rgba(255,255,255,0.04)' : 'none',
-                          transition: 'background 0.12s',
-                        }}
-                      >
-                        {/* Token */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
-                          {h.icon ? (
-                            <img src={h.icon} alt={h.symbol} width={36} height={36}
-                              style={{ borderRadius: '50%', flexShrink: 0 }}
-                              onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-                            />
-                          ) : (
-                            <div style={{
-                              width: '36px', height: '36px', borderRadius: '50%', flexShrink: 0,
-                              background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              fontSize: '11px', fontWeight: 800, color: '#04101a',
-                            }}>
-                              {h.symbol.slice(0, 2).toUpperCase()}
-                            </div>
-                          )}
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{
-                              fontSize: '15px', fontWeight: 600, color: '#f1f5f9',
-                              fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                              marginBottom: '4px',
-                            }}>
-                              {h.symbol}
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                              <span style={{
-                                fontSize: '11px', color: 'rgba(255,255,255,0.32)',
-                                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                maxWidth: '100px',
+                    {/* Rows */}
+                    {visible.map((h, i) => {
+                      const up = (h.change24h ?? 0) >= 0
+                      const chainLabel = h.chain
+                        ? h.chain.replace(/-mainnet$/, '').replace(/-/g, ' ')
+                        : null
+                      const isLast = i === visible.length - 1 && (showAllHoldings || sorted.length <= PREVIEW)
+                      return (
+                        <div
+                          key={i}
+                          className="ws-row"
+                          style={{
+                            display: 'grid', gridTemplateColumns: '1fr 110px 120px 88px',
+                            padding: '14px 20px',
+                            borderBottom: isLast ? 'none' : '1px solid rgba(255,255,255,0.04)',
+                            alignItems: 'center',
+                            transition: 'background 0.12s',
+                          }}
+                        >
+                          {/* Token col */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '11px', minWidth: 0 }}>
+                            {/* Logo */}
+                            {h.icon ? (
+                              <img src={h.icon} alt={h.symbol} width={34} height={34}
+                                style={{ borderRadius: '50%', flexShrink: 0 }}
+                                onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                              />
+                            ) : (
+                              <div style={{
+                                width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
+                                background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: '11px', fontWeight: 800, color: '#04101a',
                               }}>
-                                {h.name}
-                              </span>
-                              {chainLabel && (
+                                {h.symbol.slice(0, 2).toUpperCase()}
+                              </div>
+                            )}
+                            {/* Name + chain pill */}
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{
+                                fontSize: '14px', fontWeight: 600, color: '#f1f5f9',
+                                fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                marginBottom: '3px',
+                              }}>
+                                {h.symbol}
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                                 <span style={{
-                                  fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
-                                  padding: '2px 7px', borderRadius: '99px',
-                                  background: chainLabel === 'base'
-                                    ? 'rgba(0,82,255,0.15)'
-                                    : chainLabel === 'ethereum'
-                                      ? 'rgba(98,126,234,0.15)'
-                                      : 'rgba(139,92,246,0.15)',
-                                  border: chainLabel === 'base'
-                                    ? '1px solid rgba(0,82,255,0.30)'
-                                    : chainLabel === 'ethereum'
-                                      ? '1px solid rgba(98,126,234,0.30)'
-                                      : '1px solid rgba(139,92,246,0.30)',
-                                  color: chainLabel === 'base'
-                                    ? '#6ea8ff'
-                                    : chainLabel === 'ethereum'
-                                      ? '#a3b4f7'
-                                      : '#c4b5fd',
-                                  textTransform: 'uppercase',
+                                  fontSize: '11px', color: 'rgba(255,255,255,0.28)',
                                   fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                                  flexShrink: 0,
+                                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                  maxWidth: '80px',
                                 }}>
-                                  {chainLabel}
+                                  {h.name}
                                 </span>
-                              )}
+                                {chainLabel && (
+                                  <span style={{
+                                    fontSize: '9px', fontWeight: 700, letterSpacing: '0.07em',
+                                    padding: '2px 6px', borderRadius: '99px', flexShrink: 0,
+                                    background: chainLabel === 'base'
+                                      ? 'rgba(0,82,255,0.14)'
+                                      : chainLabel === 'ethereum'
+                                        ? 'rgba(98,126,234,0.14)'
+                                        : 'rgba(139,92,246,0.14)',
+                                    border: chainLabel === 'base'
+                                      ? '1px solid rgba(0,82,255,0.28)'
+                                      : chainLabel === 'ethereum'
+                                        ? '1px solid rgba(98,126,234,0.28)'
+                                        : '1px solid rgba(139,92,246,0.28)',
+                                    color: chainLabel === 'base'
+                                      ? '#6ea8ff'
+                                      : chainLabel === 'ethereum'
+                                        ? '#a3b4f7'
+                                        : '#c4b5fd',
+                                    textTransform: 'uppercase',
+                                    fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                                  }}>
+                                    {chainLabel}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
-                        </div>
 
-                        {/* Balance */}
-                        <div style={{
-                          textAlign: 'right', fontSize: '14px', color: 'rgba(255,255,255,0.55)',
+                          {/* Balance */}
+                          <div style={{
+                            textAlign: 'right', fontSize: '13px', color: 'rgba(255,255,255,0.50)',
+                            fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                          }}>
+                            {fmtBalance(h.balance)}
+                          </div>
+
+                          {/* Value */}
+                          <div style={{
+                            textAlign: 'right', fontSize: '14px', fontWeight: 600, color: '#e2e8f0',
+                            fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                          }}>
+                            {fmtUSD(h.value)}
+                          </div>
+
+                          {/* 24h */}
+                          <div style={{
+                            textAlign: 'right', fontSize: '13px', fontWeight: 600,
+                            color: h.change24h === null
+                              ? 'rgba(255,255,255,0.18)'
+                              : up ? '#2DD4BF' : '#ef4444',
+                            fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                          }}>
+                            {fmtPct(h.change24h)}
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    {/* Expand / collapse button */}
+                    {sorted.length > PREVIEW && (
+                      <button
+                        onClick={() => setShowAllHoldings(v => !v)}
+                        style={{
+                          width: '100%', padding: '13px 20px',
+                          background: 'none',
+                          borderTop: '1px solid rgba(255,255,255,0.06)',
+                          border: 'none', borderTop: '1px solid rgba(255,255,255,0.06)',
+                          cursor: 'pointer', display: 'flex', alignItems: 'center',
+                          justifyContent: 'center', gap: '6px',
+                          fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em',
+                          color: 'rgba(255,255,255,0.40)',
                           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                          alignSelf: 'center',
-                        }}>
-                          {fmtBalance(h.balance)}
-                        </div>
-
-                        {/* Value */}
-                        <div style={{
-                          textAlign: 'right', fontSize: '15px', fontWeight: 600, color: '#e2e8f0',
-                          fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                          alignSelf: 'center',
-                        }}>
-                          {fmtUSD(h.value)}
-                        </div>
-
-                        {/* 24h PnL */}
-                        <div style={{
-                          textAlign: 'right', fontSize: '14px', fontWeight: 600,
-                          color: h.change24h === null ? 'rgba(255,255,255,0.20)'
-                            : up ? '#2DD4BF' : '#ef4444',
-                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                          alignSelf: 'center',
-                        }}>
-                          {fmtPct(h.change24h)}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : (
+                          transition: 'color 0.15s',
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.color = '#2DD4BF')}
+                        onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.40)')}
+                      >
+                        {showAllHoldings ? (
+                          <>
+                            Show less
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M18 15l-6-6-6 6"/>
+                            </svg>
+                          </>
+                        ) : (
+                          <>
+                            View all tokens ({hidden} more)
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M6 9l6 6 6-6"/>
+                            </svg>
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                )
+              })() : (
                 <div style={{
                   padding: '40px 24px', textAlign: 'center',
                   background: '#080c14', border: '1px solid rgba(255,255,255,0.07)',
