@@ -1,86 +1,141 @@
-import { NextResponse } from "next/server";
+import { NextResponse } from 'next/server'
 
-const RPC = {
-  eth: "https://eth.llamarpc.com",
-  base: "https://mainnet.base.org",
-  polygon: "https://polygon-rpc.com",
-  bnb: "https://bsc-dataseed.bnbchain.org:443",
-};
+const ZERION_KEY       = process.env.ZERION_KEY!
+const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
+const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 
-type ChainConfig = {
-  name: string;
-  rpc: string;
-  nativeSymbol: string;
-  chainId: number;
-};
+// ── Zerion ───────────────────────────────────────────────────────────────────
 
-const CHAINS: Record<string, ChainConfig> = {
-  eth: { name: "Ethereum", rpc: RPC.eth, nativeSymbol: "ETH", chainId: 1 },
-  base: { name: "Base", rpc: RPC.base, nativeSymbol: "ETH", chainId: 8453 },
-  polygon: { name: "Polygon", rpc: RPC.polygon, nativeSymbol: "MATIC", chainId: 137 },
-  bnb: { name: "BNB Chain", rpc: RPC.bnb, nativeSymbol: "BNB", chainId: 56 },
-};
-
-async function getNativeBalance(rpc: string, address: string) {
-  try {
-    const res = await fetch(rpc, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: 1,
-        jsonrpc: "2.0",
-        method: "eth_getBalance",
-        params: [address, "latest"],
-      }),
-    });
-    const data = await res.json();
-    return data.result ? parseInt(data.result, 16) / 1e18 : 0;
-  } catch {
-    return 0;
-  }
+function zerionAuth() {
+  return `Basic ${Buffer.from(`${ZERION_KEY}:`).toString('base64')}`
 }
 
-async function getTransactions(chainId: number, address: string) {
-  try {
-    const apiKey = process.env.COVALENT_API_KEY;
-    const url = `https://api.covalenthq.com/v1/${chainId}/address/${address}/transactions_v2/?key=${apiKey}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    return data.data?.items || [];
-  } catch {
-    return [];
-  }
+async function zerionGet(path: string, params: Record<string, string> = {}) {
+  const url = new URL(`https://api.zerion.io/v1/${path}`)
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
+  const res = await fetch(url.toString(), {
+    headers: { Accept: 'application/json', Authorization: zerionAuth() },
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`Zerion ${res.status} ${path}`)
+  return res.json()
 }
+
+// ── Alchemy ──────────────────────────────────────────────────────────────────
+
+async function alchemyRpc(url: string, method: string, params: unknown[]) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: 1, jsonrpc: '2.0', method, params }),
+    cache: 'no-store',
+  })
+  const json = await res.json()
+  return json.result ?? null
+}
+
+async function getFirstTxOnChain(address: string, alchemyUrl: string): Promise<Date | null> {
+  const baseParams = {
+    fromBlock: '0x0',
+    category: ['external', 'internal', 'erc20'],
+    withMetadata: true,
+    maxCount: '0x1',
+    order: 'asc',
+  }
+  const [sent, received] = await Promise.allSettled([
+    alchemyRpc(alchemyUrl, 'alchemy_getAssetTransfers', [{ ...baseParams, fromAddress: address }]),
+    alchemyRpc(alchemyUrl, 'alchemy_getAssetTransfers', [{ ...baseParams, toAddress: address }]),
+  ])
+
+  const dates: Date[] = []
+  for (const r of [sent, received]) {
+    const ts = r.status === 'fulfilled' && r.value?.transfers?.[0]?.metadata?.blockTimestamp
+    if (ts) dates.push(new Date(ts as string))
+  }
+  return dates.length > 0 ? new Date(Math.min(...dates.map(d => d.getTime()))) : null
+}
+
+// ── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
   try {
-    const { address } = await req.json();
+    const { address } = await req.json()
+    const addr: string = (address ?? '').trim()
 
-    if (!address) {
-      return NextResponse.json({ error: "Missing wallet address" }, { status: 400 });
+    if (!addr || !/^0x[0-9a-fA-F]{40}$/i.test(addr)) {
+      return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
     }
 
-    const results: Record<string, any> = {};
+    const ethUrl  = `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_ETH_KEY}`
+    const baseUrl = `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_BASE_KEY}`
 
-    for (const key of Object.keys(CHAINS)) {
-      const chain = CHAINS[key];
-      const [balance, txs] = await Promise.all([
-        getNativeBalance(chain.rpc, address),
-        getTransactions(chain.chainId, address),
-      ]);
+    const [positionsRes, portfolioRes, ethFirst, baseFirst, nonceRes] = await Promise.allSettled([
+      zerionGet(`wallets/${addr}/positions/`, {
+        currency: 'usd',
+        'filter[positions]': 'only_simple',
+        'filter[trash]': 'only_non_trash',
+        sort: '-value',
+        'page[size]': '50',
+      }),
+      zerionGet(`wallets/${addr}/portfolio/`, { currency: 'usd' }),
+      getFirstTxOnChain(addr, ethUrl),
+      getFirstTxOnChain(addr, baseUrl),
+      alchemyRpc(ethUrl, 'eth_getTransactionCount', [addr, 'latest']),
+    ])
 
-      results[key] = {
-        chain: chain.name,
-        nativeBalance: balance,
-        transactions: txs,
-      };
-    }
+    // Holdings from Zerion positions
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rawPos: any[] = positionsRes.status === 'fulfilled' ? (positionsRes.value?.data ?? []) : []
+    const holdings = rawPos
+      .map(pos => {
+        const a  = pos.attributes ?? {}
+        const fi = a.fungible_info ?? {}
+        return {
+          name:      fi.name      ?? 'Unknown',
+          symbol:    fi.symbol    ?? '?',
+          icon:      fi.icon?.url ?? null,
+          chain:     pos.relationships?.chain?.data?.id ?? null,
+          balance:   a.quantity?.float   ?? 0,
+          value:     a.value             ?? 0,
+          price:     a.price             ?? null,
+          change24h: a.changes?.percent_1d ?? null,
+          verified:  fi.flags?.verified  ?? false,
+        }
+      })
+      .filter(h => h.value > 0.01)
 
-    return NextResponse.json({ address, results });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "Server error", details: err.message },
-      { status: 500 }
-    );
+    // Total portfolio value
+    const totalValue: number =
+      portfolioRes.status === 'fulfilled'
+        ? (portfolioRes.value?.data?.attributes?.total?.positions ?? 0)
+        : holdings.reduce((s, h) => s + h.value, 0)
+
+    // Earliest first tx across ETH + Base
+    const firstCandidates: Date[] = []
+    if (ethFirst.status  === 'fulfilled' && ethFirst.value)  firstCandidates.push(ethFirst.value)
+    if (baseFirst.status === 'fulfilled' && baseFirst.value) firstCandidates.push(baseFirst.value)
+    const firstTxDate = firstCandidates.length > 0
+      ? new Date(Math.min(...firstCandidates.map(d => d.getTime())))
+      : null
+    const walletAgeDays = firstTxDate
+      ? Math.floor((Date.now() - firstTxDate.getTime()) / 86_400_000)
+      : null
+
+    // Tx count (nonce = outgoing tx count on Ethereum)
+    const txCount = nonceRes.status === 'fulfilled' && nonceRes.value
+      ? parseInt(nonceRes.value as string, 16)
+      : 0
+
+    return NextResponse.json({
+      address: addr,
+      totalValue,
+      holdings,
+      txCount,
+      firstTxDate: firstTxDate?.toISOString() ?? null,
+      walletAgeDays,
+    })
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Wallet scan failed'
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 }
