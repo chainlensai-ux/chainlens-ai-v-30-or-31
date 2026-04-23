@@ -207,61 +207,81 @@ export default function WalletScannerPage() {
 
           {/* Header */}
           <div style={{ marginBottom: '32px' }}>
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: '8px',
-              background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)',
-              borderRadius: '99px', padding: '4px 12px', marginBottom: '16px',
-              fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-              color: '#2DD4BF', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-            }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' }}>
+              <h1 style={{
+                fontSize: '30px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.1,
+                margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                letterSpacing: '-0.02em',
+              }}>
+                Wallet Scanner
+              </h1>
               <span style={{
-                width: '6px', height: '6px', borderRadius: '50%',
-                background: '#2DD4BF', boxShadow: '0 0 8px rgba(45,212,191,0.80)',
-                flexShrink: 0, animation: 'pulse-dot 2s infinite',
-              }} />
-              WALLET SCANNER
+                fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em',
+                padding: '4px 12px', borderRadius: '99px',
+                background: 'rgba(139,92,246,0.18)',
+                border: '1px solid rgba(139,92,246,0.40)',
+                color: '#c4b5fd',
+                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                textTransform: 'uppercase', flexShrink: 0,
+              }}>
+                Elite
+              </span>
             </div>
-            <h1 style={{
-              fontSize: '26px', fontWeight: 700, color: '#f8fafc', lineHeight: 1.2,
-              margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)',
-            }}>
-              Wallet Scanner{' '}
-              <span style={{ color: '#2DD4BF' }}>Elite</span>
-            </h1>
             <p style={{
-              fontSize: '13px', color: 'rgba(255,255,255,0.38)', margin: '8px 0 0',
+              fontSize: '14px', color: '#94a3b8', margin: 0,
               fontFamily: 'var(--font-inter, Inter, sans-serif)',
             }}>
-              Portfolio holdings, PnL, transaction history, and AI personality read.
+              Advanced on-chain intelligence and AI-powered wallet analysis
             </p>
           </div>
 
           {/* Input */}
           <div style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '32px' }}>
-            <input
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
-              disabled={loading}
-              placeholder="0x… wallet address"
-              spellCheck={false}
-              style={{
-                flex: 1, padding: '12px 16px',
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(255,255,255,0.10)',
-                borderRadius: '11px', color: '#e2e8f0',
-                fontSize: '13px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                outline: 'none', transition: 'border-color 0.15s',
-              }}
-              onFocus={e => (e.currentTarget.style.borderColor = 'rgba(45,212,191,0.45)')}
-              onBlur={e  => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)')}
-            />
+            <div style={{ flex: 1, position: 'relative' }}>
+              {/* Paste icon */}
+              <button
+                onClick={() => navigator.clipboard.readText().then(t => setInput(t)).catch(() => {})}
+                title="Paste from clipboard"
+                style={{
+                  position: 'absolute', left: '13px', top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', padding: '0', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', color: 'rgba(255,255,255,0.32)',
+                  transition: 'color 0.15s',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.color = '#2DD4BF')}
+                onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.32)')}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="2" width="6" height="4" rx="1"/>
+                  <rect x="4" y="6" width="16" height="16" rx="2"/>
+                  <path d="M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2"/>
+                </svg>
+              </button>
+              <input
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
+                disabled={loading}
+                placeholder="0x… wallet address"
+                spellCheck={false}
+                style={{
+                  width: '100%', padding: '13px 16px 13px 40px',
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  borderRadius: '11px', color: '#e2e8f0',
+                  fontSize: '13px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  outline: 'none', transition: 'border-color 0.15s', boxSizing: 'border-box',
+                }}
+                onFocus={e => (e.currentTarget.style.borderColor = 'rgba(45,212,191,0.45)')}
+                onBlur={e  => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)')}
+              />
+            </div>
             <button
               className="ws-scan-btn"
               onClick={handleScan}
               disabled={loading || !input.trim()}
               style={{
-                padding: '12px 24px', borderRadius: '11px', border: 'none',
+                padding: '13px 22px', borderRadius: '11px', border: 'none',
                 background: (loading || !input.trim()) ? 'rgba(45,212,191,0.25)' : '#2DD4BF',
                 color: (loading || !input.trim()) ? 'rgba(255,255,255,0.35)' : '#04101a',
                 fontSize: '12px', fontWeight: 800,
@@ -270,10 +290,17 @@ export default function WalletScannerPage() {
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 boxShadow: (!loading && input.trim()) ? '0 0 20px rgba(45,212,191,0.25)' : 'none',
                 transition: 'background 0.15s, box-shadow 0.15s, color 0.15s',
-                whiteSpace: 'nowrap',
+                whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px',
               }}
             >
-              {loading ? 'Scanning…' : 'Scan'}
+              {loading ? 'Scanning…' : (
+                <>
+                  Scan
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M5 12h14M13 6l6 6-6 6"/>
+                  </svg>
+                </>
+              )}
             </button>
           </div>
 
