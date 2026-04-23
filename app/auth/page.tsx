@@ -10,6 +10,11 @@ type Mode = 'signin' | 'signup';
 export default function AuthPage() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     // Redirect immediately if already signed in
@@ -17,26 +22,30 @@ export default function AuthPage() {
       if (data.session) router.replace('/terminal');
     });
 
-    // Redirect on any future sign-in event (OAuth callback, email confirm, etc.)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_IN') router.replace('/terminal');
+    // Handle OAuth callback and email-confirm sign-ins
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN' && session) {
+        router.replace('/terminal');
+      }
     });
+
+    // Surface any OAuth error returned as query params
+    const params = new URLSearchParams(window.location.search);
+    const oauthErr = params.get('error_description') || params.get('error');
+    if (oauthErr) setError(decodeURIComponent(oauthErr.replace(/\+/g, ' ')));
 
     return () => subscription.unsubscribe();
   }, [router]);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
   async function handleGoogle() {
     setError(null);
-    const { error } = await supabase.auth.signInWithOAuth({
+    // redirectTo must point back to this page so the Supabase client
+    // can pick up the PKCE code and fire onAuthStateChange → SIGNED_IN
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/terminal` },
+      options: { redirectTo: `${window.location.origin}/auth` },
     });
-    if (error) setError(error.message);
+    if (oauthError) setError(oauthError.message);
   }
 
   async function handleEmailSubmit(e: React.FormEvent) {
@@ -46,20 +55,20 @@ export default function AuthPage() {
     setLoading(true);
 
     if (mode === 'signin') {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
-        setError(error.message);
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) {
+        setError(signInError.message);
       } else {
-        router.push('/terminal');
+        router.replace('/terminal');
       }
     } else {
-      const { error } = await supabase.auth.signUp({
+      const { error: signUpError } = await supabase.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/terminal` },
+        options: { emailRedirectTo: `${window.location.origin}/terminal` },
       });
-      if (error) {
-        setError(error.message);
+      if (signUpError) {
+        setError(signUpError.message);
       } else {
         setSuccess('Check your email to confirm your account.');
       }
@@ -170,7 +179,7 @@ export default function AuthPage() {
         </div>
 
         {/* Google OAuth */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
+        <div style={{ marginBottom: '20px' }}>
           <button
             onClick={handleGoogle}
             style={{
@@ -226,7 +235,9 @@ export default function AuthPage() {
           {/* Forgot password — sign in only */}
           {mode === 'signin' && (
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#475569', fontFamily: 'inherit', transition: 'color 0.15s' }}
+              <button
+                type="button"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#475569', fontFamily: 'inherit', transition: 'color 0.15s' }}
                 onMouseEnter={e => (e.currentTarget.style.color = '#94a3b8')}
                 onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
               >
@@ -237,14 +248,32 @@ export default function AuthPage() {
 
           {/* Error */}
           {error && (
-            <div style={{ padding: '10px 12px', borderRadius: '9px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.22)', color: '#fca5a5', fontSize: '12px', lineHeight: 1.5 }}>
+            <div style={{
+              padding: '10px 12px', borderRadius: '9px',
+              background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.22)',
+              color: '#fca5a5', fontSize: '12px', lineHeight: 1.5,
+              display: 'flex', alignItems: 'flex-start', gap: '8px',
+            }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, marginTop: '1px' }}>
+                <circle cx="12" cy="12" r="10" stroke="#fca5a5" strokeWidth="2"/>
+                <path d="M12 8v4M12 16h.01" stroke="#fca5a5" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
               {error}
             </div>
           )}
 
           {/* Success */}
           {success && (
-            <div style={{ padding: '10px 12px', borderRadius: '9px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)', color: '#5eead4', fontSize: '12px', lineHeight: 1.5 }}>
+            <div style={{
+              padding: '10px 12px', borderRadius: '9px',
+              background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)',
+              color: '#5eead4', fontSize: '12px', lineHeight: 1.5,
+              display: 'flex', alignItems: 'flex-start', gap: '8px',
+            }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0, marginTop: '1px' }}>
+                <circle cx="12" cy="12" r="10" stroke="#5eead4" strokeWidth="2"/>
+                <path d="M8 12l3 3 5-5" stroke="#5eead4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
               {success}
             </div>
           )}
@@ -262,10 +291,10 @@ export default function AuthPage() {
               transition: 'opacity 0.15s, box-shadow 0.15s',
               marginTop: '4px',
             }}
-            onMouseEnter={e => { if (!loading) { e.currentTarget.style.opacity = '0.92'; } }}
+            onMouseEnter={e => { if (!loading) e.currentTarget.style.opacity = '0.92'; }}
             onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
           >
-            {loading ? 'Loading...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
+            {loading ? 'Signing in…' : mode === 'signin' ? 'Sign In' : 'Create Account'}
           </button>
         </form>
 
