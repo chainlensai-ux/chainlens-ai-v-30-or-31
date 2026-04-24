@@ -24,6 +24,7 @@ type ScanResult = {
   priceChange24h?: number | null
   pools?: Pool[]
   goplus?: Record<string, Record<string, unknown>> | null
+  noActivePools?: boolean
 }
 
 // ─── Formatters ───────────────────────────────────────────────────────────
@@ -243,14 +244,15 @@ export default function TerminalTokenScanner() {
           name:           json.name,
           symbol:         json.symbol,
           contract:       json.contract,
-          price:          mainPool ? parseFloat(mainPool.attributes?.price_native ?? '0') || null : null,
-          liquidity:      mainPool ? parseFloat(mainPool.attributes?.reserve_in_usd ?? '0') || null : (json.liquidity ? parseFloat(json.liquidity) || null : null),
+          noActivePools:  json.noActivePools ?? false,
+          price:          mainPool ? parseFloat(mainPool.attributes?.base_token_price_usd ?? '0') || null : null,
+          liquidity:      mainPool ? parseFloat(mainPool.attributes?.reserve_in_usd ?? '0') || null : null,
           volume24h:      mainPool ? parseFloat(mainPool.attributes?.volume_usd?.h24 ?? '0') || null : null,
           priceChange24h: mainPool ? parseFloat(mainPool.attributes?.price_change_percentage?.h24 ?? '0') || null : null,
           pools: pairs.map((p: any) => ({
             name:           p.attributes?.name,
             address:        p.attributes?.address,
-            price:          parseFloat(p.attributes?.price_native ?? '0') || null,
+            price:          parseFloat(p.attributes?.base_token_price_usd ?? '0') || null,
             liquidity:      parseFloat(p.attributes?.reserve_in_usd ?? '0') || null,
             volume24h:      parseFloat(p.attributes?.volume_usd?.h24 ?? '0') || null,
             priceChange24h: parseFloat(p.attributes?.price_change_percentage?.h24 ?? '0') || null,
@@ -420,21 +422,34 @@ export default function TerminalTokenScanner() {
                 )}
               </div>
 
-              {/* Stat cards */}
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
-                gap: '10px', marginBottom: '28px',
-              }}>
-                <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
-                <StatCard label="Liquidity"  value={fmtLarge(result.liquidity)} />
-                <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} />
-                <StatCard
-                  label="24h Change"
-                  value={fmtPct(result.priceChange24h)}
-                  accent={pctColor(result.priceChange24h)}
-                />
-              </div>
+              {/* Stat cards — or no-pools message */}
+              {result.noActivePools ? (
+                <div style={{
+                  padding: '14px 18px', marginBottom: '28px',
+                  background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: '10px',
+                  fontSize: '12px', color: '#3a5268',
+                  fontFamily: 'var(--font-plex-mono)',
+                }}>
+                  No active trading pools found on {result.contract ? 'this network' : 'Base'} for this contract.
+                </div>
+              ) : (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+                  gap: '10px', marginBottom: '28px',
+                }}>
+                  <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
+                  <StatCard label="Liquidity"  value={fmtLarge(result.liquidity)} />
+                  <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} />
+                  <StatCard
+                    label="24h Change"
+                    value={fmtPct(result.priceChange24h)}
+                    accent={pctColor(result.priceChange24h)}
+                  />
+                </div>
+              )}
 
               {/* Contract Risk Signals */}
               <ContractRiskSection

@@ -52,10 +52,25 @@ async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
 
 async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<any> {
   try {
-    const network = chain === "eth" ? "eth" : "base";
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
-    const res = await fetch(`${baseUrl}/api/proxy/gt?network=${network}`, { cache: "no-store" });
-    return res.ok ? await res.json() : null;
+    const networkMap: Record<ChainKey, string> = {
+      eth:     'eth',
+      base:    'base',
+      polygon: 'polygon_pos',
+      bnb:     'bsc',
+    };
+    const network = networkMap[chain] ?? 'base';
+    const res = await fetch(
+      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contract}/pools?page=1`,
+      {
+        headers: { Accept: 'application/json;version=20230302' },
+        cache: 'no-store',
+      }
+    );
+    if (!res.ok) {
+      console.error('GeckoTerminal error:', res.status, await res.text().catch(() => ''));
+      return null;
+    }
+    return await res.json();
   } catch (err) {
     console.error("Error fetching GeckoTerminal:", err);
     return null;
@@ -167,24 +182,18 @@ export async function POST(req: Request) {
 
     const analysis = analyzeContract(bytecode);
 
-    // Match GT pools to this contract via included[] token entries
-    const gtIncluded: any[] = Array.isArray(gtData?.included) ? gtData.included : [];
+    // GeckoTerminal /tokens/{contract}/pools returns pools for this token directly
     const gtAllPools: any[] = Array.isArray(gtData?.data) ? gtData.data : [];
 
-    const matchingTokenEntry = gtIncluded.find((i: any) =>
-      i.attributes?.address?.toLowerCase() === contract.toLowerCase()
-    );
-    const matchingTokenId = matchingTokenEntry?.id;
-
-    const matchingPools = matchingTokenId
-      ? gtAllPools.filter((p: any) => p.relationships?.base_token?.data?.id === matchingTokenId)
-      : gtAllPools;
-
-    const mainPool = [...matchingPools].sort(
+    // Sort by liquidity descending, pick the deepest pool as main
+    const matchingPools = [...gtAllPools].sort(
       (a, b) =>
         parseFloat(b.attributes?.reserve_in_usd || "0") -
         parseFloat(a.attributes?.reserve_in_usd || "0")
-    )[0] ?? null;
+    );
+
+    const mainPool = matchingPools[0] ?? null;
+    const noActivePools = matchingPools.length === 0;
 
     // ------------------------------
     // REAL CLAUDE AI SUMMARY
@@ -223,6 +232,12 @@ ${JSON.stringify(analysis, null, 2)}
     const goldItem = goldrush?.data?.items?.[0];
     const gmgnItem = gmgn?.data;
 
+    // Name/symbol: prefer Covalent metadata, fall back to GeckoTerminal included token data
+    const gtIncluded: any[] = Array.isArray(gtData?.included) ? gtData.included : [];
+    const matchingTokenEntry = gtIncluded.find((i: any) =>
+      i.attributes?.address?.toLowerCase() === contract.toLowerCase()
+    );
+
     const resolvedName =
       metaItem?.contract_name ||
       goldItem?.contract_name ||
@@ -255,9 +270,12 @@ ${JSON.stringify(analysis, null, 2)}
       symbol: resolvedSymbol,
       decimals: resolvedDecimals,
 
+      // Pool state
+      noActivePools,
+
       // Extra data
       holders: goldrush?.holders || null,
-      liquidity: mainPool?.attributes?.reserve_in_usd || goldrush?.liquidity || null,
+      liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
 
       pairs: matchingPools,
       gtPools: matchingPools,
