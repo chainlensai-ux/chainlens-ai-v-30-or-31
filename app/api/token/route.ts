@@ -127,6 +127,7 @@ async function fetchGoPlus(chain: ChainKey, contract: string): Promise<any> {
 }
 
 
+async function fetchGMGN(contract: string): Promise<any> {
   try {
     const res = await fetch(`https://api.gmgn.ai/token/${contract}`);
     return res.ok ? await res.json() : null;
