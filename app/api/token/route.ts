@@ -369,7 +369,7 @@ ${JSON.stringify(analysis, null, 2)}
       gmgn: gmgn?.data || null,
 
       // GoPlus security data — keyed by lowercase contract address
-      goplus: gpRaw?.result ?? null,
+      goplus: (gpRaw as Record<string, unknown>)?.result ?? null,
 
       // Honeypot.is simulation results
       honeypot: hpRaw ? {
