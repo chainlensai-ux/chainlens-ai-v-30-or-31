@@ -127,6 +127,7 @@ async function fetchHoneypot(contract: string, chain: ChainKey): Promise<any> {
 }
 
 
+async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> {
   try {
     const chainIdMap: Record<ChainKey, string> = {
       eth:     '1',
