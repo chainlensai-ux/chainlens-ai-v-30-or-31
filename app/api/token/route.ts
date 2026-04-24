@@ -60,19 +60,43 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
     };
     const network = networkMap[chain] ?? 'base';
     const res = await fetch(
-      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contract}/pools?page=1`,
+      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contract}/pools?page=1&include=base_token%2Cquote_token`,
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
       }
     );
     if (!res.ok) {
-      console.error('GeckoTerminal error:', res.status, await res.text().catch(() => ''));
+      console.error('GeckoTerminal pools error:', res.status, await res.text().catch(() => ''));
       return null;
     }
     return await res.json();
   } catch (err) {
-    console.error("Error fetching GeckoTerminal:", err);
+    console.error("Error fetching GeckoTerminal pools:", err);
+    return null;
+  }
+}
+
+async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promise<any> {
+  try {
+    const networkMap: Record<ChainKey, string> = {
+      eth:     'eth',
+      base:    'base',
+      polygon: 'polygon_pos',
+      bnb:     'bsc',
+    };
+    const network = networkMap[chain] ?? 'base';
+    const res = await fetch(
+      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contract}`,
+      {
+        headers: { Accept: 'application/json;version=20230302' },
+        cache: 'no-store',
+      }
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.error("Error fetching GeckoTerminal token info:", err);
     return null;
   }
 }
@@ -172,10 +196,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Could not detect chain" }, { status: 400 });
     }
 
-    const [bytecode, goldrush, gtData, gmgn, metadata] = await Promise.all([
+    const [bytecode, goldrush, gtData, gtTokenInfo, gmgn, metadata] = await Promise.all([
       fetchBytecode(chain, contract),
       fetchGoldRush(chain, contract),
       fetchGeckoTerminal(contract, chain),
+      fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
     ]);
@@ -232,27 +257,33 @@ ${JSON.stringify(analysis, null, 2)}
     const goldItem = goldrush?.data?.items?.[0];
     const gmgnItem = gmgn?.data;
 
-    // Name/symbol: prefer Covalent metadata, fall back to GeckoTerminal included token data
+    // GeckoTerminal direct token info (most reliable for name/symbol)
+    const gtToken = gtTokenInfo?.data?.attributes ?? null;
+
+    // Included token entries from the pools response (with ?include=base_token,quote_token)
     const gtIncluded: any[] = Array.isArray(gtData?.included) ? gtData.included : [];
     const matchingTokenEntry = gtIncluded.find((i: any) =>
-      i.attributes?.address?.toLowerCase() === contract.toLowerCase()
+      i.type === 'token' && i.attributes?.address?.toLowerCase() === contract.toLowerCase()
     );
 
     const resolvedName =
+      gtToken?.name ||
+      matchingTokenEntry?.attributes?.name ||
       metaItem?.contract_name ||
       goldItem?.contract_name ||
-      matchingTokenEntry?.attributes?.name ||
       gmgnItem?.name ||
       "Unknown";
 
     const resolvedSymbol =
+      gtToken?.symbol ||
+      matchingTokenEntry?.attributes?.symbol ||
       metaItem?.contract_ticker_symbol ||
       goldItem?.contract_ticker_symbol ||
-      matchingTokenEntry?.attributes?.symbol ||
       gmgnItem?.symbol ||
       "?";
 
     const resolvedDecimals =
+      gtToken?.decimals ||
       metaItem?.contract_decimals ||
       goldItem?.contract_decimals ||
       gmgnItem?.decimals ||
