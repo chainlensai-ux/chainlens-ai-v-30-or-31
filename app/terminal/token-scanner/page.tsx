@@ -137,6 +137,7 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
   )
 
   function flagPill(key: string, label: string, dangerOn = '1'): { label: string; displayLabel: string; style: PillStyle } {
+    if (!gp) return { label, displayLabel: 'N/A', style: pillMuted() }
     const raw = gp[key]
     if (raw == null) return { label, displayLabel: 'N/A', style: pillMuted() }
     const v = String(raw)
@@ -149,6 +150,7 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
   }
 
   function taxPill(key: string, label: string): { label: string; displayLabel: string; style: PillStyle } {
+    if (!gp) return { label, displayLabel: 'N/A', style: pillMuted() }
     const raw = gp[key]
     if (raw == null) return { label, displayLabel: 'N/A', style: pillMuted() }
     const n = parseFloat(String(raw))
@@ -162,6 +164,7 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
   }
 
   function ownerPill(): { label: string; displayLabel: string; style: PillStyle } {
+    if (!gp) return { label: 'Owner', displayLabel: 'N/A', style: pillMuted() }
     const addr = String(gp['owner_address'] ?? '')
     const renounced = !addr || addr === '0x0000000000000000000000000000000000000000'
     return {
