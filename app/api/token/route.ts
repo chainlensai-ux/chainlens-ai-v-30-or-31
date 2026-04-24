@@ -101,7 +101,32 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
   }
 }
 
-async function fetchGoPlus(chain: ChainKey, contract: string): Promise<any> {
+async function fetchHoneypot(contract: string, chain: ChainKey): Promise<any> {
+  try {
+    const chainIdMap: Record<ChainKey, number> = {
+      eth:     1,
+      base:    8453,
+      polygon: 137,
+      bnb:     56,
+    };
+    const chainId = chainIdMap[chain];
+    if (!chainId) return null;
+    const res = await fetch(
+      `https://api.honeypot.is/v2/IsHoneypot?address=${contract}&chainID=${chainId}`,
+      { cache: 'no-store' }
+    );
+    if (!res.ok) {
+      console.error('Honeypot.is error:', res.status);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    console.error('Error fetching honeypot.is:', err);
+    return null;
+  }
+}
+
+
   try {
     const chainIdMap: Record<ChainKey, string> = {
       eth:     '1',
@@ -222,7 +247,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Could not detect chain" }, { status: 400 });
     }
 
-    const [bytecode, goldrush, gtData, gtTokenInfo, gmgn, metadata, gpRaw] = await Promise.all([
+    const [bytecode, goldrush, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpRaw] = await Promise.all([
       fetchBytecode(chain, contract),
       fetchGoldRush(chain, contract),
       fetchGeckoTerminal(contract, chain),
@@ -230,6 +255,7 @@ export async function POST(req: Request) {
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
       fetchGoPlus(chain, contract),
+      fetchHoneypot(contract, chain),
     ]);
 
     const analysis = analyzeContract(bytecode);
@@ -343,6 +369,15 @@ ${JSON.stringify(analysis, null, 2)}
 
       // GoPlus security data — keyed by lowercase contract address
       goplus: gpRaw?.result ?? null,
+
+      // Honeypot.is simulation results
+      honeypot: hpRaw ? {
+        isHoneypot:        hpRaw.honeypotResult?.isHoneypot        ?? null,
+        buyTax:            hpRaw.simulationResult?.buyTax           ?? null,
+        sellTax:           hpRaw.simulationResult?.sellTax          ?? null,
+        transferTax:       hpRaw.simulationResult?.transferTax      ?? null,
+        simulationSuccess: hpRaw.simulationSuccess                  ?? false,
+      } : null,
 
       // Contract analysis
       analysis,

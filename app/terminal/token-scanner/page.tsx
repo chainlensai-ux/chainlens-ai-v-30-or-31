@@ -24,6 +24,13 @@ type ScanResult = {
   priceChange24h?: number | null
   pools?: Pool[]
   goplus?: Record<string, Record<string, unknown>> | null
+  honeypot?: {
+    isHoneypot: boolean | null
+    buyTax: number | null
+    sellTax: number | null
+    transferTax: number | null
+    simulationSuccess: boolean
+  } | null
   noActivePools?: boolean
 }
 
@@ -113,15 +120,30 @@ function RiskPill({ label, value }: { label: string; value: PillStyle & { label:
   )
 }
 
-function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
-  if (!gp) return (
+type HoneypotData = {
+  isHoneypot: boolean | null
+  buyTax: number | null
+  sellTax: number | null
+  transferTax: number | null
+  simulationSuccess: boolean
+} | null
+
+function taxPct(n: number): PillStyle {
+  if (n === 0)    return pillSafe()
+  if (n <= 5)     return pillAmber()
+  return pillDanger()
+}
+
+function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; hp: HoneypotData }) {
+  const hasAnyData = gp || (hp && hp.simulationSuccess)
+  if (!hasAnyData) return (
     <div style={{ marginTop: '28px' }}>
       <p style={{
         fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
         color: '#3a5268', textTransform: 'uppercase',
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
-        Contract Risk Signals · GoPlus
+        Contract Risk Signals
       </p>
       <div style={{
         padding: '14px 18px',
@@ -135,6 +157,31 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
       </div>
     </div>
   )
+
+  // Build honeypot.is pills
+  const hpPills: { label: string; displayLabel: string; style: PillStyle }[] = []
+  if (hp && hp.simulationSuccess) {
+    hpPills.push({
+      label: 'Honeypot',
+      displayLabel: hp.isHoneypot ? 'YES' : 'NO',
+      style: hp.isHoneypot ? pillDanger() : pillSafe(),
+    })
+    if (hp.buyTax !== null) hpPills.push({
+      label: 'Buy Tax',
+      displayLabel: `${hp.buyTax.toFixed(1)}%`,
+      style: taxPct(hp.buyTax),
+    })
+    if (hp.sellTax !== null) hpPills.push({
+      label: 'Sell Tax',
+      displayLabel: `${hp.sellTax.toFixed(1)}%`,
+      style: taxPct(hp.sellTax),
+    })
+    if (hp.transferTax !== null && hp.transferTax > 0) hpPills.push({
+      label: 'Transfer Tax',
+      displayLabel: `${hp.transferTax.toFixed(1)}%`,
+      style: taxPct(hp.transferTax),
+    })
+  }
 
   function flagPill(key: string, label: string, dangerOn = '1'): { label: string; displayLabel: string; style: PillStyle } {
     if (!gp) return { label, displayLabel: 'N/A', style: pillMuted() }
@@ -174,17 +221,17 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
     }
   }
 
-  const pills = [
-    flagPill('is_honeypot',            'Honeypot'),
+  const gpPills = gp ? [
+    flagPill('is_honeypot',            'HP (GoPlus)'),
     flagPill('is_mintable',            'Mint Function'),
     flagPill('can_take_back_ownership','Ownership Revert'),
     flagPill('is_proxy',               'Proxy Contract', '__never__'),
     flagPill('is_blacklisted',         'Blacklist'),
     flagPill('is_whitelisted',         'Whitelist',      '__never__'),
-    taxPill('buy_tax',  'Buy Tax'),
-    taxPill('sell_tax', 'Sell Tax'),
+    taxPill('buy_tax',  'Buy Tax (GP)'),
+    taxPill('sell_tax', 'Sell Tax (GP)'),
     ownerPill(),
-  ]
+  ] : []
 
   return (
     <div style={{ marginTop: '28px' }}>
@@ -193,10 +240,12 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
         color: '#3a5268', textTransform: 'uppercase',
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
-        Contract Risk Signals · GoPlus
+        Contract Risk Signals
+        {hp?.simulationSuccess && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· Honeypot.is</span>}
+        {gp && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· GoPlus</span>}
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
-        {pills.map(p => (
+        {[...hpPills, ...gpPills].map(p => (
           <RiskPill key={p.label} label={p.label} value={{ ...p.style, label: p.displayLabel }} />
         ))}
       </div>
@@ -259,7 +308,8 @@ export default function TerminalTokenScanner() {
             volume24h:      parseFloat(p.attributes?.volume_usd?.h24 ?? '0') || null,
             priceChange24h: parseFloat(p.attributes?.price_change_percentage?.h24 ?? '0') || null,
           })),
-          goplus: json.goplus ?? null,
+          goplus:   json.goplus   ?? null,
+          honeypot: json.honeypot ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -458,6 +508,7 @@ export default function TerminalTokenScanner() {
                 gp={result.goplus && result.contract
                   ? (result.goplus[result.contract.toLowerCase()] ?? null)
                   : null}
+                hp={result.honeypot ?? null}
               />
 
               {/* Pools */}
