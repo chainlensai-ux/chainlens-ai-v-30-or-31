@@ -101,7 +101,32 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
   }
 }
 
-async function fetchGMGN(contract: string): Promise<any> {
+async function fetchGoPlus(chain: ChainKey, contract: string): Promise<any> {
+  try {
+    const chainIdMap: Record<ChainKey, string> = {
+      eth:     '1',
+      base:    '8453',
+      polygon: '137',
+      bnb:     '56',
+    };
+    const chainId = chainIdMap[chain];
+    if (!chainId) return null;
+    const res = await fetch(
+      `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${contract}`,
+      { cache: 'no-store' }
+    );
+    if (!res.ok) {
+      console.error('GoPlus error:', res.status);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    console.error('Error fetching GoPlus:', err);
+    return null;
+  }
+}
+
+
   try {
     const res = await fetch(`https://api.gmgn.ai/token/${contract}`);
     return res.ok ? await res.json() : null;
@@ -196,13 +221,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Could not detect chain" }, { status: 400 });
     }
 
-    const [bytecode, goldrush, gtData, gtTokenInfo, gmgn, metadata] = await Promise.all([
+    const [bytecode, goldrush, gtData, gtTokenInfo, gmgn, metadata, gpRaw] = await Promise.all([
       fetchBytecode(chain, contract),
       fetchGoldRush(chain, contract),
       fetchGeckoTerminal(contract, chain),
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
+      fetchGoPlus(chain, contract),
     ]);
 
     const analysis = analyzeContract(bytecode);
@@ -313,6 +339,9 @@ ${JSON.stringify(analysis, null, 2)}
       gtRaw: gtData || null,
 
       gmgn: gmgn?.data || null,
+
+      // GoPlus security data — keyed by lowercase contract address
+      goplus: gpRaw?.result ?? null,
 
       // Contract analysis
       analysis,

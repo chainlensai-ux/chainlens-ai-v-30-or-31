@@ -91,62 +91,96 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
 
 // ─── Contract Risk (GoPlus) ───────────────────────────────────────────────
 
-function riskVal(gp: Record<string, unknown>, key: string): string {
-  const v = gp[key]
-  if (v == null) return 'N/A'
-  return String(v)
-}
+type PillStyle = { color: string; bg: string; border: string }
 
-function riskFlag(v: string): { label: string; color: string; bg: string; border: string } {
-  if (v === '1') return { label: 'YES', color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.25)' }
-  if (v === '0') return { label: 'NO',  color: '#34d399', bg: 'rgba(52,211,153,0.08)',  border: 'rgba(52,211,153,0.20)' }
-  if (v === 'N/A') return { label: 'N/A', color: '#3a5268', bg: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.07)' }
-  return { label: v, color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.15)' }
-}
+function pillSafe():   PillStyle { return { color: '#34d399', bg: 'rgba(52,211,153,0.09)',   border: 'rgba(52,211,153,0.22)'   } }
+function pillDanger(): PillStyle { return { color: '#f87171', bg: 'rgba(248,113,113,0.09)', border: 'rgba(248,113,113,0.25)' } }
+function pillAmber():  PillStyle { return { color: '#fbbf24', bg: 'rgba(251,191,36,0.09)',  border: 'rgba(251,191,36,0.25)'  } }
+function pillMuted():  PillStyle { return { color: '#3a5268', bg: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.07)' } }
 
-function RiskBadge({ value }: { value: string }) {
-  const s = riskFlag(value)
+function RiskPill({ label, value }: { label: string; value: PillStyle & { label: string } }) {
   return (
     <span style={{
-      display: 'inline-block', padding: '2px 10px',
-      borderRadius: '99px', fontSize: '9px', fontWeight: 700,
-      letterSpacing: '0.12em', textTransform: 'uppercase',
-      color: s.color, background: s.bg, border: `1px solid ${s.border}`,
-      fontFamily: 'var(--font-plex-mono)',
+      display: 'inline-flex', alignItems: 'center', gap: '5px',
+      padding: '5px 11px', borderRadius: '99px',
+      fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
+      fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+      color: value.color, background: value.bg, border: `1px solid ${value.border}`,
     }}>
-      {s.label}
-    </span>
-  )
-}
-
-function TaxBadge({ value }: { value: string }) {
-  const n = parseFloat(value)
-  const high = !isNaN(n) && n > 5
-  return (
-    <span style={{
-      display: 'inline-block', padding: '2px 10px',
-      borderRadius: '99px', fontSize: '9px', fontWeight: 700,
-      letterSpacing: '0.10em',
-      color: high ? '#f87171' : value === 'N/A' ? '#3a5268' : '#34d399',
-      background: high ? 'rgba(248,113,113,0.10)' : value === 'N/A' ? 'rgba(255,255,255,0.03)' : 'rgba(52,211,153,0.08)',
-      border: `1px solid ${high ? 'rgba(248,113,113,0.25)' : value === 'N/A' ? 'rgba(255,255,255,0.07)' : 'rgba(52,211,153,0.20)'}`,
-      fontFamily: 'var(--font-plex-mono)',
-    }}>
-      {value === 'N/A' ? 'N/A' : `${(isNaN(n) ? 0 : n * 100).toFixed(1)}%`}
+      <span style={{ color: 'rgba(255,255,255,0.35)', fontWeight: 500 }}>{label}:</span>
+      {value.label}
     </span>
   )
 }
 
 function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
-  const FIELDS: { label: string; key: string; type: 'flag' | 'tax' }[] = [
-    { label: 'Honeypot',            key: 'is_honeypot',            type: 'flag' },
-    { label: 'Blacklist Function',  key: 'is_blacklisted',         type: 'flag' },
-    { label: 'Mintable',            key: 'is_mintable',            type: 'flag' },
-    { label: 'Owner Can Change',    key: 'can_take_back_ownership', type: 'flag' },
-    { label: 'Cooldown',            key: 'trading_cooldown',       type: 'flag' },
-    { label: 'Anti-Whale',          key: 'is_anti_whale',          type: 'flag' },
-    { label: 'Buy Tax',             key: 'buy_tax',                type: 'tax'  },
-    { label: 'Sell Tax',            key: 'sell_tax',               type: 'tax'  },
+  if (!gp) return (
+    <div style={{ marginTop: '28px' }}>
+      <p style={{
+        fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+        color: '#3a5268', textTransform: 'uppercase',
+        marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
+      }}>
+        Contract Risk Signals · GoPlus
+      </p>
+      <div style={{
+        padding: '14px 18px',
+        background: 'rgba(255,255,255,0.02)',
+        border: '1px solid rgba(255,255,255,0.06)',
+        borderRadius: '10px',
+        fontSize: '11px', color: '#3a5268',
+        fontFamily: 'var(--font-plex-mono)',
+      }}>
+        No contract risk data surfaced — verify manually.
+      </div>
+    </div>
+  )
+
+  function flagPill(key: string, label: string, dangerOn = '1'): { label: string; displayLabel: string; style: PillStyle } {
+    const raw = gp[key]
+    if (raw == null) return { label, displayLabel: 'N/A', style: pillMuted() }
+    const v = String(raw)
+    const isDanger = v === dangerOn
+    return {
+      label,
+      displayLabel: v === '1' ? 'YES' : v === '0' ? 'NO' : v,
+      style: isDanger ? pillDanger() : pillSafe(),
+    }
+  }
+
+  function taxPill(key: string, label: string): { label: string; displayLabel: string; style: PillStyle } {
+    const raw = gp[key]
+    if (raw == null) return { label, displayLabel: 'N/A', style: pillMuted() }
+    const n = parseFloat(String(raw))
+    if (isNaN(n)) return { label, displayLabel: 'N/A', style: pillMuted() }
+    const pct = (n * 100).toFixed(1)
+    return {
+      label,
+      displayLabel: `${pct}%`,
+      style: n > 0.1 ? (n > 0.05 ? pillDanger() : pillAmber()) : pillSafe(),
+    }
+  }
+
+  function ownerPill(): { label: string; displayLabel: string; style: PillStyle } {
+    const addr = String(gp['owner_address'] ?? '')
+    const renounced = !addr || addr === '0x0000000000000000000000000000000000000000'
+    return {
+      label: 'Owner',
+      displayLabel: renounced ? 'RENOUNCED' : 'HELD',
+      style: renounced ? pillSafe() : pillAmber(),
+    }
+  }
+
+  const pills = [
+    flagPill('is_honeypot',            'Honeypot'),
+    flagPill('is_mintable',            'Mint Function'),
+    flagPill('can_take_back_ownership','Ownership Revert'),
+    flagPill('is_proxy',               'Proxy Contract', '__never__'),
+    flagPill('is_blacklisted',         'Blacklist'),
+    flagPill('is_whitelisted',         'Whitelist',      '__never__'),
+    taxPill('buy_tax',  'Buy Tax'),
+    taxPill('sell_tax', 'Sell Tax'),
+    ownerPill(),
   ]
 
   return (
@@ -158,46 +192,11 @@ function ContractRiskSection({ gp }: { gp: Record<string, unknown> | null }) {
       }}>
         Contract Risk Signals · GoPlus
       </p>
-
-      {!gp ? (
-        <div style={{
-          padding: '14px 18px',
-          background: 'rgba(255,255,255,0.02)',
-          border: '1px solid rgba(255,255,255,0.06)',
-          borderRadius: '10px',
-          fontSize: '11px', color: '#3a5268',
-          fontFamily: 'var(--font-plex-mono)',
-        }}>
-          No contract risk data surfaced — verify manually.
-        </div>
-      ) : (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-          gap: '8px',
-        }}>
-          {FIELDS.map(f => (
-            <div key={f.key} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 14px',
-              background: 'rgba(255,255,255,0.025)',
-              border: '1px solid rgba(255,255,255,0.06)',
-              borderRadius: '10px', gap: '10px',
-            }}>
-              <span style={{
-                fontSize: '10px', color: '#4a6272',
-                fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
-              }}>
-                {f.label}
-              </span>
-              {f.type === 'flag'
-                ? <RiskBadge value={riskVal(gp, f.key)} />
-                : <TaxBadge  value={riskVal(gp, f.key)} />
-              }
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+        {pills.map(p => (
+          <RiskPill key={p.label} label={p.label} value={{ ...p.style, label: p.displayLabel }} />
+        ))}
+      </div>
     </div>
   )
 }
@@ -257,7 +256,7 @@ export default function TerminalTokenScanner() {
             volume24h:      parseFloat(p.attributes?.volume_usd?.h24 ?? '0') || null,
             priceChange24h: parseFloat(p.attributes?.price_change_percentage?.h24 ?? '0') || null,
           })),
-          goplus: null,
+          goplus: json.goplus ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
