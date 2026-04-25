@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -265,8 +265,20 @@ export default function TerminalTokenScanner() {
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkError, setClarkError]     = useState<string | null>(null)
 
-  async function handleScan() {
-    const q = input.trim()
+  // Auto-scan when opened from Base Radar with ?contract= param
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params   = new URLSearchParams(window.location.search)
+    const contract = params.get('contract')
+    if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
+      setInput(contract)
+      handleScan(contract)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function handleScan(override?: string) {
+    const q = (override ?? input).trim()
     if (!q || loading) return
     if (!/^0x[a-fA-F0-9]{40}$/.test(q)) {
       setError('Please enter a valid contract address (0x…)')
