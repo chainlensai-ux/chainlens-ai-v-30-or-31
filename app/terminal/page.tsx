@@ -1,11 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import ClarkChat from '@/components/ClarkChat'
 import ClarkRadar from '@/components/ClarkRadar'
 
-export default function TerminalPage() {
+function TerminalPageContent() {
   const searchParams = useSearchParams()
   const initialPrompt = searchParams.get('prompt')
   const [active, setActive] = useState('dashboard')
@@ -74,5 +74,13 @@ export default function TerminalPage() {
         </aside>
       </div>
     </>
+  )
+}
+
+export default function TerminalPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: 24, color: '#94a3b8' }}>Loading Terminal...</div>}>
+      <TerminalPageContent />
+    </Suspense>
   )
 }
