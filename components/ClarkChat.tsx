@@ -9,6 +9,7 @@ interface ClarkChatProps {
   onTyping?: (typing: boolean) => void
   onSend?: (text: string) => void
   initialMessage?: string | null
+  prefillOnlyInitial?: boolean
   mode?: 'full' | 'panel' | 'hero' | 'chat-only'
 }
 
@@ -77,7 +78,14 @@ function formatResponse(data: Record<string, unknown>): string {
   return JSON.stringify(data, null, 2)
 }
 
-export default function ClarkChat({ active, onTyping, onSend, initialMessage, mode = 'full' }: ClarkChatProps) {
+export default function ClarkChat({
+  active,
+  onTyping,
+  onSend,
+  initialMessage,
+  prefillOnlyInitial = false,
+  mode = 'full',
+}: ClarkChatProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -132,13 +140,17 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
     }
   }, [])
 
-  // Fire once per unique initialMessage value — lets the homepage panel pre-send a query.
+  // Fire once per unique initialMessage value.
   useEffect(() => {
     if (initialMessage && initialMessage !== lastSentInitialRef.current) {
       lastSentInitialRef.current = initialMessage
-      executeSend(initialMessage)
+      if (prefillOnlyInitial) {
+        setInput(initialMessage)
+      } else {
+        executeSend(initialMessage)
+      }
     }
-  }, [initialMessage, executeSend])
+  }, [initialMessage, executeSend, prefillOnlyInitial])
 
   function handleSend() {
     console.log('handleSend fired with:', input)
