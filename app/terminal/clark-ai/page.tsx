@@ -112,10 +112,10 @@ function ClarkAiContent() {
       style={{
         height: '100%',
         overflowY: 'auto',
-        padding: '24px 30px 20px',
+        padding: '28px 18px 24px',
         color: '#e2e8f0',
         background:
-          'radial-gradient(circle at 20% 10%, rgba(45,212,191,0.08), transparent 35%), radial-gradient(circle at 80% 5%, rgba(168,85,247,0.10), transparent 35%), #050816',
+          'radial-gradient(circle at 18% 10%, rgba(45,212,191,0.12), transparent 38%), radial-gradient(circle at 82% 8%, rgba(236,72,153,0.10), transparent 34%), radial-gradient(circle at 78% 22%, rgba(139,92,246,0.12), transparent 36%), #050816',
       }}
     >
       <style>{`
@@ -123,102 +123,174 @@ function ClarkAiContent() {
           background-image:
             linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px),
             linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px);
-          background-size: 26px 26px;
+          background-size: 28px 28px;
           background-position: center;
+        }
+        .clark-shell {
+          max-width: 1180px;
+          margin: 0 auto;
+          border-radius: 20px;
+          border: 1px solid rgba(255,255,255,0.09);
+          background: rgba(7,11,26,0.58);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          padding: 24px;
+        }
+        .clark-hero {
+          text-align: center;
+          margin-bottom: 24px;
+        }
+        .clark-title {
+          margin: 0 0 8px;
+          font-size: 42px;
+          font-weight: 800;
+          letter-spacing: -0.02em;
+          background: linear-gradient(92deg, #99f6e4 0%, #a5b4fc 40%, #f0abfc 70%, #fb7185 100%);
+          -webkit-background-clip: text;
+          background-clip: text;
+          color: transparent;
+        }
+        .clark-grid {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 12px;
+          margin-bottom: 20px;
+        }
+        .clark-action-card {
+          text-align: left;
+          min-height: 142px;
+          border-radius: 16px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+          padding: 20px;
+          cursor: pointer;
+          transition: border-color .15s, transform .15s, box-shadow .15s;
+        }
+        .clark-action-card:hover {
+          border-color: rgba(153,246,228,0.34);
+          transform: translateY(-2px);
+          box-shadow: 0 10px 28px rgba(45,212,191,0.10), 0 8px 24px rgba(168,85,247,0.08);
+        }
+        .clark-chat-wrap {
+          max-width: 980px;
+          margin: 0 auto;
+          border-radius: 18px;
+          border: 1px solid rgba(255,255,255,0.13);
+          background: linear-gradient(180deg, rgba(8,12,28,0.82), rgba(5,8,22,0.85));
+          box-shadow: 0 0 0 1px rgba(45,212,191,0.06) inset, 0 14px 38px rgba(0,0,0,0.42);
+          overflow: hidden;
+        }
+        .clark-footer-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+          margin-top: 10px;
+          justify-content: center;
+        }
+        @media (max-width: 1080px) {
+          .clark-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .clark-title { font-size: 36px; }
+        }
+        @media (max-width: 700px) {
+          .clark-shell { padding: 16px; }
+          .clark-grid { grid-template-columns: 1fr; }
+          .clark-title { font-size: 30px; }
         }
       `}</style>
 
-      <div className='clark-grid-bg' style={{ borderRadius: '18px', border: '1px solid rgba(255,255,255,0.08)', padding: '20px', background: 'rgba(7,11,26,0.55)' }}>
-        <div style={{ maxWidth: '920px', margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+      <div className='clark-grid-bg clark-shell'>
+        <div className='clark-hero'>
+          <div
+            style={{
+              width: '76px',
+              height: '76px',
+              margin: '0 auto 12px',
+              borderRadius: '50%',
+              position: 'relative',
+              background: 'conic-gradient(from 140deg, rgba(45,212,191,0.85), rgba(139,92,246,0.78), rgba(236,72,153,0.75), rgba(45,212,191,0.85))',
+              padding: '2px',
+              boxShadow: '0 0 24px rgba(45,212,191,0.22), 0 0 40px rgba(168,85,247,0.20)',
+            }}
+          >
             <div
-                style={{
-                width: '72px',
-                height: '72px',
-                margin: '0 auto 10px',
+              style={{
+                width: '100%',
+                height: '100%',
                 borderRadius: '50%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#99f6e4',
-                fontSize: '24px',
-                fontWeight: 800,
-                background: 'radial-gradient(circle at 35% 35%, rgba(45,212,191,0.34), rgba(139,92,246,0.28) 55%, rgba(236,72,153,0.18))',
-                border: '1px solid rgba(255,255,255,0.16)',
-                boxShadow: '0 0 25px rgba(45,212,191,0.22), 0 0 40px rgba(168,85,247,0.18)',
+                background: 'radial-gradient(circle at 50% 35%, rgba(31,41,55,0.85), rgba(2,6,23,0.95))',
+                border: '1px solid rgba(255,255,255,0.12)',
               }}
             >
-              C
+              <span style={{ position: 'absolute', width: '8px', height: '8px', borderRadius: '50%', background: '#99f6e4', left: '29px', top: '34px', boxShadow: '0 0 12px rgba(153,246,228,0.9)' }} />
+              <span style={{ position: 'absolute', width: '8px', height: '8px', borderRadius: '50%', background: '#c4b5fd', right: '29px', top: '34px', boxShadow: '0 0 12px rgba(196,181,253,0.9)' }} />
             </div>
-            <p style={{ margin: '0 0 5px', fontSize: '11px', letterSpacing: '0.15em', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
-              LIVE • Powered by CORTEX
-            </p>
-            <h1 style={{ margin: '0 0 5px', fontSize: '30px', fontWeight: 700, color: '#f8fafc' }}>Clark AI</h1>
-            <p style={{ margin: '0 0 12px', fontSize: '13px', color: '#94a3b8' }}>Base-native AI analyst for tokens, wallets, and on-chain risk.</p>
-            <h2 style={{ margin: '0 0 8px', fontSize: '26px', fontWeight: 700, color: '#e2e8f0' }}>Analyze Base Faster With Clark AI</h2>
-            <p style={{ margin: 0, fontSize: '13px', color: '#cbd5e1' }}>
-              Analyze tokens, wallets, contract risk, liquidity, and market activity across Base in seconds.
-            </p>
           </div>
+          <p style={{ margin: '0 0 7px', fontSize: '11px', letterSpacing: '0.15em', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+            LIVE • Powered by CORTEX
+          </p>
+          <h1 className='clark-title'>Clark AI</h1>
+          <p style={{ margin: '0 0 10px', fontSize: '14px', color: '#94a3b8' }}>Base-native AI analyst for tokens, wallets, and on-chain risk.</p>
+          <h2 style={{ margin: '0 0 10px', fontSize: '35px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.01em' }}>
+            Analyze <span style={{ color: '#2DD4BF' }}>Base</span> Faster With <span style={{ color: '#f0abfc' }}>Clark AI</span>
+          </h2>
+          <p style={{ margin: 0, fontSize: '14px', color: '#cbd5e1', maxWidth: '760px', marginInline: 'auto', lineHeight: 1.55 }}>
+            Analyze tokens, wallets, contract risk, liquidity, and market activity across Base in seconds.
+          </p>
+        </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '10px', marginBottom: '16px' }}>
+        <div className='clark-grid'>
             {QUICK_ACTIONS.map((item) => (
               <button
                 key={item.key}
                 onClick={() => setPrompt(item.prompt, item.title)}
-                style={{
-                  textAlign: 'left',
-                  borderRadius: '12px',
-                  border: '1px solid rgba(255,255,255,0.10)',
-                  background: 'linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02))',
-                  padding: '12px',
-                  cursor: 'pointer',
-                  transition: 'border-color 0.15s, transform 0.15s',
-                }}
+                className='clark-action-card'
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                  <span style={{ width: '20px', height: '20px', borderRadius: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#99f6e4' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                  <span style={{ width: '28px', height: '28px', borderRadius: '9px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', color: '#99f6e4' }}>
                     {item.icon}
                   </span>
-                  <span style={{ fontSize: '11px', color: '#64748b' }}>↗</span>
+                  <span style={{ fontSize: '13px', color: '#64748b' }}>↗</span>
                 </div>
-                <p style={{ margin: '0 0 4px', fontSize: '12px', fontWeight: 700, color: '#e2e8f0' }}>{item.title}</p>
-                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.4 }}>{item.description}</p>
+                <p style={{ margin: '0 0 7px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{item.title}</p>
+                <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.45 }}>{item.description}</p>
               </button>
             ))}
-          </div>
+        </div>
 
-          <div style={{ marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em' }}>CORTEX ENGINE</span>
-            <span style={{ fontSize: '10px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.28)', borderRadius: '99px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono)' }}>3 free uses today</span>
-            <span style={{ fontSize: '10px', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.25)', borderRadius: '99px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono)' }}>Credits remaining: 3</span>
-            <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Resets in 2d 14h</span>
-            {importedPrompt && (
-              <span style={{ fontSize: '10px', color: '#c4b5fd', border: '1px solid rgba(196,181,253,0.32)', borderRadius: '99px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono)' }}>
-                Imported from Base Radar
-              </span>
-            )}
-            {activeMode && (
-              <span style={{ fontSize: '10px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.30)', borderRadius: '99px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono)' }}>
-                Mode: {activeMode}
-              </span>
-            )}
+        <div className='clark-chat-wrap'>
+          <div style={{ padding: '12px 14px 0' }}>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
+              <button onClick={handleImportFromRadar} style={chipButtonStyle}>Import from Base Radar</button>
+              <button onClick={handlePasteContract} style={chipButtonStyle}>Paste Contract</button>
+              <button onClick={handlePasteWallet} style={chipButtonStyle}>Paste Wallet</button>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+              {importedPrompt && (
+                <span style={{ fontSize: '10px', color: '#c4b5fd', border: '1px solid rgba(196,181,253,0.32)', borderRadius: '99px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono)' }}>
+                  Imported from Base Radar
+                </span>
+              )}
+              {activeMode && (
+                <span style={{ fontSize: '10px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.30)', borderRadius: '99px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono)' }}>
+                  Mode: {activeMode}
+                </span>
+              )}
+            </div>
           </div>
+          <ClarkChat
+            mode='chat-only'
+            active='clark-ai'
+            initialMessage={prefillPrompt}
+            prefillOnlyInitial
+          />
+        </div>
 
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-            <button onClick={handleImportFromRadar} style={chipButtonStyle}>Import from Base Radar</button>
-            <button onClick={handlePasteContract} style={chipButtonStyle}>Paste Contract</button>
-            <button onClick={handlePasteWallet} style={chipButtonStyle}>Paste Wallet</button>
-          </div>
-
-          <div style={{ borderRadius: '14px', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(5,8,22,0.78)', minHeight: '460px', overflow: 'hidden' }}>
-            <ClarkChat
-              mode='chat-only'
-              active='clark-ai'
-              initialMessage={prefillPrompt}
-              prefillOnlyInitial
-            />
-          </div>
+        <div className='clark-footer-row'>
+          <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em' }}>CORTEX ENGINE</span>
+          <span style={{ fontSize: '10px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.28)', borderRadius: '99px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono)' }}>3 free uses today</span>
+          <span style={{ fontSize: '10px', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.25)', borderRadius: '99px', padding: '2px 8px', fontFamily: 'var(--font-plex-mono)' }}>Credits remaining: 3</span>
+          <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Resets in 2d 14h</span>
         </div>
       </div>
     </div>
