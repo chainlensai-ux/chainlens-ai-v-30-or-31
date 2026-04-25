@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchGoPlus } from "@/lib/goplus";
+import { getOrFetchCached } from "@/lib/coingeckoCache";
 
 export const dynamic = "force-dynamic";
 
@@ -58,13 +59,20 @@ function findTokenMeta(included: GTToken[], contract: string): GTToken["attribut
 // ---------- GeckoTerminal fetchers ----------
 
 // Returns the Base contract address of the top matching pool, or null
-async function resolveNameToContract(query: string): Promise<string | null> {
-  const url = `${GT}/search/pools?query=${encodeURIComponent(query)}&network=base`;
-  const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store" });
-  if (!res.ok) return null;
+async function resolveNameToContract(query: string): Promise<{ contract: string | null; warning?: string }> {
+  const result = await getOrFetchCached<{ data?: GTPool[] }>({
+    key: `coingecko:token-lookup:${query.toLowerCase()}`,
+    ttlMs: 60_000,
+    onLog: msg => console.info(`[scan-token] ${msg}`),
+    fetcher: async () => {
+      const url = `${GT}/search/pools?query=${encodeURIComponent(query)}&network=base`;
+      const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store" });
+      if (!res.ok) throw new Error(`GeckoTerminal lookup failed (${res.status})`);
+      return res.json() as Promise<{ data?: GTPool[] }>;
+    },
+  });
 
-  const data = await res.json();
-  const pools: GTPool[] = Array.isArray(data?.data) ? data.data : [];
+  const pools: GTPool[] = Array.isArray(result.data?.data) ? result.data.data : [];
 
   // Keep only Base pools and pick the first
   const pool = pools.find(
@@ -72,29 +80,39 @@ async function resolveNameToContract(query: string): Promise<string | null> {
       p.id?.startsWith("base_") ||
       p.relationships?.network?.data?.id === "base"
   );
-  if (!pool) return null;
+  if (!pool) return { contract: null, warning: result.warning };
 
   const tokenId = pool.relationships?.base_token?.data?.id ?? "";
   const address = idToAddress(tokenId);
-  return address.startsWith("0x") ? address : null;
+  return { contract: address.startsWith("0x") ? address : null, warning: result.warning };
 }
 
 // Returns pools + included token metadata for a Base contract
 async function fetchPools(
   contract: string
-): Promise<{ pools: GTPool[]; included: GTToken[] }> {
-  const url = `${GT}/networks/base/tokens/${contract}/pools?include=base_token,quote_token`;
-  const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store" });
+): Promise<{ pools: GTPool[]; included: GTToken[]; warning?: string }> {
+  const cacheKey = `coingecko:token-scan:${contract.toLowerCase()}`;
+  const result = await getOrFetchCached<{ data?: GTPool[]; included?: GTToken[] }>({
+    key: cacheKey,
+    ttlMs: 120_000,
+    onLog: msg => console.info(`[scan-token] ${msg}`),
+    fetcher: async () => {
+      const url = `${GT}/networks/base/tokens/${contract}/pools?include=base_token,quote_token`;
+      const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store" });
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`GeckoTerminal ${res.status}: ${text.slice(0, 120)}`);
-  }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`GeckoTerminal ${res.status}: ${text.slice(0, 120)}`);
+      }
 
-  const data = await res.json();
+      return res.json() as Promise<{ data?: GTPool[]; included?: GTToken[] }>;
+    },
+  });
+
   return {
-    pools: Array.isArray(data?.data) ? data.data : [],
-    included: Array.isArray(data?.included) ? data.included : [],
+    pools: Array.isArray(result.data?.data) ? result.data.data : [],
+    included: Array.isArray(result.data?.included) ? result.data.included : [],
+    warning: result.warning,
   };
 }
 
@@ -144,6 +162,7 @@ export async function GET(req: NextRequest) {
 
   try {
     let resolvedContract: string | null = null;
+    let cacheWarning: string | undefined;
 
     if (contract) {
       if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) {
@@ -154,7 +173,9 @@ export async function GET(req: NextRequest) {
       }
       resolvedContract = contract;
     } else if (query) {
-      resolvedContract = await resolveNameToContract(query);
+      const resolved = await resolveNameToContract(query);
+      resolvedContract = resolved.contract;
+      cacheWarning = resolved.warning;
       if (!resolvedContract) {
         return NextResponse.json({ error: "Token not found", query }, { status: 404 });
       }
@@ -165,7 +186,7 @@ export async function GET(req: NextRequest) {
     }
 
     const origin = req.nextUrl.origin;
-    const [{ pools, included }, goPlusRes] = await Promise.all([
+    const [{ pools, included, warning: poolsWarning }, goPlusRes] = await Promise.all([
       fetchPools(resolvedContract),
       fetchGoPlus(resolvedContract, origin),
     ]);
@@ -181,6 +202,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       data: { ...token, goplus: goPlusRes.ok ? goPlusRes.data : null },
+      warning: poolsWarning ?? cacheWarning,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Scan failed";
