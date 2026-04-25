@@ -1,13 +1,21 @@
 'use client'
 
-import { Suspense, useState } from 'react'
+import { Suspense, useMemo, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import ClarkChat from '@/components/ClarkChat'
 import ClarkRadar from '@/components/ClarkRadar'
 
 function TerminalPageContent() {
   const searchParams = useSearchParams()
-  const initialPrompt = searchParams.get('prompt')
+  const rawPrompt = searchParams.get('prompt')
+  const initialPrompt = useMemo(() => {
+    if (!rawPrompt) return null
+    try {
+      return decodeURIComponent(rawPrompt)
+    } catch {
+      return rawPrompt
+    }
+  }, [rawPrompt])
   const [active, setActive] = useState('dashboard')
   const [isTyping, setIsTyping] = useState(false)
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
@@ -56,6 +64,7 @@ function TerminalPageContent() {
             onTyping={setIsTyping}
             onSend={(msg) => setPendingMessage(msg)}
             initialMessage={initialPrompt}
+            prefillOnlyInitial
           />
         </main>
 
