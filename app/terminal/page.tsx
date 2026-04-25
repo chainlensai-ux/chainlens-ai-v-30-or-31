@@ -1,10 +1,13 @@
 'use client'
 
 import { useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import ClarkChat from '@/components/ClarkChat'
 import ClarkRadar from '@/components/ClarkRadar'
 
 export default function TerminalPage() {
+  const searchParams = useSearchParams()
+  const initialPrompt = searchParams.get('prompt')
   const [active, setActive] = useState('dashboard')
   const [isTyping, setIsTyping] = useState(false)
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
@@ -47,7 +50,13 @@ export default function TerminalPage() {
           className="flex-1 overflow-y-auto min-w-0 flex flex-col mob-terminal-main"
           style={{ position: 'relative', zIndex: 1 }}
         >
-          <ClarkChat mode="hero" active={active} onTyping={setIsTyping} onSend={(msg) => setPendingMessage(msg)} />
+          <ClarkChat
+            mode="hero"
+            active={active}
+            onTyping={setIsTyping}
+            onSend={(msg) => setPendingMessage(msg)}
+            initialMessage={initialPrompt}
+          />
         </main>
 
         <aside

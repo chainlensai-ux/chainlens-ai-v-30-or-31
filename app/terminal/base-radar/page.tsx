@@ -291,12 +291,14 @@ function TokenCard({
   token,
   index,
   onScan,
+  onAskClark,
   onTrackToggle,
   tracking,
 }: {
   token: TokenIntel
   index: number
   onScan: () => void
+  onAskClark: () => void
   onTrackToggle: () => void
   tracking: boolean
 }) {
@@ -440,7 +442,7 @@ function TokenCard({
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
         <ActionButton label='Scan' onClick={onScan} />
-        <ActionButton label='Ask Clark' disabled hint='Coming soon' onClick={() => undefined} />
+        <ActionButton label='Ask Clark' hint='Analyze with Clark' onClick={onAskClark} />
         <ActionButton label={tracking ? 'Tracking' : 'Track'} active={tracking} onClick={onTrackToggle} />
       </div>
     </div>
@@ -731,6 +733,30 @@ export default function BaseRadarPage() {
     setTrackedContracts(prev => ({ ...prev, [contract]: !prev[contract] }))
   }
 
+  function askClark(token: TokenIntel) {
+    const buyTax = token.honeypot?.buyTax
+    const sellTax = token.honeypot?.sellTax
+    const security = token.honeypot?.simulationSuccess ? 'Verified' : 'Unknown'
+    const prompt = [
+      'Analyze this Base Radar token and give me a clear verdict: WATCH, AVOID, or SCAN DEEPER.',
+      `Token: ${token.name} (${token.symbol})`,
+      `Contract: ${token.contract}`,
+      `Radar Score: ${token.radarScore}`,
+      `Status: ${token.status}`,
+      `Liquidity: ${fmtUSD(token.liquidityUsd)}`,
+      `Volume 24h: ${fmtUSD(token.volume24h)}`,
+      `FDV: ${token.fdvUsd ? fmtUSD(token.fdvUsd) : 'N/A'}`,
+      `Momentum: ${token.momentum}`,
+      `Buy Tax: ${buyTax !== null && buyTax !== undefined ? `${buyTax.toFixed(1)}%` : 'Unknown'}`,
+      `Sell Tax: ${sellTax !== null && sellTax !== undefined ? `${sellTax.toFixed(1)}%` : 'Unknown'}`,
+      `Security: ${security}`,
+      `Flags: ${token.flags.length > 0 ? token.flags.join(', ') : 'None'}`,
+      `Clark Signal: ${token.clarkVerdict ?? token.clarkSignal}`,
+    ].join('\n')
+
+    router.push(`/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`)
+  }
+
   const tokens = data?.tokens ?? []
 
   const intelTokens = useMemo(() => tokens.map(enrichToken), [tokens])
@@ -912,6 +938,7 @@ export default function BaseRadarPage() {
                   token={token}
                   index={i}
                   onScan={() => openToken(token.contract)}
+                  onAskClark={() => askClark(token)}
                   onTrackToggle={() => toggleTrack(token.contract)}
                   tracking={Boolean(trackedContracts[token.contract])}
                 />
