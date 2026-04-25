@@ -39,7 +39,7 @@ type MomentumLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE'
 type RadarFilter = 'ALL' | RadarStatus
 type SortMode = 'NEWEST' | 'HIGHEST_SCORE' | 'HIGHEST_LIQUIDITY' | 'HIGHEST_VOLUME' | 'HIGHEST_MOMENTUM'
 
-type QualityLevel = 'Weak' | 'OK' | 'Strong' | 'None' | 'Low' | 'Medium' | 'High' | 'Fresh' | 'New' | 'Older' | 'Clean' | 'Unknown' | 'Verified' | 'Unverified'
+type QualityLevel = 'Weak' | 'OK' | 'Strong' | 'None' | 'Low' | 'Medium' | 'High' | 'Fresh' | 'New' | 'Older' | 'Clean' | 'Unknown' | 'Verified' | 'Security Unknown'
 
 interface LaunchQuality {
   liquidity: QualityLevel
@@ -254,7 +254,7 @@ function getLaunchQuality(token: RadarToken): LaunchQuality {
     taxes = buyTax > 5 || sellTax > 5 ? 'High' : 'Clean'
   }
 
-  const security: QualityLevel = token.honeypot?.simulationSuccess ? 'Verified' : 'Unverified'
+  const security: QualityLevel = token.honeypot?.simulationSuccess ? 'Verified' : 'Security Unknown'
 
   return { liquidity, volume, age, taxes, security }
 }
@@ -319,7 +319,7 @@ function TokenCard({
         background: hovered ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.03)',
         border: `1px solid ${hovered ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.08)'}`,
         borderRadius: '14px',
-        padding: '14px',
+        padding: '12px',
         cursor: 'pointer',
         transition: 'background 0.15s, border-color 0.15s',
         animation: 'radarSlideIn 0.35s ease both',
@@ -340,7 +340,7 @@ function TokenCard({
         }}
       />
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '8px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '6px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
           <div style={{
             width: '28px',
@@ -380,8 +380,8 @@ function TokenCard({
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px', gap: '10px', marginBottom: '8px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '10px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: '8px', marginBottom: '7px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '8px' }}>
           <Metric label='Score' value={String(token.radarScore)} accent={token.radarScore >= 80 ? '#22d3ee' : '#e2e8f0'} />
           <Metric label='Liquidity' value={fmtUSD(token.liquidityUsd)} />
           <Metric label='Vol 24h' value={fmtUSD(token.volume24h)} />
@@ -393,7 +393,7 @@ function TokenCard({
           borderRadius: '10px',
           border: '1px solid rgba(255,255,255,0.08)',
           background: 'linear-gradient(180deg, rgba(45,212,191,0.06), rgba(168,85,247,0.04))',
-          padding: '6px',
+          padding: '5px',
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'space-between',
@@ -402,12 +402,12 @@ function TokenCard({
             <path d='M2 22 L18 19 L33 21 L46 14 L62 16 L78 9 L93 13 L108 8' stroke='rgba(45,212,191,0.8)' strokeWidth='1.5' fill='none' />
           </svg>
           <span style={{ fontSize: '8px', color: '#475569', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>
-            DECORATIVE
+            Sparkline
           </span>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '6px', marginBottom: '8px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '5px', marginBottom: '7px' }}>
         {(
           [
             ['Liquidity', token.launchQuality.liquidity],
@@ -434,7 +434,7 @@ function TokenCard({
         </div>
       )}
 
-      <p style={{ fontSize: '10px', color: '#64748b', margin: '0 0 8px', lineHeight: 1.45, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', fontStyle: 'italic' }}>
+      <p style={{ fontSize: '10px', color: '#64748b', margin: '0 0 7px', lineHeight: 1.35, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '7px', fontStyle: 'italic' }}>
         “{token.clarkVerdict ?? token.clarkSignal}”
       </p>
 
@@ -602,10 +602,10 @@ function StatsPanel({ summary, fetchedAt, loading }: { summary: RadarSummary; fe
         borderRadius: '12px',
         padding: '14px',
       }}>
-        <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>
+        <p style={{ margin: 0, fontSize: '11px', lineHeight: 1.35, color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>
           Upgrade to Pro
         </p>
-        <p style={{ margin: '0 0 10px', fontSize: '10px', color: '#cbd5e1', lineHeight: 1.4 }}>
+        <p style={{ margin: '8px 0 10px', fontSize: '10px', color: '#cbd5e1', lineHeight: 1.4 }}>
           Unlock advanced filters, alerts, and AI insights.
         </p>
         <Link href='/pricing' style={{
