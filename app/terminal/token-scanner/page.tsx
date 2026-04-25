@@ -18,6 +18,7 @@ type ScanResult = {
   name?: string
   symbol?: string
   contract?: string
+  chain?: string
   price?: number | null
   liquidity?: number | null
   volume24h?: number | null
@@ -307,6 +308,7 @@ export default function TerminalTokenScanner() {
           name:           json.name,
           symbol:         json.symbol,
           contract:       json.contract,
+          chain:          json.chain ?? 'base',
           noActivePools:  json.noActivePools ?? false,
           price:          mainPool ? parseFloat(mainPool.attributes?.base_token_price_usd ?? '0') || null : null,
           liquidity:      mainPool ? parseFloat(mainPool.attributes?.reserve_in_usd ?? '0') || null : null,
@@ -482,6 +484,7 @@ export default function TerminalTokenScanner() {
                     fontFamily: 'var(--font-plex-mono)', margin: 0,
                   }}>
                     {result.contract}
+                    {` · ${String(result.chain ?? 'Base').toUpperCase()}`}
                   </p>
                 )}
               </div>
@@ -496,7 +499,7 @@ export default function TerminalTokenScanner() {
                   fontSize: '12px', color: '#3a5268',
                   fontFamily: 'var(--font-plex-mono)',
                 }}>
-                  No active trading pools found on {result.contract ? 'this network' : 'Base'} for this contract.
+                  No active Base pools found for this contract.
                 </div>
               ) : (
                 <div style={{
