@@ -1,10 +1,21 @@
 'use client'
 
-import { useState } from 'react'
+import { Suspense, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import ClarkChat from '@/components/ClarkChat'
 import ClarkRadar from '@/components/ClarkRadar'
 
-export default function TerminalPage() {
+function TerminalPageContent() {
+  const searchParams = useSearchParams()
+  const rawPrompt = searchParams.get('prompt')
+  const initialPrompt = useMemo(() => {
+    if (!rawPrompt) return null
+    try {
+      return decodeURIComponent(rawPrompt)
+    } catch {
+      return rawPrompt
+    }
+  }, [rawPrompt])
   const [active, setActive] = useState('dashboard')
   const [isTyping, setIsTyping] = useState(false)
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
@@ -47,7 +58,14 @@ export default function TerminalPage() {
           className="flex-1 overflow-y-auto min-w-0 flex flex-col mob-terminal-main"
           style={{ position: 'relative', zIndex: 1 }}
         >
-          <ClarkChat mode="hero" active={active} onTyping={setIsTyping} onSend={(msg) => setPendingMessage(msg)} />
+          <ClarkChat
+            mode="hero"
+            active={active}
+            onTyping={setIsTyping}
+            onSend={(msg) => setPendingMessage(msg)}
+            initialMessage={initialPrompt}
+            prefillOnlyInitial
+          />
         </main>
 
         <aside
@@ -65,5 +83,13 @@ export default function TerminalPage() {
         </aside>
       </div>
     </>
+  )
+}
+
+export default function TerminalPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: 24, color: '#94a3b8' }}>Loading Terminal...</div>}>
+      <TerminalPageContent />
+    </Suspense>
   )
 }
