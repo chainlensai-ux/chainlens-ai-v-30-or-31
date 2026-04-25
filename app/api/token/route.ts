@@ -174,34 +174,6 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 }
 
 // ------------------------------
-// Detect chain
-// ------------------------------
-async function detectChain(contract: string): Promise<ChainKey | null> {
-  for (const [chainKey, rpcUrl] of Object.entries(CHAIN_RPC_MAP)) {
-    try {
-      const rpcRes = await fetch(rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "eth_getCode",
-          params: [contract, "latest"],
-        }),
-      });
-      const json = await rpcRes.json();
-      if (json?.result && json.result !== "0x") {
-        console.log(`✅ Chain detected: ${chainKey}`);
-        return chainKey as ChainKey;
-      }
-    } catch (err) {
-      console.error(`RPC error on ${chainKey}:`, err);
-    }
-  }
-  return null;
-}
-
-// ------------------------------
 // Contract analysis
 // ------------------------------
 function analyzeContract(bytecode: string | null): any {
@@ -243,10 +215,8 @@ export async function POST(req: Request) {
 
     console.log("Incoming scan request:", contract);
 
-    const chain = await detectChain(contract);
-    if (!chain) {
-      return NextResponse.json({ error: "Could not detect chain" }, { status: 400 });
-    }
+    // Token Scanner is Base-only.
+    const chain: ChainKey = "base";
 
     const [bytecode, goldrush, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpRaw] = await Promise.all([
       fetchBytecode(chain, contract),
@@ -282,6 +252,7 @@ You are the Cortex Engine of ChainLens AI.
 Summarize this token in 3–4 sentences.
 Focus on risks, liquidity, ownership, and suspicious functions.
 Output plain text only, no markdown, no tables.
+If critical data is missing (no pools, missing security), do NOT speculate and state that the token is unverified.
 
 CHAIN: ${chain}
 CONTRACT: ${contract}
@@ -293,16 +264,24 @@ BYTECODE ANALYSIS:
 ${JSON.stringify(analysis, null, 2)}
 `;
 
-    const aiResponse = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1100,
-      messages: [{ role: "user", content: aiPrompt }],
-    });
-    console.log("AI response:", aiResponse);
+    const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpRaw);
+    let aiSummary = "Unverified on Base — insufficient data for a risk verdict.";
 
-    const aiSummary =
-      (aiResponse?.content?.[0]?.type === "text" ? aiResponse.content[0].text : null) ||
-      "AI summary unavailable";
+    if (!noActivePools || hasSecurityData) {
+      try {
+        const aiResponse = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1100,
+          messages: [{ role: "user", content: aiPrompt }],
+        });
+        console.log("AI response:", aiResponse);
+        aiSummary =
+          (aiResponse?.content?.[0]?.type === "text" ? aiResponse.content[0].text : null) ||
+          aiSummary;
+      } catch (err) {
+        console.error("AI summary error:", err);
+      }
+    }
 
     // ------------------------------
     // Resolve core token fields
