@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { getOrFetchCached } from '@/lib/coingeckoCache'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -133,17 +134,24 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
 
 export async function GET() {
   try {
-    // 1. Fetch new Base pools
-    const gtRes = await fetch(
-      'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=1&include=base_token%2Cquote_token',
-      { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store' }
-    )
-    if (!gtRes.ok) {
-      console.error('[radar] GeckoTerminal error:', gtRes.status)
-      return NextResponse.json({ error: 'GeckoTerminal unavailable' }, { status: 502 })
-    }
+    // 1. Fetch new Base pools (shared cache for beta traffic)
+    const gtResult = await getOrFetchCached<Record<string, unknown>>({
+      key: 'coingecko:base-radar',
+      ttlMs: 60_000,
+      onLog: msg => console.info(`[radar] ${msg}`),
+      fetcher: async () => {
+        const gtRes = await fetch(
+          'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=1&include=base_token%2Cquote_token',
+          { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store' }
+        )
+        if (!gtRes.ok) {
+          throw new Error(`GeckoTerminal unavailable (${gtRes.status})`)
+        }
+        return gtRes.json() as Promise<Record<string, unknown>>
+      },
+    })
 
-    const gtData   = await gtRes.json()
+    const gtData = gtResult.data
     const pools    = Array.isArray(gtData?.data)     ? (gtData.data     as Record<string, unknown>[]) : []
     const included = Array.isArray(gtData?.included) ? (gtData.included as Record<string, unknown>[]) : []
 
@@ -241,7 +249,7 @@ export async function GET() {
       dangerCount, cautionCount, safeCount,
     }
 
-    return NextResponse.json({ tokens, stats, fetchedAt: new Date().toISOString() })
+    return NextResponse.json({ tokens, stats, fetchedAt: new Date().toISOString(), warning: gtResult.warning })
   } catch (err) {
     console.error('[radar] fatal error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
