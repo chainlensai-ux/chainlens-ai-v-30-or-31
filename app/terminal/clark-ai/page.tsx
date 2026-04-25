@@ -10,6 +10,7 @@ type Mode = {
   label: string
   helper: string
   prompt: string
+  icon: string
 }
 
 const MODES: Mode[] = [
@@ -18,24 +19,28 @@ const MODES: Mode[] = [
     label: 'Token Analysis',
     helper: 'Evaluate token quality, momentum, and risk on Base.',
     prompt: 'Analyze this Base token and give me WATCH, AVOID, or SCAN DEEPER with key reasons.',
+    icon: '◈',
   },
   {
     key: 'wallet',
     label: 'Wallet Analysis',
     helper: 'Break down holdings, behavior, concentration, and recent activity.',
     prompt: 'Analyze this Base wallet. Focus on behavior, concentration risk, and recent activity.',
+    icon: '◎',
   },
   {
     key: 'contract',
     label: 'Contract Risk',
     helper: 'Review privilege flags, liquidity traps, and suspicious mechanics.',
     prompt: 'Run a contract risk analysis on this Base token contract. Highlight red flags clearly.',
+    icon: '⚠',
   },
   {
     key: 'radar',
     label: 'Base Radar',
     helper: 'Use imported Base Radar signal context for a concise verdict.',
     prompt: 'Use my imported Base Radar context and give a concise WATCH / AVOID / SCAN DEEPER verdict.',
+    icon: '⟲',
   },
 ]
 
@@ -44,6 +49,21 @@ const SUGGESTED_PROMPTS = [
   'Check wallet behavior',
   'Explain liquidity risk',
   'Summarize Base Radar signal',
+]
+
+const EMPTY_STATE_CHIPS = [
+  {
+    label: 'Analyze a Base token',
+    prompt: 'Analyze this Base token and give me a clear verdict: WATCH, AVOID, or SCAN DEEPER. Contract: ',
+  },
+  {
+    label: 'Check wallet behavior',
+    prompt: 'Analyze this Base wallet behavior, holdings, flows, and risk profile. Wallet: ',
+  },
+  {
+    label: 'Explain liquidity risk',
+    prompt: 'Explain the liquidity risk for this Base token and what signals I should check before entering. Token: ',
+  },
 ]
 
 function decodePrompt(value: string | null): string | null {
@@ -186,16 +206,25 @@ function ClarkAiContent() {
           text-align: left;
           padding: 11px 12px;
           cursor: pointer;
-          transition: all .16s ease;
+          transition: all .2s ease;
         }
         .clark-mode:hover {
-          border-color: rgba(45,212,191,0.36);
-          transform: translateY(-1px);
+          border-color: rgba(45,212,191,0.52);
+          transform: translateY(-1px) scale(1.01);
+          box-shadow: 0 8px 20px rgba(3,7,18,0.45), 0 0 20px rgba(45,212,191,0.14);
         }
         .clark-mode.active {
-          border-color: rgba(45,212,191,0.56);
-          box-shadow: 0 0 0 1px rgba(45,212,191,0.2), 0 0 24px rgba(139,92,246,0.20);
-          background: linear-gradient(180deg, rgba(45,212,191,0.16), rgba(139,92,246,0.14));
+          border-color: rgba(45,212,191,0.74);
+          box-shadow: 0 0 0 1px rgba(45,212,191,0.26), 0 0 24px rgba(45,212,191,0.2), 0 0 30px rgba(139,92,246,0.14);
+          background: linear-gradient(180deg, rgba(45,212,191,0.22), rgba(139,92,246,0.18));
+        }
+        .clark-send-button:hover:not(:disabled) {
+          transform: scale(1.06);
+          filter: saturate(1.1) brightness(1.06);
+          box-shadow: 0 0 28px rgba(45,212,191,0.62), 0 0 36px rgba(236,72,153,0.5), 0 0 0 1px rgba(255,255,255,0.14) !important;
+        }
+        .clark-send-button:active:not(:disabled) {
+          transform: scale(1.02);
         }
         @media (max-width: 1080px) {
           .clark-main-grid { grid-template-columns: 1fr; }
@@ -233,7 +262,18 @@ function ClarkAiContent() {
                   className={`clark-mode${activeMode === mode.key ? ' active' : ''}`}
                   onClick={() => applyMode(mode)}
                 >
-                  <p style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{mode.label}</p>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <span style={{ width: '30px', height: '30px', borderRadius: '10px', border: `1px solid ${activeMode === mode.key ? 'rgba(45,212,191,0.62)' : 'rgba(148,163,184,0.32)'}`, background: activeMode === mode.key ? 'linear-gradient(180deg, rgba(45,212,191,0.22), rgba(139,92,246,0.14))' : 'rgba(15,23,42,0.5)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: activeMode === mode.key ? '#99f6e4' : '#cbd5e1', boxShadow: activeMode === mode.key ? '0 0 14px rgba(45,212,191,0.28)' : 'none' }}>
+                      {mode.icon}
+                    </span>
+                    <span style={{ fontSize: '13px', color: activeMode === mode.key ? '#99f6e4' : '#94a3b8', fontWeight: 700 }}>↗</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                    <p style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{mode.label}</p>
+                    {activeMode === mode.key && (
+                      <span style={{ fontSize: '9px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.45)', borderRadius: '999px', padding: '1px 6px', letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>ACTIVE</span>
+                    )}
+                  </div>
                   <p style={{ margin: '4px 0 0', fontSize: '11px', lineHeight: 1.35, color: '#94a3b8' }}>{mode.helper}</p>
                 </button>
               ))}
@@ -263,6 +303,16 @@ function ClarkAiContent() {
                         </div>
                       </div>
                       <p style={{ margin: 0, fontSize: '14px', color: '#cbd5e1' }}>Import a token, paste a wallet, or ask Clark what’s moving on Base.</p>
+                      <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#94a3b8' }}>
+                        Clark can explain token quality, wallet behavior, contract risk, and Base Radar signals.
+                      </p>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center', marginTop: '12px' }}>
+                        {EMPTY_STATE_CHIPS.map((chip) => (
+                          <button key={chip.label} onClick={() => setInput(chip.prompt)} style={emptyStateChipStyle}>
+                            {chip.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -292,18 +342,21 @@ function ClarkAiContent() {
                   <button
                     onClick={handleSend}
                     disabled={loading || !input.trim()}
+                    className='clark-send-button'
                     style={{
                       width: '44px',
                       height: '44px',
                       borderRadius: '999px',
                       border: 'none',
                       background: loading || !input.trim() ? 'rgba(148,163,184,0.28)' : 'linear-gradient(135deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%)',
-                      color: loading || !input.trim() ? '#334155' : '#e2e8f0',
+                      color: loading || !input.trim() ? '#475569' : '#f8fafc',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
-                      boxShadow: loading || !input.trim() ? 'none' : '0 0 24px rgba(45,212,191,0.45), 0 0 28px rgba(236,72,153,0.36)',
+                      fontSize: '17px',
+                      boxShadow: loading || !input.trim() ? 'inset 0 1px 1px rgba(255,255,255,0.08)' : '0 0 24px rgba(45,212,191,0.55), 0 0 32px rgba(236,72,153,0.44), 0 0 0 1px rgba(255,255,255,0.12)',
+                      transition: 'transform .16s ease, box-shadow .16s ease, filter .16s ease',
                     }}
                     aria-label='Send prompt'
                   >
@@ -314,7 +367,7 @@ function ClarkAiContent() {
             </div>
           </section>
 
-          <aside style={{ display: 'grid', gap: '12px' }}>
+          <aside style={{ display: 'grid', gap: '10px' }}>
             <div className='clark-panel' style={{ padding: '12px' }}>
               <p style={asideTitleStyle}>Context</p>
               {importedPrompt ? (
@@ -336,11 +389,19 @@ function ClarkAiContent() {
                     onClick={() => applyMode(mode)}
                     style={{
                       ...asideButtonStyle,
-                      borderColor: activeMode === mode.key ? 'rgba(45,212,191,0.5)' : 'rgba(148,163,184,0.2)',
+                      borderColor: activeMode === mode.key ? 'rgba(45,212,191,0.7)' : 'rgba(148,163,184,0.2)',
+                      background: activeMode === mode.key ? 'linear-gradient(180deg, rgba(45,212,191,0.18), rgba(139,92,246,0.14))' : 'rgba(15,23,42,0.5)',
                       color: activeMode === mode.key ? '#99f6e4' : '#cbd5e1',
+                      boxShadow: activeMode === mode.key ? '0 0 0 1px rgba(45,212,191,0.18), 0 0 16px rgba(45,212,191,0.12)' : 'none',
                     }}
                   >
-                    {mode.label}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
+                      {activeMode === mode.key && <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#2dd4bf', boxShadow: '0 0 10px rgba(45,212,191,0.75)' }} />}
+                      {mode.label}
+                      {activeMode === mode.key && (
+                        <span style={{ fontSize: '9px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.45)', borderRadius: '999px', padding: '1px 6px', letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>ACTIVE</span>
+                      )}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -432,6 +493,17 @@ const chipButtonStyle: CSSProperties = {
   cursor: 'pointer',
 }
 
+const emptyStateChipStyle: CSSProperties = {
+  borderRadius: '999px',
+  border: '1px solid rgba(148,163,184,0.28)',
+  background: 'rgba(15,23,42,0.65)',
+  color: '#cbd5e1',
+  fontSize: '11px',
+  padding: '6px 11px',
+  cursor: 'pointer',
+  transition: 'border-color .16s ease, box-shadow .16s ease',
+}
+
 const liveBadgeStyle: CSSProperties = {
   borderRadius: '999px',
   border: '1px solid rgba(45,212,191,0.34)',
@@ -473,8 +545,11 @@ const contextPreviewStyle: CSSProperties = {
   fontSize: '12px',
   lineHeight: 1.4,
   padding: '8px 10px',
-  maxHeight: '120px',
-  overflow: 'auto',
+  maxHeight: '84px',
+  display: '-webkit-box',
+  WebkitLineClamp: 4,
+  WebkitBoxOrient: 'vertical',
+  overflow: 'hidden',
 }
 
 export default function ClarkAiPage() {
