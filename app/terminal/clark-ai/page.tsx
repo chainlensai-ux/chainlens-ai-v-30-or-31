@@ -112,10 +112,10 @@ function ClarkAiContent() {
       style={{
         height: '100%',
         overflowY: 'auto',
-        padding: '28px 18px 24px',
+        padding: '34px 18px 26px',
         color: '#e2e8f0',
         background:
-          'radial-gradient(circle at 18% 10%, rgba(45,212,191,0.12), transparent 38%), radial-gradient(circle at 82% 8%, rgba(236,72,153,0.10), transparent 34%), radial-gradient(circle at 78% 22%, rgba(139,92,246,0.12), transparent 36%), #050816',
+          'radial-gradient(circle at 14% 14%, rgba(45,212,191,0.14), transparent 42%), radial-gradient(circle at 86% 12%, rgba(236,72,153,0.12), transparent 38%), radial-gradient(circle at 80% 30%, rgba(139,92,246,0.14), transparent 42%), linear-gradient(180deg, #040712 0%, #050816 45%, #040611 100%)',
       }}
     >
       <style>{`
@@ -123,26 +123,21 @@ function ClarkAiContent() {
           background-image:
             linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px),
             linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px);
-          background-size: 28px 28px;
+          background-size: 30px 30px;
           background-position: center;
         }
         .clark-shell {
-          max-width: 1180px;
+          max-width: 1120px;
           margin: 0 auto;
-          border-radius: 20px;
-          border: 1px solid rgba(255,255,255,0.09);
-          background: rgba(7,11,26,0.58);
-          backdrop-filter: blur(8px);
-          -webkit-backdrop-filter: blur(8px);
-          padding: 24px;
+          padding: 6px 8px;
         }
         .clark-hero {
           text-align: center;
-          margin-bottom: 24px;
+          margin-bottom: 30px;
         }
         .clark-title {
-          margin: 0 0 8px;
-          font-size: 42px;
+          margin: 0 0 10px;
+          font-size: 50px;
           font-weight: 800;
           letter-spacing: -0.02em;
           background: linear-gradient(92deg, #99f6e4 0%, #a5b4fc 40%, #f0abfc 70%, #fb7185 100%);
@@ -153,31 +148,32 @@ function ClarkAiContent() {
         .clark-grid {
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 12px;
-          margin-bottom: 20px;
+          gap: 14px;
+          margin-bottom: 24px;
         }
         .clark-action-card {
           text-align: left;
-          min-height: 142px;
+          min-height: 152px;
           border-radius: 16px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
-          padding: 20px;
+          border: 1px solid rgba(255,255,255,0.16);
+          background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03));
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 30px rgba(0,0,0,0.28);
+          padding: 22px;
           cursor: pointer;
           transition: border-color .15s, transform .15s, box-shadow .15s;
         }
         .clark-action-card:hover {
-          border-color: rgba(153,246,228,0.34);
+          border-color: rgba(153,246,228,0.42);
           transform: translateY(-2px);
-          box-shadow: 0 10px 28px rgba(45,212,191,0.10), 0 8px 24px rgba(168,85,247,0.08);
+          box-shadow: 0 12px 34px rgba(45,212,191,0.12), 0 10px 30px rgba(168,85,247,0.11);
         }
         .clark-chat-wrap {
-          max-width: 980px;
+          max-width: 1020px;
           margin: 0 auto;
-          border-radius: 18px;
-          border: 1px solid rgba(255,255,255,0.13);
-          background: linear-gradient(180deg, rgba(8,12,28,0.82), rgba(5,8,22,0.85));
-          box-shadow: 0 0 0 1px rgba(45,212,191,0.06) inset, 0 14px 38px rgba(0,0,0,0.42);
+          border-radius: 20px;
+          border: 1px solid rgba(255,255,255,0.17);
+          background: linear-gradient(180deg, rgba(10,16,35,0.90), rgba(4,8,22,0.92));
+          box-shadow: 0 0 0 1px rgba(45,212,191,0.12) inset, 0 16px 46px rgba(0,0,0,0.48), 0 0 36px rgba(45,212,191,0.08);
           overflow: hidden;
         }
         .clark-footer-row {
@@ -190,10 +186,10 @@ function ClarkAiContent() {
         }
         @media (max-width: 1080px) {
           .clark-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-          .clark-title { font-size: 36px; }
+          .clark-title { font-size: 40px; }
         }
         @media (max-width: 700px) {
-          .clark-shell { padding: 16px; }
+          .clark-shell { padding: 0; }
           .clark-grid { grid-template-columns: 1fr; }
           .clark-title { font-size: 30px; }
         }
@@ -203,14 +199,14 @@ function ClarkAiContent() {
         <div className='clark-hero'>
           <div
             style={{
-              width: '76px',
-              height: '76px',
-              margin: '0 auto 12px',
+              width: '92px',
+              height: '92px',
+              margin: '0 auto 14px',
               borderRadius: '50%',
               position: 'relative',
               background: 'conic-gradient(from 140deg, rgba(45,212,191,0.85), rgba(139,92,246,0.78), rgba(236,72,153,0.75), rgba(45,212,191,0.85))',
-              padding: '2px',
-              boxShadow: '0 0 24px rgba(45,212,191,0.22), 0 0 40px rgba(168,85,247,0.20)',
+              padding: '2.5px',
+              boxShadow: '0 0 28px rgba(45,212,191,0.24), 0 0 46px rgba(168,85,247,0.22), 0 10px 30px rgba(0,0,0,0.35)',
             }}
           >
             <div
@@ -218,12 +214,13 @@ function ClarkAiContent() {
                 width: '100%',
                 height: '100%',
                 borderRadius: '50%',
-                background: 'radial-gradient(circle at 50% 35%, rgba(31,41,55,0.85), rgba(2,6,23,0.95))',
+                background: 'radial-gradient(circle at 50% 28%, rgba(31,41,55,0.9), rgba(2,6,23,0.98))',
                 border: '1px solid rgba(255,255,255,0.12)',
+                boxShadow: 'inset 0 8px 18px rgba(255,255,255,0.06)',
               }}
             >
-              <span style={{ position: 'absolute', width: '8px', height: '8px', borderRadius: '50%', background: '#99f6e4', left: '29px', top: '34px', boxShadow: '0 0 12px rgba(153,246,228,0.9)' }} />
-              <span style={{ position: 'absolute', width: '8px', height: '8px', borderRadius: '50%', background: '#c4b5fd', right: '29px', top: '34px', boxShadow: '0 0 12px rgba(196,181,253,0.9)' }} />
+              <span style={{ position: 'absolute', width: '9px', height: '9px', borderRadius: '50%', background: '#99f6e4', left: '33px', top: '41px', boxShadow: '0 0 14px rgba(153,246,228,0.95)' }} />
+              <span style={{ position: 'absolute', width: '9px', height: '9px', borderRadius: '50%', background: '#c4b5fd', right: '33px', top: '41px', boxShadow: '0 0 14px rgba(196,181,253,0.95)' }} />
             </div>
           </div>
           <p style={{ margin: '0 0 7px', fontSize: '11px', letterSpacing: '0.15em', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
@@ -231,10 +228,10 @@ function ClarkAiContent() {
           </p>
           <h1 className='clark-title'>Clark AI</h1>
           <p style={{ margin: '0 0 10px', fontSize: '14px', color: '#94a3b8' }}>Base-native AI analyst for tokens, wallets, and on-chain risk.</p>
-          <h2 style={{ margin: '0 0 10px', fontSize: '35px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.01em' }}>
+          <h2 style={{ margin: '0 0 12px', fontSize: '40px', fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.015em' }}>
             Analyze <span style={{ color: '#2DD4BF' }}>Base</span> Faster With <span style={{ color: '#f0abfc' }}>Clark AI</span>
           </h2>
-          <p style={{ margin: 0, fontSize: '14px', color: '#cbd5e1', maxWidth: '760px', marginInline: 'auto', lineHeight: 1.55 }}>
+          <p style={{ margin: 0, fontSize: '15px', color: '#cbd5e1', maxWidth: '780px', marginInline: 'auto', lineHeight: 1.58 }}>
             Analyze tokens, wallets, contract risk, liquidity, and market activity across Base in seconds.
           </p>
         </div>
@@ -247,32 +244,32 @@ function ClarkAiContent() {
                 className='clark-action-card'
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                  <span style={{ width: '28px', height: '28px', borderRadius: '9px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', color: '#99f6e4' }}>
+                  <span style={{ width: '42px', height: '42px', borderRadius: '12px', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.16)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', color: '#99f6e4' }}>
                     {item.icon}
                   </span>
-                  <span style={{ fontSize: '13px', color: '#64748b' }}>↗</span>
+                  <span style={{ fontSize: '16px', color: '#94a3b8' }}>↗</span>
                 </div>
-                <p style={{ margin: '0 0 7px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>{item.title}</p>
-                <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.45 }}>{item.description}</p>
+                <p style={{ margin: '0 0 8px', fontSize: '16px', fontWeight: 700, color: '#e2e8f0' }}>{item.title}</p>
+                <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.55 }}>{item.description}</p>
               </button>
             ))}
         </div>
 
         <div className='clark-chat-wrap'>
-          <div style={{ padding: '12px 14px 0' }}>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
+          <div style={{ padding: '14px 16px 0' }}>
+            <div style={{ display: 'flex', gap: '9px', flexWrap: 'wrap', marginBottom: '10px' }}>
               <button onClick={handleImportFromRadar} style={chipButtonStyle}>Import from Base Radar</button>
               <button onClick={handlePasteContract} style={chipButtonStyle}>Paste Contract</button>
               <button onClick={handlePasteWallet} style={chipButtonStyle}>Paste Wallet</button>
             </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '10px' }}>
               {importedPrompt && (
-                <span style={{ fontSize: '10px', color: '#c4b5fd', border: '1px solid rgba(196,181,253,0.32)', borderRadius: '99px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono)' }}>
+                <span style={{ fontSize: '10px', color: '#c4b5fd', border: '1px solid rgba(196,181,253,0.40)', borderRadius: '99px', padding: '4px 10px', fontFamily: 'var(--font-plex-mono)', background: 'rgba(196,181,253,0.10)' }}>
                   Imported from Base Radar
                 </span>
               )}
               {activeMode && (
-                <span style={{ fontSize: '10px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.30)', borderRadius: '99px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono)' }}>
+                <span style={{ fontSize: '10px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.38)', borderRadius: '99px', padding: '4px 10px', fontFamily: 'var(--font-plex-mono)', background: 'rgba(45,212,191,0.10)' }}>
                   Mode: {activeMode}
                 </span>
               )}
@@ -299,13 +296,13 @@ function ClarkAiContent() {
 
 const chipButtonStyle: CSSProperties = {
   borderRadius: '999px',
-  border: '1px solid rgba(255,255,255,0.14)',
-  background: 'rgba(255,255,255,0.03)',
+  border: '1px solid rgba(255,255,255,0.20)',
+  background: 'linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.04))',
   color: '#cbd5e1',
   fontSize: '10px',
   fontWeight: 700,
   letterSpacing: '0.08em',
-  padding: '6px 10px',
+  padding: '7px 11px',
   textTransform: 'uppercase',
   fontFamily: 'var(--font-plex-mono)',
   cursor: 'pointer',
