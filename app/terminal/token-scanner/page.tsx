@@ -415,7 +415,7 @@ export default function TerminalTokenScanner() {
               onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)' }}
             />
             <button
-              onClick={handleScan}
+              onClick={() => handleScan()}
               disabled={loading || !input.trim()}
               style={{
                 padding: '12px 28px', borderRadius: '10px', border: 'none',
