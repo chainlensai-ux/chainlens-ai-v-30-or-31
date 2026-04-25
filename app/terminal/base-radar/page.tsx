@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -307,6 +308,7 @@ function TokenCard({
   const buyTax = token.honeypot?.buyTax
   const sellTax = token.honeypot?.sellTax
   const securityVerified = token.honeypot?.simulationSuccess
+  const avatarText = (token.symbol || token.name || '?').slice(0, 2).toUpperCase()
 
   return (
     <div
@@ -316,8 +318,8 @@ function TokenCard({
       style={{
         background: hovered ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.03)',
         border: `1px solid ${hovered ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.08)'}`,
-        borderRadius: '12px',
-        padding: '14px 16px',
+        borderRadius: '14px',
+        padding: '14px',
         cursor: 'pointer',
         transition: 'background 0.15s, border-color 0.15s',
         animation: 'radarSlideIn 0.35s ease both',
@@ -338,13 +340,34 @@ function TokenCard({
         }}
       />
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '4px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
-          <span style={{ fontSize: '14px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {token.name}
-          </span>
-          <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
-          <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
+          <div style={{
+            width: '28px',
+            height: '28px',
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '10px',
+            fontWeight: 700,
+            color: '#e2e8f0',
+            background: 'linear-gradient(135deg, rgba(45,212,191,0.25), rgba(168,85,247,0.22))',
+            border: '1px solid rgba(255,255,255,0.16)',
+            fontFamily: 'var(--font-plex-mono)',
+            flexShrink: 0,
+          }}>
+            {avatarText}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '14px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {token.name}
+              </span>
+              <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
+            </div>
+            <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
+          </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
@@ -357,13 +380,31 @@ function TokenCard({
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '10px', marginBottom: '8px' }}>
-        <Metric label='Score' value={String(token.radarScore)} accent={token.radarScore >= 80 ? '#22d3ee' : '#e2e8f0'} />
-        <Metric label='Liquidity' value={fmtUSD(token.liquidityUsd)} />
-        <Metric label='Vol 24h' value={fmtUSD(token.volume24h)} />
-        <Metric label='FDV' value={token.fdvUsd ? fmtUSD(token.fdvUsd) : 'N/A'} />
-        <Metric label='Momentum' value={token.momentum} />
-        <Metric label='Tax' value={securityVerified ? `B ${buyTax?.toFixed(1) ?? '0'} / S ${sellTax?.toFixed(1) ?? '0'}%` : 'Unknown'} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px', gap: '10px', marginBottom: '8px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '10px' }}>
+          <Metric label='Score' value={String(token.radarScore)} accent={token.radarScore >= 80 ? '#22d3ee' : '#e2e8f0'} />
+          <Metric label='Liquidity' value={fmtUSD(token.liquidityUsd)} />
+          <Metric label='Vol 24h' value={fmtUSD(token.volume24h)} />
+          <Metric label='FDV' value={token.fdvUsd ? fmtUSD(token.fdvUsd) : 'N/A'} />
+          <Metric label='Momentum' value={token.momentum} />
+          <Metric label='Tax' value={securityVerified ? `B ${buyTax?.toFixed(1) ?? '0'} / S ${sellTax?.toFixed(1) ?? '0'}%` : 'Unknown'} />
+        </div>
+        <div style={{
+          borderRadius: '10px',
+          border: '1px solid rgba(255,255,255,0.08)',
+          background: 'linear-gradient(180deg, rgba(45,212,191,0.06), rgba(168,85,247,0.04))',
+          padding: '6px',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+        }}>
+          <svg viewBox='0 0 110 32' width='100%' height='24' aria-hidden='true'>
+            <path d='M2 22 L18 19 L33 21 L46 14 L62 16 L78 9 L93 13 L108 8' stroke='rgba(45,212,191,0.8)' strokeWidth='1.5' fill='none' />
+          </svg>
+          <span style={{ fontSize: '8px', color: '#475569', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>
+            DECORATIVE
+          </span>
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '6px', marginBottom: '8px' }}>
@@ -461,21 +502,42 @@ function Metric({ label, value, accent }: { label: string; value: string; accent
 
 function PulseStrip({ summary }: { summary: RadarSummary }) {
   const items = [
-    ['New pools', String(summary.newPools)],
-    ['Worth watching', String(summary.worthWatching)],
-    ['High momentum', String(summary.highMomentum)],
-    ['Unverified', String(summary.unverified)],
-    ['Avg liquidity', fmtUSD(summary.averageLiquidity)],
-    ['Highest liquidity', summary.highestLiquidityToken],
-    ['Hottest score', summary.hottestToken],
+    { label: 'New Pools', value: String(summary.newPools), icon: '◈', glow: 'rgba(45,212,191,0.24)' },
+    { label: 'Worth Watching', value: String(summary.worthWatching), icon: '◎', glow: 'rgba(56,189,248,0.22)' },
+    { label: 'High Momentum', value: String(summary.highMomentum), icon: '↗', glow: 'rgba(139,92,246,0.22)' },
+    { label: 'Unverified', value: String(summary.unverified), icon: '◌', glow: 'rgba(244,114,182,0.20)' },
+    { label: 'Avg Liquidity', value: fmtUSD(summary.averageLiquidity), icon: '$', glow: 'rgba(45,212,191,0.24)' },
+    { label: 'Highest Liquidity', value: summary.highestLiquidityToken, icon: '◉', glow: 'rgba(168,85,247,0.22)' },
+    { label: 'Hottest Score', value: summary.hottestToken, icon: '✦', glow: 'rgba(236,72,153,0.22)' },
   ]
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: '8px', marginBottom: '14px' }}>
-      {items.map(([label, value]) => (
-        <div key={label} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '10px' }}>
-          <p style={{ margin: '0 0 4px', fontSize: '8px', color: '#3a5268', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
-          <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}</p>
+      {items.map((item) => (
+        <div key={item.label} style={{
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))',
+          border: '1px solid rgba(255,255,255,0.09)',
+          borderRadius: '10px',
+          padding: '10px',
+          boxShadow: `inset 0 1px 0 rgba(255,255,255,0.03), 0 0 22px ${item.glow}`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+            <span style={{
+              width: '16px',
+              height: '16px',
+              borderRadius: '5px',
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '9px',
+              color: '#99f6e4',
+              fontFamily: 'var(--font-plex-mono)',
+            }}>{item.icon}</span>
+            <p style={{ margin: 0, fontSize: '8px', color: '#3a5268', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{item.label}</p>
+          </div>
+          <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{item.value}</p>
         </div>
       ))}
     </div>
@@ -489,6 +551,20 @@ function StatsPanel({ summary, fetchedAt, loading }: { summary: RadarSummary; fe
         <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 12px' }}>
           Radar Stats
         </p>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '10px' }}>
+          <div style={{
+            width: '88px',
+            height: '88px',
+            borderRadius: '50%',
+            border: '1px solid rgba(45,212,191,0.30)',
+            background: 'radial-gradient(circle at center, rgba(45,212,191,0.16), rgba(15,23,42,0.3) 65%)',
+            boxShadow: '0 0 20px rgba(45,212,191,0.18)',
+            position: 'relative',
+          }}>
+            <div style={{ position: 'absolute', inset: '14px', borderRadius: '50%', border: '1px dashed rgba(168,85,247,0.30)' }} />
+            <div style={{ position: 'absolute', left: '50%', top: '50%', width: '4px', height: '4px', borderRadius: '50%', background: '#99f6e4', transform: 'translate(-50%, -50%)' }} />
+          </div>
+        </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <Stat label='New pools / tokens' value={String(summary.newPools)} loading={loading} />
@@ -518,6 +594,38 @@ function StatsPanel({ summary, fetchedAt, loading }: { summary: RadarSummary; fe
             {src}
           </div>
         ))}
+      </div>
+
+      <div style={{
+        background: 'linear-gradient(180deg, rgba(168,85,247,0.10), rgba(45,212,191,0.08))',
+        border: '1px solid rgba(255,255,255,0.10)',
+        borderRadius: '12px',
+        padding: '14px',
+      }}>
+        <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>
+          Upgrade to Pro
+        </p>
+        <p style={{ margin: '0 0 10px', fontSize: '10px', color: '#cbd5e1', lineHeight: 1.4 }}>
+          Unlock advanced filters, alerts, and AI insights.
+        </p>
+        <Link href='/pricing' style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '6px 10px',
+          borderRadius: '8px',
+          border: '1px solid rgba(45,212,191,0.35)',
+          background: 'rgba(45,212,191,0.14)',
+          color: '#99f6e4',
+          textDecoration: 'none',
+          fontSize: '10px',
+          fontWeight: 700,
+          letterSpacing: '0.08em',
+          fontFamily: 'var(--font-plex-mono)',
+          textTransform: 'uppercase',
+        }}>
+          Upgrade Now
+        </Link>
       </div>
     </div>
   )
