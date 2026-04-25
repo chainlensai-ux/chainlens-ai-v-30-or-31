@@ -435,7 +435,7 @@ function TokenCard({
       )}
 
       <p style={{ fontSize: '10px', color: '#64748b', margin: '0 0 8px', lineHeight: 1.45, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', fontStyle: 'italic' }}>
-        “{token.clarkSignal}”
+        “{token.clarkVerdict ?? token.clarkSignal}”
       </p>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
