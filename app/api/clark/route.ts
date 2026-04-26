@@ -451,21 +451,133 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
     else if (!ctx.deployerKnown && (ctx.linkedWallets ?? 0) === 0) verdict = "UNKNOWN";
   }
 
-  const read = capWords(isDevWalletMode ? buildDevWalletRead(ctx, verdict) : pickRead(text), 35);
-  const keySignals = pickBullets(text, ["key signals", "signals", "strengths"], 3, isDevWalletMode ? buildDevWalletSignals(ctx) : []);
-  const risks = pickBullets(text, ["risks", "risk flags", "concerns"], 3, isDevWalletMode ? buildDevWalletRisks(ctx) : []);
-  const nextAction = capWords(pickNextAction(text, verdict), 25);
-
-  const formatted =
-    `Verdict: ${verdict}\n` +
-    `Confidence: ${confidence}\n\n` +
-    `Read:\n${read}\n\n` +
-    `Key signals:\n${toBullets(keySignals)}\n\n` +
-    `Risks:\n${toBullets(risks)}\n\n` +
-    `Next action:\n${nextAction}`;
+  const formatted = normalizeClarkOutput({
+    text,
+    prompt,
+    userContent,
+    verdict,
+    confidence,
+    isDevWalletMode,
+    ctx,
+  });
 
   if (deepMode) return formatted;
   return capWords(formatted, 150);
+}
+
+function normalizeClarkOutput(input: {
+  text: string;
+  prompt: string;
+  userContent: string;
+  verdict: "AVOID" | "WATCH" | "SCAN DEEPER" | "TRUSTWORTHY" | "UNKNOWN";
+  confidence: string;
+  isDevWalletMode: boolean;
+  ctx: ClarkContextExtract;
+}): string {
+  const normalizedText = input.text
+    .replace(/\*\*/g, "")
+    .replace(/\r/g, "")
+    .replace(/[–—]/g, "-")
+    .trim();
+
+  const read = capWords(
+    input.isDevWalletMode ? buildDevWalletRead(input.ctx, input.verdict) : buildCleanRead(normalizedText),
+    35
+  );
+  const ctxSignals = deriveContextSignals(input.userContent, input.isDevWalletMode ? buildDevWalletSignals(input.ctx) : []);
+  const ctxRisks = deriveContextRisks(input.userContent, input.isDevWalletMode ? buildDevWalletRisks(input.ctx) : []);
+  const proseSignals = pickBullets(normalizedText, ["key signals", "signals", "strengths"], 3, []);
+  const proseRisks = pickBullets(normalizedText, ["risks", "risk flags", "concerns"], 3, []);
+  const inferred = inferBulletsFromProse(normalizedText);
+
+  const keySignals = uniqueBullets([...ctxSignals, ...proseSignals, ...inferred.signals]).slice(0, 3);
+  const risks = uniqueBullets([...ctxRisks, ...proseRisks, ...inferred.risks]).slice(0, 3);
+  const nextAction = capWords(cleanLine(pickNextAction(normalizedText, input.verdict)), 25);
+  const confidence = normalizeConfidence(input.confidence, normalizedText);
+
+  const safeSignals = keySignals.length > 0 ? keySignals : ["Verified data shows mixed but usable token signals."];
+  const safeRisks = risks.length > 0 ? risks : ["Some important risk fields are still unverified."];
+
+  return (
+    `Verdict: ${input.verdict}\n` +
+    `Confidence: ${confidence}\n\n` +
+    `Read:\n${read}\n\n` +
+    `Key signals:\n${toBullets(safeSignals)}\n\n` +
+    `Risks:\n${toBullets(safeRisks)}\n\n` +
+    `Next action:\n${nextAction}`
+  );
+}
+
+function normalizeConfidence(confidence: string, text: string): "Low" | "Medium" | "High" {
+  const c = `${confidence} ${text}`.toLowerCase();
+  if (/\bhigh\b/.test(c) && !/medium-high|high-medium/.test(c)) return "High";
+  if (/medium-high|high-medium/.test(c)) return "Medium";
+  if (/\blow\b/.test(c)) return "Low";
+  return "Medium";
+}
+
+function cleanLine(line: string): string {
+  return line
+    .replace(/\*\*/g, "")
+    .replace(/\b(verdict|confidence|read|key signals|risks|next action)\s*:/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildCleanRead(text: string): string {
+  const readSection = extractSection(text, "Read:", ["Key signals:", "Risks:", "Next action:"]);
+  const source = readSection || text;
+  const cleaned = source
+    .split("\n")
+    .map(cleanLine)
+    .filter(Boolean)
+    .filter(l => !/^(avoi|watch|scan deeper|trustworthy|unknown)\b/i.test(l))
+    .join(" ");
+  return toSentencePair(cleaned || "Not enough verified data to make a strong call.");
+}
+
+function uniqueBullets(items: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const cleaned = cleanLine(item).replace(/^[\-\u2022]\s*/, "");
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    if (key.includes("not enough verified data")) continue;
+    seen.add(key);
+    out.push(capWords(cleaned, 12));
+  }
+  return out;
+}
+
+function deriveContextSignals(userContent: string, seed: string[]): string[] {
+  const out = [...seed];
+  if (/owner_renounced["']?\s*:\s*["']?1/.test(userContent)) out.push("Owner appears renounced");
+  if (/is_open_source["']?\s*:\s*["']?1/.test(userContent)) out.push("Open-source contract");
+  if (/buy_tax["']?\s*:\s*["']?0/.test(userContent) && /sell_tax["']?\s*:\s*["']?0/.test(userContent)) out.push("0% buy and sell tax");
+  if (/is_honeypot["']?\s*:\s*["']?0/.test(userContent)) out.push("Honeypot not flagged");
+  return out;
+}
+
+function deriveContextRisks(userContent: string, seed: string[]): string[] {
+  const out = [...seed];
+  if (!/lpLocked|lpLockDataAvailable|liquidity_locked/.test(userContent)) out.push("LP lock or control is unverified");
+  if (/holder data available\s*:\s*false/i.test(userContent) || !/token_holders|holders/i.test(userContent)) out.push("Holder distribution needs review");
+  if (!/linked wallets\s*:\s*0/i.test(userContent)) out.push("Linked-wallet behavior needs review");
+  return out;
+}
+
+function inferBulletsFromProse(text: string): { signals: string[]; risks: string[] } {
+  const lines = text.split("\n").map(cleanLine).filter(Boolean);
+  const signals: string[] = [];
+  const risks: string[] = [];
+  for (const line of lines) {
+    const l = line.toLowerCase();
+    if (/(open.source|renounced|no mint|0% buy|0% sell|honeypot not|liquidity|volume)/.test(l)) signals.push(line);
+    if (/(unverified|needs review|thin|volatile|lp lock|holder|linked-wallet|risk)/.test(l)) risks.push(line);
+  }
+  return { signals, risks };
 }
 
 function blockIsMeaningful(block: string): boolean {
