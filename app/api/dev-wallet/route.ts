@@ -77,16 +77,41 @@ async function getAssetTransfers(params: Record<string, unknown>): Promise<Alche
 }
 
 // ─── Step 1 — Find likely deployer ───────────────────────────────────────
-// We cannot confirm the true deployer without a block explorer (no API key
-// configured). Instead, we identify the most frequent `from` address among
-// the earliest transactions *involving* this contract. This is a heuristic,
-// not a cryptographic guarantee — confidence is always "medium" at best.
+// Primary: Alchemy getContractCreation REST endpoint (high confidence).
+// Fallback: earliest asset transfer heuristic (medium confidence).
 
 async function findDeployer(contract: string): Promise<{
   address: string | null
   confidence: 'high' | 'medium' | 'low'
-  methodUsed: 'earliest_transfer_fallback' | 'unknown'
+  methodUsed: 'alchemy_contract_creation' | 'alchemy_earliest_transfer_fallback' | 'unknown'
 }> {
+  // Try Alchemy getContractCreation REST endpoint
+  try {
+    const res = await fetch(
+      `${ALCHEMY_BASE_URL}/getContractCreation?contractAddresses[]=${contract}`,
+      { cache: 'no-store' }
+    )
+    if (res.ok) {
+      const data = await res.json() as Array<{
+        contractAddress: string
+        creatorAddress: string
+        txHash: string
+      }>
+      if (Array.isArray(data) && data.length > 0) {
+        const entry =
+          data.find(e => e.contractAddress?.toLowerCase() === contract.toLowerCase()) ?? data[0]
+        if (entry?.creatorAddress) {
+          return {
+            address: entry.creatorAddress.toLowerCase(),
+            confidence: 'high',
+            methodUsed: 'alchemy_contract_creation',
+          }
+        }
+      }
+    }
+  } catch { /* fall through to heuristic */ }
+
+  // Fallback: most frequent sender among earliest inbound transfers
   const transfers = await getAssetTransfers({
     fromBlock: '0x0',
     toBlock: 'latest',
@@ -112,7 +137,7 @@ async function findDeployer(contract: string): Promise<{
   const topFrom = [...fromCounts.entries()].sort((a, b) => b[1] - a[1])[0]
   const address = topFrom?.[0] ?? transfers[0]?.from?.toLowerCase() ?? null
 
-  return { address, confidence: 'medium', methodUsed: 'earliest_transfer_fallback' }
+  return { address, confidence: 'medium', methodUsed: 'alchemy_earliest_transfer_fallback' }
 }
 
 // ─── Step 2 — Linked wallets ──────────────────────────────────────────────
@@ -134,7 +159,7 @@ async function findLinkedWallets(
     fromAddress: deployer,
     category: ['external'],
     order: 'asc',
-    maxCount: '0x32',
+    maxCount: '0x64', // cap at 100 transfers
     withMetadata: true,
   })
 
@@ -231,15 +256,105 @@ async function getSupplyData(
   }
 }
 
-// ─── Step 4 — Previous projects ───────────────────────────────────────────
-// A block explorer API key is required to enumerate past contract
-// deployments. Without one we return an honest empty result.
+// ─── Step 4 — Previous activity via GoldRush/Covalent ────────────────────
+// Uses deployer transaction history to detect prior contract deployments.
+// No block explorer API key required.
 
-function getPreviousProjectsResult(): {
-  previousDeploymentsAvailable: boolean
+async function getPreviousActivity(deployer: string | null): Promise<{
+  previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
-} {
-  return { previousDeploymentsAvailable: false, previousProjects: [] }
+  warning: string | null
+}> {
+  if (!deployer) {
+    return {
+      previousActivityAvailable: false,
+      previousProjects: [],
+      warning: 'Previous activity unavailable — likely deployer address could not be identified.',
+    }
+  }
+
+  const apiKey = process.env.COVALENT_API_KEY
+  if (!apiKey) {
+    return {
+      previousActivityAvailable: false,
+      previousProjects: [],
+      warning: 'Previous deployment history unavailable from current Alchemy/GoldRush data.',
+    }
+  }
+
+  try {
+    const res = await fetch(
+      `${COVALENT_BASE_URL}/base-mainnet/address/${deployer}/transactions_v3/?page-size=50&key=${apiKey}`,
+      { cache: 'no-store' }
+    )
+    if (!res.ok) {
+      return {
+        previousActivityAvailable: false,
+        previousProjects: [],
+        warning: 'Previous deployment history unavailable from current Alchemy/GoldRush data.',
+      }
+    }
+
+    const json = await res.json() as {
+      data?: {
+        items?: Array<{
+          tx_hash: string
+          block_signed_at: string
+          to_address: string | null
+          successful?: boolean
+        }>
+      }
+    }
+
+    const items = json?.data?.items ?? []
+
+    // Contract creation transactions have to_address === null
+    const creationTxs = items.filter(
+      tx => tx.to_address === null && tx.successful !== false
+    )
+
+    if (creationTxs.length === 0) {
+      return { previousActivityAvailable: true, previousProjects: [], warning: null }
+    }
+
+    // Resolve contract addresses from receipts (cap at 5 RPC calls)
+    const projects: PreviousProject[] = []
+    await Promise.allSettled(
+      creationTxs.slice(0, 5).map(async tx => {
+        try {
+          const receipt = await alchemyRpc('eth_getTransactionReceipt', [tx.tx_hash]) as {
+            contractAddress?: string | null
+          } | null
+          const contractAddr = receipt?.contractAddress?.toLowerCase() ?? null
+          if (contractAddr) {
+            projects.push({
+              contractAddress: contractAddr,
+              name: null,
+              symbol: null,
+              createdAt: tx.block_signed_at,
+              rugFlag: null,
+              rugReason: null,
+            })
+          }
+        } catch { /* skip unresolvable receipts */ }
+      })
+    )
+
+    return {
+      previousActivityAvailable: true,
+      previousProjects: projects,
+      warning:
+        projects.length === 0 && creationTxs.length > 0
+          ? 'Contract deployment transactions detected but addresses could not be resolved from receipts.'
+          : null,
+    }
+  } catch {
+    return {
+      previousActivityAvailable: false,
+      previousProjects: [],
+      warning: 'Previous deployment history unavailable from current Alchemy/GoldRush data.',
+    }
+  }
 }
 
 // ─── Step 5 — Suspicious transfer detection ───────────────────────────────
@@ -251,9 +366,9 @@ function detectSuspiciousTransfers(
   const reasons: string[] = []
 
   if (linkedWallets.length > 5) {
-    reasons.push(`Deployer funded ${linkedWallets.length} separate wallets — broad pre-launch distribution`)
+    reasons.push(`Likely deployer funded ${linkedWallets.length} separate wallets — broad pre-launch distribution`)
   } else if (linkedWallets.length > 2) {
-    reasons.push(`Deployer sent funds to ${linkedWallets.length} separate wallets`)
+    reasons.push(`Likely deployer sent funds to ${linkedWallets.length} separate wallets`)
   }
 
   if (supplyControlled !== null && supplyControlled > 50) {
@@ -262,7 +377,7 @@ function detectSuspiciousTransfers(
     reasons.push(`Deployer + linked wallets hold ~${supplyControlled.toFixed(1)}% of supply — elevated concentration`)
   }
 
-  // Check coordinated funding (multiple wallets funded within 1 hour)
+  // Coordinated funding: multiple wallets funded within 1 hour
   const timestamps = linkedWallets
     .filter(w => w.firstSeen !== null)
     .map(w => new Date(w.firstSeen!).getTime())
@@ -287,16 +402,24 @@ async function getClarkVerdict(data: {
   linkedWallets: LinkedWallet[]
   supplyControlled: number | null
   holderDataAvailable: boolean
+  previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
   suspiciousTransfers: boolean
   suspiciousTransferReasons: string[]
 }): Promise<{ verdict: ClarkVerdict | null; clarkError: string | null }> {
+  const previousActivityLine =
+    !data.previousActivityAvailable
+      ? 'PREVIOUS ACTIVITY: Deployment history unavailable from Alchemy/GoldRush data'
+      : data.previousProjects.length > 0
+        ? `PREVIOUS ACTIVITY: ${data.previousProjects.length} prior contract deployment(s) detected on Base`
+        : 'PREVIOUS ACTIVITY: No prior contract deployments found in recent transaction history'
+
   const prompt =
     `You are Clark — ChainLens AI's onchain security analyst. Analyze this dev wallet scan and return a verdict.\n\n` +
     `CONTRACT: ${data.contractAddress}\n` +
     `CHAIN: Base\n` +
-    `DEPLOYER: ${data.deployerAddress ?? 'Unknown'} (confidence: ${data.deployerConfidence})\n` +
-    `LINKED WALLETS: ${data.linkedWallets.length} wallet(s) received ETH from deployer\n` +
+    `LIKELY DEPLOYER: ${data.deployerAddress ?? 'Unknown'} (detection confidence: ${data.deployerConfidence})\n` +
+    `LINKED WALLETS: ${data.linkedWallets.length} wallet(s) received ETH from the likely deployer\n` +
     (data.linkedWallets.length > 0
       ? `TOP RECIPIENTS: ${data.linkedWallets.slice(0, 3).map(w => `${w.address.slice(0, 8)}… (${w.amountReceived?.toFixed(4) ?? '?'} ${w.asset ?? 'ETH'})`).join(', ')}\n`
       : '') +
@@ -305,19 +428,24 @@ async function getClarkVerdict(data: {
     (data.suspiciousTransferReasons.length > 0
       ? `SUSPICIOUS REASONS: ${data.suspiciousTransferReasons.join('; ')}\n`
       : '') +
-    `PREVIOUS PROJECTS: deployment history unavailable (no block explorer key)\n\n` +
+    `${previousActivityLine}\n\n` +
     `Return ONLY a valid JSON object. No markdown, no code fences:\n\n` +
     `{\n` +
     `  "label": "TRUSTWORTHY" | "WATCH" | "AVOID" | "UNKNOWN",\n` +
     `  "confidence": "high" | "medium" | "low",\n` +
-    `  "summary": "2-3 sentence verdict referencing actual data points",\n` +
+    `  "summary": "2-3 sentence verdict referencing actual data points. Do not claim confirmed deployer unless detection confidence is high. Acknowledge when data is unavailable.",\n` +
     `  "keySignals": ["signal 1", "signal 2"],\n` +
     `  "risks": ["risk 1", "risk 2"],\n` +
     `  "nextAction": "One clear recommended action"\n` +
     `}\n\n` +
-    `Rules: low-confidence deployer data → UNKNOWN or WATCH, not TRUSTWORTHY. ` +
-    `supply >30% → WATCH or AVOID. linked wallets >5 → WATCH or AVOID. ` +
-    `Be concise and data-driven.`
+    `Rules:\n` +
+    `- medium/low confidence deployer → UNKNOWN or WATCH, not TRUSTWORTHY\n` +
+    `- supply >30% → WATCH or AVOID\n` +
+    `- linked wallets >5 → WATCH or AVOID\n` +
+    `- say "likely deployer" not "confirmed deployer" unless confidence is high\n` +
+    `- do not say "serial rugger" or "previous rugs" without real evidence\n` +
+    `- acknowledge unavailable data honestly\n` +
+    `- be concise and data-driven`
 
   try {
     const msg = await anthropic.messages.create({
@@ -386,9 +514,9 @@ export async function POST(req: Request) {
       await findDeployer(contractAddress)
 
     if (!deployerAddress) {
-      warnings.push('Deployer could not be identified — no historical transactions found yet')
+      warnings.push('Likely deployer could not be identified from available Alchemy data.')
     } else if (deployerConfidence === 'medium') {
-      warnings.push('Deployer identified via earliest-transaction heuristic — not cryptographically confirmed')
+      warnings.push('Likely deployer identified via earliest-transaction heuristic — not cryptographically confirmed')
     }
 
     // Step 2 — Linked wallets
@@ -403,12 +531,13 @@ export async function POST(req: Request) {
     const { holderDataAvailable, supplyControlled, matchedHolderWallets } =
       await getSupplyData(contractAddress, deployerAddress, linkedWallets)
     if (!holderDataAvailable) {
-      warnings.push('Holder distribution data unavailable from Covalent')
+      warnings.push('Holder distribution unavailable from current GoldRush/Alchemy data.')
     }
 
-    // Step 4 — Previous projects
-    const { previousDeploymentsAvailable, previousProjects } = getPreviousProjectsResult()
-    warnings.push('Previous deployment history unavailable — block explorer API key not configured')
+    // Step 4 — Previous activity
+    const { previousActivityAvailable, previousProjects, warning: activityWarning } =
+      await getPreviousActivity(deployerAddress)
+    if (activityWarning) warnings.push(activityWarning)
 
     // Step 5 — Suspicious transfers
     const { suspiciousTransfers, suspiciousTransferReasons } =
@@ -422,6 +551,7 @@ export async function POST(req: Request) {
       linkedWallets,
       supplyControlled,
       holderDataAvailable,
+      previousActivityAvailable,
       previousProjects,
       suspiciousTransfers,
       suspiciousTransferReasons,
@@ -438,7 +568,7 @@ export async function POST(req: Request) {
       holderDataAvailable,
       supplyControlled,
       matchedHolderWallets,
-      previousDeploymentsAvailable,
+      previousActivityAvailable,
       previousProjects,
       suspiciousTransfers,
       suspiciousTransferReasons,

@@ -50,7 +50,7 @@ interface DevWalletResult {
   holderDataAvailable: boolean
   supplyControlled: number | null
   matchedHolderWallets: MatchedHolder[]
-  previousDeploymentsAvailable: boolean
+  previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
   suspiciousTransfers: boolean
   suspiciousTransferReasons: string[]
@@ -514,7 +514,7 @@ export default function DevWalletPage() {
             )}
 
             {/* Deployer */}
-            <Section title="Deployer Wallet">
+            <Section title={result.deployerConfidence === 'high' ? 'Deployer Wallet' : 'Likely Deployer Wallet'}>
               <Card>
                 <DataRow
                   label="Address"
@@ -682,11 +682,11 @@ export default function DevWalletPage() {
             </Section>
 
             {/* Previous Projects */}
-            <Section title="Previous Projects">
-              {!result.previousDeploymentsAvailable ? (
+            <Section title="Previous Activity / Projects">
+              {!result.previousActivityAvailable ? (
                 <Card>
                   <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    Previous deployment history unavailable — a block explorer API key is required to enumerate past contracts.
+                    Previous deployment history unavailable from current Alchemy/GoldRush data.
                   </p>
                 </Card>
               ) : result.previousProjects.length === 0 ? (
