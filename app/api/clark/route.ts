@@ -52,6 +52,7 @@ type ClarkIntent =
   | "educational"
   | "routing_help"
   | "analysis"
+  | "token_name_lookup"
   | "token_analysis"
   | "wallet_analysis"
   | "dev_wallet"
@@ -99,6 +100,26 @@ function extractAddress(text: string): string | null {
   return match ? match[0] : null;
 }
 
+function idToAddress(id: string): string {
+  const idx = id.indexOf("_");
+  return idx === -1 ? id : id.slice(idx + 1);
+}
+
+function extractTokenLookupQuery(prompt: string): string | null {
+  const t = prompt.trim().toLowerCase();
+  const patterns = [
+    /(?:scan|analyze|analyse|check)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /what about\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /is\s+([a-z0-9._-]{2,32})\s+safe\b/i,
+    /what'?s happening with\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+  ];
+  for (const p of patterns) {
+    const m = t.match(p);
+    if (m?.[1]) return m[1].trim();
+  }
+  return null;
+}
+
 function gtNetwork(chain: SupportedChain): "base" | "eth" {
   return chain === "ethereum" ? "eth" : "base";
 }
@@ -139,7 +160,15 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
     return { intent: "wallet_analysis", address };
   }
   if (/token|contract|scan|analyz|safe|risk|check|verdict/i.test(t)) {
+    if (!address) {
+      const tokenQuery = extractTokenLookupQuery(prompt);
+      if (tokenQuery) return { intent: "token_name_lookup", address: null };
+    }
     return { intent: "analysis", address };
+  }
+  if (!address) {
+    const tokenQuery = extractTokenLookupQuery(prompt);
+    if (tokenQuery) return { intent: "token_name_lookup", address: null };
   }
   return { intent: "unknown", address };
 }
@@ -377,6 +406,42 @@ async function callScanToken(
   } catch {
     return null;
   }
+}
+
+type BaseTokenCandidate = {
+  name: string;
+  symbol: string;
+  contract: string;
+};
+
+async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandidate[]> {
+  const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=base`;
+  const res = await fetch(url, { headers: { accept: "application/json", origin: "https://chainlens.ai" }, cache: "no-store" });
+  if (!res.ok) return [];
+  const json = await res.json().catch(() => ({}));
+  const pools = Array.isArray((json as Record<string, unknown>)?.data) ? (json as { data: unknown[] }).data : [];
+
+  const out: BaseTokenCandidate[] = [];
+  const seen = new Set<string>();
+  for (const raw of pools) {
+    const pool = raw as Record<string, unknown>;
+    const relationships = (pool.relationships ?? {}) as Record<string, unknown>;
+    const baseTokenRel = (relationships.base_token ?? {}) as Record<string, unknown>;
+    const baseTokenData = (baseTokenRel.data ?? {}) as Record<string, unknown>;
+    const tokenId = typeof baseTokenData.id === "string" ? baseTokenData.id : "";
+    const contract = idToAddress(tokenId);
+    if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) continue;
+    if (seen.has(contract.toLowerCase())) continue;
+    seen.add(contract.toLowerCase());
+
+    const attrs = (pool.attributes ?? {}) as Record<string, unknown>;
+    const poolName = typeof attrs.name === "string" ? attrs.name : "";
+    const tokenNameGuess = poolName.split(" / ")[0]?.trim() || contract;
+    const symbolGuess = tokenNameGuess.split(" ").slice(-1)[0] ?? tokenNameGuess;
+    out.push({ name: tokenNameGuess, symbol: symbolGuess.toUpperCase(), contract });
+    if (out.length >= 5) break;
+  }
+  return out;
 }
 
 // Anthropic — injects context as XML blocks so Clark sees structured data
@@ -1353,6 +1418,42 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   if (replyMode === "routing_help") {
     return { feature: "clark-ai", chain, mode: "routing_help", analysis: buildRoutingHelpReply(prompt) };
+  }
+
+  if (intent === "token_name_lookup") {
+    const tokenQuery = extractTokenLookupQuery(prompt) ?? prompt.trim();
+    const candidates = await searchBaseTokenCandidates(tokenQuery);
+    if (candidates.length === 0) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "token_name_lookup",
+        analysis: `I couldn’t find a Base token match for '${tokenQuery}'. Paste the contract address or open Token Scanner.`,
+      };
+    }
+    if (candidates.length > 1) {
+      const options = candidates.slice(0, 3).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "token_name_lookup",
+        analysis: `I found multiple Base matches for '${tokenQuery}'. Pick one:\n${options}\nSend the number or paste the contract.`,
+      };
+    }
+
+    const selected = candidates[0];
+    const tokenData = await callScanToken(selected.contract, "contract", origin);
+    if (!tokenData) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "token_name_lookup",
+        analysis: `I couldn’t find a Base token match for '${tokenQuery}'. Paste the contract address or open Token Scanner.`,
+      };
+    }
+    const context: ClarkContext = { tokenData };
+    const analysis = await callAnthropic(`Analyze Base token ${selected.symbol} (${selected.contract}) and assess current risk.`, context);
+    return { feature: "clark-ai", chain, mode: "analysis", analysis };
   }
 
   if ((replyMode === "analysis" || replyMode === "feature_context") && (intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && !address) {
