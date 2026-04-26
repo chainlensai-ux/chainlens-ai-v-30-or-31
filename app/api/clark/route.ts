@@ -449,11 +449,13 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
 
   const criticalRisk = hasCriticalVerifiedRisk(ctx);
   if (criticalRisk && verdict === "WATCH") verdict = "AVOID";
-  if (isDevWalletMode && !criticalRisk && ctx.explicitVerdict) verdict = ctx.explicitVerdict;
-  if (isDevWalletMode && !criticalRisk && !ctx.explicitVerdict) {
-    if (ctx.suspiciousTransfers === true && (ctx.linkedWallets ?? 0) >= 5) verdict = "AVOID";
-    else if (ctx.deployerKnown && ctx.holderDataAvailable === false) verdict = "WATCH";
-    else if (!ctx.deployerKnown && (ctx.linkedWallets ?? 0) === 0) verdict = "UNKNOWN";
+  if (isDevWalletMode) {
+    const derived = deriveDevWalletVerdict(ctx);
+    if (ctx.explicitVerdict === "AVOID" && criticalRisk) verdict = "AVOID";
+    else if (ctx.explicitVerdict === "UNKNOWN" && derived !== "AVOID") verdict = "WATCH";
+    else if (!ctx.explicitVerdict || ctx.explicitVerdict === "UNKNOWN") verdict = derived;
+    else if (ctx.explicitVerdict === "WATCH" || ctx.explicitVerdict === "AVOID") verdict = criticalRisk ? "AVOID" : ctx.explicitVerdict;
+    else verdict = derived;
   }
 
   const formatted = normalizeClarkOutput({
@@ -696,6 +698,7 @@ type ClarkContextExtract = {
   lpHolderConcentration: number | null
   lpHolderDataAvailable: boolean | null
   supplyControlled: number | null
+  hasAnySecurityOrLiquidityData: boolean
 }
 
 function hasCriticalVerifiedRisk(ctx: ClarkContextExtract): boolean {
@@ -722,11 +725,14 @@ function extractClarkContext(userContent: string): ClarkContextExtract {
   const confM = userContent.match(/\bConfidence\s*:\s*(Low|Medium|High)\b/i);
   const linked = getNum("Linked wallets");
   const suspiciousReasonsNone = /Suspicious reasons\s*:\s*(none|n\/a)/i.test(userContent);
+  const hasDeployerAddress = /\bdeployer(?:\s+wallet|\s+address)?\s*:\s*0x[a-fA-F0-9]{40}\b/i.test(userContent);
+  const hasLiquidityOrSecurityData =
+    /\b(honeypot|buy tax|sell tax|lpLocked|lpLockDataAvailable|lpHolderConcentration|lpHolderDataAvailable|Supply controlled|Holder data available)\s*:/i.test(userContent);
 
   return {
     explicitVerdict: verdictM ? verdictM[1].toUpperCase() as ClarkContextExtract["explicitVerdict"] : null,
     explicitConfidence: confM ? `${confM[1].charAt(0).toUpperCase()}${confM[1].slice(1).toLowerCase()}` as ClarkContextExtract["explicitConfidence"] : null,
-    deployerKnown: !/Likely deployer:\s*(unknown|null|none)/i.test(userContent) && /Likely deployer:/i.test(userContent),
+    deployerKnown: hasDeployerAddress || (!/Likely deployer:\s*(unknown|null|none)/i.test(userContent) && /Likely deployer:/i.test(userContent)),
     linkedWallets: linked,
     holderDataAvailable: getBool("Holder data available"),
     suspiciousTransfers: getBool("Suspicious transfers"),
@@ -739,10 +745,39 @@ function extractClarkContext(userContent: string): ClarkContextExtract {
     lpHolderConcentration: getNum("lpHolderConcentration"),
     lpHolderDataAvailable: getBool("lpHolderDataAvailable"),
     supplyControlled: getNum("Supply controlled"),
+    hasAnySecurityOrLiquidityData: hasLiquidityOrSecurityData,
   };
 }
 
+function deriveDevWalletVerdict(ctx: ClarkContextExtract): "AVOID" | "WATCH" | "UNKNOWN" {
+  if (hasCriticalVerifiedRisk(ctx)) return "AVOID";
+
+  const hasLinkedWalletSignals = (ctx.linkedWallets ?? 0) > 0;
+  const hasUsefulSignal =
+    ctx.deployerKnown ||
+    hasLinkedWalletSignals ||
+    ctx.holderDataAvailable === false ||
+    ctx.explicitConfidence === "Medium" ||
+    ctx.explicitConfidence === "Low" ||
+    (ctx.suspiciousReasonsNone && hasLinkedWalletSignals);
+
+  if (hasUsefulSignal) return "WATCH";
+
+  const noUsefulSignalsAtAll =
+    !ctx.deployerKnown &&
+    !hasLinkedWalletSignals &&
+    ctx.holderDataAvailable !== true &&
+    !ctx.hasAnySecurityOrLiquidityData &&
+    ctx.suspiciousTransfers !== true;
+
+  return noUsefulSignalsAtAll ? "UNKNOWN" : "WATCH";
+}
+
 function buildDevWalletRead(ctx: ClarkContextExtract, verdict: string): string {
+  if (verdict === "WATCH" && ctx.deployerKnown && (ctx.linkedWallets ?? 0) > 0 && ctx.holderDataAvailable === false) {
+    const conf = (ctx.explicitConfidence ?? "Medium").toLowerCase();
+    return `Likely deployer is identified with ${conf} confidence, and ${ctx.linkedWallets} linked wallets were found. Holder distribution is still unavailable, so this is watch-only.`;
+  }
   const deployerLine = ctx.deployerKnown ? "Likely deployer is identified." : "Likely deployer is not identified.";
   const linkedLine = ctx.linkedWallets !== null ? `${ctx.linkedWallets} linked wallets detected.` : "Linked wallet count is not verified.";
   const caution = verdict === "WATCH" ? "Not enough verified data to call it clean." : "This is the main risk.";
@@ -794,7 +829,7 @@ function pickNextAction(text: string, verdict: string): string {
 }
 
 function defaultAction(verdict: string): string {
-  if (verdict === "AVOID") return "Avoid for now. Scan deeper before touching it."
+  if (verdict === "AVOID") return "Avoid until the critical risk is resolved or verified safe."
   if (verdict === "TRUSTWORTHY") return "Watch execution quality and liquidity before entering."
   if (verdict === "SCAN DEEPER") return "Scan deeper before touching it."
   if (verdict === "WATCH") return "Watch only; verify holder distribution and linked-wallet behavior before trusting it."
