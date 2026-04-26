@@ -98,11 +98,11 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, message: text, mode: body.feature, context: null }),
       })
       const json = await res.json()
       const reply = json.ok
-        ? formatResponse(json.data as Record<string, unknown>)
+        ? String((json.data as Record<string, unknown>)?.reply ?? formatResponse(json.data as Record<string, unknown>))
         : (json.error ?? 'Something went wrong.')
 
       setMessages(prev => {
@@ -444,10 +444,9 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
                     fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
                       ? 'var(--font-plex-mono)'
                       : 'var(--font-inter), Inter, sans-serif',
-                    whiteSpace: msg.text.startsWith('{') || msg.text.startsWith('[')
-                      ? 'pre-wrap'
-                      : 'normal',
+                    whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
+                    overflowWrap: 'anywhere',
                   }}>
                     {msg.text === 'Clark is thinking...' ? (
                       <span>
