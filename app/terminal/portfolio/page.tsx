@@ -69,11 +69,11 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
       const res  = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feature: 'clark-ai', prompt }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'portfolio', context: { holdings: h } }),
       })
       const json = await res.json()
       if (json.ok) {
-        setClarkVerdict(json.data?.analysis ?? json.data?.response ?? 'No verdict returned.')
+        setClarkVerdict(json.data?.reply ?? json.data?.analysis ?? json.data?.response ?? 'No verdict returned.')
       } else {
         setClarkError(json.error ?? 'Clark analysis failed.')
       }
