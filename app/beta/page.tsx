@@ -1,13 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 
 const BETA_PASSWORD = 'CHAINLENS2026'
 const ACCESS_KEY = 'chainlens_beta_access'
 
 export default function BetaPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [checking, setChecking] = useState(true)
@@ -24,19 +25,20 @@ export default function BetaPage() {
     const hasAccess = window.sessionStorage.getItem(ACCESS_KEY) === 'granted'
 
     if (hasAccess) {
-      router.replace('/')
+      router.replace(resolveNextPath())
       return
     }
 
     setChecking(false)
-  }, [router])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router, searchParams])
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     if (password.trim() === BETA_PASSWORD) {
       window.sessionStorage.setItem(ACCESS_KEY, 'granted')
-      router.replace('/')
+      router.replace(resolveNextPath())
       return
     }
 
