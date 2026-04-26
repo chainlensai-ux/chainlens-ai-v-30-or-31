@@ -462,7 +462,7 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
   });
 
   if (deepMode) return formatted;
-  return capWords(formatted, 150);
+  return capWordsKeepBreaks(formatted, 150);
 }
 
 function normalizeClarkOutput(input: {
@@ -520,6 +520,8 @@ function cleanLine(line: string): string {
   return line
     .replace(/\*\*/g, "")
     .replace(/\b(verdict|confidence|read|key signals|risks|next action)\s*:/gi, "")
+    .replace(/0x[a-fA-F0-9]{40}/g, "")
+    .replace(/\|\s*/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -532,6 +534,9 @@ function buildCleanRead(text: string): string {
     .map(cleanLine)
     .filter(Boolean)
     .filter(l => !/^(avoi|watch|scan deeper|trustworthy|unknown)\b/i.test(l))
+    .filter(l => !/(price:|\bvolume\b|\bliquidity\b|\bmarket cap\b|\bfdv\b|\b24h\b|\b%\b)/i.test(l))
+    .filter(l => !/\b0x[a-fA-F0-9]{8,}\b/.test(l))
+    .filter(l => l.split(" ").length <= 24)
     .join(" ");
   return toSentencePair(cleaned || "Not enough verified data to make a strong call.");
 }
@@ -822,6 +827,24 @@ function capWords(text: string, maxWords: number): string {
   const words = text.split(/\s+/);
   if (words.length <= maxWords) return text;
   return `${words.slice(0, maxWords).join(" ")}…`;
+}
+
+function capWordsKeepBreaks(text: string, maxWords: number): string {
+  const words = text.trim().split(/\s+/);
+  if (words.length <= maxWords) return text;
+  let count = 0;
+  const out: string[] = [];
+  const parts = text.split(/(\s+)/);
+  for (const part of parts) {
+    if (!part.trim()) {
+      out.push(part);
+      continue;
+    }
+    count += 1;
+    if (count > maxWords) break;
+    out.push(part);
+  }
+  return `${out.join("").trim()}…`;
 }
 
 // ---------- Scanner functions ----------
