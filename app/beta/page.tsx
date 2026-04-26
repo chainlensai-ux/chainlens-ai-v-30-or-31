@@ -26,6 +26,7 @@ export default function BetaPage() {
   const [error, setError] = useState<string | null>(null)
   const [shaking, setShaking] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [hasAccess, setHasAccess] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   function resolveNextPath() {
@@ -218,26 +219,54 @@ export default function BetaPage() {
               </div>
             )}
 
-            <button
-              type="submit"
-              className="beta-btn"
-              disabled={!code.trim()}
-              style={{
-                width: '100%', padding: '12px 16px',
-                borderRadius: '11px', border: 'none',
-                background: code.trim() ? '#2DD4BF' : 'rgba(45,212,191,0.25)',
-                color: code.trim() ? '#04101a' : 'rgba(255,255,255,0.30)',
-                fontSize: '12px', fontWeight: 800,
-                letterSpacing: '0.14em', textTransform: 'uppercase',
-                cursor: code.trim() ? 'pointer' : 'not-allowed',
-                fontFamily: 'var(--font-plex-mono, "IBM Plex Mono", monospace)',
-                boxShadow: code.trim() ? '0 0 20px rgba(45,212,191,0.28), 0 0 8px rgba(45,212,191,0.16)' : 'none',
-                transition: 'background 0.15s, box-shadow 0.15s, color 0.15s, transform 0.10s',
-              }}
-            >
-              Enter
-            </button>
-          </form>
+                <button
+                  type="submit"
+                  className="beta-btn"
+                  disabled={!code.trim()}
+                  style={{
+                    width: '100%', padding: '12px 16px',
+                    borderRadius: '11px', border: 'none',
+                    background: code.trim() ? '#2DD4BF' : 'rgba(45,212,191,0.25)',
+                    color: code.trim() ? '#04101a' : 'rgba(255,255,255,0.30)',
+                    fontSize: '12px', fontWeight: 800,
+                    letterSpacing: '0.14em', textTransform: 'uppercase',
+                    cursor: code.trim() ? 'pointer' : 'not-allowed',
+                    fontFamily: 'var(--font-plex-mono, "IBM Plex Mono", monospace)',
+                    boxShadow: code.trim() ? '0 0 20px rgba(45,212,191,0.28), 0 0 8px rgba(45,212,191,0.16)' : 'none',
+                    transition: 'background 0.15s, box-shadow 0.15s, color 0.15s, transform 0.10s',
+                  }}
+                >
+                  Enter
+                </button>
+              </form>
+            </>
+          ) : (
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#f1f5f9', margin: 0 }}>Beta Unlocked</h1>
+              <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0, lineHeight: 1.65 }}>
+                Welcome to ChainLens beta. Your access is active for this browser session.
+              </p>
+              <button
+                type="button"
+                onClick={handleLock}
+                style={{
+                  marginTop: '8px',
+                  width: '100%', padding: '12px 16px',
+                  borderRadius: '11px',
+                  border: '1px solid rgba(239,68,68,0.30)',
+                  background: 'rgba(239,68,68,0.10)',
+                  color: '#fca5a5',
+                  fontSize: '12px',
+                  fontWeight: 800,
+                  letterSpacing: '0.12em',
+                  textTransform: 'uppercase',
+                  cursor: 'pointer',
+                }}
+              >
+                Lock Beta
+              </button>
+            </div>
+          )}
 
           <div style={{
             position: 'absolute', bottom: 0, left: '15%', right: '15%', height: '1px',
