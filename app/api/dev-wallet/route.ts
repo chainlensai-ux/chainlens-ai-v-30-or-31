@@ -40,7 +40,7 @@ interface PreviousProject {
 }
 
 interface ClarkVerdict {
-  label: 'TRUSTWORTHY' | 'WATCH' | 'AVOID' | 'UNKNOWN'
+  label: 'TRUSTWORTHY' | 'WATCH' | 'AVOID' | 'UNKNOWN' | 'SCAN DEEPER'
   confidence: 'high' | 'medium' | 'low'
   summary: string
   keySignals: string[]
@@ -455,6 +455,30 @@ async function getClarkVerdict(origin: string, data: {
   suspiciousTransferReasons: string[]
   warnings: string[]
 }): Promise<{ verdict: ClarkVerdict | null; clarkError: string | null }> {
+  const normalizeLabel = (value: unknown): ClarkVerdict['label'] | null => {
+    const v = String(value ?? '').trim().toUpperCase().replace(/_/g, ' ')
+    if (v === 'TRUSTWORTHY' || v === 'WATCH' || v === 'AVOID' || v === 'UNKNOWN' || v === 'SCAN DEEPER') return v as ClarkVerdict['label']
+    if (v === 'HIGH RISK') return 'AVOID'
+    if (v === 'LOW CONFIDENCE') return 'UNKNOWN'
+    if (v === 'SCAN DEEPER') return 'SCAN DEEPER'
+    if (v === 'SCANDEEPER' || v === 'SCAN DEEPER') return 'SCAN DEEPER'
+    return null
+  }
+  const normalizeConfidence = (value: unknown): ClarkVerdict['confidence'] => {
+    const v = String(value ?? '').trim().toLowerCase()
+    if (v === 'high') return 'high'
+    if (v === 'low') return 'low'
+    return 'medium'
+  }
+  const parseFallbackLabelFromText = (text: string): ClarkVerdict['label'] | null => {
+    const m = text.match(/\bVerdict:\s*(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/i)
+    return m ? normalizeLabel(m[1]) : null
+  }
+  const parseFallbackConfidenceFromText = (text: string): ClarkVerdict['confidence'] => {
+    const m = text.match(/\bConfidence:\s*(Low|Medium|High)\b/i)
+    return m ? normalizeConfidence(m[1]) : normalizeConfidence(data.deployerConfidence)
+  }
+
   const prompt =
     `MODE: dev-wallet\n` +
     `Analyze this Base token scan and return JSON only.\n` +
@@ -485,19 +509,46 @@ async function getClarkVerdict(origin: string, data: {
     const res = await fetch(`${origin}/api/clark`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feature: 'clark-ai', mode: 'dev-wallet', chain: 'base', prompt, message: prompt, context: data }),
+      body: JSON.stringify({
+        feature: 'clark-ai',
+        mode: 'dev-wallet',
+        chain: 'base',
+        message: prompt,
+        prompt,
+        context: {
+          contractAddress: data.contractAddress,
+          deployerAddress: data.deployerAddress,
+          deployerConfidence: data.deployerConfidence,
+          linkedWallets: data.linkedWallets,
+          suspiciousTransfers: data.suspiciousTransfers,
+          suspiciousTransferReasons: data.suspiciousTransferReasons,
+          holderDataAvailable: data.holderDataAvailable,
+          supplyControlled: data.supplyControlled,
+          previousProjects: data.previousProjects,
+          warnings: data.warnings,
+          computedVerdict: computeRiskLabel({
+            deployerAddress: data.deployerAddress,
+            deployerConfidence: data.deployerConfidence,
+            linkedWallets: data.linkedWallets,
+            suspiciousTransfers: data.suspiciousTransfers,
+            holderDataAvailable: data.holderDataAvailable,
+            supplyControlled: data.supplyControlled,
+          }),
+        },
+      }),
       cache: 'no-store',
     })
 
     if (!res.ok) return { verdict: null, clarkError: 'Clark analysis failed — verify manually.' }
-    const payload = await res.json() as { data?: { analysis?: string; reply?: string } }
-    const text = payload?.data?.reply ?? payload?.data?.analysis ?? ''
-    const jsonMatch = text.match(/\{[\s\S]+\}/)
-    if (!jsonMatch) return { verdict: null, clarkError: 'Clark returned unparseable response' }
+    const payload = await res.json() as { data?: Record<string, unknown> } | string
+    const bodyData = typeof payload === 'string' ? null : (payload?.data ?? null)
+    const text =
+      (typeof bodyData?.reply === 'string' ? bodyData.reply : null) ??
+      (typeof bodyData?.response === 'string' ? bodyData.response : null) ??
+      (typeof bodyData?.message === 'string' ? bodyData.message : null) ??
+      (typeof bodyData?.text === 'string' ? bodyData.text : null) ??
+      (typeof payload === 'string' ? payload : '')
 
-    const parsed = JSON.parse(jsonMatch[0]) as Partial<ClarkVerdict>
-    const LABELS = ['TRUSTWORTHY', 'WATCH', 'AVOID', 'UNKNOWN'] as const
-    const CONFS = ['high', 'medium', 'low'] as const
     const computedLabel = computeRiskLabel({
       deployerAddress: data.deployerAddress,
       deployerConfidence: data.deployerConfidence,
@@ -506,18 +557,17 @@ async function getClarkVerdict(origin: string, data: {
       holderDataAvailable: data.holderDataAvailable,
       supplyControlled: data.supplyControlled,
     })
+    const labelFromField = normalizeLabel(bodyData?.verdict)
+    const confidenceFromField = normalizeConfidence(bodyData?.confidence)
+    const labelFromText = parseFallbackLabelFromText(text)
+    const confidenceFromText = parseFallbackConfidenceFromText(text)
+    const finalLabel = labelFromField ?? labelFromText ?? computedLabel
+    const finalConfidence = confidenceFromField ?? confidenceFromText
 
-    let summary = sanitizeClarkText([typeof parsed.summary === 'string' ? parsed.summary : 'Analysis unavailable.'], {
-      holderDataAvailable: data.holderDataAvailable,
-      supplyControlled: data.supplyControlled,
-      liquidityDataAvailable: data.liquidityDataAvailable,
-      securityDataAvailable: data.securityDataAvailable,
-    })[0]
-    if ((!data.holderDataAvailable || data.supplyControlled === null) && !summary.includes('Holder distribution unavailable')) {
-      summary = `${summary} Holder distribution unavailable, so supply control cannot be confirmed.`
-    }
-    if (!data.liquidityDataAvailable && !summary.includes('Liquidity/LP lock data unavailable')) {
-      summary = `${summary} Liquidity/LP lock data unavailable from current scan.`
+    let parsed: Partial<ClarkVerdict> = {}
+    const jsonMatch = text.match(/\{[\s\S]+\}/)
+    if (jsonMatch) {
+      try { parsed = JSON.parse(jsonMatch[0]) as Partial<ClarkVerdict> } catch {}
     }
     if (!data.securityDataAvailable && !summary.includes('Security scan unavailable')) {
       summary = `${summary} Security scan unavailable from current data sources.`
@@ -541,13 +591,56 @@ async function getClarkVerdict(origin: string, data: {
       }
     )
 
+    const fallbackSignals = sanitizeClarkText([
+      data.deployerAddress ? 'Likely deployer identified' : 'Likely deployer not confirmed',
+      `Linked wallets detected: ${data.linkedWallets.length}`,
+      data.suspiciousTransfers ? 'Suspicious transfers observed' : 'No suspicious transfer pattern confirmed',
+    ], data)
+    const fallbackRisks = sanitizeClarkText([
+      data.holderDataAvailable ? 'Holder distribution available for review' : 'Holder distribution unavailable',
+      data.liquidityDataAvailable ? 'Liquidity data available for review' : 'LP lock/control unverified',
+      ...data.suspiciousTransferReasons.slice(0, 2),
+    ], data)
+
+    let summary = sanitizeClarkText([typeof parsed.summary === 'string' ? parsed.summary : 'Analysis unavailable.'], {
+      holderDataAvailable: data.holderDataAvailable,
+      supplyControlled: data.supplyControlled,
+      liquidityDataAvailable: data.liquidityDataAvailable,
+      securityDataAvailable: data.securityDataAvailable,
+    })[0]
+    if (text && (!summary || summary === 'Analysis unavailable.')) {
+      const clean = text.replace(/\s+/g, ' ').trim()
+      summary = clean.length > 220 ? `${clean.slice(0, 217)}...` : clean
+    }
+    if ((!data.holderDataAvailable || data.supplyControlled === null) && !summary.includes('Holder distribution unavailable')) {
+      summary = `${summary} Holder distribution unavailable, so supply control cannot be confirmed.`
+    }
+    if (!data.liquidityDataAvailable && !summary.includes('Liquidity/LP lock data unavailable')) {
+      summary = `${summary} Liquidity/LP lock data unavailable from current scan.`
+    }
+    if (!data.securityDataAvailable && !summary.includes('Security scan unavailable')) {
+      summary = `${summary} Security scan unavailable from current data sources.`
+    }
+    const keySignals = sanitizeClarkText(
+      Array.isArray(parsed.keySignals) ? parsed.keySignals.map(String) : fallbackSignals,
+      data
+    )
+    const risks = sanitizeClarkText(
+      Array.isArray(parsed.risks) ? parsed.risks.map(String) : fallbackRisks,
+      data
+    )
+
+    if (!text && !labelFromField && !labelFromText) {
+      return { verdict: null, clarkError: 'Clark returned unparseable response' }
+    }
+
     return {
       verdict: {
-        label: LABELS.includes(parsed.label as ClarkVerdict['label']) ? computedLabel : computedLabel,
-        confidence: CONFS.includes(parsed.confidence as ClarkVerdict['confidence']) ? parsed.confidence as ClarkVerdict['confidence'] : 'low',
+        label: finalLabel,
+        confidence: finalConfidence,
         summary,
-        keySignals,
-        risks,
+        keySignals: keySignals.length > 0 ? keySignals : fallbackSignals,
+        risks: risks.length > 0 ? risks : fallbackRisks,
         nextAction: typeof parsed.nextAction === 'string' ? parsed.nextAction : 'Verify manually on an explorer before trading.',
       },
       clarkError: null,

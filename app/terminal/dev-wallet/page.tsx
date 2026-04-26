@@ -5,7 +5,7 @@ import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
-type VerdictLabel = 'TRUSTWORTHY' | 'WATCH' | 'AVOID' | 'UNKNOWN'
+type VerdictLabel = 'TRUSTWORTHY' | 'WATCH' | 'AVOID' | 'UNKNOWN' | 'SCAN DEEPER'
 
 interface LinkedWallet {
   address: string
@@ -64,6 +64,7 @@ interface DevWalletResult {
 const VERDICT_STYLE: Record<VerdictLabel, { color: string; bg: string; border: string }> = {
   TRUSTWORTHY: { color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.25)'  },
   WATCH:       { color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.25)'  },
+  'SCAN DEEPER': { color: '#c4b5fd', bg: 'rgba(196,181,253,0.10)', border: 'rgba(196,181,253,0.30)' },
   AVOID:       { color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.28)' },
   UNKNOWN:     { color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.20)' },
 }
