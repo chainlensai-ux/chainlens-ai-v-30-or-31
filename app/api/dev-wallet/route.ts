@@ -48,6 +48,15 @@ interface ClarkVerdict {
   nextAction: string
 }
 
+interface VerdictSignalInput {
+  deployerAddress: string | null
+  deployerConfidence: 'high' | 'medium' | 'low'
+  linkedWallets: LinkedWallet[]
+  suspiciousTransfers: boolean
+  holderDataAvailable: boolean
+  supplyControlled: number | null
+}
+
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
   const res = await fetch(ALCHEMY_BASE_URL, {
     method: 'POST',
@@ -313,7 +322,7 @@ function detectSuspiciousTransfers(
   const reasons: string[] = []
 
   if (linkedWallets.length >= 5) {
-    reasons.push(`Likely deployer funded ${linkedWallets.length} wallets`) 
+    reasons.push(`Likely deployer funded ${linkedWallets.length} wallets`)
   }
 
   const numericAmounts = linkedWallets.map(w => w.amountReceived).filter((v): v is number => typeof v === 'number')
@@ -340,14 +349,78 @@ function detectSuspiciousTransfers(
   return { suspiciousTransfers: reasons.length > 0, suspiciousTransferReasons: reasons }
 }
 
+function computeRiskLabel(input: VerdictSignalInput): ClarkVerdict['label'] {
+  if (input.suspiciousTransfers && input.linkedWallets.length >= 5) return 'AVOID'
+  if (input.supplyControlled !== null && input.supplyControlled >= 50) return 'AVOID'
+
+  if (!input.deployerAddress && input.linkedWallets.length === 0 && !input.suspiciousTransfers && input.supplyControlled === null) {
+    return 'UNKNOWN'
+  }
+
+  if (input.deployerAddress && (input.deployerConfidence === 'low' || !input.holderDataAvailable)) {
+    return 'WATCH'
+  }
+
+  if (
+    input.deployerAddress &&
+    input.deployerConfidence === 'high' &&
+    !input.suspiciousTransfers &&
+    input.holderDataAvailable &&
+    input.supplyControlled !== null &&
+    input.supplyControlled < 20
+  ) {
+    return 'TRUSTWORTHY'
+  }
+
+  return 'WATCH'
+}
+
+function sanitizeClarkText(
+  lines: string[],
+  data: { holderDataAvailable: boolean; supplyControlled: number | null; liquidityDataAvailable: boolean }
+): string[] {
+  let cleaned = [...lines]
+
+  if (!data.holderDataAvailable || data.supplyControlled === null) {
+    cleaned = cleaned.map(line => {
+      const lower = line.toLowerCase()
+      if (lower.includes('100%') && lower.includes('supply')) {
+        return 'Holder distribution unavailable, so supply control cannot be confirmed.'
+      }
+      if ((lower.includes('creator') || lower.includes('deployer')) && lower.includes('holds') && lower.includes('%')) {
+        return 'Holder distribution unavailable, so supply control cannot be confirmed.'
+      }
+      return line
+    })
+  }
+
+  if (!data.liquidityDataAvailable) {
+    cleaned = cleaned.map(line => {
+      const lower = line.toLowerCase()
+      if (
+        lower.includes('no dex liquidity') ||
+        lower.includes('no active pool') ||
+        lower.includes('no lp lock') ||
+        lower.includes('lp not locked')
+      ) {
+        return 'Liquidity/LP lock data unavailable from current scan.'
+      }
+      return line
+    })
+  }
+
+  return cleaned
+}
+
 async function getClarkVerdict(origin: string, data: {
   contractAddress: string
   deployerAddress: string | null
-  deployerConfidence: string
+  deployerConfidence: 'high' | 'medium' | 'low'
   methodUsed: string
   linkedWallets: LinkedWallet[]
   supplyControlled: number | null
   holderDataAvailable: boolean
+  liquidityDataAvailable: boolean
   previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
   suspiciousTransfers: boolean
@@ -357,7 +430,11 @@ async function getClarkVerdict(origin: string, data: {
   const prompt =
     `MODE: dev-wallet\n` +
     `Analyze this Base token scan and return JSON only.\n` +
-    `Use wording: "likely deployer/owner wallet". Do not claim confirmed deployer.\n` +
+    `Use only the fields below. Keep response short and professional.\n` +
+    `Use wording: "likely deployer/owner wallet". Do not claim confirmed deployer unless confidence is high.\n` +
+    `Do not infer supply concentration from missing holder data.\n` +
+    `Do not infer LP lock status or DEX liquidity from missing liquidity data.\n` +
+    `Output label must be exactly one of: TRUSTWORTHY, WATCH, AVOID, UNKNOWN.\n` +
     `Address: ${data.contractAddress}\n` +
     `Likely deployer: ${data.deployerAddress ?? 'unknown'}\n` +
     `Confidence: ${data.deployerConfidence}\n` +
@@ -365,6 +442,7 @@ async function getClarkVerdict(origin: string, data: {
     `Linked wallets: ${data.linkedWallets.length}\n` +
     `Holder data available: ${data.holderDataAvailable}\n` +
     `Supply controlled: ${data.supplyControlled ?? 'unknown'}\n` +
+    `Liquidity data available: ${data.liquidityDataAvailable}\n` +
     `Previous activity available: ${data.previousActivityAvailable}\n` +
     `Previous activity contracts: ${data.previousProjects.map(p => p.contractAddress).slice(0, 8).join(', ') || 'none'}\n` +
     `Suspicious transfers: ${data.suspiciousTransfers}\n` +
@@ -389,14 +467,50 @@ async function getClarkVerdict(origin: string, data: {
     const parsed = JSON.parse(jsonMatch[0]) as Partial<ClarkVerdict>
     const LABELS = ['TRUSTWORTHY', 'WATCH', 'AVOID', 'UNKNOWN'] as const
     const CONFS = ['high', 'medium', 'low'] as const
+    const computedLabel = computeRiskLabel({
+      deployerAddress: data.deployerAddress,
+      deployerConfidence: data.deployerConfidence,
+      linkedWallets: data.linkedWallets,
+      suspiciousTransfers: data.suspiciousTransfers,
+      holderDataAvailable: data.holderDataAvailable,
+      supplyControlled: data.supplyControlled,
+    })
+
+    let summary = sanitizeClarkText([typeof parsed.summary === 'string' ? parsed.summary : 'Analysis unavailable.'], {
+      holderDataAvailable: data.holderDataAvailable,
+      supplyControlled: data.supplyControlled,
+      liquidityDataAvailable: data.liquidityDataAvailable,
+    })[0]
+    if ((!data.holderDataAvailable || data.supplyControlled === null) && !summary.includes('Holder distribution unavailable')) {
+      summary = `${summary} Holder distribution unavailable, so supply control cannot be confirmed.`
+    }
+    if (!data.liquidityDataAvailable && !summary.includes('Liquidity/LP lock data unavailable')) {
+      summary = `${summary} Liquidity/LP lock data unavailable from current scan.`
+    }
+    const keySignals = sanitizeClarkText(
+      Array.isArray(parsed.keySignals) ? parsed.keySignals.map(String) : [],
+      {
+        holderDataAvailable: data.holderDataAvailable,
+        supplyControlled: data.supplyControlled,
+        liquidityDataAvailable: data.liquidityDataAvailable,
+      }
+    )
+    const risks = sanitizeClarkText(
+      Array.isArray(parsed.risks) ? parsed.risks.map(String) : [],
+      {
+        holderDataAvailable: data.holderDataAvailable,
+        supplyControlled: data.supplyControlled,
+        liquidityDataAvailable: data.liquidityDataAvailable,
+      }
+    )
 
     return {
       verdict: {
-        label: LABELS.includes(parsed.label as ClarkVerdict['label']) ? parsed.label as ClarkVerdict['label'] : 'UNKNOWN',
+        label: LABELS.includes(parsed.label as ClarkVerdict['label']) ? computedLabel : computedLabel,
         confidence: CONFS.includes(parsed.confidence as ClarkVerdict['confidence']) ? parsed.confidence as ClarkVerdict['confidence'] : 'low',
-        summary: typeof parsed.summary === 'string' ? parsed.summary : 'Analysis unavailable.',
-        keySignals: Array.isArray(parsed.keySignals) ? parsed.keySignals.map(String) : [],
-        risks: Array.isArray(parsed.risks) ? parsed.risks.map(String) : [],
+        summary,
+        keySignals,
+        risks,
         nextAction: typeof parsed.nextAction === 'string' ? parsed.nextAction : 'Verify manually on an explorer before trading.',
       },
       clarkError: null,
@@ -466,6 +580,8 @@ export async function POST(req: Request) {
     if (activityWarning) warnings.push(activityWarning)
 
     const previousDeploymentsAvailable = false
+    const liquidityDataAvailable = false
+    warnings.push('Liquidity/LP lock data unavailable from current scan.')
 
     const { suspiciousTransfers, suspiciousTransferReasons } =
       detectSuspiciousTransfers(linkedWallets, supplyControlled)
@@ -479,6 +595,7 @@ export async function POST(req: Request) {
       linkedWallets,
       supplyControlled,
       holderDataAvailable,
+      liquidityDataAvailable,
       previousActivityAvailable,
       previousProjects,
       suspiciousTransfers,
