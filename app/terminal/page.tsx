@@ -31,10 +31,19 @@ function TerminalPageContent() {
           animation: terminalAmbient 5s ease-in-out infinite;
           pointer-events: none;
         }
+        @media (max-width: 900px) {
+          .terminal-shell { flex-direction: column; }
+          .mob-radar {
+            width: 100% !important;
+            max-height: 42vh;
+            border-left: none !important;
+            border-top: 1px solid rgba(123,92,255,0.18);
+          }
+        }
       `}</style>
 
       <div
-        className="flex h-full overflow-hidden"
+        className="flex h-full overflow-hidden terminal-shell"
         style={{ position: 'relative' }}
       >
         {/* Neon ambient glow — fixed, behind everything */}
@@ -59,7 +68,7 @@ function TerminalPageContent() {
           style={{ position: 'relative', zIndex: 1 }}
         >
           <ClarkChat
-            mode="hero"
+            mode="full"
             active={active}
             onTyping={setIsTyping}
             onSend={(msg) => setPendingMessage(msg)}
