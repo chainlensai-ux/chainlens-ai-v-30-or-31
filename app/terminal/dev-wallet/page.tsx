@@ -431,10 +431,20 @@ export default function DevWalletPage() {
           0%, 80%, 100% { opacity: 0.25; transform: scale(0.75); }
           40%            { opacity: 1;    transform: scale(1);    }
         }
+        @media (max-width: 768px) {
+          .devwallet-main { padding: 20px 14px 120px !important; }
+          .devwallet-input-row { flex-direction: column; max-width: 100% !important; }
+          .devwallet-input-row button { width: 100%; }
+          .devwallet-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; max-width: 100% !important; }
+          .devwallet-results { max-width: 100% !important; }
+          .devwallet-linked-row { grid-template-columns: 1fr !important; gap: 8px !important; }
+        }
+        @media (max-width: 520px) {
+          .devwallet-summary-grid { grid-template-columns: 1fr !important; }
+        }
       `}</style>
 
       <div
-        className="mob-scan-main"
         style={{
           flex: 1,
           minWidth: 0,
@@ -446,6 +456,7 @@ export default function DevWalletPage() {
           color: '#e2e8f0',
           WebkitOverflowScrolling: 'touch',
         }}
+        className="mob-scan-main devwallet-main"
       >
         <div style={{
           maxWidth: '1120px',
@@ -502,7 +513,7 @@ export default function DevWalletPage() {
         </div>
 
         {/* Input */}
-        <div style={{ display: 'flex', gap: '10px', maxWidth: '760px', marginBottom: '28px' }}>
+        <div className="devwallet-input-row" style={{ display: 'flex', gap: '10px', maxWidth: '760px', marginBottom: '28px' }}>
           <input
             value={input}
             onChange={e => setInput(e.target.value)}
@@ -560,7 +571,7 @@ export default function DevWalletPage() {
 
         {/* Report Summary */}
         {result && (
-          <div style={{
+          <div className="devwallet-summary-grid" style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(4,minmax(0,1fr))',
             gap: '10px',
@@ -619,7 +630,7 @@ export default function DevWalletPage() {
 
         {/* Results */}
         {result && (
-          <div style={{ maxWidth: '860px' }}>
+          <div className="devwallet-results" style={{ maxWidth: '860px' }}>
             {/* Warnings */}
             <WarningBanner warnings={result.warnings} />
 
@@ -728,7 +739,7 @@ export default function DevWalletPage() {
               {result.matchedHolderWallets.length > 0 && (
                 <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {result.matchedHolderWallets.map((h, i) => (
-                    <div key={i} style={{
+                    <div key={i} className="devwallet-linked-row" style={{
                       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                       padding: '8px 12px',
                       background: 'rgba(255,255,255,0.02)',
