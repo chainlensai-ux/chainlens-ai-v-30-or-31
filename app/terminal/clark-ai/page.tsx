@@ -146,10 +146,10 @@ function ClarkAiContent() {
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(parseClarkPayload(text)),
+        body: JSON.stringify({ ...parseClarkPayload(text), message: text, mode: 'clark-ai', context: null }),
       })
       const json = await res.json()
-      const reply = json.ok ? (json.data?.analysis ?? json.data?.response ?? 'No response.') : (json.error ?? 'Something went wrong.')
+      const reply = json.ok ? (json.data?.reply ?? json.data?.analysis ?? json.data?.response ?? 'No response.') : (json.error ?? 'Something went wrong.')
       setMessages((prev) => {
         const next = [...prev]
         next[next.length - 1] = { role: 'clark', text: String(reply) }

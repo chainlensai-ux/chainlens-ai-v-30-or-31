@@ -485,13 +485,13 @@ async function getClarkVerdict(origin: string, data: {
     const res = await fetch(`${origin}/api/clark`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feature: 'clark-ai', mode: 'dev-wallet', chain: 'base', prompt }),
+      body: JSON.stringify({ feature: 'clark-ai', mode: 'dev-wallet', chain: 'base', prompt, message: prompt, context: data }),
       cache: 'no-store',
     })
 
     if (!res.ok) return { verdict: null, clarkError: 'Clark analysis failed — verify manually.' }
-    const payload = await res.json() as { data?: { analysis?: string } }
-    const text = payload?.data?.analysis ?? ''
+    const payload = await res.json() as { data?: { analysis?: string; reply?: string } }
+    const text = payload?.data?.reply ?? payload?.data?.analysis ?? ''
     const jsonMatch = text.match(/\{[\s\S]+\}/)
     if (!jsonMatch) return { verdict: null, clarkError: 'Clark returned unparseable response' }
 

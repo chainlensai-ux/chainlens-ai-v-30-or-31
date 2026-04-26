@@ -175,10 +175,10 @@ export default function WalletScannerPage() {
       const clarkRes = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feature: 'clark-ai', prompt, walletAddress: address }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'wallet-scanner', walletAddress: address, context: data }),
       })
       const clarkJson = await clarkRes.json()
-      const text = clarkJson.data?.analysis ?? clarkJson.data?.response ?? null
+      const text = clarkJson.data?.reply ?? clarkJson.data?.analysis ?? clarkJson.data?.response ?? null
       if (text) {
         setClarkVerdict(text)
       } else {

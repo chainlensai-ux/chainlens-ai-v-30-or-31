@@ -738,6 +738,7 @@ export default function BaseRadarPage() {
     const sellTax = token.honeypot?.sellTax
     const security = token.honeypot?.simulationSuccess ? 'Verified' : 'Unknown'
     const prompt = [
+      '[mode: base-radar]',
       'Analyze this Base Radar token and give me a clear verdict: WATCH, AVOID, or SCAN DEEPER.',
       `Token: ${token.name} (${token.symbol})`,
       `Contract: ${token.contract}`,

@@ -413,6 +413,7 @@ export default function DevWalletPage() {
   const askClarkHref = useMemo(() => {
     if (!result) return '/terminal/clark-ai'
     const prompt = [
+      '[mode: dev-wallet]',
       `Dev wallet follow-up for ${result.contractAddress}`,
       `Likely deployer: ${result.deployerAddress ?? 'unknown'}`,
       `Confidence: ${result.deployerConfidence}`,

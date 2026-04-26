@@ -114,13 +114,13 @@ export default function ClarkChat({
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, message: text, mode: body.feature, context: null }),
       })
       console.log('Response status:', res.status)
 
       const json = await res.json()
       const reply = json.ok
-        ? formatResponse(json.data as Record<string, unknown>)
+        ? (String((json.data as Record<string, unknown>)?.reply ?? formatResponse(json.data as Record<string, unknown>)))
         : (json.error ?? 'Something went wrong.')
 
       setMessages(prev => {

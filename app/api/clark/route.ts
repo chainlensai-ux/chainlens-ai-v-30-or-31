@@ -25,6 +25,9 @@ type ClarkFeature =
 
 interface ClarkRequestBody {
   feature: ClarkFeature;
+  message?: string;
+  mode?: string;
+  context?: unknown;
   addressOrToken?: string;
   walletAddress?: string;
   tokenAddress?: string;
@@ -53,6 +56,8 @@ type ClarkIntent =
   | "whale_alert"
   | "feature_context"
   | "unknown";
+
+type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback";
 
 // ---------- Chain name maps ----------
 
@@ -1389,6 +1394,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as ClarkRequestBody;
+    if (body.message && !body.prompt) body.prompt = body.message;
     // Derive origin from the incoming request — always correct for any deployment
     const origin = req.nextUrl.origin;
 
@@ -1437,7 +1443,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json(
-      { ok: true, feature: body.feature, data: result },
+      { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) },
       { status: 200 }
     );
   } catch (err: unknown) {
@@ -1445,4 +1451,35 @@ export async function POST(req: NextRequest) {
     console.error("[Clark]", message);
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
+}
+
+function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
+  const obj = (result && typeof result === "object") ? { ...(result as Record<string, unknown>) } : {};
+  const reply =
+    (typeof obj.reply === "string" ? obj.reply : null) ??
+    (typeof obj.analysis === "string" ? obj.analysis : null) ??
+    (typeof obj.response === "string" ? obj.response : null) ??
+    (typeof obj.message === "string" ? obj.message : null) ??
+    (typeof obj.text === "string" ? obj.text : null) ??
+    (typeof result === "string" ? result : "");
+
+  const verdictMatch = reply.match(/\bVerdict:\s*(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/i);
+  const confMatch = reply.match(/\bConfidence:\s*(Low|Medium|High)\b/i);
+  const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : null;
+  const confidence = confMatch ? `${confMatch[1].charAt(0).toUpperCase()}${confMatch[1].slice(1).toLowerCase()}` : null;
+  const source: ClarkSource = verdict
+    ? (body.feature === "clark-ai" ? "feature_context" : "tool_call")
+    : (isCasualAssistantPrompt(body.prompt ?? "") ? "casual" : "fallback");
+
+  return {
+    ...obj,
+    reply,
+    response: reply,
+    message: reply,
+    text: reply,
+    verdict,
+    confidence,
+    mode: body.mode ?? body.feature,
+    source,
+  };
 }
