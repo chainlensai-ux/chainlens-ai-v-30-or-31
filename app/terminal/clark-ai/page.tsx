@@ -231,7 +231,7 @@ function ClarkAiContent() {
           .clark-mode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 680px) {
-          .clark-shell { padding-inline: 14px; }
+          .clark-shell { padding-inline: 14px; padding-bottom: 96px; }
           .clark-mode-grid { grid-template-columns: 1fr; }
           .clark-input-wrap { height: auto !important; border-radius: 14px !important; flex-direction: column; align-items: stretch !important; padding: 10px !important; }
           .clark-send-button { width: 100%; }

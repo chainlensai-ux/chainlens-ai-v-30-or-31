@@ -68,7 +68,7 @@ function TerminalPageContent() {
           style={{ position: 'relative', zIndex: 1 }}
         >
           <ClarkChat
-            mode="hero"
+            mode="full"
             active={active}
             onTyping={setIsTyping}
             onSend={(msg) => setPendingMessage(msg)}
