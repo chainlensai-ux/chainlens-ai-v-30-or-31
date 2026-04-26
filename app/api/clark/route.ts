@@ -334,6 +334,19 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
   const wantsStrictJson = /return\s+only\s+json|strict json|valid json/i.test(prompt);
   if (wantsStrictJson) return raw.trim();
 
+  const featureContext = hasStructuredFeatureContext(userContent, prompt);
+  if (!featureContext) {
+    if (isCasualAssistantPrompt(prompt)) {
+      return buildCasualClarkReply(prompt);
+    }
+    if (isMarketHelperPrompt(prompt)) {
+      return buildMarketHelperReply(prompt);
+    }
+    if (isScanRequestWithoutContext(prompt, userContent)) {
+      return "I need a scan result or valid ChainLens context to make a proper call. Open Token Scanner or paste a full contract or wallet address and I’ll analyze the available data.";
+    }
+  }
+
   const deepMode = /\b(deep|detailed|full breakdown|full detail|long form)\b/i.test(prompt);
   const allowProviderNames = /\b(source|sources|provider|providers)\b/i.test(prompt);
   const text = sanitizeFreeform(raw, { allowProviderNames }).replace(/\r/g, "").trim();
@@ -375,6 +388,78 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
 
   if (deepMode) return formatted;
   return capWords(formatted, 150);
+}
+
+function blockIsMeaningful(block: string): boolean {
+  const trimmed = block.trim();
+  if (!trimmed) return false;
+  if (trimmed === "{}" || trimmed === "[]" || trimmed === "null") return false;
+  return true;
+}
+
+function extractContextBlock(userContent: string, tag: string): string {
+  const m = userContent.match(new RegExp(`<${tag}>\\n([\\s\\S]*?)\\n</${tag}>`, "i"));
+  return m?.[1] ?? "";
+}
+
+function hasStructuredFeatureContext(userContent: string, prompt: string): boolean {
+  const tokenDataBlock = extractContextBlock(userContent, "token_data");
+  const walletScanBlock = extractContextBlock(userContent, "wallet_scan");
+  const analysisBlock = extractContextBlock(userContent, "analysis");
+  const holderBlock = extractContextBlock(userContent, "holder_contract_analysis");
+  const contractRiskBlock = extractContextBlock(userContent, "contract_risk");
+
+  if (blockIsMeaningful(tokenDataBlock)) return true;
+  if (blockIsMeaningful(walletScanBlock)) return true;
+  if (blockIsMeaningful(analysisBlock)) return true;
+  if (blockIsMeaningful(holderBlock)) return true;
+  if (blockIsMeaningful(contractRiskBlock)) return true;
+
+  return /\b(base radar|token scanner|wallet scanner|dev wallet|liquidity safety|whale alerts|pump alerts)\b/i.test(prompt);
+}
+
+function isCasualAssistantPrompt(prompt: string): boolean {
+  const t = prompt.trim().toLowerCase();
+  if (!t) return false;
+  if (/^(hi|hey|hello|yo|gm|sup|what'?s up)\b[!.?]*$/.test(t)) return true;
+  return /\b(help|what can you do|who are you|what is chainlens|how do i scan|how to scan|how does this work)\b/i.test(t);
+}
+
+function isMarketHelperPrompt(prompt: string): boolean {
+  return /\b(what'?s moving on base|trending tokens|what should i scan|explain liquidity risk|what are whales buying|where should i start)\b/i.test(prompt);
+}
+
+function isScanRequestWithoutContext(prompt: string, userContent: string): boolean {
+  const wantsAnalysis = /\b(scan|analyze|analysis|is this safe|safe\?|risk|verdict|check)\b/i.test(prompt);
+  if (!wantsAnalysis) return false;
+  const hasAddress = /0x[a-fA-F0-9]{40}/.test(prompt);
+  const tokenDataBlock = extractContextBlock(userContent, "token_data");
+  const walletScanBlock = extractContextBlock(userContent, "wallet_scan");
+  return !hasAddress && !blockIsMeaningful(tokenDataBlock) && !blockIsMeaningful(walletScanBlock);
+}
+
+function buildCasualClarkReply(prompt: string): string {
+  const t = prompt.toLowerCase();
+  if (/\bwhat can you do|help|who are you\b/.test(t)) {
+    return "I’m Clark — ChainLens on-chain analyst for Base. I can scan token risk, break down wallet behavior, check liquidity safety, flag dev-wallet links, and summarize what’s moving. Drop a contract, wallet, or feature context and I’ll give you a clean read.";
+  }
+  if (/\bwhat is chainlens\b/.test(t)) {
+    return "ChainLens is your Base intelligence terminal. Use Base Radar for fresh movers, Token Scanner for contract checks, Wallet Scanner for behavior reads, and Dev Wallet Detector for deployer risk mapping.";
+  }
+  if (/\bhow do i scan|how to scan\b/.test(t)) {
+    return "Paste a Base contract into Token Scanner for risk + liquidity checks, or a wallet into Wallet Scanner for flow analysis. If you share the result here, I’ll turn it into a sharp action read.";
+  }
+  return "Yo — Clark here. Paste a Base token, wallet, or alert and I’ll break it down. I can scan risk, liquidity, deployer behavior, wallet flows, and Base Radar signals.";
+}
+
+function buildMarketHelperReply(prompt: string): string {
+  if (/\bliquidity risk\b/i.test(prompt)) {
+    return "Liquidity risk is mainly lock status, concentration, and exit depth. Use Liquidity Safety first, then Token Scanner for contract flags. Share the output and I’ll translate it into entry risk.";
+  }
+  if (/\bwhales buying\b/i.test(prompt)) {
+    return "Use Whale Alerts plus Wallet Scanner to see real position changes and transfer patterns. If you paste a wallet or alert context, I’ll break down whether the flow looks accumulation or distribution.";
+  }
+  return "Use Base Radar for fresh launches, Token Scanner for contract checks, and Dev Wallet Detector for deployer and linked-wallet risk. Paste a contract or wallet and I’ll break it down.";
 }
 
 function sanitizeFreeform(raw: string, opts: { allowProviderNames: boolean }): string {
