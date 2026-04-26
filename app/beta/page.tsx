@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import Image from 'next/image'
+import { useRouter, useSearchParams } from 'next/navigation'
 
 const CORRECT_CODE = 'CHAINLENS2026'
 const SESSION_KEY = 'chainlens_beta_access'
@@ -19,6 +20,8 @@ const PARTICLES = Array.from({ length: 48 }, (_, i) => {
 })
 
 export default function BetaPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [shaking, setShaking] = useState(false)
@@ -26,36 +29,36 @@ export default function BetaPage() {
   const [hasAccess, setHasAccess] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  function resolveNextPath() {
+    const next = searchParams.get('next')
+    if (next && next.startsWith('/') && !next.startsWith('//')) return next
+    return '/'
+  }
+
   useEffect(() => {
     const granted = sessionStorage.getItem(SESSION_KEY) === SESSION_VALUE
-    setHasAccess(granted)
-    setLoading(false)
-    if (!granted) {
-      setTimeout(() => inputRef.current?.focus(), 60)
+    if (granted) {
+      router.replace(resolveNextPath())
+      return
     }
-  }, [])
+    setLoading(false)
+    setTimeout(() => inputRef.current?.focus(), 60)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router, searchParams])
 
   function handleSubmit(e?: React.FormEvent) {
     e?.preventDefault()
     const trimmed = code.trim().toUpperCase()
     if (trimmed === CORRECT_CODE) {
       sessionStorage.setItem(SESSION_KEY, SESSION_VALUE)
-      setHasAccess(true)
       setError(null)
+      router.replace(resolveNextPath())
       return
     }
 
     setError('Incorrect beta password.')
     setShaking(true)
     setTimeout(() => setShaking(false), 500)
-  }
-
-  function handleLock() {
-    sessionStorage.removeItem(SESSION_KEY)
-    setHasAccess(false)
-    setCode('')
-    setError(null)
-    setTimeout(() => inputRef.current?.focus(), 60)
   }
 
   if (loading) return null
@@ -170,53 +173,51 @@ export default function BetaPage() {
             </div>
           </div>
 
-          {!hasAccess ? (
-            <>
-              <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#f1f5f9', margin: '0 0 8px', textAlign: 'center', letterSpacing: '-0.01em' }}>
-                Beta Access
-              </h1>
-              <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 32px', textAlign: 'center', lineHeight: 1.6 }}>
-                Enter your beta access code to continue.
-              </p>
+          <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#f1f5f9', margin: '0 0 8px', textAlign: 'center', letterSpacing: '-0.01em' }}>
+            Beta Access
+          </h1>
+          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 32px', textAlign: 'center', lineHeight: 1.6 }}>
+            Enter your beta access code to continue.
+          </p>
 
-              <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <input
-                  ref={inputRef}
-                  className="beta-input"
-                  type="password"
-                  value={code}
-                  onChange={e => { setCode(e.target.value); setError(null) }}
-                  placeholder="Access code"
-                  autoComplete="off"
-                  spellCheck={false}
-                  style={{
-                    width: '100%', padding: '12px 16px',
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.10)',
-                    borderRadius: '11px',
-                    color: '#e2e8f0', fontSize: '15px',
-                    fontFamily: 'var(--font-plex-mono, "IBM Plex Mono", monospace)',
-                    letterSpacing: '0.12em',
-                    outline: 'none', boxSizing: 'border-box',
-                    transition: 'border-color 0.15s, box-shadow 0.15s',
-                  }}
-                />
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <input
+              ref={inputRef}
+              className="beta-input"
+              type="password"
+              value={code}
+              onChange={e => { setCode(e.target.value); setError(null) }}
+              placeholder="Access code"
+              autoComplete="off"
+              spellCheck={false}
+              style={{
+                width: '100%', padding: '12px 16px',
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                borderRadius: '11px',
+                color: '#e2e8f0', fontSize: '15px',
+                fontFamily: 'var(--font-plex-mono, "IBM Plex Mono", monospace)',
+                letterSpacing: '0.12em',
+                outline: 'none', boxSizing: 'border-box',
+                transition: 'border-color 0.15s, box-shadow 0.15s',
+              }}
+            />
 
-                {error && (
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: '7px',
-                    padding: '9px 12px', borderRadius: '9px',
-                    background: 'rgba(239,68,68,0.09)',
-                    border: '1px solid rgba(239,68,68,0.22)',
-                    color: '#fca5a5', fontSize: '12px',
-                  }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
-                      <circle cx="12" cy="12" r="10" stroke="#fca5a5" strokeWidth="2"/>
-                      <path d="M12 8v4M12 16h.01" stroke="#fca5a5" strokeWidth="2" strokeLinecap="round"/>
-                    </svg>
-                    {error}
-                  </div>
-                )}
+            {error && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '7px',
+                padding: '9px 12px', borderRadius: '9px',
+                background: 'rgba(239,68,68,0.09)',
+                border: '1px solid rgba(239,68,68,0.22)',
+                color: '#fca5a5', fontSize: '12px',
+              }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+                  <circle cx="12" cy="12" r="10" stroke="#fca5a5" strokeWidth="2"/>
+                  <path d="M12 8v4M12 16h.01" stroke="#fca5a5" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                {error}
+              </div>
+            )}
 
                 <button
                   type="submit"
