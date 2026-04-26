@@ -326,7 +326,122 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
 
   const data = await res.json();
   const textBlock = (data?.content ?? []).find((b: { type: string }) => b.type === "text");
-  return textBlock?.text ?? JSON.stringify(data);
+  const rawText = textBlock?.text ?? JSON.stringify(data);
+  return enforceClarkResponseFormat(rawText, prompt, userContent);
+}
+
+function enforceClarkResponseFormat(raw: string, prompt: string, userContent: string): string {
+  const wantsStrictJson = /return\s+only\s+json|strict json|valid json/i.test(prompt);
+  if (wantsStrictJson) return raw.trim();
+
+  const deepMode = /\b(deep|detailed|full breakdown|full detail|long form)\b/i.test(prompt);
+  const text = raw.replace(/\r/g, "").trim();
+  const upper = text.toUpperCase();
+
+  const verdictMatch = upper.match(/\b(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/);
+  let verdict = (verdictMatch?.[1] ?? "UNKNOWN") as "AVOID" | "WATCH" | "SCAN DEEPER" | "TRUSTWORTHY" | "UNKNOWN";
+
+  const confidenceMatch = text.match(/\b(Confidence)\s*:\s*(Low|Medium|High)\b/i);
+  const confidence = confidenceMatch?.[2]
+    ? `${confidenceMatch[2].charAt(0).toUpperCase()}${confidenceMatch[2].slice(1).toLowerCase()}`
+    : "Medium";
+
+  const criticalRisk = hasCriticalVerifiedRisk(userContent);
+  if (criticalRisk && verdict === "WATCH") verdict = "AVOID";
+
+  const read = pickRead(text);
+  const keySignals = pickBullets(text, ["key signals", "signals", "strengths"], 3);
+  const risks = pickBullets(text, ["risks", "risk flags", "concerns"], 3);
+  const nextAction = pickNextAction(text, verdict);
+
+  const formatted =
+    `Verdict: ${verdict}\n` +
+    `Confidence: ${confidence}\n\n` +
+    `Read:\n${read}\n\n` +
+    `Key signals:\n${toBullets(keySignals)}\n\n` +
+    `Risks:\n${toBullets(risks)}\n\n` +
+    `Next action:\n${nextAction}`;
+
+  if (deepMode) return formatted;
+  return capWords(formatted, 150);
+}
+
+function hasCriticalVerifiedRisk(userContent: string): boolean {
+  const lower = userContent.toLowerCase();
+  const lpUnlocked = /(lp lock|is_locked|liquidity lock).*(false|0|unlocked)/.test(lower);
+  const lpConcentrated = /(lp holder|single wallet).*(80|8[0-9]|9[0-9]|100)%/.test(lower);
+  const honeypot = /honeypot.*(true|yes|1)/.test(lower);
+  const buyTax = /buy tax[^0-9]*(1[6-9]|[2-9][0-9])/.test(lower);
+  const sellTax = /sell tax[^0-9]*(1[6-9]|[2-9][0-9])/.test(lower);
+  const suspiciousFunding = /suspicious transfers:\s*true/.test(lower) && /linked wallets:\s*([5-9]|[1-9]\d)/.test(lower);
+  return lpUnlocked || lpConcentrated || honeypot || buyTax || sellTax || suspiciousFunding;
+}
+
+function pickRead(text: string): string {
+  const readSection = extractSection(text, "Read:", ["Key signals:", "Risks:", "Next action:"]);
+  if (readSection) return toSentencePair(readSection);
+  return toSentencePair(text);
+}
+
+function pickBullets(text: string, headers: string[], max: number): string[] {
+  for (const h of headers) {
+    const section = extractSection(text, `${h}:`, ["Read:", "Key signals:", "Risks:", "Next action:"]);
+    if (!section) continue;
+    const bullets = section
+      .split("\n")
+      .map(l => l.replace(/^[\-\u2022]\s*/, "").trim())
+      .filter(Boolean)
+      .slice(0, max);
+    if (bullets.length > 0) return bullets;
+  }
+  return ["Not enough verified data to make a strong call."].slice(0, max);
+}
+
+function pickNextAction(text: string, verdict: string): string {
+  const section = extractSection(text, "Next action:", ["Read:", "Key signals:", "Risks:"]);
+  if (section) return section.split("\n").map(s => s.trim()).filter(Boolean)[0] ?? defaultAction(verdict);
+  return defaultAction(verdict);
+}
+
+function defaultAction(verdict: string): string {
+  if (verdict === "AVOID") return "Avoid for now. Scan deeper before touching it."
+  if (verdict === "TRUSTWORTHY") return "Watch execution quality and liquidity before entering."
+  if (verdict === "SCAN DEEPER") return "Scan deeper before touching it."
+  if (verdict === "WATCH") return "Watch only until risk flags improve."
+  return "Not enough verified data to make a strong call."
+}
+
+function extractSection(text: string, start: string, stops: string[]): string {
+  const lines = text.split("\n");
+  const startIdx = lines.findIndex(l => l.toLowerCase().startsWith(start.toLowerCase()));
+  if (startIdx === -1) return "";
+  const out: string[] = [];
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (stops.some(s => line.toLowerCase().startsWith(s.toLowerCase()))) break;
+    if (line.trim()) out.push(line.trim());
+  }
+  return out.join(" ");
+}
+
+function toSentencePair(text: string): string {
+  const sentences = text
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (sentences.length === 0) return "Not enough verified data to make a strong call.";
+  return sentences.slice(0, 2).join(" ");
+}
+
+function toBullets(items: string[]): string {
+  return items.slice(0, 3).map(i => `- ${i}`).join("\n");
+}
+
+function capWords(text: string, maxWords: number): string {
+  const words = text.split(/\s+/);
+  if (words.length <= maxWords) return text;
+  return `${words.slice(0, maxWords).join(" ")}…`;
 }
 
 // ---------- Scanner functions ----------
