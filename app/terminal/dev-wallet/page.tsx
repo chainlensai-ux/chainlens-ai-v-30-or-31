@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -93,6 +93,31 @@ function fmtDate(iso: string | null): string {
   catch { return iso }
 }
 
+function shortHash(hash: string, pre = 10, suf = 8): string {
+  if (hash.length <= pre + suf + 1) return hash
+  return `${hash.slice(0, pre)}…${hash.slice(-suf)}`
+}
+
+function formatMethod(method: string): string {
+  return method.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())
+}
+
+function clampSentences(text: string, maxSentences = 3): string {
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  return sentences.slice(0, maxSentences).join(' ')
+}
+
+function linkedWalletTag(wallet: LinkedWallet): string {
+  const asset = (wallet.asset ?? '').toLowerCase()
+  if (asset.includes('eth')) return 'ETH recipient'
+  if (asset) return 'Token recipient'
+  if (wallet.amountReceived !== null) return 'Funded wallet'
+  return 'Unknown transfer'
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -178,6 +203,9 @@ function WarningBanner({ warnings }: { warnings: string[] }) {
 
 function VerdictCard({ verdict }: { verdict: ClarkVerdict }) {
   const style = VERDICT_STYLE[verdict.label]
+  const shortSummary = clampSentences(verdict.summary, 3)
+  const topSignals = verdict.keySignals.slice(0, 3)
+  const topRisks = verdict.risks.slice(0, 3)
   return (
     <Card style={{
       borderColor: style.border,
@@ -193,6 +221,25 @@ function VerdictCard({ verdict }: { verdict: ClarkVerdict }) {
       }} />
 
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '8px', width: '100%', marginBottom: '8px' }}>
+          <span style={{
+            fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
+            borderRadius: '99px', padding: '4px 10px',
+            color: style.color, border: `1px solid ${style.border}`,
+            background: 'rgba(0,0,0,0.25)', fontFamily: 'var(--font-plex-mono)',
+          }}>
+            {verdict.label}
+          </span>
+          <span style={{
+            fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em',
+            borderRadius: '99px', padding: '4px 10px',
+            color: CONF_COLOR[verdict.confidence] ?? '#94a3b8',
+            border: '1px solid rgba(255,255,255,0.16)',
+            background: 'rgba(255,255,255,0.03)', fontFamily: 'var(--font-plex-mono)',
+          }}>
+            {verdict.confidence} confidence
+          </span>
+        </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
@@ -203,25 +250,18 @@ function VerdictCard({ verdict }: { verdict: ClarkVerdict }) {
             }}>
               CLARK AI VERDICT
             </span>
-            <span style={{
-              fontSize: '9px', color: CONF_COLOR[verdict.confidence] ?? '#94a3b8',
-              fontFamily: 'var(--font-plex-mono)',
-              background: 'rgba(0,0,0,0.20)', padding: '2px 8px', borderRadius: '99px',
-            }}>
-              {verdict.confidence} confidence
-            </span>
           </div>
 
           {/* Summary */}
           <p style={{
             fontSize: '13px', color: '#e2e8f0', lineHeight: 1.6, margin: '0 0 16px',
           }}>
-            {verdict.summary}
+            {shortSummary}
           </p>
 
           {/* Signals + Risks in two cols */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '14px' }}>
-            {verdict.keySignals.length > 0 && (
+            {topSignals.length > 0 && (
               <div>
                 <p style={{
                   fontSize: '10px', fontWeight: 700, color: '#3a5268',
@@ -230,12 +270,12 @@ function VerdictCard({ verdict }: { verdict: ClarkVerdict }) {
                 }}>
                   Key Signals
                 </p>
-                {verdict.keySignals.map((s, i) => (
+                {topSignals.map((s, i) => (
                   <p key={i} style={{ fontSize: '11px', color: '#94a3b8', margin: '3px 0' }}>· {s}</p>
                 ))}
               </div>
             )}
-            {verdict.risks.length > 0 && (
+            {topRisks.length > 0 && (
               <div>
                 <p style={{
                   fontSize: '10px', fontWeight: 700, color: '#3a5268',
@@ -244,7 +284,7 @@ function VerdictCard({ verdict }: { verdict: ClarkVerdict }) {
                 }}>
                   Risks
                 </p>
-                {verdict.risks.map((r, i) => (
+                {topRisks.map((r, i) => (
                   <p key={i} style={{ fontSize: '11px', color: '#f87171', margin: '3px 0' }}>· {r}</p>
                 ))}
               </div>
@@ -260,22 +300,6 @@ function VerdictCard({ verdict }: { verdict: ClarkVerdict }) {
           }}>
             NEXT: {verdict.nextAction}
           </div>
-        </div>
-
-        {/* Verdict pill */}
-        <div style={{
-          padding: '10px 20px', borderRadius: '12px',
-          background: 'rgba(0,0,0,0.25)',
-          border: `1px solid ${style.border}`,
-          textAlign: 'center', flexShrink: 0,
-        }}>
-          <p style={{
-            fontSize: '18px', fontWeight: 700, color: style.color,
-            fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em',
-            margin: 0,
-          }}>
-            {verdict.label}
-          </p>
         </div>
       </div>
     </Card>
@@ -338,6 +362,9 @@ export default function DevWalletPage() {
   const [loading, setLoading] = useState(false)
   const [result,  setResult]  = useState<DevWalletResult | null>(null)
   const [error,   setError]   = useState<string | null>(null)
+  const [isTracking, setIsTracking] = useState(false)
+  const [showAllActivity, setShowAllActivity] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   async function handleScan() {
     const q = input.trim()
@@ -349,6 +376,9 @@ export default function DevWalletPage() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setShowAllActivity(false)
+    setIsTracking(false)
+    setCopied(false)
     try {
       const res  = await fetch('/api/dev-wallet', {
         method: 'POST',
@@ -367,6 +397,20 @@ export default function DevWalletPage() {
       setLoading(false)
     }
   }
+
+  const askClarkHref = useMemo(() => {
+    if (!result) return '/terminal/clark-ai'
+    const prompt = [
+      `Dev wallet follow-up for ${result.contractAddress}`,
+      `Likely deployer: ${result.deployerAddress ?? 'unknown'}`,
+      `Confidence: ${result.deployerConfidence}`,
+      `Linked wallets: ${result.linkedWallets.length}`,
+      `Suspicious reasons: ${result.suspiciousTransferReasons.join('; ') || 'none'}`,
+      `Holder data available: ${result.holderDataAvailable}`,
+      `Verdict: ${result.clarkVerdict?.label ?? 'UNKNOWN'}`,
+    ].join('\n')
+    return `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`
+  }, [result])
 
   return (
     <>
@@ -478,6 +522,29 @@ export default function DevWalletPage() {
           </button>
         </div>
 
+        {/* Report Summary */}
+        {result && (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4,minmax(0,1fr))',
+            gap: '10px',
+            maxWidth: '760px',
+            marginBottom: '18px',
+          }}>
+            {[
+              { k: 'Likely Deployer', v: result.deployerAddress ? 'Found' : 'Unknown', c: result.deployerAddress ? '#2DD4BF' : '#94a3b8' },
+              { k: 'Linked Wallets', v: String(result.linkedWallets.length), c: result.linkedWallets.length >= 5 ? '#f87171' : '#a78bfa' },
+              { k: 'Suspicious Patterns', v: String(result.suspiciousTransferReasons.length), c: result.suspiciousTransfers ? '#f87171' : '#2DD4BF' },
+              { k: 'Confidence', v: result.deployerConfidence, c: result.deployerConfidence === 'high' ? '#2DD4BF' : result.deployerConfidence === 'medium' ? '#fbbf24' : '#f87171' },
+            ].map((item, i) => (
+              <Card key={i} style={{ padding: '12px 14px', borderColor: 'rgba(255,255,255,0.10)' }}>
+                <p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>{item.k}</p>
+                <p style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: item.c, fontFamily: 'var(--font-plex-mono)' }}>{item.v}</p>
+              </Card>
+            ))}
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div style={{
@@ -513,7 +580,18 @@ export default function DevWalletPage() {
 
             {/* Clark Verdict */}
             {result.clarkVerdict && (
-              <VerdictCard verdict={result.clarkVerdict} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px', alignItems: 'start' }}>
+                <VerdictCard verdict={result.clarkVerdict} />
+                <Link href={askClarkHref} style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  padding: '9px 12px', borderRadius: '10px', textDecoration: 'none',
+                  color: '#a78bfa', border: '1px solid rgba(167,139,250,0.35)',
+                  background: 'rgba(167,139,250,0.08)', fontSize: '11px',
+                  fontWeight: 700, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+                }}>
+                  Ask Clark
+                </Link>
+              </div>
             )}
             {!result.clarkVerdict && (
               <Card style={{ marginBottom: '24px', borderColor: 'rgba(148,163,184,0.15)' }}>
@@ -530,9 +608,14 @@ export default function DevWalletPage() {
                   label="Address"
                   value={
                     result.deployerAddress
-                      ? <span style={{ fontFamily: 'var(--font-plex-mono)', color: '#c4b5fd' }}>
-                          {shortAddr(result.deployerAddress)}
-                        </span>
+                      ? <div style={{ textAlign: 'right' }}>
+                          <span style={{ fontFamily: 'var(--font-plex-mono)', color: '#c4b5fd', display: 'block' }}>
+                            {shortAddr(result.deployerAddress)}
+                          </span>
+                          <span style={{ fontFamily: 'var(--font-plex-mono)', color: '#64748b', fontSize: '10px' }}>
+                            {result.deployerAddress}
+                          </span>
+                        </div>
                       : <span style={{ color: '#3a5268' }}>Unknown</span>
                   }
                 />
@@ -546,13 +629,29 @@ export default function DevWalletPage() {
                 />
                 <DataRow
                   label="Detection Method"
-                  value={result.methodUsed.replace(/_/g, ' ')}
+                  value={formatMethod(result.methodUsed)}
                 />
                 <DataRow label="Chain" value="Base" />
                 <DataRow label="Scanned At" value={fmtDate(result.fetchedAt)} />
 
                 {result.deployerAddress && (
                   <div style={{ marginTop: '14px', display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(result.deployerAddress ?? '')
+                        setCopied(true)
+                        setTimeout(() => setCopied(false), 1400)
+                      }}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '5px',
+                        padding: '6px 12px', borderRadius: '8px',
+                        fontSize: '11px', fontWeight: 600, cursor: 'pointer',
+                        color: copied ? '#2DD4BF' : '#94a3b8', background: 'rgba(148,163,184,0.10)',
+                        border: '1px solid rgba(148,163,184,0.25)', fontFamily: 'var(--font-plex-mono)',
+                      }}
+                    >
+                      {copied ? 'Copied' : 'Copy'}
+                    </button>
                     <a
                       href={`https://basescan.org/address/${result.deployerAddress}`}
                       target="_blank" rel="noopener noreferrer"
@@ -565,8 +664,22 @@ export default function DevWalletPage() {
                         fontFamily: 'var(--font-plex-mono)',
                       }}
                     >
-                      ↗ Basescan
+                      ↗ Open Explorer
                     </a>
+                    <button
+                      onClick={() => setIsTracking(v => !v)}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '5px',
+                        padding: '6px 12px', borderRadius: '8px',
+                        fontSize: '11px', fontWeight: 600, cursor: 'pointer',
+                        color: isTracking ? '#2DD4BF' : '#fbbf24',
+                        background: isTracking ? 'rgba(45,212,191,0.10)' : 'rgba(251,191,36,0.10)',
+                        border: `1px solid ${isTracking ? 'rgba(45,212,191,0.25)' : 'rgba(251,191,36,0.25)'}`,
+                        fontFamily: 'var(--font-plex-mono)',
+                      }}
+                    >
+                      {isTracking ? 'Tracking' : 'Track Deployer'}
+                    </button>
                   </div>
                 )}
               </Card>
@@ -630,7 +743,7 @@ export default function DevWalletPage() {
                   {result.linkedWallets.map((w, i) => (
                     <div key={i} style={{
                       display: 'grid',
-                      gridTemplateColumns: '1fr auto auto',
+                      gridTemplateColumns: '1fr auto auto auto',
                       gap: '16px', alignItems: 'center',
                       padding: '12px 16px',
                       background: 'rgba(255,255,255,0.02)',
@@ -639,7 +752,13 @@ export default function DevWalletPage() {
                       fontSize: '11px', fontFamily: 'var(--font-plex-mono)',
                     }}>
                       <div>
-                        <span style={{ color: '#c4b5fd' }}>{shortAddr(w.address)}</span>
+                        <span style={{ color: '#c4b5fd' }}>{shortAddr(w.address)}</span>{' '}
+                        <span style={{
+                          color: '#64748b', fontSize: '10px',
+                          border: '1px solid rgba(255,255,255,0.10)', borderRadius: '99px', padding: '1px 6px',
+                        }}>
+                          {linkedWalletTag(w)}
+                        </span>
                         {w.firstSeen && (
                           <span style={{ color: '#3a5268', marginLeft: '10px' }}>
                             {fmtDate(w.firstSeen)}
@@ -649,6 +768,9 @@ export default function DevWalletPage() {
                       <span style={{ color: '#e2e8f0', fontWeight: 600 }}>
                         {fmtAmount(w.amountReceived, w.asset)}
                       </span>
+                      <span style={{ color: '#64748b', fontSize: '10px' }}>
+                        {w.txHash ? shortHash(w.txHash) : '—'}
+                      </span>
                       {w.txHash && (
                         <a
                           href={`https://basescan.org/tx/${w.txHash}`}
@@ -656,7 +778,7 @@ export default function DevWalletPage() {
                           style={{ color: '#3a5268', textDecoration: 'none', fontSize: '10px' }}
                           title="View tx on Basescan"
                         >
-                          ↗
+                          ↗ Explorer
                         </a>
                       )}
                     </div>
@@ -685,7 +807,7 @@ export default function DevWalletPage() {
               ) : (
                 <Card>
                   <p style={{ fontSize: '12px', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    ✓ No suspicious transfer patterns detected from available data
+                    ✓ No suspicious transfer pattern detected from available data.
                   </p>
                 </Card>
               )}
@@ -702,12 +824,12 @@ export default function DevWalletPage() {
               ) : result.previousProjects.length === 0 ? (
                 <Card>
                   <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    No previous deployments found for this wallet.
+                    No previous activity detected from available transfer history.
                   </p>
                 </Card>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {result.previousProjects.map((p, i) => (
+                  {(showAllActivity ? result.previousProjects : result.previousProjects.slice(0, 6)).map((p, i) => (
                     <Card key={i} style={{
                       borderColor: p.rugFlag ? 'rgba(248,113,113,0.25)' : 'rgba(255,255,255,0.08)',
                     }}>
@@ -715,29 +837,57 @@ export default function DevWalletPage() {
                         <div>
                           <p style={{ fontSize: '12px', color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', margin: '0 0 4px' }}>
                             {p.name && p.symbol ? `${p.name} (${p.symbol})` : shortAddr(p.contractAddress)}
+                            <span style={{
+                              marginLeft: '8px', fontSize: '9px', color: '#64748b',
+                              border: '1px solid rgba(255,255,255,0.10)', borderRadius: '99px', padding: '1px 6px',
+                            }}>
+                              {p.symbol ? 'Token interaction' : 'Previous activity'}
+                            </span>
                           </p>
                           <p style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
                             {p.contractAddress}
                           </p>
+                          {!p.name && !p.symbol && (
+                            <p style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', margin: '6px 0 0' }}>
+                              Metadata unavailable
+                            </p>
+                          )}
                           {p.rugReason && (
                             <p style={{ fontSize: '11px', color: '#f87171', margin: '6px 0 0' }}>· {p.rugReason}</p>
                           )}
                         </div>
-                        {p.rugFlag !== null && (
-                          <span style={{
-                            padding: '3px 10px', borderRadius: '99px',
-                            fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
-                            fontFamily: 'var(--font-plex-mono)',
-                            color: p.rugFlag ? '#f87171' : '#2DD4BF',
-                            background: p.rugFlag ? 'rgba(248,113,113,0.10)' : 'rgba(45,212,191,0.08)',
-                            border: `1px solid ${p.rugFlag ? 'rgba(248,113,113,0.25)' : 'rgba(45,212,191,0.20)'}`,
-                          }}>
-                            {p.rugFlag ? 'RUG FLAGGED' : 'CLEAN'}
-                          </span>
-                        )}
+                        <span style={{
+                          padding: '3px 10px', borderRadius: '99px',
+                          fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
+                          fontFamily: 'var(--font-plex-mono)',
+                          color: p.rugFlag === true ? '#f87171' : p.rugFlag === false ? '#2DD4BF' : '#94a3b8',
+                          background: p.rugFlag === true ? 'rgba(248,113,113,0.10)' : p.rugFlag === false ? 'rgba(45,212,191,0.08)' : 'rgba(148,163,184,0.08)',
+                          border: `1px solid ${p.rugFlag === true ? 'rgba(248,113,113,0.25)' : p.rugFlag === false ? 'rgba(45,212,191,0.20)' : 'rgba(148,163,184,0.20)'}`,
+                        }}>
+                          {p.rugFlag === true ? 'Flagged' : p.rugFlag === false ? 'Checked' : 'Unavailable'}
+                        </span>
                       </div>
                     </Card>
                   ))}
+                  {result.previousProjects.length > 6 && (
+                    <button
+                      onClick={() => setShowAllActivity(v => !v)}
+                      style={{
+                        marginTop: '4px',
+                        alignSelf: 'flex-start',
+                        padding: '6px 10px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        color: '#a78bfa',
+                        background: 'rgba(167,139,250,0.08)',
+                        border: '1px solid rgba(167,139,250,0.24)',
+                        fontSize: '11px',
+                        fontFamily: 'var(--font-plex-mono)',
+                      }}
+                    >
+                      {showAllActivity ? 'Show less' : `Show more (${result.previousProjects.length - 6})`}
+                    </button>
+                  )}
                 </div>
               )}
             </Section>
