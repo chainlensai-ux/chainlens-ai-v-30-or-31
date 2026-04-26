@@ -569,6 +569,27 @@ async function getClarkVerdict(origin: string, data: {
     if (jsonMatch) {
       try { parsed = JSON.parse(jsonMatch[0]) as Partial<ClarkVerdict> } catch {}
     }
+    if (!data.securityDataAvailable && !summary.includes('Security scan unavailable')) {
+      summary = `${summary} Security scan unavailable from current data sources.`
+    }
+    const keySignals = sanitizeClarkText(
+      Array.isArray(parsed.keySignals) ? parsed.keySignals.map(String) : [],
+      {
+        holderDataAvailable: data.holderDataAvailable,
+        supplyControlled: data.supplyControlled,
+        liquidityDataAvailable: data.liquidityDataAvailable,
+        securityDataAvailable: data.securityDataAvailable,
+      }
+    )
+    const risks = sanitizeClarkText(
+      Array.isArray(parsed.risks) ? parsed.risks.map(String) : [],
+      {
+        holderDataAvailable: data.holderDataAvailable,
+        supplyControlled: data.supplyControlled,
+        liquidityDataAvailable: data.liquidityDataAvailable,
+        securityDataAvailable: data.securityDataAvailable,
+      }
+    )
 
     const fallbackSignals = sanitizeClarkText([
       data.deployerAddress ? 'Likely deployer identified' : 'Likely deployer not confirmed',
