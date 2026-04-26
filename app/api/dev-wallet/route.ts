@@ -569,9 +569,6 @@ async function getClarkVerdict(origin: string, data: {
     if (jsonMatch) {
       try { parsed = JSON.parse(jsonMatch[0]) as Partial<ClarkVerdict> } catch {}
     }
-    if (!data.securityDataAvailable && !summary.includes('Security scan unavailable')) {
-      summary = `${summary} Security scan unavailable from current data sources.`
-    }
     const keySignals = sanitizeClarkText(
       Array.isArray(parsed.keySignals) ? parsed.keySignals.map(String) : [],
       {
@@ -621,11 +618,11 @@ async function getClarkVerdict(origin: string, data: {
     if (!data.securityDataAvailable && !summary.includes('Security scan unavailable')) {
       summary = `${summary} Security scan unavailable from current data sources.`
     }
-    const keySignals = sanitizeClarkText(
+    const sanitizedKeySignals = sanitizeClarkText(
       Array.isArray(parsed.keySignals) ? parsed.keySignals.map(String) : fallbackSignals,
       data
     )
-    const risks = sanitizeClarkText(
+    const sanitizedRisks = sanitizeClarkText(
       Array.isArray(parsed.risks) ? parsed.risks.map(String) : fallbackRisks,
       data
     )
@@ -639,8 +636,8 @@ async function getClarkVerdict(origin: string, data: {
         label: finalLabel,
         confidence: finalConfidence,
         summary,
-        keySignals: keySignals.length > 0 ? keySignals : fallbackSignals,
-        risks: risks.length > 0 ? risks : fallbackRisks,
+        keySignals: sanitizedKeySignals.length > 0 ? sanitizedKeySignals : fallbackSignals,
+        risks: sanitizedRisks.length > 0 ? sanitizedRisks : fallbackRisks,
         nextAction: typeof parsed.nextAction === 'string' ? parsed.nextAction : 'Verify manually on an explorer before trading.',
       },
       clarkError: null,
