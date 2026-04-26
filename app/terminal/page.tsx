@@ -1,22 +1,11 @@
 'use client'
 
-import { Suspense, useMemo, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
-import ClarkChat from '@/components/ClarkChat'
+import { Suspense, useState } from 'react'
 import ClarkRadar from '@/components/ClarkRadar'
+import HeroSection from '@/components/HeroSection'
+import HomeTokenScreener from '@/components/HomeTokenScreener'
 
 function TerminalPageContent() {
-  const searchParams = useSearchParams()
-  const rawPrompt = searchParams.get('prompt')
-  const initialPrompt = useMemo(() => {
-    if (!rawPrompt) return null
-    try {
-      return decodeURIComponent(rawPrompt)
-    } catch {
-      return rawPrompt
-    }
-  }, [rawPrompt])
-  const [active, setActive] = useState('dashboard')
   const [isTyping, setIsTyping] = useState(false)
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
 
@@ -31,10 +20,19 @@ function TerminalPageContent() {
           animation: terminalAmbient 5s ease-in-out infinite;
           pointer-events: none;
         }
+        @media (max-width: 900px) {
+          .terminal-shell { flex-direction: column; }
+          .mob-radar {
+            width: 100% !important;
+            max-height: 42vh;
+            border-left: none !important;
+            border-top: 1px solid rgba(123,92,255,0.18);
+          }
+        }
       `}</style>
 
       <div
-        className="flex h-full overflow-hidden"
+        className="flex h-full overflow-hidden terminal-shell"
         style={{ position: 'relative' }}
       >
         {/* Neon ambient glow — fixed, behind everything */}
@@ -58,14 +56,13 @@ function TerminalPageContent() {
           className="flex-1 overflow-y-auto min-w-0 flex flex-col mob-terminal-main"
           style={{ position: 'relative', zIndex: 1 }}
         >
-          <ClarkChat
-            mode="hero"
-            active={active}
+          <HeroSection
             onTyping={setIsTyping}
-            onSend={(msg) => setPendingMessage(msg)}
-            initialMessage={initialPrompt}
-            prefillOnlyInitial
+            onSend={(msg) => {
+              setPendingMessage(msg)
+            }}
           />
+          <HomeTokenScreener />
         </main>
 
         <aside
@@ -79,7 +76,7 @@ function TerminalPageContent() {
             zIndex: 1,
           }}
         >
-          <ClarkRadar onSelectRadar={setActive} pendingMessage={pendingMessage} />
+          <ClarkRadar pendingMessage={pendingMessage} />
         </aside>
       </div>
     </>
