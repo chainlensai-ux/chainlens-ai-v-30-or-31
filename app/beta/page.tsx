@@ -64,7 +64,7 @@ export default function BetaPage() {
   if (loading) return null
 
   return (
-    <>
+    <main>
       <style>{`
         @keyframes beta-float {
           0%, 100% { transform: translateY(0px); }
@@ -274,6 +274,6 @@ export default function BetaPage() {
           }} />
         </div>
       </div>
-    </>
+    </main>
   )
 }
