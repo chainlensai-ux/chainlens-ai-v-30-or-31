@@ -175,10 +175,10 @@ export default function WalletScannerPage() {
       const clarkRes = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feature: 'clark-ai', prompt, walletAddress: address }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'wallet-scanner', walletAddress: address, context: data }),
       })
       const clarkJson = await clarkRes.json()
-      const text = clarkJson.data?.analysis ?? clarkJson.data?.response ?? null
+      const text = clarkJson.data?.reply ?? clarkJson.data?.analysis ?? clarkJson.data?.response ?? null
       if (text) {
         setClarkVerdict(text)
       } else {
@@ -212,12 +212,17 @@ export default function WalletScannerPage() {
           background: #25c0a8 !important;
           box-shadow: 0 0 24px rgba(45,212,191,0.40) !important;
         }
+        @media (max-width: 768px) {
+          .wallet-main { padding: 20px 14px 120px !important; }
+          .wallet-input-row { flex-direction: column; max-width: 100% !important; }
+          .wallet-input-row button { width: 100%; justify-content: center; }
+        }
       `}</style>
 
       <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
 
         {/* ── Left: scrollable main area ───────────────────────────────── */}
-        <div className="mob-scan-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '40px 48px' }}>
+        <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px' }}>
 
           {/* Back */}
           <Link href="/terminal" style={{
@@ -277,7 +282,7 @@ export default function WalletScannerPage() {
           </div>
 
           {/* Input */}
-          <div style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '32px' }}>
+          <div className="wallet-input-row" style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '32px' }}>
             <div style={{ flex: 1, position: 'relative' }}>
               {/* Paste icon */}
               <button

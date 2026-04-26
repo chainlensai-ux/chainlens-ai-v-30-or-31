@@ -738,6 +738,7 @@ export default function BaseRadarPage() {
     const sellTax = token.honeypot?.sellTax
     const security = token.honeypot?.simulationSuccess ? 'Verified' : 'Unknown'
     const prompt = [
+      '[mode: base-radar]',
       'Analyze this Base Radar token and give me a clear verdict: WATCH, AVOID, or SCAN DEEPER.',
       `Token: ${token.name} (${token.symbol})`,
       `Contract: ${token.contract}`,
@@ -813,9 +814,14 @@ export default function BaseRadarPage() {
           0%   { transform: rotate(0deg);   }
           100% { transform: rotate(360deg); }
         }
+        @media (max-width: 768px) {
+          .radar-main { padding: 18px 12px 120px !important; }
+          .radar-grid { grid-template-columns: 1fr !important; }
+          .radar-stats { position: static !important; }
+        }
       `}</style>
 
-      <div style={{ height: '100%', overflowY: 'auto', padding: '28px 32px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+      <div className="radar-main" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
         <div style={{ marginBottom: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '6px' }}>
             <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f8fafc', margin: 0, letterSpacing: '-0.01em' }}>Base Radar</h1>
@@ -903,7 +909,7 @@ export default function BaseRadarPage() {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: '18px', alignItems: 'start' }}>
+        <div className="radar-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: '18px', alignItems: 'start' }}>
           <div>
             <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
               Live Feed {filteredAndSortedTokens.length > 0 && `— ${filteredAndSortedTokens.length} token${filteredAndSortedTokens.length !== 1 ? 's' : ''}`}
@@ -948,7 +954,7 @@ export default function BaseRadarPage() {
             {!loading && filteredAndSortedTokens.length <= 2 && !error && <LowActivityPanel />}
           </div>
 
-          <div style={{ position: 'sticky', top: '0' }}>
+          <div className="radar-stats" style={{ position: 'sticky', top: '0' }}>
             <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
               Radar Stats
             </p>

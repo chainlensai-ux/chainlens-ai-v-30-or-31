@@ -3,8 +3,10 @@
 import { useState } from 'react'
 
 const CHIPS = [
-  'Scan Wallet',
-  'Trending on Base',
+  'Scan a Base token',
+  'Check wallet behavior',
+  'Explain liquidity risk',
+  'What can Clark do?',
 ]
 
 
