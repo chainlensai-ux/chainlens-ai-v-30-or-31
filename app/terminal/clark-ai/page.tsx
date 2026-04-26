@@ -323,7 +323,7 @@ function ClarkAiContent() {
                           <p style={{ margin: '0 0 4px', fontSize: '10px', color: msg.role === 'user' ? '#99f6e4' : '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>
                             {msg.role === 'user' ? 'YOU' : 'CLARK'}
                           </p>
-                          <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.45, color: '#e2e8f0', whiteSpace: 'pre-wrap' }}>{msg.text}</p>
+                          <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.45, color: '#e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{msg.text}</p>
                         </div>
                       ))}
                     </div>

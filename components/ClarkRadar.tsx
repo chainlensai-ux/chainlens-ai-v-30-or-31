@@ -444,10 +444,9 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
                     fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
                       ? 'var(--font-plex-mono)'
                       : 'var(--font-inter), Inter, sans-serif',
-                    whiteSpace: msg.text.startsWith('{') || msg.text.startsWith('[')
-                      ? 'pre-wrap'
-                      : 'normal',
+                    whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
+                    overflowWrap: 'anywhere',
                   }}>
                     {msg.text === 'Clark is thinking...' ? (
                       <span>

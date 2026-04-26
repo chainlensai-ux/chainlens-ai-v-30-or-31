@@ -402,6 +402,7 @@ export default function ClarkChat({
                         : 'var(--font-inter), Inter, sans-serif',
                       whiteSpace: 'pre-wrap',
                       wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',
                     }}>
                       {msg.text}
                     </div>
