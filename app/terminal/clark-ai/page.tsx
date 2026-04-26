@@ -233,6 +233,8 @@ function ClarkAiContent() {
         @media (max-width: 680px) {
           .clark-shell { padding-inline: 14px; }
           .clark-mode-grid { grid-template-columns: 1fr; }
+          .clark-input-wrap { height: auto !important; border-radius: 14px !important; flex-direction: column; align-items: stretch !important; padding: 10px !important; }
+          .clark-send-button { width: 100%; }
         }
       `}</style>
 
@@ -328,7 +330,7 @@ function ClarkAiContent() {
                   )}
                 </div>
 
-                <div style={{ marginTop: '12px', height: '58px', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(2,6,23,0.72)', display: 'flex', alignItems: 'center', padding: '8px 8px 8px 14px', gap: '8px', marginBottom: '14px' }}>
+                <div className="clark-input-wrap" style={{ marginTop: '12px', height: '58px', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(2,6,23,0.72)', display: 'flex', alignItems: 'center', padding: '8px 8px 8px 14px', gap: '8px', marginBottom: '14px' }}>
                   <input
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
