@@ -338,21 +338,31 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
   const allowProviderNames = /\b(source|sources|provider|providers)\b/i.test(prompt);
   const text = sanitizeFreeform(raw, { allowProviderNames }).replace(/\r/g, "").trim();
   const upper = text.toUpperCase();
+  const ctx = extractClarkContext(userContent);
+  const isDevWalletMode = /\bdev-wallet\b|dev wallet follow-up/i.test(prompt) || /\blikely deployer:/i.test(userContent);
 
   const verdictMatch = upper.match(/\b(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/);
   let verdict = (verdictMatch?.[1] ?? "UNKNOWN") as "AVOID" | "WATCH" | "SCAN DEEPER" | "TRUSTWORTHY" | "UNKNOWN";
+  if (ctx.explicitVerdict) verdict = ctx.explicitVerdict;
 
   const confidenceMatch = text.match(/\b(Confidence)\s*:\s*(Low|Medium|High)\b/i);
-  const confidence = confidenceMatch?.[2]
+  const confidence = ctx.explicitConfidence ??
+    (confidenceMatch?.[2]
     ? `${confidenceMatch[2].charAt(0).toUpperCase()}${confidenceMatch[2].slice(1).toLowerCase()}`
-    : "Medium";
+    : "Medium");
 
-  const criticalRisk = hasCriticalVerifiedRisk(userContent);
+  const criticalRisk = hasCriticalVerifiedRisk(ctx);
   if (criticalRisk && verdict === "WATCH") verdict = "AVOID";
+  if (isDevWalletMode && !criticalRisk && ctx.explicitVerdict) verdict = ctx.explicitVerdict;
+  if (isDevWalletMode && !criticalRisk && !ctx.explicitVerdict) {
+    if (ctx.suspiciousTransfers === true && (ctx.linkedWallets ?? 0) >= 5) verdict = "AVOID";
+    else if (ctx.deployerKnown && ctx.holderDataAvailable === false) verdict = "WATCH";
+    else if (!ctx.deployerKnown && (ctx.linkedWallets ?? 0) === 0) verdict = "UNKNOWN";
+  }
 
-  const read = capWords(pickRead(text), 35);
-  const keySignals = pickBullets(text, ["key signals", "signals", "strengths"], 3);
-  const risks = pickBullets(text, ["risks", "risk flags", "concerns"], 3);
+  const read = capWords(isDevWalletMode ? buildDevWalletRead(ctx, verdict) : pickRead(text), 35);
+  const keySignals = pickBullets(text, ["key signals", "signals", "strengths"], 3, isDevWalletMode ? buildDevWalletSignals(ctx) : []);
+  const risks = pickBullets(text, ["risks", "risk flags", "concerns"], 3, isDevWalletMode ? buildDevWalletRisks(ctx) : []);
   const nextAction = capWords(pickNextAction(text, verdict), 25);
 
   const formatted =
@@ -385,15 +395,89 @@ function sanitizeFreeform(raw: string, opts: { allowProviderNames: boolean }): s
   return out;
 }
 
-function hasCriticalVerifiedRisk(userContent: string): boolean {
-  const lower = userContent.toLowerCase();
-  const lpUnlocked = /(lp lock|is_locked|liquidity lock).*(false|0|unlocked)/.test(lower);
-  const lpConcentrated = /(lp holder|single wallet).*(80|8[0-9]|9[0-9]|100)%/.test(lower);
-  const honeypot = /honeypot.*(true|yes|1)/.test(lower);
-  const buyTax = /buy tax[^0-9]*(1[6-9]|[2-9][0-9])/.test(lower);
-  const sellTax = /sell tax[^0-9]*(1[6-9]|[2-9][0-9])/.test(lower);
-  const suspiciousFunding = /suspicious transfers:\s*true/.test(lower) && /linked wallets:\s*([5-9]|[1-9]\d)/.test(lower);
-  return lpUnlocked || lpConcentrated || honeypot || buyTax || sellTax || suspiciousFunding;
+type ClarkContextExtract = {
+  explicitVerdict: "AVOID" | "WATCH" | "SCAN DEEPER" | "TRUSTWORTHY" | "UNKNOWN" | null
+  explicitConfidence: "Low" | "Medium" | "High" | null
+  deployerKnown: boolean
+  linkedWallets: number | null
+  holderDataAvailable: boolean | null
+  suspiciousTransfers: boolean | null
+  suspiciousReasonsNone: boolean
+  honeypot: boolean | null
+  buyTax: number | null
+  sellTax: number | null
+  lpLocked: boolean | null
+  lpLockDataAvailable: boolean | null
+  lpHolderConcentration: number | null
+  lpHolderDataAvailable: boolean | null
+  supplyControlled: number | null
+}
+
+function hasCriticalVerifiedRisk(ctx: ClarkContextExtract): boolean {
+  const honeypot = ctx.honeypot === true;
+  const highTax = (ctx.buyTax !== null && ctx.buyTax > 15) || (ctx.sellTax !== null && ctx.sellTax > 15);
+  const unlockedLp = ctx.lpLockDataAvailable === true && ctx.lpLocked === false;
+  const lpConcentration = ctx.lpHolderDataAvailable === true && ctx.lpHolderConcentration !== null && ctx.lpHolderConcentration >= 80;
+  const suspiciousFunding = ctx.suspiciousTransfers === true && (ctx.linkedWallets ?? 0) >= 5;
+  const holderConcentration = ctx.holderDataAvailable === true && ctx.supplyControlled !== null && ctx.supplyControlled >= 50;
+  return honeypot || highTax || unlockedLp || lpConcentration || suspiciousFunding || holderConcentration;
+}
+
+function extractClarkContext(userContent: string): ClarkContextExtract {
+  const getNum = (label: string): number | null => {
+    const m = userContent.match(new RegExp(`${label}\\s*:\\s*([-+]?\\d+(?:\\.\\d+)?)`, "i"));
+    return m ? Number(m[1]) : null;
+  };
+  const getBool = (label: string): boolean | null => {
+    const m = userContent.match(new RegExp(`${label}\\s*:\\s*(true|false|yes|no|1|0)`, "i"));
+    if (!m) return null;
+    return /true|yes|1/i.test(m[1]);
+  };
+  const verdictM = userContent.match(/\bVerdict\s*:\s*(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/i);
+  const confM = userContent.match(/\bConfidence\s*:\s*(Low|Medium|High)\b/i);
+  const linked = getNum("Linked wallets");
+  const suspiciousReasonsNone = /Suspicious reasons\s*:\s*(none|n\/a)/i.test(userContent);
+
+  return {
+    explicitVerdict: verdictM ? verdictM[1].toUpperCase() as ClarkContextExtract["explicitVerdict"] : null,
+    explicitConfidence: confM ? `${confM[1].charAt(0).toUpperCase()}${confM[1].slice(1).toLowerCase()}` as ClarkContextExtract["explicitConfidence"] : null,
+    deployerKnown: !/Likely deployer:\s*(unknown|null|none)/i.test(userContent) && /Likely deployer:/i.test(userContent),
+    linkedWallets: linked,
+    holderDataAvailable: getBool("Holder data available"),
+    suspiciousTransfers: getBool("Suspicious transfers"),
+    suspiciousReasonsNone,
+    honeypot: getBool("Honeypot"),
+    buyTax: getNum("Buy tax"),
+    sellTax: getNum("Sell tax"),
+    lpLocked: getBool("lpLocked"),
+    lpLockDataAvailable: getBool("lpLockDataAvailable"),
+    lpHolderConcentration: getNum("lpHolderConcentration"),
+    lpHolderDataAvailable: getBool("lpHolderDataAvailable"),
+    supplyControlled: getNum("Supply controlled"),
+  };
+}
+
+function buildDevWalletRead(ctx: ClarkContextExtract, verdict: string): string {
+  const deployerLine = ctx.deployerKnown ? "Likely deployer is identified." : "Likely deployer is not identified.";
+  const linkedLine = ctx.linkedWallets !== null ? `${ctx.linkedWallets} linked wallets detected.` : "Linked wallet count is not verified.";
+  const caution = verdict === "WATCH" ? "Not enough verified data to call it clean." : "This is the main risk.";
+  return toSentencePair(`${deployerLine} ${linkedLine} ${caution}`.replace(/\*\*/g, ""));
+}
+
+function buildDevWalletSignals(ctx: ClarkContextExtract): string[] {
+  const out: string[] = [];
+  if (ctx.deployerKnown) out.push("Likely deployer identified");
+  if (ctx.linkedWallets !== null) out.push(`${ctx.linkedWallets} linked wallets found`);
+  if (ctx.suspiciousReasonsNone) out.push("No suspicious reasons confirmed");
+  return out.slice(0, 3);
+}
+
+function buildDevWalletRisks(ctx: ClarkContextExtract): string[] {
+  const out: string[] = [];
+  if (ctx.holderDataAvailable === false) out.push("Holder distribution unavailable");
+  if (ctx.explicitConfidence === "Medium" || ctx.explicitConfidence === "Low") out.push(`Deployer confidence is ${ctx.explicitConfidence?.toLowerCase()}`);
+  if ((ctx.linkedWallets ?? 0) > 0) out.push("Linked wallets need monitoring");
+  return out.slice(0, 3);
 }
 
 function pickRead(text: string): string {
@@ -402,7 +486,7 @@ function pickRead(text: string): string {
   return toSentencePair(text);
 }
 
-function pickBullets(text: string, headers: string[], max: number): string[] {
+function pickBullets(text: string, headers: string[], max: number, fallback: string[]): string[] {
   for (const h of headers) {
     const section = extractSection(text, `${h}:`, ["Read:", "Key signals:", "Risks:", "Next action:"]);
     if (!section) continue;
@@ -414,6 +498,7 @@ function pickBullets(text: string, headers: string[], max: number): string[] {
       .slice(0, max);
     if (bullets.length > 0) return bullets;
   }
+  if (fallback.length > 0) return fallback.slice(0, max);
   return ["Not enough verified data to make a strong call."].slice(0, max);
 }
 
@@ -427,7 +512,7 @@ function defaultAction(verdict: string): string {
   if (verdict === "AVOID") return "Avoid for now. Scan deeper before touching it."
   if (verdict === "TRUSTWORTHY") return "Watch execution quality and liquidity before entering."
   if (verdict === "SCAN DEEPER") return "Scan deeper before touching it."
-  if (verdict === "WATCH") return "Watch only until risk flags improve."
+  if (verdict === "WATCH") return "Watch only; verify holder distribution and linked-wallet behavior before trusting it."
   return "Not enough verified data to make a strong call."
 }
 
