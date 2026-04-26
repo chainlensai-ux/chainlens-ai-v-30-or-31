@@ -124,7 +124,7 @@ export async function POST(req: Request) {
     // Tx count (nonce = outgoing tx count on Ethereum)
     const txCount = nonceRes.status === 'fulfilled' && nonceRes.value
       ? parseInt(nonceRes.value as string, 16)
-      : 0
+      : null
 
     return NextResponse.json({
       address: addr,
