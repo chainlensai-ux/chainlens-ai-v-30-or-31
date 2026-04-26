@@ -190,7 +190,12 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
     return "unknown";
   }
   if (explicitMode === "casual_help") return "casual_help";
-  if (explicitMode === "analyst") return "analysis";
+  if (explicitMode === "analyst") {
+    const { intent } = detectIntent(prompt);
+    if (intent === "general_market" || intent === "base_radar") return "general_market";
+    if (intent === "educational") return "educational";
+    return "analysis";
+  }
   const featureModes = new Set(["dev-wallet", "base-radar", "token-analysis", "wallet-analysis", "liquidity-safety", "scan-token"]);
   if (featureModes.has(explicitMode)) return "feature_context";
   const hasStructuredMode = /\[mode\s*:/i.test(prompt) || body.context != null;
@@ -229,7 +234,7 @@ function buildRoutingHelpReply(prompt: string): string {
 }
 
 function buildGeneralMarketNoContextReply(): string {
-  return "I need live Base Radar context for that. Open Base Radar or paste a contract and I’ll scan it.";
+  return "I couldn’t pull live Base Radar data right now. Paste a contract and I’ll scan it directly.";
 }
 
 function formatUsdShort(value: number | null | undefined): string {
@@ -250,8 +255,24 @@ function buildBaseRadarBriefing(tokens: unknown[]): string {
       const risk = String(token.riskLevel ?? "UNKNOWN");
       return `- ${symbol}: Liquidity ${liq}, 24h volume ${vol}, risk ${risk}.`;
     });
-  if (picks.length === 0) return buildGeneralMarketNoContextReply();
-  return `Here’s what’s moving on Base right now:\n${picks.join("\n")}\n\nBest next step:\nOpen Base Radar or scan the strongest contract before touching it.`;
+  if (picks.length === 0) return "Base Radar is live, but no strong movers surfaced from the current feed. Try refreshing or paste a contract.";
+  return `Base Radar:\nLive Base feed pulled successfully.\n\nMoving now:\n${picks.join("\n")}\n\nBest next step:\nScan the strongest one before touching it.`;
+}
+
+function shortAddress(addr: string): string {
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+}
+
+function inferAssetLine(userContent: string, isDevWalletMode: boolean): string {
+  const contractM = userContent.match(/"contract"\s*:\s*"(0x[a-fA-F0-9]{40})"/);
+  const walletM = userContent.match(/"address"\s*:\s*"(0x[a-fA-F0-9]{40})"/);
+  const nameM = userContent.match(/"name"\s*:\s*"([^"]+)"/);
+  const symbolM = userContent.match(/"symbol"\s*:\s*"([^"]+)"/);
+  if (nameM?.[1] && symbolM?.[1] && symbolM[1] !== "?") return `${nameM[1]} (${symbolM[1]})`;
+  if (isDevWalletMode && contractM?.[1]) return `Dev wallet scan ${shortAddress(contractM[1])}`;
+  if (contractM?.[1]) return `Unknown token (${shortAddress(contractM[1])})`;
+  if (walletM?.[1]) return `Wallet ${shortAddress(walletM[1])}`;
+  return "Unknown asset";
 }
 
 function buildTokenAnalysisFallback(tokenData: unknown, address: string): string {
@@ -307,9 +328,11 @@ function buildStructuredVerdict(
   read: string,
   signals: string[],
   risks: string[],
-  action: string
+  action: string,
+  asset?: string
 ): string {
   return (
+    `${asset ? `Asset: ${asset}\n` : ""}` +
     `Verdict: ${verdict}\n` +
     `Confidence: ${confidence}\n\n` +
     `Read:\n${capWords(read, 35)}\n\n` +
@@ -690,7 +713,7 @@ function normalizeClarkOutput(input: {
 
   const read = capWords(
     input.isDevWalletMode ? buildDevWalletRead(input.ctx, input.verdict) : buildCleanRead(normalizedText),
-    35
+    55
   );
   const ctxSignals = deriveContextSignals(input.userContent, input.isDevWalletMode ? buildDevWalletSignals(input.ctx) : []);
   const ctxRisks = deriveContextRisks(input.userContent, input.isDevWalletMode ? buildDevWalletRisks(input.ctx) : []);
@@ -700,14 +723,21 @@ function normalizeClarkOutput(input: {
 
   const keySignals = uniqueBullets([...ctxSignals, ...proseSignals, ...inferred.signals]).slice(0, 3);
   const risks = uniqueBullets([...ctxRisks, ...proseRisks, ...inferred.risks]).slice(0, 3);
-  const nextAction = capWords(cleanLine(pickNextAction(normalizedText, input.verdict)), 25);
   const confidence = normalizeConfidence(input.confidence, normalizedText);
+  let verdict = input.verdict;
+  const combinedRiskText = [...risks, ...ctxRisks].join(" ").toLowerCase();
+  if (verdict === "TRUSTWORTHY" && (confidence !== "High" || /unverified|needs review|linked-wallet|holder distribution|lp lock|lp control/i.test(combinedRiskText))) {
+    verdict = confidence === "High" ? "WATCH" : "SCAN DEEPER";
+  }
+  const nextAction = capWords(cleanLine(defaultAction(verdict)), 25);
+  const asset = inferAssetLine(input.userContent, input.isDevWalletMode);
 
   const safeSignals = keySignals.length > 0 ? keySignals : ["Verified data shows mixed but usable token signals."];
   const safeRisks = risks.length > 0 ? risks : ["Some important risk fields are still unverified."];
 
   return (
-    `Verdict: ${input.verdict}\n` +
+    `Asset: ${asset}\n` +
+    `Verdict: ${verdict}\n` +
     `Confidence: ${confidence}\n\n` +
     `Read:\n${read}\n\n` +
     `Key signals:\n${toBullets(safeSignals)}\n\n` +
@@ -1031,9 +1061,9 @@ function pickNextAction(text: string, verdict: string): string {
 
 function defaultAction(verdict: string): string {
   if (verdict === "AVOID") return "Avoid until the critical risk is resolved or verified safe."
-  if (verdict === "TRUSTWORTHY") return "Watch execution quality and liquidity before entering."
-  if (verdict === "SCAN DEEPER") return "Scan deeper before touching it."
-  if (verdict === "WATCH") return "Watch only; verify holder distribution and linked-wallet behavior before trusting it."
+  if (verdict === "TRUSTWORTHY") return "Monitor normally; no major risk surfaced from available data."
+  if (verdict === "SCAN DEEPER") return "Run Token Scanner and Dev Wallet Detector before touching it."
+  if (verdict === "WATCH") return "Watch only; verify LP control and holder distribution before trusting it."
   return "Not enough verified data to make a strong call."
 }
 
