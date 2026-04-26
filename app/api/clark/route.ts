@@ -1063,7 +1063,7 @@ function defaultAction(verdict: string): string {
   if (verdict === "AVOID") return "Avoid until the critical risk is resolved or verified safe."
   if (verdict === "TRUSTWORTHY") return "Monitor normally; no major risk surfaced from available data."
   if (verdict === "SCAN DEEPER") return "Run Token Scanner and Dev Wallet Detector before touching it."
-  if (verdict === "WATCH") return "Watch only; verify LP control and holder distribution before trusting it."
+  if (verdict === "WATCH") return "Watch only; verify holder distribution, LP control, and linked-wallet behavior before trusting it."
   return "Not enough verified data to make a strong call."
 }
 
@@ -1822,7 +1822,19 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal server error";
     console.error("[Clark]", message);
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({
+      ok: true,
+      feature: "clark-ai",
+      data: {
+        reply: "I can continue with a safe fallback. Paste a contract or wallet and I’ll retry with available on-chain context.",
+        response: "I can continue with a safe fallback. Paste a contract or wallet and I’ll retry with available on-chain context.",
+        message: "I can continue with a safe fallback. Paste a contract or wallet and I’ll retry with available on-chain context.",
+        verdict: "SCAN DEEPER",
+        confidence: "Low",
+        source: "fallback",
+        mode: "fallback",
+      },
+    }, { status: 200 });
   }
 }
 

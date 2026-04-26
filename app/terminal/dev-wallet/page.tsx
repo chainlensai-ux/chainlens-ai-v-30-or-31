@@ -119,6 +119,12 @@ function linkedWalletTag(wallet: LinkedWallet): string {
   return 'Unknown transfer'
 }
 
+function extractReadSummary(text: string): string {
+  const readMatch = text.match(/Read:\s*([\s\S]*?)(?:\n(?:Key signals|Risks|Next action)\s*:|$)/i)
+  const read = (readMatch?.[1] ?? text).replace(/\s+/g, ' ').trim()
+  return clampSentences(read, 3)
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -206,7 +212,7 @@ function WarningBanner({ warnings }: { warnings: string[] }) {
 
 function VerdictCard({ verdict, askClarkHref }: { verdict: ClarkVerdict; askClarkHref: string }) {
   const style = VERDICT_STYLE[verdict.label]
-  const shortSummary = clampSentences(verdict.summary, 3)
+  const shortSummary = extractReadSummary(verdict.summary)
   const topSignals = verdict.keySignals.slice(0, 3)
   const topRisks = verdict.risks.slice(0, 3)
   return (
@@ -265,7 +271,14 @@ function VerdictCard({ verdict, askClarkHref }: { verdict: ClarkVerdict; askClar
             </span>
           </div>
 
-          {/* Summary */}
+          {/* Read */}
+          <p style={{
+            fontSize: '10px', fontWeight: 700, color: '#3a5268',
+            textTransform: 'uppercase', letterSpacing: '0.12em',
+            fontFamily: 'var(--font-plex-mono)', margin: '0 0 6px',
+          }}>
+            Read
+          </p>
           <p style={{
             fontSize: '13px', color: '#e2e8f0', lineHeight: 1.6, margin: '0 0 16px',
           }}>
@@ -311,7 +324,7 @@ function VerdictCard({ verdict, askClarkHref }: { verdict: ClarkVerdict; askClar
             fontSize: '11px', color: '#64748b',
             fontFamily: 'var(--font-plex-mono)',
           }}>
-            NEXT: {verdict.nextAction}
+            Next: {verdict.nextAction}
           </div>
         </div>
       </div>

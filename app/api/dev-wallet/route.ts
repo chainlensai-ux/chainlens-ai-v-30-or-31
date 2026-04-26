@@ -55,6 +55,15 @@ interface VerdictSignalInput {
   suspiciousTransfers: boolean
   holderDataAvailable: boolean
   supplyControlled: number | null
+  securityDataAvailable: boolean
+  liquidityDataAvailable: boolean
+  honeypot: boolean | null
+  buyTax: number | null
+  sellTax: number | null
+  lpLocked: boolean | null
+  lpLockDataAvailable: boolean
+  lpHolderConcentration: number | null
+  lpHolderDataAvailable: boolean
 }
 
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
@@ -350,15 +359,28 @@ function detectSuspiciousTransfers(
 }
 
 function computeRiskLabel(input: VerdictSignalInput): ClarkVerdict['label'] {
-  if (input.suspiciousTransfers && input.linkedWallets.length >= 5) return 'AVOID'
-  if (input.supplyControlled !== null && input.supplyControlled >= 50) return 'AVOID'
+  const verifiedCriticalRisk =
+    (input.suspiciousTransfers && input.linkedWallets.length >= 5) ||
+    (input.holderDataAvailable && input.supplyControlled !== null && input.supplyControlled >= 50) ||
+    (input.honeypot === true && input.securityDataAvailable) ||
+    (((input.buyTax ?? 0) > 15 || (input.sellTax ?? 0) > 15) && input.securityDataAvailable) ||
+    (input.lpLockDataAvailable && input.lpLocked === false) ||
+    (input.lpHolderDataAvailable && input.lpHolderConcentration !== null && input.lpHolderConcentration >= 80)
 
-  if (!input.deployerAddress && input.linkedWallets.length === 0 && !input.suspiciousTransfers && input.supplyControlled === null) {
+  if (verifiedCriticalRisk) return 'AVOID'
+
+  const hasUsefulSignal =
+    Boolean(input.deployerAddress) ||
+    input.linkedWallets.length > 0 ||
+    input.deployerConfidence === 'medium' ||
+    input.deployerConfidence === 'low' ||
+    input.holderDataAvailable === false ||
+    input.liquidityDataAvailable === false ||
+    input.securityDataAvailable === false ||
+    (!input.suspiciousTransfers && input.linkedWallets.length > 0)
+
+  if (!hasUsefulSignal) {
     return 'UNKNOWN'
-  }
-
-  if (input.deployerAddress && (input.deployerConfidence === 'low' || !input.holderDataAvailable)) {
-    return 'WATCH'
   }
 
   if (
@@ -367,7 +389,9 @@ function computeRiskLabel(input: VerdictSignalInput): ClarkVerdict['label'] {
     !input.suspiciousTransfers &&
     input.holderDataAvailable &&
     input.supplyControlled !== null &&
-    input.supplyControlled < 20
+    input.supplyControlled < 20 &&
+    input.liquidityDataAvailable &&
+    input.securityDataAvailable
   ) {
     return 'TRUSTWORTHY'
   }
@@ -437,6 +461,14 @@ function sanitizeClarkText(
   }
 
   return cleaned
+}
+
+function defaultNextAction(label: ClarkVerdict['label']): string {
+  if (label === 'WATCH') return 'Watch only; verify holder distribution, LP control, and linked-wallet behavior before trusting it.'
+  if (label === 'AVOID') return 'Avoid until the critical risk is resolved or verified safe.'
+  if (label === 'UNKNOWN') return 'Not enough verified data to make a strong call.'
+  if (label === 'SCAN DEEPER') return 'Review linked-wallet behavior and rerun the scan with fuller data.'
+  return 'Monitor regularly and keep validating new wallet activity.'
 }
 
 async function getClarkVerdict(origin: string, data: {
@@ -533,6 +565,15 @@ async function getClarkVerdict(origin: string, data: {
             suspiciousTransfers: data.suspiciousTransfers,
             holderDataAvailable: data.holderDataAvailable,
             supplyControlled: data.supplyControlled,
+            securityDataAvailable: data.securityDataAvailable,
+            liquidityDataAvailable: data.liquidityDataAvailable,
+            honeypot: null,
+            buyTax: null,
+            sellTax: null,
+            lpLocked: null,
+            lpLockDataAvailable: false,
+            lpHolderConcentration: null,
+            lpHolderDataAvailable: false,
           }),
         },
       }),
@@ -556,6 +597,15 @@ async function getClarkVerdict(origin: string, data: {
       suspiciousTransfers: data.suspiciousTransfers,
       holderDataAvailable: data.holderDataAvailable,
       supplyControlled: data.supplyControlled,
+      securityDataAvailable: data.securityDataAvailable,
+      liquidityDataAvailable: data.liquidityDataAvailable,
+      honeypot: null,
+      buyTax: null,
+      sellTax: null,
+      lpLocked: null,
+      lpLockDataAvailable: false,
+      lpHolderConcentration: null,
+      lpHolderDataAvailable: false,
     })
     const labelFromField = normalizeLabel(bodyData?.verdict)
     const confidenceFromField = normalizeConfidence(bodyData?.confidence)
@@ -618,6 +668,8 @@ async function getClarkVerdict(origin: string, data: {
     if (!data.securityDataAvailable && !summary.includes('Security scan unavailable')) {
       summary = `${summary} Security scan unavailable from current data sources.`
     }
+    const readOnly = summary.match(/Read:\s*([\s\S]*?)(?:\n(?:Key signals|Risks|Next action)\s*:|$)/i)?.[1]?.trim()
+    if (readOnly) summary = readOnly
     const sanitizedKeySignals = sanitizeClarkText(
       Array.isArray(parsed.keySignals) ? parsed.keySignals.map(String) : fallbackSignals,
       data
@@ -638,7 +690,9 @@ async function getClarkVerdict(origin: string, data: {
         summary,
         keySignals: sanitizedKeySignals.length > 0 ? sanitizedKeySignals : fallbackSignals,
         risks: sanitizedRisks.length > 0 ? sanitizedRisks : fallbackRisks,
-        nextAction: typeof parsed.nextAction === 'string' ? parsed.nextAction : 'Verify manually on an explorer before trading.',
+        nextAction: typeof parsed.nextAction === 'string' && parsed.nextAction.trim().length > 0
+          ? parsed.nextAction
+          : defaultNextAction(finalLabel),
       },
       clarkError: null,
     }

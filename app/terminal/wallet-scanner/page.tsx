@@ -21,7 +21,7 @@ type WalletResult = {
   address: string
   totalValue: number
   holdings: Holding[]
-  txCount: number
+  txCount: number | null
   firstTxDate: string | null
   walletAgeDays: number | null
 }
@@ -42,13 +42,6 @@ function fmtBalance(v: number): string {
   return v.toFixed(2)
 }
 
-function fmtAge(days: number | null): string {
-  if (days === null) return '—'
-  if (days < 30)     return `${days}d`
-  if (days < 365)    return `${Math.floor(days / 30)}mo`
-  return `${(days / 365).toFixed(1)}y`
-}
-
 function fmtPct(v: number | null): string {
   if (v === null) return '—'
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
@@ -60,37 +53,58 @@ function shortAddr(a: string): string {
 
 // ── Clark verdict parser ─────────────────────────────────────────────────────
 
-type ClarkSections = {
-  'PERSONALITY TYPE': string
-  'RISK SCORE': string
-  'BIGGEST FLAG': string
-  'VERDICT': string
-  riskNum: number | null
+type ClarkVerdictCard = {
+  verdict: 'AVOID' | 'WATCH' | 'SCAN DEEPER' | 'TRUSTWORTHY' | 'UNKNOWN'
+  confidence: 'Low' | 'Medium' | 'High'
+  read: string
+  keySignals: string[]
+  risks: string[]
+  nextAction: string
 }
 
-function parseClarkSections(text: string): ClarkSections {
-  const out: ClarkSections = {
-    'PERSONALITY TYPE': '', 'RISK SCORE': '', 'BIGGEST FLAG': '', 'VERDICT': '', riskNum: null,
-  }
-  const keys = ['PERSONALITY TYPE', 'RISK SCORE', 'BIGGEST FLAG', 'VERDICT'] as const
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-  let cur: typeof keys[number] | null = null
+const FALLBACK_VERDICT: ClarkVerdictCard = {
+  verdict: 'SCAN DEEPER',
+  confidence: 'Low',
+  read: 'Wallet balances loaded, but Clark could not complete the AI verdict right now.',
+  keySignals: [
+    'Wallet balances were retrieved',
+    'Token holdings are visible',
+    'Portfolio value is available if real',
+  ],
+  risks: [
+    'AI verdict temporarily unavailable',
+    'Transaction behavior not fully summarized',
+    'Manual review recommended',
+  ],
+  nextAction: 'Review holdings now, then rerun Clark analysis in a moment.',
+}
 
-  for (const line of lines) {
-    const clean = line.replace(/^\*{1,2}|^\#+\s*|\d+[.)]\s*/g, '').replace(/\*{1,2}$/, '').trim()
-    const matched = keys.find(k => clean.toUpperCase().startsWith(k))
-    if (matched) {
-      cur = matched
-      const rest = clean.slice(matched.length).replace(/^[\s—:\-]+/, '').trim()
-      if (rest) out[cur] = rest
-    } else if (cur) {
-      out[cur] = out[cur] ? out[cur] + ' ' + line : line
-    }
-  }
+function extractSection(text: string, header: string): string {
+  const m = text.match(new RegExp(`${header}\\s*:\\s*([\\s\\S]*?)(?:\\n(?:Asset|Verdict|Confidence|Read|Key signals|Risks|Next action)\\s*:|$)`, 'i'))
+  return (m?.[1] ?? '').trim()
+}
 
-  const m = out['RISK SCORE'].match(/(\d+)/)
-  if (m) out.riskNum = Math.min(10, Math.max(1, parseInt(m[1])))
-  return out
+function parseStructuredClark(text: string): ClarkVerdictCard | null {
+  const verdict = text.match(/\bVerdict:\s*(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/i)?.[1]?.toUpperCase() as ClarkVerdictCard['verdict'] | undefined
+  const confidence = text.match(/\bConfidence:\s*(Low|Medium|High)\b/i)?.[1] as ClarkVerdictCard['confidence'] | undefined
+  if (!verdict || !confidence) return null
+  const read = extractSection(text, 'Read') || 'Not enough verified data to make a strong call.'
+  const bulletify = (content: string, fallback: string[]) => {
+    const rows = content
+      .split(/\n|•|-/)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .slice(0, 3)
+    return rows.length > 0 ? rows : fallback
+  }
+  return {
+    verdict,
+    confidence,
+    read,
+    keySignals: bulletify(extractSection(text, 'Key signals'), FALLBACK_VERDICT.keySignals),
+    risks: bulletify(extractSection(text, 'Risks'), FALLBACK_VERDICT.risks),
+    nextAction: extractSection(text, 'Next action') || FALLBACK_VERDICT.nextAction,
+  }
 }
 
 // ── Loading dots ─────────────────────────────────────────────────────────────
@@ -118,8 +132,7 @@ export default function WalletScannerPage() {
   const [error, setError]               = useState<string | null>(null)
   const [result, setResult]             = useState<WalletResult | null>(null)
   const [clarkLoading, setClarkLoading]       = useState(false)
-  const [clarkVerdict, setClarkVerdict]       = useState<string | null>(null)
-  const [clarkError, setClarkError]           = useState<string | null>(null)
+  const [clarkVerdict, setClarkVerdict]       = useState<ClarkVerdictCard | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
 
   async function handleScan() {
@@ -129,7 +142,6 @@ export default function WalletScannerPage() {
     setError(null)
     setResult(null)
     setClarkVerdict(null)
-    setClarkError(null)
     setShowAllHoldings(false)
 
     try {
@@ -149,52 +161,72 @@ export default function WalletScannerPage() {
     }
   }
 
+  function dataQualityForWallet(data: WalletResult): 'Complete' | 'Partial' | 'Limited' {
+    const hasHoldings = data.holdings.length > 0
+    const hasValue = data.totalValue > 0
+    const hasTxMeta = data.txCount !== null || data.firstTxDate !== null
+    if (hasHoldings && hasValue && hasTxMeta) return 'Complete'
+    if (hasHoldings || hasValue) return 'Partial'
+    return 'Limited'
+  }
+
   async function triggerClark(address: string, data: WalletResult) {
     setClarkLoading(true)
     try {
       const sorted = [...data.holdings].sort((a, b) => b.value - a.value)
-      const holdingLines = sorted.slice(0, 10).map(h =>
-        `  - ${h.symbol} (${h.name}): balance=${fmtBalance(h.balance)}, value=${fmtUSD(h.value)}, 24h=${fmtPct(h.change24h)}, chain=${h.chain ?? 'unknown'}`
-      ).join('\n')
-
-      const prompt =
-        `Scan this wallet and give me a personality read + risk verdict.\n\n` +
-        `Wallet address: ${address}\n` +
-        `Total portfolio value: ${fmtUSD(data.totalValue)}\n` +
-        `Token count: ${data.holdings.length}\n` +
-        `Transaction count (Ethereum nonce): ${data.txCount}\n` +
-        `Wallet age: ${fmtAge(data.walletAgeDays)}` +
-        (data.firstTxDate ? ` (first tx: ${new Date(data.firstTxDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })})` : '') + '\n\n' +
-        `Top holdings:\n${holdingLines || '  none'}\n\n` +
-        `Using only the wallet data above, give:\n` +
-        `1. PERSONALITY TYPE — one punchy label (e.g. Diamond Hand Degen, Yield Farmer, NFT Flipper, Airdrop Hunter)\n` +
-        `2. RISK SCORE — 1–10 with one sentence why\n` +
-        `3. BIGGEST FLAG — top risk pattern you see\n` +
-        `4. VERDICT — 2–3 lines, direct, Base-native tone`
+      const topHoldings = sorted.slice(0, 10).map(h => ({
+        symbol: h.symbol,
+        name: h.name,
+        balance: h.balance,
+        valueUsd: h.value,
+        change24h: h.change24h,
+        chain: h.chain,
+      }))
+      const largest = sorted[0] ?? null
+      const stablecoinExposureUsd = sorted
+        .filter(h => /^(USDC|USDT|DAI|LUSD|USDE|USDBC)$/i.test(h.symbol))
+        .reduce((acc, h) => acc + h.value, 0)
+      const nativeEthBalance = sorted.find(h => /^ETH$/i.test(h.symbol))?.balance ?? null
+      const notableActivity: string[] = []
+      if (data.txCount !== null) notableActivity.push(`Transaction count observed: ${data.txCount}`)
+      if (data.firstTxDate) notableActivity.push(`First seen activity: ${new Date(data.firstTxDate).toISOString().slice(0, 10)}`)
+      const payload = {
+        feature: 'clark-ai',
+        mode: 'wallet-analysis',
+        message: 'Analyze this wallet summary',
+        prompt: 'Analyze this wallet summary',
+        walletAddress: address,
+        context: {
+          walletAddress: address,
+          portfolioValueUsd: data.totalValue,
+          tokenCount: data.holdings.length,
+          topHoldings,
+          largestHolding: largest ? { symbol: largest.symbol, name: largest.name, valueUsd: largest.value } : null,
+          stablecoinExposureUsd,
+          nativeEthBalance,
+          dataQuality: dataQualityForWallet(data),
+          warnings: [],
+          transactionCount: data.txCount,
+          latestActivityAt: null,
+          notableActivity: notableActivity.slice(0, 5),
+        },
+      }
 
       const clarkRes = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'wallet-scanner', walletAddress: address, context: data }),
+        body: JSON.stringify(payload),
       })
       const clarkJson = await clarkRes.json()
-      const text = clarkJson.data?.reply ?? clarkJson.data?.analysis ?? clarkJson.data?.response ?? null
-      if (text) {
-        setClarkVerdict(text)
-      } else {
-        setClarkError(clarkJson.error ?? 'No verdict returned.')
-      }
+      const text = clarkJson?.data?.reply ?? clarkJson?.data?.analysis ?? clarkJson?.data?.response ?? null
+      const parsed = typeof text === 'string' ? parseStructuredClark(text) : null
+      setClarkVerdict(parsed ?? FALLBACK_VERDICT)
     } catch {
-      setClarkError('Clark analysis failed.')
+      setClarkVerdict(FALLBACK_VERDICT)
     } finally {
       setClarkLoading(false)
     }
   }
-
-  const totalPnlPct = result && result.holdings.length > 0
-    ? result.holdings.reduce((s, h) => s + (h.change24h ?? 0) * h.value, 0) /
-      (result.totalValue || 1)
-    : null
 
   return (
     <>
@@ -385,10 +417,8 @@ export default function WalletScannerPage() {
           {/* Results */}
           {result && !loading && (() => {
             const sorted = [...result.holdings].sort((a, b) => b.value - a.value)
-            const withChange = result.holdings.filter(h => h.change24h !== null)
-            const winRate = withChange.length > 0
-              ? (withChange.filter(h => (h.change24h ?? 0) >= 0).length / withChange.length) * 100
-              : null
+            const largest = sorted[0] ?? null
+            const quality = dataQualityForWallet(result)
             return (
             <div style={{ maxWidth: '720px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
@@ -399,13 +429,11 @@ export default function WalletScannerPage() {
                 borderRadius: '18px',
                 position: 'relative', overflow: 'hidden',
               }}>
-                {/* Top gradient line */}
                 <div style={{
                   position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
                   background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
                 }} />
                 <div style={{ padding: '28px 32px' }}>
-                  {/* Label */}
                   <div style={{
                     fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
                     color: '#2DD4BF', textTransform: 'uppercase',
@@ -414,16 +442,14 @@ export default function WalletScannerPage() {
                   }}>
                     Portfolio Value
                   </div>
-                  {/* Value */}
                   <div style={{
                     fontSize: '52px', fontWeight: 900, color: '#f1f5f9',
                     fontFamily: 'var(--font-inter, Inter, sans-serif)',
                     letterSpacing: '-0.03em', lineHeight: 1,
                     marginBottom: '14px',
                   }}>
-                    {fmtUSD(result.totalValue)}
+                    {result.totalValue > 0 ? fmtUSD(result.totalValue) : 'Unavailable'}
                   </div>
-                  {/* 24h PnL row */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <span style={{
                       fontSize: '12px', color: 'rgba(255,255,255,0.32)',
@@ -431,56 +457,16 @@ export default function WalletScannerPage() {
                     }}>
                       {shortAddr(result.address)}
                     </span>
-                    {totalPnlPct !== null && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span style={{
-                          fontSize: '13px', fontWeight: 700,
-                          color: totalPnlPct >= 0 ? '#2DD4BF' : '#ef4444',
-                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                        }}>
-                          {totalPnlPct >= 0 ? '▲' : '▼'} {fmtPct(totalPnlPct)}
-                        </span>
-                        <span style={{
-                          fontSize: '11px', color: 'rgba(255,255,255,0.30)',
-                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                        }}>
-                          24h
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
 
-              {/* Four stat cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                 {[
-                  {
-                    label: 'Wallet Age',
-                    value: fmtAge(result.walletAgeDays),
-                    sub: result.firstTxDate
-                      ? new Date(result.firstTxDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
-                      : 'Unknown',
-                    color: '#a78bfa',
-                  },
-                  {
-                    label: 'Transactions',
-                    value: result.txCount.toLocaleString(),
-                    sub: `${sorted.length} token${sorted.length !== 1 ? 's' : ''} held`,
-                    color: '#2DD4BF',
-                  },
-                  {
-                    label: 'Profit / Loss',
-                    value: totalPnlPct !== null ? fmtPct(totalPnlPct) : '—',
-                    sub: '24h weighted',
-                    color: totalPnlPct === null ? 'rgba(255,255,255,0.35)' : totalPnlPct >= 0 ? '#2DD4BF' : '#ef4444',
-                  },
-                  {
-                    label: 'Win Rate',
-                    value: winRate !== null ? `${winRate.toFixed(0)}%` : '—',
-                    sub: `of ${withChange.length} tokens`,
-                    color: winRate === null ? 'rgba(255,255,255,0.35)' : winRate >= 50 ? '#2DD4BF' : '#a78bfa',
-                  },
+                  { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : 'Unavailable', sub: 'From wallet balances', color: '#2DD4BF' },
+                  { label: 'Token Count', value: sorted.length.toLocaleString(), sub: 'Visible token balances', color: '#a78bfa' },
+                  { label: 'Largest Holding', value: largest ? largest.symbol : 'Unavailable', sub: largest ? fmtUSD(largest.value) : 'No holdings found', color: '#fbbf24' },
+                  { label: 'Data Quality', value: quality, sub: 'Complete / Partial / Limited', color: quality === 'Complete' ? '#2DD4BF' : quality === 'Partial' ? '#fbbf24' : '#f87171' },
                 ].map(card => (
                   <div key={card.label} style={{
                     background: '#080c14',
@@ -512,9 +498,8 @@ export default function WalletScannerPage() {
                 ))}
               </div>
 
-              {/* Holdings table */}
               {sorted.length > 0 ? (() => {
-                const PREVIEW = 5
+                const PREVIEW = 10
                 const visible = showAllHoldings ? sorted : sorted.slice(0, PREVIEW)
                 const hidden  = sorted.length - PREVIEW
                 return (
@@ -697,7 +682,7 @@ export default function WalletScannerPage() {
                   borderRadius: '14px', color: 'rgba(255,255,255,0.30)',
                   fontSize: '13px', fontFamily: 'var(--font-inter, Inter, sans-serif)',
                 }}>
-                  No token holdings found for this wallet.
+                  Wallet balances unavailable right now. Try again.
                 </div>
               )}
             </div>
@@ -756,198 +741,55 @@ export default function WalletScannerPage() {
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
 
             {/* Idle */}
-            {!result && !clarkLoading && !clarkVerdict && !clarkError && (
+            {!result && !clarkLoading && !clarkVerdict && (
               <p style={{
                 fontSize: '13px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.7,
                 fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
               }}>
-                Scan a wallet and Clark will analyse the portfolio — personality read, risk flags, and a full verdict.
+                Scan a wallet and Clark will return a structured verdict with key signals and risks.
               </p>
             )}
 
             {/* Loading */}
             {clarkLoading && <ClarkDots />}
 
-            {/* Error */}
-            {clarkError && !clarkLoading && (
-              <p style={{
-                fontSize: '13px', color: '#fca5a5', lineHeight: 1.6,
-                fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
-              }}>
-                {clarkError}
-              </p>
-            )}
-
             {/* Structured verdict */}
-            {clarkVerdict && !clarkLoading && (() => {
-              const p = parseClarkSections(clarkVerdict)
-              const rn = p.riskNum
-              const riskColor = !rn ? '#2DD4BF' : rn <= 3 ? '#2DD4BF' : rn <= 6 ? '#f59e0b' : '#ef4444'
-              const riskLabel = !rn ? '—'        : rn <= 3 ? 'LOW'      : rn <= 6 ? 'MEDIUM'   : 'HIGH'
-              const R = 44
-              const C = 2 * Math.PI * R
-              const filled = rn ? (rn / 10) * C : 0
-
-              return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-
-                  {/* Risk gauge card */}
-                  <div style={{
-                    background: 'rgba(255,255,255,0.03)',
-                    border: '1px solid rgba(255,255,255,0.07)',
-                    borderRadius: '14px', padding: '18px 20px',
-                    display: 'flex', alignItems: 'center', gap: '18px',
-                  }}>
-                    {/* SVG gauge */}
-                    <svg width="90" height="90" viewBox="0 0 120 120" style={{ flexShrink: 0 }}>
-                      <circle cx="60" cy="60" r={R} fill="none"
-                        stroke="rgba(255,255,255,0.07)" strokeWidth="9" />
-                      {rn && (
-                        <circle cx="60" cy="60" r={R} fill="none"
-                          stroke={riskColor} strokeWidth="9" strokeLinecap="round"
-                          strokeDasharray={`${filled} ${C}`}
-                          strokeDashoffset={C / 4}
-                          style={{ filter: `drop-shadow(0 0 5px ${riskColor}99)`, transition: 'stroke-dasharray 0.6s ease' }}
-                        />
-                      )}
-                      <text x="60" y="54" textAnchor="middle" dominantBaseline="middle"
-                        fill="#f1f5f9" fontSize="24" fontWeight="800" fontFamily="Inter,sans-serif">
-                        {rn ?? '—'}
-                      </text>
-                      <text x="60" y="74" textAnchor="middle" dominantBaseline="middle"
-                        fill="rgba(255,255,255,0.30)" fontSize="11" fontFamily="IBM Plex Mono,monospace">
-                        /10
-                      </text>
-                    </svg>
-                    {/* Risk label + reason */}
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{
-                        fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                        color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase',
-                        fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                        marginBottom: '5px',
-                      }}>
-                        Risk Level
-                      </div>
-                      <div style={{
-                        fontSize: '20px', fontWeight: 800, color: riskColor,
-                        fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                        letterSpacing: '-0.01em', marginBottom: '6px',
-                      }}>
-                        {riskLabel}
-                      </div>
-                      {p['RISK SCORE'] && (
-                        <div style={{
-                          fontSize: '11px', color: 'rgba(255,255,255,0.38)', lineHeight: 1.5,
-                          fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                          overflow: 'hidden', display: '-webkit-box',
-                          WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
-                        }}>
-                          {p['RISK SCORE'].replace(/^\d+(?:\/\d+)?[\s—\-:]+/, '')}
-                        </div>
-                      )}
-                    </div>
+            {clarkVerdict && !clarkLoading && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: '12px', padding: '14px 16px',
+                }}>
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '10px', fontWeight: 700, color: '#2DD4BF', letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                      {clarkVerdict.verdict}
+                    </span>
+                    <span style={{ fontSize: '10px', fontWeight: 700, color: '#fbbf24', letterSpacing: '0.10em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                      {clarkVerdict.confidence} confidence
+                    </span>
                   </div>
 
-                  {/* Personality type */}
-                  {p['PERSONALITY TYPE'] && (
-                    <div style={{
-                      background: 'rgba(255,255,255,0.03)',
-                      border: '1px solid rgba(255,255,255,0.07)',
-                      borderRadius: '12px', padding: '14px 16px',
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '7px' }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
-                        </svg>
-                        <span style={{
-                          fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                          color: '#2DD4BF', textTransform: 'uppercase',
-                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                        }}>
-                          Personality Type
-                        </span>
-                      </div>
-                      <div style={{
-                        fontSize: '14px', fontWeight: 600, color: '#f1f5f9', lineHeight: 1.5,
-                        fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                      }}>
-                        {p['PERSONALITY TYPE']}
-                      </div>
-                    </div>
-                  )}
+                  <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', margin: '0 0 6px' }}>Read</p>
+                  <p style={{ fontSize: '13px', color: '#ffffff', lineHeight: 1.6, margin: '0 0 12px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                    {clarkVerdict.read}
+                  </p>
 
-                  {/* Biggest flag */}
-                  {p['BIGGEST FLAG'] && (
-                    <div style={{
-                      background: 'rgba(239,68,68,0.05)',
-                      border: '1px solid rgba(239,68,68,0.18)',
-                      borderRadius: '12px', padding: '14px 16px',
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '7px' }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-                          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                        </svg>
-                        <span style={{
-                          fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                          color: '#f87171', textTransform: 'uppercase',
-                          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                        }}>
-                          Biggest Flag
-                        </span>
-                      </div>
-                      <div style={{
-                        fontSize: '13px', color: 'rgba(255,255,255,0.72)', lineHeight: 1.6,
-                        fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                      }}>
-                        {p['BIGGEST FLAG']}
-                      </div>
-                    </div>
-                  )}
+                  <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', margin: '0 0 6px' }}>Key signals</p>
+                  {clarkVerdict.keySignals.slice(0, 3).map((line, i) => (
+                    <p key={`s-${i}`} style={{ fontSize: '12px', color: '#cbd5e1', margin: '0 0 4px' }}>- {line}</p>
+                  ))}
 
-                  {/* Verdict */}
-                  {p['VERDICT'] && (
-                    <div style={{
-                      borderLeft: '3px solid #2DD4BF',
-                      paddingLeft: '14px', paddingTop: '10px', paddingBottom: '10px',
-                      background: 'rgba(45,212,191,0.04)',
-                      borderRadius: '0 10px 10px 0',
-                    }}>
-                      <div style={{
-                        fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                        color: '#2DD4BF', textTransform: 'uppercase',
-                        fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                        marginBottom: '7px',
-                      }}>
-                        Verdict
-                      </div>
-                      <p style={{
-                        fontSize: '13px', fontStyle: 'italic',
-                        color: '#ffffff', lineHeight: 1.65, margin: 0,
-                        fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                      }}>
-                        {p['VERDICT']}
-                      </p>
-                    </div>
-                  )}
+                  <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', margin: '12px 0 6px' }}>Risks</p>
+                  {clarkVerdict.risks.slice(0, 3).map((line, i) => (
+                    <p key={`r-${i}`} style={{ fontSize: '12px', color: '#fca5a5', margin: '0 0 4px' }}>- {line}</p>
+                  ))}
 
-                  {/* Fallback: raw text if parsing found nothing */}
-                  {!p['PERSONALITY TYPE'] && !p['BIGGEST FLAG'] && !p['VERDICT'] && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      {clarkVerdict.split('\n').filter(l => l.trim()).map((line, i) => (
-                        <p key={i} style={{
-                          fontSize: '13px', color: '#ffffff', lineHeight: 1.6,
-                          fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
-                        }}>
-                          {line.replace(/^#{1,3} /, '')}
-                        </p>
-                      ))}
-                    </div>
-                  )}
+                  <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', margin: '12px 0 6px' }}>Next action</p>
+                  <p style={{ fontSize: '12px', color: '#94a3b8', margin: 0 }}>{clarkVerdict.nextAction}</p>
                 </div>
-              )
-            })()}
+              </div>
+            )}
           </div>
 
           {/* Footer */}
