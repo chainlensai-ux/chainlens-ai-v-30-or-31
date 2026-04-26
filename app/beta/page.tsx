@@ -1,12 +1,12 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
 import Image from 'next/image'
 
 const CORRECT_CODE = 'CHAINLENS2026'
+const SESSION_KEY = 'chainlens_beta_access'
+const SESSION_VALUE = 'granted'
 
-// Deterministic particle positions so server/client match
 const PARTICLES = Array.from({ length: 48 }, (_, i) => {
   const seed = i * 7919
   return {
@@ -19,33 +19,43 @@ const PARTICLES = Array.from({ length: 48 }, (_, i) => {
 })
 
 export default function BetaPage() {
-  const router = useRouter()
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [shaking, setShaking] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [hasAccess, setHasAccess] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (localStorage.getItem('betaAccess') === 'true') {
-      router.replace('/terminal')
-    } else {
-      setLoading(false)
+    const granted = sessionStorage.getItem(SESSION_KEY) === SESSION_VALUE
+    setHasAccess(granted)
+    setLoading(false)
+    if (!granted) {
       setTimeout(() => inputRef.current?.focus(), 60)
     }
-  }, [router])
+  }, [])
 
   function handleSubmit(e?: React.FormEvent) {
     e?.preventDefault()
     const trimmed = code.trim().toUpperCase()
     if (trimmed === CORRECT_CODE) {
-      localStorage.setItem('betaAccess', 'true')
-      router.replace('/terminal')
-    } else {
-      setError('Invalid access code.')
-      setShaking(true)
-      setTimeout(() => setShaking(false), 500)
+      sessionStorage.setItem(SESSION_KEY, SESSION_VALUE)
+      setHasAccess(true)
+      setError(null)
+      return
     }
+
+    setError('Incorrect beta password.')
+    setShaking(true)
+    setTimeout(() => setShaking(false), 500)
+  }
+
+  function handleLock() {
+    sessionStorage.removeItem(SESSION_KEY)
+    setHasAccess(false)
+    setCode('')
+    setError(null)
+    setTimeout(() => inputRef.current?.focus(), 60)
   }
 
   if (loading) return null
@@ -92,8 +102,6 @@ export default function BetaPage() {
         position: 'relative', overflow: 'hidden',
         fontFamily: 'var(--font-inter), Inter, sans-serif',
       }}>
-
-        {/* Particle dots */}
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
           {PARTICLES.map((p, i) => (
             <div key={i} style={{
@@ -111,7 +119,6 @@ export default function BetaPage() {
           ))}
         </div>
 
-        {/* Teal glow behind card */}
         <div style={{
           position: 'absolute', zIndex: 0,
           width: '560px', height: '420px',
@@ -121,7 +128,6 @@ export default function BetaPage() {
           animation: 'beta-glow-breathe 4s ease-in-out infinite',
           pointerEvents: 'none',
         }} />
-        {/* Purple glow */}
         <div style={{
           position: 'absolute', zIndex: 0,
           width: '400px', height: '320px',
@@ -132,7 +138,6 @@ export default function BetaPage() {
           pointerEvents: 'none',
         }} />
 
-        {/* Card */}
         <div
           className={shaking ? 'beta-card-shake' : ''}
           style={{
@@ -148,13 +153,11 @@ export default function BetaPage() {
             animation: 'beta-float 5.5s ease-in-out infinite',
           }}
         >
-          {/* Top accent line */}
           <div style={{
             position: 'absolute', top: 0, left: '12%', right: '12%', height: '1px',
             background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.55), rgba(139,92,246,0.45), transparent)',
           }} />
 
-          {/* Logo */}
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '28px' }}>
             <div style={{
               width: '72px', height: '72px', borderRadius: '18px',
@@ -167,89 +170,103 @@ export default function BetaPage() {
             </div>
           </div>
 
-          {/* Heading */}
-          <h1 style={{
-            fontSize: '24px', fontWeight: 800, color: '#f1f5f9',
-            margin: '0 0 8px', textAlign: 'center',
-            letterSpacing: '-0.01em',
-            fontFamily: 'var(--font-inter), Inter, sans-serif',
-          }}>
-            Beta Access
-          </h1>
+          {!hasAccess ? (
+            <>
+              <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#f1f5f9', margin: '0 0 8px', textAlign: 'center', letterSpacing: '-0.01em' }}>
+                Beta Access
+              </h1>
+              <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 32px', textAlign: 'center', lineHeight: 1.6 }}>
+                Enter your beta access code to continue.
+              </p>
 
-          {/* Subtitle */}
-          <p style={{
-            fontSize: '13px', color: '#94a3b8',
-            margin: '0 0 32px', textAlign: 'center', lineHeight: 1.6,
-            fontFamily: 'var(--font-inter), Inter, sans-serif',
-          }}>
-            Enter your beta access code to continue.
-          </p>
+              <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <input
+                  ref={inputRef}
+                  className="beta-input"
+                  type="password"
+                  value={code}
+                  onChange={e => { setCode(e.target.value); setError(null) }}
+                  placeholder="Access code"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={{
+                    width: '100%', padding: '12px 16px',
+                    background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(255,255,255,0.10)',
+                    borderRadius: '11px',
+                    color: '#e2e8f0', fontSize: '15px',
+                    fontFamily: 'var(--font-plex-mono, "IBM Plex Mono", monospace)',
+                    letterSpacing: '0.12em',
+                    outline: 'none', boxSizing: 'border-box',
+                    transition: 'border-color 0.15s, box-shadow 0.15s',
+                  }}
+                />
 
-          {/* Form */}
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <input
-              ref={inputRef}
-              className="beta-input"
-              type="password"
-              value={code}
-              onChange={e => { setCode(e.target.value); setError(null) }}
-              placeholder="Access code"
-              autoComplete="off"
-              spellCheck={false}
-              style={{
-                width: '100%', padding: '12px 16px',
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid rgba(255,255,255,0.10)',
-                borderRadius: '11px',
-                color: '#e2e8f0', fontSize: '15px',
-                fontFamily: 'var(--font-plex-mono, "IBM Plex Mono", monospace)',
-                letterSpacing: '0.12em',
-                outline: 'none', boxSizing: 'border-box',
-                transition: 'border-color 0.15s, box-shadow 0.15s',
-              }}
-            />
+                {error && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '7px',
+                    padding: '9px 12px', borderRadius: '9px',
+                    background: 'rgba(239,68,68,0.09)',
+                    border: '1px solid rgba(239,68,68,0.22)',
+                    color: '#fca5a5', fontSize: '12px',
+                  }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+                      <circle cx="12" cy="12" r="10" stroke="#fca5a5" strokeWidth="2"/>
+                      <path d="M12 8v4M12 16h.01" stroke="#fca5a5" strokeWidth="2" strokeLinecap="round"/>
+                    </svg>
+                    {error}
+                  </div>
+                )}
 
-            {/* Error */}
-            {error && (
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: '7px',
-                padding: '9px 12px', borderRadius: '9px',
-                background: 'rgba(239,68,68,0.09)',
-                border: '1px solid rgba(239,68,68,0.22)',
-                color: '#fca5a5', fontSize: '12px',
-                fontFamily: 'var(--font-inter), Inter, sans-serif',
-              }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
-                  <circle cx="12" cy="12" r="10" stroke="#fca5a5" strokeWidth="2"/>
-                  <path d="M12 8v4M12 16h.01" stroke="#fca5a5" strokeWidth="2" strokeLinecap="round"/>
-                </svg>
-                {error}
-              </div>
-            )}
+                <button
+                  type="submit"
+                  className="beta-btn"
+                  disabled={!code.trim()}
+                  style={{
+                    width: '100%', padding: '12px 16px',
+                    borderRadius: '11px', border: 'none',
+                    background: code.trim() ? '#2DD4BF' : 'rgba(45,212,191,0.25)',
+                    color: code.trim() ? '#04101a' : 'rgba(255,255,255,0.30)',
+                    fontSize: '12px', fontWeight: 800,
+                    letterSpacing: '0.14em', textTransform: 'uppercase',
+                    cursor: code.trim() ? 'pointer' : 'not-allowed',
+                    fontFamily: 'var(--font-plex-mono, "IBM Plex Mono", monospace)',
+                    boxShadow: code.trim() ? '0 0 20px rgba(45,212,191,0.28), 0 0 8px rgba(45,212,191,0.16)' : 'none',
+                    transition: 'background 0.15s, box-shadow 0.15s, color 0.15s, transform 0.10s',
+                  }}
+                >
+                  Enter
+                </button>
+              </form>
+            </>
+          ) : (
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#f1f5f9', margin: 0 }}>Beta Unlocked</h1>
+              <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0, lineHeight: 1.65 }}>
+                Welcome to ChainLens beta. Your access is active for this browser session.
+              </p>
+              <button
+                type="button"
+                onClick={handleLock}
+                style={{
+                  marginTop: '8px',
+                  width: '100%', padding: '12px 16px',
+                  borderRadius: '11px',
+                  border: '1px solid rgba(239,68,68,0.30)',
+                  background: 'rgba(239,68,68,0.10)',
+                  color: '#fca5a5',
+                  fontSize: '12px',
+                  fontWeight: 800,
+                  letterSpacing: '0.12em',
+                  textTransform: 'uppercase',
+                  cursor: 'pointer',
+                }}
+              >
+                Lock Beta
+              </button>
+            </div>
+          )}
 
-            <button
-              type="submit"
-              className="beta-btn"
-              disabled={!code.trim()}
-              style={{
-                width: '100%', padding: '12px 16px',
-                borderRadius: '11px', border: 'none',
-                background: code.trim() ? '#2DD4BF' : 'rgba(45,212,191,0.25)',
-                color: code.trim() ? '#04101a' : 'rgba(255,255,255,0.30)',
-                fontSize: '12px', fontWeight: 800,
-                letterSpacing: '0.14em', textTransform: 'uppercase',
-                cursor: code.trim() ? 'pointer' : 'not-allowed',
-                fontFamily: 'var(--font-plex-mono, "IBM Plex Mono", monospace)',
-                boxShadow: code.trim() ? '0 0 20px rgba(45,212,191,0.28), 0 0 8px rgba(45,212,191,0.16)' : 'none',
-                transition: 'background 0.15s, box-shadow 0.15s, color 0.15s, transform 0.10s',
-              }}
-            >
-              Enter
-            </button>
-          </form>
-
-          {/* Bottom accent line */}
           <div style={{
             position: 'absolute', bottom: 0, left: '15%', right: '15%', height: '1px',
             background: 'linear-gradient(90deg, transparent, rgba(139,92,246,0.30), rgba(45,212,191,0.30), transparent)',
