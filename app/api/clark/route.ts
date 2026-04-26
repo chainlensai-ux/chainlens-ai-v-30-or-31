@@ -177,7 +177,19 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   const prompt = body.prompt ?? "";
   const t = prompt.toLowerCase();
   const explicitMode = String(body.mode ?? "").toLowerCase();
-  if (explicitMode === "chat" || explicitMode === "casual_help") return "casual_help";
+  if (explicitMode === "chat") {
+    const { intent, address } = detectIntent(prompt);
+    if (intent === "casual_help") return "casual_help";
+    if (intent === "general_market" || intent === "base_radar") return "general_market";
+    if (intent === "educational") return "educational";
+    if (intent === "routing_help") return "routing_help";
+    if (intent === "token_name_lookup") return "analysis";
+    if ((intent === "analysis" || intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety") && address) {
+      return "analysis";
+    }
+    return "unknown";
+  }
+  if (explicitMode === "casual_help") return "casual_help";
   if (explicitMode === "analyst") return "analysis";
   const featureModes = new Set(["dev-wallet", "base-radar", "token-analysis", "wallet-analysis", "liquidity-safety", "scan-token"]);
   if (featureModes.has(explicitMode)) return "feature_context";
@@ -218,6 +230,58 @@ function buildRoutingHelpReply(prompt: string): string {
 
 function buildGeneralMarketNoContextReply(): string {
   return "I need live Base Radar context for that. Open Base Radar or paste a contract and I’ll scan it.";
+}
+
+function formatUsdShort(value: number | null | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+  return `$${value.toFixed(0)}`;
+}
+
+function buildBaseRadarBriefing(tokens: unknown[]): string {
+  const picks = tokens
+    .slice(0, 3)
+    .map((t) => {
+      const token = t as Record<string, unknown>;
+      const symbol = String(token.symbol ?? token.name ?? "TOKEN");
+      const liq = formatUsdShort(typeof token.liquidityUsd === "number" ? token.liquidityUsd : null);
+      const vol = formatUsdShort(typeof token.volume24h === "number" ? token.volume24h : null);
+      const risk = String(token.riskLevel ?? "UNKNOWN");
+      return `- ${symbol}: Liquidity ${liq}, 24h volume ${vol}, risk ${risk}.`;
+    });
+  if (picks.length === 0) return buildGeneralMarketNoContextReply();
+  return `Here’s what’s moving on Base right now:\n${picks.join("\n")}\n\nBest next step:\nOpen Base Radar or scan the strongest contract before touching it.`;
+}
+
+function buildTokenAnalysisFallback(tokenData: unknown, address: string): string {
+  const t = tokenData as Record<string, unknown>;
+  const name = String(t.name ?? "Token");
+  const symbol = String(t.symbol ?? "UNKNOWN");
+  const liquidity = formatUsdShort(typeof t.liquidity === "number" ? t.liquidity : null);
+  const volume = formatUsdShort(typeof t.volume24h === "number" ? t.volume24h : null);
+  return buildStructuredVerdict(
+    "SCAN DEEPER",
+    "Low",
+    `${name} (${symbol}) on Base has market data, but full risk context is incomplete.`,
+    [`Token resolved: ${symbol} (${address})`, `Liquidity: ${liquidity}`, `24h volume: ${volume}`],
+    ["Security and holder concentration are not fully verified in this pass.", "Market data alone is not enough to call it safe."],
+    "Run Token Scanner and validate contract/security fields before entry."
+  );
+}
+
+function buildWalletAnalysisFallback(walletData: unknown, address: string): string {
+  const w = walletData as Record<string, unknown>;
+  const holdings = Array.isArray(w.holdings) ? w.holdings.length : 0;
+  const totalValue = typeof w.totalValue === "number" ? formatUsdShort(w.totalValue) : "n/a";
+  return buildStructuredVerdict(
+    "SCAN DEEPER",
+    "Low",
+    `Wallet ${address} was detected and basic portfolio data is available.`,
+    [`Wallet recognized on Base-compatible flow`, `Holdings detected: ${holdings}`, `Estimated total value: ${totalValue}`],
+    ["Behavioral and counterpart risk requires deeper scanner context.", "Single-pass wallet data is not enough for a strong trust call."],
+    "Run Wallet Scanner for deeper behavior and transfer-risk analysis."
+  );
 }
 
 function missingAddressReply(intent: ClarkIntent): string {
@@ -420,33 +484,37 @@ type BaseTokenCandidate = {
 };
 
 async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandidate[]> {
-  const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=base`;
-  const res = await fetch(url, { headers: { accept: "application/json", origin: "https://chainlens.ai" }, cache: "no-store" });
-  if (!res.ok) return [];
-  const json = await res.json().catch(() => ({}));
-  const pools = Array.isArray((json as Record<string, unknown>)?.data) ? (json as { data: unknown[] }).data : [];
+  try {
+    const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=base`;
+    const res = await fetch(url, { headers: { accept: "application/json", origin: "https://chainlens.ai" }, cache: "no-store" });
+    if (!res.ok) return [];
+    const json = await res.json().catch(() => ({}));
+    const pools = Array.isArray((json as Record<string, unknown>)?.data) ? (json as { data: unknown[] }).data : [];
 
-  const out: BaseTokenCandidate[] = [];
-  const seen = new Set<string>();
-  for (const raw of pools) {
-    const pool = raw as Record<string, unknown>;
-    const relationships = (pool.relationships ?? {}) as Record<string, unknown>;
-    const baseTokenRel = (relationships.base_token ?? {}) as Record<string, unknown>;
-    const baseTokenData = (baseTokenRel.data ?? {}) as Record<string, unknown>;
-    const tokenId = typeof baseTokenData.id === "string" ? baseTokenData.id : "";
-    const contract = idToAddress(tokenId);
-    if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) continue;
-    if (seen.has(contract.toLowerCase())) continue;
-    seen.add(contract.toLowerCase());
+    const out: BaseTokenCandidate[] = [];
+    const seen = new Set<string>();
+    for (const raw of pools) {
+      const pool = raw as Record<string, unknown>;
+      const relationships = (pool.relationships ?? {}) as Record<string, unknown>;
+      const baseTokenRel = (relationships.base_token ?? {}) as Record<string, unknown>;
+      const baseTokenData = (baseTokenRel.data ?? {}) as Record<string, unknown>;
+      const tokenId = typeof baseTokenData.id === "string" ? baseTokenData.id : "";
+      const contract = idToAddress(tokenId);
+      if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) continue;
+      if (seen.has(contract.toLowerCase())) continue;
+      seen.add(contract.toLowerCase());
 
-    const attrs = (pool.attributes ?? {}) as Record<string, unknown>;
-    const poolName = typeof attrs.name === "string" ? attrs.name : "";
-    const tokenNameGuess = poolName.split(" / ")[0]?.trim() || contract;
-    const symbolGuess = tokenNameGuess.split(" ").slice(-1)[0] ?? tokenNameGuess;
-    out.push({ name: tokenNameGuess, symbol: symbolGuess.toUpperCase(), contract });
-    if (out.length >= 5) break;
+      const attrs = (pool.attributes ?? {}) as Record<string, unknown>;
+      const poolName = typeof attrs.name === "string" ? attrs.name : "";
+      const tokenNameGuess = poolName.split(" / ")[0]?.trim() || contract;
+      const symbolGuess = tokenNameGuess.split(" ").slice(-1)[0] ?? tokenNameGuess;
+      out.push({ name: tokenNameGuess, symbol: symbolGuess.toUpperCase(), contract });
+      if (out.length >= 5) break;
+    }
+    return out;
+  } catch {
+    return [];
   }
-  return out;
 }
 
 // Anthropic — injects context as XML blocks so Clark sees structured data
@@ -1414,7 +1482,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   if (replyMode === "general_market") {
-    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply() };
+    const radarRes = await fetch(`${origin}/api/radar`, { cache: "no-store" });
+    const radarJson = await radarRes.json().catch(() => ({}));
+    if (!radarRes.ok) {
+      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply() };
+    }
+    const radarTokens = Array.isArray((radarJson as Record<string, unknown>)?.tokens)
+      ? ((radarJson as Record<string, unknown>).tokens as unknown[])
+      : [];
+    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseRadarBriefing(radarTokens) };
   }
 
   if (replyMode === "educational") {
@@ -1431,6 +1507,39 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       chain,
       mode: "analysis",
       analysis: "Paste a Base contract, wallet, or scan result and I’ll analyze it.",
+    };
+  }
+
+  if (replyMode === "analysis" && address && intent === "unknown") {
+    const tokenData = await callScanToken(address, "contract", origin);
+    if (tokenData) {
+      const context: ClarkContext = { tokenData };
+      let analysis: string;
+      try {
+        analysis = await callAnthropic(`Analyze this Base token contract ${address} with strict verdict format.`, context);
+      } catch {
+        analysis = buildTokenAnalysisFallback(tokenData, address);
+      }
+      return { feature: "clark-ai", chain, mode: "analysis", analysis };
+    }
+
+    const walletRes = await callInternalApi(origin, "/api/wallet", { address });
+    if (walletRes.ok) {
+      const context: ClarkContext = { walletScan: walletRes.json ?? {} };
+      let analysis: string;
+      try {
+        analysis = await callAnthropic(`Analyze this Base wallet ${address} with strict verdict format.`, context);
+      } catch {
+        analysis = buildWalletAnalysisFallback(walletRes.json ?? {}, address);
+      }
+      return { feature: "clark-ai", chain, mode: "analysis", analysis };
+    }
+
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      analysis: "Is this a token contract or wallet?",
     };
   }
 
@@ -1466,7 +1575,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       };
     }
     const context: ClarkContext = { tokenData };
-    const analysis = await callAnthropic(`Analyze Base token ${selected.symbol} (${selected.contract}) and assess current risk.`, context);
+    let analysis: string;
+    try {
+      analysis = await callAnthropic(`Analyze Base token ${selected.symbol} (${selected.contract}) and assess current risk.`, context);
+    } catch {
+      analysis = buildTokenAnalysisFallback(tokenData, selected.contract);
+    }
     return { feature: "clark-ai", chain, mode: "analysis", analysis };
   }
 
