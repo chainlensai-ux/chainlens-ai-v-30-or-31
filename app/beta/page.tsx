@@ -1,12 +1,13 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
 import Image from 'next/image'
+import { useRouter, useSearchParams } from 'next/navigation'
 
 const CORRECT_CODE = 'CHAINLENS2026'
+const SESSION_KEY = 'chainlens_beta_access'
+const SESSION_VALUE = 'granted'
 
-// Deterministic particle positions so server/client match
 const PARTICLES = Array.from({ length: 48 }, (_, i) => {
   const seed = i * 7919
   return {
@@ -20,38 +21,49 @@ const PARTICLES = Array.from({ length: 48 }, (_, i) => {
 
 export default function BetaPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [shaking, setShaking] = useState(false)
   const [loading, setLoading] = useState(true)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  function resolveNextPath() {
+    const next = searchParams.get('next')
+    if (next && next.startsWith('/') && !next.startsWith('//')) return next
+    return '/'
+  }
+
   useEffect(() => {
-    if (localStorage.getItem('betaAccess') === 'true') {
-      router.replace('/terminal')
-    } else {
-      setLoading(false)
-      setTimeout(() => inputRef.current?.focus(), 60)
+    const granted = sessionStorage.getItem(SESSION_KEY) === SESSION_VALUE
+    if (granted) {
+      router.replace(resolveNextPath())
+      return
     }
-  }, [router])
+    setLoading(false)
+    setTimeout(() => inputRef.current?.focus(), 60)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router, searchParams])
 
   function handleSubmit(e?: React.FormEvent) {
     e?.preventDefault()
     const trimmed = code.trim().toUpperCase()
     if (trimmed === CORRECT_CODE) {
-      localStorage.setItem('betaAccess', 'true')
-      router.replace('/terminal')
-    } else {
-      setError('Invalid access code.')
-      setShaking(true)
-      setTimeout(() => setShaking(false), 500)
+      sessionStorage.setItem(SESSION_KEY, SESSION_VALUE)
+      setError(null)
+      router.replace(resolveNextPath())
+      return
     }
+
+    setError('Incorrect beta password.')
+    setShaking(true)
+    setTimeout(() => setShaking(false), 500)
   }
 
   if (loading) return null
 
   return (
-    <>
+    <main>
       <style>{`
         @keyframes beta-float {
           0%, 100% { transform: translateY(0px); }
@@ -92,8 +104,6 @@ export default function BetaPage() {
         position: 'relative', overflow: 'hidden',
         fontFamily: 'var(--font-inter), Inter, sans-serif',
       }}>
-
-        {/* Particle dots */}
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
           {PARTICLES.map((p, i) => (
             <div key={i} style={{
@@ -111,7 +121,6 @@ export default function BetaPage() {
           ))}
         </div>
 
-        {/* Teal glow behind card */}
         <div style={{
           position: 'absolute', zIndex: 0,
           width: '560px', height: '420px',
@@ -121,7 +130,6 @@ export default function BetaPage() {
           animation: 'beta-glow-breathe 4s ease-in-out infinite',
           pointerEvents: 'none',
         }} />
-        {/* Purple glow */}
         <div style={{
           position: 'absolute', zIndex: 0,
           width: '400px', height: '320px',
@@ -132,7 +140,6 @@ export default function BetaPage() {
           pointerEvents: 'none',
         }} />
 
-        {/* Card */}
         <div
           className={shaking ? 'beta-card-shake' : ''}
           style={{
@@ -148,13 +155,11 @@ export default function BetaPage() {
             animation: 'beta-float 5.5s ease-in-out infinite',
           }}
         >
-          {/* Top accent line */}
           <div style={{
             position: 'absolute', top: 0, left: '12%', right: '12%', height: '1px',
             background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.55), rgba(139,92,246,0.45), transparent)',
           }} />
 
-          {/* Logo */}
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '28px' }}>
             <div style={{
               width: '72px', height: '72px', borderRadius: '18px',
@@ -167,26 +172,13 @@ export default function BetaPage() {
             </div>
           </div>
 
-          {/* Heading */}
-          <h1 style={{
-            fontSize: '24px', fontWeight: 800, color: '#f1f5f9',
-            margin: '0 0 8px', textAlign: 'center',
-            letterSpacing: '-0.01em',
-            fontFamily: 'var(--font-inter), Inter, sans-serif',
-          }}>
+          <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#f1f5f9', margin: '0 0 8px', textAlign: 'center', letterSpacing: '-0.01em' }}>
             Beta Access
           </h1>
-
-          {/* Subtitle */}
-          <p style={{
-            fontSize: '13px', color: '#94a3b8',
-            margin: '0 0 32px', textAlign: 'center', lineHeight: 1.6,
-            fontFamily: 'var(--font-inter), Inter, sans-serif',
-          }}>
+          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 32px', textAlign: 'center', lineHeight: 1.6 }}>
             Enter your beta access code to continue.
           </p>
 
-          {/* Form */}
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <input
               ref={inputRef}
@@ -210,7 +202,6 @@ export default function BetaPage() {
               }}
             />
 
-            {/* Error */}
             {error && (
               <div style={{
                 display: 'flex', alignItems: 'center', gap: '7px',
@@ -218,7 +209,6 @@ export default function BetaPage() {
                 background: 'rgba(239,68,68,0.09)',
                 border: '1px solid rgba(239,68,68,0.22)',
                 color: '#fca5a5', fontSize: '12px',
-                fontFamily: 'var(--font-inter), Inter, sans-serif',
               }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
                   <circle cx="12" cy="12" r="10" stroke="#fca5a5" strokeWidth="2"/>
@@ -249,13 +239,12 @@ export default function BetaPage() {
             </button>
           </form>
 
-          {/* Bottom accent line */}
           <div style={{
             position: 'absolute', bottom: 0, left: '15%', right: '15%', height: '1px',
             background: 'linear-gradient(90deg, transparent, rgba(139,92,246,0.30), rgba(45,212,191,0.30), transparent)',
           }} />
         </div>
       </div>
-    </>
+    </main>
   )
 }
