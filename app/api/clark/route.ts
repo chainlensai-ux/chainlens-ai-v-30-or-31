@@ -43,6 +43,17 @@ interface ClarkContext {
   holderScan?: unknown;
 }
 
+type ClarkIntent =
+  | "casual_help"
+  | "token_analysis"
+  | "wallet_analysis"
+  | "dev_wallet"
+  | "liquidity_safety"
+  | "base_radar"
+  | "whale_alert"
+  | "feature_context"
+  | "unknown";
+
 // ---------- Chain name maps ----------
 
 const GOLDRUSH_CHAIN: Record<SupportedChain, string> = {
@@ -73,6 +84,73 @@ function extractAddress(text: string): string | null {
 
 function gtNetwork(chain: SupportedChain): "base" | "eth" {
   return chain === "ethereum" ? "eth" : "base";
+}
+
+function detectIntent(prompt: string): { intent: ClarkIntent; address: string | null } {
+  const t = prompt.trim().toLowerCase();
+  const address = extractAddress(prompt);
+
+  if (/(<token_data>|<wallet_scan>|<analysis>|feature context|ask clark)/i.test(prompt)) {
+    return { intent: "feature_context", address };
+  }
+  if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|help|who are you|what is chainlens/i.test(t)) {
+    return { intent: "casual_help", address };
+  }
+  if (/what'?s moving on base|new base tokens|base radar|what should i watch|trending/i.test(t)) {
+    return { intent: "base_radar", address };
+  }
+  if (/whale|smart money/i.test(t)) {
+    if (address) return { intent: "whale_alert", address };
+    return { intent: "unknown", address };
+  }
+  if (/dev wallet|deployer|who deployed/i.test(t)) {
+    return { intent: "dev_wallet", address };
+  }
+  if (/liquidity|lp safe|liquidity risk/i.test(t)) {
+    return { intent: "liquidity_safety", address };
+  }
+  if (/wallet/.test(t)) {
+    return { intent: "wallet_analysis", address };
+  }
+  if (/token|contract|scan|analyz|safe|risk|check|verdict/i.test(t)) {
+    return { intent: "token_analysis", address };
+  }
+  return { intent: "unknown", address };
+}
+
+function missingAddressReply(intent: ClarkIntent): string {
+  if (intent === "wallet_analysis" || intent === "whale_alert") {
+    return "I can run that, but I need a wallet address first. Paste a full 0x wallet and I’ll analyze the available data.";
+  }
+  return "I can run that, but I need a token contract first. Paste a full 0x contract and I’ll analyze the available data.";
+}
+
+async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>) {
+  const res = await fetch(`${origin}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, json };
+}
+
+function buildStructuredVerdict(
+  verdict: "AVOID" | "WATCH" | "SCAN DEEPER" | "TRUSTWORTHY" | "UNKNOWN",
+  confidence: "Low" | "Medium" | "High",
+  read: string,
+  signals: string[],
+  risks: string[],
+  action: string
+): string {
+  return (
+    `Verdict: ${verdict}\n` +
+    `Confidence: ${confidence}\n\n` +
+    `Read:\n${capWords(read, 35)}\n\n` +
+    `Key signals:\n${toBullets(signals.slice(0, 3))}\n\n` +
+    `Risks:\n${toBullets(risks.slice(0, 3))}\n\n` +
+    `Next action:\n${capWords(action, 25)}`
+  );
 }
 
 // ---------- API clients ----------
@@ -1020,6 +1098,109 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const network = gtNetwork(chain);
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
+  const { intent, address } = detectIntent(prompt);
+
+  if (intent === "casual_help") {
+    return { feature: "clark-ai", chain, analysis: buildCasualClarkReply(prompt) };
+  }
+
+  if ((intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && !address) {
+    return { feature: "clark-ai", chain, analysis: missingAddressReply(intent) };
+  }
+
+  if (intent === "dev_wallet" && address) {
+    const devWalletRes = await callInternalApi(origin, "/api/dev-wallet", { contractAddress: address });
+    if (!devWalletRes.ok) {
+      return {
+        feature: "clark-ai",
+        chain,
+        analysis: "I can do that once this feature backend is wired. For now, open Dev Wallet Detector and paste the contract.",
+      };
+    }
+
+    const data = devWalletRes.json as Record<string, unknown>;
+    const verdict = (data?.clarkVerdict as Record<string, unknown> | null) ?? null;
+    if (verdict) {
+      const rawLabel = String(verdict.label ?? "WATCH").toUpperCase();
+      const mappedVerdict = rawLabel === "LOW" ? "TRUSTWORTHY" : rawLabel === "MEDIUM" ? "WATCH" : rawLabel === "HIGH" ? "AVOID" : "UNKNOWN";
+      const rawConfidence = String(verdict.confidence ?? "low").toLowerCase();
+      const confidence = rawConfidence === "high" ? "High" : rawConfidence === "medium" ? "Medium" : "Low";
+      return {
+        feature: "clark-ai",
+        chain,
+        analysis: buildStructuredVerdict(
+          mappedVerdict,
+          confidence,
+          String(verdict.summary ?? "Not enough verified data to make a strong call."),
+          Array.isArray(verdict.keySignals) ? verdict.keySignals.map(String) : ["Likely deployer and linked-wallet checks completed."],
+          Array.isArray(verdict.risks) ? verdict.risks.map(String) : ["Some data is unverified in the current scan."],
+          String(verdict.nextAction ?? "Use Dev Wallet Detector details before any entry.")
+        ),
+      };
+    }
+  }
+
+  if (intent === "token_analysis" && address) {
+    const tokenRes = await fetch(`${origin}/api/scan-token?contract=${encodeURIComponent(address)}`, { cache: "no-store" });
+    const tokenJson = await tokenRes.json().catch(() => ({}));
+    if (!tokenRes.ok || !tokenJson?.ok) {
+      return {
+        feature: "clark-ai",
+        chain,
+        analysis: "I can do that once this feature backend is wired. For now, open Token Scanner and paste the contract.",
+      };
+    }
+    const context: ClarkContext = { tokenData: tokenJson.data ?? {} };
+    const analysis = await callAnthropic(prompt, context);
+    return { feature: "clark-ai", chain, analysis };
+  }
+
+  if (intent === "wallet_analysis" && address) {
+    const walletRes = await callInternalApi(origin, "/api/wallet", { address });
+    if (!walletRes.ok) {
+      return {
+        feature: "clark-ai",
+        chain,
+        analysis: "I can do that once this feature backend is wired. For now, open Wallet Scanner and paste the wallet.",
+      };
+    }
+    const context: ClarkContext = { walletScan: walletRes.json ?? {} };
+    const analysis = await callAnthropic(prompt, context);
+    return { feature: "clark-ai", chain, analysis };
+  }
+
+  if (intent === "liquidity_safety" && address) {
+    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: address });
+    if (!liqRes.ok || !(liqRes.json as Record<string, unknown>)?.ok) {
+      return {
+        feature: "clark-ai",
+        chain,
+        analysis: "I can do that once this feature backend is wired. For now, open Liquidity Safety and paste the contract.",
+      };
+    }
+    const liqData = (liqRes.json as Record<string, unknown>)?.data ?? {};
+    const context: ClarkContext = { tokenData: liqData };
+    const analysis = await callAnthropic(prompt, context);
+    return { feature: "clark-ai", chain, analysis };
+  }
+
+  if (intent === "base_radar") {
+    const radarRes = await fetch(`${origin}/api/radar`, { cache: "no-store" });
+    const radarJson = await radarRes.json().catch(() => ({}));
+    if (!radarRes.ok) {
+      return {
+        feature: "clark-ai",
+        chain,
+        analysis: "Use Base Radar for fresh launches and momentum reads, then ask Clark with that context for a tighter verdict.",
+      };
+    }
+    const radarTokens = Array.isArray((radarJson as Record<string, unknown>)?.tokens)
+      ? ((radarJson as Record<string, unknown>).tokens as unknown[])
+      : [];
+    const context: ClarkContext = { trending: radarTokens, gtPools: [] };
+    const analysis = await callAnthropic(prompt, context);
+    return { feature: "clark-ai", chain, analysis };
+  }
 
   // Always fetch baseline sources in parallel — never rely on routeCommand alone
   const [trendingResult, gtRawResult] = await Promise.allSettled([
