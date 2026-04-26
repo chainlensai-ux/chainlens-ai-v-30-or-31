@@ -12,6 +12,12 @@ export default function BetaPage() {
   const [error, setError] = useState('')
   const [checking, setChecking] = useState(true)
 
+  function resolveNextPath() {
+    const next = searchParams.get('next')
+    if (next && next.startsWith('/') && !next.startsWith('//')) return next
+    return '/'
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined') return
 
