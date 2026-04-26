@@ -379,7 +379,17 @@ export default function DevWalletPage() {
 
       <div
         className="mob-scan-main"
-        style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '40px 48px', color: '#e2e8f0' }}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          height: '100%',
+          minHeight: '100%',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          padding: '40px 48px 120px',
+          color: '#e2e8f0',
+          WebkitOverflowScrolling: 'touch',
+        }}
       >
         {/* Back */}
         <Link href="/terminal" style={{
