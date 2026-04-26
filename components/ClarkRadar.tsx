@@ -13,6 +13,7 @@ interface Message {
   role: 'user' | 'clark'
   text: string
 }
+type ClarkMode = 'chat' | 'analyst'
 
 // Try to pull a token name from a message like "is brett safe?" or "toshi price"
 function extractTokenQuery(text: string): string | null {
@@ -32,10 +33,20 @@ function extractTokenQuery(text: string): string | null {
   return null
 }
 
-function parseMessage(raw: string): Record<string, string> {
+function parseMessage(raw: string, clarkMode: ClarkMode): Record<string, string> {
   const t = raw.trim().toLowerCase()
   const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
   const address = addrMatch?.[0]
+  const explicitScan = /\b(scan|analy[sz]e|check|risk|verdict|dev wallet|wallet|liquidity)\b/i.test(t)
+
+  if (clarkMode === 'chat') {
+    if (address && explicitScan) {
+      if (t.includes('dev wallet')) return { feature: 'dev-wallet-detector', tokenAddress: address, prompt: raw.trim() }
+      if (t.includes('wallet')) return { feature: 'wallet-scanner', walletAddress: address }
+      return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
+    }
+    return { feature: 'clark-ai', prompt: raw.trim() }
+  }
 
   // Wallet / chain-level features (keep as-is)
   if (t.startsWith('scan wallet') && address)
@@ -77,6 +88,7 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [clarkMode, setClarkMode] = useState<ClarkMode>('chat')
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastSentRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -94,15 +106,16 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
     setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
 
     try {
-      const body = parseMessage(text)
+      const body = parseMessage(text, clarkMode)
+      const requestMode = body.feature === 'clark-ai' ? clarkMode : 'analyst'
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, message: text, mode: requestMode, context: null }),
       })
       const json = await res.json()
       const reply = json.ok
-        ? formatResponse(json.data as Record<string, unknown>)
+        ? String((json.data as Record<string, unknown>)?.reply ?? formatResponse(json.data as Record<string, unknown>))
         : (json.error ?? 'Something went wrong.')
 
       setMessages(prev => {
@@ -120,11 +133,12 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
       setLoading(false)
       inputRef.current?.focus()
     }
-  }, [])
+  }, [clarkMode])
 
   useEffect(() => {
     if (pendingMessage && pendingMessage !== lastSentRef.current) {
       lastSentRef.current = pendingMessage
+      setClarkMode('analyst')
       sendToClark(pendingMessage)
     }
   }, [pendingMessage, sendToClark])
@@ -181,6 +195,33 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
           box-shadow: 0 0 10px rgba(139,92,246,0.12), 0 0 6px rgba(236,72,153,0.06);
         }
         .clark-panel-input::placeholder { color: rgba(255,255,255,0.40); }
+        .clark-mode-toggle {
+          display: inline-flex;
+          gap: 5px;
+          padding: 3px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(10,12,26,0.74);
+        }
+        .clark-mode-btn {
+          border: none;
+          border-radius: 999px;
+          padding: 5px 9px;
+          font-size: 9px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.55);
+          background: transparent;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          white-space: nowrap;
+        }
+        .clark-mode-btn.active {
+          color: #e2e8f0;
+          background: linear-gradient(90deg, rgba(45,212,191,0.22), rgba(139,92,246,0.22));
+          box-shadow: 0 0 12px rgba(45,212,191,0.24), 0 0 12px rgba(139,92,246,0.18);
+        }
         @keyframes radarSendGlow {
           0%, 100% { box-shadow: 0 0 10px rgba(236,72,153,0.42), 0 0 6px rgba(139,92,246,0.30); }
           50%       { box-shadow: 0 0 22px rgba(236,72,153,0.72), 0 0 16px rgba(139,92,246,0.52), 0 0 30px rgba(236,72,153,0.20); }
@@ -282,39 +323,48 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
             </span>
           </div>
 
-          {/* Right — Online badge */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '5px',
-              background: 'rgba(139,92,246,0.09)',
-              border: '1px solid rgba(139,92,246,0.22)',
-              borderRadius: '100px',
-              padding: '3px 9px',
-              boxShadow: '0 0 10px rgba(139,92,246,0.12)',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div className='clark-mode-toggle'>
+              <button type='button' className={`clark-mode-btn ${clarkMode === 'chat' ? 'active' : ''}`} onClick={() => setClarkMode('chat')}>
+                Chat
+              </button>
+              <button type='button' className={`clark-mode-btn ${clarkMode === 'analyst' ? 'active' : ''}`} onClick={() => setClarkMode('analyst')}>
+                Analyst
+              </button>
+            </div>
             <div
               style={{
-                width: '5px',
-                height: '5px',
-                borderRadius: '50%',
-                background: '#a78bfa',
-                animation: 'clarkOnlinePulse 3s ease-in-out infinite',
-              }}
-            />
-            <span
-              style={{
-                fontSize: '9px',
-                fontWeight: 700,
-                letterSpacing: '0.10em',
-                color: '#a78bfa',
-                fontFamily: 'var(--font-plex-mono)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                background: 'rgba(139,92,246,0.09)',
+                border: '1px solid rgba(139,92,246,0.22)',
+                borderRadius: '100px',
+                padding: '3px 9px',
+                boxShadow: '0 0 10px rgba(139,92,246,0.12)',
               }}
             >
-              ONLINE
-            </span>
+              <div
+                style={{
+                  width: '5px',
+                  height: '5px',
+                  borderRadius: '50%',
+                  background: '#a78bfa',
+                  animation: 'clarkOnlinePulse 3s ease-in-out infinite',
+                }}
+              />
+              <span
+                style={{
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  letterSpacing: '0.10em',
+                  color: '#a78bfa',
+                  fontFamily: 'var(--font-plex-mono)',
+                }}
+              >
+                ONLINE
+              </span>
+            </div>
           </div>
         </div>
 
@@ -444,10 +494,9 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
                     fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
                       ? 'var(--font-plex-mono)'
                       : 'var(--font-inter), Inter, sans-serif',
-                    whiteSpace: msg.text.startsWith('{') || msg.text.startsWith('[')
-                      ? 'pre-wrap'
-                      : 'normal',
+                    whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
+                    overflowWrap: 'anywhere',
                   }}>
                     {msg.text === 'Clark is thinking...' ? (
                       <span>
@@ -494,7 +543,7 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
               disabled={loading}
-              placeholder="Ask Clark..."
+              placeholder={clarkMode === 'chat' ? 'Ask Clark...' : 'Paste Base contract/wallet to analyze...'}
               className="clark-panel-input"
               style={{
                 flex: 1,

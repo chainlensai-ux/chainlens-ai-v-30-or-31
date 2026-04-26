@@ -114,13 +114,13 @@ export default function ClarkChat({
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, message: text, mode: body.feature, context: null }),
       })
       console.log('Response status:', res.status)
 
       const json = await res.json()
       const reply = json.ok
-        ? formatResponse(json.data as Record<string, unknown>)
+        ? (String((json.data as Record<string, unknown>)?.reply ?? formatResponse(json.data as Record<string, unknown>)))
         : (json.error ?? 'Something went wrong.')
 
       setMessages(prev => {
@@ -202,6 +202,15 @@ export default function ClarkChat({
           0%, 100% { box-shadow: 0 0 6px rgba(45,212,191,0.80), 0 0 14px rgba(45,212,191,0.40); opacity: 1; }
           50%       { box-shadow: 0 0 12px rgba(45,212,191,1.0), 0 0 24px rgba(45,212,191,0.65); opacity: 0.85; }
         }
+        @media (max-width: 768px) {
+          .clark-chat-shell { padding-bottom: 96px; }
+          .clark-chat-input-row {
+            position: sticky !important;
+            bottom: 0 !important;
+            z-index: 15 !important;
+            background: linear-gradient(180deg, rgba(5,8,22,0.65), rgba(5,8,22,0.95)) !important;
+          }
+        }
       `}</style>
 
       <div className="flex-1 flex flex-col" style={{ background: '#050816', minHeight: 0 }}>
@@ -257,7 +266,7 @@ export default function ClarkChat({
         )}
 
         {/* ── Chat UI ──────────────────────────────────── */}
-        {mode !== 'hero' && <div style={{
+        {mode !== 'hero' && <div className="clark-chat-shell" style={{
           display: 'flex', flexDirection: 'column',
           flex: mode === 'chat-only' ? 1 : 'none',
           minHeight: 0,
@@ -308,7 +317,7 @@ export default function ClarkChat({
             className="clark-msg-scroll"
             style={{
               flex: mode === 'chat-only' ? 1 : 'none',
-              height: mode === 'chat-only' ? undefined : '380px',
+              height: mode === 'chat-only' ? undefined : 'min(380px, 48vh)',
               overflowY: 'auto',
               padding: mode === 'chat-only' ? '20px 16px' : '16px 20px',
               display: 'flex', flexDirection: 'column', gap: '14px',
@@ -393,6 +402,7 @@ export default function ClarkChat({
                         : 'var(--font-inter), Inter, sans-serif',
                       whiteSpace: 'pre-wrap',
                       wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',
                     }}>
                       {msg.text}
                     </div>
@@ -404,7 +414,7 @@ export default function ClarkChat({
 
           {/* Input row — full and chat-only modes */}
           {(mode === 'full' || mode === 'chat-only') && (
-            <div style={{
+            <div className="clark-chat-input-row" style={{
               padding: '10px 14px 14px',
               borderTop: '1px solid rgba(255,255,255,0.05)',
               position: 'relative', zIndex: 1,
