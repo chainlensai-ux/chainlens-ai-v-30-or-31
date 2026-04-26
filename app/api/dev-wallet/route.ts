@@ -384,10 +384,21 @@ function sanitizeClarkText(
   if (!data.holderDataAvailable || data.supplyControlled === null) {
     cleaned = cleaned.map(line => {
       const lower = line.toLowerCase()
+      const hasPercent = /\b\d+(\.\d+)?%/.test(line)
+      const holderConcentrationClaim =
+        lower.includes('holder') ||
+        lower.includes('supply concentration') ||
+        lower.includes('top holder') ||
+        lower.includes('deployer holds') ||
+        lower.includes('controls')
+
       if (lower.includes('100%') && lower.includes('supply')) {
         return 'Holder distribution unavailable, so supply control cannot be confirmed.'
       }
       if ((lower.includes('creator') || lower.includes('deployer')) && lower.includes('holds') && lower.includes('%')) {
+        return 'Holder distribution unavailable, so supply control cannot be confirmed.'
+      }
+      if (hasPercent && holderConcentrationClaim) {
         return 'Holder distribution unavailable, so supply control cannot be confirmed.'
       }
       return line
@@ -433,6 +444,7 @@ async function getClarkVerdict(origin: string, data: {
     `Use only the fields below. Keep response short and professional.\n` +
     `Use wording: "likely deployer/owner wallet". Do not claim confirmed deployer unless confidence is high.\n` +
     `Do not infer supply concentration from missing holder data.\n` +
+    `If holder data is unavailable, explicitly state supply control cannot be confirmed and do not mention holder percentages.\n` +
     `Do not infer LP lock status or DEX liquidity from missing liquidity data.\n` +
     `Output label must be exactly one of: TRUSTWORTHY, WATCH, AVOID, UNKNOWN.\n` +
     `Address: ${data.contractAddress}\n` +
