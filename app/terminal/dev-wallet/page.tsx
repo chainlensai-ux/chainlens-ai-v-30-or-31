@@ -138,8 +138,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <div style={{
-      background: 'rgba(255,255,255,0.03)',
-      border: '1px solid rgba(255,255,255,0.08)',
+      background: 'linear-gradient(180deg, rgba(15,23,42,0.72), rgba(10,14,28,0.78))',
+      border: '1px solid rgba(148,163,184,0.16)',
+      boxShadow: '0 10px 30px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.03)',
       borderRadius: '14px',
       padding: '20px',
       ...style,
@@ -177,8 +178,9 @@ function WarningBanner({ warnings }: { warnings: string[] }) {
   if (warnings.length === 0) return null
   return (
     <div style={{
-      background: 'rgba(251,191,36,0.06)',
-      border: '1px solid rgba(251,191,36,0.18)',
+      background: 'linear-gradient(180deg, rgba(251,191,36,0.08), rgba(120,53,15,0.08))',
+      border: '1px solid rgba(251,191,36,0.28)',
+      boxShadow: '0 8px 24px rgba(251,191,36,0.08)',
       borderRadius: '10px',
       padding: '12px 16px',
       marginBottom: '20px',
@@ -201,7 +203,7 @@ function WarningBanner({ warnings }: { warnings: string[] }) {
 
 // ─── Clark Verdict Card ───────────────────────────────────────────────────
 
-function VerdictCard({ verdict }: { verdict: ClarkVerdict }) {
+function VerdictCard({ verdict, askClarkHref }: { verdict: ClarkVerdict; askClarkHref: string }) {
   const style = VERDICT_STYLE[verdict.label]
   const shortSummary = clampSentences(verdict.summary, 3)
   const topSignals = verdict.keySignals.slice(0, 3)
@@ -239,6 +241,16 @@ function VerdictCard({ verdict }: { verdict: ClarkVerdict }) {
           }}>
             {verdict.confidence} confidence
           </span>
+          <Link href={askClarkHref} style={{
+            marginLeft: 'auto',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            padding: '6px 10px', borderRadius: '9px', textDecoration: 'none',
+            color: '#a78bfa', border: '1px solid rgba(167,139,250,0.35)',
+            background: 'rgba(167,139,250,0.10)', fontSize: '10px',
+            fontWeight: 700, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+          }}>
+            Ask Clark
+          </Link>
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           {/* Header */}
@@ -435,6 +447,20 @@ export default function DevWalletPage() {
           WebkitOverflowScrolling: 'touch',
         }}
       >
+        <div style={{
+          maxWidth: '1120px',
+          position: 'relative',
+        }}>
+          <div style={{
+            position: 'absolute',
+            top: '-40px',
+            right: '12%',
+            width: '240px',
+            height: '240px',
+            pointerEvents: 'none',
+            background: 'radial-gradient(circle, rgba(45,212,191,0.10), rgba(45,212,191,0))',
+            filter: 'blur(2px)',
+          }} />
         {/* Back */}
         <Link href="/terminal" style={{
           display: 'inline-flex', alignItems: 'center', gap: '6px',
@@ -452,13 +478,14 @@ export default function DevWalletPage() {
         </Link>
 
         {/* Header */}
-        <div style={{ marginBottom: '32px' }}>
+        <div style={{ marginBottom: '28px' }}>
           <div style={{
             display: 'inline-flex', alignItems: 'center', gap: '8px',
-            background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.25)',
-            borderRadius: '99px', padding: '4px 12px', marginBottom: '14px',
-            fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+            background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.30)',
+            borderRadius: '99px', padding: '3px 10px', marginBottom: '14px',
+            fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em',
             color: '#a78bfa', fontFamily: 'var(--font-plex-mono)',
+            boxShadow: '0 0 16px rgba(139,92,246,0.18)',
           }}>
             <span style={{
               width: '6px', height: '6px', borderRadius: '50%',
@@ -466,7 +493,7 @@ export default function DevWalletPage() {
             }} />
             ELITE
           </div>
-          <h1 style={{ fontSize: '26px', fontWeight: 700, color: '#f8fafc', margin: '0 0 6px' }}>
+          <h1 style={{ fontSize: '30px', fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', letterSpacing: '-0.02em' }}>
             Dev Wallet Detector
           </h1>
           <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>
@@ -475,7 +502,7 @@ export default function DevWalletPage() {
         </div>
 
         {/* Input */}
-        <div style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '28px' }}>
+        <div style={{ display: 'flex', gap: '10px', maxWidth: '760px', marginBottom: '28px' }}>
           <input
             value={input}
             onChange={e => setInput(e.target.value)}
@@ -485,27 +512,36 @@ export default function DevWalletPage() {
             style={{
               flex: 1, background: 'rgba(255,255,255,0.04)',
               border: '1px solid rgba(255,255,255,0.10)',
-              borderRadius: '10px', padding: '12px 16px',
+              borderRadius: '12px', padding: '14px 16px',
               color: '#e2e8f0', fontSize: '13px', outline: 'none',
               fontFamily: 'var(--font-plex-mono)',
-              transition: 'border-color 0.15s',
+              transition: 'border-color 0.15s, box-shadow 0.15s',
             }}
-            onFocus={e => { e.currentTarget.style.borderColor = 'rgba(139,92,246,0.50)' }}
-            onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)' }}
+            onFocus={e => {
+              e.currentTarget.style.borderColor = 'rgba(139,92,246,0.55)'
+              e.currentTarget.style.boxShadow = '0 0 0 3px rgba(139,92,246,0.15)'
+            }}
+            onBlur={e  => {
+              e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'
+              e.currentTarget.style.boxShadow = 'none'
+            }}
           />
           <button
             onClick={handleScan}
             disabled={loading || !input.trim()}
             style={{
-              padding: '12px 22px', borderRadius: '10px',
-              background: loading || !input.trim() ? 'rgba(139,92,246,0.15)' : 'rgba(139,92,246,0.85)',
+              padding: '14px 24px', borderRadius: '12px',
+              background: loading || !input.trim()
+                ? 'rgba(139,92,246,0.15)'
+                : 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 55%, #4f46e5 100%)',
               border: '1px solid rgba(139,92,246,0.40)',
               color: loading || !input.trim() ? '#64748b' : '#fff',
               fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em',
               cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
               fontFamily: 'var(--font-plex-mono)',
-              transition: 'background 0.15s',
+              transition: 'background 0.15s, transform 0.1s',
               whiteSpace: 'nowrap',
+              boxShadow: loading || !input.trim() ? 'none' : '0 8px 18px rgba(99,102,241,0.30)',
             }}
           >
             {loading ? (
@@ -528,7 +564,7 @@ export default function DevWalletPage() {
             display: 'grid',
             gridTemplateColumns: 'repeat(4,minmax(0,1fr))',
             gap: '10px',
-            maxWidth: '760px',
+            maxWidth: '860px',
             marginBottom: '18px',
           }}>
             {[
@@ -537,8 +573,17 @@ export default function DevWalletPage() {
               { k: 'Suspicious Patterns', v: String(result.suspiciousTransferReasons.length), c: result.suspiciousTransfers ? '#f87171' : '#2DD4BF' },
               { k: 'Confidence', v: result.deployerConfidence, c: result.deployerConfidence === 'high' ? '#2DD4BF' : result.deployerConfidence === 'medium' ? '#fbbf24' : '#f87171' },
             ].map((item, i) => (
-              <Card key={i} style={{ padding: '12px 14px', borderColor: 'rgba(255,255,255,0.10)' }}>
-                <p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>{item.k}</p>
+              <Card key={i} style={{ padding: '12px 14px', borderColor: 'rgba(255,255,255,0.10)', minHeight: '76px' }}>
+                <p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em', display: 'flex', alignItems: 'center', gap: '7px' }}>
+                  <span style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    background: item.c,
+                    boxShadow: `0 0 10px ${item.c}66`,
+                  }} />
+                  {item.k}
+                </p>
                 <p style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: item.c, fontFamily: 'var(--font-plex-mono)' }}>{item.v}</p>
               </Card>
             ))}
@@ -574,24 +619,13 @@ export default function DevWalletPage() {
 
         {/* Results */}
         {result && (
-          <div style={{ maxWidth: '760px' }}>
+          <div style={{ maxWidth: '860px' }}>
             {/* Warnings */}
             <WarningBanner warnings={result.warnings} />
 
             {/* Clark Verdict */}
             {result.clarkVerdict && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px', alignItems: 'start' }}>
-                <VerdictCard verdict={result.clarkVerdict} />
-                <Link href={askClarkHref} style={{
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  padding: '9px 12px', borderRadius: '10px', textDecoration: 'none',
-                  color: '#a78bfa', border: '1px solid rgba(167,139,250,0.35)',
-                  background: 'rgba(167,139,250,0.08)', fontSize: '11px',
-                  fontWeight: 700, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
-                }}>
-                  Ask Clark
-                </Link>
-              </div>
+              <VerdictCard verdict={result.clarkVerdict} askClarkHref={askClarkHref} />
             )}
             {!result.clarkVerdict && (
               <Card style={{ marginBottom: '24px', borderColor: 'rgba(148,163,184,0.15)' }}>
@@ -893,6 +927,7 @@ export default function DevWalletPage() {
             </Section>
           </div>
         )}
+        </div>
       </div>
     </>
   )
