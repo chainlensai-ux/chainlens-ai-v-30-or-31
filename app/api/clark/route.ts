@@ -48,6 +48,10 @@ interface ClarkContext {
 
 type ClarkIntent =
   | "casual_help"
+  | "general_market"
+  | "educational"
+  | "routing_help"
+  | "analysis"
   | "token_analysis"
   | "wallet_analysis"
   | "dev_wallet"
@@ -58,6 +62,14 @@ type ClarkIntent =
   | "unknown";
 
 type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback";
+type ClarkReplyMode =
+  | "casual_help"
+  | "general_market"
+  | "educational"
+  | "routing_help"
+  | "analysis"
+  | "feature_context"
+  | "unknown";
 
 // ---------- Chain name maps ----------
 
@@ -101,7 +113,16 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|help|who are you|what is chainlens/i.test(t)) {
     return { intent: "casual_help", address };
   }
-  if (/what'?s moving on base|new base tokens|base radar|what should i watch|trending/i.test(t)) {
+  if (/what'?s pumping on base|what'?s moving on base|new base tokens|show me hot tokens|what should i watch|what'?s trending|trending/i.test(t)) {
+    return { intent: "general_market", address };
+  }
+  if (/what is liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock/i.test(t)) {
+    return { intent: "educational", address };
+  }
+  if (/how do i scan|where do i check deployer|how do i track a wallet|how do i use this|which feature|where should i go/i.test(t)) {
+    return { intent: "routing_help", address };
+  }
+  if (/base radar/.test(t)) {
     return { intent: "base_radar", address };
   }
   if (/whale|smart money/i.test(t)) {
@@ -118,9 +139,51 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
     return { intent: "wallet_analysis", address };
   }
   if (/token|contract|scan|analyz|safe|risk|check|verdict/i.test(t)) {
-    return { intent: "token_analysis", address };
+    return { intent: "analysis", address };
   }
   return { intent: "unknown", address };
+}
+
+function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
+  const prompt = body.prompt ?? "";
+  const t = prompt.toLowerCase();
+  const hasStructuredMode = /\[mode\s*:/i.test(prompt) || Boolean(body.mode) || body.context != null;
+  if (hasStructuredMode) return "feature_context";
+
+  const { intent, address } = detectIntent(prompt);
+  if (intent === "casual_help") return "casual_help";
+  if (intent === "general_market") return "general_market";
+  if (intent === "educational") return "educational";
+  if (intent === "routing_help") return "routing_help";
+  if (intent === "base_radar") return "general_market";
+  if (intent === "feature_context") return "feature_context";
+  if (intent === "analysis") return "analysis";
+  if ((intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && address) {
+    return "analysis";
+  }
+  if (/scan|analyz|check|verdict|risk/.test(t) && address) return "analysis";
+  return "unknown";
+}
+
+function buildEducationalReply(prompt: string): string {
+  const t = prompt.toLowerCase();
+  if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can’t exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
+  if (/dev wallet/.test(t)) return "A dev wallet is a deployer-linked wallet that can reveal insider coordination, funding links, or early sell pressure.";
+  if (/holder concentration/.test(t)) return "Holder concentration means too much supply sits in a few wallets, increasing dump and manipulation risk.";
+  if (/lp lock/.test(t)) return "LP lock matters because unlocked liquidity can be pulled, which can collapse tradability and price.";
+  return "Great question. Share the exact risk concept and I’ll break it down quickly.";
+}
+
+function buildRoutingHelpReply(prompt: string): string {
+  const t = prompt.toLowerCase();
+  if (/track a wallet|wallet/.test(t)) return "Use Wallet Scanner to track wallet behavior and flows, then ask Clark to summarize the risk read.";
+  if (/deployer|dev wallet/.test(t)) return "Use Dev Wallet Detector with the token contract to check likely deployer links and suspicious wallet clusters.";
+  if (/scan a token|token/.test(t)) return "Use Token Scanner with the contract address for contract and risk checks, then ask Clark for a final read.";
+  return "Use Base Radar for discovery, Token Scanner for contract checks, Wallet Scanner for behavior, and Dev Wallet Detector for deployer risk.";
+}
+
+function buildGeneralMarketNoContextReply(): string {
+  return "I can help with that, but I need live Base Radar context. Open Base Radar or ask me to analyze a specific contract.";
 }
 
 function missingAddressReply(intent: ClarkIntent): string {
@@ -1273,17 +1336,30 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const network = gtNetwork(chain);
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
+  const replyMode = detectReplyMode(body);
   const { intent, address } = detectIntent(prompt);
 
-  if (intent === "casual_help") {
-    return { feature: "clark-ai", chain, analysis: buildCasualClarkReply(prompt) };
+  if (replyMode === "casual_help") {
+    return { feature: "clark-ai", chain, mode: "casual_help", analysis: buildCasualClarkReply(prompt) };
   }
 
-  if ((intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && !address) {
+  if (replyMode === "general_market") {
+    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply() };
+  }
+
+  if (replyMode === "educational") {
+    return { feature: "clark-ai", chain, mode: "educational", analysis: buildEducationalReply(prompt) };
+  }
+
+  if (replyMode === "routing_help") {
+    return { feature: "clark-ai", chain, mode: "routing_help", analysis: buildRoutingHelpReply(prompt) };
+  }
+
+  if ((replyMode === "analysis" || replyMode === "feature_context") && (intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && !address) {
     return { feature: "clark-ai", chain, analysis: missingAddressReply(intent) };
   }
 
-  if (intent === "dev_wallet" && address) {
+  if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "dev_wallet" && address) {
     const devWalletRes = await callInternalApi(origin, "/api/dev-wallet", { contractAddress: address });
     if (!devWalletRes.ok) {
       return {
@@ -1315,7 +1391,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     }
   }
 
-  if (intent === "token_analysis" && address) {
+  if ((replyMode === "analysis" || replyMode === "feature_context") && (intent === "token_analysis" || intent === "analysis") && address) {
     const tokenRes = await fetch(`${origin}/api/scan-token?contract=${encodeURIComponent(address)}`, { cache: "no-store" });
     const tokenJson = await tokenRes.json().catch(() => ({}));
     if (!tokenRes.ok || !tokenJson?.ok) {
@@ -1330,7 +1406,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, analysis };
   }
 
-  if (intent === "wallet_analysis" && address) {
+  if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "wallet_analysis" && address) {
     const walletRes = await callInternalApi(origin, "/api/wallet", { address });
     if (!walletRes.ok) {
       return {
@@ -1344,7 +1420,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, analysis };
   }
 
-  if (intent === "liquidity_safety" && address) {
+  if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "liquidity_safety" && address) {
     const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: address });
     if (!liqRes.ok || !(liqRes.json as Record<string, unknown>)?.ok) {
       return {
@@ -1359,7 +1435,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, analysis };
   }
 
-  if (intent === "base_radar") {
+  if (replyMode === "feature_context" && intent === "base_radar") {
     const radarRes = await fetch(`${origin}/api/radar`, { cache: "no-store" });
     const radarJson = await radarRes.json().catch(() => ({}));
     if (!radarRes.ok) {
@@ -1419,9 +1495,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     analysis:   contractAnalysis  ?? {},
   };
 
-  const analysis = await callAnthropic(prompt, context);
+  if (replyMode !== "analysis" && replyMode !== "feature_context") {
+    return { feature: "clark-ai", chain, mode: "unknown", analysis: buildGeneralMarketNoContextReply() };
+  }
 
-  return { feature: "clark-ai", chain, analysis };
+  const analysis = await callAnthropic(prompt, context);
+  return { feature: "clark-ai", chain, mode: replyMode, analysis };
 }
 
 // ---------- Main handler ----------
@@ -1514,7 +1593,7 @@ function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
     text: reply,
     verdict,
     confidence,
-    mode: body.mode ?? body.feature,
+    mode: (typeof obj.mode === "string" ? obj.mode : null) ?? body.mode ?? body.feature,
     source,
   };
 }
