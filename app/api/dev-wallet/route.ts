@@ -377,7 +377,7 @@ function computeRiskLabel(input: VerdictSignalInput): ClarkVerdict['label'] {
 
 function sanitizeClarkText(
   lines: string[],
-  data: { holderDataAvailable: boolean; supplyControlled: number | null; liquidityDataAvailable: boolean }
+  data: { holderDataAvailable: boolean; supplyControlled: number | null; liquidityDataAvailable: boolean; securityDataAvailable: boolean }
 ): string[] {
   let cleaned = [...lines]
 
@@ -420,6 +420,22 @@ function sanitizeClarkText(
     })
   }
 
+  if (!data.securityDataAvailable) {
+    cleaned = cleaned.map(line => {
+      const lower = line.toLowerCase()
+      if (
+        lower.includes('honeypot') ||
+        lower.includes('sell tax') ||
+        lower.includes('buy tax') ||
+        lower.includes('transfer tax') ||
+        lower.includes('blacklist')
+      ) {
+        return 'Security scan unavailable from current data sources.'
+      }
+      return line
+    })
+  }
+
   return cleaned
 }
 
@@ -432,6 +448,7 @@ async function getClarkVerdict(origin: string, data: {
   supplyControlled: number | null
   holderDataAvailable: boolean
   liquidityDataAvailable: boolean
+  securityDataAvailable: boolean
   previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
   suspiciousTransfers: boolean
@@ -446,6 +463,7 @@ async function getClarkVerdict(origin: string, data: {
     `Do not infer supply concentration from missing holder data.\n` +
     `If holder data is unavailable, explicitly state supply control cannot be confirmed and do not mention holder percentages.\n` +
     `Do not infer LP lock status or DEX liquidity from missing liquidity data.\n` +
+    `If security scan data is unavailable, do not infer honeypot status or tax values.\n` +
     `Output label must be exactly one of: TRUSTWORTHY, WATCH, AVOID, UNKNOWN.\n` +
     `Address: ${data.contractAddress}\n` +
     `Likely deployer: ${data.deployerAddress ?? 'unknown'}\n` +
@@ -455,6 +473,7 @@ async function getClarkVerdict(origin: string, data: {
     `Holder data available: ${data.holderDataAvailable}\n` +
     `Supply controlled: ${data.supplyControlled ?? 'unknown'}\n` +
     `Liquidity data available: ${data.liquidityDataAvailable}\n` +
+    `Security data available: ${data.securityDataAvailable}\n` +
     `Previous activity available: ${data.previousActivityAvailable}\n` +
     `Previous activity contracts: ${data.previousProjects.map(p => p.contractAddress).slice(0, 8).join(', ') || 'none'}\n` +
     `Suspicious transfers: ${data.suspiciousTransfers}\n` +
@@ -492,6 +511,7 @@ async function getClarkVerdict(origin: string, data: {
       holderDataAvailable: data.holderDataAvailable,
       supplyControlled: data.supplyControlled,
       liquidityDataAvailable: data.liquidityDataAvailable,
+      securityDataAvailable: data.securityDataAvailable,
     })[0]
     if ((!data.holderDataAvailable || data.supplyControlled === null) && !summary.includes('Holder distribution unavailable')) {
       summary = `${summary} Holder distribution unavailable, so supply control cannot be confirmed.`
@@ -499,12 +519,16 @@ async function getClarkVerdict(origin: string, data: {
     if (!data.liquidityDataAvailable && !summary.includes('Liquidity/LP lock data unavailable')) {
       summary = `${summary} Liquidity/LP lock data unavailable from current scan.`
     }
+    if (!data.securityDataAvailable && !summary.includes('Security scan unavailable')) {
+      summary = `${summary} Security scan unavailable from current data sources.`
+    }
     const keySignals = sanitizeClarkText(
       Array.isArray(parsed.keySignals) ? parsed.keySignals.map(String) : [],
       {
         holderDataAvailable: data.holderDataAvailable,
         supplyControlled: data.supplyControlled,
         liquidityDataAvailable: data.liquidityDataAvailable,
+        securityDataAvailable: data.securityDataAvailable,
       }
     )
     const risks = sanitizeClarkText(
@@ -513,6 +537,7 @@ async function getClarkVerdict(origin: string, data: {
         holderDataAvailable: data.holderDataAvailable,
         supplyControlled: data.supplyControlled,
         liquidityDataAvailable: data.liquidityDataAvailable,
+        securityDataAvailable: data.securityDataAvailable,
       }
     )
 
@@ -584,7 +609,7 @@ export async function POST(req: Request) {
     const { holderDataAvailable, supplyControlled, matchedHolderWallets } =
       await getSupplyData(normalizedAddress, deployerAddress, linkedWallets)
     if (!holderDataAvailable) {
-      warnings.push('Holder distribution unavailable from current GoldRush data.')
+      warnings.push('GoldRush holder distribution unavailable.')
     }
 
     const { previousActivityAvailable, previousProjects, warning: activityWarning } =
@@ -593,7 +618,9 @@ export async function POST(req: Request) {
 
     const previousDeploymentsAvailable = false
     const liquidityDataAvailable = false
+    const securityDataAvailable = false
     warnings.push('Liquidity/LP lock data unavailable from current scan.')
+    warnings.push('Security scan unavailable from current data sources.')
 
     const { suspiciousTransfers, suspiciousTransferReasons } =
       detectSuspiciousTransfers(linkedWallets, supplyControlled)
@@ -608,6 +635,7 @@ export async function POST(req: Request) {
       supplyControlled,
       holderDataAvailable,
       liquidityDataAvailable,
+      securityDataAvailable,
       previousActivityAvailable,
       previousProjects,
       suspiciousTransfers,
