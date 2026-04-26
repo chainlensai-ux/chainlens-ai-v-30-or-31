@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useAccount } from 'wagmi'
+import { useWeb3Modal } from '@web3modal/wagmi/react'
 
 type Holding = {
   symbol: string
@@ -9,16 +11,8 @@ type Holding = {
   price: number
   balance: number
   value: number
-  change24h: number
+  change24h: number | null
 }
-
-const MOCK_HOLDINGS: Holding[] = [
-  { symbol: 'ETH',   name: 'Ethereum', chain: 'base', price: 3420.50,   balance: 0.85,    value: 2907.43, change24h:  2.34  },
-  { symbol: 'BRETT', name: 'Brett',    chain: 'base', price: 0.1423,    balance: 14250,   value: 2027.78, change24h: -5.21  },
-  { symbol: 'USDC',  name: 'USD Coin', chain: 'base', price: 1.00,      balance: 850,     value: 850.00,  change24h:  0.01  },
-  { symbol: 'TOSHI', name: 'Toshi',    chain: 'base', price: 0.000891,  balance: 500000,  value: 445.50,  change24h: -2.18  },
-  { symbol: 'BASED', name: 'Based',    chain: 'base', price: 0.00341,   balance: 120000,  value: 409.20,  change24h: 12.45  },
-]
 
 function fmtPrice(v: number): string {
   if (v >= 1000) return `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
@@ -39,14 +33,19 @@ function fmtBalance(v: number): string {
 }
 
 export default function PortfolioPage() {
-  const [walletConnected, setWalletConnected] = useState(false)
+  const { address, isConnected } = useAccount()
+  const { open } = useWeb3Modal()
   const [holdings, setHoldings] = useState<Holding[]>([])
+  const [loadingPortfolio, setLoadingPortfolio] = useState(false)
+  const [portfolioError, setPortfolioError] = useState<string | null>(null)
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkError, setClarkError] = useState<string | null>(null)
 
   const totalValue   = holdings.reduce((s, h) => s + h.value, 0)
-  const totalPnL     = holdings.reduce((s, h) => s + h.value * (h.change24h / 100), 0)
+  const holdingsWithPnl = holdings.filter(h => typeof h.change24h === 'number')
+  const totalPnL     = holdingsWithPnl.reduce((s, h) => s + h.value * ((h.change24h ?? 0) / 100), 0)
+  const hasPnlData = holdingsWithPnl.length > 0
   const pnlPositive  = totalPnL >= 0
   const chains       = [...new Set(holdings.map(h => h.chain))]
 
@@ -63,17 +62,17 @@ Line 3 — Biggest risk flag in this portfolio
 Line 4 — One paragraph verdict on this portfolio
 
 Portfolio:
-${h.map(t => `${t.symbol} (${t.name}): $${t.value.toFixed(2)} value, ${t.change24h > 0 ? '+' : ''}${t.change24h.toFixed(2)}% 24h`).join('\n')}
+${h.map(t => `${t.symbol} (${t.name}): $${t.value.toFixed(2)} value${typeof t.change24h === 'number' ? `, ${t.change24h > 0 ? '+' : ''}${t.change24h.toFixed(2)}% 24h` : ''}`).join('\n')}
 Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
 
       const res  = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feature: 'clark-ai', prompt }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'portfolio', context: { holdings: h } }),
       })
       const json = await res.json()
       if (json.ok) {
-        setClarkVerdict(json.data?.analysis ?? json.data?.response ?? 'No verdict returned.')
+        setClarkVerdict(json.data?.reply ?? json.data?.analysis ?? json.data?.response ?? 'No verdict returned.')
       } else {
         setClarkError(json.error ?? 'Clark analysis failed.')
       }
@@ -84,18 +83,60 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
     }
   }
 
-  function handleConnect() {
-    setWalletConnected(true)
-    setHoldings(MOCK_HOLDINGS)
-    analyzePortfolio(MOCK_HOLDINGS)
-  }
-
   useEffect(() => {
-    if (walletConnected && holdings.length > 0 && !clarkVerdict && !clarkLoading) {
+    if (isConnected && holdings.length > 0 && !clarkVerdict && !clarkLoading) {
       analyzePortfolio(holdings)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [walletConnected])
+  }, [isConnected, holdings])
+
+  useEffect(() => {
+    async function loadPortfolio() {
+      if (!isConnected || !address) {
+        setHoldings([])
+        setPortfolioError(null)
+        setClarkVerdict(null)
+        setClarkError(null)
+        return
+      }
+
+      setLoadingPortfolio(true)
+      setPortfolioError(null)
+      setClarkVerdict(null)
+      setClarkError(null)
+
+      try {
+        const res = await fetch('/api/wallet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address }),
+        })
+        const json = await res.json()
+        if (!res.ok) throw new Error(json?.error ?? 'Portfolio lookup failed')
+
+        const baseHoldings = (json?.holdings ?? [])
+          .filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base'))
+          .map((h: Holding) => ({
+            symbol: h.symbol ?? '?',
+            name: h.name ?? 'Unknown',
+            chain: h.chain ?? 'base',
+            price: Number(h.price ?? 0),
+            balance: Number(h.balance ?? 0),
+            value: Number(h.value ?? 0),
+            change24h: typeof h.change24h === 'number' ? h.change24h : null,
+          }))
+
+        setHoldings(baseHoldings)
+      } catch {
+        setHoldings([])
+        setPortfolioError('Portfolio data unavailable right now. Try again in a moment.')
+      } finally {
+        setLoadingPortfolio(false)
+      }
+    }
+
+    loadPortfolio()
+  }, [isConnected, address])
 
   return (
     <>
@@ -152,7 +193,7 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
               fontFamily: 'var(--font-plex-mono)', marginBottom: '4px',
             }}>Portfolio</div>
             <div style={{ fontSize: '22px', fontWeight: 800, letterSpacing: '-0.02em', color: '#f1f5f9', lineHeight: 1 }}>
-              {walletConnected ? fmtUSD(totalValue) : '—'}
+              {isConnected ? fmtUSD(totalValue) : '—'}
             </div>
           </div>
 
@@ -166,11 +207,11 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
             </div>
             <div style={{
               fontSize: '16px', fontWeight: 700,
-              color: walletConnected ? (pnlPositive ? '#2DD4BF' : '#f43f5e') : '#3e5c78',
+              color: isConnected && hasPnlData ? (pnlPositive ? '#2DD4BF' : '#f43f5e') : '#3e5c78',
               fontFamily: 'var(--font-plex-mono)',
             }}>
-              {walletConnected
-                ? `${pnlPositive ? '+' : ''}${fmtUSD(totalPnL)}`
+              {isConnected
+                ? hasPnlData ? `${pnlPositive ? '+' : ''}${fmtUSD(totalPnL)}` : 'PnL unavailable'
                 : '—'}
             </div>
           </div>
@@ -184,12 +225,12 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
               Tokens
             </div>
             <div style={{ fontSize: '16px', fontWeight: 700, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)' }}>
-              {walletConnected ? holdings.length : '—'}
+              {isConnected ? holdings.length : '—'}
             </div>
           </div>
 
           {/* Chain pills */}
-          {walletConnected && chains.length > 0 && (
+          {isConnected && chains.length > 0 && (
             <>
               <div style={{ width: '1px', height: '36px', background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
               <div>
@@ -214,6 +255,20 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
               </div>
             </>
           )}
+
+          {isConnected && address && (
+            <>
+              <div style={{ width: '1px', height: '36px', background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#3e5c78', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>
+                  Wallet
+                </div>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
+                  {address.slice(0, 6)}…{address.slice(-4)}
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* ── Main content row ──────────────────────────────────── */}
@@ -223,7 +278,7 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
           <div className="mob-terminal-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
 
             {/* Table header */}
-            {walletConnected && (
+            {isConnected && (
               <div style={{
                 display: 'grid',
                 gridTemplateColumns: '2fr 80px 120px 120px 120px 90px',
@@ -242,7 +297,7 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
             )}
 
             {/* Rows or empty state */}
-            {!walletConnected ? (
+            {!isConnected ? (
               <div style={{
                 flex: 1, display: 'flex', flexDirection: 'column',
                 alignItems: 'center', justifyContent: 'center', gap: '20px',
@@ -263,20 +318,35 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
                 </div>
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: '15px', fontWeight: 600, color: '#f1f5f9', marginBottom: '8px' }}>
-                    Connect wallet to view portfolio
+                    Connect your wallet to view your Base portfolio.
                   </div>
                   <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.30)', maxWidth: '300px', lineHeight: 1.6 }}>
-                    Link your wallet to see holdings, PnL, and get a Clark AI portfolio analysis.
+                    Link your wallet to see supported Base holdings and get a Clark AI portfolio analysis.
                   </div>
                 </div>
-                <button className="port-connect-btn" onClick={handleConnect}>
+                <button className="port-connect-btn" onClick={() => open()}>
                   Connect Wallet
                 </button>
               </div>
             ) : (
               <div style={{ flex: 1 }}>
+                {loadingPortfolio && (
+                  <div style={{ padding: '24px 28px', color: '#94a3b8', fontSize: '12px', fontFamily: 'var(--font-plex-mono)' }}>
+                    Loading portfolio…
+                  </div>
+                )}
+                {portfolioError && !loadingPortfolio && (
+                  <div style={{ padding: '24px 28px', color: '#fca5a5', fontSize: '12px', fontFamily: 'var(--font-plex-mono)' }}>
+                    {portfolioError}
+                  </div>
+                )}
+                {!loadingPortfolio && !portfolioError && holdings.length === 0 && (
+                  <div style={{ padding: '24px 28px', color: '#94a3b8', fontSize: '12px', fontFamily: 'var(--font-plex-mono)' }}>
+                    No supported Base token balances found for this wallet.
+                  </div>
+                )}
                 {holdings.map((h, i) => {
-                  const pos = h.change24h >= 0
+                  const pos = (h.change24h ?? 0) >= 0
                   return (
                     <div
                       key={h.symbol}
@@ -331,12 +401,18 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
                       </span>
 
                       {/* 24h change */}
-                      <span style={{
-                        fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-plex-mono)',
-                        color: pos ? '#2DD4BF' : '#f43f5e',
-                      }}>
-                        {pos ? '+' : ''}{h.change24h.toFixed(2)}%
-                      </span>
+                      {typeof h.change24h === 'number' ? (
+                        <span style={{
+                          fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-plex-mono)',
+                          color: pos ? '#2DD4BF' : '#f43f5e',
+                        }}>
+                          {pos ? '+' : ''}{h.change24h.toFixed(2)}%
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-plex-mono)', color: '#3e5c78' }}>
+                          —
+                        </span>
+                      )}
                     </div>
                   )
                 })}
@@ -359,8 +435,8 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
                   <span style={{ fontSize: '13px', fontWeight: 800, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)' }}>
                     {fmtUSD(totalValue)}
                   </span>
-                  <span style={{ fontSize: '12px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', color: pnlPositive ? '#2DD4BF' : '#f43f5e' }}>
-                    {pnlPositive ? '+' : ''}{((totalPnL / totalValue) * 100).toFixed(2)}%
+                  <span style={{ fontSize: '12px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', color: hasPnlData ? (pnlPositive ? '#2DD4BF' : '#f43f5e') : '#3e5c78' }}>
+                    {hasPnlData && totalValue > 0 ? `${pnlPositive ? '+' : ''}${((totalPnL / totalValue) * 100).toFixed(2)}%` : 'PnL unavailable'}
                   </span>
                 </div>
               </div>
@@ -403,7 +479,7 @@ Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
               </div>
 
               {/* Idle — no wallet */}
-              {!walletConnected && !clarkLoading && !clarkVerdict && (
+              {!isConnected && !clarkLoading && !clarkVerdict && (
                 <p style={{ fontSize: '11px', color: '#1e3a44', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, margin: 0 }}>
                   Connect your wallet and Clark will analyse your portfolio — personality type, risk score, biggest flag, and a full verdict.
                 </p>
