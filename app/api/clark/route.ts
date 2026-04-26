@@ -335,7 +335,8 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
   if (wantsStrictJson) return raw.trim();
 
   const deepMode = /\b(deep|detailed|full breakdown|full detail|long form)\b/i.test(prompt);
-  const text = raw.replace(/\r/g, "").trim();
+  const allowProviderNames = /\b(source|sources|provider|providers)\b/i.test(prompt);
+  const text = sanitizeFreeform(raw, { allowProviderNames }).replace(/\r/g, "").trim();
   const upper = text.toUpperCase();
 
   const verdictMatch = upper.match(/\b(AVOID|WATCH|SCAN DEEPER|TRUSTWORTHY|UNKNOWN)\b/);
@@ -349,10 +350,10 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
   const criticalRisk = hasCriticalVerifiedRisk(userContent);
   if (criticalRisk && verdict === "WATCH") verdict = "AVOID";
 
-  const read = pickRead(text);
+  const read = capWords(pickRead(text), 35);
   const keySignals = pickBullets(text, ["key signals", "signals", "strengths"], 3);
   const risks = pickBullets(text, ["risks", "risk flags", "concerns"], 3);
-  const nextAction = pickNextAction(text, verdict);
+  const nextAction = capWords(pickNextAction(text, verdict), 25);
 
   const formatted =
     `Verdict: ${verdict}\n` +
@@ -364,6 +365,24 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
 
   if (deepMode) return formatted;
   return capWords(formatted, 150);
+}
+
+function sanitizeFreeform(raw: string, opts: { allowProviderNames: boolean }): string {
+  let out = raw
+    .replace(/^\s{0,3}#{1,6}\s.+$/gm, "")
+    .replace(/^\s*[-=]{3,}\s*$/gm, "")
+    .replace(/\|.*\|/g, "")
+    .replace(/^\s*dev wallet follow[- ]?up:?/gim, "")
+    .trim();
+
+  if (!opts.allowProviderNames) {
+    out = out
+      .replace(/\bGoPlus\b/gi, "Security scan")
+      .replace(/\bCovalent\b/gi, "available scan data")
+      .replace(/\bGoldRush\b/gi, "available scan data")
+      .replace(/\bGeckoTerminal\b/gi, "market data");
+  }
+  return out;
 }
 
 function hasCriticalVerifiedRisk(userContent: string): boolean {
@@ -388,9 +407,10 @@ function pickBullets(text: string, headers: string[], max: number): string[] {
     const section = extractSection(text, `${h}:`, ["Read:", "Key signals:", "Risks:", "Next action:"]);
     if (!section) continue;
     const bullets = section
-      .split("\n")
+      .split(/\n|•|;/)
       .map(l => l.replace(/^[\-\u2022]\s*/, "").trim())
       .filter(Boolean)
+      .map(l => capWords(l, 12))
       .slice(0, max);
     if (bullets.length > 0) return bullets;
   }
