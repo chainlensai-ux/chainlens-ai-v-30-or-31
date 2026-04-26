@@ -10,12 +10,12 @@ import ConnectWallet from '@/components/ConnectWallet'
 // ─── Action chips inside the prompt box ───────────────────────────────────
 
 const CHIPS = [
-  "WHAT'S PUMPING RIGHT NOW?",
-  'SCAN A WHALE WALLET',
-  'IS BTC A BUY RIGHT NOW?',
-  'SHOW ME SMART MONEY MOVES',
-  'BEST PERFORMER THIS WEEK?',
-  "WHAT'S THE MARKET SENTIMENT?",
+  'SCAN A BASE TOKEN',
+  'CHECK WALLET BEHAVIOR',
+  'EXPLAIN LIQUIDITY RISK',
+  'WHAT CAN CLARK DO?',
+  'OPEN BASE RADAR',
+  'ANALYZE DEV WALLET RISK',
 ]
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
