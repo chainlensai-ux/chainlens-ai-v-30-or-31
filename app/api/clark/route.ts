@@ -176,7 +176,12 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
 function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   const prompt = body.prompt ?? "";
   const t = prompt.toLowerCase();
-  const hasStructuredMode = /\[mode\s*:/i.test(prompt) || Boolean(body.mode) || body.context != null;
+  const explicitMode = String(body.mode ?? "").toLowerCase();
+  if (explicitMode === "chat" || explicitMode === "casual_help") return "casual_help";
+  if (explicitMode === "analyst") return "analysis";
+  const featureModes = new Set(["dev-wallet", "base-radar", "token-analysis", "wallet-analysis", "liquidity-safety", "scan-token"]);
+  if (featureModes.has(explicitMode)) return "feature_context";
+  const hasStructuredMode = /\[mode\s*:/i.test(prompt) || body.context != null;
   if (hasStructuredMode) return "feature_context";
 
   const { intent, address } = detectIntent(prompt);
@@ -212,7 +217,7 @@ function buildRoutingHelpReply(prompt: string): string {
 }
 
 function buildGeneralMarketNoContextReply(): string {
-  return "I can help with that, but I need live Base Radar context. Open Base Radar or ask me to analyze a specific contract.";
+  return "I need live Base Radar context for that. Open Base Radar or paste a contract and I’ll scan it.";
 }
 
 function missingAddressReply(intent: ClarkIntent): string {
@@ -1418,6 +1423,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   if (replyMode === "routing_help") {
     return { feature: "clark-ai", chain, mode: "routing_help", analysis: buildRoutingHelpReply(prompt) };
+  }
+
+  if (replyMode === "analysis" && !address && intent !== "token_name_lookup") {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      analysis: "Paste a Base contract, wallet, or scan result and I’ll analyze it.",
+    };
   }
 
   if (intent === "token_name_lookup") {
