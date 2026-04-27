@@ -81,8 +81,16 @@ function parseClarkPayload(raw: string): Record<string, string> {
   const addrMatch = trimmed.match(/0x[a-fA-F0-9]{40}/)
   const address = addrMatch?.[0]
 
+  const WALLET_INTENT = /\b(wallet|balance|balances|holdings?|portfolio|copy[\s-]?trade?|smart\s+money)\b/i
+  const MARKET_INTENT = /\b(pumping|pump(?:ing)?|hot\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?|trending)\b/i
+
   if (lower.startsWith('scan wallet') && address) return { feature: 'wallet-scanner', walletAddress: address }
-  if (address) return { feature: 'scan-token', tokenAddress: address, prompt: trimmed }
+  if (lower.startsWith('dev wallet') && address) return { feature: 'dev-wallet-detector', tokenAddress: address }
+  if (MARKET_INTENT.test(lower)) return { feature: 'base-radar' }
+  if (address) {
+    if (WALLET_INTENT.test(lower)) return { feature: 'wallet-scanner', walletAddress: address, prompt: trimmed }
+    return { feature: 'scan-token', tokenAddress: address, prompt: trimmed }
+  }
   return { feature: 'clark-ai', prompt: trimmed }
 }
 

@@ -540,6 +540,14 @@ async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandid
   }
 }
 
+function shouldFetchMarketContext(prompt: string): boolean {
+  const t = prompt.toLowerCase()
+  const SKIP = /\b(wallet|balance|balances|holdings?|portfolio|copy[\s-]?trade?|smart\s+money)\b|^(what\s+is|what'?s?\s+a|how\s+does|explain|define|help)/
+  if (SKIP.test(t)) return false
+  const MARKET = /\b(pump|pumping|hot\b|movers?|gainers?|runners?|trending|new\s+launches?|new\s+tokens?|token|price|liquidity|volume|lp\b|honeypot|tax\b|dex\b|chart|pool|contract)\b|0x[a-fA-F0-9]{40}/
+  return MARKET.test(t)
+}
+
 // Anthropic — injects context as XML blocks so Clark sees structured data
 async function callAnthropic(prompt: string, context: ClarkContext | null) {
   const apiKey = requireEnv("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY);
@@ -1286,10 +1294,13 @@ async function routeCommand(
   const t = prompt.toLowerCase();
   const address = extractAddress(prompt);
 
-  if (t.includes("base radar") || t.includes("trending") || t.includes("what's hot")) {
+  const MARKET_KEYWORDS = /\b(pumping|pump(?:ing)?|hot\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?)\b/;
+  const WALLET_KEYWORDS = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|copy[\s-]?trade?|smart\s+money)\b/;
+
+  if (t.includes("base radar") || t.includes("trending") || t.includes("what's hot") || MARKET_KEYWORDS.test(t)) {
     return scanBaseRadarData(origin);
   }
-  if ((t.includes("scan wallet") || t.includes("wallet scan")) && address) {
+  if ((t.includes("scan wallet") || t.includes("wallet scan") || WALLET_KEYWORDS.test(t)) && address) {
     return scanWalletData(address, chain);
   }
   if ((t.includes("dev wallet") || t.includes("dev wallets")) && address) {
@@ -1342,8 +1353,9 @@ async function handleWalletScanner(body: ClarkRequestBody) {
   const walletAddress = body.walletAddress ?? body.addressOrToken;
   if (!walletAddress) throw new Error("walletAddress or addressOrToken is required");
 
-  const [covalentBalances, zerionPositions] = await Promise.all([
+  const results = await Promise.allSettled([
     callCovalent(`${chainName}/address/${walletAddress}/balances_v2/`),
+    callCovalent(`${chainName}/address/${walletAddress}/transactions_v3/`, { "page-size": "20" }),
     callZerion(`wallets/${walletAddress}/positions/`, {
       currency: "usd",
       "filter[positions]": "only_simple",
@@ -1351,12 +1363,38 @@ async function handleWalletScanner(body: ClarkRequestBody) {
     }),
   ]);
 
-  return {
-    feature: "wallet-scanner",
-    chain,
-    walletAddress,
-    walletScan: { covalentBalances, zerionPositions },
+  type ZPos = { attributes?: { value?: { usd?: number }; fungible_info?: { symbol?: string; name?: string } } };
+  const zerionRaw = results[2].status === "fulfilled" ? results[2].value : null;
+  const allPositions: ZPos[] = Array.isArray((zerionRaw as { data?: unknown[] })?.data)
+    ? (zerionRaw as { data: ZPos[] }).data
+    : [];
+  const top10 = allPositions
+    .filter(p => (p.attributes?.value?.usd ?? 0) > 0)
+    .sort((a, b) => (b.attributes?.value?.usd ?? 0) - (a.attributes?.value?.usd ?? 0))
+    .slice(0, 10)
+    .map(p => ({
+      symbol: p.attributes?.fungible_info?.symbol ?? "?",
+      name: p.attributes?.fungible_info?.name ?? "?",
+      usd: p.attributes?.value?.usd ?? 0,
+    }));
+
+  const context: ClarkContext = {
+    walletScan: {
+      type: "wallet-scan",
+      address: walletAddress,
+      chain,
+      balances: results[0].status === "fulfilled" ? results[0].value : null,
+      transactions: results[1].status === "fulfilled" ? results[1].value : null,
+      zerion_top10: top10,
+    },
   };
+
+  const prompt = body.prompt
+    ? `${body.prompt}\n\nWallet address: ${walletAddress}`
+    : `Analyze wallet ${walletAddress}. Use the WALLET SCAN FORMAT. Focus on holdings, behavior, PnL, and end with WATCH/AVOID/COPY verdict.`;
+
+  const analysis = await callAnthropic(prompt, context);
+  return { feature: "wallet-scanner", chain, walletAddress, analysis };
 }
 
 async function handleDevWalletDetector(body: ClarkRequestBody) {
@@ -1365,17 +1403,24 @@ async function handleDevWalletDetector(body: ClarkRequestBody) {
   const tokenAddress = body.tokenAddress ?? body.addressOrToken;
   if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
 
-  const holders = await callGoldrush(
-    `${chainName}/tokens/${tokenAddress}/token_holders_v2/`,
-    { "page-size": "200" }
-  );
+  const results = await Promise.allSettled([
+    callGoldrush(`${chainName}/tokens/${tokenAddress}/token_holders_v2/`, { "page-size": "200" }),
+    callGoPlus(tokenAddress, chain),
+  ]);
 
-  return {
-    feature: "dev-wallet-detector",
-    chain,
-    tokenAddress,
-    tokenData: { holders },
+  const context: ClarkContext = {
+    tokenData: {
+      type: "dev-wallet-scan",
+      address: tokenAddress,
+      chain,
+      top_holders: results[0].status === "fulfilled" ? results[0].value : null,
+      goplus_security: results[1].status === "fulfilled" ? results[1].value : null,
+    },
   };
+
+  const prompt = `Identify the dev/deployer wallet for token ${tokenAddress}. Analyze top holders and GoPlus security flags for concentration risk, suspicious mechanics, or insider wallets. Give a clear verdict: is this dev wallet a red flag?`;
+  const analysis = await callAnthropic(prompt, context);
+  return { feature: "dev-wallet-detector", chain, tokenAddress, analysis };
 }
 
 async function handleLiquiditySafety(body: ClarkRequestBody, origin: string) {
@@ -1405,17 +1450,27 @@ async function handleWhaleAlerts(body: ClarkRequestBody) {
   const walletAddress = body.walletAddress ?? body.addressOrToken;
   if (!walletAddress) throw new Error("walletAddress or addressOrToken is required");
 
-  const txs = await callCovalent(
-    `${chainName}/address/${walletAddress}/transactions_v3/`,
-    { "page-size": "50" }
-  );
+  const results = await Promise.allSettled([
+    callCovalent(`${chainName}/address/${walletAddress}/transactions_v3/`, { "page-size": "50" }),
+    callZerion(`wallets/${walletAddress}/positions/`, {
+      currency: "usd",
+      "filter[positions]": "only_simple",
+    }),
+  ]);
 
-  return {
-    feature: "whale-alerts",
-    chain,
-    walletAddress,
-    walletScan: { transactions: txs },
+  const context: ClarkContext = {
+    walletScan: {
+      type: "whale-scan",
+      address: walletAddress,
+      chain,
+      transactions: results[0].status === "fulfilled" ? results[0].value : null,
+      zerion_positions: results[1].status === "fulfilled" ? results[1].value : null,
+    },
   };
+
+  const prompt = `Analyze whale wallet ${walletAddress}. Identify large moves, accumulation patterns, and key tokens. Is this wallet worth following? End with WATCH or AVOID verdict.`;
+  const analysis = await callAnthropic(prompt, context);
+  return { feature: "whale-alerts", chain, walletAddress, analysis };
 }
 
 async function handlePumpAlerts(body: ClarkRequestBody, origin: string) {
@@ -1712,36 +1767,34 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, analysis };
   }
 
-  // Always fetch baseline sources in parallel — never rely on routeCommand alone
-  const [trendingResult, gtRawResult] = await Promise.allSettled([
-    callTrending(origin),
-    callGeckoTerminal(network, origin),
-  ]);
+  let trending: unknown[] = [];
+  let gtPools: unknown[] = [];
 
-  let trending: unknown[] = trendingResult.status === "fulfilled" && Array.isArray(trendingResult.value)
-    ? trendingResult.value
-    : [];
+  if (shouldFetchMarketContext(prompt)) {
+    const [trendingResult, gtRawResult] = await Promise.allSettled([
+      callTrending(origin),
+      callGeckoTerminal(network, origin),
+    ]);
+    if (trendingResult.status === "fulfilled" && Array.isArray(trendingResult.value))
+      trending = trendingResult.value;
+    if (gtRawResult.status === "fulfilled" && Array.isArray((gtRawResult.value as { data?: unknown[] })?.data))
+      gtPools = ((gtRawResult.value as { data: unknown[] }).data as unknown[]).slice(0, 5);
+  }
 
-  let gtPools: unknown[] = gtRawResult.status === "fulfilled"
-    ? (Array.isArray((gtRawResult.value as { data?: unknown[] })?.data)
-        ? (gtRawResult.value as { data: unknown[] }).data
-        : [])
-    : [];
-
-  // Route-specific context — non-fatal if unavailable; enriches all context fields
+  // Route-specific context — non-fatal if unavailable
   let tokenData: unknown = {};
   let walletScan: unknown = {};
   let contractAnalysis: unknown = {};
 
   try {
     const routeCtx = await routeCommand(prompt, chain, origin);
-    if (routeCtx?.tokenData  != null) tokenData        = routeCtx.tokenData;
-    if (routeCtx?.walletScan != null) walletScan        = routeCtx.walletScan;
-    if (routeCtx?.analysis   != null) contractAnalysis  = routeCtx.analysis;
-    if (Array.isArray(routeCtx?.trending)  && (routeCtx.trending  as unknown[]).length > 0)
-      trending = routeCtx.trending  as unknown[];
-    if (Array.isArray(routeCtx?.gtPools)   && (routeCtx.gtPools   as unknown[]).length > 0)
-      gtPools  = routeCtx.gtPools   as unknown[];
+    if (routeCtx?.tokenData  != null) tokenData       = routeCtx.tokenData;
+    if (routeCtx?.walletScan != null) walletScan       = routeCtx.walletScan;
+    if (routeCtx?.analysis   != null) contractAnalysis = routeCtx.analysis;
+    if (Array.isArray(routeCtx?.trending) && (routeCtx.trending as unknown[]).length > 0)
+      trending = routeCtx.trending as unknown[];
+    if (Array.isArray(routeCtx?.gtPools) && (routeCtx.gtPools as unknown[]).length > 0)
+      gtPools = (routeCtx.gtPools as unknown[]).slice(0, 5);
   } catch (err) {
     console.error("[Clark router]", err instanceof Error ? err.message : err);
   }
@@ -1749,9 +1802,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const context: ClarkContext = {
     trending,
     gtPools,
-    tokenData:  tokenData        ?? {},
-    walletScan: walletScan        ?? {},
-    analysis:   contractAnalysis  ?? {},
+    tokenData:  tokenData       ?? {},
+    walletScan: walletScan      ?? {},
+    analysis:   contractAnalysis ?? {},
   };
 
   if (replyMode !== "analysis" && replyMode !== "feature_context") {
@@ -1820,20 +1873,12 @@ export async function POST(req: NextRequest) {
       { status: 200 }
     );
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Internal server error";
-    console.error("[Clark]", message);
+    console.error("[Clark]", err instanceof Error ? err.message : err);
+    const safeMsg = "Clark could not fetch that data right now. Try again in a moment or open the matching scanner.";
     return NextResponse.json({
       ok: true,
       feature: "clark-ai",
-      data: {
-        reply: "I can continue with a safe fallback. Paste a contract or wallet and I’ll retry with available on-chain context.",
-        response: "I can continue with a safe fallback. Paste a contract or wallet and I’ll retry with available on-chain context.",
-        message: "I can continue with a safe fallback. Paste a contract or wallet and I’ll retry with available on-chain context.",
-        verdict: "SCAN DEEPER",
-        confidence: "Low",
-        source: "fallback",
-        mode: "fallback",
-      },
+      data: { reply: safeMsg, response: safeMsg, analysis: safeMsg, verdict: "SCAN DEEPER", source: "fallback" },
     }, { status: 200 });
   }
 }

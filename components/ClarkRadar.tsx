@@ -33,6 +33,9 @@ function extractTokenQuery(text: string): string | null {
   return null
 }
 
+const WALLET_INTENT = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|holds\b|copy[\s-]?trade?|copytrade|follow|smart\s+money|good\s+wallet|whale\s+wallet|wallet\s+quality)\b/i
+const MARKET_INTENT = /\b(pumping|pump(?:ing)?|hot\b|moving\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?|what\s+should\s+i\s+watch|what'?s\s+on\s+base)\b/i
+
 function parseMessage(raw: string, clarkMode: ClarkMode): Record<string, string> {
   const t = raw.trim().toLowerCase()
   const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
@@ -48,7 +51,7 @@ function parseMessage(raw: string, clarkMode: ClarkMode): Record<string, string>
     return { feature: 'clark-ai', prompt: raw.trim() }
   }
 
-  // Wallet / chain-level features (keep as-is)
+  // Explicit wallet commands
   if (t.startsWith('scan wallet') && address)
     return { feature: 'wallet-scanner', walletAddress: address }
   if (t.startsWith('dev wallet') && address)
@@ -56,13 +59,16 @@ function parseMessage(raw: string, clarkMode: ClarkMode): Record<string, string>
   if (t.includes('whale') && address)
     return { feature: 'whale-alerts', walletAddress: address }
 
-  // Trending / base radar
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || t.includes('whales'))
+  // Market / radar — check BEFORE bare address so "what's pumping?" never hits scan-token
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || t.includes('whales') || MARKET_INTENT.test(t))
     return { feature: 'base-radar' }
 
-  // Contract address → scan-token (preferred over old token-scanner)
-  if (address)
+  // Bare address: wallet intent → wallet-scanner, otherwise → scan-token
+  if (address) {
+    if (WALLET_INTENT.test(t))
+      return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
     return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
+  }
 
   // Token name + signal keyword → scan-token
   const TOKEN_SIGNALS = /\b(price|liquidity|volume|safe|safety|pools?|rug|trap|pump|pumping|dump|degen|volatile|volatility|risk|cap|chart|scan|check|analyze|analysis|verdict)\b/i
