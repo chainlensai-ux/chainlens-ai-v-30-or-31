@@ -193,7 +193,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
     return { intent: "general_market", address };
   }
 
-  if (/what is liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock/i.test(t)) {
+  if (/\bliquidity risk\b|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock/i.test(t)) {
     return { intent: "educational", address };
   }
 
@@ -257,7 +257,27 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
 
 function buildEducationalReply(prompt: string): string {
   const t = prompt.toLowerCase();
-  if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can’t exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
+  const deep = /\b(explain|why|how|deeply|full breakdown|detailed|tell me more|what else|advanced|everything)\b/i.test(prompt);
+  if (/liquidity risk/.test(t)) {
+    if (deep) {
+      return `Overview:
+Liquidity risk is the chance you can’t enter or exit without major slippage because depth is too thin, concentrated, or removable.
+
+What matters:
+- Thin pools can print big candles that reverse fast.
+- Unlocked or concentrated LP can vanish and break tradability.
+- Volume only helps when it sits on real liquidity.
+
+What I’d check:
+1. Depth and slippage at your planned size.
+2. LP ownership/lock profile and whether liquidity is growing or draining.
+3. Volume-to-liquidity ratio and holder concentration.
+
+Clark’s read:
+Good chart action with weak liquidity is noise until proven otherwise. In ChainLens terms, liquidity quality is the first risk gate.`;
+    }
+    return "Liquidity risk is the chance you can’t enter or exit cleanly because the pool is too thin or controllable. Why it matters: even a clean-looking token can break if liquidity disappears. In ChainLens terms, I’d check depth, LP ownership/lock, and volume versus liquidity.";
+  }
   if (/dev wallet/.test(t)) return "A dev wallet is a deployer-linked wallet that can reveal insider coordination, funding links, or early sell pressure.";
   if (/holder concentration/.test(t)) return "Holder concentration means too much supply sits in a few wallets, increasing dump and manipulation risk.";
   if (/lp lock/.test(t)) return "LP lock matters because unlocked liquidity can be pulled, which can collapse tradability and price.";
@@ -347,8 +367,11 @@ ${summary}
 Moving now:
 ${lines.join("\n")}
 
+Clark’s read:
+The better watch is usually the strongest liquid mover, not just the biggest % spike. Treat this as a watchlist, not a buy list.
+
 Best next step:
-Scan the strongest token before touching it.`;
+Scan the strongest liquid mover, then verify contract and holder risk before sizing.`;
 }
 
 function mapTrendingTokens(raw: unknown[]): BaseMarketToken[] {
@@ -439,10 +462,10 @@ function buildTokenAnalysisFallback(tokenData: unknown, address: string): string
   return buildStructuredVerdict(
     "SCAN DEEPER",
     "Low",
-    `${name} (${symbol}) on Base has market data, but full risk context is incomplete.`,
+    `${name} (${symbol}) has momentum data, but this still needs contract-level confirmation.`,
     [`Token resolved: ${symbol} (${address})`, `Liquidity: ${liquidity}`, `24h volume: ${volume}`],
-    ["Security and holder concentration are not fully verified in this pass.", "Market data alone is not enough to call it safe."],
-    "Run Token Scanner and validate contract/security fields before entry."
+    ["I can’t verify holder distribution from this pass.", "Market momentum alone does not prove contract quality."],
+    "Run Token Scanner before sizing and confirm liquidity/holder control."
   );
 }
 
@@ -1226,12 +1249,38 @@ function pickNextAction(text: string, verdict: string): string {
   return defaultAction(verdict);
 }
 
+function pickVariant(seed: string, variants: string[]): string {
+  let hash = 0;
+  for (const ch of seed) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return variants[hash % variants.length];
+}
+
 function defaultAction(verdict: string): string {
-  if (verdict === "AVOID") return "Avoid until the critical risk is resolved or verified safe."
-  if (verdict === "TRUSTWORTHY") return "Monitor normally; no major risk surfaced from available data."
-  if (verdict === "SCAN DEEPER") return "Run Token Scanner and Dev Wallet Detector before touching it."
-  if (verdict === "WATCH") return "Watch only; verify holder distribution, LP control, and linked-wallet behavior before trusting it."
-  return "Not enough verified data to make a strong call."
+  if (verdict === "AVOID") return pickVariant(verdict, [
+    "Avoid until the critical risk is resolved.",
+    "Stand down for now; this setup still carries a hard red flag.",
+    "Not a trade candidate yet—wait for the risk to clear.",
+  ]);
+  if (verdict === "TRUSTWORTHY") return pickVariant(verdict, [
+    "Monitor as normal; no major risk surfaced from available data.",
+    "Signals look cleaner than average, but keep normal risk controls.",
+    "Reasonable setup from current data—still manage size and exits.",
+  ]);
+  if (verdict === "SCAN DEEPER") return pickVariant(verdict, [
+    "Run a full scan before trusting this signal.",
+    "Best next step: verify liquidity + holders before sizing.",
+    "Treat this as a lead, not a confirmed signal.",
+  ]);
+  if (verdict === "WATCH") return pickVariant(verdict, [
+    "Worth watching, but confirm behavior and structure before acting.",
+    "Watchlist candidate—follow flow and concentration before trust.",
+    "Signal is usable, not final; track follow-through first.",
+  ]);
+  return pickVariant(verdict, [
+    "I can’t confirm enough yet for a strong call.",
+    "Useful clues are present, but one key piece is still missing.",
+    "I’d keep this in watch mode until the missing data clears.",
+  ]);
 }
 
 function extractSection(text: string, start: string, stops: string[]): string {
@@ -1746,11 +1795,15 @@ Data note:
 Wallet balances are from the wallet feed and may be partial for unsupported assets.`;
 }
 
-function buildWalletQualityReply(walletData: unknown, address: string): string {
+function buildWalletQualityReply(walletData: unknown, address: string, prompt: string): string {
   const data = (walletData ?? {}) as Record<string, unknown>;
   const holdings = Array.isArray(data.holdings) ? (data.holdings as Array<Record<string, unknown>>) : [];
   const totalValue = typeof data.totalValue === "number" ? (data.totalValue as number) : null;
   const txCount = typeof data.txCount === "number" ? (data.txCount as number) : null;
+  const stableExposure = holdings
+    .filter((h) => /^(USDC|USDT|DAI|USDBC)$/i.test(String(h.symbol ?? "")))
+    .reduce((sum, h) => sum + Number(h.value ?? 0), 0);
+  const stableRatio = totalValue && totalValue > 0 ? stableExposure / totalValue : 0;
 
   let verdict: "WATCH" | "SCAN DEEPER" | "AVOID" | "UNKNOWN" = "UNKNOWN";
   let confidence: "Low" | "Medium" | "High" = "Low";
@@ -1763,21 +1816,29 @@ function buildWalletQualityReply(walletData: unknown, address: string): string {
     confidence = "Low";
   }
 
-  const signals = [
-    totalValue !== null ? `Portfolio value is ${formatUsdShort(totalValue)}.` : "Portfolio value is unavailable.",
-    `Holdings detected: ${holdings.length}.`,
-    txCount !== null ? `Ethereum nonce indicates ${txCount} outbound txs.` : "Behavior history depth is limited in this pass.",
-  ];
+  const signals: string[] = [];
+  if ((totalValue ?? 0) >= 50_000) signals.push(`Size is meaningful at ${formatUsdShort(totalValue)} and worth monitoring.`);
+  else if ((totalValue ?? 0) > 0) signals.push(`Wallet has some size (${formatUsdShort(totalValue)}), but it is not a clear whale signal yet.`);
+  else signals.push("Portfolio value is currently limited from available wallet data.");
+  if (holdings.length >= 8) signals.push("Broad holdings suggest rotation/farming behavior, not a single bet.");
+  else if (holdings.length >= 2) signals.push("Moderate concentration makes this easier to track over time.");
+  else signals.push("Concentrated wallet; easier to watch, but exposure risk is higher.");
+  if (stableRatio >= 0.4) signals.push("Stablecoin-heavy mix suggests dry powder to deploy.");
+  else if (txCount !== null) signals.push(`Observed outbound activity count: ${txCount}.`);
 
   const risks = [
-    "Balance snapshots alone cannot prove smart-money behavior.",
-    "PnL, timing, and transfer counterparties are not fully verified here.",
-    holdings.length < 2 ? "Portfolio concentration is high or unclear." : "Needs deeper flow analysis before trust.",
+    "Balances show size, but not entry timing or execution skill.",
+    "Counterparty flow and realized PnL are still missing from this pass.",
+    holdings.length < 2 ? "Concentration risk is elevated until activity confirms intent." : "Needs transfer-history context before confidence can rise.",
   ];
 
+  const copyTradeAsk = /\bcopy\s*-?\s*trade\b/i.test(prompt);
   const read = verdict === "WATCH"
-    ? "This wallet has meaningful value and enough holdings to be worth monitoring, but balances alone are not enough to treat it as smart money."
-    : "Not enough behavior data to call this a high-quality wallet from balances alone. It needs deeper flow analysis.";
+    ? "Good signal potential from wallet size and structure, so this is worth monitoring. But size alone does not prove trading skill without entry/exit behavior."
+    : "Useful starting signal, but behavior is the missing piece. I can read holdings here, not execution quality.";
+  const nextAction = copyTradeAsk
+    ? "Track entries, exits, and position sizing first; if behavior stays consistent, keep it on your watchlist."
+    : "Monitor where capital rotates next and confirm entries/exits before treating this as a lead wallet.";
 
   return buildStructuredVerdict(
     verdict,
@@ -1785,7 +1846,7 @@ function buildWalletQualityReply(walletData: unknown, address: string): string {
     read,
     signals,
     risks,
-    "Use Wallet Scanner for transaction behavior before making follow decisions.",
+    nextAction,
     `Wallet ${shortAddress(address)}`
   );
 }
@@ -1942,7 +2003,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "wallet_quality" && address) {
     try {
       const walletData = await fetchWalletSnapshot(address);
-      return { feature: "clark-ai", chain, analysis: buildWalletQualityReply(walletData, address) };
+      return { feature: "clark-ai", chain, analysis: buildWalletQualityReply(walletData, address, prompt) };
     } catch {
       return {
         feature: "clark-ai",
