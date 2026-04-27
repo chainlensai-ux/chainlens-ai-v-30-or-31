@@ -7,6 +7,8 @@ const {
   COVALENT_API_KEY,
   ANTHROPIC_API_KEY,
   BASESCAN_API_KEY,
+  ALCHEMY_ETHEREUM_KEY,
+  ALCHEMY_BASE_KEY,
 } = process.env;
 
 // ---------- Types ----------
