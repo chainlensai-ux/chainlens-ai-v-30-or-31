@@ -150,7 +150,11 @@ function hasTokenIntent(text: string): boolean {
 }
 
 function hasMarketIntent(text: string): boolean {
-  return /\b(what'?s pumping on base|what'?s moving on base|show hot base tokens|top movers on base|new base launches|biggest gainers|what should i watch|trending|hot tokens?)\b/i.test(text);
+  return /\b(what'?s pumping on base|what'?s moving on base|show hot base tokens|top movers on base|new base launches|biggest gainers|what should i watch|trending|hot tokens?|pumping|movers?|runners?|trending tokens?|other tokens?|show more|any others?)\b/i.test(text);
+}
+
+function hasMarketFollowupIntent(text: string): boolean {
+  return /\b(other tokens?|show more|show me more|any others?|more runners?|more movers?|what else is moving|what else is pumping|other runners?|other movers?|more base tokens?|what else should i watch)\b/i.test(text);
 }
 
 function detectIntent(prompt: string): { intent: ClarkIntent; address: string | null } {
@@ -189,7 +193,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
     if (address) return { intent: "analysis", address };
   }
 
-  if (hasMarketIntent(t) || /\bbase radar\b/.test(t)) {
+  if (hasMarketIntent(t) || hasMarketFollowupIntent(t) || /\bbase radar\b/.test(t)) {
     return { intent: "general_market", address };
   }
 
@@ -215,6 +219,9 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   const prompt = body.prompt ?? "";
   const t = prompt.toLowerCase();
   const explicitMode = String(body.mode ?? "").toLowerCase();
+  const contextText = body.context == null ? "" : JSON.stringify(body.context).toLowerCase();
+  const isFollowupMarket = hasMarketFollowupIntent(prompt.toLowerCase());
+  const hasMarketHistory = /\b(base market|moving now|more movers|base radar|what'?s pumping on base)\b/.test(contextText);
   if (explicitMode === "chat") {
     const { intent, address } = detectIntent(prompt);
     if (intent === "casual_help") return "casual_help";
@@ -225,6 +232,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
     if ((intent === "analysis" || intent === "token_analysis" || intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety") && address) {
       return "analysis";
     }
+    if (isFollowupMarket) return "general_market";
     if (address) return "analysis";
     return "unknown";
   }
@@ -239,6 +247,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   if (featureModes.has(explicitMode)) return "feature_context";
   const hasStructuredMode = /\[mode\s*:/i.test(prompt) || body.context != null;
   if (hasStructuredMode) return "feature_context";
+  if (isFollowupMarket && (hasMarketHistory || body.context == null)) return "general_market";
 
   const { intent, address } = detectIntent(prompt);
   if (intent === "casual_help") return "casual_help";
@@ -294,6 +303,9 @@ function buildRoutingHelpReply(prompt: string): string {
 
 function buildGeneralMarketNoContextReply(prompt: string): string {
   const t = prompt.toLowerCase();
+  if (hasMarketFollowupIntent(t)) {
+    return "I can’t pull a fresh second batch right now, but the next names to check should have rising volume, decent liquidity, and cleaner holder/LP signals. Paste one contract and I’ll scan it.";
+  }
   if (/what should i watch/.test(t)) {
     return "I can’t pull live Base movers right now. What to watch: fresh 24h volume expansion, liquidity depth above ~$50k, repeat buyers across multiple candles, dev-wallet behavior, and holder concentration. Paste a contract and I’ll scan it.";
   }
@@ -320,8 +332,9 @@ type BaseMarketToken = {
   change24h: number | null;
 };
 
-function buildBaseMarketBriefing(tokens: BaseMarketToken[]): string {
+function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string): string {
   const STABLES = new Set(["USDC", "USDBC", "DAI", "USDT"]);
+  const followup = hasMarketFollowupIntent(prompt.toLowerCase());
   const sorted = tokens
     .filter((p) => !STABLES.has((p.symbol ?? "").toUpperCase()))
     .filter((p) => (p.change24h ?? 0) > 0 && (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
@@ -361,10 +374,10 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[]): string {
     return `- ${token.symbol}: ${(token.change24h ?? 0).toFixed(1)}% 24h, volume ${formatUsdShort(token.volume)}, liquidity ${formatUsdShort(token.liquidity)}, ${reason}.`;
   });
 
-  return `Base Market:
+  return `${followup ? "Base Market — more names:" : "Base Market:"}
 ${summary}
 
-Moving now:
+${followup ? "More movers:" : "Moving now:"}
 ${lines.join("\n")}
 
 Clark’s read:
@@ -1879,7 +1892,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       }
     }
     if (tokens.length > 0) {
-      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens) };
+      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens, prompt) };
     }
     return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(prompt) };
   }
