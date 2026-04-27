@@ -371,26 +371,44 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, cont
   const contextText = context == null ? "" : JSON.stringify(context);
   const shownSymbols = mentionedSymbolsFromText(contextText);
   const maxItems = followup ? 8 : 7;
-  const seen = new Set<string>();
-  const ranked = tokens
-    .filter((p) => (p.change24h ?? 0) > 0 && (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
-    .filter((p) => {
+  const dedupe = (items: BaseMarketToken[]) => {
+    const seen = new Set<string>();
+    return items.filter((p) => {
       const sym = (p.symbol ?? "").toUpperCase();
-      if (!sym) return false;
-      if (STABLES.has(sym)) return false;
-      if (!followup && MAJORS.has(sym)) return false;
+      if (!sym || STABLES.has(sym)) return false;
       const key = `${sym}:${(p.contract ?? "").toLowerCase()}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
-    })
+    });
+  };
+
+  const rankedStrict = dedupe(tokens)
+    .filter((p) => (p.change24h ?? 0) > 0 && (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
+    .filter((p) => !MAJORS.has((p.symbol ?? "").toUpperCase()))
     .sort((a, b) => marketTokenScore(b) - marketTokenScore(a));
 
-  const startIndex = followup ? Math.min(5, ranked.length) : 0;
-  const display = ranked
-    .slice(startIndex)
+  const rankedRelaxed = dedupe(tokens)
+    .filter((p) => (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
+    .sort((a, b) => marketTokenScore(b) - marketTokenScore(a));
+
+  const strictFollowup = rankedStrict
+    .slice(Math.min(5, rankedStrict.length))
     .filter((t) => !shownSymbols.has(t.symbol.toUpperCase()))
     .slice(0, maxItems);
+
+  const relaxedFollowup = rankedRelaxed
+    .filter((t) => !shownSymbols.has(t.symbol.toUpperCase()))
+    .filter((t) => !strictFollowup.some((s) => s.contract.toLowerCase() === t.contract.toLowerCase()))
+    .slice(0, maxItems);
+  const anyVisibleFollowup = rankedRelaxed
+    .filter((t) => !strictFollowup.some((s) => s.contract.toLowerCase() === t.contract.toLowerCase()))
+    .slice(0, maxItems);
+
+  const display = followup
+    ? (strictFollowup.length > 0 ? strictFollowup : relaxedFollowup.length > 0 ? relaxedFollowup : anyVisibleFollowup)
+    : rankedStrict.slice(0, maxItems);
+  const weakSecondBatch = followup && strictFollowup.length === 0 && relaxedFollowup.length > 0;
 
   if (display.length === 0) {
     return followup
@@ -404,15 +422,23 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, cont
     : avgChange >= 3
       ? "CoinGecko Terminal Base market feed shows selective upside with mixed quality across pools."
       : "CoinGecko Terminal Base market feed is active, but momentum is uneven and needs tighter selection.";
+  const followupSummary = "I’m only seeing a smaller second batch from the current Base feed, so treat these as watchlist names, not confirmed runners.";
 
   const lines = display.map((token) => {
     const liqNum = token.liquidity ?? 0;
     const move = token.change24h ?? 0;
     const volNum = token.volume ?? 0;
+    const symUpper = token.symbol.toUpperCase();
     const reason = liqNum < 25_000
       ? (move > 500
           ? "extreme move, tiny liquidity — likely noisy until scanned"
           : "thin liquidity / high noise")
+      : followup && move < 0 && liqNum >= 50_000 && volNum >= 50_000
+        ? MAJORS.has(symUpper)
+          ? "established Base name, cooling off, watch for reversal"
+          : "cooling off but liquid / worth watching"
+      : followup && MAJORS.has(symUpper)
+        ? "established major on Base, useful as lower-signal context"
       : liqNum < 50_000
         ? "thin liquidity, needs scan"
         : liqNum >= 100_000 && volNum >= 100_000
@@ -425,18 +451,22 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, cont
   });
 
   return `${followup ? "Base Market — more names:" : "Base Market:"}
-${summary}
+${followup ? followupSummary : summary}
 
 ${followup ? "More movers:" : "Moving now:"}
 ${lines.join("\n")}
 
 Clark’s read:
-The better watch is usually the strongest liquid mover, not just the biggest % spike. Treat this as a watchlist, not a buy list.
+${weakSecondBatch
+    ? "The first batch had the cleaner momentum. This second batch is more about watchlist coverage than strong conviction."
+    : "The better watch is usually the strongest liquid mover, not just the biggest % spike. Treat this as a watchlist, not a buy list."}
 
 Best next step:
-${display.length < 4
-    ? "This is a small usable batch right now; wait for deeper volume/liquidity confirmation before sizing."
-    : "Scan the strongest liquid mover, then verify contract and holder risk before sizing."}`;
+${followup
+    ? "Pick one with real volume/liquidity and run a token scan."
+    : display.length < 4
+      ? "This is a small usable batch right now; wait for deeper volume/liquidity confirmation before sizing."
+      : "Scan the strongest liquid mover, then verify contract and holder risk before sizing."}`;
 }
 
 function mapTrendingTokens(raw: unknown[]): BaseMarketToken[] {
