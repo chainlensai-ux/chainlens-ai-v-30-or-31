@@ -130,7 +130,7 @@ function gtNetwork(chain: SupportedChain): "base" | "eth" {
 }
 
 function hasWalletIntent(text: string): boolean {
-  return /\b(wallet|balance|balances|holdings?|portfolio|scan wallet|wallet scan)\b/i.test(text);
+  return /\b(wallet|wallet value|balance|balances|balence|ballance|bal|holdings?|holds|portfolio|tokens held|scan wallet|wallet scan)\b/i.test(text);
 }
 
 function hasWalletQualityIntent(text: string): boolean {
@@ -325,10 +325,15 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[]): string {
   const lines = sorted.slice(0, 4).map((token) => {
     const liqNum = token.liquidity ?? 0;
     const move = token.change24h ?? 0;
+    const volNum = token.volume ?? 0;
     const reason = liqNum < 25_000
-      ? "thin liquidity / high noise"
+      ? (move > 500
+          ? "extreme move, but liquidity is tiny — likely noisy until scanned"
+          : "thin liquidity / high noise")
       : liqNum < 50_000
         ? "thin liquidity, needs scan"
+        : liqNum > 100_000 && volNum > 75_000
+          ? "stronger market signal, still needs scan"
         : move > 80 && liqNum < 150_000
           ? "likely noisy"
           : "risk appears lower from available market data";
