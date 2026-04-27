@@ -121,10 +121,27 @@ export default function HomePage() {
           animation: feat-in 0.55s ease-out both;
         }
         .feat-card:hover { transform: translateY(-6px); }
+
+        @keyframes arc-rotate {
+          from { transform: rotate(0deg); }
+          to   { transform: rotate(360deg); }
+        }
+        @keyframes horizon-breathe {
+          0%,100% { opacity: 0.55; transform: scaleX(1); }
+          50%      { opacity: 0.75; transform: scaleX(1.04); }
+        }
+        .hero-horizon { animation: horizon-breathe 8s ease-in-out infinite; }
+
         @media (max-width: 767px) {
           .mob-hero-main { padding: 80px 16px 60px !important; }
           .feat-grid { grid-template-columns: 1fr !important; }
           .feat-section { padding: 56px 16px 64px !important; }
+          .hero-feat-row { flex-direction: column !important; gap: 16px !important; }
+          .hero-feat-row > div { border-right: none !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; padding-bottom: 16px !important; }
+          .hero-feat-row > div:last-child { border-bottom: none !important; }
+        }
+        @media (max-width: 1023px) {
+          .hero-feat-row { gap: 16px !important; }
         }
 
         /* CRT scanline sweep */
@@ -220,75 +237,120 @@ export default function HomePage() {
 
       <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
-        {/* Animated orb — teal left */}
+        {/* ── Cinematic background layer ── */}
+
+        {/* Tech grid */}
+        <div style={{
+          position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
+          backgroundImage: `
+            linear-gradient(rgba(45,212,191,0.022) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(45,212,191,0.022) 1px, transparent 1px)
+          `,
+          backgroundSize: '56px 56px',
+        }} />
+
+        {/* Star field */}
+        <div style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
+          backgroundImage: [
+            'radial-gradient(1px 1px at 8%  14%, rgba(255,255,255,0.22) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 18% 62%, rgba(255,255,255,0.14) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 32% 28%, rgba(255,255,255,0.18) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 47% 78%, rgba(255,255,255,0.12) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 58% 18%, rgba(255,255,255,0.16) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 68% 48%, rgba(255,255,255,0.13) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 76% 82%, rgba(255,255,255,0.10) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 85% 35%, rgba(255,255,255,0.15) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 92% 68%, rgba(255,255,255,0.12) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 4%  52%, rgba(255,255,255,0.10) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 25% 88%, rgba(255,255,255,0.14) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 55%  8%, rgba(255,255,255,0.17) 0%, transparent 100%)',
+            'radial-gradient(1.5px 1.5px at 38% 45%, rgba(255,255,255,0.10) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 72% 12%, rgba(255,255,255,0.13) 0%, transparent 100%)',
+            'radial-gradient(1px 1px at 96% 24%, rgba(255,255,255,0.11) 0%, transparent 100%)',
+          ].join(', '),
+        }} />
+
+        {/* Teal volumetric glow — left */}
+        <div style={{
+          position: 'absolute', pointerEvents: 'none', zIndex: 0,
+          width: '700px', height: '700px',
+          top: '-80px', left: '-140px',
+          background: 'radial-gradient(ellipse at center, rgba(45,212,191,0.13) 0%, rgba(45,212,191,0.04) 45%, transparent 70%)',
+          filter: 'blur(60px)',
+          animation: 'orb-teal 16s ease-in-out infinite',
+        }} />
+
+        {/* Purple/magenta volumetric glow — right */}
+        <div style={{
+          position: 'absolute', pointerEvents: 'none', zIndex: 0,
+          width: '800px', height: '800px',
+          top: '-120px', right: '-180px',
+          background: 'radial-gradient(ellipse at center, rgba(139,92,246,0.14) 0%, rgba(236,72,153,0.06) 40%, transparent 68%)',
+          filter: 'blur(70px)',
+          animation: 'orb-purple 20s ease-in-out infinite',
+        }} />
+
+        {/* Left curved arc sweep — teal ring */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
           width: '900px', height: '900px',
           borderRadius: '50%',
-          top: '-200px', left: '-5%',
-          background: 'radial-gradient(circle, rgba(45,212,191,0.10) 0%, transparent 68%)',
-          filter: 'blur(70px)',
-          animation: 'orb-teal 14s ease-in-out infinite',
+          border: '1px solid rgba(45,212,191,0.08)',
+          top: '-300px', left: '-420px',
+          boxShadow: 'inset 0 0 80px rgba(45,212,191,0.04)',
+        }} />
+        <div style={{
+          position: 'absolute', pointerEvents: 'none', zIndex: 0,
+          width: '700px', height: '700px',
+          borderRadius: '50%',
+          border: '1px solid rgba(45,212,191,0.05)',
+          top: '-200px', left: '-320px',
         }} />
 
-        {/* Animated orb — purple right */}
+        {/* Right curved arc sweep — purple ring */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
           width: '1000px', height: '1000px',
           borderRadius: '50%',
-          top: '-150px', right: '-8%',
-          background: 'radial-gradient(circle, rgba(139,92,246,0.10) 0%, transparent 68%)',
-          filter: 'blur(90px)',
-          animation: 'orb-purple 18s ease-in-out infinite',
+          border: '1px solid rgba(139,92,246,0.07)',
+          top: '-350px', right: '-480px',
+          boxShadow: 'inset 0 0 80px rgba(139,92,246,0.04)',
         }} />
-
-        {/* Static orb — teal bottom-left */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
           width: '750px', height: '750px',
           borderRadius: '50%',
-          bottom: '-120px', left: '-80px',
-          background: 'radial-gradient(circle, rgba(45,212,191,0.12) 0%, transparent 68%)',
-          filter: 'blur(80px)',
+          border: '1px solid rgba(236,72,153,0.05)',
+          top: '-220px', right: '-350px',
         }} />
 
-        {/* Static orb — purple bottom-right */}
+        {/* Planetary horizon arc — bottom center */}
+        <div
+          className="hero-horizon"
+          style={{
+            position: 'absolute', pointerEvents: 'none', zIndex: 0,
+            width: '130%', height: '320px',
+            borderRadius: '50%',
+            bottom: '-140px', left: '-15%',
+            background: 'radial-gradient(ellipse at 50% 100%, rgba(45,212,191,0.10) 0%, rgba(139,92,246,0.08) 30%, transparent 70%)',
+            filter: 'blur(40px)',
+          }}
+        />
+        {/* Horizon arc border line */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '800px', height: '800px',
+          width: '120%', height: '600px',
           borderRadius: '50%',
-          bottom: '-140px', right: '-80px',
-          background: 'radial-gradient(circle, rgba(139,92,246,0.10) 0%, transparent 68%)',
-          filter: 'blur(90px)',
+          border: '1px solid rgba(45,212,191,0.06)',
+          bottom: '-380px', left: '-10%',
         }} />
-
-        {/* Terminal grid overlay — fixed, full page */}
         <div style={{
-          position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
-          backgroundImage: `
-            linear-gradient(rgba(45,212,191,0.028) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(45,212,191,0.028) 1px, transparent 1px)
-          `,
-          backgroundSize: '60px 60px',
-        }} />
-
-        {/* Scattered-star background */}
-        <div style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: -1,
-          backgroundImage: [
-            'radial-gradient(1px 1px at 12% 18%, rgba(255,255,255,0.18) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 28% 55%, rgba(255,255,255,0.12) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 44% 32%, rgba(255,255,255,0.15) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 62% 74%, rgba(255,255,255,0.10) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 78% 22%, rgba(255,255,255,0.13) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 88% 60%, rgba(255,255,255,0.16) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 5%  80%, rgba(255,255,255,0.10) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 35% 90%, rgba(255,255,255,0.12) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 55% 10%, rgba(255,255,255,0.14) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 92% 45%, rgba(255,255,255,0.11) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 20% 42%, rgba(255,255,255,0.09) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 70% 88%, rgba(255,255,255,0.10) 0%, transparent 100%)',
-          ].join(', '),
+          position: 'absolute', pointerEvents: 'none', zIndex: 0,
+          width: '110%', height: '500px',
+          borderRadius: '50%',
+          border: '1px solid rgba(139,92,246,0.05)',
+          bottom: '-300px', left: '-5%',
         }} />
 
         {/* Hero */}
@@ -389,7 +451,7 @@ export default function HomePage() {
               WebkitTextFillColor: 'transparent',
               backgroundClip: 'text',
             }}>
-              before everyone else does
+              before everyone else does.
             </span>
           </h1>
 
@@ -405,6 +467,90 @@ export default function HomePage() {
             Ask Clark anything — scan wallets, find early pumps, track
             smart money, and get real-time onchain intelligence.
           </p>
+
+          {/* Feature icon row */}
+          <div className="hero-feat-row" style={{
+            display: 'flex',
+            alignItems: 'stretch',
+            gap: '0',
+            maxWidth: '880px',
+            width: '100%',
+            margin: '8px 0 36px',
+            background: 'rgba(255,255,255,0.02)',
+            border: '1px solid rgba(255,255,255,0.07)',
+            borderRadius: '16px',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            overflow: 'hidden',
+          }}>
+            {([
+              {
+                accent: '#2DD4BF',
+                heading: 'Scan & Analyze',
+                desc: 'Tokens, wallets, and contracts',
+                icon: (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+                  </svg>
+                ),
+              },
+              {
+                accent: '#8b5cf6',
+                heading: 'Detect Early',
+                desc: 'Find early pumps and smart moves',
+                icon: (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                  </svg>
+                ),
+              },
+              {
+                accent: '#ec4899',
+                heading: 'Track Smart Money',
+                desc: 'Whales, dev wallets, and key flows',
+                icon: (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                  </svg>
+                ),
+              },
+              {
+                accent: '#60a5fa',
+                heading: 'Stay Ahead',
+                desc: 'Real-time alerts and onchain insights',
+                icon: (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                ),
+              },
+            ] as { accent: string; heading: string; desc: string; icon: React.ReactNode }[]).map((item, i) => (
+              <div key={i} style={{
+                flex: 1,
+                padding: '20px 18px',
+                borderRight: i < 3 ? '1px solid rgba(255,255,255,0.06)' : 'none',
+                display: 'flex',
+                gap: '12px',
+                alignItems: 'flex-start',
+              }}>
+                <div style={{
+                  width: '38px', height: '38px', borderRadius: '50%',
+                  flexShrink: 0,
+                  border: `1.5px solid ${item.accent}55`,
+                  background: `${item.accent}12`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: item.accent,
+                  boxShadow: `0 0 16px ${item.accent}20`,
+                }}>
+                  {item.icon}
+                </div>
+                <div>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', marginBottom: '3px', lineHeight: 1.3 }}>{item.heading}</div>
+                  <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.42)', lineHeight: 1.5 }}>{item.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
 
           {/* CTA buttons — horizontal row */}
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
