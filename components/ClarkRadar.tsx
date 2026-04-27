@@ -15,71 +15,6 @@ interface Message {
 }
 type ClarkMode = 'chat' | 'analyst'
 
-// Try to pull a token name from a message like "is brett safe?" or "toshi price"
-function extractTokenQuery(text: string): string | null {
-  const t = text.toLowerCase()
-  const STOP = new Set(['a', 'an', 'the', 'this', 'that', 'it', 'is', 'are', 'be', 'me', 'my',
-    'on', 'in', 'of', 'to', 'and', 'or', 'so', 'do', 'for', 'going', 'doing', 'there', 'here'])
-
-  const cmd = t.match(/\b(?:scan|check|analyze|info\s+on|about)\s+([a-z][a-z0-9]{1,15})\b/)
-  if (cmd && !STOP.has(cmd[1])) return cmd[1]
-
-  const before = t.match(/\b([a-z][a-z0-9]{1,15})\s+(?:price|liquidity|volume|safe|safety|pools?|rug|chart|cap|analysis|pumping)\b/)
-  if (before && !STOP.has(before[1])) return before[1]
-
-  const afterIs = t.match(/\bis\s+([a-z][a-z0-9]{1,15})\b/)
-  if (afterIs && !STOP.has(afterIs[1])) return afterIs[1]
-
-  return null
-}
-
-const WALLET_INTENT = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|holds\b|copy[\s-]?trade?|copytrade|follow|smart\s+money|good\s+wallet|whale\s+wallet|wallet\s+quality)\b/i
-const MARKET_INTENT = /\b(pumping|pump(?:ing)?|hot\b|moving\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?|what\s+should\s+i\s+watch|what'?s\s+on\s+base)\b/i
-
-function parseMessage(raw: string, clarkMode: ClarkMode): Record<string, string> {
-  const t = raw.trim().toLowerCase()
-  const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
-  const address = addrMatch?.[0]
-  const explicitScan = /\b(scan|analy[sz]e|check|risk|verdict|dev wallet|wallet|liquidity)\b/i.test(t)
-
-  if (clarkMode === 'chat') {
-    if (address && explicitScan) {
-      if (t.includes('dev wallet')) return { feature: 'dev-wallet-detector', tokenAddress: address, prompt: raw.trim() }
-      if (t.includes('wallet')) return { feature: 'wallet-scanner', walletAddress: address }
-      return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
-    }
-    return { feature: 'clark-ai', prompt: raw.trim() }
-  }
-
-  // Explicit wallet commands
-  if (t.startsWith('scan wallet') && address)
-    return { feature: 'wallet-scanner', walletAddress: address }
-  if (t.startsWith('dev wallet') && address)
-    return { feature: 'dev-wallet-detector', tokenAddress: address }
-  if (t.includes('whale') && address)
-    return { feature: 'whale-alerts', walletAddress: address }
-
-  // Market / radar — check BEFORE bare address so "what's pumping?" never hits scan-token
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || t.includes('whales') || MARKET_INTENT.test(t))
-    return { feature: 'base-radar' }
-
-  // Bare address: wallet intent → wallet-scanner, otherwise → scan-token
-  if (address) {
-    if (WALLET_INTENT.test(t))
-      return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
-    return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
-  }
-
-  // Token name + signal keyword → scan-token
-  const TOKEN_SIGNALS = /\b(price|liquidity|volume|safe|safety|pools?|rug|trap|pump|pumping|dump|degen|volatile|volatility|risk|cap|chart|scan|check|analyze|analysis|verdict)\b/i
-  if (TOKEN_SIGNALS.test(t)) {
-    const name = extractTokenQuery(t)
-    if (name) return { feature: 'scan-token', query: name, prompt: raw.trim() }
-  }
-
-  return { feature: 'clark-ai', prompt: raw.trim() }
-}
-
 function formatResponse(data: Record<string, unknown>): string {
   if (typeof data?.analysis === 'string') return data.analysis
   return JSON.stringify(data, null, 2)
@@ -105,19 +40,26 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
     }
   }, [messages])
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const sendToClark = useCallback(async (text: string) => {
     setMessages(prev => [...prev, { role: 'user', text }])
     setLoading(true)
     setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
 
     try {
-      const body = parseMessage(text, clarkMode)
-      const requestMode = body.feature === 'clark-ai' ? clarkMode : 'analyst'
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, message: text, mode: requestMode, context: null }),
+        body: JSON.stringify({
+          feature: 'clark-ai',
+          message: text,
+          prompt: text,
+          mode: 'unified',
+          uiModeHint: clarkMode,
+          context: null,
+          history: [...messages, { role: 'user', text }]
+            .slice(-6)
+            .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text })),
+        }),
       })
       const json = await res.json()
       const reply = json.ok
@@ -139,7 +81,7 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
       setLoading(false)
       inputRef.current?.focus()
     }
-  }, [clarkMode])
+  }, [clarkMode, messages])
 
   useEffect(() => {
     if (pendingMessage && pendingMessage !== lastSentRef.current) {
