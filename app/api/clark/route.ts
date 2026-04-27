@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fetchWalletSnapshot } from "@/lib/server/walletSnapshot";
 
 const {
   GOLDRUSH_API_KEY,
@@ -224,6 +225,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
     if ((intent === "analysis" || intent === "token_analysis" || intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety") && address) {
       return "analysis";
     }
+    if (address) return "analysis";
     return "unknown";
   }
   if (explicitMode === "casual_help") return "casual_help";
@@ -397,116 +399,6 @@ async function callInternalApi(origin: string, path: string, payload: Record<str
   } catch {
     return { ok: false, status: 503, json: {} };
   }
-}
-
-async function alchemyRpc(url: string, method: string, params: unknown[]) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: 1, jsonrpc: "2.0", method, params }),
-    cache: "no-store",
-  });
-  const json = await res.json().catch(() => ({}));
-  return (json as Record<string, unknown>).result ?? null;
-}
-
-async function getFirstTxOnChain(address: string, alchemyUrl: string): Promise<Date | null> {
-  const baseParams = {
-    fromBlock: "0x0",
-    category: ["external", "internal", "erc20"],
-    withMetadata: true,
-    maxCount: "0x1",
-    order: "asc",
-  };
-  const [sent, received] = await Promise.allSettled([
-    alchemyRpc(alchemyUrl, "alchemy_getAssetTransfers", [{ ...baseParams, fromAddress: address }]),
-    alchemyRpc(alchemyUrl, "alchemy_getAssetTransfers", [{ ...baseParams, toAddress: address }]),
-  ]);
-
-  const dates: Date[] = [];
-  for (const r of [sent, received]) {
-    const ts = r.status === "fulfilled"
-      ? (((r.value as Record<string, unknown>)?.transfers as Array<Record<string, unknown>> | undefined)?.[0]?.metadata as Record<string, unknown> | undefined)?.blockTimestamp
-      : null;
-    if (typeof ts === "string") dates.push(new Date(ts));
-  }
-  return dates.length > 0 ? new Date(Math.min(...dates.map((d) => d.getTime()))) : null;
-}
-
-async function fetchWalletSnapshot(address: string) {
-  const addr = address.trim();
-  if (!/^0x[0-9a-fA-F]{40}$/i.test(addr)) return null;
-  if (!ZERION_KEY) return null;
-
-  const ethUrl = ALCHEMY_ETHEREUM_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_ETHEREUM_KEY}` : null;
-  const baseUrl = ALCHEMY_BASE_KEY ? `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_BASE_KEY}` : null;
-
-  const [positionsRes, portfolioRes, ethFirst, baseFirst, nonceRes] = await Promise.allSettled([
-    callZerion(`wallets/${addr}/positions/`, {
-      currency: "usd",
-      "filter[positions]": "only_simple",
-      "filter[trash]": "only_non_trash",
-      sort: "-value",
-      "page[size]": "50",
-    }),
-    callZerion(`wallets/${addr}/portfolio/`, { currency: "usd" }),
-    ethUrl ? getFirstTxOnChain(addr, ethUrl) : Promise.resolve(null),
-    baseUrl ? getFirstTxOnChain(addr, baseUrl) : Promise.resolve(null),
-    ethUrl ? alchemyRpc(ethUrl, "eth_getTransactionCount", [addr, "latest"]) : Promise.resolve(null),
-  ]);
-
-  const rawPos = positionsRes.status === "fulfilled" && Array.isArray((positionsRes.value as Record<string, unknown>)?.data)
-    ? ((positionsRes.value as Record<string, unknown>).data as Array<Record<string, unknown>>)
-    : [];
-  const holdings = rawPos
-    .map((pos) => {
-      const a = (pos.attributes ?? {}) as Record<string, unknown>;
-      const fi = (a.fungible_info ?? {}) as Record<string, unknown>;
-      const rel = (pos.relationships ?? {}) as Record<string, unknown>;
-      const chainData = ((rel.chain ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
-      const qty = (a.quantity ?? {}) as Record<string, unknown>;
-      const changes = (a.changes ?? {}) as Record<string, unknown>;
-      const flags = (fi.flags ?? {}) as Record<string, unknown>;
-      return {
-        name: String(fi.name ?? "Unknown"),
-        symbol: String(fi.symbol ?? "?"),
-        icon: ((fi.icon as Record<string, unknown> | undefined)?.url as string | undefined) ?? null,
-        chain: typeof chainData?.id === "string" ? chainData.id : null,
-        balance: typeof qty.float === "number" ? qty.float : 0,
-        value: typeof a.value === "number" ? a.value : 0,
-        price: typeof a.price === "number" ? a.price : null,
-        change24h: typeof changes.percent_1d === "number" ? changes.percent_1d : null,
-        verified: Boolean(flags.verified),
-      };
-    })
-    .filter((h) => h.value > 0.01);
-
-  const totalValue = portfolioRes.status === "fulfilled"
-    ? ((((portfolioRes.value as Record<string, unknown>)?.data as Record<string, unknown> | undefined)?.attributes as Record<string, unknown> | undefined)?.total as Record<string, unknown> | undefined)?.positions
-    : null;
-  const portfolioValue = typeof totalValue === "number" ? totalValue : holdings.reduce((s, h) => s + h.value, 0);
-
-  const firstCandidates: Date[] = [];
-  if (ethFirst.status === "fulfilled" && ethFirst.value instanceof Date) firstCandidates.push(ethFirst.value);
-  if (baseFirst.status === "fulfilled" && baseFirst.value instanceof Date) firstCandidates.push(baseFirst.value);
-  const firstTxDate = firstCandidates.length > 0
-    ? new Date(Math.min(...firstCandidates.map((d) => d.getTime())))
-    : null;
-  const walletAgeDays = firstTxDate
-    ? Math.floor((Date.now() - firstTxDate.getTime()) / 86_400_000)
-    : null;
-  const txCount = nonceRes.status === "fulfilled" && typeof nonceRes.value === "string"
-    ? parseInt(nonceRes.value, 16)
-    : null;
-
-  return {
-    address: addr,
-    totalValue: portfolioValue,
-    holdings,
-    txCount,
-    firstTxDate: firstTxDate?.toISOString() ?? null,
-    walletAgeDays,
-  };
 }
 
 function buildStructuredVerdict(
@@ -1870,35 +1762,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   if (replyMode === "analysis" && address && intent === "unknown") {
-    const tokenData = await callScanToken(address, "contract", origin);
-    if (tokenData) {
-      const context: ClarkContext = { tokenData };
-      let analysis: string;
-      try {
-        analysis = await callAnthropic(`Analyze this Base token contract ${address} with strict verdict format.`, context);
-      } catch {
-        analysis = buildTokenAnalysisFallback(tokenData, address);
-      }
-      return { feature: "clark-ai", chain, mode: "analysis", analysis };
-    }
-
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address });
-    if (walletRes.ok) {
-      const context: ClarkContext = { walletScan: walletRes.json ?? {} };
-      let analysis: string;
-      try {
-        analysis = await callAnthropic(`Analyze this Base wallet ${address} with strict verdict format.`, context);
-      } catch {
-        analysis = buildWalletAnalysisFallback(walletRes.json ?? {}, address);
-      }
-      return { feature: "clark-ai", chain, mode: "analysis", analysis };
-    }
-
     return {
       feature: "clark-ai",
       chain,
       mode: "analysis",
-      analysis: "Is this a token contract or wallet?",
+      analysis: "Is this a token contract or wallet? I can scan either.",
     };
   }
 
@@ -1980,27 +1848,29 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "wallet_balance" && address) {
-    const walletData = await fetchWalletSnapshot(address);
-    if (!walletData) {
+    try {
+      const walletData = await fetchWalletSnapshot(address);
+      return { feature: "clark-ai", chain, analysis: buildWalletBalanceReply(walletData, address) };
+    } catch {
       return {
         feature: "clark-ai",
         chain,
         analysis: "I couldn’t fetch wallet balances right now. Try Wallet Scanner or paste another Base wallet.",
       };
     }
-    return { feature: "clark-ai", chain, analysis: buildWalletBalanceReply(walletData, address) };
   }
 
   if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "wallet_quality" && address) {
-    const walletData = await fetchWalletSnapshot(address);
-    if (!walletData) {
+    try {
+      const walletData = await fetchWalletSnapshot(address);
+      return { feature: "clark-ai", chain, analysis: buildWalletQualityReply(walletData, address) };
+    } catch {
       return {
         feature: "clark-ai",
         chain,
         analysis: "I couldn’t fetch wallet balances right now. Try Wallet Scanner or paste another Base wallet.",
       };
     }
-    return { feature: "clark-ai", chain, analysis: buildWalletQualityReply(walletData, address) };
   }
 
   if ((replyMode === "analysis" || replyMode === "feature_context") && (intent === "token_analysis" || intent === "analysis") && address) {
