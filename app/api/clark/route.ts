@@ -86,6 +86,8 @@ type ConversationContext = {
   shownMarketSymbols: Set<string>;
   marketTurns: number;
   lastTopic: ConversationTopic;
+  tokenOptions: Map<number, string>;
+  tokenDisambiguationActive: boolean;
 };
 
 // ---------- Chain name maps ----------
@@ -283,10 +285,12 @@ function isLikelyTokenFollowup(text: string): boolean {
 function extractConversationContext(body: ClarkRequestBody): ConversationContext {
   const history = Array.isArray(body.history) ? body.history.slice(-6) : [];
   const shownMarketSymbols = new Set<string>();
+  const tokenOptions = new Map<number, string>();
   let lastWalletAddress: string | null = null;
   let lastTokenAddress: string | null = null;
   let marketTurns = 0;
   let lastTopic: ConversationTopic = "unknown";
+  let tokenDisambiguationActive = false;
 
   for (const msg of history) {
     const role = String(msg?.role ?? "").toLowerCase();
@@ -302,12 +306,22 @@ function extractConversationContext(body: ClarkRequestBody): ConversationContext
       if (addresses[0]) lastTokenAddress = addresses[0];
       if (lastTopic !== "wallet") lastTopic = "token";
     }
+    if (/\bi found multiple base matches|pick one|send the number or paste the contract\b/.test(lower)) {
+      tokenDisambiguationActive = true;
+      lastTopic = "token";
+    }
     if (/\bbase market|moving now|more movers|what'?s pumping on base|what'?s moving on base|trending on base\b/.test(lower)) {
       marketTurns += 1;
       if (lastTopic !== "wallet" && lastTopic !== "token") lastTopic = "market";
     }
     if (role === "assistant") {
       for (const m of content.toUpperCase().matchAll(/-\s*([A-Z0-9]{2,10})\s*:/g)) shownMarketSymbols.add(m[1]);
+      for (const line of content.split("\n")) {
+        const mm = line.match(/^\s*([1-9])\.\s*.+?(0x[a-fA-F0-9]{40})/);
+        if (!mm) continue;
+        tokenOptions.set(Number(mm[1]), mm[2]);
+        lastTokenAddress = mm[2];
+      }
     }
     for (const addr of addresses) {
       if (/\bwallet|balance|holdings|portfolio\b/.test(lower)) lastWalletAddress = addr;
@@ -315,27 +329,44 @@ function extractConversationContext(body: ClarkRequestBody): ConversationContext
     }
   }
 
-  return { lastWalletAddress, lastTokenAddress, shownMarketSymbols, marketTurns, lastTopic };
+  return { lastWalletAddress, lastTokenAddress, shownMarketSymbols, marketTurns, lastTopic, tokenOptions, tokenDisambiguationActive };
 }
 
 function resolveFollowupPrompt(
   prompt: string,
   detected: { intent: ClarkIntent; address: string | null },
   convo: ConversationContext
-): { intent: ClarkIntent; address: string | null; missingWalletRef: boolean; marketOffset: number } {
-  if (detected.address) return { intent: detected.intent, address: detected.address, missingWalletRef: false, marketOffset: 0 };
+): { intent: ClarkIntent; address: string | null; missingWalletRef: boolean; marketOffset: number; forceTokenScan: boolean } {
   const lower = prompt.toLowerCase();
+  const bareAddress = /^0x[a-fA-F0-9]{40}$/.test(prompt.trim());
+  const hasSelectionWords = /\b(that one|this one|scan it|choose this|use this|token)\b/.test(lower);
+
+  const numericPick = prompt.trim().match(/^([1-9])$/);
+  if (numericPick) {
+    const idx = Number(numericPick[1]);
+    const picked = convo.tokenOptions.get(idx);
+    if (picked) return { intent: "analysis", address: picked, missingWalletRef: false, marketOffset: 0, forceTokenScan: true };
+  }
+
+  if (detected.address) {
+    if (convo.tokenDisambiguationActive || (convo.lastTopic === "token" && (hasSelectionWords || bareAddress))) {
+      return { intent: "analysis", address: detected.address, missingWalletRef: false, marketOffset: 0, forceTokenScan: true };
+    }
+    return { intent: detected.intent, address: detected.address, missingWalletRef: false, marketOffset: 0, forceTokenScan: false };
+  }
 
   if (isLikelyWalletFollowup(lower)) {
-    if (!convo.lastWalletAddress) return { intent: "wallet_quality", address: null, missingWalletRef: true, marketOffset: 0 };
+    if (!convo.lastWalletAddress) return { intent: "wallet_quality", address: null, missingWalletRef: true, marketOffset: 0, forceTokenScan: false };
     const walletBalanceAsk = /\b(balance|holdings?|what does it hold)\b/.test(lower);
-    return { intent: walletBalanceAsk ? "wallet_balance" : "wallet_quality", address: convo.lastWalletAddress, missingWalletRef: false, marketOffset: 0 };
+    return { intent: walletBalanceAsk ? "wallet_balance" : "wallet_quality", address: convo.lastWalletAddress, missingWalletRef: false, marketOffset: 0, forceTokenScan: false };
   }
-  if (isLikelyTokenFollowup(lower) && convo.lastTokenAddress) return { intent: "analysis", address: convo.lastTokenAddress, missingWalletRef: false, marketOffset: 0 };
+  if ((isLikelyTokenFollowup(lower) || convo.tokenDisambiguationActive) && convo.lastTokenAddress) {
+    return { intent: "analysis", address: convo.lastTokenAddress, missingWalletRef: false, marketOffset: 0, forceTokenScan: true };
+  }
   if (hasMarketFollowupIntent(lower) || (/\bwhat else\b/.test(lower) && convo.lastTopic === "market")) {
-    return { intent: "general_market", address: null, missingWalletRef: false, marketOffset: Math.max(0, convo.marketTurns) * 8 };
+    return { intent: "general_market", address: null, missingWalletRef: false, marketOffset: Math.max(0, convo.marketTurns) * 8, forceTokenScan: false };
   }
-  return { intent: detected.intent, address: detected.address, missingWalletRef: false, marketOffset: 0 };
+  return { intent: detected.intent, address: detected.address, missingWalletRef: false, marketOffset: 0, forceTokenScan: false };
 }
 
 function buildEducationalReply(prompt: string): string {
@@ -485,8 +516,11 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, cont
   const weakSecondBatch = followup && strictFollowup.length === 0 && relaxedFollowup.length > 0;
 
   if (display.length === 0) {
+    const marketExhausted = followup && ((opts?.marketOffset ?? 0) > 0 || shownSymbols.size > 0);
     return followup
-      ? "I can’t pull a fresh second batch right now, but the next names to check should show volume expansion, liquidity support, and cleaner holder/LP structure. Paste one contract and I’ll scan it."
+      ? (marketExhausted
+          ? "I’ve shown most of the usable Base market feed right now. The next move is to pick 1–2 names with real volume/liquidity and scan contract + holder risk."
+          : "I can’t pull a fresh second batch right now, but the next names to check should show volume expansion, liquidity support, and cleaner holder/LP structure. Paste one contract and I’ll scan it.")
       : "I can’t pull live Base movers right now. Focus on rising 24h volume, liquidity support, contract hygiene, and holder/LP structure first. Paste any contract and I’ll scan it.";
   }
 
@@ -2089,6 +2123,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           extraShownSymbols: convo.shownMarketSymbols,
           marketOffset: resolved.marketOffset,
         }),
+      };
+    }
+    if (hasMarketFollowupIntent(prompt.toLowerCase()) && (resolved.marketOffset > 0 || convo.marketTurns > 0)) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "general_market",
+        analysis: "I’ve shown most of the usable Base market feed right now. The next move is to pick 1–2 names with real volume/liquidity and scan contract + holder risk.",
       };
     }
     return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(prompt) };
