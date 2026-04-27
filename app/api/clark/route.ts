@@ -279,32 +279,24 @@ function formatUsdShort(value: number | null | undefined): string {
   return `$${value.toFixed(0)}`;
 }
 
-function buildBaseMarketBriefing(gtResponse: unknown): string {
-  const root = (gtResponse ?? {}) as Record<string, unknown>;
-  const pools = Array.isArray(root.data) ? (root.data as Record<string, unknown>[]) : [];
+type BaseMarketToken = {
+  symbol: string;
+  name: string;
+  contract: string;
+  price: number | null;
+  liquidity: number | null;
+  volume: number | null;
+  change24h: number | null;
+};
 
-  const parsed = pools.map((pool) => {
-    const attrs = (pool.attributes ?? {}) as Record<string, unknown>;
-    const name = String(attrs.name ?? "TOKEN / WETH");
-    const symbol = name.split("/")[0]?.trim().split(" ")[0] || "TOKEN";
-
-    const changeMap = (attrs.price_change_percentage ?? {}) as Record<string, unknown>;
-    const volumeMap = (attrs.volume_usd ?? {}) as Record<string, unknown>;
-    const change24h = typeof changeMap.h24 === "string" ? Number(changeMap.h24) : typeof changeMap.h24 === "number" ? changeMap.h24 : null;
-    const volume24h = typeof volumeMap.h24 === "string" ? Number(volumeMap.h24) : typeof volumeMap.h24 === "number" ? volumeMap.h24 : null;
-    const liquidity = typeof attrs.reserve_in_usd === "string" ? Number(attrs.reserve_in_usd) : typeof attrs.reserve_in_usd === "number" ? attrs.reserve_in_usd : null;
-    const createdAt = typeof attrs.pool_created_at === "string" ? attrs.pool_created_at : null;
-
-    return { symbol, change24h, volume24h, liquidity, createdAt };
-  }).filter((p) => p.change24h !== null && p.volume24h !== null && p.liquidity !== null);
-
-  const sorted = parsed
-    .filter((p) => (p.change24h ?? 0) > 0)
+function buildBaseMarketBriefing(tokens: BaseMarketToken[]): string {
+  const sorted = tokens
+    .filter((p) => (p.change24h ?? 0) > 0 && (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
     .sort((a, b) => {
       if ((b.change24h ?? 0) !== (a.change24h ?? 0)) return (b.change24h ?? 0) - (a.change24h ?? 0);
-      if ((b.volume24h ?? 0) !== (a.volume24h ?? 0)) return (b.volume24h ?? 0) - (a.volume24h ?? 0);
+      if ((b.volume ?? 0) !== (a.volume ?? 0)) return (b.volume ?? 0) - (a.volume ?? 0);
       if ((b.liquidity ?? 0) !== (a.liquidity ?? 0)) return (b.liquidity ?? 0) - (a.liquidity ?? 0);
-      return String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? ""));
+      return (b.price ?? 0) - (a.price ?? 0);
     })
     .slice(0, 5);
 
@@ -325,7 +317,7 @@ function buildBaseMarketBriefing(gtResponse: unknown): string {
         ? "risk appears lower from available market data"
         : "risk appears lower from available market data";
 
-    return `- ${token.symbol}: ${(token.change24h ?? 0).toFixed(1)}% 24h, volume ${formatUsdShort(token.volume24h)}, liquidity ${formatUsdShort(token.liquidity)}, ${reason}.`;
+    return `- ${token.symbol}: ${(token.change24h ?? 0).toFixed(1)}% 24h, volume ${formatUsdShort(token.volume)}, liquidity ${formatUsdShort(token.liquidity)}, ${reason}.`;
   });
 
   return `Base Market:
@@ -1723,8 +1715,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   if (replyMode === "general_market") {
     try {
-      const gtBase = await callGeckoTerminal("base", origin);
-      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(gtBase) };
+      const trendingRaw = await callTrending(origin);
+      const tokens = (Array.isArray(trendingRaw) ? trendingRaw : [])
+        .map((t) => {
+          const token = t as Record<string, unknown>;
+          return {
+            symbol: String(token.symbol ?? "TOKEN"),
+            name: String(token.name ?? "Token"),
+            contract: String(token.contract ?? ""),
+            price: typeof token.price === "number" ? token.price : null,
+            liquidity: typeof token.liquidity === "number" ? token.liquidity : null,
+            volume: typeof token.volume === "number" ? token.volume : null,
+            change24h: typeof token.change24h === "number" ? token.change24h : null,
+          } satisfies BaseMarketToken;
+        })
+        .filter((t) => /^0x[a-fA-F0-9]{40}$/.test(t.contract));
+      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens) };
     } catch {
       return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply() };
     }
