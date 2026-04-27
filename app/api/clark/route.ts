@@ -272,8 +272,15 @@ function buildRoutingHelpReply(prompt: string): string {
   return "Use Base Radar for discovery, Token Scanner for contract checks, Wallet Scanner for behavior, and Dev Wallet Detector for deployer risk.";
 }
 
-function buildGeneralMarketNoContextReply(): string {
-  return "I couldn’t pull CoinGecko Terminal Base data right now. Paste a contract and I’ll scan it directly.";
+function buildGeneralMarketNoContextReply(prompt: string): string {
+  const t = prompt.toLowerCase();
+  if (/what should i watch/.test(t)) {
+    return "I can’t pull live Base movers right now. What to watch: fresh 24h volume expansion, liquidity depth above ~$50k, repeat buyers across multiple candles, dev-wallet behavior, and holder concentration. Paste a contract and I’ll scan it.";
+  }
+  if (/what'?s pumping|what'?s moving|show hot|top movers|biggest gainers|new launches?/.test(t)) {
+    return "I can’t pull live movers right now. To find real Base pumps, look for: rising 24h volume, liquidity above ~$50k, strong but not ridiculous price movement, and no obvious LP/dev-wallet red flags. Paste a contract and I’ll scan it.";
+  }
+  return "I can’t pull live Base movers right now, but the right way to read pumps is volume + liquidity + 24h change together. Paste any contract and I’ll scan it, or refresh Base Radar.";
 }
 
 function formatUsdShort(value: number | null | undefined): string {
@@ -294,7 +301,9 @@ type BaseMarketToken = {
 };
 
 function buildBaseMarketBriefing(tokens: BaseMarketToken[]): string {
+  const STABLES = new Set(["USDC", "USDBC", "DAI", "USDT"]);
   const sorted = tokens
+    .filter((p) => !STABLES.has((p.symbol ?? "").toUpperCase()))
     .filter((p) => (p.change24h ?? 0) > 0 && (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
     .sort((a, b) => {
       if ((b.change24h ?? 0) !== (a.change24h ?? 0)) return (b.change24h ?? 0) - (a.change24h ?? 0);
@@ -304,7 +313,7 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[]): string {
     })
     .slice(0, 5);
 
-  if (sorted.length === 0) return buildGeneralMarketNoContextReply();
+  if (sorted.length === 0) return "I can’t pull live Base movers right now, but the right way to read pumps is volume + liquidity + 24h change together. Paste any contract and I’ll scan it, or refresh Base Radar.";
 
   const avgChange = sorted.reduce((sum, t) => sum + (t.change24h ?? 0), 0) / sorted.length;
   const summary = avgChange >= 8
@@ -315,11 +324,14 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[]): string {
 
   const lines = sorted.slice(0, 4).map((token) => {
     const liqNum = token.liquidity ?? 0;
-    const reason = liqNum < 50_000
-      ? "thin liquidity, needs scan"
-      : liqNum < 250_000
-        ? "risk appears lower from available market data"
-        : "risk appears lower from available market data";
+    const move = token.change24h ?? 0;
+    const reason = liqNum < 25_000
+      ? "thin liquidity / high noise"
+      : liqNum < 50_000
+        ? "thin liquidity, needs scan"
+        : move > 80 && liqNum < 150_000
+          ? "likely noisy"
+          : "risk appears lower from available market data";
 
     return `- ${token.symbol}: ${(token.change24h ?? 0).toFixed(1)}% 24h, volume ${formatUsdShort(token.volume)}, liquidity ${formatUsdShort(token.liquidity)}, ${reason}.`;
   });
@@ -332,6 +344,69 @@ ${lines.join("\n")}
 
 Best next step:
 Scan the strongest token before touching it.`;
+}
+
+function mapTrendingTokens(raw: unknown[]): BaseMarketToken[] {
+  return (Array.isArray(raw) ? raw : [])
+    .map((t) => {
+      const token = t as Record<string, unknown>;
+      return {
+        symbol: String(token.symbol ?? "TOKEN"),
+        name: String(token.name ?? "Token"),
+        contract: String(token.contract ?? ""),
+        price: typeof token.price === "number" ? token.price : null,
+        liquidity: typeof token.liquidity === "number" ? token.liquidity : null,
+        volume: typeof token.volume === "number" ? token.volume : null,
+        change24h: typeof token.change24h === "number" ? token.change24h : null,
+      } satisfies BaseMarketToken;
+    })
+    .filter((t) => /^0x[a-fA-F0-9]{40}$/.test(t.contract));
+}
+
+function mapGtPoolsToMarketTokens(gtRaw: unknown): BaseMarketToken[] {
+  const root = (gtRaw ?? {}) as Record<string, unknown>;
+  const pools = Array.isArray(root.data) ? (root.data as Array<Record<string, unknown>>) : [];
+  const included = Array.isArray(root.included) ? (root.included as Array<Record<string, unknown>>) : [];
+  const tokenMap = new Map<string, { symbol: string; name: string; address: string }>();
+
+  for (const item of included) {
+    if (item.type !== "token") continue;
+    const attrs = (item.attributes ?? {}) as Record<string, unknown>;
+    const id = typeof item.id === "string" ? item.id : "";
+    const address = typeof attrs.address === "string" ? attrs.address : "";
+    if (!id || !address) continue;
+    tokenMap.set(id, {
+      symbol: String(attrs.symbol ?? "TOKEN"),
+      name: String(attrs.name ?? "Token"),
+      address,
+    });
+  }
+
+  const out: BaseMarketToken[] = [];
+  const seen = new Set<string>();
+  for (const pool of pools) {
+    const attrs = (pool.attributes ?? {}) as Record<string, unknown>;
+    const rel = (pool.relationships ?? {}) as Record<string, unknown>;
+    const baseData = ((rel.base_token ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
+    const baseId = typeof baseData?.id === "string" ? baseData.id : "";
+    const meta = tokenMap.get(baseId);
+    if (!meta) continue;
+    const key = meta.address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const volumeObj = (attrs.volume_usd ?? {}) as Record<string, unknown>;
+    const changeObj = (attrs.price_change_percentage ?? {}) as Record<string, unknown>;
+    out.push({
+      symbol: meta.symbol,
+      name: meta.name,
+      contract: meta.address,
+      price: typeof attrs.base_token_price_usd === "string" ? Number(attrs.base_token_price_usd) : null,
+      liquidity: typeof attrs.reserve_in_usd === "string" ? Number(attrs.reserve_in_usd) : null,
+      volume: typeof volumeObj.h24 === "string" ? Number(volumeObj.h24) : typeof volumeObj.h24 === "number" ? volumeObj.h24 : null,
+      change24h: typeof changeObj.h24 === "string" ? Number(changeObj.h24) : typeof changeObj.h24 === "number" ? changeObj.h24 : null,
+    });
+  }
+  return out;
 }
 
 function shortAddress(addr: string): string {
@@ -1722,26 +1797,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   if (replyMode === "general_market") {
+    let tokens: BaseMarketToken[] = [];
     try {
       const trendingRaw = await callTrending(origin);
-      const tokens = (Array.isArray(trendingRaw) ? trendingRaw : [])
-        .map((t) => {
-          const token = t as Record<string, unknown>;
-          return {
-            symbol: String(token.symbol ?? "TOKEN"),
-            name: String(token.name ?? "Token"),
-            contract: String(token.contract ?? ""),
-            price: typeof token.price === "number" ? token.price : null,
-            liquidity: typeof token.liquidity === "number" ? token.liquidity : null,
-            volume: typeof token.volume === "number" ? token.volume : null,
-            change24h: typeof token.change24h === "number" ? token.change24h : null,
-          } satisfies BaseMarketToken;
-        })
-        .filter((t) => /^0x[a-fA-F0-9]{40}$/.test(t.contract));
-      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens) };
+      tokens = mapTrendingTokens(trendingRaw);
     } catch {
-      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply() };
+      tokens = [];
     }
+    if (tokens.length === 0) {
+      try {
+        const gtRaw = await callGeckoTerminal("base", origin);
+        tokens = mapGtPoolsToMarketTokens(gtRaw);
+      } catch {
+        tokens = [];
+      }
+    }
+    if (tokens.length > 0) {
+      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens) };
+    }
+    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(prompt) };
   }
 
   if (replyMode === "educational") {
@@ -1976,7 +2050,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   };
 
   if (replyMode !== "analysis" && replyMode !== "feature_context") {
-    return { feature: "clark-ai", chain, mode: "unknown", analysis: buildGeneralMarketNoContextReply() };
+    return { feature: "clark-ai", chain, mode: "unknown", analysis: buildGeneralMarketNoContextReply(prompt) };
   }
 
   const analysis = await callAnthropic(prompt, context);
