@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fetchWalletSnapshot } from "@/lib/server/walletSnapshot";
 
 const {
   GOLDRUSH_API_KEY,
@@ -54,6 +55,8 @@ type ClarkIntent =
   | "analysis"
   | "token_name_lookup"
   | "token_analysis"
+  | "wallet_balance"
+  | "wallet_quality"
   | "wallet_analysis"
   | "dev_wallet"
   | "liquidity_safety"
@@ -124,6 +127,34 @@ function gtNetwork(chain: SupportedChain): "base" | "eth" {
   return chain === "ethereum" ? "eth" : "base";
 }
 
+function hasWalletIntent(text: string): boolean {
+  return /\b(wallet|wallet value|balance|balances|balence|ballance|bal|holdings?|holds|portfolio|tokens held|scan wallet|wallet scan)\b/i.test(text);
+}
+
+function hasWalletQualityIntent(text: string): boolean {
+  return /\b(good wallet|copy\s*-?\s*trade|smart money|should i follow|worth following)\b/i.test(text);
+}
+
+function hasDevWalletIntent(text: string): boolean {
+  return /\b(dev wallet|deployer|who deployed)\b/i.test(text);
+}
+
+function hasLiquidityIntent(text: string): boolean {
+  return /\b(liquidity|lp safe|liquidity risk|lp\b)\b/i.test(text);
+}
+
+function hasTokenIntent(text: string): boolean {
+  return /\b(token|contract|scan|analyz|analyse|safe|risk|check|verdict)\b/i.test(text);
+}
+
+function hasMarketIntent(text: string): boolean {
+  return /\b(what'?s pumping on base|what'?s moving on base|show hot base tokens|top movers on base|new base launches|biggest gainers|what should i watch|trending|hot tokens?|pumping|movers?|runners?|trending tokens?|other tokens?|show more|any others?)\b/i.test(text);
+}
+
+function hasMarketFollowupIntent(text: string): boolean {
+  return /\b(other tokens?|show more|show me more|any others?|more runners?|more movers?|what else is moving|what else is pumping|other runners?|other movers?|more base tokens?|what else should i watch)\b/i.test(text);
+}
+
 function detectIntent(prompt: string): { intent: ClarkIntent; address: string | null } {
   const t = prompt.trim().toLowerCase();
   const address = extractAddress(prompt);
@@ -131,45 +162,54 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/(<token_data>|<wallet_scan>|<analysis>|feature context|ask clark)/i.test(prompt)) {
     return { intent: "feature_context", address };
   }
+
   if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|help|who are you|what is chainlens/i.test(t)) {
     return { intent: "casual_help", address };
   }
-  if (/what'?s pumping on base|what'?s moving on base|new base tokens|show me hot tokens|what should i watch|what'?s trending|trending/i.test(t)) {
-    return { intent: "general_market", address };
+
+  if (hasWalletQualityIntent(t) && address) {
+    return { intent: "wallet_quality", address };
   }
-  if (/what is liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock/i.test(t)) {
-    return { intent: "educational", address };
+
+  if (hasWalletIntent(t) && address) {
+    return { intent: "wallet_balance", address };
   }
-  if (/how do i scan|where do i check deployer|how do i track a wallet|how do i use this|which feature|where should i go/i.test(t)) {
-    return { intent: "routing_help", address };
-  }
-  if (/base radar/.test(t)) {
-    return { intent: "base_radar", address };
-  }
-  if (/whale|smart money/i.test(t)) {
-    if (address) return { intent: "whale_alert", address };
-    return { intent: "unknown", address };
-  }
-  if (/dev wallet|deployer|who deployed/i.test(t)) {
+
+  if (hasDevWalletIntent(t) && address) {
     return { intent: "dev_wallet", address };
   }
-  if (/liquidity|lp safe|liquidity risk/i.test(t)) {
+
+  if (hasLiquidityIntent(t) && address) {
     return { intent: "liquidity_safety", address };
   }
-  if (/wallet/.test(t)) {
-    return { intent: "wallet_analysis", address };
-  }
-  if (/token|contract|scan|analyz|safe|risk|check|verdict/i.test(t)) {
+
+  if (hasTokenIntent(t)) {
     if (!address) {
       const tokenQuery = extractTokenLookupQuery(prompt);
       if (tokenQuery) return { intent: "token_name_lookup", address: null };
     }
-    return { intent: "analysis", address };
+    if (address) return { intent: "analysis", address };
   }
+
+  if (hasMarketIntent(t) || hasMarketFollowupIntent(t) || /\bbase radar\b/.test(t)) {
+    return { intent: "general_market", address };
+  }
+
+  if (/\bliquidity risk\b|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock/i.test(t)) {
+    return { intent: "educational", address };
+  }
+
+  if (/how do i scan|where do i check deployer|how do i track a wallet|how do i use this|which feature|where should i go/i.test(t)) {
+    return { intent: "routing_help", address };
+  }
+
+  if (/whale/i.test(t) && address) return { intent: "whale_alert", address };
+
   if (!address) {
     const tokenQuery = extractTokenLookupQuery(prompt);
     if (tokenQuery) return { intent: "token_name_lookup", address: null };
   }
+
   return { intent: "unknown", address };
 }
 
@@ -177,6 +217,9 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   const prompt = body.prompt ?? "";
   const t = prompt.toLowerCase();
   const explicitMode = String(body.mode ?? "").toLowerCase();
+  const contextText = body.context == null ? "" : JSON.stringify(body.context).toLowerCase();
+  const isFollowupMarket = hasMarketFollowupIntent(prompt.toLowerCase());
+  const hasMarketHistory = /\b(base market|moving now|more movers|base radar|what'?s pumping on base)\b/.test(contextText);
   if (explicitMode === "chat") {
     const { intent, address } = detectIntent(prompt);
     if (intent === "casual_help") return "casual_help";
@@ -184,9 +227,11 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
     if (intent === "educational") return "educational";
     if (intent === "routing_help") return "routing_help";
     if (intent === "token_name_lookup") return "analysis";
-    if ((intent === "analysis" || intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety") && address) {
+    if ((intent === "analysis" || intent === "token_analysis" || intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety") && address) {
       return "analysis";
     }
+    if (isFollowupMarket) return "general_market";
+    if (address) return "analysis";
     return "unknown";
   }
   if (explicitMode === "casual_help") return "casual_help";
@@ -200,6 +245,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   if (featureModes.has(explicitMode)) return "feature_context";
   const hasStructuredMode = /\[mode\s*:/i.test(prompt) || body.context != null;
   if (hasStructuredMode) return "feature_context";
+  if (isFollowupMarket && (hasMarketHistory || body.context == null)) return "general_market";
 
   const { intent, address } = detectIntent(prompt);
   if (intent === "casual_help") return "casual_help";
@@ -209,7 +255,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   if (intent === "base_radar") return "general_market";
   if (intent === "feature_context") return "feature_context";
   if (intent === "analysis") return "analysis";
-  if ((intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && address) {
+  if ((intent === "token_analysis" || intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && address) {
     return "analysis";
   }
   if (/scan|analyz|check|verdict|risk/.test(t) && address) return "analysis";
@@ -218,7 +264,27 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
 
 function buildEducationalReply(prompt: string): string {
   const t = prompt.toLowerCase();
-  if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can’t exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
+  const deep = /\b(explain|why|how|deeply|full breakdown|detailed|tell me more|what else|advanced|everything)\b/i.test(prompt);
+  if (/liquidity risk/.test(t)) {
+    if (deep) {
+      return `Overview:
+Liquidity risk is the chance you can’t enter or exit without major slippage because depth is too thin, concentrated, or removable.
+
+What matters:
+- Thin pools can print big candles that reverse fast.
+- Unlocked or concentrated LP can vanish and break tradability.
+- Volume only helps when it sits on real liquidity.
+
+What I’d check:
+1. Depth and slippage at your planned size.
+2. LP ownership/lock profile and whether liquidity is growing or draining.
+3. Volume-to-liquidity ratio and holder concentration.
+
+Clark’s read:
+Good chart action with weak liquidity is noise until proven otherwise. In ChainLens terms, liquidity quality is the first risk gate.`;
+    }
+    return "Liquidity risk is the chance you can’t enter or exit cleanly because the pool is too thin or controllable. Why it matters: even a clean-looking token can break if liquidity disappears. In ChainLens terms, I’d check depth, LP ownership/lock, and volume versus liquidity.";
+  }
   if (/dev wallet/.test(t)) return "A dev wallet is a deployer-linked wallet that can reveal insider coordination, funding links, or early sell pressure.";
   if (/holder concentration/.test(t)) return "Holder concentration means too much supply sits in a few wallets, increasing dump and manipulation risk.";
   if (/lp lock/.test(t)) return "LP lock matters because unlocked liquidity can be pulled, which can collapse tradability and price.";
@@ -233,8 +299,18 @@ function buildRoutingHelpReply(prompt: string): string {
   return "Use Base Radar for discovery, Token Scanner for contract checks, Wallet Scanner for behavior, and Dev Wallet Detector for deployer risk.";
 }
 
-function buildGeneralMarketNoContextReply(): string {
-  return "I couldn’t pull live Base Radar data right now. Paste a contract and I’ll scan it directly.";
+function buildGeneralMarketNoContextReply(prompt: string): string {
+  const t = prompt.toLowerCase();
+  if (hasMarketFollowupIntent(t)) {
+    return "I can’t pull a fresh second batch right now, but the next names to check should have rising volume, decent liquidity, and cleaner holder/LP signals. Paste one contract and I’ll scan it.";
+  }
+  if (/what should i watch/.test(t)) {
+    return "I can’t pull live Base movers right now. What to watch: fresh 24h volume expansion, liquidity depth above ~$50k, repeat buyers across multiple candles, dev-wallet behavior, and holder concentration. Paste a contract and I’ll scan it.";
+  }
+  if (/what'?s pumping|what'?s moving|show hot|top movers|biggest gainers|new launches?/.test(t)) {
+    return "I can’t pull live movers right now. To find real Base pumps, look for: rising 24h volume, liquidity above ~$50k, strong but not ridiculous price movement, and no obvious LP/dev-wallet red flags. Paste a contract and I’ll scan it.";
+  }
+  return "I can’t pull live Base movers right now, but the right way to read pumps is volume + liquidity + 24h change together. Paste any contract and I’ll scan it, or refresh Base Radar.";
 }
 
 function formatUsdShort(value: number | null | undefined): string {
@@ -244,19 +320,224 @@ function formatUsdShort(value: number | null | undefined): string {
   return `$${value.toFixed(0)}`;
 }
 
-function buildBaseRadarBriefing(tokens: unknown[]): string {
-  const picks = tokens
-    .slice(0, 3)
+type BaseMarketToken = {
+  symbol: string;
+  name: string;
+  contract: string;
+  price: number | null;
+  liquidity: number | null;
+  volume: number | null;
+  change24h: number | null;
+  createdAt: number | null;
+  source: "trending" | "gt";
+};
+
+const STABLES = new Set(["USDC", "USDBC", "DAI", "USDT"]);
+const MAJORS = new Set(["WETH", "ETH", "CBBTC", "WBTC", "BTC"]);
+
+function mentionedSymbolsFromText(text: string): Set<string> {
+  const upper = text.toUpperCase();
+  const symbols = new Set<string>();
+  for (const match of upper.matchAll(/\b[A-Z0-9]{2,10}\b/g)) {
+    symbols.add(match[0]);
+  }
+  return symbols;
+}
+
+function marketTokenScore(token: BaseMarketToken): number {
+  const change = token.change24h ?? 0;
+  const volume = Math.max(token.volume ?? 0, 0);
+  const liquidity = Math.max(token.liquidity ?? 0, 0);
+  let score = 0;
+
+  score += Math.max(Math.min(change, 300), -30) * 1.8;
+  score += Math.log10(volume + 1) * 22;
+  score += Math.log10(liquidity + 1) * 26;
+
+  if (liquidity < 25_000) score -= 35;
+  if (change > 500 && liquidity < 25_000) score -= 55;
+  if (token.symbol.trim().length < 2 || token.name.trim().length < 2) score -= 12;
+  if (volume > 0 && liquidity > 0) {
+    const ratio = volume / liquidity;
+    if (ratio > 8) score -= 10;
+  }
+  return score;
+}
+
+function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, context?: unknown): string {
+  const followup = hasMarketFollowupIntent(prompt.toLowerCase());
+  const contextText = context == null ? "" : JSON.stringify(context);
+  const shownSymbols = mentionedSymbolsFromText(contextText);
+  const maxItems = followup ? 8 : 7;
+  const dedupe = (items: BaseMarketToken[]) => {
+    const seen = new Set<string>();
+    return items.filter((p) => {
+      const sym = (p.symbol ?? "").toUpperCase();
+      if (!sym || STABLES.has(sym)) return false;
+      const key = `${sym}:${(p.contract ?? "").toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  const rankedStrict = dedupe(tokens)
+    .filter((p) => (p.change24h ?? 0) > 0 && (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
+    .filter((p) => !MAJORS.has((p.symbol ?? "").toUpperCase()))
+    .sort((a, b) => marketTokenScore(b) - marketTokenScore(a));
+
+  const rankedRelaxed = dedupe(tokens)
+    .filter((p) => (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
+    .sort((a, b) => marketTokenScore(b) - marketTokenScore(a));
+
+  const strictFollowup = rankedStrict
+    .slice(Math.min(5, rankedStrict.length))
+    .filter((t) => !shownSymbols.has(t.symbol.toUpperCase()))
+    .slice(0, maxItems);
+
+  const relaxedFollowup = rankedRelaxed
+    .filter((t) => !shownSymbols.has(t.symbol.toUpperCase()))
+    .filter((t) => !strictFollowup.some((s) => s.contract.toLowerCase() === t.contract.toLowerCase()))
+    .slice(0, maxItems);
+  const anyVisibleFollowup = rankedRelaxed
+    .filter((t) => !strictFollowup.some((s) => s.contract.toLowerCase() === t.contract.toLowerCase()))
+    .slice(0, maxItems);
+
+  const display = followup
+    ? (strictFollowup.length > 0 ? strictFollowup : relaxedFollowup.length > 0 ? relaxedFollowup : anyVisibleFollowup)
+    : rankedStrict.slice(0, maxItems);
+  const weakSecondBatch = followup && strictFollowup.length === 0 && relaxedFollowup.length > 0;
+
+  if (display.length === 0) {
+    return followup
+      ? "I can’t pull a fresh second batch right now, but the next names to check should show volume expansion, liquidity support, and cleaner holder/LP structure. Paste one contract and I’ll scan it."
+      : "I can’t pull live Base movers right now. Focus on rising 24h volume, liquidity support, contract hygiene, and holder/LP structure first. Paste any contract and I’ll scan it.";
+  }
+
+  const avgChange = display.reduce((sum, t) => sum + (t.change24h ?? 0), 0) / display.length;
+  const summary = avgChange >= 8
+    ? "CoinGecko Terminal Base market feed shows strong upside momentum across top active pools."
+    : avgChange >= 3
+      ? "CoinGecko Terminal Base market feed shows selective upside with mixed quality across pools."
+      : "CoinGecko Terminal Base market feed is active, but momentum is uneven and needs tighter selection.";
+  const followupSummary = "I’m only seeing a smaller second batch from the current Base feed, so treat these as watchlist names, not confirmed runners.";
+
+  const lines = display.map((token) => {
+    const liqNum = token.liquidity ?? 0;
+    const move = token.change24h ?? 0;
+    const volNum = token.volume ?? 0;
+    const symUpper = token.symbol.toUpperCase();
+    const reason = liqNum < 25_000
+      ? (move > 500
+          ? "extreme move, tiny liquidity — likely noisy until scanned"
+          : "thin liquidity / high noise")
+      : followup && move < 0 && liqNum >= 50_000 && volNum >= 50_000
+        ? MAJORS.has(symUpper)
+          ? "established Base name, cooling off, watch for reversal"
+          : "cooling off but liquid / worth watching"
+      : followup && MAJORS.has(symUpper)
+        ? "established major on Base, useful as lower-signal context"
+      : liqNum < 50_000
+        ? "thin liquidity, needs scan"
+        : liqNum >= 100_000 && volNum >= 100_000
+          ? "stronger market signal, still needs scan"
+        : move > 80 && liqNum < 150_000
+          ? "likely noisy"
+          : "risk appears lower from available market data";
+
+    return `- ${token.symbol}: ${(token.change24h ?? 0).toFixed(1)}% 24h, volume ${formatUsdShort(token.volume)}, liquidity ${formatUsdShort(token.liquidity)}, ${reason}.`;
+  });
+
+  return `${followup ? "Base Market — more names:" : "Base Market:"}
+${followup ? followupSummary : summary}
+
+${followup ? "More movers:" : "Moving now:"}
+${lines.join("\n")}
+
+Clark’s read:
+${weakSecondBatch
+    ? "The first batch had the cleaner momentum. This second batch is more about watchlist coverage than strong conviction."
+    : "The better watch is usually the strongest liquid mover, not just the biggest % spike. Treat this as a watchlist, not a buy list."}
+
+Best next step:
+${followup
+    ? "Pick one with real volume/liquidity and run a token scan."
+    : display.length < 4
+      ? "This is a small usable batch right now; wait for deeper volume/liquidity confirmation before sizing."
+      : "Scan the strongest liquid mover, then verify contract and holder risk before sizing."}`;
+}
+
+function mapTrendingTokens(raw: unknown[]): BaseMarketToken[] {
+  return (Array.isArray(raw) ? raw : [])
     .map((t) => {
       const token = t as Record<string, unknown>;
-      const symbol = String(token.symbol ?? token.name ?? "TOKEN");
-      const liq = formatUsdShort(typeof token.liquidityUsd === "number" ? token.liquidityUsd : null);
-      const vol = formatUsdShort(typeof token.volume24h === "number" ? token.volume24h : null);
-      const risk = String(token.riskLevel ?? "UNKNOWN");
-      return `- ${symbol}: Liquidity ${liq}, 24h volume ${vol}, risk ${risk}.`;
+      return {
+        symbol: String(token.symbol ?? "TOKEN"),
+        name: String(token.name ?? "Token"),
+        contract: String(token.contract ?? ""),
+        price: typeof token.price === "number" ? token.price : null,
+        liquidity: typeof token.liquidity === "number" ? token.liquidity : null,
+        volume: typeof token.volume === "number" ? token.volume : null,
+        change24h: typeof token.change24h === "number" ? token.change24h : null,
+        createdAt: typeof token.createdAt === "number" ? token.createdAt : null,
+        source: "trending",
+      } satisfies BaseMarketToken;
+    })
+    .filter((t) => /^0x[a-fA-F0-9]{40}$/.test(t.contract));
+}
+
+function mapGtPoolsToMarketTokens(gtRaw: unknown): BaseMarketToken[] {
+  const root = (gtRaw ?? {}) as Record<string, unknown>;
+  const pools = Array.isArray(root.data) ? (root.data as Array<Record<string, unknown>>) : [];
+  const included = Array.isArray(root.included) ? (root.included as Array<Record<string, unknown>>) : [];
+  const tokenMap = new Map<string, { symbol: string; name: string; address: string }>();
+
+  for (const item of included) {
+    if (item.type !== "token") continue;
+    const attrs = (item.attributes ?? {}) as Record<string, unknown>;
+    const id = typeof item.id === "string" ? item.id : "";
+    const address = typeof attrs.address === "string" ? attrs.address : "";
+    if (!id || !address) continue;
+    tokenMap.set(id, {
+      symbol: String(attrs.symbol ?? "TOKEN"),
+      name: String(attrs.name ?? "Token"),
+      address,
     });
-  if (picks.length === 0) return "Base Radar is live, but no strong movers surfaced from the current feed. Try refreshing or paste a contract.";
-  return `Base Radar:\nLive Base feed pulled successfully.\n\nMoving now:\n${picks.join("\n")}\n\nBest next step:\nScan the strongest one before touching it.`;
+  }
+
+  const out: BaseMarketToken[] = [];
+  const seen = new Set<string>();
+  for (const pool of pools) {
+    const attrs = (pool.attributes ?? {}) as Record<string, unknown>;
+    const rel = (pool.relationships ?? {}) as Record<string, unknown>;
+    const baseData = ((rel.base_token ?? {}) as Record<string, unknown>).data as Record<string, unknown> | undefined;
+    const baseId = typeof baseData?.id === "string" ? baseData.id : "";
+    const meta = tokenMap.get(baseId);
+    if (!meta) continue;
+    const key = meta.address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const volumeObj = (attrs.volume_usd ?? {}) as Record<string, unknown>;
+    const changeObj = (attrs.price_change_percentage ?? {}) as Record<string, unknown>;
+    const createdRaw = attrs.pool_created_at;
+    const createdAt = typeof createdRaw === "string"
+      ? Date.parse(createdRaw)
+      : typeof createdRaw === "number"
+        ? createdRaw
+        : NaN;
+    out.push({
+      symbol: meta.symbol,
+      name: meta.name,
+      contract: meta.address,
+      price: typeof attrs.base_token_price_usd === "string" ? Number(attrs.base_token_price_usd) : null,
+      liquidity: typeof attrs.reserve_in_usd === "string" ? Number(attrs.reserve_in_usd) : null,
+      volume: typeof volumeObj.h24 === "string" ? Number(volumeObj.h24) : typeof volumeObj.h24 === "number" ? volumeObj.h24 : null,
+      change24h: typeof changeObj.h24 === "string" ? Number(changeObj.h24) : typeof changeObj.h24 === "number" ? changeObj.h24 : null,
+      createdAt: Number.isFinite(createdAt) ? createdAt : null,
+      source: "gt",
+    });
+  }
+  return out;
 }
 
 function shortAddress(addr: string): string {
@@ -284,10 +565,10 @@ function buildTokenAnalysisFallback(tokenData: unknown, address: string): string
   return buildStructuredVerdict(
     "SCAN DEEPER",
     "Low",
-    `${name} (${symbol}) on Base has market data, but full risk context is incomplete.`,
+    `${name} (${symbol}) has momentum data, but this still needs contract-level confirmation.`,
     [`Token resolved: ${symbol} (${address})`, `Liquidity: ${liquidity}`, `24h volume: ${volume}`],
-    ["Security and holder concentration are not fully verified in this pass.", "Market data alone is not enough to call it safe."],
-    "Run Token Scanner and validate contract/security fields before entry."
+    ["I can’t verify holder distribution from this pass.", "Market momentum alone does not prove contract quality."],
+    "Run Token Scanner before sizing and confirm liquidity/holder control."
   );
 }
 
@@ -306,20 +587,24 @@ function buildWalletAnalysisFallback(walletData: unknown, address: string): stri
 }
 
 function missingAddressReply(intent: ClarkIntent): string {
-  if (intent === "wallet_analysis" || intent === "whale_alert") {
+  if (intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "whale_alert") {
     return "I can run that, but I need a wallet address first. Paste a full 0x wallet and I’ll analyze the available data.";
   }
   return "I can run that, but I need a token contract first. Paste a full 0x contract and I’ll analyze the available data.";
 }
 
 async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>) {
-  const res = await fetch(`${origin}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const json = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, json };
+  try {
+    const res = await fetch(`${origin}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, json };
+  } catch {
+    return { ok: false, status: 503, json: {} };
+  }
 }
 
 function buildStructuredVerdict(
@@ -1067,12 +1352,38 @@ function pickNextAction(text: string, verdict: string): string {
   return defaultAction(verdict);
 }
 
+function pickVariant(seed: string, variants: string[]): string {
+  let hash = 0;
+  for (const ch of seed) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return variants[hash % variants.length];
+}
+
 function defaultAction(verdict: string): string {
-  if (verdict === "AVOID") return "Avoid until the critical risk is resolved or verified safe."
-  if (verdict === "TRUSTWORTHY") return "Monitor normally; no major risk surfaced from available data."
-  if (verdict === "SCAN DEEPER") return "Run Token Scanner and Dev Wallet Detector before touching it."
-  if (verdict === "WATCH") return "Watch only; verify holder distribution, LP control, and linked-wallet behavior before trusting it."
-  return "Not enough verified data to make a strong call."
+  if (verdict === "AVOID") return pickVariant(verdict, [
+    "Avoid until the critical risk is resolved.",
+    "Stand down for now; this setup still carries a hard red flag.",
+    "Not a trade candidate yet—wait for the risk to clear.",
+  ]);
+  if (verdict === "TRUSTWORTHY") return pickVariant(verdict, [
+    "Monitor as normal; no major risk surfaced from available data.",
+    "Signals look cleaner than average, but keep normal risk controls.",
+    "Reasonable setup from current data—still manage size and exits.",
+  ]);
+  if (verdict === "SCAN DEEPER") return pickVariant(verdict, [
+    "Run a full scan before trusting this signal.",
+    "Best next step: verify liquidity + holders before sizing.",
+    "Treat this as a lead, not a confirmed signal.",
+  ]);
+  if (verdict === "WATCH") return pickVariant(verdict, [
+    "Worth watching, but confirm behavior and structure before acting.",
+    "Watchlist candidate—follow flow and concentration before trust.",
+    "Signal is usable, not final; track follow-through first.",
+  ]);
+  return pickVariant(verdict, [
+    "I can’t confirm enough yet for a strong call.",
+    "Useful clues are present, but one key piece is still missing.",
+    "I’d keep this in watch mode until the missing data clears.",
+  ]);
 }
 
 function extractSection(text: string, start: string, stops: string[]): string {
@@ -1294,26 +1605,26 @@ async function routeCommand(
   const t = prompt.toLowerCase();
   const address = extractAddress(prompt);
 
-  const MARKET_KEYWORDS = /\b(pumping|pump(?:ing)?|hot\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?)\b/;
-  const WALLET_KEYWORDS = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|copy[\s-]?trade?|smart\s+money)\b/;
-
-  if (t.includes("base radar") || t.includes("trending") || t.includes("what's hot") || MARKET_KEYWORDS.test(t)) {
-    return scanBaseRadarData(origin);
-  }
-  if ((t.includes("scan wallet") || t.includes("wallet scan") || WALLET_KEYWORDS.test(t)) && address) {
+  if (address && (hasWalletIntent(t) || hasWalletQualityIntent(t))) {
     return scanWalletData(address, chain);
   }
-  if ((t.includes("dev wallet") || t.includes("dev wallets")) && address) {
+  if (address && hasDevWalletIntent(t)) {
     return scanDevWalletData(address, chain);
   }
-  if (t.includes("liquidity") && address) {
+  if (address && hasLiquidityIntent(t)) {
     return scanLiquidityData(address, chain, origin);
   }
-  if (t.includes("whale") && address) {
+  if (address && /\bwhale\b/.test(t)) {
     return scanWhaleData(address, chain);
   }
-  if (t.includes("pump") && address) {
+  if (address && /\bpump\b/.test(t)) {
     return scanPumpData(address, chain, origin);
+  }
+  if (address && hasTokenIntent(t)) {
+    return scanTokenData(address, chain, origin);
+  }
+  if (hasMarketIntent(t) || /\bbase radar\b/.test(t)) {
+    return { gtPools: [] };
   }
   if (address) {
     return scanTokenData(address, chain, origin);
@@ -1555,6 +1866,94 @@ async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
   return { feature: "base-radar", chain: "base", analysis };
 }
 
+function buildWalletBalanceReply(walletData: unknown, address: string): string {
+  const data = (walletData ?? {}) as Record<string, unknown>;
+  const holdings = Array.isArray(data.holdings) ? (data.holdings as Array<Record<string, unknown>>) : [];
+  const sorted = holdings
+    .slice()
+    .sort((a, b) => (Number(b.value ?? 0)) - (Number(a.value ?? 0)));
+  const top = sorted.slice(0, 3);
+  const largest = top[0];
+
+  const summary = [
+    `- Portfolio value: ${typeof data.totalValue === "number" ? formatUsdShort(data.totalValue as number) : "n/a"}`,
+    `- Token count: ${holdings.length || "n/a"}`,
+    `- Largest holding: ${largest ? `${String(largest.symbol ?? largest.name ?? "TOKEN")} / ${formatUsdShort(Number(largest.value ?? 0))}` : "n/a"}`,
+  ];
+
+  const holdingLines = top.length > 0
+    ? top.map((h) => `- ${String(h.symbol ?? h.name ?? "TOKEN")}: ${Number(h.balance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 4 })} / ${formatUsdShort(Number(h.value ?? 0))}`)
+    : ["- No priced holdings returned by wallet feed."];
+
+  return `Wallet:
+${shortAddress(address)}
+
+Summary:
+${summary.join("\n")}
+
+Top holdings:
+${holdingLines.join("\n")}
+
+Data note:
+Wallet balances are from the wallet feed and may be partial for unsupported assets.`;
+}
+
+function buildWalletQualityReply(walletData: unknown, address: string, prompt: string): string {
+  const data = (walletData ?? {}) as Record<string, unknown>;
+  const holdings = Array.isArray(data.holdings) ? (data.holdings as Array<Record<string, unknown>>) : [];
+  const totalValue = typeof data.totalValue === "number" ? (data.totalValue as number) : null;
+  const txCount = typeof data.txCount === "number" ? (data.txCount as number) : null;
+  const stableExposure = holdings
+    .filter((h) => /^(USDC|USDT|DAI|USDBC)$/i.test(String(h.symbol ?? "")))
+    .reduce((sum, h) => sum + Number(h.value ?? 0), 0);
+  const stableRatio = totalValue && totalValue > 0 ? stableExposure / totalValue : 0;
+
+  let verdict: "WATCH" | "SCAN DEEPER" | "AVOID" | "UNKNOWN" = "UNKNOWN";
+  let confidence: "Low" | "Medium" | "High" = "Low";
+
+  if ((totalValue ?? 0) > 25_000 && holdings.length >= 4) {
+    verdict = "WATCH";
+    confidence = "Medium";
+  } else if (holdings.length > 0) {
+    verdict = "SCAN DEEPER";
+    confidence = "Low";
+  }
+
+  const signals: string[] = [];
+  if ((totalValue ?? 0) >= 50_000) signals.push(`Size is meaningful at ${formatUsdShort(totalValue)} and worth monitoring.`);
+  else if ((totalValue ?? 0) > 0) signals.push(`Wallet has some size (${formatUsdShort(totalValue)}), but it is not a clear whale signal yet.`);
+  else signals.push("Portfolio value is currently limited from available wallet data.");
+  if (holdings.length >= 8) signals.push("Broad holdings suggest rotation/farming behavior, not a single bet.");
+  else if (holdings.length >= 2) signals.push("Moderate concentration makes this easier to track over time.");
+  else signals.push("Concentrated wallet; easier to watch, but exposure risk is higher.");
+  if (stableRatio >= 0.4) signals.push("Stablecoin-heavy mix suggests dry powder to deploy.");
+  else if (txCount !== null) signals.push(`Observed outbound activity count: ${txCount}.`);
+
+  const risks = [
+    "Balances show size, but not entry timing or execution skill.",
+    "Counterparty flow and realized PnL are still missing from this pass.",
+    holdings.length < 2 ? "Concentration risk is elevated until activity confirms intent." : "Needs transfer-history context before confidence can rise.",
+  ];
+
+  const copyTradeAsk = /\bcopy\s*-?\s*trade\b/i.test(prompt);
+  const read = verdict === "WATCH"
+    ? "Good signal potential from wallet size and structure, so this is worth monitoring. But size alone does not prove trading skill without entry/exit behavior."
+    : "Useful starting signal, but behavior is the missing piece. I can read holdings here, not execution quality.";
+  const nextAction = copyTradeAsk
+    ? "Track entries, exits, and position sizing first; if behavior stays consistent, keep it on your watchlist."
+    : "Monitor where capital rotates next and confirm entries/exits before treating this as a lead wallet.";
+
+  return buildStructuredVerdict(
+    verdict,
+    confidence,
+    read,
+    signals,
+    risks,
+    nextAction,
+    `Wallet ${shortAddress(address)}`
+  );
+}
+
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const network = gtNetwork(chain);
@@ -1567,15 +1966,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   if (replyMode === "general_market") {
-    const radarRes = await fetch(`${origin}/api/radar`, { cache: "no-store" });
-    const radarJson = await radarRes.json().catch(() => ({}));
-    if (!radarRes.ok) {
-      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply() };
+    let tokens: BaseMarketToken[] = [];
+    try {
+      const trendingRaw = await callTrending(origin);
+      tokens = mapTrendingTokens(trendingRaw);
+    } catch {
+      tokens = [];
     }
-    const radarTokens = Array.isArray((radarJson as Record<string, unknown>)?.tokens)
-      ? ((radarJson as Record<string, unknown>).tokens as unknown[])
-      : [];
-    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseRadarBriefing(radarTokens) };
+    if (tokens.length === 0) {
+      try {
+        const gtRaw = await callGeckoTerminal("base", origin);
+        tokens = mapGtPoolsToMarketTokens(gtRaw);
+      } catch {
+        tokens = [];
+      }
+    }
+    if (tokens.length > 0) {
+      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens, prompt, body.context) };
+    }
+    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(prompt) };
   }
 
   if (replyMode === "educational") {
@@ -1596,35 +2005,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   if (replyMode === "analysis" && address && intent === "unknown") {
-    const tokenData = await callScanToken(address, "contract", origin);
-    if (tokenData) {
-      const context: ClarkContext = { tokenData };
-      let analysis: string;
-      try {
-        analysis = await callAnthropic(`Analyze this Base token contract ${address} with strict verdict format.`, context);
-      } catch {
-        analysis = buildTokenAnalysisFallback(tokenData, address);
-      }
-      return { feature: "clark-ai", chain, mode: "analysis", analysis };
-    }
-
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address });
-    if (walletRes.ok) {
-      const context: ClarkContext = { walletScan: walletRes.json ?? {} };
-      let analysis: string;
-      try {
-        analysis = await callAnthropic(`Analyze this Base wallet ${address} with strict verdict format.`, context);
-      } catch {
-        analysis = buildWalletAnalysisFallback(walletRes.json ?? {}, address);
-      }
-      return { feature: "clark-ai", chain, mode: "analysis", analysis };
-    }
-
     return {
       feature: "clark-ai",
       chain,
       mode: "analysis",
-      analysis: "Is this a token contract or wallet?",
+      analysis: "Is this a token contract or wallet? I can scan either.",
     };
   }
 
@@ -1705,6 +2090,32 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     }
   }
 
+  if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "wallet_balance" && address) {
+    try {
+      const walletData = await fetchWalletSnapshot(address);
+      return { feature: "clark-ai", chain, analysis: buildWalletBalanceReply(walletData, address) };
+    } catch {
+      return {
+        feature: "clark-ai",
+        chain,
+        analysis: "I couldn’t fetch wallet balances right now. Try Wallet Scanner or paste another Base wallet.",
+      };
+    }
+  }
+
+  if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "wallet_quality" && address) {
+    try {
+      const walletData = await fetchWalletSnapshot(address);
+      return { feature: "clark-ai", chain, analysis: buildWalletQualityReply(walletData, address, prompt) };
+    } catch {
+      return {
+        feature: "clark-ai",
+        chain,
+        analysis: "I couldn’t fetch wallet balances right now. Try Wallet Scanner or paste another Base wallet.",
+      };
+    }
+  }
+
   if ((replyMode === "analysis" || replyMode === "feature_context") && (intent === "token_analysis" || intent === "analysis") && address) {
     const tokenRes = await fetch(`${origin}/api/scan-token?contract=${encodeURIComponent(address)}`, { cache: "no-store" });
     const tokenJson = await tokenRes.json().catch(() => ({}));
@@ -1726,7 +2137,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       return {
         feature: "clark-ai",
         chain,
-        analysis: "I can do that once this feature backend is wired. For now, open Wallet Scanner and paste the wallet.",
+        analysis: "I couldn’t fetch wallet balances right now. Try Wallet Scanner or paste another Base wallet.",
       };
     }
     const context: ClarkContext = { walletScan: walletRes.json ?? {} };
@@ -1808,7 +2219,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   };
 
   if (replyMode !== "analysis" && replyMode !== "feature_context") {
-    return { feature: "clark-ai", chain, mode: "unknown", analysis: buildGeneralMarketNoContextReply() };
+    return { feature: "clark-ai", chain, mode: "unknown", analysis: buildGeneralMarketNoContextReply(prompt) };
   }
 
   const analysis = await callAnthropic(prompt, context);
