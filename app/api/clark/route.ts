@@ -330,42 +330,92 @@ type BaseMarketToken = {
   liquidity: number | null;
   volume: number | null;
   change24h: number | null;
+  createdAt: number | null;
+  source: "trending" | "gt";
 };
 
-function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string): string {
-  const STABLES = new Set(["USDC", "USDBC", "DAI", "USDT"]);
+const STABLES = new Set(["USDC", "USDBC", "DAI", "USDT"]);
+const MAJORS = new Set(["WETH", "ETH", "CBBTC", "WBTC", "BTC"]);
+
+function mentionedSymbolsFromText(text: string): Set<string> {
+  const upper = text.toUpperCase();
+  const symbols = new Set<string>();
+  for (const match of upper.matchAll(/\b[A-Z0-9]{2,10}\b/g)) {
+    symbols.add(match[0]);
+  }
+  return symbols;
+}
+
+function marketTokenScore(token: BaseMarketToken): number {
+  const change = token.change24h ?? 0;
+  const volume = Math.max(token.volume ?? 0, 0);
+  const liquidity = Math.max(token.liquidity ?? 0, 0);
+  let score = 0;
+
+  score += Math.max(Math.min(change, 300), -30) * 1.8;
+  score += Math.log10(volume + 1) * 22;
+  score += Math.log10(liquidity + 1) * 26;
+
+  if (liquidity < 25_000) score -= 35;
+  if (change > 500 && liquidity < 25_000) score -= 55;
+  if (token.symbol.trim().length < 2 || token.name.trim().length < 2) score -= 12;
+  if (volume > 0 && liquidity > 0) {
+    const ratio = volume / liquidity;
+    if (ratio > 8) score -= 10;
+  }
+  return score;
+}
+
+function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, context?: unknown): string {
   const followup = hasMarketFollowupIntent(prompt.toLowerCase());
-  const sorted = tokens
-    .filter((p) => !STABLES.has((p.symbol ?? "").toUpperCase()))
+  const contextText = context == null ? "" : JSON.stringify(context);
+  const shownSymbols = mentionedSymbolsFromText(contextText);
+  const maxItems = followup ? 8 : 7;
+  const seen = new Set<string>();
+  const ranked = tokens
     .filter((p) => (p.change24h ?? 0) > 0 && (p.volume ?? 0) > 0 && (p.liquidity ?? 0) > 0)
-    .sort((a, b) => {
-      if ((b.change24h ?? 0) !== (a.change24h ?? 0)) return (b.change24h ?? 0) - (a.change24h ?? 0);
-      if ((b.volume ?? 0) !== (a.volume ?? 0)) return (b.volume ?? 0) - (a.volume ?? 0);
-      if ((b.liquidity ?? 0) !== (a.liquidity ?? 0)) return (b.liquidity ?? 0) - (a.liquidity ?? 0);
-      return (b.price ?? 0) - (a.price ?? 0);
+    .filter((p) => {
+      const sym = (p.symbol ?? "").toUpperCase();
+      if (!sym) return false;
+      if (STABLES.has(sym)) return false;
+      if (!followup && MAJORS.has(sym)) return false;
+      const key = `${sym}:${(p.contract ?? "").toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     })
-    .slice(0, 5);
+    .sort((a, b) => marketTokenScore(b) - marketTokenScore(a));
 
-  if (sorted.length === 0) return "I can’t pull live Base movers right now, but the right way to read pumps is volume + liquidity + 24h change together. Paste any contract and I’ll scan it, or refresh Base Radar.";
+  const startIndex = followup ? Math.min(5, ranked.length) : 0;
+  const display = ranked
+    .slice(startIndex)
+    .filter((t) => !shownSymbols.has(t.symbol.toUpperCase()))
+    .slice(0, maxItems);
 
-  const avgChange = sorted.reduce((sum, t) => sum + (t.change24h ?? 0), 0) / sorted.length;
+  if (display.length === 0) {
+    return followup
+      ? "I can’t pull a fresh second batch right now, but the next names to check should show volume expansion, liquidity support, and cleaner holder/LP structure. Paste one contract and I’ll scan it."
+      : "I can’t pull live Base movers right now. Focus on rising 24h volume, liquidity support, contract hygiene, and holder/LP structure first. Paste any contract and I’ll scan it.";
+  }
+
+  const avgChange = display.reduce((sum, t) => sum + (t.change24h ?? 0), 0) / display.length;
   const summary = avgChange >= 8
     ? "CoinGecko Terminal Base market feed shows strong upside momentum across top active pools."
     : avgChange >= 3
       ? "CoinGecko Terminal Base market feed shows selective upside with mixed quality across pools."
       : "CoinGecko Terminal Base market feed is active, but momentum is uneven and needs tighter selection.";
 
-  const lines = sorted.slice(0, 4).map((token) => {
+  const lines = display.map((token) => {
     const liqNum = token.liquidity ?? 0;
     const move = token.change24h ?? 0;
     const volNum = token.volume ?? 0;
     const reason = liqNum < 25_000
       ? (move > 500
-          ? "extreme move, but liquidity is tiny — likely noisy until scanned"
+          ? "extreme move, tiny liquidity — likely noisy until scanned"
           : "thin liquidity / high noise")
       : liqNum < 50_000
         ? "thin liquidity, needs scan"
-        : liqNum > 100_000 && volNum > 75_000
+        : liqNum >= 100_000 && volNum >= 100_000
           ? "stronger market signal, still needs scan"
         : move > 80 && liqNum < 150_000
           ? "likely noisy"
@@ -384,7 +434,9 @@ Clark’s read:
 The better watch is usually the strongest liquid mover, not just the biggest % spike. Treat this as a watchlist, not a buy list.
 
 Best next step:
-Scan the strongest liquid mover, then verify contract and holder risk before sizing.`;
+${display.length < 4
+    ? "This is a small usable batch right now; wait for deeper volume/liquidity confirmation before sizing."
+    : "Scan the strongest liquid mover, then verify contract and holder risk before sizing."}`;
 }
 
 function mapTrendingTokens(raw: unknown[]): BaseMarketToken[] {
@@ -399,6 +451,8 @@ function mapTrendingTokens(raw: unknown[]): BaseMarketToken[] {
         liquidity: typeof token.liquidity === "number" ? token.liquidity : null,
         volume: typeof token.volume === "number" ? token.volume : null,
         change24h: typeof token.change24h === "number" ? token.change24h : null,
+        createdAt: typeof token.createdAt === "number" ? token.createdAt : null,
+        source: "trending",
       } satisfies BaseMarketToken;
     })
     .filter((t) => /^0x[a-fA-F0-9]{40}$/.test(t.contract));
@@ -437,6 +491,12 @@ function mapGtPoolsToMarketTokens(gtRaw: unknown): BaseMarketToken[] {
     seen.add(key);
     const volumeObj = (attrs.volume_usd ?? {}) as Record<string, unknown>;
     const changeObj = (attrs.price_change_percentage ?? {}) as Record<string, unknown>;
+    const createdRaw = attrs.pool_created_at;
+    const createdAt = typeof createdRaw === "string"
+      ? Date.parse(createdRaw)
+      : typeof createdRaw === "number"
+        ? createdRaw
+        : NaN;
     out.push({
       symbol: meta.symbol,
       name: meta.name,
@@ -445,6 +505,8 @@ function mapGtPoolsToMarketTokens(gtRaw: unknown): BaseMarketToken[] {
       liquidity: typeof attrs.reserve_in_usd === "string" ? Number(attrs.reserve_in_usd) : null,
       volume: typeof volumeObj.h24 === "string" ? Number(volumeObj.h24) : typeof volumeObj.h24 === "number" ? volumeObj.h24 : null,
       change24h: typeof changeObj.h24 === "string" ? Number(changeObj.h24) : typeof changeObj.h24 === "number" ? changeObj.h24 : null,
+      createdAt: Number.isFinite(createdAt) ? createdAt : null,
+      source: "gt",
     });
   }
   return out;
@@ -1892,7 +1954,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       }
     }
     if (tokens.length > 0) {
-      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens, prompt) };
+      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens, prompt, body.context) };
     }
     return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(prompt) };
   }
