@@ -142,6 +142,9 @@ function ClarkAiContent() {
           mode: 'unified',
           uiModeHint: activeMode,
           context: null,
+          history: [...messages, { role: 'user', text }]
+            .slice(-6)
+            .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text })),
         }),
       })
       const json = await res.json()

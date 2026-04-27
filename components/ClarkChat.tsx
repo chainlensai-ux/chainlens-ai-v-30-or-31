@@ -44,9 +44,6 @@ export default function ClarkChat({
     }
   }, [messages])
 
-  // Stable send function — callable from both the UI and the initialMessage effect.
-  // useState setters and refs are guaranteed stable by React, so [] deps is correct.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const executeSend = useCallback(async (text: string) => {
     console.log('executeSend sending:', text)
     setMessages(prev => [...prev, { role: 'user', text }])
@@ -65,6 +62,9 @@ export default function ClarkChat({
           mode: 'unified',
           uiModeHint: mode,
           context: null,
+          history: [...messages, { role: 'user', text }]
+            .slice(-6)
+            .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text })),
         }),
       })
       console.log('Response status:', res.status)
@@ -89,7 +89,7 @@ export default function ClarkChat({
       setLoading(false)
       inputRef.current?.focus()
     }
-  }, [])
+  }, [messages, mode])
 
   // Fire once per unique initialMessage value.
   useEffect(() => {

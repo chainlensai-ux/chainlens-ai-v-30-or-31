@@ -38,6 +38,7 @@ interface ClarkRequestBody {
   prompt?: string;
   query?: string;
   tokenData?: unknown;
+  history?: Array<{ role?: string; content?: string }>;
 }
 
 interface ClarkContext {
@@ -76,6 +77,16 @@ type ClarkReplyMode =
   | "analysis"
   | "feature_context"
   | "unknown";
+
+type ConversationTopic = "wallet" | "token" | "market" | "unknown";
+
+type ConversationContext = {
+  lastWalletAddress: string | null;
+  lastTokenAddress: string | null;
+  shownMarketSymbols: Set<string>;
+  marketTurns: number;
+  lastTopic: ConversationTopic;
+};
 
 // ---------- Chain name maps ----------
 
@@ -229,9 +240,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
     if (intent === "educational") return "educational";
     if (intent === "routing_help") return "routing_help";
     if (intent === "token_name_lookup") return "analysis";
-    if ((intent === "analysis" || intent === "token_analysis" || intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety") && address) {
-      return "analysis";
-    }
+    if ((intent === "analysis" || intent === "token_analysis" || intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety") && address) return "analysis";
     if (isFollowupMarket) return "general_market";
     if (address) return "analysis";
     return "unknown";
@@ -257,11 +266,76 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   if (intent === "base_radar") return "general_market";
   if (intent === "feature_context") return "feature_context";
   if (intent === "analysis") return "analysis";
-  if ((intent === "token_analysis" || intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && address) {
-    return "analysis";
-  }
+  if ((intent === "token_analysis" || intent === "wallet_balance" || intent === "wallet_quality" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && address) return "analysis";
   if (/scan|analyz|check|verdict|risk/.test(t) && address) return "analysis";
+  if (address) return "analysis";
   return "unknown";
+}
+
+function isLikelyWalletFollowup(text: string): boolean {
+  return /\b(is it safe|safe wallet|good wallet|should i follow it|copy\s*-?\s*trade|wallet safe|holdings?|balance|what does it hold|its activity|watch it|is that risky)\b/i.test(text);
+}
+
+function isLikelyTokenFollowup(text: string): boolean {
+  return /\b(is it safe|token|contract|liquidity|deployer|dev wallet|honeypot|tax|holder|scan it)\b/i.test(text);
+}
+
+function extractConversationContext(body: ClarkRequestBody): ConversationContext {
+  const history = Array.isArray(body.history) ? body.history.slice(-6) : [];
+  const shownMarketSymbols = new Set<string>();
+  let lastWalletAddress: string | null = null;
+  let lastTokenAddress: string | null = null;
+  let marketTurns = 0;
+  let lastTopic: ConversationTopic = "unknown";
+
+  for (const msg of history) {
+    const role = String(msg?.role ?? "").toLowerCase();
+    const content = String(msg?.content ?? "");
+    if (!content) continue;
+    const lower = content.toLowerCase();
+    const addresses = content.match(/0x[a-fA-F0-9]{40}/g) ?? [];
+    if (/\bwallet|balance|copy\s*-?\s*trade|follow\b/.test(lower)) {
+      if (addresses[0]) lastWalletAddress = addresses[0];
+      lastTopic = "wallet";
+    }
+    if (/\btoken|contract|liquidity|holder|deployer|dev wallet\b/.test(lower)) {
+      if (addresses[0]) lastTokenAddress = addresses[0];
+      if (lastTopic !== "wallet") lastTopic = "token";
+    }
+    if (/\bbase market|moving now|more movers|what'?s pumping on base|what'?s moving on base|trending on base\b/.test(lower)) {
+      marketTurns += 1;
+      if (lastTopic !== "wallet" && lastTopic !== "token") lastTopic = "market";
+    }
+    if (role === "assistant") {
+      for (const m of content.toUpperCase().matchAll(/-\s*([A-Z0-9]{2,10})\s*:/g)) shownMarketSymbols.add(m[1]);
+    }
+    for (const addr of addresses) {
+      if (/\bwallet|balance|holdings|portfolio\b/.test(lower)) lastWalletAddress = addr;
+      if (/\btoken|contract|pool|liquidity|deployer\b/.test(lower)) lastTokenAddress = addr;
+    }
+  }
+
+  return { lastWalletAddress, lastTokenAddress, shownMarketSymbols, marketTurns, lastTopic };
+}
+
+function resolveFollowupPrompt(
+  prompt: string,
+  detected: { intent: ClarkIntent; address: string | null },
+  convo: ConversationContext
+): { intent: ClarkIntent; address: string | null; missingWalletRef: boolean; marketOffset: number } {
+  if (detected.address) return { intent: detected.intent, address: detected.address, missingWalletRef: false, marketOffset: 0 };
+  const lower = prompt.toLowerCase();
+
+  if (isLikelyWalletFollowup(lower)) {
+    if (!convo.lastWalletAddress) return { intent: "wallet_quality", address: null, missingWalletRef: true, marketOffset: 0 };
+    const walletBalanceAsk = /\b(balance|holdings?|what does it hold)\b/.test(lower);
+    return { intent: walletBalanceAsk ? "wallet_balance" : "wallet_quality", address: convo.lastWalletAddress, missingWalletRef: false, marketOffset: 0 };
+  }
+  if (isLikelyTokenFollowup(lower) && convo.lastTokenAddress) return { intent: "analysis", address: convo.lastTokenAddress, missingWalletRef: false, marketOffset: 0 };
+  if (hasMarketFollowupIntent(lower) || (/\bwhat else\b/.test(lower) && convo.lastTopic === "market")) {
+    return { intent: "general_market", address: null, missingWalletRef: false, marketOffset: Math.max(0, convo.marketTurns) * 8 };
+  }
+  return { intent: detected.intent, address: detected.address, missingWalletRef: false, marketOffset: 0 };
 }
 
 function buildEducationalReply(prompt: string): string {
@@ -366,11 +440,11 @@ function marketTokenScore(token: BaseMarketToken): number {
   return score;
 }
 
-function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, context?: unknown): string {
+function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, context?: unknown, opts?: { extraShownSymbols?: Set<string>; marketOffset?: number }): string {
   const followup = hasMarketFollowupIntent(prompt.toLowerCase());
   const contextText = context == null ? "" : JSON.stringify(context);
-  const shownSymbols = mentionedSymbolsFromText(contextText);
-  const maxItems = followup ? 8 : 7;
+  const shownSymbols = new Set([...mentionedSymbolsFromText(contextText), ...(opts?.extraShownSymbols ?? new Set<string>())]);
+  const maxItems = followup ? 10 : 10;
   const dedupe = (items: BaseMarketToken[]) => {
     const seen = new Set<string>();
     return items.filter((p) => {
@@ -393,7 +467,7 @@ function buildBaseMarketBriefing(tokens: BaseMarketToken[], prompt: string, cont
     .sort((a, b) => marketTokenScore(b) - marketTokenScore(a));
 
   const strictFollowup = rankedStrict
-    .slice(Math.min(5, rankedStrict.length))
+    .slice(Math.min(Math.max(8, opts?.marketOffset ?? 8), rankedStrict.length))
     .filter((t) => !shownSymbols.has(t.symbol.toUpperCase()))
     .slice(0, maxItems);
 
@@ -740,8 +814,8 @@ async function callGoPlus(address: string, chain: SupportedChain = "base") {
 }
 
 // Uses req.nextUrl.origin so the call always targets the same deployment
-async function callGeckoTerminal(network: "base" | "eth", origin: string) {
-  const res = await fetch(`${origin}/api/proxy/gt?network=${network}`, {
+async function callGeckoTerminal(network: "base" | "eth", origin: string, page = 1) {
+  const res = await fetch(`${origin}/api/proxy/gt?network=${network}&page=${page}`, {
     next: { revalidate: 30 },
   });
 
@@ -1959,9 +2033,27 @@ function buildWalletQualityReply(walletData: unknown, address: string, prompt: s
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const network = gtNetwork(chain);
-  const prompt = body.prompt ?? "Give me a clear on-chain summary.";
-  const replyMode = detectReplyMode(body);
-  const { intent, address } = detectIntent(prompt);
+  const rawPrompt = body.prompt ?? "Give me a clear on-chain summary.";
+  const detected = detectIntent(rawPrompt);
+  const convo = extractConversationContext(body);
+  const resolved = resolveFollowupPrompt(rawPrompt, detected, convo);
+  const prompt = rawPrompt;
+  const intent = resolved.intent;
+  const address = resolved.address;
+  const replyMode = intent === "general_market"
+    ? "general_market"
+    : (intent === "wallet_balance" || intent === "wallet_quality" || intent === "analysis")
+      ? "analysis"
+      : detectReplyMode({ ...body, prompt });
+
+  if (resolved.missingWalletRef) {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      analysis: "Which wallet do you mean? Paste the address and I’ll check it.",
+    };
+  }
 
   if (replyMode === "casual_help") {
     return { feature: "clark-ai", chain, mode: "casual_help", analysis: buildCasualClarkReply(prompt) };
@@ -1975,16 +2067,29 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     } catch {
       tokens = [];
     }
-    if (tokens.length === 0) {
-      try {
-        const gtRaw = await callGeckoTerminal("base", origin);
-        tokens = mapGtPoolsToMarketTokens(gtRaw);
-      } catch {
-        tokens = [];
-      }
+    try {
+      const gtPages = await Promise.allSettled([
+        callGeckoTerminal("base", origin, 1),
+        callGeckoTerminal("base", origin, 2),
+        callGeckoTerminal("base", origin, 3),
+      ]);
+      const gtTokens = gtPages
+        .filter((r): r is PromiseFulfilledResult<unknown> => r.status === "fulfilled")
+        .flatMap((r) => mapGtPoolsToMarketTokens(r.value));
+      tokens = [...tokens, ...gtTokens];
+    } catch {
+      // keep existing tokens; do not expose provider errors
     }
     if (tokens.length > 0) {
-      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildBaseMarketBriefing(tokens, prompt, body.context) };
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "general_market",
+        analysis: buildBaseMarketBriefing(tokens, prompt, body.context, {
+          extraShownSymbols: convo.shownMarketSymbols,
+          marketOffset: resolved.marketOffset,
+        }),
+      };
     }
     return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(prompt) };
   }

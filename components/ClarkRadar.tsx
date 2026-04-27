@@ -40,7 +40,6 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
     }
   }, [messages])
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const sendToClark = useCallback(async (text: string) => {
     setMessages(prev => [...prev, { role: 'user', text }])
     setLoading(true)
@@ -57,6 +56,9 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
           mode: 'unified',
           uiModeHint: clarkMode,
           context: null,
+          history: [...messages, { role: 'user', text }]
+            .slice(-6)
+            .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text })),
         }),
       })
       const json = await res.json()
@@ -79,7 +81,7 @@ export default function ClarkRadar({ onSelectRadar, pendingMessage }: ClarkRadar
       setLoading(false)
       inputRef.current?.focus()
     }
-  }, [clarkMode])
+  }, [clarkMode, messages])
 
   useEffect(() => {
     if (pendingMessage && pendingMessage !== lastSentRef.current) {
