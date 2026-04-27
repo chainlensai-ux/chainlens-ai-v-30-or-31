@@ -75,25 +75,6 @@ function decodePrompt(value: string | null): string | null {
   }
 }
 
-function parseClarkPayload(raw: string): Record<string, string> {
-  const trimmed = raw.trim()
-  const lower = trimmed.toLowerCase()
-  const addrMatch = trimmed.match(/0x[a-fA-F0-9]{40}/)
-  const address = addrMatch?.[0]
-
-  const WALLET_INTENT = /\b(wallet|balance|balances|holdings?|portfolio|copy[\s-]?trade?|smart\s+money)\b/i
-  const MARKET_INTENT = /\b(pumping|pump(?:ing)?|hot\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?|trending)\b/i
-
-  if (lower.startsWith('scan wallet') && address) return { feature: 'wallet-scanner', walletAddress: address }
-  if (lower.startsWith('dev wallet') && address) return { feature: 'dev-wallet-detector', tokenAddress: address }
-  if (MARKET_INTENT.test(lower)) return { feature: 'base-radar' }
-  if (address) {
-    if (WALLET_INTENT.test(lower)) return { feature: 'wallet-scanner', walletAddress: address, prompt: trimmed }
-    return { feature: 'scan-token', tokenAddress: address, prompt: trimmed }
-  }
-  return { feature: 'clark-ai', prompt: trimmed }
-}
-
 function ClarkAiContent() {
   const searchParams = useSearchParams()
   const importedPrompt = useMemo(() => decodePrompt(searchParams.get('prompt')), [searchParams])
@@ -154,7 +135,14 @@ function ClarkAiContent() {
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...parseClarkPayload(text), message: text, mode: 'clark-ai', context: null }),
+        body: JSON.stringify({
+          feature: 'clark-ai',
+          message: text,
+          prompt: text,
+          mode: 'unified',
+          uiModeHint: activeMode,
+          context: null,
+        }),
       })
       const json = await res.json()
       const reply = json.ok ? (json.data?.reply ?? json.data?.analysis ?? json.data?.response ?? 'No response.') : (json.error ?? 'Something went wrong.')
