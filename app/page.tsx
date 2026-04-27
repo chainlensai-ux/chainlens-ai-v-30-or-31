@@ -1,22 +1,9 @@
 
 'use client'
 
-import { useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
-import HomeClarkPanel from '@/components/HomeClarkPanel'
 import ConnectWallet from '@/components/ConnectWallet'
-
-// ─── Action chips inside the prompt box ───────────────────────────────────
-
-const CHIPS = [
-  'SCAN A BASE TOKEN',
-  'CHECK WALLET BEHAVIOR',
-  'EXPLAIN LIQUIDITY RISK',
-  'WHAT CAN CLARK DO?',
-  'OPEN BASE RADAR',
-  'ANALYZE DEV WALLET RISK',
-]
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
 
@@ -104,10 +91,6 @@ const FEATURES = [
 ]
 
 export default function HomePage() {
-  const [query, setQuery] = useState('')
-  const [showClarkPanel, setShowClarkPanel] = useState(false)
-  const [initialClarkMessage, setInitialClarkMessage] = useState<string | null>(null)
-
   return (
     <>
       {/* Keyframes */}
@@ -128,13 +111,6 @@ export default function HomePage() {
           33%      { transform: translate(-50px, 50px) scale(1.08); opacity: 0.60; }
           66%      { transform: translate(70px, -30px) scale(0.92); opacity: 0.38; }
         }
-        @keyframes input-glow {
-          0%,100% { box-shadow: 0 0 0 0 rgba(45,212,191,0), 0 0 0 1px rgba(139,92,246,0.28); }
-          50%      { box-shadow: 0 0 22px 5px rgba(45,212,191,0.20), 0 0 0 1px rgba(45,212,191,0.55); }
-        }
-        .clark-input-box {
-          animation: input-glow 3s ease-in-out infinite;
-        }
         @keyframes feat-in {
           from { opacity: 0; transform: translateY(22px); }
           to   { opacity: 1; transform: translateY(0); }
@@ -146,8 +122,7 @@ export default function HomePage() {
         }
         .feat-card:hover { transform: translateY(-6px); }
         @media (max-width: 767px) {
-          .mob-hero-main { padding: 40px 16px 28px !important; }
-          .mob-hero-chips { justify-content: flex-start !important; overflow-x: auto !important; flex-wrap: nowrap !important; padding-bottom: 4px !important; -webkit-overflow-scrolling: touch !important; }
+          .mob-hero-main { padding: 80px 16px 60px !important; }
           .feat-grid { grid-template-columns: 1fr !important; }
           .feat-section { padding: 56px 16px 64px !important; }
         }
@@ -323,7 +298,7 @@ export default function HomePage() {
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: '76px 24px 52px',
+          padding: '100px 24px 80px',
           position: 'relative',
           zIndex: 1,
           textAlign: 'center',
@@ -431,226 +406,84 @@ export default function HomePage() {
             smart money, and get real-time onchain intelligence.
           </p>
 
-          {/* Prompt box */}
-          <div className="clark-input-box" style={{
-            width: '100%',
-            maxWidth: '600px',
-            background: 'rgba(255,255,255,0.025)',
-            border: '1px solid rgba(139,92,246,0.25)',
-            borderRadius: '18px',
-            padding: '20px 20px 18px',
-            marginBottom: '32px',
-            boxShadow: '0 4px 40px rgba(0,0,0,0.3), 0 1px 0 rgba(255,255,255,0.04) inset',
-          }}>
+          {/* CTA buttons — horizontal row */}
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
 
-            {/* Action chips */}
-            <div className="mob-hero-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', justifyContent: 'center', marginBottom: '18px' }}>
-              {CHIPS.map(chip => (
-                <button
-                  key={chip}
-                  onClick={() => setQuery(chip)}
-                  style={{
-                    background: 'rgba(255,255,255,0.08)',
-                    border: '1px solid rgba(255,255,255,0.12)',
-                    borderRadius: '999px',
-                    padding: '6px 14px',
-                    fontSize: '10px',
-                    fontWeight: 600,
-                    letterSpacing: '0.08em',
-                    color: 'rgba(255,255,255,0.90)',
-                    cursor: 'pointer',
-                    textTransform: 'uppercase',
-                    fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                    transition: 'border-color 0.15s, color 0.15s, background 0.15s',
-                    whiteSpace: 'nowrap',
-                  }}
-                  onMouseEnter={e => {
-                    const el = e.currentTarget as HTMLButtonElement
-                    el.style.borderColor = 'rgba(139,92,246,0.45)'
-                    el.style.color = 'rgba(255,255,255,0.90)'
-                    el.style.background = 'rgba(139,92,246,0.08)'
-                  }}
-                  onMouseLeave={e => {
-                    const el = e.currentTarget as HTMLButtonElement
-                    el.style.borderColor = 'rgba(255,255,255,0.10)'
-                    el.style.color = 'rgba(255,255,255,0.60)'
-                    el.style.background = 'rgba(255,255,255,0.04)'
-                  }}
-                >
-                  {chip}
-                </button>
-              ))}
-            </div>
-
-            {/* Divider */}
-            <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', marginBottom: '14px' }} />
-
-            {/* Input row */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '10px',
-              background: 'rgba(255,255,255,0.02)',
-              border: '1px solid rgba(255,255,255,0.07)',
-              borderRadius: '10px',
-              padding: '8px 8px 8px 14px',
-            }}>
-              <input
-                type="text"
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && query.trim()) {
-                    setInitialClarkMessage(query.trim())
-                    setShowClarkPanel(true)
-                    setQuery('')
-                    e.preventDefault()
-                  }
-                }}
-                placeholder="Ask Clark — scan a wallet, find early pumps, track smart money..."
-                style={{
-                  flex: 1,
-                  background: 'transparent',
-                  border: 'none',
-                  outline: 'none',
-                  color: 'rgba(255,255,255,0.80)',
-                  fontSize: '13px',
-                  fontFamily: 'inherit',
-                  minWidth: 0,
-                }}
-              />
-              <button
-                onClick={() => {
-                  if (query.trim()) {
-                    setInitialClarkMessage(query.trim())
-                    setShowClarkPanel(true)
-                    setQuery('')
-                  }
-                }}
-                style={{
-                  width: '36px',
-                  height: '36px',
-                  borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  boxShadow: '0 0 18px rgba(139,92,246,0.55)',
-                  border: '1px solid rgba(139,92,246,0.50)',
-                  cursor: 'pointer',
-                  padding: 0,
-                  transition: 'box-shadow 0.15s, transform 0.15s',
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                  <path d="M5 12h14M13 6l6 6-6 6" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
-            </div>
-
-            {/* Box footer */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              marginTop: '12px',
-            }}>
-              <span style={{
-                width: '5px', height: '5px', borderRadius: '50%',
-                background: '#4ade80',
-                boxShadow: '0 0 5px rgba(74,222,128,0.7)',
-                flexShrink: 0,
-              }} />
-              <span style={{
-                fontSize: '9px',
-                fontWeight: 600,
-                color: 'rgba(255,255,255,0.22)',
-                letterSpacing: '0.13em',
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                textTransform: 'uppercase',
-              }}>
-                Live · Powered by CORTEX
-              </span>
-            </div>
-
-          </div>
-
-          {/* CTA buttons */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
+            {/* Connect Wallet — teal */}
+            <ConnectWallet />
 
             {/* Primary — Enter Terminal */}
-            <Link href="/terminal" className="mob-cta-primary" style={{
+            <Link href="/terminal" style={{
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '10px',
-              padding: '16px 40px',
+              gap: '9px',
+              padding: '13px 32px',
               borderRadius: '12px',
               background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
               color: '#fff',
-              fontSize: '14px',
+              fontSize: '13px',
               fontWeight: 800,
-              letterSpacing: '0.12em',
+              letterSpacing: '0.10em',
               textTransform: 'uppercase',
               textDecoration: 'none',
-              boxShadow: '0 0 36px rgba(45,212,191,0.5), 0 0 36px rgba(139,92,246,0.3)',
+              boxShadow: '0 0 32px rgba(45,212,191,0.45), 0 0 32px rgba(139,92,246,0.25)',
               transition: 'opacity 0.15s, box-shadow 0.15s, transform 0.15s',
             }}
               onMouseEnter={e => {
                 const el = e.currentTarget as HTMLAnchorElement
-                el.style.opacity    = '0.92'
-                el.style.transform  = 'translateY(-2px)'
-                el.style.boxShadow  = '0 0 52px rgba(45,212,191,0.65), 0 0 52px rgba(139,92,246,0.4)'
+                el.style.opacity   = '0.92'
+                el.style.transform = 'translateY(-2px)'
+                el.style.boxShadow = '0 0 48px rgba(45,212,191,0.60), 0 0 48px rgba(139,92,246,0.38)'
               }}
               onMouseLeave={e => {
                 const el = e.currentTarget as HTMLAnchorElement
-                el.style.opacity    = '1'
-                el.style.transform  = 'translateY(0)'
-                el.style.boxShadow  = '0 0 36px rgba(45,212,191,0.5), 0 0 36px rgba(139,92,246,0.3)'
+                el.style.opacity   = '1'
+                el.style.transform = 'translateY(0)'
+                el.style.boxShadow = '0 0 32px rgba(45,212,191,0.45), 0 0 32px rgba(139,92,246,0.25)'
               }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                 <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="2"/>
-                <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                 <path d="M7 8l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
                 <line x1="13" y1="11" x2="17" y2="11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
               </svg>
-              Enter Terminal
+              Enter Terminal →
             </Link>
 
-            {/* Secondary pair */}
-            <div className="mob-cta-secondary" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
-              <ConnectWallet />
-              <Link href="/pricing" style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: '11px 28px',
-                borderRadius: '10px',
-                background: 'rgba(139,92,246,0.12)',
-                color: 'rgba(255,255,255,0.72)',
-                fontSize: '12px',
-                fontWeight: 700,
-                letterSpacing: '0.10em',
-                textTransform: 'uppercase',
-                textDecoration: 'none',
-                border: '1px solid rgba(139,92,246,0.28)',
-                transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+            {/* Start Free — purple */}
+            <Link href="/pricing" style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '13px 28px',
+              borderRadius: '12px',
+              background: 'rgba(139,92,246,0.12)',
+              color: 'rgba(255,255,255,0.80)',
+              fontSize: '13px',
+              fontWeight: 700,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              textDecoration: 'none',
+              border: '1px solid rgba(139,92,246,0.32)',
+              transition: 'background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s',
+            }}
+              onMouseEnter={e => {
+                const el = e.currentTarget as HTMLAnchorElement
+                el.style.background  = 'rgba(139,92,246,0.22)'
+                el.style.color       = '#fff'
+                el.style.borderColor = 'rgba(139,92,246,0.55)'
+                el.style.transform   = 'translateY(-1px)'
               }}
-                onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLAnchorElement
-                  el.style.background   = 'rgba(139,92,246,0.24)'
-                  el.style.color        = '#fff'
-                  el.style.borderColor  = 'rgba(139,92,246,0.50)'
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLAnchorElement
-                  el.style.background   = 'rgba(139,92,246,0.12)'
-                  el.style.color        = 'rgba(255,255,255,0.72)'
-                  el.style.borderColor  = 'rgba(139,92,246,0.28)'
-                }}
-              >
-                Start Free
-              </Link>
-            </div>
+              onMouseLeave={e => {
+                const el = e.currentTarget as HTMLAnchorElement
+                el.style.background  = 'rgba(139,92,246,0.12)'
+                el.style.color       = 'rgba(255,255,255,0.80)'
+                el.style.borderColor = 'rgba(139,92,246,0.32)'
+                el.style.transform   = 'translateY(0)'
+              }}
+            >
+              Start Free
+            </Link>
           </div>
 
         </main>
@@ -762,15 +595,15 @@ export default function HomePage() {
                   background: `linear-gradient(90deg, transparent 0%, ${f.accent}88 50%, transparent 100%)`,
                 }} />
 
-                {/* Icon */}
+                {/* Icon — circular ring */}
                 <div style={{
-                  width: '48px', height: '48px', borderRadius: '14px',
-                  background: `rgba(${f.accent === '#2DD4BF' ? '45,212,191' : f.accent === '#ec4899' ? '236,72,153' : f.accent === '#8b5cf6' ? '139,92,246' : '96,165,250'}, 0.10)`,
-                  border: `1px solid ${f.borderColor}`,
+                  width: '56px', height: '56px', borderRadius: '50%',
+                  background: `rgba(${f.accent === '#2DD4BF' ? '45,212,191' : f.accent === '#ec4899' ? '236,72,153' : f.accent === '#8b5cf6' ? '139,92,246' : '96,165,250'}, 0.08)`,
+                  border: `2px solid ${f.accent}55`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   color: f.accent,
                   marginBottom: '20px',
-                  boxShadow: `0 0 20px ${f.accent}22`,
+                  boxShadow: `0 0 24px ${f.accent}33, inset 0 0 12px ${f.accent}11`,
                   flexShrink: 0,
                 }}>
                   {f.icon}
@@ -1407,13 +1240,6 @@ export default function HomePage() {
         </div>
       </footer>
 
-      {/* Sliding Clark panel — triggered by Enter in the hero input */}
-      <HomeClarkPanel
-        open={showClarkPanel}
-        initialMessage={initialClarkMessage}
-        onClose={() => setShowClarkPanel(false)}
-      />
     </>
- 
   )
 }
