@@ -81,33 +81,33 @@ export default function Navbar() {
           50%      { opacity: 0.5; box-shadow: 0 0 2px rgba(74,222,128,0.3); }
         }
         @keyframes nav-shell-glow {
-          0%,100% { box-shadow: 0 0 0 1px rgba(45,212,191,0.08), 0 8px 40px rgba(0,0,0,0.55), 0 0 60px rgba(45,212,191,0.03); }
-          50%      { box-shadow: 0 0 0 1px rgba(45,212,191,0.16), 0 8px 40px rgba(0,0,0,0.55), 0 0 60px rgba(45,212,191,0.07); }
+          0%,100% { box-shadow: 0 0 0 1px rgba(45,212,191,0.20), 0 24px 80px rgba(0,0,0,0.62), 0 0 60px rgba(45,212,191,0.10), 0 0 80px rgba(139,92,246,0.08); }
+          50%      { box-shadow: 0 0 0 1px rgba(139,92,246,0.28), 0 24px 80px rgba(0,0,0,0.62), 0 0 80px rgba(45,212,191,0.16), 0 0 110px rgba(139,92,246,0.14); }
         }
         .nav-shell { animation: nav-shell-glow 5s ease-in-out infinite; }
 
         .nav-link {
-          color: rgba(255,255,255,0.55);
+          color: rgba(255,255,255,0.72);
           text-decoration: none;
-          font-size: 13.5px;
+          font-size: 16px;
           font-weight: 500;
           letter-spacing: 0.01em;
-          transition: color 0.15s;
-          padding: 5px 0;
+          transition: color 0.15s, text-shadow 0.15s;
+          padding: 8px 0;
           white-space: nowrap;
         }
-        .nav-link:hover { color: #fff; }
+        .nav-link:hover { color: #fff; text-shadow: 0 0 16px rgba(45,212,191,0.25); }
 
         .tools-btn {
           background: none; border: none;
-          color: rgba(255,255,255,0.55);
-          cursor: pointer; font-size: 13.5px;
+          color: rgba(255,255,255,0.72);
+          cursor: pointer; font-size: 16px;
           font-weight: 500; font-family: inherit;
           display: flex; align-items: center; gap: 4px;
-          padding: 5px 0; transition: color 0.15s;
+          padding: 8px 0; transition: color 0.15s, text-shadow 0.15s;
           white-space: nowrap;
         }
-        .tools-btn:hover, .tools-btn.open { color: #fff; }
+        .tools-btn:hover, .tools-btn.open { color: #fff; text-shadow: 0 0 16px rgba(45,212,191,0.25); }
 
         .tools-item {
           display: flex; align-items: center; justify-content: space-between;
@@ -142,43 +142,47 @@ export default function Navbar() {
         }
 
         .btn-signin {
-          padding: 7px 16px;
-          border: 1px solid rgba(255,255,255,0.14);
+          padding: 11px 24px;
+          border: 1px solid rgba(255,255,255,0.20);
           border-radius: 999px;
-          background: transparent;
-          color: rgba(255,255,255,0.65);
-          font-size: 12px; font-weight: 600;
+          background: rgba(6,8,20,0.70);
+          color: rgba(255,255,255,0.90);
+          font-size: 13px; font-weight: 700;
           text-decoration: none;
-          letter-spacing: 0.04em;
-          transition: border-color 0.15s, color 0.15s, background 0.15s;
+          letter-spacing: 0.10em;
+          text-transform: uppercase;
+          transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
           white-space: nowrap;
         }
         .btn-signin:hover {
-          border-color: rgba(255,255,255,0.32);
+          border-color: rgba(255,255,255,0.42);
           color: #fff;
-          background: rgba(255,255,255,0.05);
+          background: rgba(255,255,255,0.08);
+          box-shadow: 0 0 28px rgba(45,212,191,0.14);
         }
 
         .btn-access {
           display: inline-flex; align-items: center; gap: 6px;
-          padding: 7px 18px; border-radius: 999px;
-          background: linear-gradient(135deg, rgba(45,212,191,0.10) 0%, rgba(139,92,246,0.16) 100%);
-          border: 1px solid rgba(45,212,191,0.32);
+          padding: 12px 26px; border-radius: 999px;
+          background: linear-gradient(115deg, rgba(45,212,191,0.20) 0%, rgba(56,189,248,0.28) 28%, rgba(124,58,237,0.40) 72%, rgba(168,85,247,0.62) 100%);
+          border: 1px solid rgba(167,139,250,0.66);
           color: #fff;
-          font-size: 12px; font-weight: 700;
+          font-size: 13px; font-weight: 800;
           text-decoration: none;
-          letter-spacing: 0.04em;
-          box-shadow: 0 0 14px rgba(45,212,191,0.12), 0 0 24px rgba(139,92,246,0.08);
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          box-shadow: 0 0 18px rgba(45,212,191,0.22), 0 0 30px rgba(139,92,246,0.22);
           transition: box-shadow 0.15s, border-color 0.15s, background 0.15s;
           white-space: nowrap;
         }
         .btn-access:hover {
-          border-color: rgba(45,212,191,0.55);
-          background: linear-gradient(135deg, rgba(45,212,191,0.18) 0%, rgba(139,92,246,0.24) 100%);
-          box-shadow: 0 0 22px rgba(45,212,191,0.24), 0 0 36px rgba(139,92,246,0.15);
+          border-color: rgba(196,181,253,0.92);
+          background: linear-gradient(115deg, rgba(45,212,191,0.24) 0%, rgba(56,189,248,0.34) 28%, rgba(124,58,237,0.52) 72%, rgba(168,85,247,0.78) 100%);
+          box-shadow: 0 0 32px rgba(45,212,191,0.34), 0 0 52px rgba(139,92,246,0.34);
         }
 
         .mob-ham {
+          display: none;
           width: 36px; height: 36px; border-radius: 8px;
           background: none; border: 1px solid rgba(255,255,255,0.10);
           cursor: pointer; flex-shrink: 0; margin-left: auto;
@@ -209,10 +213,14 @@ export default function Navbar() {
 
         @media (max-width: 1023px) {
           .nav-live-badge { display: none !important; }
+          .mob-nav-links { display: none !important; }
+          .mob-ham { display: flex !important; }
         }
         @media (max-width: 767px) {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
-          .nav-outer { padding: 8px 12px !important; }
+          .nav-outer { padding: 10px 12px !important; }
+          .nav-shell { height: 58px !important; border-radius: 16px !important; }
+          .mob-auth-wrap { display: none !important; }
         }
       `}</style>
 
@@ -233,18 +241,18 @@ export default function Navbar() {
         <div
           className="nav-shell"
           style={{
-            maxWidth: '1160px',
+            maxWidth: '1320px',
             margin: '0 auto',
-            background: 'rgba(6,8,20,0.84)',
+            background: 'linear-gradient(180deg, rgba(8,12,28,0.90) 0%, rgba(5,8,20,0.84) 100%)',
             backdropFilter: 'blur(28px)',
             WebkitBackdropFilter: 'blur(28px)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: '16px',
-            padding: '0 18px',
-            height: '54px',
+            border: '1px solid rgba(109,40,217,0.36)',
+            borderRadius: '999px',
+            padding: '0 28px',
+            height: '74px',
             display: 'flex',
             alignItems: 'center',
-            gap: '24px',
+            gap: '34px',
             pointerEvents: 'auto',
             position: 'relative',
             overflow: 'visible',
@@ -259,9 +267,9 @@ export default function Navbar() {
 
           {/* Logo */}
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '9px', textDecoration: 'none', flexShrink: 0 }}>
-            <Image src="/cl-logo.png" alt="ChainLens AI" width={30} height={30} />
+            <Image src="/cl-logo.png" alt="ChainLens AI" width={36} height={36} />
             <div>
-              <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '14px', lineHeight: 1.15 }}>
+              <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '18px', lineHeight: 1.15 }}>
                 <span style={{ color: '#f1f5f9' }}>Chain</span>
                 <span style={{
                   background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 60%, #ec4899 100%)',
@@ -269,7 +277,7 @@ export default function Navbar() {
                 }}>Lens</span>
               </div>
               <div style={{
-                fontSize: '7px', color: 'rgba(45,212,191,0.50)',
+                fontSize: '8px', color: 'rgba(255,255,255,0.58)',
                 letterSpacing: '0.20em', textTransform: 'uppercase',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               }}>
@@ -288,7 +296,7 @@ export default function Navbar() {
           </button>
 
           {/* Center nav links */}
-          <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '24px', flex: 1 }}>
+          <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '34px', flex: 1 }}>
             <div style={{ position: 'relative' }}>
               <button
                 className={`tools-btn${open ? ' open' : ''}`}
@@ -396,9 +404,12 @@ export default function Navbar() {
               className="nav-live-badge"
               style={{
                 display: 'flex', alignItems: 'center', gap: '6px',
-                paddingRight: '14px',
-                borderRight: '1px solid rgba(255,255,255,0.07)',
+                padding: '10px 18px',
+                border: '1px solid rgba(45,212,191,0.24)',
+                borderRadius: '999px',
+                background: 'rgba(8,12,32,0.78)',
                 marginRight: '4px',
+                boxShadow: '0 0 20px rgba(45,212,191,0.10)',
               }}
             >
               <div style={{
@@ -426,7 +437,7 @@ export default function Navbar() {
                 alignItems: 'center',
                 gap: '8px',
                 borderColor: 'rgba(45,212,191,0.30)',
-                background: 'linear-gradient(135deg, rgba(45,212,191,0.09) 0%, rgba(139,92,246,0.12) 100%)',
+                background: 'linear-gradient(135deg, rgba(45,212,191,0.12) 0%, rgba(139,92,246,0.18) 100%)',
               }}>
                 <span style={{
                   width: '20px',
