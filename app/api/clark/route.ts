@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 
 const {
   GOLDRUSH_API_KEY,
@@ -393,7 +394,7 @@ function classifyClarkQuestionType(
   if (/what about liquidity|explain the lp risk/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_liquidity_followup";
   if (/what about the dev wallet|dev wallet/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_dev_followup";
   if (/is it safe/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol)) return "token_safety_followup";
-  if (/why is it moving/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol)) return "token_move_explainer";
+  if (/why is it moving|why is token\s+\d+\s+moving|explain the move/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol || ctx.followupWords)) return "token_move_explainer";
   if (/balance|holdings?|portfolio|tell me the balance/.test(normalized) && (ctx.explicitAddress || ctx.lastWallet)) return "wallet_balance";
   if (/(good wallet|worth tracking|copy trade|smart money|wallet quality|is this a good wallet)/.test(normalized) && (ctx.explicitAddress || ctx.lastWallet || ctx.followupWords)) return "wallet_quality";
   if (/copy trade|wallet worth tracking|why is this wallet worth tracking/.test(normalized)) return "wallet_strategy";
@@ -442,7 +443,62 @@ function pickAddressBySelection(historyLines: string[], selectedIndex: number): 
 
 function isMarketFollowupPrompt(prompt: string): boolean {
   const t = prompt.trim().toLowerCase();
-  return /^(more|give me more|other tokens|other ones|next|show more)$/i.test(t) || /\bgive me other tokens\b/i.test(t);
+  return /^(more|give me more|other tokens|other ones|next|show more|continue)$/i.test(t) || /\bgive me (other|20 more|100|500)\b/i.test(t);
+}
+
+function parseMarketRequest(prompt: string): { count: number; mode: BaseMarketMode; wantsMore: boolean } {
+  const t = prompt.toLowerCase();
+  const num = t.match(/\b(\d{1,3})\b/);
+  const explicit = num ? Number(num[1]) : null;
+  const wantsMore = /\b(more|continue|other tokens|next)\b/i.test(t);
+  const count = explicit ? Math.min(100, explicit) : (wantsMore ? 10 : 10);
+  const mode: BaseMarketMode =
+    /new launch|new base launch/.test(t) ? "new_launches" :
+    /microcap|degen|low cap|early/.test(t) ? "microcaps" :
+    /cooling|pullback/.test(t) ? "cooling_watchlist" :
+    /liquid/.test(t) ? "liquid_movers" :
+    "pumping";
+  return { count, mode, wantsMore };
+}
+
+function extractSeenTokenAddresses(history: ClarkRequestBody["history"]): string[] {
+  const lines = getHistoryMessages(history);
+  const out: string[] = [];
+  for (const line of lines) {
+    for (const m of line.matchAll(/0x[a-fA-F0-9]{40}/g)) out.push(m[0]);
+  }
+  return [...new Set(out.map((x) => x.toLowerCase()))];
+}
+
+function formatBaseMarketReply(candidates: BaseMarketCandidate[], total: number, offset: number, cappedMessage?: string | null, extended = false): string {
+  const rows = candidates.map((c, i) => {
+    const idx = offset + i + 1;
+    const move = c.change24h != null ? `${c.change24h.toFixed(1)}% 24h` : "n/a 24h";
+    const vol = formatUsdShort(c.volume24h);
+    const liq = formatUsdShort(c.liquidityUsd);
+    const reason = c.reasonTags[0] ?? "watch";
+    const addr = c.tokenAddress ?? c.poolAddress ?? "unresolved";
+    return `${idx}. ${c.symbol ?? "?"} — ${move}, vol ${vol}, liq ${liq} — ${reason} — ${addr}`;
+  });
+  const header = extended ? "Base Market — extended list:" : "Base Market:";
+  const read = candidates.some((c) => (c.liquidityUsd ?? 0) > 100_000)
+    ? "This list is led by tokens with real liquidity, but there are still noisy runners mixed in."
+    : "This feed is mostly thinner-liquidity momentum; treat fast moves as high-risk until depth confirms.";
+  return [
+    header,
+    `Clark is seeing ${total} usable Base candidates from current pool data.`,
+    cappedMessage ?? "",
+    "",
+    "Moving now:",
+    ...rows,
+    "",
+    "Clark’s read:",
+    read,
+    "Use market momentum as discovery only, then run single-token analysis before conviction.",
+    "",
+    "Next:",
+    "Pick a number or symbol and I’ll run a full report.",
+  ].filter(Boolean).join("\n");
 }
 
 function classifyPlannerIntent(prompt: string, address: string | null): ClarkPlannerIntent {
@@ -457,7 +513,7 @@ function classifyPlannerIntent(prompt: string, address: string | null): ClarkPla
   if (/liquidity|lp safe|liquidity risk/.test(t)) return "liquidity_safety";
   if (/balance|holdings?|portfolio|what does .*wallet hold|tell me the balance/.test(t) && address) return "wallet_balance";
   if (/(good wallet|worth following|copy[\s-]?trad|smart money|is it safe|wallet quality)/.test(t) && (address || /it\b/.test(t))) return "wallet_quality";
-  if (/pumping on base|moving on base|trending|movers|gainers|runners|more/.test(t)) return "market";
+  if (/pumping on base|moving on base|trending|movers|gainers|runners|more|base tokens|show 100|give me 100|give me 20/.test(t)) return "market";
   if (/scan|token|contract|safe|risk|brett|0x[a-fA-F0-9]{40}/.test(t)) return "token_analysis";
   if (/\[mode\s*:|feature context|<token_data>|<wallet_scan>/i.test(prompt)) return "feature_context";
   return "unknown";
@@ -475,6 +531,7 @@ function buildClarkToolPlan(input: {
   const trimmed = message.trim().toLowerCase();
   const selectedOptionIndex =
     (/^\s*([1-9])\s*$/.test(trimmed) ? Number(trimmed) : null) ??
+    (/\b(?:scan|check|token|full report on|report on|why is token)\s+([1-9])\b/.test(trimmed) ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report on|why is token)\s+([1-9])\b/)?.[1] ?? 0) : null) ??
     (/first one|that one|this one/.test(trimmed) ? 1 : null) ??
     (/second one/.test(trimmed) ? 2 : null) ??
     (/third one/.test(trimmed) ? 3 : null);
@@ -1020,8 +1077,11 @@ async function callGoPlus(address: string, chain: SupportedChain = "base") {
 }
 
 // Uses req.nextUrl.origin so the call always targets the same deployment
-async function callGeckoTerminal(network: "base" | "eth", origin: string) {
-  const res = await fetch(`${origin}/api/proxy/gt?network=${network}`, {
+async function callGeckoTerminal(network: "base" | "eth", origin: string, options?: { type?: "pools" | "trending" | "new"; page?: number; perPage?: number }) {
+  const type = options?.type ?? "pools";
+  const page = options?.page ?? 1;
+  const perPage = options?.perPage ?? 20;
+  const res = await fetch(`${origin}/api/proxy/gt?network=${network}&type=${type}&page=${page}&per_page=${perPage}`, {
     next: { revalidate: 30 },
   });
 
@@ -2792,7 +2852,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, mode: "routing_help", analysis: buildRoutingHelpReply(prompt), intent: plan.intent, toolsUsed };
   }
 
-  if (plan.intent === "strategy" && !/pumping on base|moving on base|trending|movers|gainers|runners/i.test(prompt)) {
+  if (plan.intent === "strategy" && !/pumping on base|moving on base|trending|movers|gainers|runners|more|give me|show\s+\d+|new base launches|low cap|base tokens/i.test(prompt.toLowerCase())) {
     return { feature: "clark-ai", chain, mode: "analysis", analysis: buildClarkStrategyReply(prompt), intent: plan.intent, toolsUsed };
   }
 
@@ -2843,8 +2903,32 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   if (plan.intent === "market" || plan.intent === "strategy" || replyMode === "general_market") {
+    const req = parseMarketRequest(prompt);
+    const seen = extractSeenTokenAddresses(body.history);
+    const extended = /\b(100|show 100|list 100|give me 100|500)\b/i.test(prompt);
+    const requestedCount = /\b500\b/.test(prompt) ? 100 : req.count;
+    const universe = await getBaseMarketUniverse({
+      origin,
+      mode: req.mode,
+      requestedCount: extended ? requestedCount : Math.max(20, requestedCount),
+      followup: req.wantsMore,
+      excludeAddresses: req.wantsMore ? seen : [],
+    }).catch(() => ({ candidates: [] as BaseMarketCandidate[], clamped: /\b500\b/.test(prompt), cappedMessage: /\b500\b/.test(prompt) ? "I can show up to 100 usable Base candidates at a time." : null }));
+
+    const take = extended ? Math.min(requestedCount, 100) : (req.wantsMore ? Math.min(requestedCount, 20) : 10);
+    const marketRows = universe.candidates.slice(0, take);
+    if (marketRows.length > 0) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "general_market",
+        analysis: formatBaseMarketReply(marketRows, universe.candidates.length, req.wantsMore ? seen.length : 0, universe.cappedMessage, extended),
+        intent: plan.intent,
+        toolsUsed: [...new Set([...toolsUsed, "market_get_base_movers"])],
+      };
+    }
     if (evidence.market?.ok) {
-      const list = evidence.market.candidates.slice(0, 5).map((c) => ({
+      const list = evidence.market.candidates.slice(0, 10).map((c) => ({
         attributes: {
           name: `${c.token} / USDC`,
           reserve_in_usd: c.liquidity,
@@ -2852,16 +2936,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           price_change_percentage: { h24: c.change24h },
         },
       }));
-      return {
-        feature: "clark-ai",
-        chain,
-        mode: "general_market",
-        analysis: buildGTMarketBriefing(list),
-        intent: plan.intent,
-        toolsUsed,
-      };
+      return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGTMarketBriefing(list), intent: plan.intent, toolsUsed };
     }
-    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(), intent: plan.intent, toolsUsed };
+    return { feature: "clark-ai", chain, mode: "general_market", analysis: "I can’t pull the full Base market feed right now, but I can still scan any token you paste and build a watchlist from partial data.", intent: plan.intent, toolsUsed };
   }
 
   if (plan.intent === "wallet_balance") {
