@@ -139,6 +139,8 @@ export default function HomePage() {
           .hero-feat-row { flex-direction: column !important; gap: 16px !important; }
           .hero-feat-row > div { border-right: none !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; padding-bottom: 16px !important; }
           .hero-feat-row > div:last-child { border-bottom: none !important; }
+          .hero-cta-row { flex-direction: column !important; width: 100%; }
+          .hero-cta-row > * { width: 100% !important; }
         }
         @media (max-width: 1023px) {
           .hero-feat-row { gap: 16px !important; }
@@ -294,35 +296,35 @@ export default function HomePage() {
         {/* Left curved arc sweep — teal ring */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '900px', height: '900px',
+          width: '1080px', height: '1080px',
           borderRadius: '50%',
-          border: '1px solid rgba(45,212,191,0.08)',
-          top: '-300px', left: '-420px',
-          boxShadow: 'inset 0 0 80px rgba(45,212,191,0.04)',
+          border: '1px solid rgba(45,212,191,0.18)',
+          top: '-360px', left: '-560px',
+          boxShadow: 'inset 0 0 120px rgba(45,212,191,0.08), 0 0 120px rgba(45,212,191,0.12)',
         }} />
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '700px', height: '700px',
+          width: '860px', height: '860px',
           borderRadius: '50%',
-          border: '1px solid rgba(45,212,191,0.05)',
-          top: '-200px', left: '-320px',
+          border: '1px solid rgba(45,212,191,0.10)',
+          top: '-240px', left: '-460px',
         }} />
 
         {/* Right curved arc sweep — purple ring */}
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '1000px', height: '1000px',
+          width: '1120px', height: '1120px',
           borderRadius: '50%',
-          border: '1px solid rgba(139,92,246,0.07)',
-          top: '-350px', right: '-480px',
-          boxShadow: 'inset 0 0 80px rgba(139,92,246,0.04)',
+          border: '1px solid rgba(168,85,247,0.18)',
+          top: '-390px', right: '-560px',
+          boxShadow: 'inset 0 0 120px rgba(168,85,247,0.09), 0 0 120px rgba(168,85,247,0.10)',
         }} />
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '750px', height: '750px',
+          width: '880px', height: '880px',
           borderRadius: '50%',
-          border: '1px solid rgba(236,72,153,0.05)',
-          top: '-220px', right: '-350px',
+          border: '1px solid rgba(236,72,153,0.11)',
+          top: '-250px', right: '-430px',
         }} />
 
         {/* Planetary horizon arc — bottom center */}
@@ -332,9 +334,9 @@ export default function HomePage() {
             position: 'absolute', pointerEvents: 'none', zIndex: 0,
             width: '130%', height: '320px',
             borderRadius: '50%',
-            bottom: '-140px', left: '-15%',
-            background: 'radial-gradient(ellipse at 50% 100%, rgba(45,212,191,0.10) 0%, rgba(139,92,246,0.08) 30%, transparent 70%)',
-            filter: 'blur(40px)',
+            bottom: '-132px', left: '-15%',
+            background: 'radial-gradient(ellipse at 50% 100%, rgba(56,189,248,0.26) 0%, rgba(139,92,246,0.22) 35%, rgba(236,72,153,0.16) 52%, transparent 78%)',
+            filter: 'blur(34px)',
           }}
         />
         {/* Horizon arc border line */}
@@ -342,15 +344,17 @@ export default function HomePage() {
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
           width: '120%', height: '600px',
           borderRadius: '50%',
-          border: '1px solid rgba(45,212,191,0.06)',
+          border: '1px solid rgba(45,212,191,0.28)',
           bottom: '-380px', left: '-10%',
+          boxShadow: '0 0 30px rgba(45,212,191,0.16)',
         }} />
         <div style={{
           position: 'absolute', pointerEvents: 'none', zIndex: 0,
           width: '110%', height: '500px',
           borderRadius: '50%',
-          border: '1px solid rgba(139,92,246,0.05)',
+          border: '1px solid rgba(168,85,247,0.25)',
           bottom: '-300px', left: '-5%',
+          boxShadow: '0 0 30px rgba(168,85,247,0.16)',
         }} />
 
         {/* Hero */}
@@ -432,12 +436,13 @@ export default function HomePage() {
 
           {/* Headline */}
           <h1 style={{
-            fontSize: 'clamp(48px, 6.5vw, 76px)',
-            fontWeight: 800,
-            lineHeight: 1.06,
+            fontSize: 'clamp(52px, 7.2vw, 102px)',
+            fontWeight: 900,
+            lineHeight: 1.03,
             letterSpacing: '-0.025em',
-            margin: '0 0 20px',
-            maxWidth: '780px',
+            margin: '0 0 24px',
+            maxWidth: '1100px',
+            textShadow: '0 8px 30px rgba(0,0,0,0.46)',
           }}>
             {/* Line 1 — white */}
             <span style={{ color: '#f8fafc', display: 'block' }}>
@@ -446,10 +451,11 @@ export default function HomePage() {
             {/* Line 2 — pink → indigo gradient (merged with "does") */}
             <span style={{
               display: 'block',
-              background: 'linear-gradient(95deg, #ec4899 0%, #a855f7 45%, #818cf8 80%, #6366f1 100%)',
+              background: 'linear-gradient(94deg, #ec4899 0%, #a855f7 32%, #818cf8 64%, #22d3ee 100%)',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
               backgroundClip: 'text',
+              textShadow: '0 0 34px rgba(139,92,246,0.30), 0 0 64px rgba(34,211,238,0.20)',
             }}>
               before everyone else does.
             </span>
@@ -458,10 +464,10 @@ export default function HomePage() {
           {/* Subtext */}
           <p style={{
             fontSize: '17px',
-            color: 'rgba(255,255,255,0.48)',
-            lineHeight: 1.7,
-            maxWidth: '520px',
-            margin: '0 0 32px',
+            color: 'rgba(255,255,255,0.66)',
+            lineHeight: 1.62,
+            maxWidth: '700px',
+            margin: '0 0 38px',
             fontWeight: 400,
           }}>
             Ask Clark anything — scan wallets, find early pumps, track
@@ -473,14 +479,15 @@ export default function HomePage() {
             display: 'flex',
             alignItems: 'stretch',
             gap: '0',
-            maxWidth: '880px',
+            maxWidth: '1060px',
             width: '100%',
             margin: '8px 0 36px',
-            background: 'rgba(255,255,255,0.02)',
-            border: '1px solid rgba(255,255,255,0.07)',
-            borderRadius: '16px',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
+            background: 'linear-gradient(180deg, rgba(6,11,28,0.82) 0%, rgba(5,10,24,0.66) 100%)',
+            border: '1px solid rgba(148,163,184,0.24)',
+            borderRadius: '22px',
+            backdropFilter: 'blur(18px)',
+            WebkitBackdropFilter: 'blur(18px)',
+            boxShadow: '0 22px 64px rgba(0,0,0,0.52), 0 0 42px rgba(45,212,191,0.08), inset 0 1px 0 rgba(255,255,255,0.10)',
             overflow: 'hidden',
           }}>
             {([
@@ -527,33 +534,33 @@ export default function HomePage() {
             ] as { accent: string; heading: string; desc: string; icon: React.ReactNode }[]).map((item, i) => (
               <div key={i} style={{
                 flex: 1,
-                padding: '20px 18px',
-                borderRight: i < 3 ? '1px solid rgba(255,255,255,0.06)' : 'none',
+                padding: '24px 20px',
+                borderRight: i < 3 ? '1px solid rgba(148,163,184,0.22)' : 'none',
                 display: 'flex',
                 gap: '12px',
                 alignItems: 'flex-start',
               }}>
                 <div style={{
-                  width: '38px', height: '38px', borderRadius: '50%',
+                  width: '44px', height: '44px', borderRadius: '50%',
                   flexShrink: 0,
-                  border: `1.5px solid ${item.accent}55`,
-                  background: `${item.accent}12`,
+                  border: `1.5px solid ${item.accent}66`,
+                  background: `radial-gradient(circle at 35% 30%, ${item.accent}2A 0%, rgba(15,23,42,0.8) 75%)`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   color: item.accent,
-                  boxShadow: `0 0 16px ${item.accent}20`,
+                  boxShadow: `0 0 20px ${item.accent}28`,
                 }}>
                   {item.icon}
                 </div>
                 <div>
                   <div style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', marginBottom: '3px', lineHeight: 1.3 }}>{item.heading}</div>
-                  <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.42)', lineHeight: 1.5 }}>{item.desc}</div>
+                  <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.60)', lineHeight: 1.5 }}>{item.desc}</div>
                 </div>
               </div>
             ))}
           </div>
 
           {/* CTA buttons — horizontal row */}
-          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
+          <div className="hero-cta-row" style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
 
             {/* Connect Wallet — teal */}
             <ConnectWallet />
@@ -563,29 +570,30 @@ export default function HomePage() {
               display: 'inline-flex',
               alignItems: 'center',
               gap: '9px',
-              padding: '13px 32px',
-              borderRadius: '12px',
-              background: 'linear-gradient(90deg, #2DD4BF 0%, #8b5cf6 100%)',
+              padding: '18px 46px',
+              borderRadius: '999px',
+              background: 'linear-gradient(100deg, rgba(45,212,191,0.24) 0%, rgba(34,211,238,0.26) 25%, rgba(99,102,241,0.28) 64%, rgba(168,85,247,0.26) 100%)',
+              border: '1px solid rgba(34,211,238,0.58)',
               color: '#fff',
-              fontSize: '13px',
+              fontSize: '15px',
               fontWeight: 800,
-              letterSpacing: '0.10em',
+              letterSpacing: '0.09em',
               textTransform: 'uppercase',
               textDecoration: 'none',
-              boxShadow: '0 0 32px rgba(45,212,191,0.45), 0 0 32px rgba(139,92,246,0.25)',
+              boxShadow: '0 0 42px rgba(45,212,191,0.34), 0 0 42px rgba(139,92,246,0.30), inset 0 1px 0 rgba(255,255,255,0.32)',
               transition: 'opacity 0.15s, box-shadow 0.15s, transform 0.15s',
             }}
               onMouseEnter={e => {
                 const el = e.currentTarget as HTMLAnchorElement
                 el.style.opacity   = '0.92'
                 el.style.transform = 'translateY(-2px)'
-                el.style.boxShadow = '0 0 48px rgba(45,212,191,0.60), 0 0 48px rgba(139,92,246,0.38)'
+                el.style.boxShadow = '0 0 62px rgba(45,212,191,0.52), 0 0 62px rgba(139,92,246,0.46), inset 0 1px 0 rgba(255,255,255,0.36)'
               }}
               onMouseLeave={e => {
                 const el = e.currentTarget as HTMLAnchorElement
                 el.style.opacity   = '1'
                 el.style.transform = 'translateY(0)'
-                el.style.boxShadow = '0 0 32px rgba(45,212,191,0.45), 0 0 32px rgba(139,92,246,0.25)'
+                el.style.boxShadow = '0 0 42px rgba(45,212,191,0.34), 0 0 42px rgba(139,92,246,0.30), inset 0 1px 0 rgba(255,255,255,0.32)'
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -601,16 +609,17 @@ export default function HomePage() {
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              padding: '13px 28px',
-              borderRadius: '12px',
+              padding: '17px 38px',
+              borderRadius: '999px',
               background: 'rgba(139,92,246,0.12)',
-              color: 'rgba(255,255,255,0.80)',
-              fontSize: '13px',
+              color: 'rgba(255,255,255,0.92)',
+              fontSize: '15px',
               fontWeight: 700,
-              letterSpacing: '0.08em',
+              letterSpacing: '0.10em',
               textTransform: 'uppercase',
               textDecoration: 'none',
-              border: '1px solid rgba(139,92,246,0.32)',
+              border: '1px solid rgba(168,85,247,0.56)',
+              boxShadow: '0 0 26px rgba(139,92,246,0.18)',
               transition: 'background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s',
             }}
               onMouseEnter={e => {
