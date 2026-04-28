@@ -27,7 +27,9 @@ interface ClarkRequestBody {
   feature: ClarkFeature;
   message?: string;
   mode?: string;
+  uiModeHint?: string;
   context?: unknown;
+  history?: Array<{ role?: string; content?: string }>;
   addressOrToken?: string;
   walletAddress?: string;
   tokenAddress?: string;
@@ -61,6 +63,50 @@ type ClarkIntent =
   | "whale_alert"
   | "feature_context"
   | "unknown";
+
+type ClarkPlannerIntent =
+  | "casual"
+  | "help"
+  | "educational"
+  | "strategy"
+  | "market"
+  | "token_analysis"
+  | "token_full_report_request"
+  | "wallet_balance"
+  | "wallet_quality"
+  | "wallet_compare_request"
+  | "dev_wallet"
+  | "liquidity_safety"
+  | "feature_context"
+  | "unknown";
+
+type ClarkToolName =
+  | "market_get_base_movers"
+  | "token_resolve"
+  | "token_scan"
+  | "wallet_get_snapshot"
+  | "wallet_analyze_quality"
+  | "dev_wallet_analyze"
+  | "liquidity_analyze";
+
+type ClarkPlanTool = {
+  name: ClarkToolName;
+  args: Record<string, unknown>;
+  required: boolean;
+};
+
+type ClarkToolPlan = {
+  intent: ClarkPlannerIntent;
+  tools: ClarkPlanTool[];
+  depth: "short" | "normal" | "deep";
+  followupContext: {
+    address: string | null;
+    lastTokenAddress: string | null;
+    lastWalletAddress: string | null;
+    marketFollowup: boolean;
+    selectedOptionIndex: number | null;
+  };
+};
 
 type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback";
 type ClarkReplyMode =
@@ -137,7 +183,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|help|who are you|what is chainlens/i.test(t)) {
     return { intent: "casual_help", address };
   }
-  if (/what is liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock/i.test(t)) {
+  if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock|what is slippage|explain slippage/i.test(t)) {
     return { intent: "educational", address };
   }
   if (/how do i scan|where do i check deployer|how do i track a wallet|how do i use this|which feature|where should i go/i.test(t)) {
@@ -223,9 +269,144 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   return "unknown";
 }
 
+function getHistoryMessages(history: ClarkRequestBody["history"]): string[] {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map((h) => (typeof h?.content === "string" ? h.content : ""))
+    .filter(Boolean)
+    .slice(-12);
+}
+
+function findLastAddressInTextList(lines: string[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const a = extractAddress(lines[i] ?? "");
+    if (a) return a;
+  }
+  return null;
+}
+
+function pickAddressBySelection(historyLines: string[], selectedIndex: number): string | null {
+  if (selectedIndex < 1) return null;
+  for (let i = historyLines.length - 1; i >= 0; i--) {
+    const line = historyLines[i] ?? "";
+    const regex = new RegExp(`(?:^|\\n)\\s*${selectedIndex}\\.\\s+[^\\n]*?(0x[a-fA-F0-9]{40})`, "m");
+    const m = line.match(regex);
+    if (m?.[1]) return m[1];
+  }
+  return null;
+}
+
+function isMarketFollowupPrompt(prompt: string): boolean {
+  const t = prompt.trim().toLowerCase();
+  return /^(more|give me more|other tokens|other ones|next|show more)$/i.test(t) || /\bgive me other tokens\b/i.test(t);
+}
+
+function classifyPlannerIntent(prompt: string, address: string | null): ClarkPlannerIntent {
+  const t = prompt.trim().toLowerCase();
+  if (/^(hi|hey|hello|yo|gm|sup)\b/.test(t)) return "casual";
+  if (/what can you do|help|who are you/.test(t)) return "help";
+  if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|holder concentration|lp lock|what is slippage|explain slippage/i.test(t)) return "educational";
+  if (/what should i watch|watch today|framework|strategy/i.test(t)) return "strategy";
+  if (/full report/.test(t)) return "token_full_report_request";
+  if (/compare .*wallet/.test(t)) return "wallet_compare_request";
+  if (/dev wallet|deployer|who deployed/.test(t)) return "dev_wallet";
+  if (/liquidity|lp safe|liquidity risk/.test(t)) return "liquidity_safety";
+  if (/balance|holdings?|portfolio|what does .*wallet hold|tell me the balance/.test(t) && address) return "wallet_balance";
+  if (/(good wallet|worth following|copy[\s-]?trad|smart money|is it safe|wallet quality)/.test(t) && (address || /it\b/.test(t))) return "wallet_quality";
+  if (/pumping on base|moving on base|trending|movers|gainers|runners|more/.test(t)) return "market";
+  if (/scan|token|contract|safe|risk|brett|0x[a-fA-F0-9]{40}/.test(t)) return "token_analysis";
+  if (/\[mode\s*:|feature context|<token_data>|<wallet_scan>/i.test(prompt)) return "feature_context";
+  return "unknown";
+}
+
+function buildClarkToolPlan(input: {
+  message: string;
+  mode?: string;
+  uiModeHint?: string;
+  context?: unknown;
+  history?: ClarkRequestBody["history"];
+}): ClarkToolPlan {
+  const message = input.message ?? "";
+  const historyLines = getHistoryMessages(input.history);
+  const trimmed = message.trim().toLowerCase();
+  const selectedOptionIndex =
+    (/^\s*([1-9])\s*$/.test(trimmed) ? Number(trimmed) : null) ??
+    (/first one|that one|this one/.test(trimmed) ? 1 : null) ??
+    (/second one/.test(trimmed) ? 2 : null) ??
+    (/third one/.test(trimmed) ? 3 : null);
+  const directAddress = extractAddress(message);
+  const selectedAddress = selectedOptionIndex ? pickAddressBySelection(historyLines, selectedOptionIndex) : null;
+  const inferredAddress = directAddress ?? selectedAddress;
+  const lastHistoryAddress = findLastAddressInTextList(historyLines);
+  const marketFollowup = isMarketFollowupPrompt(message);
+  const explicitFollowupRef = /\b(this token|this wallet|it|this one|that one|first one|second one|third one)\b/i.test(message);
+  const allowHistoryEntity = Boolean(selectedOptionIndex || marketFollowup || explicitFollowupRef);
+  const fallbackAddress = inferredAddress ?? (allowHistoryEntity ? lastHistoryAddress : null);
+  let plannerIntent = classifyPlannerIntent(message, inferredAddress);
+  if (selectedAddress && (plannerIntent === "unknown" || plannerIntent === "feature_context")) plannerIntent = "token_analysis";
+  if (/^it\b/i.test(trimmed) && fallbackAddress) plannerIntent = "token_analysis";
+  const depth: ClarkToolPlan["depth"] =
+    /\b(deep|detailed|full detail|full breakdown)\b/i.test(message) ? "deep" :
+    /\b(quick|short|brief)\b/i.test(message) ? "short" : "normal";
+
+  const followupContext = {
+    address: fallbackAddress ?? null,
+    lastTokenAddress: fallbackAddress ?? null,
+    lastWalletAddress: fallbackAddress ?? null,
+    marketFollowup,
+    selectedOptionIndex,
+  };
+
+  const tools: ClarkPlanTool[] = [];
+  const tokenLookup = extractTokenLookupQuery(message);
+  const looksWallet = /\b(wallet|balance|portfolio|copy[\s-]?trade|smart money)\b/i.test(message);
+
+  switch (plannerIntent) {
+    case "market":
+    case "strategy":
+      tools.push({ name: "market_get_base_movers", args: { page: 1, perPage: 20 }, required: false });
+      break;
+    case "wallet_balance":
+      if (fallbackAddress) tools.push({ name: "wallet_get_snapshot", args: { address: fallbackAddress }, required: true });
+      break;
+    case "wallet_quality":
+      if (fallbackAddress) {
+        tools.push({ name: "wallet_get_snapshot", args: { address: fallbackAddress }, required: true });
+        tools.push({ name: "wallet_analyze_quality", args: { address: fallbackAddress }, required: false });
+      }
+      break;
+    case "dev_wallet":
+      if (fallbackAddress) tools.push({ name: "dev_wallet_analyze", args: { address: fallbackAddress }, required: true });
+      break;
+    case "liquidity_safety":
+      if (fallbackAddress) tools.push({ name: "liquidity_analyze", args: { address: fallbackAddress }, required: true });
+      break;
+    case "token_full_report_request":
+    case "token_analysis":
+      if (!fallbackAddress && tokenLookup) {
+        tools.push({ name: "token_resolve", args: { query: tokenLookup }, required: true });
+      } else if (fallbackAddress && looksWallet) {
+        tools.push({ name: "wallet_get_snapshot", args: { address: fallbackAddress }, required: false });
+      } else if (fallbackAddress) {
+        tools.push({ name: "token_scan", args: { address: fallbackAddress }, required: true });
+      }
+      break;
+    default:
+      break;
+  }
+
+  return {
+    intent: plannerIntent,
+    tools,
+    depth,
+    followupContext,
+  };
+}
+
 function buildEducationalReply(prompt: string): string {
   const t = prompt.toLowerCase();
   if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can’t exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
+  if (/slippage/.test(t)) return "Slippage is the price impact between quoted and executed price. Thin liquidity and large orders increase slippage and worsen entries/exits.";
   if (/dev wallet/.test(t)) return "A dev wallet is a deployer-linked wallet that can reveal insider coordination, funding links, or early sell pressure.";
   if (/holder concentration/.test(t)) return "Holder concentration means too much supply sits in a few wallets, increasing dump and manipulation risk.";
   if (/lp lock/.test(t)) return "LP lock matters because unlocked liquidity can be pulled, which can collapse tradability and price.";
@@ -285,14 +466,16 @@ function buildGTMarketBriefing(pools: unknown[]): string {
   });
 
   if (picks.length === 0) {
-    return "I couldn't pull CoinGecko Terminal Base data right now. Paste a contract and I'll scan it directly.";
+    return "I couldn't pull live Base market data right now. Paste a contract and I'll scan it directly.";
   }
 
   return (
     "Base Market:\n" +
-    "CoinGecko Terminal — top movers on Base now.\n\n" +
+    "Top movers on Base right now.\n\n" +
     "Moving now:\n" +
     picks.join("\n") +
+    "\n\nClark’s read:\n" +
+    "Momentum is active, but thin-liquidity names can reverse fast.\n" +
     "\n\nBest next step:\n" +
     "Scan the strongest token before touching it. Market data alone does not confirm safety."
   );
@@ -356,6 +539,67 @@ function buildWalletAnalysisFallback(walletData: unknown, address: string): stri
     [`Wallet recognized on Base-compatible flow`, `Holdings detected: ${holdings}`, `Estimated total value: ${totalValue}`],
     ["Behavioral and counterpart risk requires deeper scanner context.", "Single-pass wallet data is not enough for a strong trust call."],
     "Run Wallet Scanner for deeper behavior and transfer-risk analysis."
+  );
+}
+
+function enforceWalletAssetLabel(text: string, address: string): string {
+  const walletLine = `Asset: Wallet ${shortAddress(address)}`;
+  if (/^Asset:/im.test(text)) {
+    return text.replace(/^Asset:.*$/im, walletLine);
+  }
+  return `${walletLine}\n${text.trim()}`;
+}
+
+function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>, address: string): string {
+  const top = snapshot.holdingsTop10;
+  const topValue = top.reduce((s, h) => s + h.value, 0);
+  const top1 = top[0]?.value ?? 0;
+  const concentration = topValue > 0 ? (top1 / topValue) * 100 : 0;
+  const breadth = snapshot.tokenCount;
+  const stablePct = snapshot.totalValue > 0 ? (snapshot.stablecoinExposureUsd / snapshot.totalValue) * 100 : 0;
+  const activity = snapshot.txCount ?? 0;
+
+  let verdict: "WATCH" | "SCAN DEEPER" | "AVOID" | "TRUSTWORTHY" = "WATCH";
+  let confidence: "Low" | "Medium" | "High" = "Medium";
+
+  if (snapshot.totalValue < 500 && breadth < 5) {
+    verdict = "SCAN DEEPER";
+    confidence = "Low";
+  } else if (concentration >= 80 && snapshot.totalValue > 10_000) {
+    verdict = "WATCH";
+    confidence = "Medium";
+  } else if (snapshot.totalValue >= 25_000 && breadth >= 8 && stablePct >= 10 && activity >= 20) {
+    verdict = "WATCH";
+    confidence = "High";
+  }
+
+  const profile =
+    snapshot.totalValue >= 25_000 && activity >= 20 ? "tracker-worthy whale/watch wallet" :
+    breadth >= 20 ? "broad rotation/farmer-style wallet" :
+    "lower-signal concentrated wallet";
+
+  const signals = [
+    `Portfolio value: ${formatUsdShort(snapshot.totalValue)}`,
+    `Concentration: top holding is ${concentration.toFixed(1)}% of visible top holdings`,
+    `Stablecoin exposure: ${formatUsdShort(snapshot.stablecoinExposureUsd)} (${stablePct.toFixed(1)}%)`,
+  ];
+  const risks = [
+    snapshot.dustOrUnpricedHidden ? "Dust or unpriced holdings exist and are hidden in this summary" : "Major holdings are mostly priced",
+    breadth < 5 ? "Low breadth increases single-asset dependency risk" : "Breadth is acceptable for watchlist monitoring",
+    activity < 10 ? "Low observed activity can indicate low signal quality" : "Observed activity is sufficient for behavior tracking",
+  ];
+  const read = `This looks like a ${profile}. I can rate it as a watch wallet, not proven smart money, unless timing/PnL evidence is added.`;
+
+  return enforceWalletAssetLabel(
+    buildStructuredVerdict(
+      verdict,
+      confidence,
+      read,
+      signals,
+      risks,
+      "Use this as a monitoring wallet; confirm entry timing and repeat behavior before copy-trading."
+    ),
+    address
   );
 }
 
@@ -717,8 +961,7 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
   }
 
   const deepMode = /\b(deep|detailed|full breakdown|full detail|long form)\b/i.test(prompt);
-  const allowProviderNames = /\b(source|sources|provider|providers)\b/i.test(prompt);
-  const text = sanitizeFreeform(raw, { allowProviderNames }).replace(/\r/g, "").trim();
+  const text = sanitizeFreeform(raw, { allowProviderNames: false }).replace(/\r/g, "").trim();
   const upper = text.toUpperCase();
   const ctx = extractClarkContext(userContent);
   const isDevWalletMode = /\bdev-wallet\b|dev wallet follow-up/i.test(prompt) || /\blikely deployer:/i.test(userContent);
@@ -1376,6 +1619,253 @@ async function routeCommand(
   return null;
 }
 
+type ClarkToolEvidence = {
+  market?: {
+    ok: boolean;
+    candidates: Array<{ token: string; change24h: number; volume24h: number; liquidity: number }>;
+    source: "gt_proxy";
+    errorSafeMessage?: string;
+  };
+  tokenResolve?: {
+    ok: boolean;
+    query: string;
+    matches: Array<{ symbol: string; contract: string }>;
+    selected?: { symbol: string; contract: string } | null;
+    errorSafeMessage?: string;
+  };
+  tokenScan?: {
+    ok: boolean;
+    token: { name: string; symbol: string; address: string } | null;
+    market: { price: number | null; change24h: number | null; volume24h: number | null; liquidity: number | null };
+    security: { honeypot: boolean | null; buyTax: number | null; sellTax: number | null };
+    liquidity: { pools: number; topPoolLiquidity: number | null };
+    warnings: string[];
+    errorSafeMessage?: string;
+  };
+  walletSnapshot?: {
+    ok: boolean;
+    address: string;
+    totalValue: number;
+    holdingsTop10: Array<{ symbol: string; value: number; balance: number }>;
+    hiddenHoldingsCount: number;
+    dustOrUnpricedHidden: boolean;
+    stablecoinExposureUsd: number;
+    tokenCount: number;
+    txCount: number | null;
+    walletAgeDays: number | null;
+    dataQuality: "Complete" | "Partial" | "Limited";
+    errorSafeMessage?: string;
+  };
+  walletQuality?: {
+    ok: boolean;
+    analysis: string;
+    errorSafeMessage?: string;
+  };
+  devWallet?: {
+    ok: boolean;
+    deployerAddress: string | null;
+    linkedWallets: number;
+    confidence: "Low" | "Medium" | "High";
+    verdict: "WATCH" | "AVOID" | "TRUSTWORTHY" | "UNKNOWN" | "SCAN DEEPER";
+    warnings: string[];
+    errorSafeMessage?: string;
+  };
+  liquidity?: {
+    ok: boolean;
+    token: { name: string; symbol: string; address: string } | null;
+    liquidityUsd: number | null;
+    riskTier: string | null;
+    stabilityScore: number | null;
+    warnings: string[];
+    errorSafeMessage?: string;
+  };
+};
+
+async function executeClarkToolPlan(input: {
+  plan: ClarkToolPlan;
+  origin: string;
+  prompt: string;
+  chain: SupportedChain;
+}): Promise<{ evidence: ClarkToolEvidence; toolsUsed: ClarkToolName[]; resolvedAddress: string | null }> {
+  const evidence: ClarkToolEvidence = {};
+  const toolsUsed: ClarkToolName[] = [];
+  let resolvedAddress: string | null = input.plan.followupContext.address;
+
+  for (const tool of input.plan.tools) {
+    toolsUsed.push(tool.name);
+    try {
+      if (tool.name === "market_get_base_movers") {
+        const gtRaw = await callGeckoTerminal("base", input.origin).catch(() => null);
+        const allPools: Array<Record<string, unknown>> = Array.isArray((gtRaw as { data?: unknown[] })?.data)
+          ? ((gtRaw as { data: unknown[] }).data as Array<Record<string, unknown>>)
+          : [];
+        const candidates = allPools
+          .map((p) => {
+            const a = (p.attributes ?? {}) as Record<string, unknown>;
+            return {
+              token: String(a.name ?? "Unknown").split(" / ")[0]?.trim() ?? "Unknown",
+              change24h: Number((a.price_change_percentage as Record<string, unknown> | undefined)?.h24 ?? 0),
+              volume24h: parseFloat(String((a.volume_usd as Record<string, unknown> | undefined)?.h24 ?? 0)),
+              liquidity: parseFloat(String(a.reserve_in_usd ?? 0)),
+            };
+          })
+          .filter((x) => x.liquidity > 5000)
+          .sort((a, b) => b.change24h - a.change24h)
+          .slice(0, 8);
+        evidence.market = { ok: candidates.length > 0, candidates, source: "gt_proxy", errorSafeMessage: candidates.length ? undefined : "Market feed is temporarily limited." };
+        continue;
+      }
+
+      if (tool.name === "token_resolve") {
+        const query = String(tool.args.query ?? "").trim();
+        const matches = query ? await searchBaseTokenCandidates(query) : [];
+        evidence.tokenResolve = {
+          ok: matches.length > 0,
+          query,
+          matches: matches.map((m) => ({ symbol: m.symbol, contract: m.contract })),
+          selected: matches.length === 1 ? { symbol: matches[0].symbol, contract: matches[0].contract } : null,
+          errorSafeMessage: matches.length ? undefined : "I couldn’t find a clear Base token match yet.",
+        };
+        if (matches.length === 1) resolvedAddress = matches[0].contract;
+        continue;
+      }
+
+      if (tool.name === "token_scan") {
+        const addr = String(tool.args.address ?? resolvedAddress ?? "").trim();
+        const tokenData = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await callScanToken(addr, "contract", input.origin) : null;
+        const t = (tokenData ?? {}) as Record<string, unknown>;
+        const g = (t.goplus ?? {}) as Record<string, unknown>;
+        const hp = (t.honeypot ?? {}) as Record<string, unknown>;
+        const warnings: string[] = [];
+        if (!tokenData) warnings.push("Token scan data is limited right now.");
+        evidence.tokenScan = {
+          ok: Boolean(tokenData),
+          token: tokenData ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? addr) } : null,
+          market: {
+            price: typeof t.price === "number" ? t.price : null,
+            change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : null,
+            volume24h: typeof t.volume24h === "number" ? t.volume24h : null,
+            liquidity: typeof t.liquidity === "number" ? t.liquidity : null,
+          },
+          security: {
+            honeypot: typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : (g.is_honeypot != null ? String(g.is_honeypot) === "1" : null),
+            buyTax: typeof hp.buyTax === "number" ? hp.buyTax : (g.buy_tax != null ? Number(g.buy_tax) : null),
+            sellTax: typeof hp.sellTax === "number" ? hp.sellTax : (g.sell_tax != null ? Number(g.sell_tax) : null),
+          },
+          liquidity: {
+            pools: Array.isArray(t.pools) ? t.pools.length : 0,
+            topPoolLiquidity: typeof t.liquidity === "number" ? t.liquidity : null,
+          },
+          warnings,
+          errorSafeMessage: tokenData ? undefined : "I couldn’t complete a token scan right now.",
+        };
+        resolvedAddress = evidence.tokenScan.token?.address ?? resolvedAddress;
+        continue;
+      }
+
+      if (tool.name === "wallet_get_snapshot") {
+        const address = String(tool.args.address ?? resolvedAddress ?? "").trim();
+        const walletRes = await callInternalApi(input.origin, "/api/wallet", { address });
+        const w = (walletRes.json ?? {}) as Record<string, unknown>;
+        const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
+        const totalValue = typeof w.totalValue === "number" ? w.totalValue : 0;
+        const ranked = [...holdings]
+          .map((h) => ({
+            symbol: String(h.symbol ?? "?"),
+            value: typeof h.value === "number" ? h.value : 0,
+            balance: typeof h.balance === "number" ? h.balance : 0,
+          }))
+          .sort((a, b) => b.value - a.value);
+        const topHoldings = ranked.filter((h) => h.value >= 1 && h.symbol !== "?").slice(0, 10);
+        const hiddenHoldingsCount = Math.max(ranked.length - topHoldings.length, 0);
+        const dustOrUnpricedHidden = ranked.some((h) => h.value < 1 || h.symbol === "?");
+        const stablecoinExposureUsd = ranked
+          .filter((h) => /^(USDC|USDT|DAI|LUSD|USDE|USDBC|EURC)$/i.test(h.symbol))
+          .reduce((sum, h) => sum + h.value, 0);
+        const hasHoldings = holdings.length > 0;
+        const hasValue = totalValue > 0;
+        const hasTxMeta = typeof w.txCount === "number" || typeof w.walletAgeDays === "number";
+        const dataQuality: "Complete" | "Partial" | "Limited" = hasHoldings && hasValue && hasTxMeta ? "Complete" : (hasHoldings || hasValue ? "Partial" : "Limited");
+        evidence.walletSnapshot = {
+          ok: walletRes.ok && !w.error,
+          address,
+          totalValue,
+          holdingsTop10: topHoldings,
+          hiddenHoldingsCount,
+          dustOrUnpricedHidden,
+          stablecoinExposureUsd,
+          tokenCount: holdings.length,
+          txCount: typeof w.txCount === "number" ? w.txCount : null,
+          walletAgeDays: typeof w.walletAgeDays === "number" ? w.walletAgeDays : null,
+          dataQuality,
+          errorSafeMessage: walletRes.ok ? undefined : "Wallet data is temporarily unavailable.",
+        };
+        resolvedAddress = address;
+        continue;
+      }
+
+      if (tool.name === "wallet_analyze_quality") {
+        const address = String(tool.args.address ?? resolvedAddress ?? "").trim();
+        const context: ClarkContext = { walletScan: evidence.walletSnapshot ?? {} };
+        let analysis = "";
+        try {
+          analysis = await callAnthropic(`Analyze wallet ${address}. Use the standard Clark verdict format and include uncertainty if smart-money proof is missing.`, context);
+        } catch {
+          analysis = buildWalletAnalysisFallback(evidence.walletSnapshot ?? {}, address);
+        }
+        evidence.walletQuality = { ok: true, analysis };
+        continue;
+      }
+
+      if (tool.name === "dev_wallet_analyze") {
+        const address = String(tool.args.address ?? resolvedAddress ?? "").trim();
+        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address });
+        const d = (devWalletRes.json ?? {}) as Record<string, unknown>;
+        const verdictRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.label ?? "UNKNOWN") as string;
+        const confRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.confidence ?? "low") as string;
+        const normalizedVerdict = (() => {
+          const v = verdictRaw.toUpperCase();
+          if (v === "HIGH") return "AVOID";
+          if (v === "LOW") return "TRUSTWORTHY";
+          if (v === "MEDIUM") return "WATCH";
+          if (v === "AVOID" || v === "WATCH" || v === "UNKNOWN" || v === "SCAN DEEPER" || v === "TRUSTWORTHY") return v;
+          return "UNKNOWN";
+        })() as "AVOID" | "WATCH" | "UNKNOWN" | "SCAN DEEPER" | "TRUSTWORTHY";
+        evidence.devWallet = {
+          ok: devWalletRes.ok,
+          deployerAddress: typeof d.deployerAddress === "string" ? d.deployerAddress : null,
+          linkedWallets: Array.isArray(d.linkedWallets) ? d.linkedWallets.length : 0,
+          confidence: confRaw.toLowerCase() === "high" ? "High" : confRaw.toLowerCase() === "medium" ? "Medium" : "Low",
+          verdict: normalizedVerdict,
+          warnings: Array.isArray(d.warnings) ? d.warnings.map(String).slice(0, 5) : [],
+          errorSafeMessage: devWalletRes.ok ? undefined : "Dev wallet scan is not available right now.",
+        };
+        continue;
+      }
+
+      if (tool.name === "liquidity_analyze") {
+        const address = String(tool.args.address ?? resolvedAddress ?? "").trim();
+        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address });
+        const l = (((liqRes.json as Record<string, unknown>)?.data ?? {}) as Record<string, unknown>);
+        evidence.liquidity = {
+          ok: liqRes.ok && Boolean((liqRes.json as Record<string, unknown>)?.ok),
+          token: liqRes.ok ? { name: String(l.name ?? "Unknown"), symbol: String(l.symbol ?? "?"), address: String(l.contract ?? address) } : null,
+          liquidityUsd: typeof l.lp_total_liquidity_usd === "number" ? l.lp_total_liquidity_usd : null,
+          riskTier: typeof l.lp_risk_tier === "string" ? l.lp_risk_tier : null,
+          stabilityScore: typeof l.lp_stability_score === "number" ? l.lp_stability_score : null,
+          warnings: liqRes.ok ? [] : ["Liquidity data is currently limited."],
+          errorSafeMessage: liqRes.ok ? undefined : "Liquidity scan is temporarily unavailable.",
+        };
+        continue;
+      }
+    } catch (err) {
+      console.error("[Clark tools]", tool.name, err instanceof Error ? err.message : err);
+    }
+  }
+
+  return { evidence, toolsUsed, resolvedAddress };
+}
+
 // ---------- Feature handlers ----------
 
 async function handleTokenScanner(body: ClarkRequestBody, origin: string) {
@@ -1639,258 +2129,257 @@ async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
-  const network = gtNetwork(chain);
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   const replyMode = detectReplyMode(body);
-  const { intent, address } = detectIntent(prompt);
+  const directIntent = detectIntent(prompt);
+  const plan = buildClarkToolPlan({
+    message: prompt,
+    mode: body.mode,
+    uiModeHint: body.uiModeHint,
+    context: body.context,
+    history: body.history,
+  });
+  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain });
 
-  if (replyMode === "casual_help") {
-    return { feature: "clark-ai", chain, mode: "casual_help", analysis: buildCasualClarkReply(prompt) };
+  if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
+    return { feature: "clark-ai", chain, mode: "casual_help", analysis: buildCasualClarkReply(prompt), intent: plan.intent, toolsUsed };
   }
 
-  if (replyMode === "general_market") {
-    const gtRaw = await callGeckoTerminal("base", origin).catch(() => null);
-    const allPools: unknown[] = Array.isArray((gtRaw as { data?: unknown[] })?.data)
-      ? (gtRaw as { data: unknown[] }).data
-      : [];
-    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGTMarketBriefing(allPools) };
-  }
-
-  if (replyMode === "educational") {
-    return { feature: "clark-ai", chain, mode: "educational", analysis: buildEducationalReply(prompt) };
+  if (replyMode === "educational" || plan.intent === "educational") {
+    return { feature: "clark-ai", chain, mode: "educational", analysis: buildEducationalReply(prompt), intent: plan.intent, toolsUsed };
   }
 
   if (replyMode === "routing_help") {
-    return { feature: "clark-ai", chain, mode: "routing_help", analysis: buildRoutingHelpReply(prompt) };
+    return { feature: "clark-ai", chain, mode: "routing_help", analysis: buildRoutingHelpReply(prompt), intent: plan.intent, toolsUsed };
   }
 
-  if (replyMode === "analysis" && !address && intent !== "token_name_lookup") {
+  if (plan.intent === "wallet_compare_request") {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      analysis: "Wallet compare is planned for the next phase. For now, share one wallet and I’ll score it with available evidence.",
+      intent: plan.intent,
+      toolsUsed,
+    };
+  }
+
+  if (plan.intent === "token_full_report_request") {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      analysis: "Full multi-tool token report is coming in the next phase. For now, I can run token, liquidity, or dev-wallet checks separately.",
+      intent: plan.intent,
+      toolsUsed,
+    };
+  }
+
+  if (plan.intent === "market" || plan.intent === "strategy" || replyMode === "general_market") {
+    if (evidence.market?.ok) {
+      const list = evidence.market.candidates.slice(0, 5).map((c) => ({
+        attributes: {
+          name: `${c.token} / USDC`,
+          reserve_in_usd: c.liquidity,
+          volume_usd: { h24: c.volume24h },
+          price_change_percentage: { h24: c.change24h },
+        },
+      }));
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "general_market",
+        analysis: buildGTMarketBriefing(list),
+        intent: plan.intent,
+        toolsUsed,
+      };
+    }
+    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(), intent: plan.intent, toolsUsed };
+  }
+
+  if (plan.intent === "wallet_balance") {
+    const w = evidence.walletSnapshot;
+    if (!w?.ok) {
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: "I couldn’t pull this wallet snapshot right now. Paste the wallet again and I’ll retry.", intent: plan.intent, toolsUsed };
+    }
+    const top = w.holdingsTop10.slice(0, 8).map((h) => `- ${h.symbol}: ${formatUsdShort(h.value)} (${h.balance.toFixed(4)} tokens)`).join("\n");
+    const summary = [
+      `Wallet: ${shortAddress(w.address)}`,
+      "Summary:",
+      `- Total value: ${formatUsdShort(w.totalValue)}`,
+      `- Token count: ${w.tokenCount}`,
+      `- Tx count: ${w.txCount ?? "n/a"}`,
+      `- Wallet age: ${w.walletAgeDays ?? "n/a"} days`,
+      "",
+      "Top holdings:",
+      top || "- No significant holdings found",
+      "",
+      w.hiddenHoldingsCount > 0 ? `Other holdings hidden: ${w.hiddenHoldingsCount}` : "",
+      w.dustOrUnpricedHidden ? "Dust/unpriced tokens hidden" : "",
+      `Data note: ${w.dataQuality} data quality from current wallet snapshot.`,
+    ].join("\n");
+    return { feature: "clark-ai", chain, mode: "analysis", analysis: summary, intent: plan.intent, toolsUsed };
+  }
+
+  if (plan.intent === "wallet_quality") {
+    if (!resolvedAddress) {
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: "Share the wallet address and I’ll evaluate quality with available evidence.", intent: plan.intent, toolsUsed };
+    }
+    if (evidence.walletSnapshot?.ok) {
+      const quality = buildWalletQualityVerdict(evidence.walletSnapshot, resolvedAddress);
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: quality, intent: plan.intent, toolsUsed };
+    }
+    if (evidence.walletQuality?.analysis) {
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: enforceWalletAssetLabel(evidence.walletQuality.analysis, resolvedAddress), intent: plan.intent, toolsUsed };
+    }
+    const fallback = evidence.walletSnapshot
+      ? enforceWalletAssetLabel(buildWalletAnalysisFallback(evidence.walletSnapshot, resolvedAddress), resolvedAddress)
+      : "I can judge this as a whale/watch wallet only. Not enough verified data to call it smart money yet.";
+    return { feature: "clark-ai", chain, mode: "analysis", analysis: fallback, intent: plan.intent, toolsUsed };
+  }
+
+  if (plan.intent === "dev_wallet") {
+    if (!resolvedAddress) return { feature: "clark-ai", chain, mode: "analysis", analysis: missingAddressReply("dev_wallet"), intent: plan.intent, toolsUsed };
+    if (evidence.devWallet?.ok) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        analysis: buildStructuredVerdict(
+          evidence.devWallet.verdict,
+          evidence.devWallet.confidence,
+          evidence.devWallet.deployerAddress ? "Likely deployer and linked-wallet analysis completed." : "Deployer identity is still uncertain from available data.",
+          [
+            evidence.devWallet.deployerAddress ? `Likely deployer: ${shortAddress(evidence.devWallet.deployerAddress)}` : "Likely deployer not confirmed",
+            `Linked wallets detected: ${evidence.devWallet.linkedWallets}`,
+            "Use this as watch evidence, not certainty.",
+          ],
+          evidence.devWallet.warnings.length ? evidence.devWallet.warnings : ["Some deployer-link fields are still unverified."],
+          "Track linked wallets and re-check holder distribution before trusting this token."
+        ),
+        intent: plan.intent,
+        toolsUsed,
+      };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", analysis: "Dev wallet scan is temporarily unavailable. Open Dev Wallet Detector and retry.", intent: plan.intent, toolsUsed };
+  }
+
+  if (plan.intent === "liquidity_safety") {
+    if (!resolvedAddress) return { feature: "clark-ai", chain, mode: "analysis", analysis: missingAddressReply("liquidity_safety"), intent: plan.intent, toolsUsed };
+    if (evidence.liquidity?.ok && evidence.liquidity.token) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        analysis: buildStructuredVerdict(
+          evidence.liquidity.riskTier === "low" ? "WATCH" : evidence.liquidity.riskTier === "extreme" ? "AVOID" : "SCAN DEEPER",
+          evidence.liquidity.riskTier === "low" ? "Medium" : "Low",
+          `${evidence.liquidity.token.name} liquidity scan completed with ${evidence.liquidity.riskTier ?? "unknown"} LP risk tier.`,
+          [
+            `Total liquidity: ${formatUsdShort(evidence.liquidity.liquidityUsd)}`,
+            `LP stability score: ${evidence.liquidity.stabilityScore ?? "n/a"}`,
+            "Liquidity depth and turnover were checked from available pools.",
+          ],
+          evidence.liquidity.warnings.length ? evidence.liquidity.warnings : ["LP lock ownership may still require manual verification."],
+          "Use Liquidity Safety panel details before any entry."
+        ),
+        intent: plan.intent,
+        toolsUsed,
+      };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", analysis: "Liquidity scan is temporarily unavailable. Retry with the contract address.", intent: plan.intent, toolsUsed };
+  }
+
+  if (plan.intent === "token_analysis") {
+    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1) {
+      const options = evidence.tokenResolve.matches.slice(0, 3).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "token_name_lookup",
+        analysis: `I found multiple Base matches for '${evidence.tokenResolve.query}'. Pick one:\n${options}\nSend the number or paste the contract.`,
+        intent: plan.intent,
+        toolsUsed,
+      };
+    }
+
+    if (plan.tools.some((t) => t.name === "token_resolve") && evidence.tokenResolve?.selected?.contract) {
+      const tokenData = await callScanToken(evidence.tokenResolve.selected.contract, "contract", origin);
+      if (tokenData) evidence.tokenScan = {
+        ok: true,
+        token: { name: String((tokenData as Record<string, unknown>).name ?? "Token"), symbol: String((tokenData as Record<string, unknown>).symbol ?? "?"), address: String((tokenData as Record<string, unknown>).contract ?? evidence.tokenResolve.selected.contract) },
+        market: {
+          price: typeof (tokenData as Record<string, unknown>).price === "number" ? (tokenData as Record<string, unknown>).price as number : null,
+          change24h: typeof (tokenData as Record<string, unknown>).priceChange24h === "number" ? (tokenData as Record<string, unknown>).priceChange24h as number : null,
+          volume24h: typeof (tokenData as Record<string, unknown>).volume24h === "number" ? (tokenData as Record<string, unknown>).volume24h as number : null,
+          liquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null,
+        },
+        security: { honeypot: null, buyTax: null, sellTax: null },
+        liquidity: { pools: Array.isArray((tokenData as Record<string, unknown>).pools) ? ((tokenData as Record<string, unknown>).pools as unknown[]).length : 0, topPoolLiquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null },
+        warnings: [],
+      };
+    }
+
+    const token = evidence.tokenScan?.token;
+    if (!token) {
+      if (directIntent.address && !/wallet|balance|portfolio|copy[\s-]?trade/i.test(prompt)) {
+        return { feature: "clark-ai", chain, mode: "analysis", analysis: "Is this address a token contract or a wallet? Tell me which scan you want.", intent: plan.intent, toolsUsed };
+      }
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: "Paste a Base token contract (or token name) and I’ll scan it.", intent: plan.intent, toolsUsed };
+    }
+    const context: ClarkContext = {
+      tokenData: {
+        name: token.name,
+        symbol: token.symbol,
+        contract: token.address,
+        price: evidence.tokenScan?.market.price,
+        liquidity: evidence.tokenScan?.market.liquidity,
+        volume24h: evidence.tokenScan?.market.volume24h,
+        priceChange24h: evidence.tokenScan?.market.change24h,
+        security: evidence.tokenScan?.security,
+      },
+    };
+    let analysis: string;
+    try {
+      analysis = await callAnthropic(prompt, context);
+    } catch {
+      analysis = buildTokenAnalysisFallback(context.tokenData ?? {}, token.address);
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", analysis, intent: plan.intent, toolsUsed };
+  }
+
+  if ((replyMode === "analysis" || replyMode === "feature_context") && !resolvedAddress && directIntent.intent !== "token_name_lookup") {
     return {
       feature: "clark-ai",
       chain,
       mode: "analysis",
       analysis: "Paste a Base contract, wallet, or scan result and I’ll analyze it.",
+      intent: plan.intent,
+      toolsUsed,
     };
-  }
-
-  if (replyMode === "analysis" && address && intent === "unknown") {
-    const tokenData = await callScanToken(address, "contract", origin);
-    if (tokenData) {
-      const context: ClarkContext = { tokenData };
-      let analysis: string;
-      try {
-        analysis = await callAnthropic(`Analyze this Base token contract ${address} with strict verdict format.`, context);
-      } catch {
-        analysis = buildTokenAnalysisFallback(tokenData, address);
-      }
-      return { feature: "clark-ai", chain, mode: "analysis", analysis };
-    }
-
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address });
-    if (walletRes.ok) {
-      const context: ClarkContext = { walletScan: walletRes.json ?? {} };
-      let analysis: string;
-      try {
-        analysis = await callAnthropic(`Analyze this Base wallet ${address} with strict verdict format.`, context);
-      } catch {
-        analysis = buildWalletAnalysisFallback(walletRes.json ?? {}, address);
-      }
-      return { feature: "clark-ai", chain, mode: "analysis", analysis };
-    }
-
-    return {
-      feature: "clark-ai",
-      chain,
-      mode: "analysis",
-      analysis: "Is this a token contract or wallet?",
-    };
-  }
-
-  if (intent === "token_name_lookup") {
-    const tokenQuery = extractTokenLookupQuery(prompt) ?? prompt.trim();
-    const candidates = await searchBaseTokenCandidates(tokenQuery);
-    if (candidates.length === 0) {
-      return {
-        feature: "clark-ai",
-        chain,
-        mode: "token_name_lookup",
-        analysis: `I couldn’t find a Base token match for '${tokenQuery}'. Paste the contract address or open Token Scanner.`,
-      };
-    }
-    if (candidates.length > 1) {
-      const options = candidates.slice(0, 3).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
-      return {
-        feature: "clark-ai",
-        chain,
-        mode: "token_name_lookup",
-        analysis: `I found multiple Base matches for '${tokenQuery}'. Pick one:\n${options}\nSend the number or paste the contract.`,
-      };
-    }
-
-    const selected = candidates[0];
-    const tokenData = await callScanToken(selected.contract, "contract", origin);
-    if (!tokenData) {
-      return {
-        feature: "clark-ai",
-        chain,
-        mode: "token_name_lookup",
-        analysis: `I couldn’t find a Base token match for '${tokenQuery}'. Paste the contract address or open Token Scanner.`,
-      };
-    }
-    const context: ClarkContext = { tokenData };
-    let analysis: string;
-    try {
-      analysis = await callAnthropic(`Analyze Base token ${selected.symbol} (${selected.contract}) and assess current risk.`, context);
-    } catch {
-      analysis = buildTokenAnalysisFallback(tokenData, selected.contract);
-    }
-    return { feature: "clark-ai", chain, mode: "analysis", analysis };
-  }
-
-  if ((replyMode === "analysis" || replyMode === "feature_context") && (intent === "token_analysis" || intent === "wallet_analysis" || intent === "dev_wallet" || intent === "liquidity_safety" || intent === "whale_alert") && !address) {
-    return { feature: "clark-ai", chain, analysis: missingAddressReply(intent) };
-  }
-
-  if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "dev_wallet" && address) {
-    const devWalletRes = await callInternalApi(origin, "/api/dev-wallet", { contractAddress: address });
-    if (!devWalletRes.ok) {
-      return {
-        feature: "clark-ai",
-        chain,
-        analysis: "I can do that once this feature backend is wired. For now, open Dev Wallet Detector and paste the contract.",
-      };
-    }
-
-    const data = devWalletRes.json as Record<string, unknown>;
-    const verdict = (data?.clarkVerdict as Record<string, unknown> | null) ?? null;
-    if (verdict) {
-      const rawLabel = String(verdict.label ?? "WATCH").toUpperCase();
-      const mappedVerdict = rawLabel === "LOW" ? "TRUSTWORTHY" : rawLabel === "MEDIUM" ? "WATCH" : rawLabel === "HIGH" ? "AVOID" : "UNKNOWN";
-      const rawConfidence = String(verdict.confidence ?? "low").toLowerCase();
-      const confidence = rawConfidence === "high" ? "High" : rawConfidence === "medium" ? "Medium" : "Low";
-      return {
-        feature: "clark-ai",
-        chain,
-        analysis: buildStructuredVerdict(
-          mappedVerdict,
-          confidence,
-          String(verdict.summary ?? "Not enough verified data to make a strong call."),
-          Array.isArray(verdict.keySignals) ? verdict.keySignals.map(String) : ["Likely deployer and linked-wallet checks completed."],
-          Array.isArray(verdict.risks) ? verdict.risks.map(String) : ["Some data is unverified in the current scan."],
-          String(verdict.nextAction ?? "Use Dev Wallet Detector details before any entry.")
-        ),
-      };
-    }
-  }
-
-  if ((replyMode === "analysis" || replyMode === "feature_context") && (intent === "token_analysis" || intent === "analysis") && address) {
-    const tokenRes = await fetch(`${origin}/api/scan-token?contract=${encodeURIComponent(address)}`, { cache: "no-store" });
-    const tokenJson = await tokenRes.json().catch(() => ({}));
-    if (!tokenRes.ok || !tokenJson?.ok) {
-      return {
-        feature: "clark-ai",
-        chain,
-        analysis: "I can do that once this feature backend is wired. For now, open Token Scanner and paste the contract.",
-      };
-    }
-    const context: ClarkContext = { tokenData: tokenJson.data ?? {} };
-    const analysis = await callAnthropic(prompt, context);
-    return { feature: "clark-ai", chain, analysis };
-  }
-
-  if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "wallet_analysis" && address) {
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address });
-    if (!walletRes.ok) {
-      return {
-        feature: "clark-ai",
-        chain,
-        analysis: "I can do that once this feature backend is wired. For now, open Wallet Scanner and paste the wallet.",
-      };
-    }
-    const context: ClarkContext = { walletScan: walletRes.json ?? {} };
-    const analysis = await callAnthropic(prompt, context);
-    return { feature: "clark-ai", chain, analysis };
-  }
-
-  if ((replyMode === "analysis" || replyMode === "feature_context") && intent === "liquidity_safety" && address) {
-    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: address });
-    if (!liqRes.ok || !(liqRes.json as Record<string, unknown>)?.ok) {
-      return {
-        feature: "clark-ai",
-        chain,
-        analysis: "I can do that once this feature backend is wired. For now, open Liquidity Safety and paste the contract.",
-      };
-    }
-    const liqData = (liqRes.json as Record<string, unknown>)?.data ?? {};
-    const context: ClarkContext = { tokenData: liqData };
-    const analysis = await callAnthropic(prompt, context);
-    return { feature: "clark-ai", chain, analysis };
-  }
-
-  if (replyMode === "feature_context" && intent === "base_radar") {
-    const radarRes = await fetch(`${origin}/api/radar`, { cache: "no-store" });
-    const radarJson = await radarRes.json().catch(() => ({}));
-    if (!radarRes.ok) {
-      return {
-        feature: "clark-ai",
-        chain,
-        analysis: "Use Base Radar for fresh launches and momentum reads, then ask Clark with that context for a tighter verdict.",
-      };
-    }
-    const radarTokens = Array.isArray((radarJson as Record<string, unknown>)?.tokens)
-      ? ((radarJson as Record<string, unknown>).tokens as unknown[])
-      : [];
-    const context: ClarkContext = { trending: radarTokens, gtPools: [] };
-    const analysis = await callAnthropic(prompt, context);
-    return { feature: "clark-ai", chain, analysis };
   }
 
   let trending: unknown[] = [];
   let gtPools: unknown[] = [];
-
+  const network = gtNetwork(chain);
   if (shouldFetchMarketContext(prompt)) {
     const [trendingResult, gtRawResult] = await Promise.allSettled([
       callTrending(origin),
       callGeckoTerminal(network, origin),
     ]);
-    if (trendingResult.status === "fulfilled" && Array.isArray(trendingResult.value))
-      trending = trendingResult.value;
-    if (gtRawResult.status === "fulfilled" && Array.isArray((gtRawResult.value as { data?: unknown[] })?.data))
-      gtPools = ((gtRawResult.value as { data: unknown[] }).data as unknown[]).slice(0, 5);
-  }
-
-  // Route-specific context — non-fatal if unavailable
-  let tokenData: unknown = {};
-  let walletScan: unknown = {};
-  let contractAnalysis: unknown = {};
-
-  try {
-    const routeCtx = await routeCommand(prompt, chain, origin);
-    if (routeCtx?.tokenData  != null) tokenData       = routeCtx.tokenData;
-    if (routeCtx?.walletScan != null) walletScan       = routeCtx.walletScan;
-    if (routeCtx?.analysis   != null) contractAnalysis = routeCtx.analysis;
-    if (Array.isArray(routeCtx?.trending) && (routeCtx.trending as unknown[]).length > 0)
-      trending = routeCtx.trending as unknown[];
-    if (Array.isArray(routeCtx?.gtPools) && (routeCtx.gtPools as unknown[]).length > 0)
-      gtPools = (routeCtx.gtPools as unknown[]).slice(0, 5);
-  } catch (err) {
-    console.error("[Clark router]", err instanceof Error ? err.message : err);
+    if (trendingResult.status === "fulfilled" && Array.isArray(trendingResult.value)) trending = trendingResult.value;
+    if (gtRawResult.status === "fulfilled" && Array.isArray((gtRawResult.value as { data?: unknown[] })?.data)) gtPools = ((gtRawResult.value as { data: unknown[] }).data as unknown[]).slice(0, 5);
   }
 
   const context: ClarkContext = {
     trending,
     gtPools,
-    tokenData:  tokenData       ?? {},
-    walletScan: walletScan      ?? {},
-    analysis:   contractAnalysis ?? {},
+    tokenData: evidence.tokenScan ?? {},
+    walletScan: evidence.walletSnapshot ?? {},
+    analysis: body.context ?? {},
   };
-
-  if (replyMode !== "analysis" && replyMode !== "feature_context") {
-    return { feature: "clark-ai", chain, mode: "unknown", analysis: buildGeneralMarketNoContextReply() };
-  }
-
   const analysis = await callAnthropic(prompt, context);
-  return { feature: "clark-ai", chain, mode: replyMode, analysis };
+  return { feature: "clark-ai", chain, mode: replyMode, analysis, intent: plan.intent, toolsUsed };
 }
 
 // ---------- Main handler ----------
