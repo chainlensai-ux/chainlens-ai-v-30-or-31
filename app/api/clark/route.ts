@@ -342,7 +342,12 @@ function buildClarkToolPlan(input: {
   const marketFollowup = isMarketFollowupPrompt(message);
   const explicitFollowupRef = /\b(this token|this wallet|it|this one|that one|first one|second one|third one)\b/i.test(message);
   let plannerIntent = classifyPlannerIntent(message, inferredAddress);
-  if (selectedAddress && (plannerIntent === "unknown" || plannerIntent === "feature_context")) plannerIntent = "token_analysis";
+  if (selectedAddress && (plannerIntent === "unknown" || plannerIntent === "feature_context")) {
+    const historyText = historyLines.join("\n").toLowerCase();
+    plannerIntent = /full report|run the full report|token_full_report_request/.test(historyText)
+      ? "token_full_report_request"
+      : "token_analysis";
+  }
   const reportFollowupIntent = plannerIntent === "token_full_report_request" || plannerIntent === "dev_wallet" || plannerIntent === "liquidity_safety";
   const allowHistoryEntity = Boolean(selectedOptionIndex || marketFollowup || explicitFollowupRef || reportFollowupIntent);
   const fallbackAddress = inferredAddress ?? (allowHistoryEntity ? lastHistoryAddress : null);
@@ -894,6 +899,14 @@ type BaseTokenCandidate = {
   contract: string;
 };
 
+const BASE_TOKEN_ALIAS_MAP: Record<string, BaseTokenCandidate> = {
+  brett: {
+    name: "Brett",
+    symbol: "BRETT",
+    contract: "0x532f27101965dd16442e59d40670faf5ebb142e4",
+  },
+};
+
 async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandidate[]> {
   try {
     const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=base`;
@@ -922,9 +935,12 @@ async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandid
       out.push({ name: tokenNameGuess, symbol: symbolGuess.toUpperCase(), contract });
       if (out.length >= 5) break;
     }
-    return out;
+    if (out.length) return out;
+    const alias = BASE_TOKEN_ALIAS_MAP[query.trim().toLowerCase()];
+    return alias ? [alias] : [];
   } catch {
-    return [];
+    const alias = BASE_TOKEN_ALIAS_MAP[query.trim().toLowerCase()];
+    return alias ? [alias] : [];
   }
 }
 
