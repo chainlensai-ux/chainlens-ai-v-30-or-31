@@ -38,6 +38,14 @@ interface ClarkRequestBody {
   prompt?: string;
   query?: string;
   tokenData?: unknown;
+  clarkContext?: {
+    lastMarketList?: unknown;
+    lastToken?: string | null;
+    lastWallet?: string | null;
+    lastIntent?: string | null;
+    lastSelectedRank?: number | null;
+  };
+  marketContext?: unknown;
 }
 
 interface ClarkContext {
@@ -447,6 +455,57 @@ function pickAddressBySelection(historyLines: string[], selectedIndex: number): 
 }
 
 type MarketListItem = { rank: number; symbol: string; address: string; line: string };
+type StructuredMarketItem = {
+  rank: number;
+  symbol: string;
+  name?: string | null;
+  tokenAddress?: string | null;
+  poolAddress?: string | null;
+  reasonTag?: string | null;
+};
+
+function normalizeStructuredMarketItems(source: unknown): StructuredMarketItem[] {
+  if (!Array.isArray(source)) return [];
+  const items: StructuredMarketItem[] = [];
+  for (const raw of source) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const rank = typeof row.rank === "number" ? row.rank : Number(row.rank);
+    if (!Number.isFinite(rank) || rank < 1) continue;
+    const symbol = typeof row.symbol === "string" ? row.symbol.trim() : "";
+    const tokenAddress = typeof row.tokenAddress === "string" ? row.tokenAddress.trim() : null;
+    const poolAddress = typeof row.poolAddress === "string" ? row.poolAddress.trim() : null;
+    const preferredAddress = tokenAddress || poolAddress;
+    if (!preferredAddress) continue;
+    items.push({
+      rank: Math.floor(rank),
+      symbol: symbol || "?",
+      name: typeof row.name === "string" ? row.name : null,
+      tokenAddress,
+      poolAddress,
+      reasonTag: typeof row.reasonTag === "string" ? row.reasonTag : null,
+    });
+  }
+  return items.sort((a, b) => a.rank - b.rank);
+}
+
+function extractStructuredMarketItems(body: ClarkRequestBody): StructuredMarketItem[] {
+  const fromClarkContext = normalizeStructuredMarketItems(body.clarkContext?.lastMarketList);
+  if (fromClarkContext.length) return fromClarkContext;
+  const contextObj = (body.context && typeof body.context === "object") ? body.context as Record<string, unknown> : null;
+  const fromContextList = normalizeStructuredMarketItems(contextObj?.marketList);
+  if (fromContextList.length) return fromContextList;
+  const contextMarketObj = contextObj?.marketContext;
+  if (contextMarketObj && typeof contextMarketObj === "object") {
+    const fromContextMarketItems = normalizeStructuredMarketItems((contextMarketObj as Record<string, unknown>).items);
+    if (fromContextMarketItems.length) return fromContextMarketItems;
+  }
+  if (body.marketContext && typeof body.marketContext === "object") {
+    const fromTopMarketItems = normalizeStructuredMarketItems((body.marketContext as Record<string, unknown>).items);
+    if (fromTopMarketItems.length) return fromTopMarketItems;
+  }
+  return [];
+}
 
 function extractMarketListItemsFromHistory(history: ClarkRequestBody["history"]): MarketListItem[] {
   const lines = getHistoryMessages(history);
@@ -481,18 +540,26 @@ function extractMarketListItemsFromHistory(history: ClarkRequestBody["history"])
   return items.sort((a, b) => a.rank - b.rank);
 }
 
-function inferSelectionIndex(trimmed: string, history: ClarkRequestBody["history"]): number | null {
+function inferSelectionIndex(
+  trimmed: string,
+  history: ClarkRequestBody["history"],
+  marketList: Array<{ rank: number }> = [],
+  lastSelectedRankFromContext?: number | null
+): number | null {
   const direct =
     (/^\s*([1-9]\d{0,2})\s*$/.test(trimmed) ? Number(trimmed.match(/^\s*([1-9]\d{0,2})\s*$/)?.[1] ?? 0) : null) ??
-    (/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number)\s+([1-9]\d{0,2})\b/.test(trimmed)
-      ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number)\s+([1-9]\d{0,2})\b/)?.[1] ?? 0)
+    (/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+([1-9]\d{0,2})\b/.test(trimmed)
+      ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number|pick)\s+([1-9]\d{0,2})\b/)?.[1] ?? 0)
+      : null) ??
+    (/\b([1-9]\d{0,2})\s+of (?:them|those|the list|the candidates|all those)\b/.test(trimmed)
+      ? Number(trimmed.match(/\b([1-9]\d{0,2})\s+of (?:them|those|the list|the candidates|all those)\b/)?.[1] ?? 0)
       : null) ??
     (/first one|that one|this one/.test(trimmed) ? 1 : null) ??
     (/second one/.test(trimmed) ? 2 : null) ??
     (/third one/.test(trimmed) ? 3 : null);
   if (direct) return direct;
 
-  const list = extractMarketListItemsFromHistory(history);
+  const list = marketList.length ? marketList : extractMarketListItemsFromHistory(history);
   if (!list.length) return null;
   const selectedRanks = getHistoryMessages(history).flatMap((line) => {
     const out: number[] = [];
@@ -500,8 +567,10 @@ function inferSelectionIndex(trimmed: string, history: ClarkRequestBody["history
     if (m?.[1]) out.push(Number(m[1]));
     return out;
   });
-  const lastSelected = selectedRanks.length ? selectedRanks[selectedRanks.length - 1] : null;
-  if (/\bnext one|next report|report the next one|scan next|full report next|next report on the next one/i.test(trimmed)) {
+  const lastSelected = (typeof lastSelectedRankFromContext === "number" && lastSelectedRankFromContext > 0)
+    ? lastSelectedRankFromContext
+    : (selectedRanks.length ? selectedRanks[selectedRanks.length - 1] : null);
+  if (/\bnext one|next report|report the next one|scan next|full report next|next report on the next one|out of all those|of those|the ones above|the candidates|the list/i.test(trimmed)) {
     if (lastSelected) return Math.min(lastSelected + 1, list[list.length - 1]?.rank ?? lastSelected);
     return list[0]?.rank ?? null;
   }
@@ -545,7 +614,7 @@ function formatBaseMarketReply(candidates: BaseMarketCandidate[], total: number,
     const liq = formatUsdShort(c.liquidityUsd);
     const reason = c.reasonTags[0] ?? "watch";
     const addr = c.tokenAddress ?? c.poolAddress ?? "unresolved";
-    return `${idx}. ${c.symbol ?? "?"} — ${move}, vol ${vol}, liq ${liq} — ${reason} — ${addr}`;
+    return `${idx}. ${c.symbol ?? "?"} — ${move}, vol ${vol}, liq ${liq} — ${reason}\n   Contract: ${addr}`;
   });
   const header = extended ? "Base Market — extended list:" : "Base Market:";
   const read = candidates.some((c) => (c.liquidityUsd ?? 0) > 100_000)
@@ -592,13 +661,21 @@ function buildClarkToolPlan(input: {
   uiModeHint?: string;
   context?: unknown;
   history?: ClarkRequestBody["history"];
+  structuredMarketList?: StructuredMarketItem[];
+  clarkContext?: ClarkRequestBody["clarkContext"];
 }): ClarkToolPlan {
   const message = input.message ?? "";
   const historyLines = getHistoryMessages(input.history);
   const trimmed = message.trim().toLowerCase();
-  const selectedOptionIndex = inferSelectionIndex(trimmed, input.history);
+  const structuredMarketRows = (input.structuredMarketList ?? []).map((m) => ({
+    rank: m.rank,
+    symbol: m.symbol ?? "?",
+    address: m.tokenAddress ?? m.poolAddress ?? "",
+    line: `${m.rank}. ${m.symbol ?? "?"}`,
+  })).filter((m) => !!m.address);
+  const marketItems = structuredMarketRows.length ? structuredMarketRows : extractMarketListItemsFromHistory(input.history);
+  const selectedOptionIndex = inferSelectionIndex(trimmed, input.history, marketItems, input.clarkContext?.lastSelectedRank);
   const directAddress = extractAddress(message);
-  const marketItems = extractMarketListItemsFromHistory(input.history);
   const selectedAddress = selectedOptionIndex
     ? (marketItems.find((m) => m.rank === selectedOptionIndex)?.address ?? pickAddressBySelection(historyLines, selectedOptionIndex))
     : null;
@@ -641,6 +718,13 @@ function buildClarkToolPlan(input: {
     if (/contract|token|scan|full report|asset:/i.test(historyText) && !/wallet:/i.test(historyText)) {
       plannerIntent = "token_full_report_request";
     }
+  }
+  if (directAddress && input.clarkContext?.lastIntent) {
+    const lastIntent = input.clarkContext.lastIntent.toLowerCase();
+    if (/full_report|full report|token_full_report_request/.test(lastIntent)) plannerIntent = "token_full_report_request";
+    else if (/liquidity/.test(lastIntent)) plannerIntent = "liquidity_safety";
+    else if (/dev_wallet|dev wallet/.test(lastIntent)) plannerIntent = "dev_wallet";
+    else if (/move|moving/.test(lastIntent)) plannerIntent = "token_analysis";
   }
   const depth: ClarkToolPlan["depth"] =
     /\b(deep|detailed|full detail|full breakdown)\b/i.test(message) ? "deep" :
@@ -743,10 +827,6 @@ function buildRoutingHelpReply(prompt: string): string {
   return "Use Base Radar for discovery, Token Scanner for contract checks, Wallet Scanner for behavior, and Dev Wallet Detector for deployer risk.";
 }
 
-function buildGeneralMarketNoContextReply(): string {
-  return "I couldn’t pull live Base Radar data right now. Paste a contract and I’ll scan it directly.";
-}
-
 function formatUsdShort(value: number | null | undefined): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
@@ -803,21 +883,6 @@ function buildGTMarketBriefing(pools: unknown[]): string {
   );
 }
 
-function buildBaseRadarBriefing(tokens: unknown[]): string {
-  const picks = tokens
-    .slice(0, 3)
-    .map((t) => {
-      const token = t as Record<string, unknown>;
-      const symbol = String(token.symbol ?? token.name ?? "TOKEN");
-      const liq = formatUsdShort(typeof token.liquidityUsd === "number" ? token.liquidityUsd : null);
-      const vol = formatUsdShort(typeof token.volume24h === "number" ? token.volume24h : null);
-      const risk = String(token.riskLevel ?? "UNKNOWN");
-      return `- ${symbol}: Liquidity ${liq}, 24h volume ${vol}, risk ${risk}.`;
-    });
-  if (picks.length === 0) return "Base Radar is live, but no strong movers surfaced from the current feed. Try refreshing or paste a contract.";
-  return `Base Radar:\nLive Base feed pulled successfully.\n\nMoving now:\n${picks.join("\n")}\n\nBest next step:\nScan the strongest one before touching it.`;
-}
-
 function shortAddress(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
@@ -832,22 +897,6 @@ function inferAssetLine(userContent: string, isDevWalletMode: boolean): string {
   if (contractM?.[1]) return `Unknown token (${shortAddress(contractM[1])})`;
   if (walletM?.[1]) return `Wallet ${shortAddress(walletM[1])}`;
   return "Unknown asset";
-}
-
-function buildTokenAnalysisFallback(tokenData: unknown, address: string): string {
-  const t = tokenData as Record<string, unknown>;
-  const name = String(t.name ?? "Token");
-  const symbol = String(t.symbol ?? "UNKNOWN");
-  const liquidity = formatUsdShort(typeof t.liquidity === "number" ? t.liquidity : null);
-  const volume = formatUsdShort(typeof t.volume24h === "number" ? t.volume24h : null);
-  return buildStructuredVerdict(
-    "SCAN DEEPER",
-    "Low",
-    `${name} (${symbol}) on Base has market data, but full risk context is incomplete.`,
-    [`Token resolved: ${symbol} (${address})`, `Liquidity: ${liquidity}`, `24h volume: ${volume}`],
-    ["Security and holder concentration are not fully verified in this pass.", "Market data alone is not enough to call it safe."],
-    "Run Token Scanner and validate contract/security fields before entry."
-  );
 }
 
 function buildWalletAnalysisFallback(walletData: unknown, address: string): string {
@@ -1746,12 +1795,6 @@ function buildDevWalletRisks(ctx: ClarkContextExtract): string[] {
   return out.slice(0, 3);
 }
 
-function pickRead(text: string): string {
-  const readSection = extractSection(text, "Read:", ["Key signals:", "Risks:", "Next action:"]);
-  if (readSection) return toSentencePair(readSection);
-  return toSentencePair(text);
-}
-
 function pickBullets(text: string, headers: string[], max: number, fallback: string[]): string[] {
   for (const h of headers) {
     const section = extractSection(text, `${h}:`, ["Read:", "Key signals:", "Risks:", "Next action:"]);
@@ -1766,12 +1809,6 @@ function pickBullets(text: string, headers: string[], max: number, fallback: str
   }
   if (fallback.length > 0) return fallback.slice(0, max);
   return ["Not enough verified data to make a strong call."].slice(0, max);
-}
-
-function pickNextAction(text: string, verdict: string): string {
-  const section = extractSection(text, "Next action:", ["Read:", "Key signals:", "Risks:"]);
-  if (section) return section.split("\n").map(s => s.trim()).filter(Boolean)[0] ?? defaultAction(verdict);
-  return defaultAction(verdict);
 }
 
 function defaultAction(verdict: string): string {
@@ -1989,44 +2026,6 @@ async function scanPumpData(address: string, chain: SupportedChain = "base", ori
     },
     gtPools: results[1].status === "fulfilled" ? ((results[1].value as { data?: unknown[] })?.data ?? []) : [],
   };
-}
-
-// ---------- Command router ----------
-
-async function routeCommand(
-  prompt: string,
-  chain: SupportedChain = "base",
-  origin: string
-): Promise<ClarkContext | null> {
-  const t = prompt.toLowerCase();
-  const address = extractAddress(prompt);
-
-  const MARKET_KEYWORDS = /\b(pumping|pump(?:ing)?|hot\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?)\b/;
-  const WALLET_KEYWORDS = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|copy[\s-]?trade?|smart\s+money)\b/;
-
-  if (t.includes("base radar") || t.includes("trending") || t.includes("what's hot") || MARKET_KEYWORDS.test(t)) {
-    return scanBaseRadarData(origin);
-  }
-  if ((t.includes("scan wallet") || t.includes("wallet scan") || WALLET_KEYWORDS.test(t)) && address) {
-    return scanWalletData(address, chain);
-  }
-  if ((t.includes("dev wallet") || t.includes("dev wallets")) && address) {
-    return scanDevWalletData(address, chain);
-  }
-  if (t.includes("liquidity") && address) {
-    return scanLiquidityData(address, chain, origin);
-  }
-  if (t.includes("whale") && address) {
-    return scanWhaleData(address, chain);
-  }
-  if (t.includes("pump") && address) {
-    return scanPumpData(address, chain, origin);
-  }
-  if (address) {
-    return scanTokenData(address, chain, origin);
-  }
-
-  return null;
 }
 
 type ClarkToolEvidence = {
@@ -2901,12 +2900,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   const replyMode = detectReplyMode(body);
   const directIntent = detectIntent(prompt);
+  const structuredMarketList = extractStructuredMarketItems(body);
   const plan = buildClarkToolPlan({
     message: prompt,
     mode: body.mode,
     uiModeHint: body.uiModeHint,
     context: body.context,
     history: body.history,
+    structuredMarketList,
+    clarkContext: body.clarkContext,
   });
   const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain });
 
@@ -2993,6 +2995,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
         chain,
         mode: "general_market",
         analysis: formatBaseMarketReply(marketRows, universe.candidates.length, req.wantsMore ? seen.length : 0, universe.cappedMessage, extended),
+        marketContext: {
+          type: "base_market_list",
+          createdAt: new Date().toISOString(),
+          items: marketRows.map((c, i) => ({
+            rank: (req.wantsMore ? seen.length : 0) + i + 1,
+            symbol: c.symbol ?? "?",
+            name: c.name ?? null,
+            tokenAddress: c.tokenAddress ?? null,
+            poolAddress: c.poolAddress ?? null,
+            reasonTag: c.reasonTags[0] ?? null,
+          })),
+        },
         intent: plan.intent,
         toolsUsed: [...new Set([...toolsUsed, "market_get_base_movers"])],
       };
