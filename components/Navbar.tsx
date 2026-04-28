@@ -399,7 +399,7 @@ export default function Navbar() {
               </span>
             </div>
 
-            <Link href="/auth"    className="btn-signin">Sign In</Link>
+            <Link href="/sign-in"    className="btn-signin">Sign In</Link>
             <Link href="/pricing" className="btn-access">
               Get Access
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
@@ -432,7 +432,7 @@ export default function Navbar() {
 
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '16px 0' }} />
 
-          <Link href="/auth" onClick={() => setMobileOpen(false)} style={{
+          <Link href="/sign-in" onClick={() => setMobileOpen(false)} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             padding: '13px 20px', borderRadius: '999px',
             border: '1px solid rgba(255,255,255,0.14)',
