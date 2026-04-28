@@ -550,7 +550,7 @@ function enforceWalletAssetLabel(text: string, address: string): string {
   return `${walletLine}\n${text.trim()}`;
 }
 
-function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>, address: string): string {
+function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>, address: string, prompt?: string): string {
   const top = snapshot.holdingsTop10;
   const topValue = top.reduce((s, h) => s + h.value, 0);
   const top1 = top[0]?.value ?? 0;
@@ -589,6 +589,10 @@ function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["wall
     activity < 10 ? "Low observed activity can indicate low signal quality" : "Observed activity is sufficient for behavior tracking",
   ];
   const read = `This looks like a ${profile}. I can rate it as a watch wallet, not proven smart money, unless timing/PnL evidence is added.`;
+  const copyTradePrompt = /\bcopy[\s-]?trade\b/i.test(prompt ?? "");
+  const nextAction = copyTradePrompt
+    ? "Do not copy from balance alone. Track entries/exits, sizing, and repeat behavior first."
+    : "Track this wallet’s future entries/exits before treating it as a lead wallet.";
 
   return enforceWalletAssetLabel(
     buildStructuredVerdict(
@@ -597,10 +601,80 @@ function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["wall
       read,
       signals,
       risks,
-      "Use this as a monitoring wallet; confirm entry timing and repeat behavior before copy-trading."
+      nextAction
     ),
     address
   );
+}
+
+function formatInt(value: number | null | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  return value.toLocaleString("en-US");
+}
+
+function normalizeWalletSnapshotEvidence(rawWallet: Record<string, unknown>, address: string): NonNullable<ClarkToolEvidence["walletSnapshot"]> {
+  const holdings = Array.isArray(rawWallet.holdings) ? (rawWallet.holdings as Array<Record<string, unknown>>) : [];
+  const totalValue = typeof rawWallet.totalValue === "number" ? rawWallet.totalValue : 0;
+  const ranked = [...holdings]
+    .map((h) => ({
+      symbol: String(h.symbol ?? "?"),
+      value: typeof h.value === "number" ? h.value : 0,
+      balance: typeof h.balance === "number" ? h.balance : 0,
+    }))
+    .sort((a, b) => b.value - a.value);
+
+  const topHoldings = ranked.filter((h) => h.value > 1 && h.symbol !== "?").slice(0, 8);
+  const hiddenHoldingsCount = Math.max(ranked.length - topHoldings.length, 0);
+  const dustOrUnpricedHidden = ranked.some((h) => h.value <= 1 || h.symbol === "?");
+  const stablecoinExposureUsd = ranked
+    .filter((h) => /^(USDC|USDT|DAI|LUSD|USDE|USDBC|EURC)$/i.test(h.symbol))
+    .reduce((sum, h) => sum + h.value, 0);
+  const hasHoldings = ranked.length > 0;
+  const hasValue = totalValue > 0;
+  const txCount = typeof rawWallet.txCount === "number" ? rawWallet.txCount : null;
+  const walletAgeDays = typeof rawWallet.walletAgeDays === "number" ? rawWallet.walletAgeDays : null;
+  const hasTxMeta = txCount !== null || walletAgeDays !== null;
+  const dataQuality: "Complete" | "Partial" | "Limited" = hasHoldings && hasValue && hasTxMeta ? "Complete" : (hasHoldings || hasValue ? "Partial" : "Limited");
+
+  return {
+    ok: true,
+    address,
+    totalValue,
+    holdingsTop10: topHoldings,
+    hiddenHoldingsCount,
+    dustOrUnpricedHidden,
+    stablecoinExposureUsd,
+    tokenCount: ranked.length,
+    txCount,
+    walletAgeDays,
+    dataQuality,
+  };
+}
+
+function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>): string {
+  const top = snapshot.holdingsTop10.slice(0, 8).map((h) => `- ${h.symbol}: ${formatUsdShort(h.value)}`);
+  const notes = [
+    `- Dust/unpriced holdings hidden: ${snapshot.hiddenHoldingsCount}`,
+    "- Wallet balances may be partial for unsupported assets.",
+  ];
+  if (snapshot.holdingsTop10.length < 3) notes.push("- Fewer than 3 priced holdings were available in this scan.");
+
+  return [
+    "Wallet:",
+    shortAddress(snapshot.address),
+    "",
+    "Summary:",
+    `- Portfolio value: ${formatUsdShort(snapshot.totalValue)}`,
+    `- Wallet age: ${snapshot.walletAgeDays != null ? `${formatInt(snapshot.walletAgeDays)} days` : "n/a"}`,
+    `- Tx count: ${formatInt(snapshot.txCount)}`,
+    `- Token count: ${formatInt(snapshot.tokenCount)}`,
+    "",
+    "Top holdings:",
+    ...(top.length > 0 ? top : ["- No priced holdings above $1 found"]),
+    "",
+    "Data note:",
+    ...notes,
+  ].join("\n");
 }
 
 function missingAddressReply(intent: ClarkIntent): string {
@@ -1767,37 +1841,10 @@ async function executeClarkToolPlan(input: {
         const address = String(tool.args.address ?? resolvedAddress ?? "").trim();
         const walletRes = await callInternalApi(input.origin, "/api/wallet", { address });
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
-        const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
-        const totalValue = typeof w.totalValue === "number" ? w.totalValue : 0;
-        const ranked = [...holdings]
-          .map((h) => ({
-            symbol: String(h.symbol ?? "?"),
-            value: typeof h.value === "number" ? h.value : 0,
-            balance: typeof h.balance === "number" ? h.balance : 0,
-          }))
-          .sort((a, b) => b.value - a.value);
-        const topHoldings = ranked.filter((h) => h.value >= 1 && h.symbol !== "?").slice(0, 10);
-        const hiddenHoldingsCount = Math.max(ranked.length - topHoldings.length, 0);
-        const dustOrUnpricedHidden = ranked.some((h) => h.value < 1 || h.symbol === "?");
-        const stablecoinExposureUsd = ranked
-          .filter((h) => /^(USDC|USDT|DAI|LUSD|USDE|USDBC|EURC)$/i.test(h.symbol))
-          .reduce((sum, h) => sum + h.value, 0);
-        const hasHoldings = holdings.length > 0;
-        const hasValue = totalValue > 0;
-        const hasTxMeta = typeof w.txCount === "number" || typeof w.walletAgeDays === "number";
-        const dataQuality: "Complete" | "Partial" | "Limited" = hasHoldings && hasValue && hasTxMeta ? "Complete" : (hasHoldings || hasValue ? "Partial" : "Limited");
+        const normalized = normalizeWalletSnapshotEvidence(w, address);
         evidence.walletSnapshot = {
+          ...normalized,
           ok: walletRes.ok && !w.error,
-          address,
-          totalValue,
-          holdingsTop10: topHoldings,
-          hiddenHoldingsCount,
-          dustOrUnpricedHidden,
-          stablecoinExposureUsd,
-          tokenCount: holdings.length,
-          txCount: typeof w.txCount === "number" ? w.txCount : null,
-          walletAgeDays: typeof w.walletAgeDays === "number" ? w.walletAgeDays : null,
-          dataQuality,
           errorSafeMessage: walletRes.ok ? undefined : "Wallet data is temporarily unavailable.",
         };
         resolvedAddress = address;
@@ -1923,49 +1970,12 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string) {
 
   // Balance / holdings question — return plain summary, no verdict format
   if (isBalanceQuestion && !isQualityQuestion) {
-    const topHoldings = (w.holdings ?? [])
-      .slice(0, 8)
-      .map(h => `- ${h.symbol}: ${formatUsdShort(h.value)} (${h.balance.toFixed(4)} tokens)`)
-      .join("\n");
-    const totalVal = formatUsdShort(w.totalValue ?? 0);
-    const ageLine = w.walletAgeDays != null ? `Wallet age: ${w.walletAgeDays} days` : "";
-    const txLine = w.txCount != null ? `Tx count: ${w.txCount}` : "";
-    const lines = [
-      `Wallet: ${shortAddress(walletAddress)}`,
-      `Total value: ${totalVal}`,
-      ageLine,
-      txLine,
-      "",
-      "Holdings:",
-      topHoldings || "- No significant holdings found",
-    ].filter(Boolean);
-    return { feature: "wallet-scanner", chain, walletAddress, analysis: lines.join("\n") };
+    const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
+    return { feature: "wallet-scanner", chain, walletAddress, analysis: formatWalletBalanceSummary(normalized) };
   }
 
-  // Quality / analyst question — use structured verdict via Anthropic
-  const context: ClarkContext = {
-    walletScan: {
-      type: "wallet-scan",
-      address: walletAddress,
-      chain,
-      totalValue: w.totalValue,
-      walletAgeDays: w.walletAgeDays,
-      txCount: w.txCount,
-      firstTxDate: w.firstTxDate,
-      holdings: w.holdings,
-    },
-  };
-
-  const analysisPrompt = userPrompt
-    ? `${userPrompt}\n\nWallet address: ${walletAddress}`
-    : `Analyze wallet ${walletAddress}. Use this format: Asset / Verdict / Confidence / Read / Key signals / Risks / Next action. End with WATCH or AVOID. Do not say "copy trade this".`;
-
-  let analysis: string;
-  try {
-    analysis = await callAnthropic(analysisPrompt, context);
-  } catch {
-    analysis = buildWalletAnalysisFallback(w, walletAddress);
-  }
+  const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
+  const analysis = buildWalletQualityVerdict(normalized, walletAddress, userPrompt);
   return { feature: "wallet-scanner", chain, walletAddress, analysis };
 }
 
@@ -2202,22 +2212,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     if (!w?.ok) {
       return { feature: "clark-ai", chain, mode: "analysis", analysis: "I couldn’t pull this wallet snapshot right now. Paste the wallet again and I’ll retry.", intent: plan.intent, toolsUsed };
     }
-    const top = w.holdingsTop10.slice(0, 8).map((h) => `- ${h.symbol}: ${formatUsdShort(h.value)} (${h.balance.toFixed(4)} tokens)`).join("\n");
-    const summary = [
-      `Wallet: ${shortAddress(w.address)}`,
-      "Summary:",
-      `- Total value: ${formatUsdShort(w.totalValue)}`,
-      `- Token count: ${w.tokenCount}`,
-      `- Tx count: ${w.txCount ?? "n/a"}`,
-      `- Wallet age: ${w.walletAgeDays ?? "n/a"} days`,
-      "",
-      "Top holdings:",
-      top || "- No significant holdings found",
-      "",
-      w.hiddenHoldingsCount > 0 ? `Other holdings hidden: ${w.hiddenHoldingsCount}` : "",
-      w.dustOrUnpricedHidden ? "Dust/unpriced tokens hidden" : "",
-      `Data note: ${w.dataQuality} data quality from current wallet snapshot.`,
-    ].join("\n");
+    const summary = formatWalletBalanceSummary(w);
     return { feature: "clark-ai", chain, mode: "analysis", analysis: summary, intent: plan.intent, toolsUsed };
   }
 
@@ -2226,7 +2221,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       return { feature: "clark-ai", chain, mode: "analysis", analysis: "Share the wallet address and I’ll evaluate quality with available evidence.", intent: plan.intent, toolsUsed };
     }
     if (evidence.walletSnapshot?.ok) {
-      const quality = buildWalletQualityVerdict(evidence.walletSnapshot, resolvedAddress);
+      const quality = buildWalletQualityVerdict(evidence.walletSnapshot, resolvedAddress, prompt);
       return { feature: "clark-ai", chain, mode: "analysis", analysis: quality, intent: plan.intent, toolsUsed };
     }
     if (evidence.walletQuality?.analysis) {
@@ -2322,6 +2317,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
     const token = evidence.tokenScan?.token;
     if (!token) {
+      if (resolvedAddress && (plan.followupContext.selectedOptionIndex !== null || plan.tools.some((t) => t.name === "token_scan"))) {
+        return {
+          feature: "clark-ai",
+          chain,
+          mode: "analysis",
+          analysis: `I resolved your selection to ${shortAddress(resolvedAddress)}, but the token scan is temporarily unavailable. Paste the same contract again and I’ll retry.`,
+          intent: plan.intent,
+          toolsUsed,
+        };
+      }
       if (directIntent.address && !/wallet|balance|portfolio|copy[\s-]?trade/i.test(prompt)) {
         return { feature: "clark-ai", chain, mode: "analysis", analysis: "Is this address a token contract or a wallet? Tell me which scan you want.", intent: plan.intent, toolsUsed };
       }
