@@ -42,12 +42,12 @@ export async function GET(req: Request) {
     clearTimeout(timeout);
 
     if (!res.ok) {
-      return Response.json({ error: "Market source unavailable" }, { status: 200 });
+      return Response.json({ data: [], error: "Market source unavailable" }, { status: 200 });
     }
     const data = await res.json().catch(() => ({ data: [] }));
     return Response.json(data);
   } catch {
     console.log("GT PROXY ERROR");
-    return Response.json({ error: "Proxy fetch failed" }, { status: 500 });
+    return Response.json({ data: [], error: "Proxy fetch failed" }, { status: 200 });
   }
 }

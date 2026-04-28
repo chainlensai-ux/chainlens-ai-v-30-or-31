@@ -159,6 +159,7 @@ export async function getBaseMarketUniverse(input: {
   origin: string;
   mode: BaseMarketMode;
   requestedCount: number;
+  // reserved for future paging heuristics on conversational "more" requests
   followup?: boolean;
   excludeAddresses?: string[];
 }): Promise<{ candidates: BaseMarketCandidate[]; clamped: boolean; cappedMessage: string | null; }> {
@@ -167,6 +168,7 @@ export async function getBaseMarketUniverse(input: {
   const clamped = requested > 100;
   const cappedMessage = clamped ? "I can show up to 100 usable Base candidates at a time." : null;
   const large = clampedCount >= 100;
+  // normal requests: 3 pages/source, explicit 100-style requests: 10 pages/source
   const pages = large ? 10 : 3;
   const perPage = 20;
   const key = `${input.mode}:${large ? "lg" : "sm"}`;
@@ -190,6 +192,7 @@ export async function getBaseMarketUniverse(input: {
   };
 
   const pageFetches: Promise<void>[] = [];
+  // Lightweight universe only: no deep/security/dev/liquidity endpoints are called here.
   for (let p = 1; p <= pages; p++) {
     for (const type of ["pools", "trending", "new"] as const) {
       const u = `${input.origin}/api/proxy/gt?network=base&type=${type}&page=${p}&per_page=${perPage}`;
@@ -203,7 +206,9 @@ export async function getBaseMarketUniverse(input: {
     fetchJsonTimeout(`${input.origin}/api/trending`).then((j) => {
       const payload = (j && typeof j === "object") ? (j as Record<string, unknown>) : {};
       const rows = Array.isArray(payload?.data) ? payload.data : [];
-      for (const r of rows) {
+      for (const row of rows) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as Record<string, unknown>;
         all.push({
           tokenAddress: typeof r?.contract === "string" && /^0x[a-fA-F0-9]{40}$/.test(r.contract) ? r.contract : null,
           poolAddress: null,
