@@ -2452,9 +2452,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
         toolsUsed,
       };
     }
-    return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGeneralMarketNoContextReply(), intent: plan.intent, toolsUsed };
-  }
-
     const reportEvidence = buildFullReportEvidence(evidence, resolvedAddress);
     const analysis = renderFullTokenReport(reportEvidence);
     return {
