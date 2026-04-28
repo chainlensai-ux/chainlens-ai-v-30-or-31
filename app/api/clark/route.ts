@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
+import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 
 const {
   GOLDRUSH_API_KEY,
@@ -406,7 +407,7 @@ function classifyClarkQuestionType(
   if (ctx.explicitAddress && ctx.lastIntent === "dev_wallet") return "token_dev_followup";
   if (/what about liquidity|explain the lp risk/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_liquidity_followup";
   if (/what about the dev wallet|dev wallet/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_dev_followup";
-  if (/is it safe/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol)) return "token_safety_followup";
+  if (/(is it safe|is this token safe|token safe\??)/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol)) return "token_safety_followup";
   if (/why is it moving|why is token\s+\d+\s+moving|explain the move/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol || ctx.followupWords)) return "token_move_explainer";
   if (/balance|holdings?|portfolio|tell me the balance/.test(normalized) && (ctx.explicitAddress || ctx.lastWallet)) return "wallet_balance";
   if (/(good wallet|worth tracking|copy trade|smart money|wallet quality|is this a good wallet)/.test(normalized) && (ctx.explicitAddress || ctx.lastWallet || ctx.followupWords)) return "wallet_quality";
@@ -650,7 +651,7 @@ function classifyPlannerIntent(prompt: string, address: string | null): ClarkPla
   if (/balance|holdings?|portfolio|what does .*wallet hold|tell me the balance/.test(t) && address) return "wallet_balance";
   if (/(good wallet|worth following|copy[\s-]?trad|smart money|is it safe|wallet quality)/.test(t) && (address || /it\b/.test(t))) return "wallet_quality";
   if (/pumping on base|moving on base|trending|movers|gainers|runners|more|base tokens|show 100|give me 100|give me 20/.test(t)) return "market";
-  if (/scan|token|contract|safe|risk|brett|0x[a-fA-F0-9]{40}/.test(t)) return "token_analysis";
+  if (/scan|token|contract|safe|risk|is this token safe|brett|0x[a-fA-F0-9]{40}/.test(t)) return "token_analysis";
   if (/\[mode\s*:|feature context|<token_data>|<wallet_scan>/i.test(prompt)) return "feature_context";
   return "unknown";
 }
@@ -713,7 +714,7 @@ function buildClarkToolPlan(input: {
         : "token_analysis";
   }
   if (/^it\b/i.test(trimmed) && fallbackAddress) plannerIntent = plannerIntent === "unknown" ? "token_analysis" : plannerIntent;
-  if (/^is it safe\??$/i.test(trimmed) && fallbackAddress) {
+  if (/^(is it safe|is this token safe)\??$/i.test(trimmed) && fallbackAddress) {
     const historyText = historyLines.join("\n").toLowerCase();
     if (/contract|token|scan|full report|asset:/i.test(historyText) && !/wallet:/i.test(historyText)) {
       plannerIntent = "token_full_report_request";
@@ -2046,7 +2047,16 @@ type ClarkToolEvidence = {
     ok: boolean;
     token: { name: string; symbol: string; address: string } | null;
     market: { price: number | null; change24h: number | null; volume24h: number | null; liquidity: number | null };
-    security: { honeypot: boolean | null; buyTax: number | null; sellTax: number | null };
+    security: {
+      honeypot: boolean | null;
+      buyTax: number | null;
+      sellTax: number | null;
+      transferTax: number | null;
+      simulationSuccess: boolean | null;
+      securityStatus: "verified" | "partial" | "unverified";
+      riskLevel: "low" | "medium" | "high" | "unknown";
+      missing: string[];
+    };
     liquidity: { pools: number; topPoolLiquidity: number | null };
     warnings: string[];
     errorSafeMessage?: string;
@@ -2143,11 +2153,13 @@ async function executeClarkToolPlan(input: {
         const addrArg = String(tool.args.address ?? "").trim();
         const addr = addrArg || String(resolvedAddress ?? "").trim();
         const tokenData = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await callScanToken(addr, "contract", input.origin) : null;
+        const securitySim = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await fetchHoneypotSecurity(addr, "base") : null;
         const t = (tokenData ?? {}) as Record<string, unknown>;
         const g = (t.goplus ?? {}) as Record<string, unknown>;
         const hp = (t.honeypot ?? {}) as Record<string, unknown>;
         const warnings: string[] = [];
         if (!tokenData) warnings.push("Token scan data is limited right now.");
+        if (securitySim?.warnings?.length) warnings.push(...securitySim.warnings);
         evidence.tokenScan = {
           ok: Boolean(tokenData),
           token: tokenData ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? addr) } : null,
@@ -2158,9 +2170,14 @@ async function executeClarkToolPlan(input: {
             liquidity: typeof t.liquidity === "number" ? t.liquidity : null,
           },
           security: {
-            honeypot: typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : (g.is_honeypot != null ? String(g.is_honeypot) === "1" : null),
-            buyTax: typeof hp.buyTax === "number" ? hp.buyTax : (g.buy_tax != null ? Number(g.buy_tax) : null),
-            sellTax: typeof hp.sellTax === "number" ? hp.sellTax : (g.sell_tax != null ? Number(g.sell_tax) : null),
+            honeypot: securitySim?.honeypot ?? (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : (g.is_honeypot != null ? String(g.is_honeypot) === "1" : null)),
+            buyTax: securitySim?.buyTax ?? (typeof hp.buyTax === "number" ? hp.buyTax : (g.buy_tax != null ? Number(g.buy_tax) : null)),
+            sellTax: securitySim?.sellTax ?? (typeof hp.sellTax === "number" ? hp.sellTax : (g.sell_tax != null ? Number(g.sell_tax) : null)),
+            transferTax: securitySim?.transferTax ?? null,
+            simulationSuccess: securitySim?.simulationSuccess ?? null,
+            securityStatus: securitySim?.securityStatus ?? "unverified",
+            riskLevel: securitySim?.riskLevel ?? "unknown",
+            missing: securitySim?.missing ?? ["honeypot", "buyTax", "sellTax", "transferTax", "simulationSuccess"],
           },
           liquidity: {
             pools: Array.isArray(t.pools) ? t.pools.length : 0,
@@ -2275,7 +2292,10 @@ type ClarkFullReportEvidence = {
     mintable: boolean | null;
     buyTax: number | null;
     sellTax: number | null;
+    transferTax: number | null;
     honeypot: boolean | null;
+    simulationSuccess: boolean | null;
+    securityStatus: "verified" | "partial" | "unverified";
     warnings: string[];
   };
   liquidity: {
@@ -2343,7 +2363,10 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
       mintable: null,
       buyTax: evidence.tokenScan?.security.buyTax ?? null,
       sellTax: evidence.tokenScan?.security.sellTax ?? null,
+      transferTax: evidence.tokenScan?.security.transferTax ?? null,
       honeypot: evidence.tokenScan?.security.honeypot ?? null,
+      simulationSuccess: evidence.tokenScan?.security.simulationSuccess ?? null,
+      securityStatus: evidence.tokenScan?.security.securityStatus ?? "unverified",
       warnings: contractWarnings,
     },
     liquidity: {
@@ -2370,6 +2393,10 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   if (out.contract.proxy === null) out.missing.push("Proxy status");
   if (out.contract.mintable === null) out.missing.push("Mintability");
   if (out.contract.honeypot === null) out.missing.push("Honeypot check");
+  if (out.contract.buyTax === null) out.missing.push("Buy tax check");
+  if (out.contract.sellTax === null) out.missing.push("Sell tax check");
+  if (out.contract.transferTax === null) out.missing.push("Transfer tax check");
+  if (out.contract.simulationSuccess === null) out.missing.push("Security simulation");
   if (out.liquidity.lpLocked === null) out.missing.push("LP lock/control");
   if (out.devWallet.likelyDeployer === null) out.missing.push("Likely deployer identity");
 
@@ -2384,8 +2411,11 @@ function buildClarkEvidencePack(report: ClarkFullReportEvidence, wallet?: ClarkT
     `Liquidity: ${formatUsdShort(report.market.liquidity)}`,
   ];
   const securityFacts = [
-    `Honeypot: ${boolToWord(report.contract.honeypot)}`,
-    `Tax: ${report.contract.buyTax != null || report.contract.sellTax != null ? `${report.contract.buyTax ?? "?"}% / ${report.contract.sellTax ?? "?"}%` : "Unverified"}`,
+    `Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? "Not flagged" : "Unverified"}`,
+    `Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
+    `Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
+    `Transfer tax: ${report.contract.transferTax != null ? `${report.contract.transferTax}%` : "Unverified"}`,
+    `Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unverified"}`,
     `Proxy: ${boolToWord(report.contract.proxy)}`,
   ];
   const liquidityFacts = [
@@ -2402,12 +2432,15 @@ function buildClarkEvidencePack(report: ClarkFullReportEvidence, wallet?: ClarkT
     : [];
   const confidenceDrivers = dedupeLines([
     report.market.marketSourceAvailable ? "Market data is present." : "",
-    report.contract.honeypot === false ? "No honeypot flag in current checks." : "",
+    report.contract.honeypot === false ? "No honeypot flag in security simulation." : "",
+    report.contract.simulationSuccess === true ? "Security simulation passed." : "",
     (report.liquidity.liquidityUsd ?? 0) > 100_000 ? "Liquidity depth is substantial." : "",
   ]).filter(Boolean);
   const riskDrivers = dedupeLines([
-    report.contract.honeypot === true ? "Honeypot flag detected." : "",
+    report.contract.honeypot === true ? "Honeypot behavior is flagged in security simulation." : "",
+    report.contract.simulationSuccess === false ? "Security simulation failed." : "",
     (report.contract.buyTax ?? 0) > 15 || (report.contract.sellTax ?? 0) > 15 ? "Transfer tax is elevated." : "",
+    report.contract.securityStatus === "unverified" ? "Tax/honeypot check unverified." : "",
     report.missing.length ? "Several checks remain unverified." : "",
   ]).filter(Boolean);
   return {
@@ -2438,8 +2471,10 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
   if (report.market.liquidity != null) signals.push(`Liquidity observed around ${formatUsdShort(report.market.liquidity)}.`);
   if (report.market.volume24h != null) signals.push(`24h volume observed around ${formatUsdShort(report.market.volume24h)}.`);
   if (report.contract.honeypot === false) signals.push("No honeypot flag detected in current checks.");
+  if (report.contract.simulationSuccess === true) signals.push("Security simulation passed.");
   if ((report.devWallet.linkedWallets ?? 0) > 0) risks.push(`Linked deployer-wallet cluster detected (${report.devWallet.linkedWallets}).`);
   if (report.contract.honeypot === true) risks.push("Honeypot risk is flagged.");
+  if (report.contract.simulationSuccess === false) risks.push("Security simulation failed.");
   if ((report.contract.buyTax ?? 0) > 15 || (report.contract.sellTax ?? 0) > 15) risks.push("High transfer tax is flagged.");
   if ((report.liquidity.liquidityUsd ?? 0) < 20_000 && report.liquidity.liquidityUsd !== null) risks.push("Liquidity is thin for meaningful exits.");
   if (report.missing.length > 0) risks.push("Important risk checks are still unverified.");
@@ -2450,11 +2485,14 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
   const critical = report.contract.honeypot === true || (report.contract.buyTax ?? 0) > 20 || (report.contract.sellTax ?? 0) > 20;
   if (critical) {
     verdict = "AVOID";
-    confidence = "High";
+    confidence = report.contract.securityStatus === "verified" ? "High" : "Medium";
   } else if (!report.token.address || (!report.market.marketSourceAvailable && report.missing.length >= 5)) {
     verdict = "UNKNOWN";
     confidence = "Low";
-  } else if ((report.liquidity.liquidityUsd ?? 0) >= 100_000 && report.contract.honeypot === false && report.missing.length <= 3) {
+  } else if (report.contract.securityStatus === "unverified") {
+    verdict = "SCAN DEEPER";
+    confidence = "Low";
+  } else if ((report.liquidity.liquidityUsd ?? 0) >= 100_000 && report.contract.honeypot === false && (report.contract.buyTax ?? 999) <= 10 && (report.contract.sellTax ?? 999) <= 10 && report.missing.length <= 5) {
     verdict = "WATCH";
     confidence = "Medium";
   } else {
@@ -2468,7 +2506,9 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
       ? "This token has usable market depth and no major confirmed contract red flags, but still needs active monitoring."
       : verdict === "UNKNOWN"
         ? "There is not enough verified scanner coverage to make a reliable call yet."
-        : "I can’t call it safe from market data alone; risk coverage is still incomplete.";
+        : report.contract.securityStatus === "unverified"
+          ? "Security simulation is unverified right now. Market and liquidity data alone cannot confirm safety."
+          : "I can’t call it safe from market data alone; risk coverage is still incomplete.";
 
   const nextAction = verdict === "AVOID"
     ? "Avoid until the flagged risks are resolved and re-verified."
@@ -2510,6 +2550,12 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     "",
     "Quick read:",
     quickRead,
+    "",
+    "Contract/security:",
+    `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? "Not flagged" : "Unverified"}`,
+    `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
+    `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
+    `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unverified"}`,
     "",
     "Signals:",
     ...(signals.length ? signals.map((s) => `- ${s}`) : ["- No strong positive signal confirmed yet."]),
@@ -2585,8 +2631,11 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     `- Open source: ${boolToWord(report.contract.openSource)}`,
     `- Proxy: ${boolToWord(report.contract.proxy)}`,
     `- Mint: ${boolToWord(report.contract.mintable)}`,
-    `- Tax: ${report.contract.buyTax != null || report.contract.sellTax != null ? `${report.contract.buyTax ?? "?"}% / ${report.contract.sellTax ?? "?"}%` : "Unverified"}`,
-    `- Honeypot: ${boolToWord(report.contract.honeypot)}`,
+    `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? "Not flagged" : "Unverified"}`,
+    `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
+    `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
+    `- Transfer tax: ${report.contract.transferTax != null ? `${report.contract.transferTax}%` : "Unverified"}`,
+    `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unverified"}`,
     `- Transfer controls: ${report.contract.proxy === true || report.contract.mintable === true ? "Potentially elevated control surface" : "Unverified"}`,
     "",
     "Liquidity / exit risk:",
@@ -3132,6 +3181,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
     if (plan.tools.some((t) => t.name === "token_resolve") && evidence.tokenResolve?.selected?.contract) {
       const tokenData = await callScanToken(evidence.tokenResolve.selected.contract, "contract", origin);
+      const securitySim = await fetchHoneypotSecurity(evidence.tokenResolve.selected.contract, "base");
       if (tokenData) evidence.tokenScan = {
         ok: true,
         token: { name: String((tokenData as Record<string, unknown>).name ?? "Token"), symbol: String((tokenData as Record<string, unknown>).symbol ?? "?"), address: String((tokenData as Record<string, unknown>).contract ?? evidence.tokenResolve.selected.contract) },
@@ -3141,9 +3191,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           volume24h: typeof (tokenData as Record<string, unknown>).volume24h === "number" ? (tokenData as Record<string, unknown>).volume24h as number : null,
           liquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null,
         },
-        security: { honeypot: null, buyTax: null, sellTax: null },
+        security: {
+          honeypot: securitySim.honeypot,
+          buyTax: securitySim.buyTax,
+          sellTax: securitySim.sellTax,
+          transferTax: securitySim.transferTax,
+          simulationSuccess: securitySim.simulationSuccess,
+          securityStatus: securitySim.securityStatus,
+          riskLevel: securitySim.riskLevel,
+          missing: securitySim.missing,
+        },
         liquidity: { pools: Array.isArray((tokenData as Record<string, unknown>).pools) ? ((tokenData as Record<string, unknown>).pools as unknown[]).length : 0, topPoolLiquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null },
-        warnings: [],
+        warnings: [...securitySim.warnings],
       };
     }
 
