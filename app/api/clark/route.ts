@@ -745,6 +745,9 @@ function buildClarkToolPlan(input: {
   const explicitFollowupRef = /\b(this token|this wallet|it|this one|that one|first one|second one|third one)\b/i.test(message);
   const tokenFollowupPrompt = /\b(what about the dev wallet|what about liquidity|is it safe|why is it moving|should i watch|what are the risks|go deeper|explain the lp risk|what about holders)\b/i.test(trimmed);
   let plannerIntent = investigation.intent ?? classifyPlannerIntent(message, inferredAddress);
+  if (plannerIntent === "strategy" && (selectedAddress || /\btoken\b|\bpools?\b/.test(trimmed))) {
+    plannerIntent = classifyPlannerIntent(message, inferredAddress);
+  }
   if (selectedAddress && (plannerIntent === "unknown" || plannerIntent === "feature_context")) {
     const historyText = historyLines.join("\n").toLowerCase();
     plannerIntent = /full report|run the full report|token_full_report_request|report the next one|next report/.test(`${historyText}\n${trimmed}`)
@@ -753,6 +756,8 @@ function buildClarkToolPlan(input: {
   }
   if (selectedAddress && /full report|report\b|deep scan|full analysis|run all checks/.test(trimmed)) {
     plannerIntent = "token_full_report_request";
+  } else if (selectedAddress && /\b(show all .*pools|show all pools|all pools for|pools for|pool breakdown|token \d+ pools)\b/.test(trimmed)) {
+    plannerIntent = "token_analysis";
   } else if (selectedAddress && /why is token|explain the move|why is it moving/.test(trimmed)) {
     plannerIntent = "token_analysis";
   }
@@ -2114,6 +2119,7 @@ type ClarkToolEvidence = {
       missing: string[];
     };
     liquidity: { pools: number; topPoolLiquidity: number | null };
+    poolDetails?: Array<{ dex: string; pair: string; liquidity: number | null; volume24h: number | null; change24h: number | null; poolAddress: string | null }>;
     warnings: string[];
     errorSafeMessage?: string;
   };
@@ -2239,6 +2245,19 @@ async function executeClarkToolPlan(input: {
             pools: Array.isArray(t.pools) ? t.pools.length : 0,
             topPoolLiquidity: typeof t.liquidity === "number" ? t.liquidity : null,
           },
+          poolDetails: Array.isArray(t.pools)
+            ? (t.pools as Array<Record<string, unknown>>).map((p) => {
+              const a = (p.attributes ?? p) as Record<string, unknown>;
+              return {
+                dex: typeof a.dex === "string" ? a.dex : (typeof a.dex_id === "string" ? a.dex_id : "DEX"),
+                pair: typeof a.pair === "string" ? a.pair : (typeof a.name === "string" ? a.name : "pair"),
+                liquidity: typeof a.liquidity === "number" ? a.liquidity : (typeof a.reserve_in_usd === "number" ? a.reserve_in_usd : null),
+                volume24h: typeof a.volume24h === "number" ? a.volume24h : (typeof (a.volume_usd as Record<string, unknown> | undefined)?.h24 === "number" ? (a.volume_usd as Record<string, unknown>).h24 as number : null),
+                change24h: typeof a.change24h === "number" ? a.change24h : (typeof (a.price_change_percentage as Record<string, unknown> | undefined)?.h24 === "number" ? (a.price_change_percentage as Record<string, unknown>).h24 as number : null),
+                poolAddress: typeof a.address === "string" ? a.address : (typeof p.id === "string" ? p.id : null),
+              };
+            })
+            : [],
           warnings,
           errorSafeMessage: tokenData ? undefined : "I couldn’t complete a token scan right now.",
         };
@@ -2953,6 +2972,54 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
     }
   }
 
+  const wantsPoolBreakdown = /\b(show all .*pools|show all pools|all pools for|pools for|token \d+ pools|cas pools|pool breakdown)\b/i.test(body.prompt ?? "");
+  if (wantsPoolBreakdown) {
+    const token = scanData as Record<string, unknown>;
+    const pools = Array.isArray(token.pools) ? token.pools as Array<Record<string, unknown>> : [];
+    const rows = pools.map((p) => {
+      const a = (p.attributes ?? p) as Record<string, unknown>;
+      const liq = formatUsdShort(typeof a.liquidity === "number" ? a.liquidity : (typeof a.reserve_in_usd === "number" ? a.reserve_in_usd : null));
+      const vol = formatUsdShort(typeof a.volume24h === "number" ? a.volume24h : (typeof (a.volume_usd as Record<string, unknown> | undefined)?.h24 === "number" ? (a.volume_usd as Record<string, unknown>).h24 as number : null));
+      const moveNum = typeof a.change24h === "number" ? a.change24h : (typeof (a.price_change_percentage as Record<string, unknown> | undefined)?.h24 === "number" ? (a.price_change_percentage as Record<string, unknown>).h24 as number : null);
+      return {
+        dex: typeof a.dex === "string" ? a.dex : (typeof a.dex_id === "string" ? a.dex_id : "DEX"),
+        pair: typeof a.pair === "string" ? a.pair : (typeof a.name === "string" ? a.name : "pair"),
+        liquidity: liq,
+        volume: vol,
+        move: moveNum != null ? `${moveNum.toFixed(2)}%` : "Unverified",
+        pool: typeof a.address === "string" ? a.address : (typeof p.id === "string" ? p.id : "Unverified"),
+        liqRaw: typeof a.liquidity === "number" ? a.liquidity : (typeof a.reserve_in_usd === "number" ? a.reserve_in_usd : 0),
+      };
+    }).sort((a, b) => (b.liqRaw ?? 0) - (a.liqRaw ?? 0));
+
+    if (!rows.length) {
+      return { feature: "scan-token", data: scanData, analysis: "I can’t pull all pools right now, but I can still run a full report on the token." };
+    }
+    const tokenName = String((token.name as string | undefined) ?? "Token");
+    const tokenSymbol = String((token.symbol as string | undefined) ?? "?");
+    const contract = String((token.contract as string | undefined) ?? body.tokenAddress ?? body.addressOrToken ?? "Unverified");
+    const topLiq = rows[0]?.liqRaw ?? 0;
+    const totalLiq = rows.reduce((s, r) => s + (r.liqRaw ?? 0), 0);
+    const concentrated = totalLiq > 0 && topLiq / totalLiq >= 0.6;
+    return {
+      feature: "scan-token",
+      data: scanData,
+      analysis: [
+        `Pool breakdown: ${tokenSymbol}`,
+        `Contract: ${contract}`,
+        "",
+        "Pools:",
+        ...rows.slice(0, 8).map((r, i) => `${i + 1}. ${r.dex}/${r.pair} — liquidity ${r.liquidity} — 24h vol ${r.volume} — 24h move ${r.move} — pool ${r.pool}`),
+        "",
+        "Clark’s read:",
+        concentrated ? "Liquidity is concentrated in one dominant pool, so execution risk can spike if that pool thins out." : "Liquidity is spread across multiple pools, which usually improves execution resilience.",
+        "",
+        "Next:",
+        "Run full report or liquidity check before sizing.",
+      ].join("\n"),
+    };
+  }
+
   if (!scanData) {
     const label = body.tokenAddress ?? body.addressOrToken ?? body.query ?? body.prompt ?? "unknown";
     return {
@@ -3094,7 +3161,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       includePoolVariants: req.includePoolVariants,
     }).catch(() => ({ candidates: [] as BaseMarketCandidate[], clamped: /\b500\b/.test(prompt), cappedMessage: /\b500\b/.test(prompt) ? "I can show up to 100 usable Base candidates at a time." : null }));
 
-    const take = extended ? Math.min(requestedCount, 100) : (req.wantsMore ? Math.min(requestedCount, 20) : 10);
+    const take = extended
+      ? Math.min(requestedCount, 100)
+      : (requestedCount > 10 ? Math.min(requestedCount, 100) : (req.wantsMore ? Math.min(requestedCount, 20) : 10));
     const strictDifferent = req.strictDifferent;
     const cursorOffset = Math.max(0, Number(body.clarkContext?.marketCursor?.offset ?? 0) || 0);
     const startOffset = req.wantsMore ? cursorOffset : 0;
@@ -3303,11 +3372,57 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           missing: securitySim.missing,
         },
         liquidity: { pools: Array.isArray((tokenData as Record<string, unknown>).pools) ? ((tokenData as Record<string, unknown>).pools as unknown[]).length : 0, topPoolLiquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null },
+        poolDetails: Array.isArray((tokenData as Record<string, unknown>).pools)
+          ? ((tokenData as Record<string, unknown>).pools as Array<Record<string, unknown>>).map((p) => {
+            const a = (p.attributes ?? p) as Record<string, unknown>;
+            return {
+              dex: typeof a.dex === "string" ? a.dex : (typeof a.dex_id === "string" ? a.dex_id : "DEX"),
+              pair: typeof a.pair === "string" ? a.pair : (typeof a.name === "string" ? a.name : "pair"),
+              liquidity: typeof a.liquidity === "number" ? a.liquidity : (typeof a.reserve_in_usd === "number" ? a.reserve_in_usd : null),
+              volume24h: typeof a.volume24h === "number" ? a.volume24h : (typeof (a.volume_usd as Record<string, unknown> | undefined)?.h24 === "number" ? (a.volume_usd as Record<string, unknown>).h24 as number : null),
+              change24h: typeof a.change24h === "number" ? a.change24h : (typeof (a.price_change_percentage as Record<string, unknown> | undefined)?.h24 === "number" ? (a.price_change_percentage as Record<string, unknown>).h24 as number : null),
+              poolAddress: typeof a.address === "string" ? a.address : (typeof p.id === "string" ? p.id : null),
+            };
+          })
+          : [],
         warnings: [...securitySim.warnings],
       };
     }
 
     const token = evidence.tokenScan?.token;
+    const wantsPoolBreakdown = /\b(show all .*pools|show all pools|all pools for|pools for|token \d+ pools|pool breakdown|[A-Z0-9$._-]{2,12}\s+pools)\b/i.test(prompt);
+    if (wantsPoolBreakdown && !token) {
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: "I can’t pull all pools right now, but I can still run a full report on the token.", intent: plan.intent, toolsUsed };
+    }
+    if (wantsPoolBreakdown && token) {
+      const pools = [...(evidence.tokenScan?.poolDetails ?? [])].sort((a, b) => (b.liquidity ?? 0) - (a.liquidity ?? 0));
+      if (!pools.length) {
+        return { feature: "clark-ai", chain, mode: "analysis", analysis: "I can’t pull all pools right now, but I can still run a full report on the token.", intent: plan.intent, toolsUsed };
+      }
+      const topLiq = pools[0]?.liquidity ?? 0;
+      const totalLiq = pools.reduce((s, p) => s + (p.liquidity ?? 0), 0);
+      const concentrated = totalLiq > 0 && topLiq / totalLiq >= 0.6;
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        analysis: [
+          `Pool breakdown: ${token.symbol ?? "?"}`,
+          `Contract: ${token.address}`,
+          "",
+          "Pools:",
+          ...pools.slice(0, 8).map((p, i) => `${i + 1}. ${p.dex}/${p.pair} — liquidity ${formatUsdShort(p.liquidity)} — 24h vol ${formatUsdShort(p.volume24h)} — 24h move ${p.change24h != null ? `${p.change24h.toFixed(2)}%` : "Unverified"} — pool ${p.poolAddress ?? "Unverified"}`),
+          "",
+          "Clark’s read:",
+          concentrated ? "Liquidity is concentrated in one dominant pool, so execution risk is more sensitive to that venue." : "Liquidity is spread across multiple pools, which usually supports smoother execution.",
+          "",
+          "Next:",
+          "Run full report or liquidity check before sizing.",
+        ].join("\n"),
+        intent: plan.intent,
+        toolsUsed,
+      };
+    }
     if (!token) {
       if (resolvedAddress) {
         const fallbackReport = buildFullReportEvidence(evidence, resolvedAddress);
