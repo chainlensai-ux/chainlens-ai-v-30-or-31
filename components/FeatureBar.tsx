@@ -391,7 +391,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
           {/* Sign In — dark neutral ghost */}
           <button
             className="flex-1"
-            onClick={() => router.push('/auth')}
+            onClick={() => router.push('/sign-in')}
             style={{
               height: '30px',
               borderRadius: '8px',
@@ -422,7 +422,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
           {/* Sign Up — purple tint */}
           <button
             className="flex-1 active:scale-[0.98]"
-            onClick={() => router.push('/auth')}
+            onClick={() => router.push('/sign-in')}
             style={{
               height: '30px',
               borderRadius: '8px',

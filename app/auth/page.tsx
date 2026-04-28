@@ -13,14 +13,27 @@ export default function AuthPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [authCheckLoading, setAuthCheckLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
-    // Redirect immediately if already signed in
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) router.replace('/terminal');
-    });
+    let isMounted = true;
+
+    async function checkExistingUser() {
+      const { data, error: userError } = await supabase.auth.getUser();
+
+      if (!isMounted) return;
+
+      if (!userError && data.user) {
+        router.replace('/terminal');
+        return;
+      }
+
+      setAuthCheckLoading(false);
+    }
+
+    checkExistingUser();
 
     // Handle OAuth callback and email-confirm sign-ins
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -34,7 +47,10 @@ export default function AuthPage() {
     const oauthErr = params.get('error_description') || params.get('error');
     if (oauthErr) setError(decodeURIComponent(oauthErr.replace(/\+/g, ' ')));
 
-    return () => subscription.unsubscribe();
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
   }, [router]);
 
   async function handleGoogle() {
@@ -89,6 +105,35 @@ export default function AuthPage() {
     boxSizing: 'border-box',
     transition: 'border-color 0.15s',
   };
+
+  if (authCheckLoading) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        width: '100%',
+        background: '#06060a',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px 16px',
+        fontFamily: 'var(--font-inter), Inter, sans-serif',
+      }}>
+        <div style={{
+          width: '100%',
+          maxWidth: '400px',
+          background: '#080c14',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: '20px',
+          padding: '28px 24px',
+          color: 'rgba(255,255,255,0.60)',
+          textAlign: 'center',
+          fontSize: '13px',
+        }}>
+          Checking authentication status...
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{
