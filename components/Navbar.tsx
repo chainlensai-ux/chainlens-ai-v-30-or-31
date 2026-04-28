@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
+import { supabase } from '@/lib/supabaseClient'
 
 const TIER_COLUMNS = [
   {
@@ -51,6 +52,26 @@ const TIER_COLUMNS = [
 export default function Navbar() {
   const [open, setOpen] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [accountEmail, setAccountEmail] = useState<string | null>(null)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setAccountEmail(data.session?.user?.email ?? null)
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAccountEmail(session?.user?.email ?? null)
+    })
+
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
+  const shortEmail = accountEmail
+    ? accountEmail.length > 20
+      ? `${accountEmail.slice(0, 8)}…${accountEmail.slice(-8)}`
+      : accountEmail
+    : null
+  const initials = (shortEmail?.[0] ?? 'A').toUpperCase()
 
   return (
     <>
@@ -399,7 +420,37 @@ export default function Navbar() {
               </span>
             </div>
 
-            <Link href="/auth"    className="btn-signin">Sign In</Link>
+            {accountEmail ? (
+              <Link href="/terminal/settings" className="btn-signin" style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                borderColor: 'rgba(45,212,191,0.30)',
+                background: 'linear-gradient(135deg, rgba(45,212,191,0.09) 0%, rgba(139,92,246,0.12) 100%)',
+              }}>
+                <span style={{
+                  width: '20px',
+                  height: '20px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                  color: '#04101a',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}>{initials}</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <span>{shortEmail}</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '10px', color: 'rgba(45,212,191,0.95)' }}>
+                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.9)' }} />
+                    SIGNED IN
+                  </span>
+                </span>
+              </Link>
+            ) : (
+              <Link href="/sign-in" className="btn-signin">Sign In</Link>
+            )}
             <Link href="/pricing" className="btn-access">
               Get Access
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
@@ -432,13 +483,14 @@ export default function Navbar() {
 
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '16px 0' }} />
 
-          <Link href="/auth" onClick={() => setMobileOpen(false)} style={{
+          <Link href={accountEmail ? '/terminal/settings' : '/sign-in'} onClick={() => setMobileOpen(false)} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             padding: '13px 20px', borderRadius: '999px',
-            border: '1px solid rgba(255,255,255,0.14)',
-            color: 'rgba(255,255,255,0.70)', fontSize: '14px', fontWeight: 600,
+            border: accountEmail ? '1px solid rgba(45,212,191,0.35)' : '1px solid rgba(255,255,255,0.14)',
+            color: accountEmail ? 'rgba(45,212,191,0.92)' : 'rgba(255,255,255,0.70)', fontSize: '14px', fontWeight: 600,
             textDecoration: 'none', marginBottom: '8px',
-          }}>Sign In</Link>
+            background: accountEmail ? 'linear-gradient(135deg, rgba(45,212,191,0.08) 0%, rgba(139,92,246,0.14) 100%)' : 'transparent',
+          }}>{accountEmail ? 'Account (Signed In)' : 'Sign In'}</Link>
 
           <Link href="/pricing" onClick={() => setMobileOpen(false)} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
