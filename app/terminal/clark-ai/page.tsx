@@ -14,7 +14,16 @@ type ClarkContextState = {
     reasonTag?: string | null
   }>
   lastIntent?: string | null
+  previousIntent?: string | null
   lastSelectedRank?: number | null
+  marketCursor?: {
+    offset: number
+    returnedCount: number
+    requestedCount: number
+    totalCandidates: number
+  } | null
+  seenMarketAddresses?: string[]
+  seenMarketSymbols?: string[]
 }
 
 type Mode = {
@@ -172,7 +181,24 @@ function ClarkAiContent() {
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
       if (nextItems && nextItems.length > 0) {
         clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
+        const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
+        const symSet = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
+        for (const item of nextItems as Array<Record<string, unknown>>) {
+          const token = typeof item.tokenAddress === 'string' ? item.tokenAddress.toLowerCase() : null
+          const pool = typeof item.poolAddress === 'string' ? item.poolAddress.toLowerCase() : null
+          const sym = typeof item.symbol === 'string' ? item.symbol.toUpperCase() : null
+          if (token) addrSet.add(token)
+          if (pool) addrSet.add(pool)
+          if (sym) symSet.add(sym)
+        }
+        clarkContextRef.current.seenMarketAddresses = [...addrSet]
+        clarkContextRef.current.seenMarketSymbols = [...symSet]
       }
+      const cursor = (marketContext && typeof marketContext === 'object' && (marketContext as Record<string, unknown>).cursor && typeof (marketContext as Record<string, unknown>).cursor === 'object')
+        ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor']
+        : null
+      if (cursor) clarkContextRef.current.marketCursor = cursor
+      clarkContextRef.current.previousIntent = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
       clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
       const reply = json.ok ? (payload?.reply ?? payload?.analysis ?? payload?.response ?? 'No response.') : (json.error ?? 'Something went wrong.')

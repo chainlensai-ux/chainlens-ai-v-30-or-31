@@ -45,6 +45,10 @@ interface ClarkRequestBody {
     lastWallet?: string | null;
     lastIntent?: string | null;
     lastSelectedRank?: number | null;
+    marketCursor?: { offset?: number; returnedCount?: number; requestedCount?: number; totalCandidates?: number } | null;
+    seenMarketAddresses?: string[] | null;
+    seenMarketSymbols?: string[] | null;
+    previousIntent?: string | null;
   };
   marketContext?: unknown;
 }
@@ -583,11 +587,13 @@ function isMarketFollowupPrompt(prompt: string): boolean {
   return /^(more|give me more|other tokens|other ones|next|show more|continue)$/i.test(t) || /\bgive me (other|20 more|100|500)\b/i.test(t);
 }
 
-function parseMarketRequest(prompt: string): { count: number; mode: BaseMarketMode; wantsMore: boolean } {
+function parseMarketRequest(prompt: string): { count: number; mode: BaseMarketMode; wantsMore: boolean; strictDifferent: boolean; includePoolVariants: boolean } {
   const t = prompt.toLowerCase();
   const num = t.match(/\b(\d{1,3})\b/);
   const explicit = num ? Number(num[1]) : null;
   const wantsMore = /\b(more|continue|other tokens|next)\b/i.test(t);
+  const strictDifferent = /\b(different tokens?|different base tokens?|other names|new names|not the same|no repeats|other tokens not the same)\b/i.test(t);
+  const includePoolVariants = /\b(pools|all pools|same token pools|every pool|show all .* pools)\b/i.test(t);
   const count = explicit ? Math.min(100, explicit) : (wantsMore ? 10 : 10);
   const mode: BaseMarketMode =
     /new launch|new base launch/.test(t) ? "new_launches" :
@@ -595,7 +601,57 @@ function parseMarketRequest(prompt: string): { count: number; mode: BaseMarketMo
     /cooling|pullback/.test(t) ? "cooling_watchlist" :
     /liquid/.test(t) ? "liquid_movers" :
     "pumping";
-  return { count, mode, wantsMore };
+  return { count, mode, wantsMore, strictDifferent, includePoolVariants };
+}
+
+function normalizeMarketName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function extractSeenMarketState(body: ClarkRequestBody): {
+  addresses: Set<string>;
+  pools: Set<string>;
+  symbols: Set<string>;
+  names: Set<string>;
+} {
+  const addresses = new Set<string>();
+  const pools = new Set<string>();
+  const symbols = new Set<string>();
+  const names = new Set<string>();
+
+  const addFromRaw = (raw: unknown) => {
+    if (!raw || typeof raw !== "object") return;
+    const row = raw as Record<string, unknown>;
+    const tokenAddress = typeof row.tokenAddress === "string" ? row.tokenAddress.toLowerCase() : null;
+    const poolAddress = typeof row.poolAddress === "string" ? row.poolAddress.toLowerCase() : null;
+    const symbol = typeof row.symbol === "string" ? row.symbol.toUpperCase() : null;
+    const name = typeof row.name === "string" ? normalizeMarketName(row.name) : null;
+    if (tokenAddress?.startsWith("0x")) addresses.add(tokenAddress);
+    if (poolAddress?.startsWith("0x")) pools.add(poolAddress);
+    if (symbol) symbols.add(symbol);
+    if (name) names.add(name);
+  };
+
+  for (const item of extractStructuredMarketItems(body)) addFromRaw(item);
+  for (const line of getHistoryMessages(body.history)) {
+    for (const m of line.matchAll(/0x[a-fA-F0-9]{40}/g)) addresses.add(m[0].toLowerCase());
+    const rankRows = line.split("\n").filter((r) => /^\s*\d+\./.test(r));
+    for (const row of rankRows) {
+      const sm = row.match(/^\s*\d+\.\s*([A-Z0-9$._-]{2,12})/);
+      if (sm?.[1]) symbols.add(sm[1].toUpperCase());
+      const nm = row.match(/^\s*\d+\.\s*([^-—\n]+?)(?:\s+—|-)/);
+      if (nm?.[1]) names.add(normalizeMarketName(nm[1]));
+    }
+  }
+
+  for (const raw of body.clarkContext?.seenMarketAddresses ?? []) {
+    if (typeof raw === "string" && /^0x[a-fA-F0-9]{40}$/.test(raw)) addresses.add(raw.toLowerCase());
+  }
+  for (const raw of body.clarkContext?.seenMarketSymbols ?? []) {
+    if (typeof raw === "string" && raw.trim()) symbols.add(raw.toUpperCase());
+  }
+
+  return { addresses, pools, symbols, names };
 }
 
 function extractSeenTokenAddresses(history: ClarkRequestBody["history"]): string[] {
@@ -3025,30 +3081,75 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   if (plan.intent === "market" || plan.intent === "strategy" || replyMode === "general_market") {
     const req = parseMarketRequest(prompt);
-    const seen = extractSeenTokenAddresses(body.history);
+    const seen = extractSeenMarketState(body);
+    const seenAddressArray = [...seen.addresses];
     const extended = /\b(100|show 100|list 100|give me 100|500)\b/i.test(prompt);
     const requestedCount = /\b500\b/.test(prompt) ? 100 : req.count;
     const universe = await getBaseMarketUniverse({
       origin,
       mode: req.mode,
-      requestedCount: extended ? requestedCount : Math.max(20, requestedCount),
+      requestedCount: extended ? requestedCount : Math.max(40, requestedCount),
       followup: req.wantsMore,
-      excludeAddresses: req.wantsMore ? seen : [],
+      excludeAddresses: req.wantsMore ? seenAddressArray : [],
+      includePoolVariants: req.includePoolVariants,
     }).catch(() => ({ candidates: [] as BaseMarketCandidate[], clamped: /\b500\b/.test(prompt), cappedMessage: /\b500\b/.test(prompt) ? "I can show up to 100 usable Base candidates at a time." : null }));
 
     const take = extended ? Math.min(requestedCount, 100) : (req.wantsMore ? Math.min(requestedCount, 20) : 10);
-    const marketRows = universe.candidates.slice(0, take);
+    const strictDifferent = req.strictDifferent;
+    const cursorOffset = Math.max(0, Number(body.clarkContext?.marketCursor?.offset ?? 0) || 0);
+    const startOffset = req.wantsMore ? cursorOffset : 0;
+    const marketRows: BaseMarketCandidate[] = [];
+    const localSymbols = new Set<string>();
+    const localNames = new Set<string>();
+    let consumed = startOffset;
+    for (let i = startOffset; i < universe.candidates.length; i++) {
+      consumed = i + 1;
+      const c = universe.candidates[i];
+      const token = c.tokenAddress?.toLowerCase() ?? null;
+      const pool = c.poolAddress?.toLowerCase() ?? null;
+      const symbol = (c.symbol ?? "").toUpperCase();
+      const normalizedName = normalizeMarketName(c.name ?? c.symbol ?? "");
+      if (token && seen.addresses.has(token)) continue;
+      if (pool && seen.pools.has(pool)) continue;
+      if (strictDifferent && symbol && seen.symbols.has(symbol)) continue;
+      if (strictDifferent && normalizedName && seen.names.has(normalizedName)) continue;
+      if (strictDifferent && symbol && localSymbols.has(symbol)) continue;
+      if (strictDifferent && normalizedName && localNames.has(normalizedName)) continue;
+      if (symbol) localSymbols.add(symbol);
+      if (normalizedName) localNames.add(normalizedName);
+      marketRows.push(c);
+      if (marketRows.length >= take) break;
+    }
+    const offsetBase = req.wantsMore ? startOffset : 0;
+    const cappedRemainingMessage = req.wantsMore && marketRows.length < take
+      ? `I can only see ${marketRows.length} more usable Base candidates from the current feed.`
+      : null;
     if (marketRows.length > 0) {
+      const headerLine = strictDifferent
+        ? "Clark is showing a fresh set of different Base candidates from the current pool feed."
+        : `Clark is seeing ${universe.candidates.length} usable Base candidates from current pool data.`;
+      const readLine = strictDifferent && req.wantsMore
+        ? "These are further down the feed, so treat them as watchlist names — not stronger than the first batch."
+        : "This list is led by tokens with real liquidity, but there are still noisy runners mixed in.";
       return {
         feature: "clark-ai",
         chain,
         mode: "general_market",
-        analysis: formatBaseMarketReply(marketRows, universe.candidates.length, req.wantsMore ? seen.length : 0, universe.cappedMessage, extended),
+        analysis: formatBaseMarketReply(marketRows, universe.candidates.length, offsetBase, cappedRemainingMessage ?? universe.cappedMessage, extended)
+          .replace(`Clark is seeing ${universe.candidates.length} usable Base candidates from current pool data.`, headerLine)
+          .replace("This list is led by tokens with real liquidity, but there are still noisy runners mixed in.", readLine),
         marketContext: {
           type: "base_market_list",
+          mode: req.mode,
           createdAt: new Date().toISOString(),
+          cursor: {
+            offset: consumed,
+            returnedCount: marketRows.length,
+            requestedCount: take,
+            totalCandidates: universe.candidates.length,
+          },
           items: marketRows.map((c, i) => ({
-            rank: (req.wantsMore ? seen.length : 0) + i + 1,
+            rank: offsetBase + i + 1,
             symbol: c.symbol ?? "?",
             name: c.name ?? null,
             tokenAddress: c.tokenAddress ?? null,

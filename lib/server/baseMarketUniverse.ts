@@ -22,6 +22,14 @@ export type BaseMarketCandidate = {
   reasonTags: string[];
 };
 
+function normalizeName(value: string | null | undefined): string {
+  return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function normalizeSymbol(value: string | null | undefined): string {
+  return (value ?? "").toUpperCase().replace(/[^A-Z0-9]+/g, "");
+}
+
 const CACHE_TTL_MS = 60_000;
 const cache = new Map<string, { at: number; data: BaseMarketCandidate[] }>();
 const STABLES = new Set(["USDC", "USDBC", "USDT", "DAI"]);
@@ -133,26 +141,84 @@ function rankAndTag(items: BaseMarketCandidate[], mode: BaseMarketMode): BaseMar
   return scored.map((s) => s.item);
 }
 
+function qualityScore(item: BaseMarketCandidate): number {
+  return (item.liquidityUsd ?? 0) * 0.65 + (item.volume24h ?? 0) * 0.35 + Math.max(0, item.change24h ?? 0) * 150;
+}
+
+function mergeCandidate(prev: BaseMarketCandidate, next: BaseMarketCandidate): BaseMarketCandidate {
+  const better = qualityScore(next) > qualityScore(prev) ? next : prev;
+  const other = better === next ? prev : next;
+  return {
+    ...better,
+    sourceTags: [...new Set([...(better.sourceTags ?? []), ...(other.sourceTags ?? [])])],
+    reasonTags: better.reasonTags.length ? better.reasonTags : other.reasonTags,
+    tokenAddress: better.tokenAddress ?? other.tokenAddress,
+    poolAddress: better.poolAddress ?? other.poolAddress,
+  };
+}
+
 function dedupe(items: BaseMarketCandidate[]): BaseMarketCandidate[] {
   const byToken = new Map<string, BaseMarketCandidate>();
   for (const item of items) {
-    const key = item.tokenAddress?.toLowerCase() || item.poolAddress?.toLowerCase() || `${item.symbol}:${item.name}`.toLowerCase();
-    const prev = byToken.get(key);
-    if (!prev) {
-      byToken.set(key, item);
-      continue;
-    }
-    byToken.set(key, {
-      ...prev,
-      sourceTags: [...new Set([...prev.sourceTags, ...item.sourceTags])],
-      volume24h: (Math.max(prev.volume24h ?? 0, item.volume24h ?? 0) || prev.volume24h || item.volume24h || null),
-      liquidityUsd: (Math.max(prev.liquidityUsd ?? 0, item.liquidityUsd ?? 0) || prev.liquidityUsd || item.liquidityUsd || null),
-      change24h: item.change24h ?? prev.change24h,
-      tokenAddress: prev.tokenAddress ?? item.tokenAddress,
-      poolAddress: prev.poolAddress ?? item.poolAddress,
-    });
+    const tokenKey = item.tokenAddress?.toLowerCase();
+    if (!tokenKey) continue;
+    const prev = byToken.get(tokenKey);
+    byToken.set(tokenKey, prev ? mergeCandidate(prev, item) : item);
   }
-  return [...byToken.values()];
+
+  const tokenCollapsed = items.map((item) => {
+    const tokenKey = item.tokenAddress?.toLowerCase();
+    return tokenKey ? (byToken.get(tokenKey) ?? item) : item;
+  });
+
+  const byPool = new Map<string, BaseMarketCandidate>();
+  for (const item of tokenCollapsed) {
+    const key = item.poolAddress?.toLowerCase();
+    if (!key) continue;
+    const prev = byPool.get(key);
+    byPool.set(key, prev ? mergeCandidate(prev, item) : item);
+  }
+
+  const poolCollapsed = tokenCollapsed.map((item) => {
+    const key = item.poolAddress?.toLowerCase();
+    return key ? (byPool.get(key) ?? item) : item;
+  });
+
+  const bySymbolName = new Map<string, BaseMarketCandidate>();
+  for (const item of poolCollapsed) {
+    const symbol = normalizeSymbol(item.symbol);
+    const name = normalizeName(item.name);
+    const key = `${symbol}|${name}`;
+    const prev = bySymbolName.get(key);
+    bySymbolName.set(key, prev ? mergeCandidate(prev, item) : item);
+  }
+
+  return [...new Set([...bySymbolName.values()])];
+}
+
+function dedupeRanked(items: BaseMarketCandidate[], includePoolVariants = false): BaseMarketCandidate[] {
+  const out: BaseMarketCandidate[] = [];
+  const seenToken = new Set<string>();
+  const seenPool = new Set<string>();
+  const seenSymName = new Set<string>();
+  const seenSymbol = new Set<string>();
+  for (const item of items) {
+    const token = item.tokenAddress?.toLowerCase() ?? "";
+    const pool = item.poolAddress?.toLowerCase() ?? "";
+    const symbol = normalizeSymbol(item.symbol);
+    const name = normalizeName(item.name);
+    const symName = `${symbol}|${name}`;
+    if (token && seenToken.has(token)) continue;
+    if (pool && seenPool.has(pool)) continue;
+    if (seenSymName.has(symName)) continue;
+    if (!includePoolVariants && symbol && seenSymbol.has(symbol)) continue;
+    if (token) seenToken.add(token);
+    if (pool) seenPool.add(pool);
+    seenSymName.add(symName);
+    if (symbol) seenSymbol.add(symbol);
+    out.push(item);
+  }
+  return out;
 }
 
 export async function getBaseMarketUniverse(input: {
@@ -162,6 +228,7 @@ export async function getBaseMarketUniverse(input: {
   // reserved for future paging heuristics on conversational "more" requests
   followup?: boolean;
   excludeAddresses?: string[];
+  includePoolVariants?: boolean;
 }): Promise<{ candidates: BaseMarketCandidate[]; clamped: boolean; cappedMessage: string | null; }> {
   const requested = Number.isFinite(input.requestedCount) ? Math.max(1, Math.floor(input.requestedCount)) : 10;
   const clampedCount = Math.min(100, requested);
@@ -177,7 +244,8 @@ export async function getBaseMarketUniverse(input: {
     let c = hit.data;
     const ex = new Set((input.excludeAddresses ?? []).map((x) => x.toLowerCase()));
     if (ex.size) c = c.filter((x) => !x.tokenAddress || !ex.has(x.tokenAddress.toLowerCase()));
-    return { candidates: c.slice(0, clampedCount), clamped, cappedMessage };
+    const deduped = dedupeRanked(c, input.includePoolVariants);
+    return { candidates: deduped, clamped, cappedMessage };
   }
 
   const all: BaseMarketCandidate[] = [];
@@ -240,10 +308,10 @@ export async function getBaseMarketUniverse(input: {
     new Promise((resolve) => setTimeout(resolve, timeoutMs)),
   ]);
 
-  const ranked = rankAndTag(dedupe(all), input.mode);
+  const ranked = dedupeRanked(rankAndTag(dedupe(all), input.mode), input.includePoolVariants);
   cache.set(key, { at: Date.now(), data: ranked });
   let out = ranked;
   const ex = new Set((input.excludeAddresses ?? []).map((x) => x.toLowerCase()));
   if (ex.size) out = out.filter((x) => !x.tokenAddress || !ex.has(x.tokenAddress.toLowerCase()));
-  return { candidates: out.slice(0, clampedCount), clamped, cappedMessage };
+  return { candidates: out, clamped, cappedMessage };
 }
