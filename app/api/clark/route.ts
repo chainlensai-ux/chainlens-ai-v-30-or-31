@@ -183,7 +183,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|help|who are you|what is chainlens/i.test(t)) {
     return { intent: "casual_help", address };
   }
-  if (/what is liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock/i.test(t)) {
+  if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock|what is slippage|explain slippage/i.test(t)) {
     return { intent: "educational", address };
   }
   if (/how do i scan|where do i check deployer|how do i track a wallet|how do i use this|which feature|where should i go/i.test(t)) {
@@ -305,7 +305,7 @@ function classifyPlannerIntent(prompt: string, address: string | null): ClarkPla
   const t = prompt.trim().toLowerCase();
   if (/^(hi|hey|hello|yo|gm|sup)\b/.test(t)) return "casual";
   if (/what can you do|help|who are you/.test(t)) return "help";
-  if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|holder concentration|lp lock/i.test(t)) return "educational";
+  if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|holder concentration|lp lock|what is slippage|explain slippage/i.test(t)) return "educational";
   if (/what should i watch|watch today|framework|strategy/i.test(t)) return "strategy";
   if (/full report/.test(t)) return "token_full_report_request";
   if (/compare .*wallet/.test(t)) return "wallet_compare_request";
@@ -328,18 +328,27 @@ function buildClarkToolPlan(input: {
 }): ClarkToolPlan {
   const message = input.message ?? "";
   const historyLines = getHistoryMessages(input.history);
-  const selectedOptionIndex = /^\s*([1-9])\s*$/.test(message.trim()) ? Number(message.trim()) : null;
+  const trimmed = message.trim().toLowerCase();
+  const selectedOptionIndex =
+    (/^\s*([1-9])\s*$/.test(trimmed) ? Number(trimmed) : null) ??
+    (/first one|that one|this one/.test(trimmed) ? 1 : null) ??
+    (/second one/.test(trimmed) ? 2 : null) ??
+    (/third one/.test(trimmed) ? 3 : null);
   const directAddress = extractAddress(message);
   const selectedAddress = selectedOptionIndex ? pickAddressBySelection(historyLines, selectedOptionIndex) : null;
   const inferredAddress = directAddress ?? selectedAddress;
   const lastHistoryAddress = findLastAddressInTextList(historyLines);
-  const fallbackAddress = inferredAddress ?? lastHistoryAddress;
-  const plannerIntent = classifyPlannerIntent(message, inferredAddress);
+  const marketFollowup = isMarketFollowupPrompt(message);
+  const explicitFollowupRef = /\b(this token|this wallet|it|this one|that one|first one|second one|third one)\b/i.test(message);
+  const allowHistoryEntity = Boolean(selectedOptionIndex || marketFollowup || explicitFollowupRef);
+  const fallbackAddress = inferredAddress ?? (allowHistoryEntity ? lastHistoryAddress : null);
+  let plannerIntent = classifyPlannerIntent(message, inferredAddress);
+  if (selectedAddress && (plannerIntent === "unknown" || plannerIntent === "feature_context")) plannerIntent = "token_analysis";
+  if (/^it\b/i.test(trimmed) && fallbackAddress) plannerIntent = "token_analysis";
   const depth: ClarkToolPlan["depth"] =
     /\b(deep|detailed|full detail|full breakdown)\b/i.test(message) ? "deep" :
     /\b(quick|short|brief)\b/i.test(message) ? "short" : "normal";
 
-  const marketFollowup = isMarketFollowupPrompt(message);
   const followupContext = {
     address: fallbackAddress ?? null,
     lastTokenAddress: fallbackAddress ?? null,
@@ -397,6 +406,7 @@ function buildClarkToolPlan(input: {
 function buildEducationalReply(prompt: string): string {
   const t = prompt.toLowerCase();
   if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can’t exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
+  if (/slippage/.test(t)) return "Slippage is the price impact between quoted and executed price. Thin liquidity and large orders increase slippage and worsen entries/exits.";
   if (/dev wallet/.test(t)) return "A dev wallet is a deployer-linked wallet that can reveal insider coordination, funding links, or early sell pressure.";
   if (/holder concentration/.test(t)) return "Holder concentration means too much supply sits in a few wallets, increasing dump and manipulation risk.";
   if (/lp lock/.test(t)) return "LP lock matters because unlocked liquidity can be pulled, which can collapse tradability and price.";
@@ -456,14 +466,16 @@ function buildGTMarketBriefing(pools: unknown[]): string {
   });
 
   if (picks.length === 0) {
-    return "I couldn't pull CoinGecko Terminal Base data right now. Paste a contract and I'll scan it directly.";
+    return "I couldn't pull live Base market data right now. Paste a contract and I'll scan it directly.";
   }
 
   return (
     "Base Market:\n" +
-    "CoinGecko Terminal — top movers on Base now.\n\n" +
+    "Top movers on Base right now.\n\n" +
     "Moving now:\n" +
     picks.join("\n") +
+    "\n\nClark’s read:\n" +
+    "Momentum is active, but thin-liquidity names can reverse fast.\n" +
     "\n\nBest next step:\n" +
     "Scan the strongest token before touching it. Market data alone does not confirm safety."
   );
@@ -527,6 +539,67 @@ function buildWalletAnalysisFallback(walletData: unknown, address: string): stri
     [`Wallet recognized on Base-compatible flow`, `Holdings detected: ${holdings}`, `Estimated total value: ${totalValue}`],
     ["Behavioral and counterpart risk requires deeper scanner context.", "Single-pass wallet data is not enough for a strong trust call."],
     "Run Wallet Scanner for deeper behavior and transfer-risk analysis."
+  );
+}
+
+function enforceWalletAssetLabel(text: string, address: string): string {
+  const walletLine = `Asset: Wallet ${shortAddress(address)}`;
+  if (/^Asset:/im.test(text)) {
+    return text.replace(/^Asset:.*$/im, walletLine);
+  }
+  return `${walletLine}\n${text.trim()}`;
+}
+
+function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>, address: string): string {
+  const top = snapshot.holdingsTop10;
+  const topValue = top.reduce((s, h) => s + h.value, 0);
+  const top1 = top[0]?.value ?? 0;
+  const concentration = topValue > 0 ? (top1 / topValue) * 100 : 0;
+  const breadth = snapshot.tokenCount;
+  const stablePct = snapshot.totalValue > 0 ? (snapshot.stablecoinExposureUsd / snapshot.totalValue) * 100 : 0;
+  const activity = snapshot.txCount ?? 0;
+
+  let verdict: "WATCH" | "SCAN DEEPER" | "AVOID" | "TRUSTWORTHY" = "WATCH";
+  let confidence: "Low" | "Medium" | "High" = "Medium";
+
+  if (snapshot.totalValue < 500 && breadth < 5) {
+    verdict = "SCAN DEEPER";
+    confidence = "Low";
+  } else if (concentration >= 80 && snapshot.totalValue > 10_000) {
+    verdict = "WATCH";
+    confidence = "Medium";
+  } else if (snapshot.totalValue >= 25_000 && breadth >= 8 && stablePct >= 10 && activity >= 20) {
+    verdict = "WATCH";
+    confidence = "High";
+  }
+
+  const profile =
+    snapshot.totalValue >= 25_000 && activity >= 20 ? "tracker-worthy whale/watch wallet" :
+    breadth >= 20 ? "broad rotation/farmer-style wallet" :
+    "lower-signal concentrated wallet";
+
+  const signals = [
+    `Portfolio value: ${formatUsdShort(snapshot.totalValue)}`,
+    `Concentration: top holding is ${concentration.toFixed(1)}% of visible top holdings`,
+    `Stablecoin exposure: ${formatUsdShort(snapshot.stablecoinExposureUsd)} (${stablePct.toFixed(1)}%)`,
+  ];
+  const risks = [
+    snapshot.dustOrUnpricedHidden ? "Dust or unpriced holdings exist and are hidden in this summary" : "Major holdings are mostly priced",
+    breadth < 5 ? "Low breadth increases single-asset dependency risk" : "Breadth is acceptable for watchlist monitoring",
+    activity < 10 ? "Low observed activity can indicate low signal quality" : "Observed activity is sufficient for behavior tracking",
+  ];
+  const read = `This looks like a ${profile}. I can rate it as a watch wallet, not proven smart money, unless timing/PnL evidence is added.`;
+
+  return enforceWalletAssetLabel(
+    buildStructuredVerdict(
+      verdict,
+      confidence,
+      read,
+      signals,
+      risks,
+      "Use this as a monitoring wallet; confirm entry timing and repeat behavior before copy-trading."
+    ),
+    address
   );
 }
 
@@ -888,8 +961,7 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
   }
 
   const deepMode = /\b(deep|detailed|full breakdown|full detail|long form)\b/i.test(prompt);
-  const allowProviderNames = /\b(source|sources|provider|providers)\b/i.test(prompt);
-  const text = sanitizeFreeform(raw, { allowProviderNames }).replace(/\r/g, "").trim();
+  const text = sanitizeFreeform(raw, { allowProviderNames: false }).replace(/\r/g, "").trim();
   const upper = text.toUpperCase();
   const ctx = extractClarkContext(userContent);
   const isDevWalletMode = /\bdev-wallet\b|dev wallet follow-up/i.test(prompt) || /\blikely deployer:/i.test(userContent);
@@ -1575,6 +1647,9 @@ type ClarkToolEvidence = {
     address: string;
     totalValue: number;
     holdingsTop10: Array<{ symbol: string; value: number; balance: number }>;
+    hiddenHoldingsCount: number;
+    dustOrUnpricedHidden: boolean;
+    stablecoinExposureUsd: number;
     tokenCount: number;
     txCount: number | null;
     walletAgeDays: number | null;
@@ -1694,6 +1769,19 @@ async function executeClarkToolPlan(input: {
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
         const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
         const totalValue = typeof w.totalValue === "number" ? w.totalValue : 0;
+        const ranked = [...holdings]
+          .map((h) => ({
+            symbol: String(h.symbol ?? "?"),
+            value: typeof h.value === "number" ? h.value : 0,
+            balance: typeof h.balance === "number" ? h.balance : 0,
+          }))
+          .sort((a, b) => b.value - a.value);
+        const topHoldings = ranked.filter((h) => h.value >= 1 && h.symbol !== "?").slice(0, 10);
+        const hiddenHoldingsCount = Math.max(ranked.length - topHoldings.length, 0);
+        const dustOrUnpricedHidden = ranked.some((h) => h.value < 1 || h.symbol === "?");
+        const stablecoinExposureUsd = ranked
+          .filter((h) => /^(USDC|USDT|DAI|LUSD|USDE|USDBC|EURC)$/i.test(h.symbol))
+          .reduce((sum, h) => sum + h.value, 0);
         const hasHoldings = holdings.length > 0;
         const hasValue = totalValue > 0;
         const hasTxMeta = typeof w.txCount === "number" || typeof w.walletAgeDays === "number";
@@ -1702,11 +1790,10 @@ async function executeClarkToolPlan(input: {
           ok: walletRes.ok && !w.error,
           address,
           totalValue,
-          holdingsTop10: holdings.slice(0, 10).map((h) => ({
-            symbol: String(h.symbol ?? "?"),
-            value: typeof h.value === "number" ? h.value : 0,
-            balance: typeof h.balance === "number" ? h.balance : 0,
-          })),
+          holdingsTop10: topHoldings,
+          hiddenHoldingsCount,
+          dustOrUnpricedHidden,
+          stablecoinExposureUsd,
           tokenCount: holdings.length,
           txCount: typeof w.txCount === "number" ? w.txCount : null,
           walletAgeDays: typeof w.walletAgeDays === "number" ? w.walletAgeDays : null,
@@ -2127,6 +2214,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       "Top holdings:",
       top || "- No significant holdings found",
       "",
+      w.hiddenHoldingsCount > 0 ? `Other holdings hidden: ${w.hiddenHoldingsCount}` : "",
+      w.dustOrUnpricedHidden ? "Dust/unpriced tokens hidden" : "",
       `Data note: ${w.dataQuality} data quality from current wallet snapshot.`,
     ].join("\n");
     return { feature: "clark-ai", chain, mode: "analysis", analysis: summary, intent: plan.intent, toolsUsed };
@@ -2136,11 +2225,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     if (!resolvedAddress) {
       return { feature: "clark-ai", chain, mode: "analysis", analysis: "Share the wallet address and I’ll evaluate quality with available evidence.", intent: plan.intent, toolsUsed };
     }
+    if (evidence.walletSnapshot?.ok) {
+      const quality = buildWalletQualityVerdict(evidence.walletSnapshot, resolvedAddress);
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: quality, intent: plan.intent, toolsUsed };
+    }
     if (evidence.walletQuality?.analysis) {
-      return { feature: "clark-ai", chain, mode: "analysis", analysis: evidence.walletQuality.analysis, intent: plan.intent, toolsUsed };
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: enforceWalletAssetLabel(evidence.walletQuality.analysis, resolvedAddress), intent: plan.intent, toolsUsed };
     }
     const fallback = evidence.walletSnapshot
-      ? buildWalletAnalysisFallback(evidence.walletSnapshot, resolvedAddress)
+      ? enforceWalletAssetLabel(buildWalletAnalysisFallback(evidence.walletSnapshot, resolvedAddress), resolvedAddress)
       : "I can judge this as a whale/watch wallet only. Not enough verified data to call it smart money yet.";
     return { feature: "clark-ai", chain, mode: "analysis", analysis: fallback, intent: plan.intent, toolsUsed };
   }
