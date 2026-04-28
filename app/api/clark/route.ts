@@ -284,6 +284,33 @@ type ClarkTokenContext = {
   symbol: string | null;
 };
 
+type ClarkQuestionType =
+  | "casual"
+  | "education"
+  | "market_overview"
+  | "token_scan"
+  | "token_full_report"
+  | "token_liquidity_followup"
+  | "token_dev_followup"
+  | "token_safety_followup"
+  | "token_move_explainer"
+  | "wallet_balance"
+  | "wallet_quality"
+  | "wallet_strategy"
+  | "compare_request"
+  | "unknown_general";
+
+type ClarkResolvedContext = {
+  lastToken: ClarkTokenContext;
+  lastWallet: string | null;
+  lastMarketSymbols: string[];
+  lastIntent: ClarkPlannerIntent | "unknown";
+  userWantsFollowup: boolean;
+  explicitAddress: string | null;
+  explicitSymbol: string | null;
+  questionType: ClarkQuestionType;
+};
+
 function extractLastTokenContext(historyLines: string[]): ClarkTokenContext {
   for (let i = historyLines.length - 1; i >= 0; i--) {
     const line = historyLines[i] ?? "";
@@ -302,6 +329,96 @@ function extractLastTokenContext(historyLines: string[]): ClarkTokenContext {
     }
   }
   return { address: null, name: null, symbol: null };
+}
+
+function extractLastWalletContext(historyLines: string[]): string | null {
+  for (let i = historyLines.length - 1; i >= 0; i--) {
+    const line = historyLines[i] ?? "";
+    if (/wallet/i.test(line)) {
+      const addr = extractAddress(line);
+      if (addr) return addr;
+    }
+  }
+  return null;
+}
+
+function resolveClarkContext(message: string, history: ClarkRequestBody["history"]): ClarkResolvedContext {
+  const historyLines = getHistoryMessages(history);
+  const normalized = message.trim().toLowerCase();
+  const explicitAddress = extractAddress(message);
+  const explicitSymbol = explicitAddress ? null : extractTokenLookupQuery(message);
+  const lastToken = extractLastTokenContext(historyLines);
+  const lastWallet = extractLastWalletContext(historyLines);
+  const marketText = historyLines.slice(-3).join("\n");
+  const lastMarketSymbols = [...marketText.matchAll(/\b[A-Z]{2,6}\b/g)].map((m) => m[0]).slice(0, 5);
+  const followupWords = /\b(it|this|this token|this wallet|what about|go deeper|why|is it safe|dev wallet|liquidity|holders|risks|more)\b/i.test(normalized);
+  const lastIntent: ClarkPlannerIntent | "unknown" =
+    /CLARK FULL REPORT|Bull case|Bear case/i.test(marketText) ? "token_full_report_request" :
+    /Dev wallet read:/i.test(marketText) ? "dev_wallet" :
+    /Liquidity read:/i.test(marketText) ? "liquidity_safety" :
+    /Wallet:|wallet quality|Asset: Wallet/i.test(marketText) ? "wallet_quality" :
+    /Base Market|what'?s pumping|movers?/i.test(marketText) ? "market" :
+    "unknown";
+
+  const questionType = classifyClarkQuestionType(normalized, { explicitAddress, explicitSymbol, lastToken, lastWallet, lastIntent, followupWords });
+  return {
+    lastToken,
+    lastWallet,
+    lastMarketSymbols,
+    lastIntent,
+    userWantsFollowup: followupWords,
+    explicitAddress,
+    explicitSymbol,
+    questionType,
+  };
+}
+
+function classifyClarkQuestionType(
+  normalized: string,
+  ctx: {
+    explicitAddress: string | null;
+    explicitSymbol: string | null;
+    lastToken: ClarkTokenContext;
+    lastWallet: string | null;
+    lastIntent: ClarkPlannerIntent | "unknown";
+    followupWords: boolean;
+  }
+): ClarkQuestionType {
+  if (/^(hi|hey|hello|yo|gm|sup)\b/.test(normalized)) return "casual";
+  if (/what can you do|help|who are you|how do i find whale wallets|what are red flags in a token|how do i find early wallets/.test(normalized)) return "unknown_general";
+  if (/what is liquidity risk|what is a dev wallet|holder concentration|lp lock|slippage/.test(normalized)) return "education";
+  if (/what should i watch|why are base memes moving|strategy|framework/.test(normalized)) return "market_overview";
+  if (/what'?s pumping on base|moving on base|trending|movers|gainers/.test(normalized)) return "market_overview";
+  if (/full report|deep scan|full analysis|run all checks/.test(normalized)) return "token_full_report";
+  if (/what about liquidity|explain the lp risk/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_liquidity_followup";
+  if (/what about the dev wallet|dev wallet/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_dev_followup";
+  if (/is it safe/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol)) return "token_safety_followup";
+  if (/why is it moving/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol)) return "token_move_explainer";
+  if (/balance|holdings?|portfolio|tell me the balance/.test(normalized) && (ctx.explicitAddress || ctx.lastWallet)) return "wallet_balance";
+  if (/(good wallet|worth tracking|copy trade|smart money|wallet quality|is this a good wallet)/.test(normalized) && (ctx.explicitAddress || ctx.lastWallet || ctx.followupWords)) return "wallet_quality";
+  if (/copy trade|wallet worth tracking|why is this wallet worth tracking/.test(normalized)) return "wallet_strategy";
+  if (/compare .*wallet/.test(normalized)) return "compare_request";
+  if (/scan|check|token scan|contract/.test(normalized) || ctx.explicitAddress || ctx.explicitSymbol) return "token_scan";
+  return "unknown_general";
+}
+
+function planClarkInvestigation(context: ClarkResolvedContext): { intent: ClarkPlannerIntent; forceAddress: string | null } {
+  switch (context.questionType) {
+    case "casual": return { intent: "casual", forceAddress: null };
+    case "education": return { intent: "educational", forceAddress: null };
+    case "market_overview": return { intent: "market", forceAddress: null };
+    case "token_full_report": return { intent: "token_full_report_request", forceAddress: context.explicitAddress ?? context.lastToken.address };
+    case "token_liquidity_followup": return { intent: "liquidity_safety", forceAddress: context.explicitAddress ?? context.lastToken.address };
+    case "token_dev_followup": return { intent: "dev_wallet", forceAddress: context.explicitAddress ?? context.lastToken.address };
+    case "token_safety_followup": return { intent: "token_full_report_request", forceAddress: context.explicitAddress ?? context.lastToken.address };
+    case "token_move_explainer": return { intent: "token_analysis", forceAddress: context.explicitAddress ?? context.lastToken.address };
+    case "wallet_balance": return { intent: "wallet_balance", forceAddress: context.explicitAddress ?? context.lastWallet };
+    case "wallet_quality":
+    case "wallet_strategy": return { intent: "wallet_quality", forceAddress: context.explicitAddress ?? context.lastWallet };
+    case "compare_request": return { intent: "wallet_compare_request", forceAddress: null };
+    case "token_scan": return { intent: "token_analysis", forceAddress: context.explicitAddress ?? context.lastToken.address };
+    default: return { intent: "strategy", forceAddress: null };
+  }
 }
 
 function findLastAddressInTextList(lines: string[]): string | null {
@@ -364,12 +481,14 @@ function buildClarkToolPlan(input: {
   const directAddress = extractAddress(message);
   const selectedAddress = selectedOptionIndex ? pickAddressBySelection(historyLines, selectedOptionIndex) : null;
   const tokenContext = extractLastTokenContext(historyLines);
+  const resolvedContext = resolveClarkContext(message, input.history);
+  const investigation = planClarkInvestigation(resolvedContext);
   const inferredAddress = directAddress ?? selectedAddress;
   const lastHistoryAddress = findLastAddressInTextList(historyLines);
   const marketFollowup = isMarketFollowupPrompt(message);
   const explicitFollowupRef = /\b(this token|this wallet|it|this one|that one|first one|second one|third one)\b/i.test(message);
   const tokenFollowupPrompt = /\b(what about the dev wallet|what about liquidity|is it safe|why is it moving|should i watch|what are the risks|go deeper|explain the lp risk|what about holders)\b/i.test(trimmed);
-  let plannerIntent = classifyPlannerIntent(message, inferredAddress);
+  let plannerIntent = investigation.intent ?? classifyPlannerIntent(message, inferredAddress);
   if (selectedAddress && (plannerIntent === "unknown" || plannerIntent === "feature_context")) {
     const historyText = historyLines.join("\n").toLowerCase();
     plannerIntent = /full report|run the full report|token_full_report_request/.test(historyText)
@@ -378,7 +497,7 @@ function buildClarkToolPlan(input: {
   }
   const reportFollowupIntent = plannerIntent === "token_full_report_request" || plannerIntent === "dev_wallet" || plannerIntent === "liquidity_safety";
   const allowHistoryEntity = Boolean(selectedOptionIndex || marketFollowup || explicitFollowupRef || reportFollowupIntent);
-  let fallbackAddress = inferredAddress ?? (allowHistoryEntity ? (tokenContext.address ?? lastHistoryAddress) : null);
+  let fallbackAddress = investigation.forceAddress ?? inferredAddress ?? (allowHistoryEntity ? (tokenContext.address ?? lastHistoryAddress) : null);
   if (!inferredAddress && tokenContext.address && (tokenFollowupPrompt || reportFollowupIntent || plannerIntent === "token_analysis")) {
     fallbackAddress = tokenContext.address;
   }
@@ -470,6 +589,23 @@ function buildEducationalReply(prompt: string): string {
   if (/holder concentration/.test(t)) return "Holder concentration means too much supply sits in a few wallets, increasing dump and manipulation risk.";
   if (/lp lock/.test(t)) return "LP lock matters because unlocked liquidity can be pulled, which can collapse tradability and price.";
   return "Great question. Share the exact risk concept and I’ll break it down quickly.";
+}
+
+function buildClarkStrategyReply(prompt: string): string {
+  const t = prompt.toLowerCase();
+  if (/what should i watch|watch on base today/.test(t)) {
+    return "Focus on liquidity-backed movers, not just top gainers. Watch 24h volume/liquidity balance, sudden deployer-linked selling, and whether momentum holds after the first pullback.";
+  }
+  if (/base memes moving|why are base memes moving/.test(t)) {
+    return "Base memes usually move when short-term liquidity rotates quickly into a few tickers. The key is whether volume is sustaining or just one burst with thin exits.";
+  }
+  if (/find whale wallets|early wallets/.test(t)) {
+    return "Track wallets with repeatable entries before momentum expands, then verify they do not dump immediately on strength. Consistency of behavior matters more than wallet size alone.";
+  }
+  if (/red flags in a token/.test(t)) {
+    return "Main red flags: unclear contract controls, thin liquidity, concentrated ownership, and suspicious deployer-linked flows. If two or more are unresolved, treat it as SCAN DEEPER or avoid.";
+  }
+  return "I can help with market watchlists, token risk reads, wallet quality checks, and full investigations. Ask for a market overview or share a token/wallet for targeted analysis.";
 }
 
 function buildRoutingHelpReply(prompt: string): string {
@@ -2031,6 +2167,19 @@ type ClarkFullReportEvidence = {
   missing: string[];
 };
 
+type ClarkEvidencePack = {
+  asset: string;
+  contract: string;
+  marketFacts: string[];
+  securityFacts: string[];
+  liquidityFacts: string[];
+  devFacts: string[];
+  walletFacts: string[];
+  missing: string[];
+  confidenceDrivers: string[];
+  riskDrivers: string[];
+};
+
 function boolToWord(value: boolean | null): string {
   if (value === true) return "Yes";
   if (value === false) return "No";
@@ -2096,6 +2245,54 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   if (out.devWallet.likelyDeployer === null) out.missing.push("Likely deployer identity");
 
   return out;
+}
+
+function buildClarkEvidencePack(report: ClarkFullReportEvidence, wallet?: ClarkToolEvidence["walletSnapshot"]): ClarkEvidencePack {
+  const asset = `${report.token.name ?? "Unknown token"} (${report.token.symbol ?? "?"})`;
+  const marketFacts = [
+    `24h move: ${report.market.change24h != null ? `${report.market.change24h.toFixed(2)}%` : "Unverified"}`,
+    `Volume: ${formatUsdShort(report.market.volume24h)}`,
+    `Liquidity: ${formatUsdShort(report.market.liquidity)}`,
+  ];
+  const securityFacts = [
+    `Honeypot: ${boolToWord(report.contract.honeypot)}`,
+    `Tax: ${report.contract.buyTax != null || report.contract.sellTax != null ? `${report.contract.buyTax ?? "?"}% / ${report.contract.sellTax ?? "?"}%` : "Unverified"}`,
+    `Proxy: ${boolToWord(report.contract.proxy)}`,
+  ];
+  const liquidityFacts = [
+    `Pool depth: ${formatUsdShort(report.liquidity.liquidityUsd)}`,
+    `LP control: ${boolToWord(report.liquidity.lpLocked)}`,
+    `Volume/liquidity: ${report.liquidity.volumeToLiquidity != null ? report.liquidity.volumeToLiquidity.toFixed(2) : "Unverified"}`,
+  ];
+  const devFacts = [
+    `Deployer: ${report.devWallet.likelyDeployer ? shortAddress(report.devWallet.likelyDeployer) : "Unverified"}`,
+    `Linked wallets: ${report.devWallet.linkedWallets ?? 0}`,
+  ];
+  const walletFacts = wallet?.ok
+    ? [`Wallet value: ${formatUsdShort(wallet.totalValue)}`, `Token count: ${formatInt(wallet.tokenCount)}`]
+    : [];
+  const confidenceDrivers = dedupeLines([
+    report.market.marketSourceAvailable ? "Market data is present." : "",
+    report.contract.honeypot === false ? "No honeypot flag in current checks." : "",
+    (report.liquidity.liquidityUsd ?? 0) > 100_000 ? "Liquidity depth is substantial." : "",
+  ]).filter(Boolean);
+  const riskDrivers = dedupeLines([
+    report.contract.honeypot === true ? "Honeypot flag detected." : "",
+    (report.contract.buyTax ?? 0) > 15 || (report.contract.sellTax ?? 0) > 15 ? "Transfer tax is elevated." : "",
+    report.missing.length ? "Several checks remain unverified." : "",
+  ]).filter(Boolean);
+  return {
+    asset,
+    contract: report.token.address ?? "Unresolved",
+    marketFacts,
+    securityFacts,
+    liquidityFacts,
+    devFacts,
+    walletFacts,
+    missing: report.missing,
+    confidenceDrivers,
+    riskDrivers,
+  };
 }
 
 function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
@@ -2595,6 +2792,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, mode: "routing_help", analysis: buildRoutingHelpReply(prompt), intent: plan.intent, toolsUsed };
   }
 
+  if (plan.intent === "strategy" && !/pumping on base|moving on base|trending|movers|gainers|runners/i.test(prompt)) {
+    return { feature: "clark-ai", chain, mode: "analysis", analysis: buildClarkStrategyReply(prompt), intent: plan.intent, toolsUsed };
+  }
+
   if (plan.intent === "wallet_compare_request") {
     return {
       feature: "clark-ai",
@@ -2804,7 +3005,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       return { feature: "clark-ai", chain, mode: "analysis", analysis: "Paste a Base token contract (or token name) and I’ll scan it.", intent: plan.intent, toolsUsed };
     }
     const report = buildFullReportEvidence(evidence, token.address);
-    const analysis = renderQuickTokenScan(report);
+    const pack = buildClarkEvidencePack(report);
+    const lower = prompt.toLowerCase();
+    const analysis =
+      /is it safe|safe\??$/.test(lower)
+        ? [
+            `Safety read for ${pack.asset}:`,
+            `- Verified now: ${pack.confidenceDrivers.length ? pack.confidenceDrivers.join(" ") : "Only partial market/security checks."}`,
+            `- Risks seen: ${pack.riskDrivers.length ? pack.riskDrivers.join(" ") : "No critical risk flag confirmed yet."}`,
+            `- Not verified yet: ${pack.missing.length ? pack.missing.join(", ") : "No major missing fields."}`,
+            "- What to check next: confirm LP control and deployer behavior before treating this as safe."
+          ].join("\n")
+        : /why is it moving/.test(lower)
+          ? [
+              `Move explainer for ${pack.asset}:`,
+              `- Market picture: ${pack.marketFacts.join(" | ")}`,
+              `- Liquidity context: ${pack.liquidityFacts.join(" | ")}`,
+              `- Interpretation: moves are reliable only when volume and liquidity rise together without new contract/deployer risk flags.`,
+              `- Missing context: ${pack.missing.length ? pack.missing.join(", ") : "limited missing fields"}`
+            ].join("\n")
+          : renderQuickTokenScan(report);
     return { feature: "clark-ai", chain, mode: "analysis", analysis, intent: plan.intent, toolsUsed };
   }
 
