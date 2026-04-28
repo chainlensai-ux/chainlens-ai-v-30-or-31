@@ -17,6 +17,20 @@ interface Message {
   role: 'user' | 'clark'
   text: string
 }
+type ClarkContextState = {
+  lastMarketList?: Array<{
+    rank: number
+    symbol: string
+    name?: string | null
+    tokenAddress?: string | null
+    poolAddress?: string | null
+    reasonTag?: string | null
+  }>
+  lastToken?: string | null
+  lastWallet?: string | null
+  lastIntent?: string | null
+  lastSelectedRank?: number | null
+}
 
 // Try to pull a token name from a message like "is brett safe?" or "toshi price"
 function extractTokenQuery(text: string): string | null {
@@ -86,7 +100,7 @@ function formatResponse(data: Record<string, unknown>): string {
 }
 
 export default function ClarkChat({
-  active,
+  active: _active,
   onTyping,
   onSend,
   initialMessage,
@@ -99,6 +113,7 @@ export default function ClarkChat({
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const lastSentInitialRef = useRef<string | null>(null)
+  const clarkContextRef = useRef<ClarkContextState>({})
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -106,9 +121,6 @@ export default function ClarkChat({
     }
   }, [messages])
 
-  // Stable send function — callable from both the UI and the initialMessage effect.
-  // useState setters and refs are guaranteed stable by React, so [] deps is correct.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const executeSend = useCallback(async (text: string) => {
     console.log('executeSend sending:', text)
     setMessages(prev => [...prev, { role: 'user', text }])
@@ -117,17 +129,38 @@ export default function ClarkChat({
 
     try {
       const body = parseMessage(text)
+      const history = [...messages, { role: 'user', text }]
+        .slice(-30)
+        .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       console.log('POST → /api/clark')
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, message: text, mode: body.feature, context: null }),
+        body: JSON.stringify({
+          ...body,
+          message: text,
+          mode: body.feature,
+          uiModeHint: mode,
+          context: null,
+          history,
+          clarkContext: clarkContextRef.current,
+        }),
       })
       console.log('Response status:', res.status)
 
       const json = await res.json()
+      const payload = (json.data as Record<string, unknown>) ?? {}
+      const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
+        ? payload.marketContext as { items?: unknown }
+        : null
+      const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
+      if (nextItems && nextItems.length > 0) {
+        clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
+      }
+      clarkContextRef.current.lastIntent = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
+      clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
       const reply = json.ok
-        ? (String((json.data as Record<string, unknown>)?.reply ?? formatResponse(json.data as Record<string, unknown>)))
+        ? (String(payload?.reply ?? formatResponse(payload)))
         : (json.error ?? 'Something went wrong.')
 
       setMessages(prev => {
@@ -145,16 +178,16 @@ export default function ClarkChat({
       setLoading(false)
       inputRef.current?.focus()
     }
-  }, [])
+  }, [messages, mode])
 
   // Fire once per unique initialMessage value.
   useEffect(() => {
     if (initialMessage && initialMessage !== lastSentInitialRef.current) {
       lastSentInitialRef.current = initialMessage
       if (prefillOnlyInitial) {
-        setInput(initialMessage)
+        queueMicrotask(() => setInput(initialMessage))
       } else {
-        executeSend(initialMessage)
+        queueMicrotask(() => { void executeSend(initialMessage) })
       }
     }
   }, [initialMessage, executeSend, prefillOnlyInitial])
