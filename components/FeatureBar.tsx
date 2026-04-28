@@ -3,9 +3,11 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 import ConnectWallet from '@/components/ConnectWallet'
+import { supabase } from '@/lib/supabaseClient'
 
 
 
@@ -298,6 +300,26 @@ interface Props {
 
 export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }: Props) {
   const router = useRouter()
+  const [accountEmail, setAccountEmail] = useState<string | null>(null)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setAccountEmail(data.session?.user?.email ?? null)
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAccountEmail(session?.user?.email ?? null)
+    })
+
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
+  const initials = (accountEmail?.[0] ?? 'A').toUpperCase()
+  const shortEmail = accountEmail
+    ? accountEmail.length > 18
+      ? `${accountEmail.slice(0, 7)}…${accountEmail.slice(-7)}`
+      : accountEmail
+    : null
   return (
     <aside
       className="h-screen shrink-0 flex flex-col mob-featurebar"
@@ -386,71 +408,96 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
         {/* Connect Wallet — full width */}
         <ConnectWallet className="w-full active:scale-[0.98]" />
 
-        {/* Sign In | Sign Up */}
-        <div className="flex" style={{ gap: '6px' }}>
-          {/* Sign In — dark neutral ghost */}
+        {accountEmail ? (
           <button
-            className="flex-1"
-            onClick={() => router.push('/sign-in')}
+            className="w-full"
+            onClick={() => router.push('/terminal/settings')}
             style={{
-              height: '30px',
+              height: '34px',
               borderRadius: '8px',
-              background: 'rgba(255,255,255,0.03)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              color: '#5a7490',
-              fontSize: '12px',
+              background: 'linear-gradient(135deg, rgba(45,212,191,0.10) 0%, rgba(139,92,246,0.14) 100%)',
+              border: '1px solid rgba(45,212,191,0.30)',
+              color: '#d1fae5',
+              fontSize: '11px',
               fontWeight: 500,
               cursor: 'pointer',
               fontFamily: 'var(--font-inter)',
-              transition: 'color 0.12s, border-color 0.12s, background 0.12s',
+              transition: 'border-color 0.12s, box-shadow 0.12s',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0 8px',
             }}
             onMouseEnter={e => {
               const el = e.currentTarget as HTMLButtonElement
-              el.style.color       = '#94a3b8'
-              el.style.borderColor = 'rgba(255,255,255,0.16)'
-              el.style.background  = 'rgba(255,255,255,0.06)'
+              el.style.borderColor = 'rgba(45,212,191,0.48)'
+              el.style.boxShadow = '0 0 18px rgba(45,212,191,0.20)'
             }}
             onMouseLeave={e => {
               const el = e.currentTarget as HTMLButtonElement
-              el.style.color       = '#5a7490'
-              el.style.borderColor = 'rgba(255,255,255,0.08)'
-              el.style.background  = 'rgba(255,255,255,0.03)'
+              el.style.borderColor = 'rgba(45,212,191,0.30)'
+              el.style.boxShadow = 'none'
             }}
           >
-            Sign In
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
+              <span style={{
+                width: '18px',
+                height: '18px',
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                color: '#04101a',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '10px',
+              }}>{initials}</span>
+              <span>{shortEmail}</span>
+            </span>
+            <span style={{ color: '#5eead4', fontSize: '9px', letterSpacing: '0.09em', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.9)' }} />
+              SIGNED IN
+            </span>
           </button>
-          {/* Sign Up — purple tint */}
-          <button
-            className="flex-1 active:scale-[0.98]"
-            onClick={() => router.push('/sign-in')}
-            style={{
-              height: '30px',
-              borderRadius: '8px',
-              background: 'rgba(139,92,246,0.12)',
-              border: '1px solid rgba(139,92,246,0.28)',
-              color: '#a78bfa',
-              fontSize: '12px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              fontFamily: 'var(--font-inter)',
-              transition: 'background 0.12s, border-color 0.12s, box-shadow 0.12s',
-            }}
-            onMouseEnter={e => {
-              const el = e.currentTarget as HTMLButtonElement
-              el.style.background  = 'rgba(139,92,246,0.22)'
-              el.style.borderColor = 'rgba(139,92,246,0.48)'
-              el.style.boxShadow   = '0 0 16px rgba(139,92,246,0.22)'
-            }}
-            onMouseLeave={e => {
-              const el = e.currentTarget as HTMLButtonElement
-              el.style.background  = 'rgba(139,92,246,0.12)'
-              el.style.borderColor = 'rgba(139,92,246,0.28)'
-              el.style.boxShadow   = 'none'
-            }}
-          >
-            Sign Up
-          </button>
-        </div>
+        ) : (
+          <div className="flex" style={{ gap: '6px' }}>
+            <button
+              className="flex-1"
+              onClick={() => router.push('/sign-in')}
+              style={{
+                height: '30px',
+                borderRadius: '8px',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                color: '#5a7490',
+                fontSize: '12px',
+                fontWeight: 500,
+                cursor: 'pointer',
+                fontFamily: 'var(--font-inter)',
+                transition: 'color 0.12s, border-color 0.12s, background 0.12s',
+              }}
+            >
+              Sign In
+            </button>
+            <button
+              className="flex-1 active:scale-[0.98]"
+              onClick={() => router.push('/sign-in')}
+              style={{
+                height: '30px',
+                borderRadius: '8px',
+                background: 'rgba(139,92,246,0.12)',
+                border: '1px solid rgba(139,92,246,0.28)',
+                color: '#a78bfa',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'var(--font-inter)',
+              }}
+            >
+              Sign Up
+            </button>
+          </div>
+        )}
             </div>
     </aside>
   )

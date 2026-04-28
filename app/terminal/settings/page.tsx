@@ -6,6 +6,13 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import type { UserSettingsUpdate } from '@/lib/supabase/userSettings'
 
+const AVATAR_COLORS: Record<string, string> = {
+  mint: 'linear-gradient(135deg, #2DD4BF 0%, #14b8a6 100%)',
+  purple: 'linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%)',
+  pink: 'linear-gradient(135deg, #ec4899 0%, #f43f5e 100%)',
+  blue: 'linear-gradient(135deg, #38bdf8 0%, #3b82f6 100%)',
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function Card({ children, danger = false }: { children: React.ReactNode; danger?: boolean }) {
@@ -130,6 +137,8 @@ export default function SettingsPage() {
   const router = useRouter()
   const LOCAL_SETTINGS_KEY = 'chainlens_local_settings'
   const [displayName, setDisplayName] = useState('')
+  const [avatarUrl, setAvatarUrl] = useState('')
+  const [avatarColor, setAvatarColor] = useState<'mint' | 'purple' | 'pink' | 'blue'>('mint')
   const [userEmail, setUserEmail] = useState<string | null>(null)
   const [accessToken, setAccessToken] = useState<string | null>(null)
   const [isAuthed, setIsAuthed] = useState(false)
@@ -157,6 +166,120 @@ export default function SettingsPage() {
   const [notifRadar, setNotifRadar]   = useState(false)
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [savedFiltersCount, setSavedFiltersCount] = useState(0)
+  const [selectedTerminalTool, setSelectedTerminalTool] = useState<string | null>(null)
+  const [onboardingCount, setOnboardingCount] = useState(0)
+
+  function buildPayload(): UserSettingsUpdate {
+    return {
+      theme: darkMode ? 'dark' : 'light',
+      accent_color: 'mint',
+      default_chain: defaultChain,
+      clark_detail_level: clarkDetailLevel,
+      display_name: displayName.trim() || null,
+      avatar_url: avatarUrl.trim() || null,
+      avatar_color: avatarColor,
+      saved_layout: {
+        selected_terminal_tool: 'settings',
+      },
+      saved_filters: {
+        whale_alerts: notifWhale,
+        pump_alerts: notifPump,
+        base_radar_alerts: notifRadar,
+      },
+      onboarding_progress: {},
+    }
+  }
+
+  function hydrateFromSettings(settings: Record<string, unknown>) {
+    setDarkMode(settings.theme !== 'light')
+
+    const chain = settings.default_chain
+    if (chain === 'base' || chain === 'ethereum' || chain === 'solana') {
+      setDefaultChain(chain)
+    }
+
+    const detail = settings.clark_detail_level
+    if (detail === 'low' || detail === 'normal' || detail === 'high') {
+      setClarkDetailLevel(detail)
+    }
+
+    if (typeof settings.display_name === 'string') setDisplayName(settings.display_name)
+    if (typeof settings.avatar_url === 'string') setAvatarUrl(settings.avatar_url)
+    if (settings.avatar_color === 'mint' || settings.avatar_color === 'purple' || settings.avatar_color === 'pink' || settings.avatar_color === 'blue') {
+      setAvatarColor(settings.avatar_color)
+    }
+
+    const filters = settings.saved_filters
+    if (filters && typeof filters === 'object' && !Array.isArray(filters)) {
+      const safeFilters = filters as Record<string, unknown>
+      if (typeof safeFilters.whale_alerts === 'boolean') setNotifWhale(safeFilters.whale_alerts)
+      if (typeof safeFilters.pump_alerts === 'boolean') setNotifPump(safeFilters.pump_alerts)
+      if (typeof safeFilters.base_radar_alerts === 'boolean') setNotifRadar(safeFilters.base_radar_alerts)
+      setSavedFiltersCount(Object.keys(safeFilters).length)
+    } else {
+      setSavedFiltersCount(0)
+    }
+
+    const layout = settings.saved_layout
+    if (layout && typeof layout === 'object' && !Array.isArray(layout)) {
+      const tool = (layout as Record<string, unknown>).selected_terminal_tool
+      setSelectedTerminalTool(typeof tool === 'string' ? tool : null)
+    } else {
+      setSelectedTerminalTool(null)
+    }
+
+    const onboarding = settings.onboarding_progress
+    if (onboarding && typeof onboarding === 'object' && !Array.isArray(onboarding)) {
+      setOnboardingCount(Object.keys(onboarding as Record<string, unknown>).length)
+    } else {
+      setOnboardingCount(0)
+    }
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!authChecked) return
+
+    if (!isAuthed || !accessToken) {
+      const localRaw = window.localStorage.getItem(LOCAL_SETTINGS_KEY)
+      if (localRaw) {
+        try {
+          const localSettings = JSON.parse(localRaw) as Record<string, unknown>
+          queueMicrotask(() => hydrateFromSettings(localSettings))
+        } catch {
+          // Keep safe defaults when local settings are invalid.
+        }
+      }
+      return
+    }
+
+    let canceled = false
+    const loadRemote = async () => {
+      try {
+        const res = await fetch('/api/user-settings', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        })
+
+        if (!res.ok) throw new Error('Failed to load settings')
+        const data = await res.json() as { settings?: Record<string, unknown>; error?: string }
+        if (canceled) return
+
+        if (data.settings) {
+          hydrateFromSettings(data.settings)
+          setSaveMessage(data.error ? 'Loaded defaults (settings fetch had an issue).' : 'Loaded saved account settings.')
+        }
+      } catch {
+        if (!canceled) setSaveMessage('Could not load account settings. Using local defaults.')
+      }
+    }
+
+    loadRemote()
+    return () => { canceled = true }
+  }, [authChecked, isAuthed, accessToken])
 
   function buildPayload(): UserSettingsUpdate {
     return {
@@ -284,6 +407,41 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleSaveProfile() {
+    setSavingState('saving')
+    setSaveMessage('Saving profile...')
+
+    const profilePayload: UserSettingsUpdate = {
+      display_name: displayName.trim() || null,
+      avatar_url: avatarUrl.trim() || null,
+      avatar_color: avatarColor,
+    }
+
+    if (!isAuthed || !accessToken) {
+      setSavingState('error')
+      setSaveMessage('Sign in to save your profile and settings.')
+      return
+    }
+
+    try {
+      const res = await fetch('/api/user-settings', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(profilePayload),
+      })
+
+      if (!res.ok) throw new Error('Profile save failed')
+      setSavingState('saved')
+      setSaveMessage('Profile saved to your account.')
+    } catch {
+      setSavingState('error')
+      setSaveMessage('Failed to save profile.')
+    }
+  }
+
   const APIS = [
     { name: 'GeckoTerminal',  sub: 'Token & pool data',         connected: true  },
     { name: 'Base RPC',       sub: 'On-chain reads',            connected: true  },
@@ -341,31 +499,31 @@ export default function SettingsPage() {
           <Card>
             <SectionTitle>Account</SectionTitle>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', marginBottom: '24px' }}>
-              {/* Avatar placeholder */}
+              {/* Avatar preview */}
               <div style={{
                 width: '64px', height: '64px', borderRadius: '50%', flexShrink: 0,
-                background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: '22px', fontWeight: 800, color: '#04101a',
                 fontFamily: 'var(--font-inter, Inter, sans-serif)',
                 boxShadow: '0 0 20px rgba(45,212,191,0.25)',
-                cursor: 'pointer',
                 border: '2px solid rgba(45,212,191,0.20)',
+                overflow: 'hidden',
               }}>
-                {(displayName || userEmail || 'U')[0].toUpperCase()}
+                {avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={avatarUrl} alt="Avatar preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <span>{(displayName || userEmail || 'U')[0].toUpperCase()}</span>
+                )}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', marginBottom: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.06em' }}>
-                  Click avatar to upload photo
+                  {isAuthed ? 'Signed in account profile' : 'Guest mode profile preview'}
                 </div>
-                <button style={{
-                  padding: '5px 14px', borderRadius: '7px',
-                  background: 'rgba(45,212,191,0.08)',
-                  border: '1px solid rgba(45,212,191,0.20)',
-                  color: '#2DD4BF', fontSize: '11px', fontWeight: 600,
-                  cursor: 'pointer', fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                  letterSpacing: '0.05em',
-                }}>Change Avatar</button>
+                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.50)' }}>
+                  Signed in as: {userEmail ?? 'Guest'}
+                </div>
               </div>
             </div>
 
@@ -391,9 +549,47 @@ export default function SettingsPage() {
                   Email is managed by your sign-in provider.
                 </div>
               </div>
+              <div>
+                <Label>Avatar URL</Label>
+                <Input value={avatarUrl} onChange={setAvatarUrl} placeholder="https://..." />
+              </div>
+              <div>
+                <Label>Avatar Color</Label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {(['mint', 'purple', 'pink', 'blue'] as const).map(color => (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => setAvatarColor(color)}
+                      style={{
+                        width: '26px',
+                        height: '26px',
+                        borderRadius: '50%',
+                        border: avatarColor === color ? '2px solid rgba(255,255,255,0.8)' : '1px solid rgba(255,255,255,0.20)',
+                        background: AVATAR_COLORS[color],
+                        cursor: 'pointer',
+                      }}
+                      title={color}
+                    />
+                  ))}
+                </div>
+              </div>
             </div>
 
             <div style={{ marginTop: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <button
+                onClick={handleSaveProfile}
+                style={{
+                  padding: '9px 22px', borderRadius: '9px',
+                  background: 'rgba(139,92,246,0.14)',
+                  border: '1px solid rgba(139,92,246,0.30)',
+                  color: '#c4b5fd', fontSize: '12px', fontWeight: 700,
+                  cursor: 'pointer', fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                  letterSpacing: '0.08em', textTransform: 'uppercase',
+                }}
+              >
+                Save Profile
+              </button>
               <button
                 onClick={handleSaveSettings}
                 style={{
@@ -434,6 +630,31 @@ export default function SettingsPage() {
                 </svg>
                 {signingOut ? 'Signing out…' : 'Sign Out'}
               </button>
+            </div>
+            {!isAuthed && (
+              <div style={{ marginTop: '10px', fontSize: '12px', color: 'rgba(255,255,255,0.48)' }}>
+                Sign in to save your profile and settings.
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <SectionTitle>Saved Progress</SectionTitle>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Account status</div>
+              <div style={{ fontSize: '12px', textAlign: 'right', color: isAuthed ? '#5eead4' : 'rgba(255,255,255,0.45)' }}>{isAuthed ? 'Signed in' : 'Guest'}</div>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Settings sync</div>
+              <div style={{ fontSize: '12px', textAlign: 'right', color: isAuthed ? '#5eead4' : 'rgba(255,255,255,0.45)' }}>{isAuthed ? 'Enabled' : 'Local only'}</div>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Clark detail level</div>
+              <div style={{ fontSize: '12px', textAlign: 'right' }}>{clarkDetailLevel}</div>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Default chain</div>
+              <div style={{ fontSize: '12px', textAlign: 'right' }}>{defaultChain}</div>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Saved filters count</div>
+              <div style={{ fontSize: '12px', textAlign: 'right' }}>{savedFiltersCount}</div>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Selected terminal tool</div>
+              <div style={{ fontSize: '12px', textAlign: 'right' }}>{selectedTerminalTool ?? 'Not set'}</div>
+              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Onboarding progress</div>
+              <div style={{ fontSize: '12px', textAlign: 'right' }}>{onboardingCount > 0 ? `${onboardingCount} item(s)` : 'No saved progression yet.'}</div>
             </div>
           </Card>
 

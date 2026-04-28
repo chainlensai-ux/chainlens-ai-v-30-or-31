@@ -9,6 +9,9 @@ export type UserSettings = {
   accent_color: string;
   default_chain: string;
   clark_detail_level: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  avatar_color: string;
   saved_layout: JsonMap;
   saved_filters: JsonMap;
   onboarding_progress: JsonMap;
@@ -18,7 +21,7 @@ export type UserSettings = {
 
 export type UserSettingsUpdate = Partial<Pick<
   UserSettings,
-  'theme' | 'accent_color' | 'default_chain' | 'clark_detail_level' | 'saved_layout' | 'saved_filters' | 'onboarding_progress'
+  'theme' | 'accent_color' | 'default_chain' | 'clark_detail_level' | 'display_name' | 'avatar_url' | 'avatar_color' | 'saved_layout' | 'saved_filters' | 'onboarding_progress'
 >>;
 
 export const USER_SETTINGS_DEFAULTS: Omit<UserSettings, 'user_id'> = {
@@ -26,6 +29,9 @@ export const USER_SETTINGS_DEFAULTS: Omit<UserSettings, 'user_id'> = {
   accent_color: 'mint',
   default_chain: 'base',
   clark_detail_level: 'normal',
+  display_name: null,
+  avatar_url: null,
+  avatar_color: 'mint',
   saved_layout: {},
   saved_filters: {},
   onboarding_progress: {},
@@ -36,6 +42,9 @@ const ALLOWED_KEYS = new Set([
   'accent_color',
   'default_chain',
   'clark_detail_level',
+  'display_name',
+  'avatar_url',
+  'avatar_color',
   'saved_layout',
   'saved_filters',
   'onboarding_progress',
@@ -79,6 +88,12 @@ export function sanitizeSettingsUpdate(input: unknown): { valid: UserSettingsUpd
       if (key === 'accent_color') valid.accent_color = value;
       if (key === 'default_chain') valid.default_chain = value;
       if (key === 'clark_detail_level') valid.clark_detail_level = value;
+      if (key === 'avatar_color') valid.avatar_color = value;
+      if (key === 'display_name') valid.display_name = value;
+      if (key === 'avatar_url') valid.avatar_url = value;
+    } else if (value === null && (key === 'display_name' || key === 'avatar_url')) {
+      if (key === 'display_name') valid.display_name = null;
+      if (key === 'avatar_url') valid.avatar_url = null;
     } else {
       invalidKeys.push(key);
     }
