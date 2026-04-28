@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
+import type { UserSettingsUpdate } from '@/lib/supabase/userSettings'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -127,15 +128,27 @@ function StatusBadge({ connected }: { connected: boolean }) {
 
 export default function SettingsPage() {
   const router = useRouter()
+  const LOCAL_SETTINGS_KEY = 'chainlens_local_settings'
   const [displayName, setDisplayName] = useState('')
   const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [isAuthed, setIsAuthed] = useState(false)
+  const [authChecked, setAuthChecked] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
+  const [savingState, setSavingState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [saveMessage, setSaveMessage] = useState<string>('')
 
   const [darkMode, setDarkMode] = useState(true)
+  const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum' | 'solana'>('base')
+  const [clarkDetailLevel, setClarkDetailLevel] = useState<'low' | 'normal' | 'high'>('normal')
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      setUserEmail(data.session?.user?.email ?? null)
+      const session = data.session
+      setUserEmail(session?.user?.email ?? null)
+      setAccessToken(session?.access_token ?? null)
+      setIsAuthed(Boolean(session?.user))
+      setAuthChecked(true)
     })
   }, [])
 
@@ -145,10 +158,130 @@ export default function SettingsPage() {
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
+  function buildPayload(): UserSettingsUpdate {
+    return {
+      theme: darkMode ? 'dark' : 'light',
+      accent_color: 'mint',
+      default_chain: defaultChain,
+      clark_detail_level: clarkDetailLevel,
+      saved_layout: {
+        selected_terminal_tool: 'settings',
+      },
+      saved_filters: {
+        whale_alerts: notifWhale,
+        pump_alerts: notifPump,
+        base_radar_alerts: notifRadar,
+      },
+      onboarding_progress: {},
+    }
+  }
+
+  function hydrateFromSettings(settings: Record<string, unknown>) {
+    setDarkMode(settings.theme !== 'light')
+
+    const chain = settings.default_chain
+    if (chain === 'base' || chain === 'ethereum' || chain === 'solana') {
+      setDefaultChain(chain)
+    }
+
+    const detail = settings.clark_detail_level
+    if (detail === 'low' || detail === 'normal' || detail === 'high') {
+      setClarkDetailLevel(detail)
+    }
+
+    const filters = settings.saved_filters
+    if (filters && typeof filters === 'object' && !Array.isArray(filters)) {
+      const safeFilters = filters as Record<string, unknown>
+      if (typeof safeFilters.whale_alerts === 'boolean') setNotifWhale(safeFilters.whale_alerts)
+      if (typeof safeFilters.pump_alerts === 'boolean') setNotifPump(safeFilters.pump_alerts)
+      if (typeof safeFilters.base_radar_alerts === 'boolean') setNotifRadar(safeFilters.base_radar_alerts)
+    }
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!authChecked) return
+
+    if (!isAuthed || !accessToken) {
+      const localRaw = window.localStorage.getItem(LOCAL_SETTINGS_KEY)
+      if (localRaw) {
+        try {
+          const localSettings = JSON.parse(localRaw) as Record<string, unknown>
+          queueMicrotask(() => hydrateFromSettings(localSettings))
+        } catch {
+          // Keep safe defaults when local settings are invalid.
+        }
+      }
+      return
+    }
+
+    let canceled = false
+    const loadRemote = async () => {
+      try {
+        const res = await fetch('/api/user-settings', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        })
+
+        if (!res.ok) throw new Error('Failed to load settings')
+        const data = await res.json() as { settings?: Record<string, unknown>; error?: string }
+        if (canceled) return
+
+        if (data.settings) {
+          hydrateFromSettings(data.settings)
+          setSaveMessage(data.error ? 'Loaded defaults (settings fetch had an issue).' : 'Loaded saved account settings.')
+        }
+      } catch {
+        if (!canceled) setSaveMessage('Could not load account settings. Using local defaults.')
+      }
+    }
+
+    loadRemote()
+    return () => { canceled = true }
+  }, [authChecked, isAuthed, accessToken])
+
   async function handleSignOut() {
     setSigningOut(true)
     await supabase.auth.signOut()
     router.replace('/')
+  }
+
+  async function handleSaveSettings() {
+    const payload = buildPayload()
+    setSavingState('saving')
+    setSaveMessage('Saving...')
+
+    if (!isAuthed || !accessToken) {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify(payload))
+      }
+      setSavingState('saved')
+      setSaveMessage('Saved locally. Sign in to sync settings across devices.')
+      return
+    }
+
+    try {
+      const res = await fetch('/api/user-settings', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(payload),
+      })
+
+      if (!res.ok) throw new Error('Save failed')
+      setSavingState('saved')
+      setSaveMessage('Saved to your account.')
+    } catch {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify(payload))
+      }
+      setSavingState('error')
+      setSaveMessage('Failed to save remotely. Local backup saved.')
+    }
   }
 
   const APIS = [
@@ -190,6 +323,16 @@ export default function SettingsPage() {
           <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.35)', margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
             Manage your account, preferences, and integrations.
           </p>
+          {authChecked && (
+            <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)', margin: '8px 0 0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+              {isAuthed ? 'Signed in: changes persist to your ChainLens account.' : 'Sign in to save settings to your account. Logged-out changes are local only.'}
+            </p>
+          )}
+          {saveMessage && (
+            <p style={{ fontSize: '11px', margin: '6px 0 0', color: savingState === 'error' ? '#fca5a5' : 'rgba(45,212,191,0.80)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+              {saveMessage}
+            </p>
+          )}
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -251,7 +394,9 @@ export default function SettingsPage() {
             </div>
 
             <div style={{ marginTop: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <button style={{
+              <button
+                onClick={handleSaveSettings}
+                style={{
                 padding: '9px 22px', borderRadius: '9px',
                 background: 'rgba(45,212,191,0.12)',
                 border: '1px solid rgba(45,212,191,0.25)',
@@ -262,7 +407,9 @@ export default function SettingsPage() {
               }}
                 onMouseEnter={e => { e.currentTarget.style.background = 'rgba(45,212,191,0.20)' }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'rgba(45,212,191,0.12)' }}
-              >Save Changes</button>
+              >
+                {savingState === 'saving' ? 'Saving…' : savingState === 'saved' ? 'Saved' : 'Save Changes'}
+              </button>
 
               <button
                 onClick={handleSignOut}
@@ -298,6 +445,50 @@ export default function SettingsPage() {
               sub="Always-on dark theme optimised for on-chain data"
               right={<Toggle on={darkMode} onChange={() => setDarkMode(v => !v)} />}
             />
+            <Row
+              label="Default Chain"
+              sub="Used as your account default for scanner context"
+              right={(
+                <select
+                  value={defaultChain}
+                  onChange={e => setDefaultChain(e.target.value as 'base' | 'ethereum' | 'solana')}
+                  style={{
+                    background: 'rgba(255,255,255,0.04)',
+                    color: '#e2e8f0',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    borderRadius: '8px',
+                    padding: '5px 8px',
+                    fontSize: '12px',
+                  }}
+                >
+                  <option value="base">Base</option>
+                  <option value="ethereum">Ethereum</option>
+                  <option value="solana">Solana</option>
+                </select>
+              )}
+            />
+            <Row
+              label="Clark Detail Level"
+              sub="How verbose Clark responses should be by default"
+              right={(
+                <select
+                  value={clarkDetailLevel}
+                  onChange={e => setClarkDetailLevel(e.target.value as 'low' | 'normal' | 'high')}
+                  style={{
+                    background: 'rgba(255,255,255,0.04)',
+                    color: '#e2e8f0',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    borderRadius: '8px',
+                    padding: '5px 8px',
+                    fontSize: '12px',
+                  }}
+                >
+                  <option value="low">Low</option>
+                  <option value="normal">Normal</option>
+                  <option value="high">High</option>
+                </select>
+              )}
+            />
             <div style={{ paddingTop: '4px' }} />
           </Card>
 
@@ -325,7 +516,7 @@ export default function SettingsPage() {
           {/* ── API ─────────────────────────────────────── */}
           <Card>
             <SectionTitle>API Connections</SectionTitle>
-            {APIS.map((api, i) => (
+            {APIS.map((api) => (
               <Row
                 key={api.name}
                 label={api.name}
