@@ -281,6 +281,90 @@ export default function SettingsPage() {
     return () => { canceled = true }
   }, [authChecked, isAuthed, accessToken])
 
+  function buildPayload(): UserSettingsUpdate {
+    return {
+      theme: darkMode ? 'dark' : 'light',
+      accent_color: 'mint',
+      default_chain: defaultChain,
+      clark_detail_level: clarkDetailLevel,
+      saved_layout: {
+        selected_terminal_tool: 'settings',
+      },
+      saved_filters: {
+        whale_alerts: notifWhale,
+        pump_alerts: notifPump,
+        base_radar_alerts: notifRadar,
+      },
+      onboarding_progress: {},
+    }
+  }
+
+  function hydrateFromSettings(settings: Record<string, unknown>) {
+    setDarkMode(settings.theme !== 'light')
+
+    const chain = settings.default_chain
+    if (chain === 'base' || chain === 'ethereum' || chain === 'solana') {
+      setDefaultChain(chain)
+    }
+
+    const detail = settings.clark_detail_level
+    if (detail === 'low' || detail === 'normal' || detail === 'high') {
+      setClarkDetailLevel(detail)
+    }
+
+    const filters = settings.saved_filters
+    if (filters && typeof filters === 'object' && !Array.isArray(filters)) {
+      const safeFilters = filters as Record<string, unknown>
+      if (typeof safeFilters.whale_alerts === 'boolean') setNotifWhale(safeFilters.whale_alerts)
+      if (typeof safeFilters.pump_alerts === 'boolean') setNotifPump(safeFilters.pump_alerts)
+      if (typeof safeFilters.base_radar_alerts === 'boolean') setNotifRadar(safeFilters.base_radar_alerts)
+    }
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!authChecked) return
+
+    if (!isAuthed || !accessToken) {
+      const localRaw = window.localStorage.getItem(LOCAL_SETTINGS_KEY)
+      if (localRaw) {
+        try {
+          const localSettings = JSON.parse(localRaw) as Record<string, unknown>
+          queueMicrotask(() => hydrateFromSettings(localSettings))
+        } catch {
+          // Keep safe defaults when local settings are invalid.
+        }
+      }
+      return
+    }
+
+    let canceled = false
+    const loadRemote = async () => {
+      try {
+        const res = await fetch('/api/user-settings', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        })
+
+        if (!res.ok) throw new Error('Failed to load settings')
+        const data = await res.json() as { settings?: Record<string, unknown>; error?: string }
+        if (canceled) return
+
+        if (data.settings) {
+          hydrateFromSettings(data.settings)
+          setSaveMessage(data.error ? 'Loaded defaults (settings fetch had an issue).' : 'Loaded saved account settings.')
+        }
+      } catch {
+        if (!canceled) setSaveMessage('Could not load account settings. Using local defaults.')
+      }
+    }
+
+    loadRemote()
+    return () => { canceled = true }
+  }, [authChecked, isAuthed, accessToken])
+
   async function handleSignOut() {
     setSigningOut(true)
     await supabase.auth.signOut()
