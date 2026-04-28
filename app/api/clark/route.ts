@@ -355,6 +355,8 @@ function resolveClarkContext(message: string, history: ClarkRequestBody["history
   const followupWords = /\b(it|this|this token|this wallet|what about|go deeper|why|is it safe|dev wallet|liquidity|holders|risks|more)\b/i.test(normalized);
   const lastIntent: ClarkPlannerIntent | "unknown" =
     /CLARK FULL REPORT|Bull case|Bear case/i.test(marketText) ? "token_full_report_request" :
+    /Which Base token should I run the full report on/i.test(marketText) ? "token_full_report_request" :
+    /I can run that, but I need a token contract first/i.test(marketText) ? "token_analysis" :
     /Dev wallet read:/i.test(marketText) ? "dev_wallet" :
     /Liquidity read:/i.test(marketText) ? "liquidity_safety" :
     /Wallet:|wallet quality|Asset: Wallet/i.test(marketText) ? "wallet_quality" :
@@ -390,7 +392,10 @@ function classifyClarkQuestionType(
   if (/what is liquidity risk|what is a dev wallet|holder concentration|lp lock|slippage/.test(normalized)) return "education";
   if (/what should i watch|why are base memes moving|strategy|framework/.test(normalized)) return "market_overview";
   if (/what'?s pumping on base|moving on base|trending|movers|gainers/.test(normalized)) return "market_overview";
-  if (/full report|deep scan|full analysis|run all checks/.test(normalized)) return "token_full_report";
+  if (/full report|deep scan|full analysis|run all checks|report on/.test(normalized)) return "token_full_report";
+  if (ctx.explicitAddress && ctx.lastIntent === "token_full_report_request") return "token_full_report";
+  if (ctx.explicitAddress && ctx.lastIntent === "liquidity_safety") return "token_liquidity_followup";
+  if (ctx.explicitAddress && ctx.lastIntent === "dev_wallet") return "token_dev_followup";
   if (/what about liquidity|explain the lp risk/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_liquidity_followup";
   if (/what about the dev wallet|dev wallet/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_dev_followup";
   if (/is it safe/.test(normalized) && (ctx.lastToken.address || ctx.explicitAddress || ctx.explicitSymbol)) return "token_safety_followup";
@@ -437,6 +442,68 @@ function pickAddressBySelection(historyLines: string[], selectedIndex: number): 
     const regex = new RegExp(`(?:^|\\n)\\s*${selectedIndex}\\.\\s+[^\\n]*?(0x[a-fA-F0-9]{40})`, "m");
     const m = line.match(regex);
     if (m?.[1]) return m[1];
+  }
+  return null;
+}
+
+type MarketListItem = { rank: number; symbol: string; address: string; line: string };
+
+function extractMarketListItemsFromHistory(history: ClarkRequestBody["history"]): MarketListItem[] {
+  const lines = getHistoryMessages(history);
+  const items: MarketListItem[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const msg = lines[i] ?? "";
+    if (!/Base Market|Moving now:/i.test(msg)) continue;
+    const rows = msg.split("\n");
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r] ?? "";
+      const rankMatch = row.match(/^\s*(\d{1,3})\.\s+/);
+      if (!rankMatch) continue;
+      const rank = Number(rankMatch[1]);
+      const symbolMatch = row.match(/^\s*\d{1,3}\.\s*([A-Z0-9$._-]{2,12})\b/);
+      const fullAddress = row.match(/0x[a-fA-F0-9]{40}/)?.[0]
+        ?? rows[r + 1]?.match(/0x[a-fA-F0-9]{40}/)?.[0]
+        ?? null;
+      const shortAddress = row.match(/0x[a-fA-F0-9]{4,8}\.\.\.[a-fA-F0-9]{3,8}/)?.[0]
+        ?? rows[r + 1]?.match(/0x[a-fA-F0-9]{4,8}\.\.\.[a-fA-F0-9]{3,8}/)?.[0]
+        ?? null;
+      if (!fullAddress && shortAddress) {
+        const maybeFull = msg.match(new RegExp(`${shortAddress.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}[^\\n]*(0x[a-fA-F0-9]{40})`, "i"))?.[1];
+        if (maybeFull) {
+          items.push({ rank, symbol: symbolMatch?.[1] ?? "?", address: maybeFull, line: row });
+        }
+        continue;
+      }
+      if (fullAddress) items.push({ rank, symbol: symbolMatch?.[1] ?? "?", address: fullAddress, line: row });
+    }
+    if (items.length > 0) break;
+  }
+  return items.sort((a, b) => a.rank - b.rank);
+}
+
+function inferSelectionIndex(trimmed: string, history: ClarkRequestBody["history"]): number | null {
+  const direct =
+    (/^\s*([1-9]\d{0,2})\s*$/.test(trimmed) ? Number(trimmed.match(/^\s*([1-9]\d{0,2})\s*$/)?.[1] ?? 0) : null) ??
+    (/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number)\s+([1-9]\d{0,2})\b/.test(trimmed)
+      ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report(?: on)?|why is token|number)\s+([1-9]\d{0,2})\b/)?.[1] ?? 0)
+      : null) ??
+    (/first one|that one|this one/.test(trimmed) ? 1 : null) ??
+    (/second one/.test(trimmed) ? 2 : null) ??
+    (/third one/.test(trimmed) ? 3 : null);
+  if (direct) return direct;
+
+  const list = extractMarketListItemsFromHistory(history);
+  if (!list.length) return null;
+  const selectedRanks = getHistoryMessages(history).flatMap((line) => {
+    const out: number[] = [];
+    const m = line.match(/\b(?:scan|check|full report on|report on|token)\s+([1-9]\d{0,2})\b/i);
+    if (m?.[1]) out.push(Number(m[1]));
+    return out;
+  });
+  const lastSelected = selectedRanks.length ? selectedRanks[selectedRanks.length - 1] : null;
+  if (/\bnext one|next report|report the next one|scan next|full report next|next report on the next one/i.test(trimmed)) {
+    if (lastSelected) return Math.min(lastSelected + 1, list[list.length - 1]?.rank ?? lastSelected);
+    return list[0]?.rank ?? null;
   }
   return null;
 }
@@ -529,14 +596,12 @@ function buildClarkToolPlan(input: {
   const message = input.message ?? "";
   const historyLines = getHistoryMessages(input.history);
   const trimmed = message.trim().toLowerCase();
-  const selectedOptionIndex =
-    (/^\s*([1-9])\s*$/.test(trimmed) ? Number(trimmed) : null) ??
-    (/\b(?:scan|check|token|full report on|report on|why is token)\s+([1-9])\b/.test(trimmed) ? Number(trimmed.match(/\b(?:scan|check|token|full report on|report on|why is token)\s+([1-9])\b/)?.[1] ?? 0) : null) ??
-    (/first one|that one|this one/.test(trimmed) ? 1 : null) ??
-    (/second one/.test(trimmed) ? 2 : null) ??
-    (/third one/.test(trimmed) ? 3 : null);
+  const selectedOptionIndex = inferSelectionIndex(trimmed, input.history);
   const directAddress = extractAddress(message);
-  const selectedAddress = selectedOptionIndex ? pickAddressBySelection(historyLines, selectedOptionIndex) : null;
+  const marketItems = extractMarketListItemsFromHistory(input.history);
+  const selectedAddress = selectedOptionIndex
+    ? (marketItems.find((m) => m.rank === selectedOptionIndex)?.address ?? pickAddressBySelection(historyLines, selectedOptionIndex))
+    : null;
   const tokenContext = extractLastTokenContext(historyLines);
   const resolvedContext = resolveClarkContext(message, input.history);
   const investigation = planClarkInvestigation(resolvedContext);
@@ -548,13 +613,18 @@ function buildClarkToolPlan(input: {
   let plannerIntent = investigation.intent ?? classifyPlannerIntent(message, inferredAddress);
   if (selectedAddress && (plannerIntent === "unknown" || plannerIntent === "feature_context")) {
     const historyText = historyLines.join("\n").toLowerCase();
-    plannerIntent = /full report|run the full report|token_full_report_request/.test(historyText)
+    plannerIntent = /full report|run the full report|token_full_report_request|report the next one|next report/.test(`${historyText}\n${trimmed}`)
       ? "token_full_report_request"
       : "token_analysis";
   }
+  if (selectedAddress && /full report|report\b|deep scan|full analysis|run all checks/.test(trimmed)) {
+    plannerIntent = "token_full_report_request";
+  } else if (selectedAddress && /why is token|explain the move|why is it moving/.test(trimmed)) {
+    plannerIntent = "token_analysis";
+  }
   const reportFollowupIntent = plannerIntent === "token_full_report_request" || plannerIntent === "dev_wallet" || plannerIntent === "liquidity_safety";
   const allowHistoryEntity = Boolean(selectedOptionIndex || marketFollowup || explicitFollowupRef || reportFollowupIntent);
-  let fallbackAddress = investigation.forceAddress ?? inferredAddress ?? (allowHistoryEntity ? (tokenContext.address ?? lastHistoryAddress) : null);
+  let fallbackAddress = inferredAddress ?? investigation.forceAddress ?? (allowHistoryEntity ? (tokenContext.address ?? lastHistoryAddress) : null);
   if (!inferredAddress && tokenContext.address && (tokenFollowupPrompt || reportFollowupIntent || plannerIntent === "token_analysis")) {
     fallbackAddress = tokenContext.address;
   }
@@ -3067,6 +3137,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     if (!token) {
       if (resolvedAddress) {
         const fallbackReport = buildFullReportEvidence(evidence, resolvedAddress);
+        if (/why is it moving|why is token\s+\d+\s+moving|explain the move/i.test(prompt.toLowerCase())) {
+          const pack = buildClarkEvidencePack(fallbackReport);
+          return {
+            feature: "clark-ai",
+            chain,
+            mode: "analysis",
+            analysis: [
+              `Move read for ${pack.asset}:`,
+              `- Price action: ${pack.marketFacts[0] ?? "Unverified"}`,
+              `- Volume: ${pack.marketFacts[1] ?? "Unverified"}`,
+              `- Liquidity: ${pack.marketFacts[2] ?? "Unverified"}`,
+              "- Trade flow: Unverified in this pass.",
+              "- What it means: momentum needs volume + liquidity confirmation to stay reliable.",
+              `- What could invalidate it: ${pack.riskDrivers.length ? pack.riskDrivers.join(" ") : "Loss of liquidity or failed follow-through."}`,
+            ].join("\n"),
+            intent: plan.intent,
+            toolsUsed,
+          };
+        }
         return {
           feature: "clark-ai",
           chain,
@@ -3093,7 +3182,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
             `- Not verified yet: ${pack.missing.length ? pack.missing.join(", ") : "No major missing fields."}`,
             "- What to check next: confirm LP control and deployer behavior before treating this as safe."
           ].join("\n")
-        : /why is it moving/.test(lower)
+        : /why is it moving|why is token\s+\d+\s+moving|explain the move/.test(lower)
           ? [
               `Move explainer for ${pack.asset}:`,
               `- Market picture: ${pack.marketFacts.join(" | ")}`,
