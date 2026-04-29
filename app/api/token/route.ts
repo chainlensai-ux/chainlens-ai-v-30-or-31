@@ -333,17 +333,36 @@ ${JSON.stringify(analysis, null, 2)}
       18;
 
     
-    const holderItems: any[] = Array.isArray(holdersRaw?.data?.items) ? holdersRaw.data.items : []
-    const topHolders = holderItems.slice(0, 20).map((h: any, i: number) => ({
-      rank: i + 1,
-      address: h.address || h.wallet_address || h.holder_address || '',
-      amount: Number(h.balance ?? h.balance_quote ?? 0),
-      percent: Number(h.total_supply_label ? String(h.total_supply_label).replace('%','') : h.percent_of_supply ?? h.share ?? 0),
-    })).filter((h: any) => Number.isFinite(h.percent) && h.percent >= 0)
-    const sum = (n: number) => topHolders.slice(0, n).reduce((s: number, h: any) => s + h.percent, 0)
-    const top1 = sum(1), top5 = sum(5), top10 = sum(10), top20 = sum(20)
-    const holderDistribution = topHolders.length ? { top1, top5, top10, top20, others: Math.max(0, 100 - top20), holderCount: holdersRaw?.data?.pagination?.total_count ?? null, topHolders } : null
+    const holderCandidates = [
+      holdersRaw?.data?.items,
+      holdersRaw?.data?.data?.items,
+      holdersRaw?.items,
+      holdersRaw?.holders,
+      holdersRaw?.token_holders,
+    ]
+    const holderItems: any[] = holderCandidates.find((x) => Array.isArray(x)) ?? []
 
+    const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.data?.pagination?.has_more ?? null
+    const toNum = (v: unknown) => {
+      const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN
+      return Number.isFinite(n) ? n : null
+    }
+    const topHolders = holderItems.slice(0, 20).map((h: any, i: number) => {
+      const address = h.address || h.holder_address || h.wallet_address || h.owner_address || ''
+      const amount = toNum(h.balance) ?? toNum(h.token_balance) ?? toNum(h.balance_quote) ?? 0
+      const pctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.percent_of_supply) ?? toNum(h.share)
+      const supply = toNum(h.total_supply) ?? toNum(goldrush?.data?.items?.[0]?.total_supply)
+      const percent = pctRaw != null ? pctRaw : (supply && amount ? (amount / supply) * 100 : null)
+      return { rank: i + 1, address, amount, percent }
+    }).filter((h: any) => h.address)
+
+    const hasPct = topHolders.some((h: any) => h.percent != null)
+    const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
+    const top1 = hasPct ? sum(1) : null
+    const top5 = hasPct ? sum(5) : null
+    const top10 = hasPct ? sum(10) : null
+    const top20 = hasPct ? sum(20) : null
+    const holderDistribution = topHolders.length ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders } : null
     // ------------------------------
     // Final JSON response
     // ------------------------------
