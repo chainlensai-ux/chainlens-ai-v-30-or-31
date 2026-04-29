@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import Image from 'next/image'
 
 type Plan = {
   id: 'free' | 'pro' | 'elite'
@@ -45,10 +46,12 @@ export default function PricingPage() {
       <div style={{ position: 'relative', zIndex: 2, maxWidth: 1620, margin: '0 auto', padding: '18px 22px 52px' }}>
         <nav className='nav-pill' style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 22px', marginBottom: 24 }}>
           <Link href='/' style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}>
-            <span style={{ width: 26, height: 26, borderRadius: 7, background: 'linear-gradient(145deg,#22d3ee,#a855f7)', boxShadow: '0 0 22px rgba(34,211,238,.45)' }} />
+            <Image src='/cl-logo.png' alt='ChainLens logo' width={30} height={30} style={{ width: 30, height: 30 }} priority />
             <span>
-              <span style={{ display: 'block', fontWeight: 900, letterSpacing: '.02em', color: '#fff' }}>ChainLens</span>
-              <span style={{ display: 'block', fontSize: 10, color: '#67e8f9', marginTop: -2 }}>AI Intelligence</span>
+              <span style={{ display: 'block', fontWeight: 900, letterSpacing: '.01em', lineHeight: 1, fontSize: 19 }}>
+                <span style={{ color: '#67e8f9' }}>Chain</span><span style={{ color: '#d946ef' }}>Lens</span>
+              </span>
+              <span style={{ display: 'block', fontSize: 10, color: '#67e8f9', marginTop: 2 }}>AI Intelligence</span>
             </span>
           </Link>
           <div className='nav-links' style={{ display: 'flex', gap: 24, color: '#94a3b8', fontSize: 14 }}>
