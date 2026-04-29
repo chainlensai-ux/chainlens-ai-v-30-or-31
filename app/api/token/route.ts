@@ -177,9 +177,14 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 
 async function fetchTokenHolders(chain: ChainKey, contract: string): Promise<any> {
   try {
-    const res = await fetch(`https://api.covalenthq.com/v1/${chain}/tokens/${contract}/token_holders_v2/?page-size=200&key=${process.env.COVALENT_API_KEY}`, { cache: 'no-store' });
-    return res.ok ? await res.json() : null
-  } catch { return null }
+    const keyMissing = !process.env.COVALENT_API_KEY
+    if (keyMissing) return { __status: 'unavailable', __reason: 'missing_api_key' }
+    const url = `https://api.covalenthq.com/v1/${chain}/tokens/${contract}/token_holders_v2/?page-size=200&key=${process.env.COVALENT_API_KEY}`
+    const res = await fetch(url, { cache: 'no-store' });
+    console.log('[holders] contract', contract, '[holders] chain', chain, '[holders] status', res.status)
+    if (!res.ok) return { __status: 'error', __reason: 'provider_unavailable' }
+    return await res.json()
+  } catch { return { __status: 'error', __reason: 'provider_unavailable' } }
 }
 
 // ------------------------------
@@ -341,6 +346,7 @@ ${JSON.stringify(analysis, null, 2)}
       holdersRaw?.token_holders,
     ]
     const holderItems: any[] = holderCandidates.find((x) => Array.isArray(x)) ?? []
+    console.log('[holders] items length', holderItems.length)
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.data?.pagination?.has_more ?? null
     const toNum = (v: unknown) => {
@@ -357,12 +363,14 @@ ${JSON.stringify(analysis, null, 2)}
     }).filter((h: any) => h.address)
 
     const hasPct = topHolders.some((h: any) => h.percent != null)
+    console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct)
     const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
     const top1 = hasPct ? sum(1) : null
     const top5 = hasPct ? sum(5) : null
     const top10 = hasPct ? sum(10) : null
     const top20 = hasPct ? sum(20) : null
     const holderDistribution = topHolders.length ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders } : null
+    const holderDistributionStatus = holderDistribution ? (hasPct ? { source: 'goldrush', status: 'ok' } : { source: 'goldrush', status: 'empty', reason: 'no_percentages' }) : (holderItems.length ? { source: 'goldrush', status: 'empty', reason: 'no_rows' } : { source: 'unavailable', status: (holdersRaw?.__status ?? 'empty'), reason: (holdersRaw?.__reason ?? 'no_rows') })
     // ------------------------------
     // Final JSON response
     // ------------------------------
@@ -381,6 +389,7 @@ ${JSON.stringify(analysis, null, 2)}
       // Extra data
       holders: goldrush?.holders || null,
       holderDistribution,
+      holderDistributionStatus,
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
 
       pairs: matchingPools,
