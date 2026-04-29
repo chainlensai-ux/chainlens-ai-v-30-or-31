@@ -12,6 +12,8 @@ type Pool = {
   liquidity?: number | null
   volume24h?: number | null
   priceChange24h?: number | null
+  marketCap?: number | null
+  fdv?: number | null
 }
 
 type ScanResult = {
@@ -23,6 +25,8 @@ type ScanResult = {
   liquidity?: number | null
   volume24h?: number | null
   priceChange24h?: number | null
+  marketCap?: number | null
+  fdv?: number | null
   pools?: Pool[]
   goplus?: Record<string, Record<string, unknown>> | null
   honeypot?: {
@@ -33,6 +37,8 @@ type ScanResult = {
     simulationSuccess: boolean
   } | null
   noActivePools?: boolean
+  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:number;percent:number|null}> } | null
+  holderDistributionStatus?: { source?: string; status?: string; reason?: string } | null
 }
 
 // ─── Formatters ───────────────────────────────────────────────────────────
@@ -97,7 +103,7 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
   )
 }
 
-// ─── Contract Risk (GoPlus) ───────────────────────────────────────────────
+// ─── Contract Security ───────────────────────────────────────────────
 
 type PillStyle = { color: string; bg: string; border: string }
 
@@ -144,7 +150,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         color: '#3a5268', textTransform: 'uppercase',
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
-        Contract Risk Signals
+        Security Simulation
       </p>
       <div style={{
         padding: '14px 18px',
@@ -154,7 +160,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         fontSize: '11px', color: '#3a5268',
         fontFamily: 'var(--font-plex-mono)',
       }}>
-        No contract risk data surfaced — verify manually.
+        No security simulation data surfaced — status is unverified.
       </div>
     </div>
   )
@@ -223,14 +229,14 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
   }
 
   const gpPills = gp ? [
-    flagPill('is_honeypot',            'HP (GoPlus)'),
+    flagPill('is_honeypot',            'Honeypot'),
     flagPill('is_mintable',            'Mint Function'),
     flagPill('can_take_back_ownership','Ownership Revert'),
     flagPill('is_proxy',               'Proxy Contract', '__never__'),
     flagPill('is_blacklisted',         'Blacklist'),
     flagPill('is_whitelisted',         'Whitelist',      '__never__'),
-    taxPill('buy_tax',  'Buy Tax (GP)'),
-    taxPill('sell_tax', 'Sell Tax (GP)'),
+    taxPill('buy_tax',  'Buy Tax'),
+    taxPill('sell_tax', 'Sell Tax'),
     ownerPill(),
   ] : []
 
@@ -241,9 +247,9 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         color: '#3a5268', textTransform: 'uppercase',
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
-        Contract Risk Signals
+        Security Simulation
         {hp?.simulationSuccess && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· Honeypot.is</span>}
-        {gp && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· GoPlus</span>}
+        
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
         {[...hpPills, ...gpPills].map(p => (
@@ -272,7 +278,6 @@ export default function TerminalTokenScanner() {
     const params   = new URLSearchParams(window.location.search)
     const contract = params.get('contract')
     if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
-      setInput(contract)
       handleScan(contract)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -302,28 +307,34 @@ export default function TerminalTokenScanner() {
         setError(json.error ?? 'Token not found on Base.')
         setClarkLoading(false)
       } else {
-        const pairs: any[] = Array.isArray(json.pairs) ? json.pairs : []
+        const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
         const mainPool = pairs[0] ?? null
+        const attr = (p: Record<string, unknown> | null) => ((p?.attributes as Record<string, unknown> | undefined) ?? {})
+        const num = (v: unknown) => { const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN; return Number.isFinite(n) && n !== 0 ? n : null }
         const mapped: ScanResult = {
           name:           json.name,
           symbol:         json.symbol,
           contract:       json.contract,
           chain:          json.chain ?? 'base',
           noActivePools:  json.noActivePools ?? false,
-          price:          mainPool ? parseFloat(mainPool.attributes?.base_token_price_usd ?? '0') || null : null,
-          liquidity:      mainPool ? parseFloat(mainPool.attributes?.reserve_in_usd ?? '0') || null : null,
-          volume24h:      mainPool ? parseFloat(mainPool.attributes?.volume_usd?.h24 ?? '0') || null : null,
-          priceChange24h: mainPool ? parseFloat(mainPool.attributes?.price_change_percentage?.h24 ?? '0') || null : null,
-          pools: pairs.map((p: any) => ({
-            name:           p.attributes?.name,
-            address:        p.attributes?.address,
-            price:          parseFloat(p.attributes?.base_token_price_usd ?? '0') || null,
-            liquidity:      parseFloat(p.attributes?.reserve_in_usd ?? '0') || null,
-            volume24h:      parseFloat(p.attributes?.volume_usd?.h24 ?? '0') || null,
-            priceChange24h: parseFloat(p.attributes?.price_change_percentage?.h24 ?? '0') || null,
+          price:          mainPool ? num(attr(mainPool).base_token_price_usd) : null,
+          liquidity:      mainPool ? num(attr(mainPool).reserve_in_usd) : null,
+          volume24h:      mainPool ? num((attr(mainPool).volume_usd as Record<string, unknown> | undefined)?.h24) : null,
+          priceChange24h: mainPool ? num((attr(mainPool).price_change_percentage as Record<string, unknown> | undefined)?.h24) : null,
+          marketCap: num(json.market_cap ?? attr(mainPool).market_cap_usd),
+          fdv: num(json.fdv ?? attr(mainPool).fdv_usd),
+          pools: pairs.map((p: Record<string, unknown>) => ({
+            name:           (attr(p).name as string | undefined),
+            address:        (attr(p).address as string | undefined),
+            price:          num(attr(p).base_token_price_usd),
+            liquidity:      num(attr(p).reserve_in_usd),
+            volume24h:      num((attr(p).volume_usd as Record<string, unknown> | undefined)?.h24),
+            priceChange24h: num((attr(p).price_change_percentage as Record<string, unknown> | undefined)?.h24),
           })),
           goplus:   json.goplus   ?? null,
           honeypot: json.honeypot ?? null,
+          holderDistribution: json.holderDistribution ?? null,
+          holderDistributionStatus: json.holderDistributionStatus ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -349,16 +360,21 @@ export default function TerminalTokenScanner() {
           40%            { opacity: 1;    transform: scale(1);    }
         }
         @media (max-width: 768px) {
-          .token-main { padding: 20px 14px 120px !important; }
+          .token-main { padding: 32px 14px 120px !important; }
           .token-input-row { flex-direction: column; max-width: 100% !important; }
           .token-input-row button { width: 100%; }
+          .token-shell { display: block !important; }
+          .mob-verdict-panel { width: 100% !important; border-left: none !important; border-top: 1px solid rgba(255,255,255,0.08); }
+          .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
         }
+        @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(5,minmax(0,1fr)) !important;} }
+        @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
       `}</style>
 
-      <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
+      <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
 
         {/* ── Left: scrollable scan area ──────────────────────────── */}
-        <div className="mob-scan-main token-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px' }}>
+        <div className="mob-scan-main token-main" style={{ flex: '0 0 70%', minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '56px 44px 120px' }}>
 
           {/* Back button */}
           <Link href="/terminal" style={{
@@ -393,10 +409,7 @@ export default function TerminalTokenScanner() {
               }} />
               TOKEN SCANNER
             </div>
-            <h1 style={{ fontSize: '26px', fontWeight: 700, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>
-              Token Scanner{' '}
-              <span style={{ color: '#2DD4BF' }}>Elite</span>
-            </h1>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner <span style={{ color: '#2DD4BF' }}>Elite</span></h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>Paste a Base contract or token symbol.</p>
           </div>
 
           {/* Input row */}
@@ -406,7 +419,7 @@ export default function TerminalTokenScanner() {
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="0x… contract address"
+              placeholder="Paste Base contract or token symbol"
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
@@ -436,7 +449,7 @@ export default function TerminalTokenScanner() {
                 flexShrink: 0, transition: 'all 0.15s',
               }}
             >
-              {loading ? 'SCANNING…' : 'SCAN'}
+              {loading ? 'SCANNING…' : 'SCAN TOKEN'}
             </button>
           </div>
 
@@ -468,7 +481,7 @@ export default function TerminalTokenScanner() {
 
           {/* Results */}
           {result && (
-            <div style={{ maxWidth: '820px' }}>
+            <div style={{ maxWidth: 'none', width: '100%' }}>
 
               {/* Token identity */}
               <div style={{ marginBottom: '24px' }}>
@@ -488,8 +501,9 @@ export default function TerminalTokenScanner() {
                     fontSize: '11px', color: '#3a5268',
                     fontFamily: 'var(--font-plex-mono)', margin: 0,
                   }}>
-                    {result.contract}
+                    {shorten(result.contract)}
                     {` · ${String(result.chain ?? 'Base').toUpperCase()}`}
+                    <span style={{marginLeft:'8px',padding:'2px 8px',border:'1px solid rgba(59,130,246,.35)',borderRadius:'999px',color:'#93c5fd'}}>BASE</span>
                   </p>
                 )}
               </div>
@@ -507,9 +521,9 @@ export default function TerminalTokenScanner() {
                   No active Base pools found for this contract.
                 </div>
               ) : (
-                <div style={{
+                <div className="metric-grid" style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+                  gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
                   gap: '10px', marginBottom: '28px',
                 }}>
                   <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
@@ -520,16 +534,48 @@ export default function TerminalTokenScanner() {
                     value={fmtPct(result.priceChange24h)}
                     accent={pctColor(result.priceChange24h)}
                   />
+                  <StatCard
+                    label={result.marketCap != null ? 'Market Cap' : result.fdv != null ? 'FDV' : 'Market Cap'}
+                    value={result.marketCap != null ? fmtLarge(result.marketCap) : result.fdv != null ? fmtLarge(result.fdv) : 'Unverified'}
+                    accent="#a78bfa"
+                  />
                 </div>
               )}
 
-              {/* Contract Risk Signals */}
+              {/* Security Simulation */}
               <ContractRiskSection
                 gp={result.goplus && result.contract
                   ? (result.goplus[result.contract.toLowerCase()] ?? null)
                   : null}
                 hp={result.honeypot ?? null}
               />
+
+
+              {/* Holder analytics */}
+              {result.holderDistributionStatus?.status === 'ok' && result.holderDistribution?.topHolders?.length ? (
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
+                  <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                    <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution.top1],['Top 5',result.holderDistribution.top5],['Top 10',result.holderDistribution.top10],['Top 20',result.holderDistribution.top20],['Others',result.holderDistribution.others]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+                  </div>
+                  <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
+                    <div style={{display:'grid',gap:'4px',maxHeight:'160px',overflowY:'auto'}}>{result.holderDistribution.topHolders.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'28px 1fr 56px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{h.percent == null ? 'N/A' : `${h.percent.toFixed(2)}%`}</span></div>)}</div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px',padding:'16px'}}>
+                  <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>Holder Intelligence</p>
+                  <p style={{margin:'0 0 8px',fontSize:'12px',color:'#cbd5e1',fontWeight:700}}>State: Unverified</p>
+                  <p style={{margin:'0 0 12px',fontSize:'12px',color:'#94a3b8'}}>Holder rows were not returned for this token. Clark will treat holder concentration as an unverified risk.</p>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'10px'}}>
+                    {['Top holders: Unavailable','Concentration: Unverified','Supply spread: Unverified'].map((chip)=>(
+                      <span key={chip} style={{padding:'5px 9px',borderRadius:'999px',fontSize:'10px',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(148,163,184,.26)',color:'#94a3b8'}}>{chip}</span>
+                    ))}
+                  </div>
+                  <p style={{margin:0,fontSize:'11px',color:'#67e8f9'}}>Market, liquidity, and security simulation are still available.</p>
+                </div>
+              )}
 
               {/* Pools */}
               {result.pools && result.pools.length > 0 && (
@@ -539,15 +585,15 @@ export default function TerminalTokenScanner() {
                     color: '#3a5268', textTransform: 'uppercase',
                     marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
                   }}>
-                    Pools · {result.pools.length}
-                  </p>
+                    LIQUIDITY & POOLS
+                  </p><div style={{display:'inline-flex',marginBottom:'10px',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} POOLS</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {result.pools.map((pool, i) => (
+                    {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
                         key={i}
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: '1fr repeat(4, auto)',
+                          gridTemplateColumns: '1.2fr repeat(6, auto)',
                           alignItems: 'center', gap: '20px',
                           padding: '12px 18px',
                           background: 'rgba(255,255,255,0.025)',
@@ -571,9 +617,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
                           Vol {fmtLarge(pool.volume24h)}
                         </span>
-                        <span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>
-                          {fmtPct(pool.priceChange24h)}
-                        </span>
+                        <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>APR N/A</span><span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>{fmtPct(pool.priceChange24h)}</span><span style={{whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24'}}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
                       </div>
                     ))}
                   </div>
@@ -585,7 +629,8 @@ export default function TerminalTokenScanner() {
 
         {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
         <aside className="mob-verdict-panel" style={{
-          width: '288px',
+          width: '30%',
+          minWidth: '320px',
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           background: '#080c14',
@@ -609,7 +654,7 @@ export default function TerminalTokenScanner() {
               color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
               textTransform: 'uppercase', margin: 0,
             }}>
-              Clark Verdict
+              Clark AI Verdict
             </p>
           </div>
 
@@ -619,7 +664,7 @@ export default function TerminalTokenScanner() {
               fontSize: '11px', color: '#1e3a44',
               fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
             }}>
-              scan a token to see Clark's verdict
+              Scan a Base token to generate a structured Clark verdict.
             </p>
           )}
 
@@ -647,15 +692,27 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Verdict */}
-          {clarkVerdict && (
-            <p style={{
-              fontSize: '12px', lineHeight: 1.8,
-              color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)',
-              whiteSpace: 'pre-wrap', margin: 0,
-            }}>
-              {clarkVerdict}
-            </p>
-          )}
+          {result && (() => {
+            const hp = result.honeypot
+            const gp = result.goplus && result.contract ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null : null
+            const buyTax = hp?.buyTax ?? (gp?.buy_tax != null ? Number(gp.buy_tax) * 100 : null)
+            const sellTax = hp?.sellTax ?? (gp?.sell_tax != null ? Number(gp.sell_tax) * 100 : null)
+            const transferTax = hp?.transferTax ?? null
+            const simulationFailed = hp ? !hp.simulationSuccess : false
+            const hpFlagged = hp?.isHoneypot === true || String(gp?.is_honeypot ?? '') === '1'
+            const blacklistRisk = String(gp?.is_blacklisted ?? '') === '1' || String(gp?.is_whitelisted ?? '') === '1'
+            const ownerHeld = String(gp?.owner_address ?? '') && String(gp?.owner_address ?? '') !== '0x0000000000000000000000000000000000000000'
+            const liq = result.liquidity ?? 0
+            const hasMarket = (result.price != null) || (result.volume24h != null) || liq > 0
+            const strongRisk = hpFlagged || simulationFailed || (buyTax != null && buyTax >= 15) || (sellTax != null && sellTax >= 15) || (transferTax != null && transferTax >= 15) || blacklistRisk
+            const watchReady = (hp?.isHoneypot === false || String(gp?.is_honeypot ?? '') === '0') && !simulationFailed && (buyTax == null || buyTax <= 5) && (sellTax == null || sellTax <= 5) && liq > 50000 && (result.volume24h ?? 0) > 0
+            const verdict = !hasMarket && !hp && !gp ? 'UNKNOWN' : strongRisk ? 'AVOID' : watchReady && !ownerHeld ? 'WATCH' : 'SCAN DEEPER'
+            const confidence = verdict === 'AVOID' ? 'High' : verdict === 'WATCH' ? 'Medium-High' : verdict === 'SCAN DEEPER' ? 'Medium' : 'Low'
+            const holderMissing = result.holderDistributionStatus?.status !== 'ok' || !result.holderDistribution || result.holderDistribution.topHolders.length === 0
+            const holderRisk = result.holderDistribution?.top1 != null && result.holderDistribution.top1 > 25 ? 'Top holder concentration elevated.' : result.holderDistribution?.top5 != null && result.holderDistribution.top5 > 50 ? 'Top 5 holders control over half supply.' : result.holderDistribution?.top10 != null && result.holderDistribution.top10 > 70 ? 'Heavy holder concentration.' : holderMissing ? 'Holder distribution unverified.' : ''
+            const missing = [ownerHeld ? 'Contract ownership renounced' : '', result.marketCap == null && result.fdv == null ? 'Market cap / FDV' : '', 'LP lock/control', holderMissing ? 'Holder concentration' : '', 'Deployer behavior'].filter(Boolean)
+            return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'12px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'12px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:verdict==='AVOID'?'#f87171':verdict==='WATCH'?'#2DD4BF':verdict==='SCAN DEEPER'?'#fbbf24':'#94a3b8'}}>{verdict}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',background:'rgba(255,255,255,0.02)',fontSize:'12px',color:'#cbd5e1',lineHeight:1.6}}>{result.symbol ?? 'This token'} has {liq > 0 ? `usable liquidity (${fmtLarge(result.liquidity)})` : 'limited liquidity context'} and {result.volume24h != null ? `24h activity (${fmtLarge(result.volume24h)})` : 'unclear 24h activity'}. {ownerHeld ? 'Owner is still held and deeper control checks are required.' : 'Ownership appears renounced, but LP and holder checks are still required.'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Key Signals: Liquidity {fmtLarge(result.liquidity)}, 24H {fmtPct(result.priceChange24h)}, Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy/Sell Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'} / {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Risks: {strongRisk ? 'High-risk security signal detected.' : [ownerHeld ? 'Owner status held.' : '', holderRisk].filter(Boolean).join(' ') || 'No critical risk flag in current simulation.'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Missing Checks: {missing.join(', ') || 'None major in current read.'}</div><div style={{padding:'11px 12px',border:'1px solid rgba(45,212,191,.35)',borderRadius:'10px',background:'rgba(45,212,191,.07)',fontSize:'11px',color:'#67e8f9'}}>Next Action: Run liquidity and dev-wallet checks before treating this as a watchlist lead.</div></div> })()}
+          <div style={{marginTop:'auto',paddingTop:'8px',borderTop:'1px solid rgba(148,163,184,.12)',fontSize:'10px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)'}}>RPC: hidden<br/>We never render RPC URLs or API keys in the interface. Debug via server logs only.</div>
         </aside>
 
       </div>
