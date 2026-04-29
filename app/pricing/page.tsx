@@ -25,12 +25,12 @@ export default function PricingPage() {
     <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflow: 'hidden' }}>
       <style>{`
         .glass{background:linear-gradient(170deg,rgba(10,17,33,.88),rgba(5,9,20,.82));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.18);border-radius:18px}
-        .nav-pill{border-radius:999px;border:1px solid rgba(110,231,255,.24);background:linear-gradient(120deg,rgba(2,7,22,.84),rgba(14,22,39,.86));box-shadow:0 0 30px rgba(34,211,238,.1),0 0 30px rgba(168,85,247,.1),inset 0 0 0 1px rgba(255,255,255,.03)}
+        .nav-pill{border-radius:999px;border:1px solid rgba(125,211,252,.22);background:linear-gradient(120deg,rgba(3,9,24,.86),rgba(14,22,39,.88));box-shadow:0 0 24px rgba(34,211,238,.08),0 0 26px rgba(168,85,247,.08),inset 0 0 0 1px rgba(255,255,255,.04)}
         .cta{display:block;text-align:center;border-radius:11px;padding:12px 14px;font-weight:800;font-size:12px;letter-spacing:.09em;text-decoration:none;transition:.2s transform,.2s box-shadow,.2s opacity}.cta:hover{transform:translateY(-2px)}
         .cta-free{border:1px solid rgba(148,163,184,.36);color:#e2e8f0;background:rgba(15,23,42,.55)}
         .cta-pro{color:#fff;background:linear-gradient(98deg,#7c3aed,#a855f7,#ec4899);box-shadow:0 10px 28px rgba(168,85,247,.5)}
         .cta-elite{color:#221300;background:linear-gradient(120deg,#f59e0b,#fde047,#facc15);box-shadow:0 10px 30px rgba(251,191,36,.45)}
-        .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.23;background:repeating-linear-gradient(135deg,rgba(217,70,239,.55) 0 1px,transparent 1px 14px);filter:blur(1px)}
+        .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.17;background:repeating-linear-gradient(135deg,rgba(217,70,239,.45) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
         .energy-left{position:absolute;left:-60px;top:140px;width:360px;height:300px;opacity:.22;background:repeating-linear-gradient(90deg,rgba(56,189,248,.5) 0 1px,transparent 1px 18px),repeating-linear-gradient(0deg,rgba(56,189,248,.3) 0 1px,transparent 1px 18px)}
         @media(max-width:1250px){.hero{grid-template-columns:1fr !important}.plan-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}.stats{max-width:340px}.intro{min-height:auto !important}}
         @media(max-width:860px){.plan-grid{grid-template-columns:1fr !important}.nav-links{display:none}}
@@ -40,16 +40,18 @@ export default function PricingPage() {
       <div className='energy-right' />
       <div className='energy-left' />
       <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 18% 22%, rgba(34,211,238,.22), transparent 35%), radial-gradient(circle at 84% 20%, rgba(217,70,239,.22), transparent 34%), radial-gradient(circle at 60% 8%, rgba(129,140,248,.15), transparent 38%)' }} />
-      <div style={{ position: 'absolute', left: '-14%', right: '-14%', bottom: -160, height: 360, borderTop: '2px solid rgba(45,212,191,.7)', borderRadius: '54% 54% 0 0 / 100% 100% 0 0', boxShadow: '0 -18px 70px rgba(34,211,238,.55), 0 -15px 85px rgba(168,85,247,.38)' }} />
-      <div style={{ position: 'absolute', left: '-12%', right: '-12%', bottom: -178, height: 360, borderTop: '1px solid rgba(217,70,239,.62)', borderRadius: '50% 50% 0 0 / 100% 100% 0 0', filter: 'blur(.2px)' }} />
+      <div style={{ position: 'absolute', inset: 'auto -22% -260px -22%', height: 480, background: 'radial-gradient(ellipse at 50% 12%, rgba(8,20,44,.92) 0%, rgba(5,11,25,.82) 48%, rgba(3,6,15,.18) 76%, transparent 100%)' }} />
+      <div style={{ position: 'absolute', left: '-18%', right: '-18%', bottom: -210, height: 430, borderTop: '2px solid rgba(56,189,248,.75)', borderRadius: '56% 56% 0 0 / 100% 100% 0 0', boxShadow: '0 -20px 78px rgba(34,211,238,.48), 0 -10px 96px rgba(59,130,246,.28)' }} />
+      <div style={{ position: 'absolute', left: '-15%', right: '-15%', bottom: -228, height: 430, borderTop: '1px solid rgba(217,70,239,.55)', borderRadius: '52% 52% 0 0 / 100% 100% 0 0', boxShadow: '0 -8px 50px rgba(217,70,239,.24)' }} />
+      <div style={{ position: 'absolute', left: '-10%', right: '-10%', bottom: -190, height: 320, background: 'radial-gradient(ellipse at 50% 0%, rgba(34,211,238,.11), rgba(217,70,239,.08) 45%, transparent 76%)' }} />
 
       <div style={{ position: 'relative', zIndex: 2, maxWidth: 1620, margin: '0 auto', padding: '18px 22px 52px' }}>
         <nav className='nav-pill' style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 22px', marginBottom: 24 }}>
           <Link href='/' style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}>
-            <Image src='/cl-logo.png' alt='ChainLens logo' width={30} height={30} style={{ width: 30, height: 30 }} priority />
+            <Image src='/cl-logo.png' alt='ChainLens logo' width={28} height={28} style={{ width: 28, height: 28, objectFit: 'contain' }} priority />
             <span>
-              <span style={{ display: 'block', fontWeight: 900, letterSpacing: '.01em', lineHeight: 1, fontSize: 19 }}>
-                <span style={{ color: '#67e8f9' }}>Chain</span><span style={{ color: '#d946ef' }}>Lens</span>
+              <span style={{ display: 'block', fontWeight: 800, letterSpacing: '.005em', lineHeight: 1, fontSize: 18 }}>
+                <span style={{ color: '#f8fafc' }}>Chain</span><span style={{ background: 'linear-gradient(90deg,#7dd3fc,#a78bfa,#e879f9)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Lens</span>
               </span>
               <span style={{ display: 'block', fontSize: 10, color: '#67e8f9', marginTop: 2 }}>AI Intelligence</span>
             </span>
