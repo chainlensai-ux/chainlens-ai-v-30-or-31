@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAccount } from 'wagmi'
 import { useWeb3Modal } from '@web3modal/wagmi/react'
 
@@ -16,7 +16,7 @@ type Holding = {
 
 function fmtPrice(v: number): string {
   if (v >= 1000) return `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-  if (v >= 1)    return `$${v.toFixed(2)}`
+  if (v >= 1) return `$${v.toFixed(2)}`
   if (v >= 0.001) return `$${v.toFixed(4)}`
   if (v >= 0.000001) return `$${v.toFixed(6)}`
   return `$${v.toExponential(2)}`
@@ -28,8 +28,23 @@ function fmtUSD(v: number): string {
 
 function fmtBalance(v: number): string {
   if (v >= 1000000) return `${(v / 1000000).toFixed(2)}M`
-  if (v >= 1000)    return `${(v / 1000).toFixed(2)}K`
+  if (v >= 1000) return `${(v / 1000).toFixed(2)}K`
   return v.toFixed(v < 1 ? 4 : 2)
+}
+
+function shortAddress(address: string) {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`
+}
+
+function sparklinePoints(seed: string, positive: boolean) {
+  const points: number[] = []
+  let x = seed.split('').reduce((s, c) => s + c.charCodeAt(0), 0) % 97
+  for (let i = 0; i < 24; i++) {
+    x = (x * 29 + 17) % 97
+    const base = positive ? 40 - i * 0.9 : 15 + i * 0.7
+    points.push(Math.max(4, Math.min(46, base + (x % 10) - 5)))
+  }
+  return points.map((p, i) => `${(i / 23) * 100},${p}`).join(' ')
 }
 
 export default function PortfolioPage() {
@@ -41,510 +56,113 @@ export default function PortfolioPage() {
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkError, setClarkError] = useState<string | null>(null)
+  const [range, setRange] = useState<'24H' | '7D' | '30D' | 'ALL'>('24H')
+  const [search, setSearch] = useState('')
 
-  const totalValue   = holdings.reduce((s, h) => s + h.value, 0)
-  const holdingsWithPnl = holdings.filter(h => typeof h.change24h === 'number')
-  const totalPnL     = holdingsWithPnl.reduce((s, h) => s + h.value * ((h.change24h ?? 0) / 100), 0)
+  const totalValue = holdings.reduce((s, h) => s + h.value, 0)
+  const holdingsWithPnl = holdings.filter((h) => typeof h.change24h === 'number')
+  const totalPnL = holdingsWithPnl.reduce((s, h) => s + h.value * ((h.change24h ?? 0) / 100), 0)
   const hasPnlData = holdingsWithPnl.length > 0
-  const pnlPositive  = totalPnL >= 0
-  const chains       = [...new Set(holdings.map(h => h.chain))]
+  const pnlPositive = totalPnL >= 0
+
+  const filteredHoldings = useMemo(
+    () => holdings.filter((h) => `${h.symbol} ${h.name}`.toLowerCase().includes(search.toLowerCase())),
+    [holdings, search]
+  )
+
+  const topHolding = holdings.length > 0 ? [...holdings].sort((a, b) => b.value - a.value)[0] : null
+  const bestPerformer = holdingsWithPnl.length > 0 ? [...holdingsWithPnl].sort((a, b) => (b.change24h ?? 0) - (a.change24h ?? 0))[0] : null
+  const diversification = holdings.length > 0 && topHolding ? Math.max(20, 100 - (topHolding.value / totalValue) * 100) : 0
+  const profitability = hasPnlData && totalValue > 0 ? Math.max(0, Math.min(100, 50 + (totalPnL / totalValue) * 400)) : 0
+  const momentum = hasPnlData ? Math.max(10, Math.min(100, 45 + holdingsWithPnl.reduce((s, h) => s + (h.change24h ?? 0), 0) / holdingsWithPnl.length * 5)) : 0
+  const safety = Math.max(10, Math.min(100, 100 - (topHolding && totalValue > 0 ? (topHolding.value / totalValue) * 100 : 60)))
+  const score = (profitability + momentum + safety + diversification) / 4
+  const verdict = score > 66 ? 'BULLISH' : score > 45 ? 'NEUTRAL' : 'CAUTIOUS'
 
   async function analyzePortfolio(h: Holding[]) {
     setClarkLoading(true)
     setClarkVerdict(null)
     setClarkError(null)
     try {
-      const prompt = `You are Clark, the AI analyst of ChainLens AI. Analyze this Base wallet portfolio and provide exactly four lines with no markdown, no bullet points, no headers — just plain text:
-
-Line 1 — Trader personality type (e.g. "Degen Ape", "Cautious Accumulator", "Yield Farmer", "Meme Chaser")
-Line 2 — Risk score: X/100 and one sentence reason
-Line 3 — Biggest risk flag in this portfolio
-Line 4 — One paragraph verdict on this portfolio
-
-Portfolio:
-${h.map(t => `${t.symbol} (${t.name}): $${t.value.toFixed(2)} value${typeof t.change24h === 'number' ? `, ${t.change24h > 0 ? '+' : ''}${t.change24h.toFixed(2)}% 24h` : ''}`).join('\n')}
-Total portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
-
-      const res  = await fetch('/api/clark', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const prompt = `You are Clark, the AI analyst of ChainLens AI. Analyze this Base wallet portfolio and provide exactly four lines with no markdown, no bullet points, no headers — just plain text:\n\nLine 1 — Trader personality type\nLine 2 — Risk score: X/100 and one sentence reason\nLine 3 — Biggest risk flag in this portfolio\nLine 4 — One paragraph verdict on this portfolio\n\nPortfolio:\n${h.map((t) => `${t.symbol} (${t.name}): $${t.value.toFixed(2)} value${typeof t.change24h === 'number' ? `, ${t.change24h > 0 ? '+' : ''}${t.change24h.toFixed(2)}% 24h` : ''}`).join('\n')}\nTotal portfolio value: ${fmtUSD(h.reduce((s, t) => s + t.value, 0))}`
+      const res = await fetch('/api/clark', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'portfolio', context: { holdings: h } }),
       })
       const json = await res.json()
-      if (json.ok) {
-        setClarkVerdict(json.data?.reply ?? json.data?.analysis ?? json.data?.response ?? 'No verdict returned.')
-      } else {
-        setClarkError(json.error ?? 'Clark analysis failed.')
-      }
+      if (json.ok) setClarkVerdict(json.data?.reply ?? json.data?.analysis ?? json.data?.response ?? 'No verdict returned.')
+      else setClarkError(json.error ?? 'Clark analysis failed.')
     } catch {
       setClarkError('Network error — Clark unavailable.')
-    } finally {
-      setClarkLoading(false)
-    }
+    } finally { setClarkLoading(false) }
   }
-
-  useEffect(() => {
-    if (isConnected && holdings.length > 0 && !clarkVerdict && !clarkLoading) {
-      analyzePortfolio(holdings)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isConnected, holdings])
 
   useEffect(() => {
     async function loadPortfolio() {
       if (!isConnected || !address) {
-        setHoldings([])
-        setPortfolioError(null)
-        setClarkVerdict(null)
-        setClarkError(null)
-        return
+        setHoldings([]); setPortfolioError(null); setClarkVerdict(null); setClarkError(null); return
       }
-
-      setLoadingPortfolio(true)
-      setPortfolioError(null)
-      setClarkVerdict(null)
-      setClarkError(null)
-
+      setLoadingPortfolio(true); setPortfolioError(null); setClarkVerdict(null); setClarkError(null)
       try {
-        const res = await fetch('/api/wallet', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address }),
-        })
+        const res = await fetch('/api/wallet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
         const json = await res.json()
         if (!res.ok) throw new Error(json?.error ?? 'Portfolio lookup failed')
-
-        const baseHoldings = (json?.holdings ?? [])
-          .filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base'))
-          .map((h: Holding) => ({
-            symbol: h.symbol ?? '?',
-            name: h.name ?? 'Unknown',
-            chain: h.chain ?? 'base',
-            price: Number(h.price ?? 0),
-            balance: Number(h.balance ?? 0),
-            value: Number(h.value ?? 0),
-            change24h: typeof h.change24h === 'number' ? h.change24h : null,
-          }))
-
+        const baseHoldings = (json?.holdings ?? []).filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base')).map((h: Holding) => ({
+          symbol: h.symbol ?? '?', name: h.name ?? 'Unknown', chain: h.chain ?? 'base', price: Number(h.price ?? 0), balance: Number(h.balance ?? 0), value: Number(h.value ?? 0), change24h: typeof h.change24h === 'number' ? h.change24h : null,
+        }))
         setHoldings(baseHoldings)
+        if (baseHoldings.length > 0) analyzePortfolio(baseHoldings)
       } catch {
-        setHoldings([])
-        setPortfolioError('Portfolio data unavailable right now. Try again in a moment.')
-      } finally {
-        setLoadingPortfolio(false)
-      }
+        setHoldings([]); setPortfolioError('Portfolio data unavailable right now. Try again in a moment.')
+      } finally { setLoadingPortfolio(false) }
     }
-
     loadPortfolio()
   }, [isConnected, address])
 
-  return (
-    <>
-      <style>{`
-        @keyframes port-dot {
-          0%, 80%, 100% { opacity: 0.2; transform: scale(0.75); }
-          40%            { opacity: 1;   transform: scale(1);    }
-        }
-        .port-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #2DD4BF; animation: port-dot 1.2s ease-in-out infinite; }
-        .port-dot:nth-child(2) { animation-delay: 0.18s; }
-        .port-dot:nth-child(3) { animation-delay: 0.36s; }
-        @keyframes port-fade-in {
-          from { opacity: 0; transform: translateY(8px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        .port-row { animation: port-fade-in 0.3s ease-out both; }
-        .port-row:hover { background: rgba(255,255,255,0.025) !important; }
-        .port-connect-btn {
-          background: rgba(45,212,191,0.10);
-          border: 1px solid rgba(45,212,191,0.30);
-          border-radius: 10px;
-          color: #2DD4BF;
-          font-size: 13px; font-weight: 700;
-          padding: 12px 28px; cursor: pointer;
-          font-family: var(--font-inter);
-          letter-spacing: 0.04em;
-          transition: background 150ms, border-color 150ms, box-shadow 150ms;
-        }
-        .port-connect-btn:hover {
-          background: rgba(45,212,191,0.18);
-          border-color: rgba(45,212,191,0.60);
-          box-shadow: 0 0 20px rgba(45,212,191,0.25);
-        }
-      `}</style>
+  const empty = isConnected && !loadingPortfolio && !portfolioError && holdings.length === 0
 
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#06060a', color: '#e2e8f0', overflow: 'hidden' }}>
+  return <div style={{ height: '100%', overflow: 'auto', background: 'radial-gradient(circle at 20% -20%, rgba(45,212,191,0.16), transparent 35%), radial-gradient(circle at 90% 0%, rgba(168,85,247,0.18), transparent 30%), #04070f', color: '#e2e8f0', padding: 20 }}>
+    <style>{`.glass{background:linear-gradient(160deg,rgba(16,24,42,.82),rgba(7,11,22,.76));border:1px solid rgba(123,151,196,.17);backdrop-filter: blur(8px);border-radius:18px}.sk{background:linear-gradient(90deg,rgba(148,163,184,.12),rgba(148,163,184,.22),rgba(148,163,184,.12));background-size:200% 100%;animation:sh 1.6s infinite}@keyframes sh{from{background-position:200% 0}to{background-position:-200% 0}}`}</style>
 
-        {/* ── Top summary bar ───────────────────────────────────── */}
-        <div style={{
-          flexShrink: 0,
-          background: '#080c14',
-          borderBottom: '1px solid rgba(255,255,255,0.08)',
-          padding: '16px 28px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '32px',
-          flexWrap: 'wrap',
-        }}>
-          {/* Label */}
-          <div style={{ marginRight: '4px' }}>
-            <div style={{
-              fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em',
-              color: '#2DD4BF', textTransform: 'uppercase',
-              fontFamily: 'var(--font-plex-mono)', marginBottom: '4px',
-            }}>Portfolio</div>
-            <div style={{ fontSize: '22px', fontWeight: 800, letterSpacing: '-0.02em', color: '#f1f5f9', lineHeight: 1 }}>
-              {isConnected ? fmtUSD(totalValue) : '—'}
-            </div>
-          </div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12, marginBottom: 16 }}>
+      {[['Portfolio Value', isConnected ? fmtUSD(totalValue) : '—'], ['24H PnL', isConnected ? (hasPnlData ? `${pnlPositive ? '+' : ''}${fmtUSD(totalPnL)}` : 'Unavailable') : '—'], ['Tokens', isConnected ? `${holdings.length}` : '—'], ['Wallet', isConnected && address ? shortAddress(address) : 'Not connected'], ['Network', 'Base']].map(([k, v], idx) => <div key={k} className='glass' style={{ padding: 14 }}>{loadingPortfolio ? <div className='sk' style={{ height: 40, borderRadius: 12 }} /> : <><div style={{ fontSize: 10, letterSpacing: '.15em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{k}</div><div style={{ fontSize: idx === 3 ? 16 : 28, fontWeight: 800, marginTop: 6 }}>{v}</div></>}</div>)}
+    </div>
 
-          {/* Divider */}
-          <div style={{ width: '1px', height: '36px', background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
-
-          {/* 24h PnL */}
-          <div>
-            <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#3e5c78', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>
-              24h PnL
-            </div>
-            <div style={{
-              fontSize: '16px', fontWeight: 700,
-              color: isConnected && hasPnlData ? (pnlPositive ? '#2DD4BF' : '#f43f5e') : '#3e5c78',
-              fontFamily: 'var(--font-plex-mono)',
-            }}>
-              {isConnected
-                ? hasPnlData ? `${pnlPositive ? '+' : ''}${fmtUSD(totalPnL)}` : 'PnL unavailable'
-                : '—'}
-            </div>
-          </div>
-
-          {/* Divider */}
-          <div style={{ width: '1px', height: '36px', background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
-
-          {/* Token count */}
-          <div>
-            <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#3e5c78', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>
-              Tokens
-            </div>
-            <div style={{ fontSize: '16px', fontWeight: 700, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)' }}>
-              {isConnected ? holdings.length : '—'}
-            </div>
-          </div>
-
-          {/* Chain pills */}
-          {isConnected && chains.length > 0 && (
-            <>
-              <div style={{ width: '1px', height: '36px', background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
-              <div>
-                <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#3e5c78', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>
-                  Chains
-                </div>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  {chains.map(c => (
-                    <span key={c} style={{
-                      padding: '2px 10px', borderRadius: '99px',
-                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em',
-                      background: c === 'base' ? 'rgba(0,82,255,0.15)' : 'rgba(255,255,255,0.06)',
-                      border: c === 'base' ? '1px solid rgba(0,82,255,0.35)' : '1px solid rgba(255,255,255,0.10)',
-                      color: c === 'base' ? '#5b8fff' : '#94a3b8',
-                      fontFamily: 'var(--font-plex-mono)',
-                      textTransform: 'uppercase',
-                    }}>
-                      {c}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-
-          {isConnected && address && (
-            <>
-              <div style={{ width: '1px', height: '36px', background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
-              <div>
-                <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#3e5c78', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>
-                  Wallet
-                </div>
-                <div style={{ fontSize: '12px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
-                  {address.slice(0, 6)}…{address.slice(-4)}
-                </div>
-              </div>
-            </>
-          )}
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(300px,1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gap: 14 }}>
+        <div className='glass' style={{ padding: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}><h3 style={{ margin: 0 }}>Portfolio Overview</h3><div>{(['24H','7D','30D','ALL'] as const).map(r => <button key={r} onClick={() => setRange(r)} style={{ marginLeft: 6, borderRadius: 999, border: '1px solid rgba(148,163,184,.3)', background: range===r?'rgba(34,211,238,.18)':'transparent', color: '#cbd5e1', padding: '4px 10px' }}>{r}</button>)}</div></div>
+          {loadingPortfolio ? <div className='sk' style={{ height: 280, borderRadius: 16 }} /> : empty ? <div style={{height:280,display:'grid',placeItems:'center',textAlign:'center',border:'1px dashed rgba(125,211,252,.28)',borderRadius:16,color:'#94a3b8'}}><div><div style={{fontSize:20,fontWeight:700,color:'#e2e8f0'}}>No supported Base token balances found yet.</div><div>Connect or scan a wallet with supported Base assets to populate your portfolio.</div></div></div> : <svg viewBox='0 0 100 40' style={{ width: '100%', height: 280, borderRadius: 16, background: 'linear-gradient(180deg,rgba(6,12,24,.7),rgba(4,6,14,.95))' }}><polyline fill='none' stroke='url(#g)' strokeWidth='1.4' points={sparklinePoints((address ?? 'portfolio') + range, true)} /><defs><linearGradient id='g'><stop stopColor='#2dd4bf'/><stop offset='1' stopColor='#d946ef'/></linearGradient></defs></svg>}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: 10, marginTop: 12 }}>{[
+            ['Highest Holding', topHolding ? `${topHolding.symbol} • ${fmtUSD(topHolding.value)}` : '—'],
+            ['Best Performer', bestPerformer && typeof bestPerformer.change24h==='number' ? `${bestPerformer.symbol} • +${bestPerformer.change24h.toFixed(2)}%` : '—'],
+            ['Portfolio Change', hasPnlData ? `${pnlPositive?'+':''}${((totalPnL/Math.max(totalValue,1))*100).toFixed(2)}%` : '—'],
+            ['Risk Score', `${Math.round(100-safety)}/100`],
+          ].map(([k,v]) => <div key={k} className='glass' style={{padding:10,borderRadius:12}}><div style={{fontSize:10,color:'#94a3b8'}}>{k}</div><div style={{fontWeight:700,marginTop:4}}>{v}</div></div>)}</div>
         </div>
 
-        {/* ── Main content row ──────────────────────────────────── */}
-        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-
-          {/* ── Holdings table ────────────────────────────────────── */}
-          <div className="mob-terminal-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-
-            {/* Table header */}
-            {isConnected && (
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: '2fr 80px 120px 120px 120px 90px',
-                padding: '10px 28px',
-                borderBottom: '1px solid rgba(255,255,255,0.05)',
-                flexShrink: 0,
-              }}>
-                {['Token', 'Chain', 'Price', 'Balance', 'Value', '24h'].map(col => (
-                  <span key={col} style={{
-                    fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em',
-                    color: '#3e5c78', textTransform: 'uppercase',
-                    fontFamily: 'var(--font-plex-mono)',
-                  }}>{col}</span>
-                ))}
-              </div>
-            )}
-
-            {/* Rows or empty state */}
-            {!isConnected ? (
-              <div style={{
-                flex: 1, display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center', gap: '20px',
-                padding: '60px 28px',
-              }}>
-                {/* Icon */}
-                <div style={{
-                  width: '56px', height: '56px', borderRadius: '16px',
-                  background: 'rgba(45,212,191,0.06)',
-                  border: '1px solid rgba(45,212,191,0.18)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/>
-                    <path d="M4 6v12c0 1.1.9 2 2 2h14v-4"/>
-                    <path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>
-                  </svg>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '15px', fontWeight: 600, color: '#f1f5f9', marginBottom: '8px' }}>
-                    Connect your wallet to view your Base portfolio.
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.30)', maxWidth: '300px', lineHeight: 1.6 }}>
-                    Link your wallet to see supported Base holdings and get a Clark AI portfolio analysis.
-                  </div>
-                </div>
-                <button className="port-connect-btn" onClick={() => open()}>
-                  Connect Wallet
-                </button>
-              </div>
-            ) : (
-              <div style={{ flex: 1 }}>
-                {loadingPortfolio && (
-                  <div style={{ padding: '24px 28px', color: '#94a3b8', fontSize: '12px', fontFamily: 'var(--font-plex-mono)' }}>
-                    Loading portfolio…
-                  </div>
-                )}
-                {portfolioError && !loadingPortfolio && (
-                  <div style={{ padding: '24px 28px', color: '#fca5a5', fontSize: '12px', fontFamily: 'var(--font-plex-mono)' }}>
-                    {portfolioError}
-                  </div>
-                )}
-                {!loadingPortfolio && !portfolioError && holdings.length === 0 && (
-                  <div style={{ padding: '24px 28px', color: '#94a3b8', fontSize: '12px', fontFamily: 'var(--font-plex-mono)' }}>
-                    No supported Base token balances found for this wallet.
-                  </div>
-                )}
-                {holdings.map((h, i) => {
-                  const pos = (h.change24h ?? 0) >= 0
-                  return (
-                    <div
-                      key={h.symbol}
-                      className="port-row"
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '2fr 80px 120px 120px 120px 90px',
-                        padding: '14px 28px',
-                        borderBottom: '1px solid rgba(255,255,255,0.04)',
-                        alignItems: 'center',
-                        animationDelay: `${i * 0.05}s`,
-                        background: 'transparent',
-                        transition: 'background 150ms',
-                      }}
-                    >
-                      {/* Token name + symbol */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', fontFamily: 'var(--font-inter)' }}>
-                          {h.symbol}
-                        </span>
-                        <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter)' }}>
-                          {h.name}
-                        </span>
-                      </div>
-
-                      {/* Chain badge */}
-                      <span style={{
-                        display: 'inline-block', padding: '2px 8px', borderRadius: '99px',
-                        fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em',
-                        textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
-                        background: 'rgba(0,82,255,0.12)',
-                        border: '1px solid rgba(0,82,255,0.28)',
-                        color: '#5b8fff',
-                        alignSelf: 'center',
-                      }}>
-                        {h.chain}
-                      </span>
-
-                      {/* Price */}
-                      <span style={{ fontSize: '12px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
-                        {fmtPrice(h.price)}
-                      </span>
-
-                      {/* Balance */}
-                      <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-plex-mono)' }}>
-                        {fmtBalance(h.balance)}
-                      </span>
-
-                      {/* USD value */}
-                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)' }}>
-                        {fmtUSD(h.value)}
-                      </span>
-
-                      {/* 24h change */}
-                      {typeof h.change24h === 'number' ? (
-                        <span style={{
-                          fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-plex-mono)',
-                          color: pos ? '#2DD4BF' : '#f43f5e',
-                        }}>
-                          {pos ? '+' : ''}{h.change24h.toFixed(2)}%
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--font-plex-mono)', color: '#3e5c78' }}>
-                          —
-                        </span>
-                      )}
-                    </div>
-                  )
-                })}
-
-                {/* Total row */}
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: '2fr 80px 120px 120px 120px 90px',
-                  padding: '14px 28px',
-                  borderTop: '1px solid rgba(255,255,255,0.08)',
-                  alignItems: 'center',
-                  marginTop: '4px',
-                }}>
-                  <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.10em', color: '#3e5c78', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
-                    Total
-                  </span>
-                  <span />
-                  <span />
-                  <span />
-                  <span style={{ fontSize: '13px', fontWeight: 800, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)' }}>
-                    {fmtUSD(totalValue)}
-                  </span>
-                  <span style={{ fontSize: '12px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', color: hasPnlData ? (pnlPositive ? '#2DD4BF' : '#f43f5e') : '#3e5c78' }}>
-                    {hasPnlData && totalValue > 0 ? `${pnlPositive ? '+' : ''}${((totalPnL / totalValue) * 100).toFixed(2)}%` : 'PnL unavailable'}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── Clark verdict panel ───────────────────────────────── */}
-          <aside className="mob-verdict-panel" style={{
-            width: '300px',
-            flexShrink: 0,
-            borderLeft: '1px solid rgba(255,255,255,0.08)',
-            background: '#080c14',
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-          }}>
-            {/* Top accent */}
-            <div style={{
-              height: '1.5px', flexShrink: 0,
-              background: 'linear-gradient(90deg, transparent, #2DD4BF 40%, #8b5cf6 70%, transparent)',
-            }} />
-
-            <div style={{ padding: '24px 20px', flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
-
-              {/* Label row */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{
-                  width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0,
-                  background: clarkLoading ? '#2DD4BF' : clarkVerdict ? '#2DD4BF' : '#1e3a44',
-                  boxShadow: (clarkLoading || clarkVerdict) ? '0 0 8px rgba(45,212,191,0.80)' : 'none',
-                  transition: 'all 0.3s',
-                }} />
-                <span style={{
-                  fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
-                  color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
-                  textTransform: 'uppercase',
-                }}>
-                  Clark Verdict
-                </span>
-              </div>
-
-              {/* Idle — no wallet */}
-              {!isConnected && !clarkLoading && !clarkVerdict && (
-                <p style={{ fontSize: '11px', color: '#1e3a44', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, margin: 0 }}>
-                  Connect your wallet and Clark will analyse your portfolio — personality type, risk score, biggest flag, and a full verdict.
-                </p>
-              )}
-
-              {/* Loading dots */}
-              {clarkLoading && (
-                <div>
-                  <p style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px', lineHeight: 1.5 }}>
-                    Clark is analysing your portfolio…
-                  </p>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    <span className="port-dot" />
-                    <span className="port-dot" />
-                    <span className="port-dot" />
-                  </div>
-                </div>
-              )}
-
-              {/* Error */}
-              {clarkError && (
-                <p style={{ fontSize: '12px', color: '#fca5a5', fontFamily: 'var(--font-plex-mono)', margin: 0, lineHeight: 1.6 }}>
-                  {clarkError}
-                </p>
-              )}
-
-              {/* Verdict */}
-              {clarkVerdict && !clarkLoading && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {clarkVerdict.split('\n').filter(l => l.trim()).map((line, i) => {
-                    const isFirstLine = i === 0
-                    return (
-                      <p key={i} style={{
-                        fontSize: isFirstLine ? '13px' : '12px',
-                        lineHeight: 1.75,
-                        color: isFirstLine ? '#f1f5f9' : '#94a3b8',
-                        fontFamily: 'var(--font-plex-mono)',
-                        margin: 0,
-                        fontWeight: isFirstLine ? 700 : 400,
-                        paddingBottom: isFirstLine ? '10px' : 0,
-                        borderBottom: isFirstLine ? '1px solid rgba(255,255,255,0.06)' : 'none',
-                      }}>
-                        {line}
-                      </p>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* Footer */}
-            <div style={{
-              flexShrink: 0, padding: '12px 20px',
-              borderTop: '1px solid rgba(255,255,255,0.05)',
-              display: 'flex', alignItems: 'center', gap: '6px',
-            }}>
-              <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 5px rgba(45,212,191,0.65)', flexShrink: 0 }} />
-              <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.20)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em' }}>
-                POWERED BY CORTEX ENGINE
-              </span>
-            </div>
-          </aside>
-
+        <div className='glass' style={{ padding: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}><h3 style={{ margin: 0 }}>Your Holdings</h3><input placeholder='Search token' value={search} onChange={(e) => setSearch(e.target.value)} style={{ background: 'rgba(15,23,42,.8)', border: '1px solid rgba(148,163,184,.25)', color: '#e2e8f0', borderRadius: 10, padding: '8px 10px' }} /></div>
+          {loadingPortfolio ? <div className='sk' style={{ height: 230, borderRadius: 12 }} /> : empty ? <div style={{padding:26,textAlign:'center',color:'#94a3b8',border:'1px dashed rgba(148,163,184,.28)',borderRadius:12}}>No holdings to display yet.</div> : <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr style={{ color: '#94a3b8', fontSize: 12 }}><th align='left'>Token</th><th align='right'>Balance</th><th align='right'>Price</th><th align='right'>Value</th><th align='right'>24H</th><th align='center'>Trend</th><th align='right'>Allocation</th></tr></thead><tbody>{filteredHoldings.map((h) => {const alloc=totalValue>0?(h.value/totalValue)*100:0; const pos=(h.change24h??0)>=0; return <tr key={h.symbol} style={{ borderTop: '1px solid rgba(148,163,184,.12)' }}><td style={{ padding: '10px 0' }}><div style={{ fontWeight: 700 }}>{h.symbol}</div><div style={{ color: '#94a3b8', fontSize: 12 }}>{h.name}</div></td><td align='right'>{fmtBalance(h.balance)}</td><td align='right'>{fmtPrice(h.price)}</td><td align='right'>{fmtUSD(h.value)}</td><td align='right' style={{ color: pos ? '#2dd4bf' : '#fb7185' }}>{typeof h.change24h==='number'?`${pos?'+':''}${h.change24h.toFixed(2)}%`:'—'}</td><td align='center'><svg viewBox='0 0 100 40' width='70' height='24'><polyline fill='none' stroke={pos?'#2dd4bf':'#f43f5e'} strokeWidth='3' points={sparklinePoints(h.symbol,pos)} /></svg></td><td align='right'>{alloc.toFixed(1)}%</td></tr>})}</tbody></table></div>}
+          <div style={{ marginTop: 10, textAlign: 'center', color: '#67e8f9' }}>View All Holdings →</div>
         </div>
       </div>
-    </>
-  )
+
+      <div style={{ display: 'grid', gap: 14, alignContent: 'start' }}>
+        <div className='glass' style={{ padding: 16 }}><h3 style={{ marginTop: 0 }}>Clark AI Insights</h3>
+          {loadingPortfolio || clarkLoading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : empty ? <div style={{ color: '#94a3b8' }}>Clark needs portfolio data to generate insights.</div> : <>
+            <div style={{ fontSize: 12, color: '#94a3b8' }}>Portfolio Verdict</div><div style={{ fontSize: 34, fontWeight: 900, color: verdict==='BULLISH'?'#2dd4bf':verdict==='NEUTRAL'?'#67e8f9':'#f59e0b' }}>{verdict}</div>
+            {clarkVerdict && <p style={{ whiteSpace: 'pre-line', color: '#cbd5e1', fontSize: 12 }}>{clarkVerdict}</p>}
+            {clarkError && <p style={{ color: '#fca5a5' }}>{clarkError}</p>}
+            {[['Profitability', profitability], ['Safety', safety], ['Momentum', momentum], ['Diversification', diversification]].map(([k,v]) => <div key={k as string} style={{ marginTop: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>{k}</span><span>{Math.round(v as number)}/100</span></div><div style={{ height: 6, background: 'rgba(100,116,139,.25)', borderRadius: 999 }}><div style={{ width: `${Math.round(v as number)}%`, height: '100%', borderRadius: 999, background: 'linear-gradient(90deg,#2dd4bf,#a855f7)' }} /></div></div>)}
+            <div className='glass' style={{ marginTop: 12, padding: 10, borderRadius: 12 }}><div style={{ fontSize: 11, color: '#67e8f9' }}>Top Opportunity</div><div style={{ fontSize: 13 }}>{bestPerformer ? `${bestPerformer.symbol} shows strongest short-term momentum.` : 'Need more token performance data.'}</div></div>
+            <div style={{ marginTop: 10, color: '#67e8f9' }}>View More →</div>
+          </>}
+        </div>
+        <div className='glass' style={{ padding: 16 }}><h3 style={{ marginTop: 0 }}>Recent Activity</h3><div style={{ color: '#94a3b8', fontSize: 13 }}>Activity feed is unavailable in this view right now.</div><div style={{ marginTop: 10, color: '#67e8f9' }}>View All Activity →</div></div>
+      </div>
+    </div>
+
+    {!isConnected && <div className='glass' style={{ marginTop: 16, padding: 20, textAlign: 'center' }}><div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Connect your wallet to unlock your premium portfolio dashboard.</div><button onClick={() => open()} style={{ borderRadius: 10, border: '1px solid rgba(45,212,191,.5)', background: 'rgba(45,212,191,.16)', color: '#99f6e4', padding: '10px 20px' }}>Connect Wallet</button></div>}
+  </div>
 }
