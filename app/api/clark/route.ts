@@ -132,6 +132,8 @@ type ClarkReplyMode =
   | "feature_context"
   | "unknown";
 
+type LiveIntent = "MARKET_OVERVIEW" | "TOKEN_QUERY" | "BASE_MARKET" | "WALLET_QUERY" | "GENERAL_CHAT";
+
 // ---------- Chain name maps ----------
 
 const GOLDRUSH_CHAIN: Record<SupportedChain, string> = {
@@ -878,7 +880,32 @@ function buildClarkStrategyReply(prompt: string): string {
   if (/red flags in a token/.test(t)) {
     return "Main red flags: unclear contract controls, thin liquidity, concentrated ownership, and suspicious deployer-linked flows. If two or more are unresolved, treat it as SCAN DEEPER or avoid.";
   }
-  return "I can help with market watchlists, token risk reads, wallet quality checks, and full investigations. Ask for a market overview or share a token/wallet for targeted analysis.";
+  return "Share a token symbol/contract, a wallet address, or ask for Base movers and I’ll run a live read.";
+}
+
+function detectLiveIntent(prompt: string): LiveIntent {
+  const t = prompt.toLowerCase().trim();
+  if (/scan\s+0x[a-f0-9]{40}|check wallet|wallet\b/.test(t)) return "WALLET_QUERY";
+  if (/what'?s pumping on base|base trending|moving on base|top movers on base/.test(t)) return "BASE_MARKET";
+  if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
+  if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
+  return "GENERAL_CHAT";
+}
+
+async function fetchCoinGeckoMajors() {
+  const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true", { cache: "no-store" });
+  if (!res.ok) throw new Error("coingecko majors failed");
+  return res.json() as Promise<Record<string, { usd?: number; usd_24h_change?: number }>>;
+}
+
+function pct(value?: number) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function fmtPrice(value?: number) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  return value >= 1 ? `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : `$${value.toFixed(6)}`;
 }
 
 function buildRoutingHelpReply(prompt: string): string {
@@ -3070,6 +3097,75 @@ async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
+  const liveIntent = detectLiveIntent(prompt);
+
+  if (liveIntent === "MARKET_OVERVIEW") {
+    try {
+      const data = await fetchCoinGeckoMajors();
+      const eth = data.ethereum ?? {};
+      const btc = data.bitcoin ?? {};
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "general_market",
+        intent: "market",
+        toolsUsed: ["coingecko_simple_price"],
+        analysis: [
+          `Ethereum is trading at ${fmtPrice(eth.usd)} (${pct(eth.usd_24h_change)} 24h).`,
+          `Bitcoin is at ${fmtPrice(btc.usd)} (${pct(btc.usd_24h_change)} 24h).`,
+          `Market sentiment: ${(eth.usd_24h_change ?? 0) + (btc.usd_24h_change ?? 0) >= 0 ? "mildly bullish" : "cautious"} based on 24h momentum.`,
+        ].join("\n"),
+      };
+    } catch {
+      return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["coingecko_simple_price"], analysis: "Live market data unavailable right now. Try again." };
+    }
+  }
+
+  if (liveIntent === "TOKEN_QUERY") {
+    const query = extractTokenLookupQuery(prompt) ?? prompt.trim();
+    try {
+      const tokenData = await callScanToken(query, "query", origin);
+      if (!tokenData) {
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: "Token not found on Base or data unavailable." };
+      }
+      const rec = tokenData as Record<string, unknown>;
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "token_analysis",
+        toolsUsed: ["token_scan"],
+        analysis: [
+          `${String(rec.symbol ?? "?")} (${String(rec.name ?? "Unknown")}):`,
+          `Price: ${fmtPrice(typeof rec.price === "number" ? rec.price : undefined)}`,
+          `24h: ${pct(typeof rec.priceChange24h === "number" ? rec.priceChange24h : undefined)}`,
+          `Liquidity: ${formatUsdShort(typeof rec.liquidity === "number" ? rec.liquidity : null)}`,
+          `Volume: ${formatUsdShort(typeof rec.volume24h === "number" ? rec.volume24h : null)}`,
+          `Momentum: ${typeof rec.priceChange24h === "number" && rec.priceChange24h > 0 ? "strong short-term uptrend" : "mixed / cooling"}.`,
+        ].join("\n"),
+      };
+    } catch {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: "Live market data unavailable right now. Try again." };
+    }
+  }
+
+  if (liveIntent === "BASE_MARKET") {
+    try {
+      const universe = await getBaseMarketUniverse({ origin, mode: "movers", requestedCount: 5, followup: false, excludeAddresses: [], includePoolVariants: false });
+      const top = universe.candidates.slice(0, 5);
+      if (!top.length) return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "general_market",
+        intent: "market",
+        toolsUsed: ["market_get_base_movers"],
+        analysis: ["Top movers on Base right now:", ...top.map((c, i) => `${i + 1}. ${c.symbol ?? "?"} ${pct(c.change24h)}`)].join("\n"),
+      };
+    } catch {
+      return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };
+    }
+  }
   const replyMode = detectReplyMode(body);
   const directIntent = detectIntent(prompt);
   const structuredMarketList = extractStructuredMarketItems(body);
