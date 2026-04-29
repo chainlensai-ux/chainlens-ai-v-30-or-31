@@ -37,6 +37,7 @@ type ScanResult = {
     simulationSuccess: boolean
   } | null
   noActivePools?: boolean
+  holderDistribution?: { top1:number; top5:number; top10:number; top20:number; others:number; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:number;percent:number}> } | null
 }
 
 // ─── Formatters ───────────────────────────────────────────────────────────
@@ -331,6 +332,7 @@ export default function TerminalTokenScanner() {
           })),
           goplus:   json.goplus   ?? null,
           honeypot: json.honeypot ?? null,
+          holderDistribution: json.holderDistribution ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -546,11 +548,11 @@ export default function TerminalTokenScanner() {
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
                 <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
                   <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
-                  <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px'}}>Top holder metrics and distribution context unavailable.</div>
+                  {result.holderDistribution ? <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution.top1],['Top 5',result.holderDistribution.top5],['Top 10',result.holderDistribution.top10],['Top 20',result.holderDistribution.top20],['Others',result.holderDistribution.others]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{Number(v).toFixed(1)}%</span></div>)}</div> : <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px'}}>Top holder metrics and distribution context unavailable.</div>}
                 </div>
                 <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
                   <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
-                  <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px'}}>No holder data yet for this scan.</div>
+                  {result.holderDistribution?.topHolders?.length ? <div style={{display:'grid',gap:'4px',maxHeight:'160px',overflowY:'auto'}}>{result.holderDistribution.topHolders.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'28px 1fr 56px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{h.percent.toFixed(2)}%</span></div>)}</div> : <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px'}}>No holder data yet for this scan.</div>}
                 </div>
               </div>
 
