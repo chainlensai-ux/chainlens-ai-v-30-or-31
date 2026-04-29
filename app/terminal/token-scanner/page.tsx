@@ -440,7 +440,7 @@ export default function TerminalTokenScanner() {
                 flexShrink: 0, transition: 'all 0.15s',
               }}
             >
-              {loading ? 'SCANNING…' : 'SCAN'}
+              {loading ? 'SCANNING…' : 'SCAN TOKEN'}
             </button>
           </div>
 
@@ -492,8 +492,9 @@ export default function TerminalTokenScanner() {
                     fontSize: '11px', color: '#3a5268',
                     fontFamily: 'var(--font-plex-mono)', margin: 0,
                   }}>
-                    {result.contract}
+                    {shorten(result.contract)}
                     {` · ${String(result.chain ?? 'Base').toUpperCase()}`}
+                    <span style={{marginLeft:'8px',padding:'2px 8px',border:'1px solid rgba(59,130,246,.35)',borderRadius:'999px',color:'#93c5fd'}}>BASE</span>
                   </p>
                 )}
               </div>
@@ -540,6 +541,19 @@ export default function TerminalTokenScanner() {
                 hp={result.honeypot ?? null}
               />
 
+
+              {/* Holder analytics */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
+                <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                  <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                  <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px'}}>Top holder metrics and distribution context unavailable.</div>
+                </div>
+                <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                  <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
+                  <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px'}}>No holder data yet for this scan.</div>
+                </div>
+              </div>
+
               {/* Pools */}
               {result.pools && result.pools.length > 0 && (
                 <>
@@ -548,7 +562,7 @@ export default function TerminalTokenScanner() {
                     color: '#3a5268', textTransform: 'uppercase',
                     marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
                   }}>
-                    Liquidity & Pools · {result.pools.length}
+                    Liquidity Liquidity & Liquidity & Pools Pools · {result.pools.length} POOLS
                   </p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
@@ -556,7 +570,7 @@ export default function TerminalTokenScanner() {
                         key={i}
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: '1fr repeat(4, auto)',
+                          gridTemplateColumns: '1.2fr repeat(6, auto)',
                           alignItems: 'center', gap: '20px',
                           padding: '12px 18px',
                           background: 'rgba(255,255,255,0.025)',
@@ -580,9 +594,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
                           Vol {fmtLarge(pool.volume24h)}
                         </span>
-                        <span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>
-                          {fmtPct(pool.priceChange24h)}
-                        </span>
+                        <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>APR N/A</span><span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>{fmtPct(pool.priceChange24h)}</span><span style={{whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24'}}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
                       </div>
                     ))}
                   </div>
@@ -618,7 +630,7 @@ export default function TerminalTokenScanner() {
               color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
               textTransform: 'uppercase', margin: 0,
             }}>
-              Clark Verdict
+              Clark AI Verdict
             </p>
           </div>
 
@@ -674,6 +686,7 @@ export default function TerminalTokenScanner() {
             const confidence = verdict === 'AVOID' ? 'High' : verdict === 'WATCH' ? 'Medium-High' : verdict === 'SCAN DEEPER' ? 'Medium' : 'Low'
             const missing = [ownerHeld ? 'Contract ownership renounced' : '', result.marketCap == null && result.fdv == null ? 'Market cap / FDV' : '', 'LP lock/control', 'Holder concentration', 'Deployer behavior'].filter(Boolean)
             return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'10px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'10px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:verdict==='AVOID'?'#f87171':verdict==='WATCH'?'#2DD4BF':verdict==='SCAN DEEPER'?'#fbbf24':'#94a3b8'}}>{verdict}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{fontSize:'12px',color:'#cbd5e1',lineHeight:1.65}}>{result.symbol ?? 'This token'} has {liq > 0 ? `usable liquidity (${fmtLarge(result.liquidity)})` : 'limited liquidity context'} and {result.volume24h != null ? `24h activity (${fmtLarge(result.volume24h)})` : 'unclear 24h activity'}. {ownerHeld ? 'Owner is still held and deeper control checks are required.' : 'Ownership appears renounced, but LP and holder checks are still required.'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Key Signals: Liquidity {fmtLarge(result.liquidity)}, 24H {fmtPct(result.priceChange24h)}, Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy/Sell Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'} / {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Risks: {strongRisk ? 'High-risk security signal detected.' : ownerHeld ? 'Owner status held.' : 'No critical risk flag in current simulation.'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Missing Checks: {missing.join(', ') || 'None major in current read.'}</div><div style={{fontSize:'11px',color:'#67e8f9'}}>Next Action: Run liquidity and dev-wallet checks before treating this as a watchlist lead.</div></div> })()}
+          <div style={{marginTop:'auto',paddingTop:'8px',borderTop:'1px solid rgba(148,163,184,.12)',fontSize:'10px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)'}}>RPC: hidden<br/>We never render RPC URLs or API keys in the interface. Debug via server logs only.</div>
         </aside>
 
       </div>
