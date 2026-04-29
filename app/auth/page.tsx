@@ -258,9 +258,12 @@ export default function AuthPage() {
         <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.45), rgba(139,92,246,0.45), transparent)' }} />
 
         {/* Logo */}
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }}>
           <Image src="/cl-logo.png" alt="ChainLens" width={72} height={72} />
         </div>
+        <p style={{ textAlign: 'center', marginTop: 0, marginBottom: '22px', color: 'rgba(226,232,240,0.72)', fontSize: '12px', letterSpacing: '0.02em' }}>
+          Access your ChainLens terminal.
+        </p>
 
         {/* Mode tabs */}
         <div style={{ display: 'flex', background: 'rgba(255,255,255,0.04)', borderRadius: '10px', padding: '3px', marginBottom: '24px' }}>
