@@ -1,401 +1,97 @@
 import Link from 'next/link'
-import Navbar from '@/components/Navbar'
+import Image from 'next/image'
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-type Section = { title: string; items: string[] }
-
-interface Plan {
-  id: string
+type Plan = {
+  id: 'free' | 'pro' | 'elite'
   label: string
-  labelColor: string
   price: string
-  billing: string
-  engine: string
-  engineColor: string
+  subtext: string
+  sectionTitle: string
+  features: string[]
+  note?: string
   cta: string
-  ctaStyle: 'outline' | 'gradient' | 'gold'
-  border: string
-  badge: string | null
-  sections: Section[]
+  ctaClass: string
+  badge?: string
+  trial?: string
 }
 
-// ─── Plans ───────────────────────────────────────────────────────────────────
-
-const PLANS: Plan[] = [
-  {
-    id: 'free',
-    label: 'FREE',
-    labelColor: '#ec4899',
-    price: '$0',
-    billing: 'forever free · no card required',
-    engine: 'CORTEX LITE',
-    engineColor: 'rgba(236,72,153,0.65)',
-    cta: 'Get Started Free',
-    ctaStyle: 'outline',
-    border: 'rgba(255,255,255,0.09)',
-    badge: null,
-    sections: [
-      {
-        title: 'Token Scanner',
-        items: [
-          'Price, liquidity, volume, 24h change',
-          'Basic token info only',
-          'No AI verdict',
-        ],
-      },
-      {
-        title: 'Liquidity Safety',
-        items: [
-          'Basic LP score only',
-          'No full LP analysis',
-        ],
-      },
-      {
-        title: 'Clark AI',
-        items: ['3 prompts per day'],
-      },
-      {
-        title: 'Not Included',
-        items: [
-          'No Wallet Scanner',
-          'No Dev Wallet Detector',
-          'No Pump Alerts',
-          'No Whale Alerts',
-          'No Base Radar',
-        ],
-      },
-    ],
-  },
-  {
-    id: 'pro',
-    label: 'PRO',
-    labelColor: '#2DD4BF',
-    price: '$30',
-    billing: 'per month · 7-day free trial',
-    engine: 'CORTEX STANDARD',
-    engineColor: 'rgba(45,212,191,0.65)',
-    cta: 'Start Free Trial',
-    ctaStyle: 'gradient',
-    border: 'rgba(139,92,246,0.55)',
-    badge: 'MOST POPULAR',
-    sections: [
-      {
-        title: 'Everything in Free, plus',
-        items: [
-          'Full Token Scanner',
-          'Full Liquidity Safety',
-          'Wallet Scanner',
-          'Dev Wallet Detector',
-          'Pump Alerts',
-          'Whale Alerts',
-          'Base Radar',
-          'Clark AI — 50 prompts / day',
-        ],
-      },
-    ],
-  },
-  {
-    id: 'elite',
-    label: 'ELITE',
-    labelColor: '#fbbf24',
-    price: '$60',
-    billing: 'per month · 7-day free trial',
-    engine: 'CORTEX FULL INTELLIGENCE',
-    engineColor: 'rgba(251,191,36,0.75)',
-    cta: 'Unlock Elite',
-    ctaStyle: 'gold',
-    border: 'rgba(251,191,36,0.40)',
-    badge: 'FULL INTELLIGENCE',
-    sections: [
-      {
-        title: 'Everything in Pro, plus',
-        items: [
-          'Clark AI — unlimited prompts',
-          'Auto Clark verdict on every scan',
-          'Smart money tracking',
-          'Advanced whale alerts',
-          'Priority CORTEX processing',
-          'Early access to new features',
-        ],
-      },
-    ],
-  },
+const plans: Plan[] = [
+  { id: 'free', label: 'FREE', price: '$0', subtext: 'forever', sectionTitle: 'CORE FEATURES', note: 'Best for trying ChainLens.', features: ['Live Base market preview', 'Price, liquidity, volume, 24h change', 'Basic token info', '3 token scans / day', 'No AI verdicts', 'No Wallet Scanner', 'No Dev Wallet Detector', 'No Whale / Pump Alerts', 'No Full Base Radar access'], cta: 'GET STARTED FREE', ctaClass: 'cta-free' },
+  { id: 'pro', label: 'PRO', price: '$30', subtext: 'per month', sectionTitle: 'EVERYTHING IN FREE, PLUS', note: 'Best for active Base traders.', features: ['Full Token Scanner', 'Liquidity Safety', 'Wallet Scanner', 'Dev Wallet Detector', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Clark AI — 50 prompts / day', 'Saved scans & settings'], cta: 'START FREE TRIAL', ctaClass: 'cta-pro', badge: 'MOST POPULAR', trial: '7-DAY FREE TRIAL' },
+  { id: 'elite', label: 'ELITE', price: '$60', subtext: 'per month', sectionTitle: 'EVERYTHING IN PRO, PLUS', note: 'Best for whale tracking and power users.', features: ['Unlimited Clark AI', 'Unlimited full reports', 'Tracked wallets', 'Smart wallet watchlists', 'Wallet change monitoring', 'Advanced whale alerts', 'Auto Clark verdicts', 'Priority CORTEX processing'], cta: 'UNLOCK ELITE', ctaClass: 'cta-elite', trial: '7-DAY FREE TRIAL' },
 ]
-
-// ─── Accent maps ─────────────────────────────────────────────────────────────
-
-const SECTION_COLOR: Record<string, string> = {
-  free:  'rgba(236,72,153,0.60)',
-  pro:   'rgba(45,212,191,0.60)',
-  elite: 'rgba(251,191,36,0.65)',
-}
-const CHECK_COLOR: Record<string, string> = {
-  free:  'rgba(236,72,153,0.55)',
-  pro:   '#2DD4BF',
-  elite: '#fbbf24',
-}
-
-// ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function PricingPage() {
   return (
-    <>
+    <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflow: 'hidden' }}>
+      {/* TODO: Pricing limits displayed here are marketing copy only; backend plan gating/usage enforcement must be validated separately. */}
       <style>{`
-        @keyframes pricing-grid-fade {
-          0%,100% { opacity:0.50; }
-          50%      { opacity:0.78; }
-        }
-        @keyframes pro-glow {
-          0%,100% { box-shadow: 0 0 40px rgba(139,92,246,0.18), inset 0 0 0 1px rgba(139,92,246,0.55); }
-          50%      { box-shadow: 0 0 64px rgba(139,92,246,0.32), inset 0 0 0 1px rgba(139,92,246,0.80); }
-        }
-        @keyframes elite-glow {
-          0%,100% { box-shadow: 0 0 50px rgba(251,191,36,0.18), 0 0 100px rgba(251,191,36,0.08), inset 0 0 0 1px rgba(251,191,36,0.40); }
-          50%      { box-shadow: 0 0 80px rgba(251,191,36,0.32), 0 0 140px rgba(251,191,36,0.14), inset 0 0 0 1px rgba(251,191,36,0.70); }
-        }
-        @keyframes shine-sweep {
-          0%   { transform: translateX(-100%) skewX(-15deg); }
-          100% { transform: translateX(300%) skewX(-15deg); }
-        }
-        .card-pro   { animation: pro-glow   4s ease-in-out infinite; }
-        .card-elite { animation: elite-glow 3.5s ease-in-out infinite; }
-
-        /* ── Hover lift for all cards ── */
-        .pricing-card {
-          transition: transform 0.28s cubic-bezier(0.22,1,0.36,1), box-shadow 0.28s ease;
-          overflow: hidden;
-        }
-        .pricing-card::before {
-          content: '';
-          position: absolute;
-          top: 0; left: 0; right: 0; bottom: 0;
-          background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.04) 50%, transparent 60%);
-          opacity: 0;
-          transition: opacity 0.3s;
-          pointer-events: none;
-          z-index: 2;
-        }
-        .pricing-card:hover { transform: translateY(-8px); }
-        .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
-
-        .pricing-card.card-free:hover {
-          box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 40px rgba(236,72,153,0.18);
-          border-color: rgba(236,72,153,0.35) !important;
-        }
-        .pricing-card.card-pro:hover {
-          box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 80px rgba(139,92,246,0.40), inset 0 0 0 1px rgba(139,92,246,0.90);
-          animation-play-state: paused;
-        }
-        .pricing-card.card-elite:hover {
-          box-shadow: 0 24px 70px rgba(0,0,0,0.60), 0 0 100px rgba(251,191,36,0.45), 0 0 160px rgba(251,191,36,0.18), inset 0 0 0 1px rgba(251,191,36,0.85);
-          animation-play-state: paused;
-        }
-
-        .cta-outline {
-          background:transparent; border:1px solid rgba(255,255,255,0.18);
-          color:rgba(255,255,255,0.70);
-          transition:border-color 0.15s,color 0.15s,background 0.15s;
-        }
-        .cta-outline:hover { border-color:rgba(255,255,255,0.40); color:#fff; background:rgba(255,255,255,0.05); }
-
-        .cta-gradient {
-          background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%);
-          border:none; color:#fff;
-          transition:opacity 0.15s,transform 0.15s;
-        }
-        .cta-gradient:hover { opacity:0.88; transform:translateY(-1px); }
-
-        .cta-gold {
-          background:linear-gradient(135deg,#f59e0b 0%,#fbbf24 50%,#f59e0b 100%);
-          border:none; color:#0a0800;
-          font-weight:800;
-          transition:opacity 0.15s,transform 0.15s,box-shadow 0.15s;
-          box-shadow:0 0 20px rgba(251,191,36,0.35);
-        }
-        .cta-gold:hover { opacity:0.90; transform:translateY(-2px); box-shadow:0 0 32px rgba(251,191,36,0.55); }
-
-        .elite-price {
-          background:linear-gradient(135deg,#fbbf24 0%,#fff 60%,#fbbf24 100%);
-          -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
-        }
+        .glass{background:linear-gradient(170deg,rgba(10,17,33,.88),rgba(5,9,20,.82));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.18);border-radius:18px}
+        .nav-pill{border-radius:999px;border:1px solid rgba(125,211,252,.22);background:linear-gradient(120deg,rgba(3,9,24,.86),rgba(14,22,39,.88));box-shadow:0 0 24px rgba(34,211,238,.08),0 0 26px rgba(168,85,247,.08),inset 0 0 0 1px rgba(255,255,255,.04)}
+        .cta{display:block;text-align:center;border-radius:11px;padding:12px 14px;font-weight:800;font-size:12px;letter-spacing:.09em;text-decoration:none;transition:.2s transform,.2s box-shadow,.2s opacity}.cta:hover{transform:translateY(-2px)}
+        .cta-free{border:1px solid rgba(148,163,184,.36);color:#e2e8f0;background:rgba(15,23,42,.55)}
+        .cta-pro{color:#fff;background:linear-gradient(98deg,#7c3aed,#a855f7,#ec4899);box-shadow:0 12px 30px rgba(168,85,247,.55)}
+        .cta-elite{color:#221300;background:linear-gradient(120deg,#f59e0b,#fde047,#facc15);box-shadow:0 12px 32px rgba(251,191,36,.5)}
+        .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.17;background:repeating-linear-gradient(135deg,rgba(217,70,239,.45) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
+        .energy-left{position:absolute;left:-130px;top:120px;width:420px;height:340px;opacity:.12;background:radial-gradient(circle at 25% 50%, rgba(56,189,248,.28), transparent 65%)}
+        @media(max-width:1250px){.hero{grid-template-columns:1fr !important}.plan-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}.stats{max-width:340px}.intro{min-height:auto !important}}
+        @media(max-width:860px){.plan-grid{grid-template-columns:1fr !important}.nav-links{display:none}}
       `}</style>
 
-      <Navbar />
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(7,12,24,0.2) 0%, rgba(3,6,15,0.0) 55%)' }} />
+      <div className='energy-right' />
+      <div className='energy-left' />
+      <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 18% 22%, rgba(34,211,238,.22), transparent 35%), radial-gradient(circle at 84% 20%, rgba(217,70,239,.22), transparent 34%), radial-gradient(circle at 60% 8%, rgba(129,140,248,.15), transparent 38%)' }} />
+      <div style={{ position: 'absolute', inset: 'auto -28% -320px -28%', height: 620, background: 'radial-gradient(ellipse at 50% 10%, rgba(11,25,56,.96) 0%, rgba(7,14,33,.92) 38%, rgba(4,8,19,.55) 63%, rgba(3,6,15,.08) 86%, transparent 100%)' }} />
+      <div style={{ position: 'absolute', left: '-24%', right: '-24%', bottom: -255, height: 520, borderTop: '2px solid rgba(56,189,248,.82)', borderRadius: '58% 58% 0 0 / 100% 100% 0 0', boxShadow: '0 -24px 95px rgba(34,211,238,.54), 0 -16px 130px rgba(59,130,246,.32)' }} />
+      <div style={{ position: 'absolute', left: '-20%', right: '-20%', bottom: -276, height: 520, borderTop: '1px solid rgba(217,70,239,.48)', borderRadius: '54% 54% 0 0 / 100% 100% 0 0', boxShadow: '0 -10px 68px rgba(217,70,239,.2)' }} />
+      <div style={{ position: 'absolute', left: '-14%', right: '-14%', bottom: -240, height: 400, background: 'radial-gradient(ellipse at 50% 0%, rgba(34,211,238,.14), rgba(147,197,253,.1) 28%, rgba(217,70,239,.08) 48%, transparent 78%)' }} />
 
-      <div style={{ minHeight:'100vh', background:'#08080f', position:'relative', display:'flex', flexDirection:'column' }}>
+      <div style={{ position: 'relative', zIndex: 2, maxWidth: 1680, margin: '0 auto', padding: '18px 22px 52px' }}>
+        <nav className='nav-pill' style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 22px', marginBottom: 24 }}>
+          <Link href='/' style={{ display: 'flex', alignItems: 'center', gap: 13, textDecoration: 'none' }}>
+            <Image src='/cl-logo.png' alt='ChainLens logo' width={38} height={38} style={{ width: 38, height: 38, objectFit: 'contain' }} priority />
+            <span>
+              <span style={{ display: 'block', fontWeight: 800, letterSpacing: '.005em', lineHeight: 1, fontSize: 22 }}>
+                <span style={{ color: '#f8fafc' }}>Chain</span><span style={{ background: 'linear-gradient(90deg,#7dd3fc,#a78bfa,#e879f9)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Lens</span>
+              </span>
+              <span style={{ display: 'block', fontSize: 10, color: '#67e8f9', marginTop: 2 }}>AI Intelligence</span>
+            </span>
+          </Link>
+          <div className='nav-links' style={{ display: 'flex', gap: 24, color: '#94a3b8', fontSize: 14 }}>
+            <Link href='/dashboard/tokens' style={{ color: 'inherit', textDecoration: 'none' }}>Tools</Link><Link href='/terminal' style={{ color: 'inherit', textDecoration: 'none' }}>Terminal</Link><Link href='/pricing' style={{ color: '#e2e8f0', textDecoration: 'none' }}>Pricing</Link><Link href='/affiliate' style={{ color: 'inherit', textDecoration: 'none' }}>Affiliate</Link><Link href='/about' style={{ color: 'inherit', textDecoration: 'none' }}>About</Link>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><span style={{ fontSize: 10, borderRadius: 999, border: '1px solid rgba(34,197,94,.45)', padding: '2px 8px', color: '#86efac', background: 'rgba(22,163,74,.12)' }}>LIVE</span><span style={{ fontSize: 11, color: '#67e8f9' }}>Powered by CORTEX</span><Link href='/app' style={{ marginLeft: 8, textDecoration: 'none', padding: '9px 14px', borderRadius: 999, border: '1px solid rgba(45,212,191,.54)', color: '#99f6e4', background: 'rgba(45,212,191,.13)', fontWeight: 700 }}>Get Access</Link></div>
+        </nav>
 
-        {/* Grid */}
-        <div style={{
-          position:'absolute', inset:0, pointerEvents:'none', zIndex:0,
-          backgroundImage:`linear-gradient(rgba(255,255,255,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.025) 1px,transparent 1px)`,
-          backgroundSize:'52px 52px',
-          maskImage:'radial-gradient(ellipse 90% 70% at 50% 20%,black 20%,transparent 80%)',
-          WebkitMaskImage:'radial-gradient(ellipse 90% 70% at 50% 20%,black 20%,transparent 80%)',
-          animation:'pricing-grid-fade 6s ease-in-out infinite',
-        }} />
-
-        {/* Ambient glows */}
-        <div style={{ position:'absolute', pointerEvents:'none', zIndex:0, width:'600px', height:'300px', borderRadius:'50%', top:'50px', left:'50%', transform:'translateX(-50%)', background:'radial-gradient(ellipse,rgba(139,92,246,0.10) 0%,transparent 70%)', filter:'blur(60px)' }} />
-        <div style={{ position:'absolute', pointerEvents:'none', zIndex:0, width:'400px', height:'400px', borderRadius:'50%', top:'100px', right:'5%', background:'radial-gradient(ellipse,rgba(251,191,36,0.07) 0%,transparent 70%)', filter:'blur(80px)' }} />
-
-        <div style={{ position:'relative', zIndex:1, maxWidth:'1020px', margin:'0 auto', padding:'48px 24px 72px', display:'flex', flexDirection:'column', alignItems:'center' }}>
-
-          <h1 style={{ fontSize:'clamp(22px,3vw,40px)', fontWeight:900, lineHeight:1.0, letterSpacing:'-0.03em', color:'#fff', textAlign:'center', margin:'0 0 10px' }}>
-            One price. Worldwide.
-          </h1>
-          <p style={{ fontSize:'13px', color:'rgba(255,255,255,0.38)', textAlign:'center', lineHeight:1.65, maxWidth:'360px', margin:'0 0 40px' }}>
-            No dark patterns. No regional pricing. Cancel any time. Your data stays yours.
-          </p>
-
-          {/* Cards — Elite gets 1.28× width */}
-          <div className="mob-pricing-grid" style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1.28fr', gap:'14px', width:'100%', alignItems:'start' }}>
-
-            {PLANS.map(plan => {
-              const isElite = plan.id === 'elite'
-              const isPro   = plan.id === 'pro'
-
-              return (
-                <div
-                  key={plan.id}
-                  className={`pricing-card ${isElite ? 'card-elite' : isPro ? 'card-pro' : 'card-free'}`}
-                  style={{
-                    position:'relative',
-                    background: isElite
-                      ? 'rgba(16,12,4,0.95)'
-                      : isPro
-                        ? 'rgba(12,10,26,0.92)'
-                        : 'rgba(10,10,18,0.72)',
-                    borderRadius: isElite ? '18px' : '14px',
-                    padding: isElite ? '24px 22px 20px' : '20px 16px 18px',
-                    display:'flex', flexDirection:'column',
-                    marginTop: isPro ? '-8px' : isElite ? '-14px' : '0',
-                    ...((!isPro && !isElite) ? { border:`1px solid ${plan.border}` } : {}),
-                  }}
-                >
-                  {/* Badge */}
-                  {plan.badge && (
-                    <div style={{
-                      position:'absolute', top:'-15px', left:'50%', transform:'translateX(-50%)',
-                      background: isElite
-                        ? 'linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)'
-                        : 'linear-gradient(90deg,#8b5cf6,#ec4899)',
-                      borderRadius:'999px', padding:'3px 12px',
-                      fontSize:'8px', fontWeight:800, letterSpacing:'0.18em',
-                      color: isElite ? '#0a0800' : '#fff',
-                      whiteSpace:'nowrap', fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)',
-                      boxShadow: isElite ? '0 0 14px rgba(251,191,36,0.50)' : undefined,
-                    }}>{plan.badge}</div>
-                  )}
-
-                  {/* Tier label */}
-                  <div style={{ fontSize:'9px', fontWeight:700, letterSpacing:'0.18em', color:plan.labelColor, fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)', marginBottom:'7px' }}>
-                    {plan.label}
-                  </div>
-
-                  {/* Price */}
-                  <div
-                    className={isElite ? 'elite-price' : ''}
-                    style={{
-                      fontSize: isElite ? 'clamp(34px,3.8vw,48px)' : 'clamp(30px,3.2vw,42px)',
-                      fontWeight:300, lineHeight:1, color:'#fff',
-                      letterSpacing:'-0.01em', marginBottom:'4px',
-                      fontFamily:'var(--font-inter,Inter,sans-serif)',
-                    }}
-                  >
-                    {plan.price}
-                  </div>
-
-                  {/* Billing */}
-                  <div style={{ fontSize:'9px', color:'rgba(255,255,255,0.30)', marginBottom:'12px', fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)' }}>
-                    {plan.billing}
-                  </div>
-
-                  {/* Engine badge */}
-                  <div style={{ display:'flex', alignItems:'center', gap:'5px', marginBottom:'12px' }}>
-                    <div style={{ width:'4px', height:'4px', borderRadius:'50%', background:plan.engineColor, flexShrink:0,
-                      boxShadow: isElite ? '0 0 5px rgba(251,191,36,0.80)' : undefined }} />
-                    <span style={{ fontSize:'7px', fontWeight:700, letterSpacing:'0.16em', color:plan.engineColor, fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)' }}>
-                      {plan.engine}
-                    </span>
-                  </div>
-
-                  {/* Divider */}
-                  <div style={{ height:'1px', background: isElite ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.07)', marginBottom:'14px' }} />
-
-                  {/* Feature sections */}
-                  <div style={{ display:'flex', flexDirection:'column', gap:'10px', marginBottom:'16px', flex:1 }}>
-                    {plan.sections.map(sec => (
-                      <div key={sec.title}>
-                        <div style={{ fontSize:'7px', fontWeight:700, letterSpacing:'0.16em', color:SECTION_COLOR[plan.id], fontFamily:'var(--font-plex-mono,IBM Plex Mono,monospace)', textTransform:'uppercase', marginBottom:'5px' }}>
-                          {sec.title}
-                        </div>
-                        <div style={{ display:'flex', flexDirection:'column', gap:'3px' }}>
-                          {sec.items.map(item => {
-                            const isNo = item.startsWith('No ')
-                            return (
-                              <div key={item} style={{ display:'flex', alignItems:'flex-start', gap:'7px' }}>
-                                <span style={{ fontSize:'9px', flexShrink:0, marginTop:'1px', color: isNo ? 'rgba(255,255,255,0.18)' : CHECK_COLOR[plan.id], lineHeight:1.2 }}>
-                                  {isNo ? '✕' : '✓'}
-                                </span>
-                                <span style={{ fontSize:'11px', lineHeight:1.45, color: isNo ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.72)', fontFamily:'var(--font-inter,Inter,sans-serif)' }}>
-                                  {item}
-                                </span>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Elite — Pro included note */}
-                  {isElite && (
-                    <div style={{
-                      display: 'flex', alignItems: 'center', gap: '8px',
-                      background: 'rgba(251,191,36,0.07)',
-                      border: '1px solid rgba(251,191,36,0.18)',
-                      borderRadius: '10px',
-                      padding: '8px 12px',
-                      marginBottom: '12px',
-                    }}>
-                      <span style={{ fontSize: '13px', flexShrink: 0 }}>⭐</span>
-                      <span style={{
-                        fontSize: '11px', fontWeight: 600,
-                        color: 'rgba(251,191,36,0.85)',
-                        fontFamily: 'var(--font-inter,Inter,sans-serif)',
-                        lineHeight: 1.4,
-                      }}>
-                        Everything in Pro included — plus full CORTEX intelligence.
-                      </span>
-                    </div>
-                  )}
-
-                  {/* CTA */}
-                  <Link
-                    href="/app"
-                    className={`cta-${plan.ctaStyle}`}
-                    style={{
-                      display:'block', textAlign:'center',
-                      padding: isElite ? '10px 16px' : '9px 14px',
-                      borderRadius:'8px',
-                      fontSize:'10px',
-                      fontWeight:700, letterSpacing:'0.10em',
-                      textTransform:'uppercase', textDecoration:'none',
-                      fontFamily:'var(--font-inter,Inter,sans-serif)',
-                      cursor:'pointer',
-                    }}
-                  >
-                    {plan.cta}
-                  </Link>
-
-                </div>
-              )
-            })}
+        <section className='hero' style={{ display: 'grid', gridTemplateColumns: '1.02fr 2.65fr .72fr', gap: 12, alignItems: 'stretch' }}>
+          <div className='intro' style={{ padding: '18px 12px 8px 6px', minHeight: 468 }}>
+            <div style={{ color: '#67e8f9', fontSize: 11, letterSpacing: '.2em', marginBottom: 14 }}>• PRICING</div>
+            <div style={{ fontSize: 'clamp(40px,3.6vw,66px)', lineHeight: .95, fontWeight: 900 }}>ONE PRICE.<br /><span style={{ background: 'linear-gradient(90deg,#22d3ee,#a855f7,#ec4899)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>WORLDWIDE.</span></div>
+            <p style={{ marginTop: 14, color: '#94a3b8', lineHeight: 1.5, fontSize: 14 }}>No dark patterns. No regional pricing.<br />Cancel any time. Your data stays yours.</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>{['Secure Checkout', 'Cancel Anytime', 'Used by Base Traders'].map((chip) => <span key={chip} style={{ borderRadius: 999, border: '1px solid rgba(148,163,184,.28)', padding: '6px 10px', fontSize: 11, color: '#dbeafe', background: 'rgba(15,23,42,.55)', boxShadow: '0 0 16px rgba(34,211,238,.12)' }}>{chip}</span>)}</div>
+            <div style={{ marginTop: 12, fontSize: 12, color: '#94a3b8' }}>Powered by <span style={{ color: '#e2e8f0', fontWeight: 700 }}>BASE</span></div>
           </div>
 
-        </div>
+          <div className='plan-grid' style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 14 }}>
+            {plans.map((plan) => <div key={plan.id} className='glass' style={{ padding: '18px 18px 16px', minHeight: 468, borderColor: plan.id === 'pro' ? 'rgba(217,70,239,.72)' : plan.id === 'elite' ? 'rgba(251,191,36,.66)' : 'rgba(147,51,234,.36)', boxShadow: plan.id === 'pro' ? '0 0 56px rgba(217,70,239,.38),inset 0 0 0 1px rgba(217,70,239,.24)' : plan.id === 'elite' ? '0 0 56px rgba(251,191,36,.35),inset 0 0 0 1px rgba(250,204,21,.22)' : '0 0 26px rgba(168,85,247,.14)', position: 'relative', transform: plan.id === 'pro' ? 'translateY(-3px)' : 'none' }}>
+              {plan.badge && <div style={{ position: 'absolute', top: -11, left: '50%', transform: 'translateX(-50%)', borderRadius: 999, background: 'linear-gradient(90deg,#a855f7,#ec4899)', color: '#fff', fontSize: 10, letterSpacing: '.12em', fontWeight: 800, padding: '4px 12px', boxShadow: '0 0 24px rgba(217,70,239,.6)' }}>{plan.badge}</div>}
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}><div style={{ fontSize: 12, letterSpacing: '.18em', color: plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#a78bfa' : '#e879f9' }}>{plan.label}</div>{plan.trial && <span style={{ fontSize: 9, border: '1px solid rgba(148,163,184,.42)', color: '#cbd5e1', borderRadius: 999, padding: '4px 8px' }}>{plan.trial}</span>}</div>
+              <div style={{ fontSize: 48, fontWeight: 800, marginTop: 8, color: plan.id === 'elite' ? '#fde68a' : '#fff', lineHeight: 1 }}>{plan.price}</div><div style={{ color: '#94a3b8', marginTop: 0, fontSize: 13 }}>{plan.subtext}</div>
+              <div style={{ marginTop: 8, fontSize: 11, color: '#94a3b8' }}>{plan.note}</div>
+              <div style={{ marginTop: 14, fontSize: 10, color: plan.id === 'elite' ? '#fcd34d' : plan.id === 'pro' ? '#67e8f9' : '#f0abfc', letterSpacing: '.15em' }}>{plan.sectionTitle}</div>
+              <div style={{ display: 'grid', gap: 8, marginTop: 10, minHeight: 248 }}>{plan.features.map((f) => {const no = f.startsWith('No '); return <div key={f} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', color: no ? '#64748b' : '#dbeafe', fontSize: 12.5, lineHeight: 1.45 }}><span style={{ color: no ? '#475569' : plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#22d3ee' : '#c084fc' }}>{no ? '✕' : '✓'}</span><span>{f}</span></div>})}</div>
+              {plan.id === 'elite' && <div style={{ border: '1px solid rgba(250,204,21,.4)', background: 'rgba(250,204,21,.1)', color: '#fde68a', borderRadius: 11, padding: 10, fontSize: 12, marginBottom: 10 }}>Everything in Pro included — plus full CORTEX intelligence.</div>}
+              <Link href='/app' className={`cta ${plan.ctaClass}`}>{plan.cta}</Link>
+            </div>)}
+          </div>
+
+          <aside className='glass stats' style={{ padding: 14, minHeight: 468, borderColor: 'rgba(34,211,238,.46)', boxShadow: '0 0 30px rgba(34,211,238,.16)' }}>
+            <div style={{ color: '#67e8f9', fontSize: 10, letterSpacing: '.15em', marginBottom: 14, fontWeight: 700 }}>TRUSTED BY WINNING TRADERS</div>
+            {[['50K+', 'Active Traders'], ['2M+', 'Scans Performed'], ['$2.4B+', 'Volume Analyzed'], ['99.9%', 'Uptime']].map(([v, k], i) => <div key={k} style={{ borderTop: i === 0 ? '1px solid rgba(148,163,184,.22)' : '1px solid rgba(148,163,184,.14)', padding: '15px 0' }}><div style={{ color: '#22d3ee', fontSize: 31, fontWeight: 800, lineHeight: 1 }}>{v}</div><div style={{ color: '#94a3b8', fontSize: 11 }}>{k}</div></div>)}
+          </aside>
+        </section>
       </div>
-    </>
+    </div>
   )
 }
