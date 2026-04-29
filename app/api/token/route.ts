@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -173,6 +174,14 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
   }
 }
 
+
+async function fetchTokenHolders(chain: ChainKey, contract: string): Promise<any> {
+  try {
+    const res = await fetch(`https://api.covalenthq.com/v1/${chain}/tokens/${contract}/token_holders_v2/?page-size=200&key=${process.env.COVALENT_API_KEY}`, { cache: 'no-store' });
+    return res.ok ? await res.json() : null
+  } catch { return null }
+}
+
 // ------------------------------
 // Contract analysis
 // ------------------------------
@@ -218,9 +227,10 @@ export async function POST(req: Request) {
     // Token Scanner is Base-only.
     const chain: ChainKey = "base";
 
-    const [bytecode, goldrush, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpRaw] = await Promise.all([
+    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpRaw] = await Promise.all([
       fetchBytecode(chain, contract),
       fetchGoldRush(chain, contract),
+      fetchTokenHolders(chain, contract),
       fetchGeckoTerminal(contract, chain),
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
@@ -322,6 +332,18 @@ ${JSON.stringify(analysis, null, 2)}
       gmgnItem?.decimals ||
       18;
 
+    
+    const holderItems: any[] = Array.isArray(holdersRaw?.data?.items) ? holdersRaw.data.items : []
+    const topHolders = holderItems.slice(0, 20).map((h: any, i: number) => ({
+      rank: i + 1,
+      address: h.address || h.wallet_address || h.holder_address || '',
+      amount: Number(h.balance ?? h.balance_quote ?? 0),
+      percent: Number(h.total_supply_label ? String(h.total_supply_label).replace('%','') : h.percent_of_supply ?? h.share ?? 0),
+    })).filter((h: any) => Number.isFinite(h.percent) && h.percent >= 0)
+    const sum = (n: number) => topHolders.slice(0, n).reduce((s: number, h: any) => s + h.percent, 0)
+    const top1 = sum(1), top5 = sum(5), top10 = sum(10), top20 = sum(20)
+    const holderDistribution = topHolders.length ? { top1, top5, top10, top20, others: Math.max(0, 100 - top20), holderCount: holdersRaw?.data?.pagination?.total_count ?? null, topHolders } : null
+
     // ------------------------------
     // Final JSON response
     // ------------------------------
@@ -339,6 +361,7 @@ ${JSON.stringify(analysis, null, 2)}
 
       // Extra data
       holders: goldrush?.holders || null,
+      holderDistribution,
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
 
       pairs: matchingPools,
