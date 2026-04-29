@@ -25,6 +25,23 @@ type HolderDistribution = {
   topHolders: Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>
 }
 
+function toNum(v: unknown): number | null {
+  const n = typeof v === "string" || typeof v === "number" ? Number(v) : NaN
+  return Number.isFinite(n) ? n : null
+}
+
+function pickNum(...vals: unknown[]): number | null {
+  for (const v of vals) {
+    const n = toNum(v)
+    if (n != null) return n
+  }
+  return null
+}
+
+function withTimeout(ms = 5000): AbortSignal {
+  return AbortSignal.timeout(ms)
+}
+
 // ------------------------------
 // Fetch helpers
 // ------------------------------
@@ -75,6 +92,7 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
+        signal: withTimeout(),
       }
     );
     if (!res.ok) {
@@ -102,6 +120,7 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
+        signal: withTimeout(),
       }
     );
     if (!res.ok) return null;
@@ -359,10 +378,6 @@ ${JSON.stringify(analysis, null, 2)}
     console.log('[holders] items length', holderItems.length)
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? null
-    const toNum = (v: unknown) => {
-      const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN
-      return Number.isFinite(n) ? n : null
-    }
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
       const address = h.address || h.holder_address || h.wallet_address || h.owner_address || ''
       const amount = toNum(h.balance) ?? toNum(h.token_balance) ?? toNum(h.amount) ?? toNum(h.balance_quote) ?? null
@@ -389,11 +404,18 @@ ${JSON.stringify(analysis, null, 2)}
           ? { source: 'goldrush', status: 'empty', reason: 'no_rows', itemCount: holderItems.length, normalizedCount: 0 }
           : { source: 'unavailable', status: (holdersRaw?.__status ?? 'empty'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: 0, normalizedCount: 0 })
 
-    const rawMarketCap = toNum(gtToken?.market_cap_usd) ?? toNum(mainPool?.attributes?.market_cap_usd) ?? toNum(goldItem?.market_cap) ?? toNum(gmgnItem?.market_cap)
-    const circulatingSupply = toNum(gtToken?.circulating_supply) ?? toNum(goldItem?.circulating_supply) ?? toNum(gmgnItem?.circulating_supply)
-    const tokenPrice = toNum(mainPool?.attributes?.base_token_price_usd)
-    const computedMarketCap = rawMarketCap ?? (tokenPrice != null && circulatingSupply != null ? tokenPrice * circulatingSupply : null)
-    const fdv = toNum(gtToken?.fdv_usd) ?? toNum(mainPool?.attributes?.fdv_usd) ?? toNum(goldItem?.fully_diluted_value) ?? toNum(gmgnItem?.fdv)
+    const poolAttr = mainPool?.attributes ?? {}
+    const marketCapFromGt = pickNum(
+      gtToken?.market_cap_usd, gtToken?.market_cap, gtToken?.marketCap, gtToken?.market_cap_in_usd,
+      poolAttr.market_cap_usd, poolAttr.market_cap, mainPool?.market_cap_usd, mainPool?.market_cap
+    )
+    const circulatingSupply = pickNum(gtToken?.circulating_supply, goldItem?.circulating_supply, gmgnItem?.circulating_supply)
+    const tokenPrice = pickNum(poolAttr.base_token_price_usd, gtToken?.price_usd, gtToken?.price)
+    const computedMarketCap = marketCapFromGt ?? (tokenPrice != null && circulatingSupply != null ? tokenPrice * circulatingSupply : null)
+    const marketCapSource = marketCapFromGt != null ? 'geckoterminal' : (computedMarketCap != null ? 'computed' : 'unavailable')
+    const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
+    const fdvSource = fdv != null ? 'geckoterminal' : 'unavailable'
+    console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] marketCap available', computedMarketCap != null, '[gt-market] fdv available', fdv != null)
     // ------------------------------
     // Final JSON response
     // ------------------------------
@@ -415,8 +437,12 @@ ${JSON.stringify(analysis, null, 2)}
       holderDistributionStatus,
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
       market_cap: computedMarketCap,
+      marketCapUsd: computedMarketCap,
+      marketCapSource,
       circulating_supply: circulatingSupply,
       fdv,
+      fdvUsd: fdv,
+      fdvSource,
 
       pairs: matchingPools,
       gtPools: matchingPools,

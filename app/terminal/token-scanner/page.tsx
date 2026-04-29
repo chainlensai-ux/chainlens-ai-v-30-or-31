@@ -14,6 +14,10 @@ type Pool = {
   priceChange24h?: number | null
   marketCap?: number | null
   fdv?: number | null
+  marketCapUsd?: number | null
+  fdvUsd?: number | null
+  marketCapSource?: 'geckoterminal' | 'coingecko_terminal' | 'computed' | 'unavailable'
+  fdvSource?: 'geckoterminal' | 'coingecko_terminal' | 'unavailable'
   circulatingSupply?: number | null
 }
 
@@ -28,6 +32,10 @@ type ScanResult = {
   priceChange24h?: number | null
   marketCap?: number | null
   fdv?: number | null
+  marketCapUsd?: number | null
+  fdvUsd?: number | null
+  marketCapSource?: 'geckoterminal' | 'coingecko_terminal' | 'computed' | 'unavailable'
+  fdvSource?: 'geckoterminal' | 'coingecko_terminal' | 'unavailable'
   circulatingSupply?: number | null
   pools?: Pool[]
   goplus?: Record<string, Record<string, unknown>> | null
@@ -78,7 +86,7 @@ function shorten(addr: string): string {
 
 // ─── StatCard ─────────────────────────────────────────────────────────────
 
-function StatCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function StatCard({ label, value, accent, helper }: { label: string; value: string; accent?: string; helper?: string }) {
   return (
     <div style={{
       background: 'rgba(255,255,255,0.03)',
@@ -101,6 +109,7 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
       }}>
         {value}
       </p>
+      {helper && <p style={{ margin: '8px 0 0', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{helper}</p>}
     </div>
   )
 }
@@ -324,8 +333,12 @@ export default function TerminalTokenScanner() {
           volume24h:      mainPool ? num((attr(mainPool).volume_usd as Record<string, unknown> | undefined)?.h24) : null,
           priceChange24h: mainPool ? num((attr(mainPool).price_change_percentage as Record<string, unknown> | undefined)?.h24) : null,
           marketCap: num(json.market_cap ?? attr(mainPool).market_cap_usd),
+          marketCapUsd: num(json.marketCapUsd ?? json.market_cap ?? attr(mainPool).market_cap_usd),
           circulatingSupply: num(json.circulating_supply),
           fdv: num(json.fdv ?? attr(mainPool).fdv_usd),
+          fdvUsd: num(json.fdvUsd ?? json.fdv ?? attr(mainPool).fdv_usd),
+          marketCapSource: json.marketCapSource ?? 'unavailable',
+          fdvSource: json.fdvSource ?? 'unavailable',
           pools: pairs.map((p: Record<string, unknown>) => ({
             name:           (attr(p).name as string | undefined),
             address:        (attr(p).address as string | undefined),
@@ -539,12 +552,14 @@ export default function TerminalTokenScanner() {
                   />
                   <StatCard
                     label='Market Cap'
-                    value={result.marketCap != null ? fmtLarge(result.marketCap) : 'Unverified'}
+                    value={result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Unverified'}
+                    helper={result.marketCapUsd != null ? (result.marketCapSource === 'computed' ? 'Computed from price × circulating supply' : 'Live GT data') : 'Circulating supply unavailable'}
                     accent="#a78bfa"
                   />
                   <StatCard
                     label='FDV'
-                    value={fmtLarge(result.fdv)}
+                    value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}
+                    helper='Fully Diluted Valuation'
                     accent="#a78bfa"
                   />
                 </div>
@@ -719,8 +734,8 @@ export default function TerminalTokenScanner() {
             const confidence = verdict === 'AVOID' ? 'High' : verdict === 'WATCH' ? 'Medium-High' : verdict === 'SCAN DEEPER' ? 'Medium' : 'Low'
             const holderMissing = result.holderDistributionStatus?.status !== 'ok' || !result.holderDistribution || result.holderDistribution.topHolders.length === 0
             const holderRisk = result.holderDistribution?.top1 != null && result.holderDistribution.top1 > 25 ? 'Elevated top1 concentration.' : result.holderDistribution?.top5 != null && result.holderDistribution.top5 > 50 ? 'Elevated top5 concentration.' : result.holderDistribution?.top10 != null && result.holderDistribution.top10 > 70 ? 'Concentrated supply distribution.' : holderMissing ? 'Holder concentration unverified.' : ''
-            const missing = [ownerHeld ? 'Contract ownership renounced' : '', result.marketCap == null && result.fdv == null ? 'Market cap / FDV' : '', 'LP lock/control', holderMissing ? 'Holder concentration' : '', 'Deployer behavior'].filter(Boolean)
-            return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'12px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'12px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:verdict==='AVOID'?'#f87171':verdict==='WATCH'?'#2DD4BF':verdict==='SCAN DEEPER'?'#fbbf24':'#94a3b8'}}>{verdict}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',background:'rgba(255,255,255,0.02)',fontSize:'12px',color:'#cbd5e1',lineHeight:1.6}}>{result.symbol ?? 'This token'} has {liq > 0 ? `usable liquidity (${fmtLarge(result.liquidity)})` : 'limited liquidity context'} and {result.volume24h != null ? `24h activity (${fmtLarge(result.volume24h)})` : 'unclear 24h activity'}. {ownerHeld ? 'Owner is still held and deeper control checks are required.' : 'Ownership appears renounced, but LP and holder checks are still required.'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Key Signals: Liquidity {fmtLarge(result.liquidity)}, 24H {fmtPct(result.priceChange24h)}, Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy/Sell Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'} / {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Risks: {strongRisk ? 'High-risk security signal detected.' : [ownerHeld ? 'Owner status held.' : '', holderRisk].filter(Boolean).join(' ') || 'No critical risk flag in current simulation.'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Missing Checks: {missing.join(', ') || 'None major in current read.'}</div><div style={{padding:'11px 12px',border:'1px solid rgba(45,212,191,.35)',borderRadius:'10px',background:'rgba(45,212,191,.07)',fontSize:'11px',color:'#67e8f9'}}>Next Action: Run liquidity and dev-wallet checks before treating this as a watchlist lead.</div></div> })()}
+            const missing = [ownerHeld ? 'Contract ownership renounced' : '', result.marketCapUsd == null ? 'Market cap / circulating supply' : '', 'LP lock/control', holderMissing ? 'Holder concentration' : '', 'Deployer behavior'].filter(Boolean)
+            return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'12px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'12px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:verdict==='AVOID'?'#f87171':verdict==='WATCH'?'#2DD4BF':verdict==='SCAN DEEPER'?'#fbbf24':'#94a3b8'}}>{verdict}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',background:'rgba(255,255,255,0.02)',fontSize:'12px',color:'#cbd5e1',lineHeight:1.6}}>{result.symbol ?? 'This token'} has {liq > 0 ? `usable liquidity (${fmtLarge(result.liquidity)})` : 'limited liquidity context'} and {result.volume24h != null ? `24h activity (${fmtLarge(result.volume24h)})` : 'unclear 24h activity'}. {ownerHeld ? 'Owner is still held and deeper control checks are required.' : 'Ownership appears renounced, but LP and holder checks are still required.'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Key Signals: Liquidity {fmtLarge(result.liquidity)}, 24H {fmtPct(result.priceChange24h)}, {result.marketCapUsd != null ? `Market cap ${fmtLarge(result.marketCapUsd)}, ` : result.fdvUsd != null ? `FDV ${fmtLarge(result.fdvUsd)}, ` : ''}Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy/Sell Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'} / {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Risks: {strongRisk ? 'High-risk security signal detected.' : [ownerHeld ? 'Owner status held.' : '', holderRisk].filter(Boolean).join(' ') || 'No critical risk flag in current simulation.'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Missing Checks: {missing.join(', ') || 'None major in current read.'}</div><div style={{padding:'11px 12px',border:'1px solid rgba(45,212,191,.35)',borderRadius:'10px',background:'rgba(45,212,191,.07)',fontSize:'11px',color:'#67e8f9'}}>Next Action: Run liquidity and dev-wallet checks before treating this as a watchlist lead.</div></div> })()}
           <div style={{marginTop:'auto',paddingTop:'8px',borderTop:'1px solid rgba(148,163,184,.12)',fontSize:'10px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)'}}>RPC: hidden<br/>We never render RPC URLs or API keys in the interface. Debug via server logs only.</div>
         </aside>
 
