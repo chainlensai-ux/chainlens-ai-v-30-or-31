@@ -97,7 +97,7 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
   )
 }
 
-// ─── Contract Risk (GoPlus) ───────────────────────────────────────────────
+// ─── Contract Security ───────────────────────────────────────────────
 
 type PillStyle = { color: string; bg: string; border: string }
 
@@ -144,7 +144,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         color: '#3a5268', textTransform: 'uppercase',
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
-        Contract Risk Signals
+        Security Simulation
       </p>
       <div style={{
         padding: '14px 18px',
@@ -154,7 +154,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         fontSize: '11px', color: '#3a5268',
         fontFamily: 'var(--font-plex-mono)',
       }}>
-        No contract risk data surfaced — verify manually.
+        No security simulation data surfaced — status is unverified.
       </div>
     </div>
   )
@@ -223,14 +223,14 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
   }
 
   const gpPills = gp ? [
-    flagPill('is_honeypot',            'HP (GoPlus)'),
+    flagPill('is_honeypot',            'Honeypot'),
     flagPill('is_mintable',            'Mint Function'),
     flagPill('can_take_back_ownership','Ownership Revert'),
     flagPill('is_proxy',               'Proxy Contract', '__never__'),
     flagPill('is_blacklisted',         'Blacklist'),
     flagPill('is_whitelisted',         'Whitelist',      '__never__'),
-    taxPill('buy_tax',  'Buy Tax (GP)'),
-    taxPill('sell_tax', 'Sell Tax (GP)'),
+    taxPill('buy_tax',  'Buy Tax'),
+    taxPill('sell_tax', 'Sell Tax'),
     ownerPill(),
   ] : []
 
@@ -241,9 +241,9 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         color: '#3a5268', textTransform: 'uppercase',
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
-        Contract Risk Signals
+        Security Simulation
         {hp?.simulationSuccess && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· Honeypot.is</span>}
-        {gp && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· GoPlus</span>}
+        
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
         {[...hpPills, ...gpPills].map(p => (
@@ -272,7 +272,6 @@ export default function TerminalTokenScanner() {
     const params   = new URLSearchParams(window.location.search)
     const contract = params.get('contract')
     if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
-      setInput(contract)
       handleScan(contract)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -302,25 +301,27 @@ export default function TerminalTokenScanner() {
         setError(json.error ?? 'Token not found on Base.')
         setClarkLoading(false)
       } else {
-        const pairs: any[] = Array.isArray(json.pairs) ? json.pairs : []
+        const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
         const mainPool = pairs[0] ?? null
+        const attr = (p: Record<string, unknown> | null) => ((p?.attributes as Record<string, unknown> | undefined) ?? {})
+        const num = (v: unknown) => { const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN; return Number.isFinite(n) && n !== 0 ? n : null }
         const mapped: ScanResult = {
           name:           json.name,
           symbol:         json.symbol,
           contract:       json.contract,
           chain:          json.chain ?? 'base',
           noActivePools:  json.noActivePools ?? false,
-          price:          mainPool ? parseFloat(mainPool.attributes?.base_token_price_usd ?? '0') || null : null,
-          liquidity:      mainPool ? parseFloat(mainPool.attributes?.reserve_in_usd ?? '0') || null : null,
-          volume24h:      mainPool ? parseFloat(mainPool.attributes?.volume_usd?.h24 ?? '0') || null : null,
-          priceChange24h: mainPool ? parseFloat(mainPool.attributes?.price_change_percentage?.h24 ?? '0') || null : null,
-          pools: pairs.map((p: any) => ({
-            name:           p.attributes?.name,
-            address:        p.attributes?.address,
-            price:          parseFloat(p.attributes?.base_token_price_usd ?? '0') || null,
-            liquidity:      parseFloat(p.attributes?.reserve_in_usd ?? '0') || null,
-            volume24h:      parseFloat(p.attributes?.volume_usd?.h24 ?? '0') || null,
-            priceChange24h: parseFloat(p.attributes?.price_change_percentage?.h24 ?? '0') || null,
+          price:          mainPool ? num(attr(mainPool).base_token_price_usd) : null,
+          liquidity:      mainPool ? num(attr(mainPool).reserve_in_usd) : null,
+          volume24h:      mainPool ? num((attr(mainPool).volume_usd as Record<string, unknown> | undefined)?.h24) : null,
+          priceChange24h: mainPool ? num((attr(mainPool).price_change_percentage as Record<string, unknown> | undefined)?.h24) : null,
+          pools: pairs.map((p: Record<string, unknown>) => ({
+            name:           (attr(p).name as string | undefined),
+            address:        (attr(p).address as string | undefined),
+            price:          num(attr(p).base_token_price_usd),
+            liquidity:      num(attr(p).reserve_in_usd),
+            volume24h:      num((attr(p).volume_usd as Record<string, unknown> | undefined)?.h24),
+            priceChange24h: num((attr(p).price_change_percentage as Record<string, unknown> | undefined)?.h24),
           })),
           goplus:   json.goplus   ?? null,
           honeypot: json.honeypot ?? null,
@@ -393,10 +394,7 @@ export default function TerminalTokenScanner() {
               }} />
               TOKEN SCANNER
             </div>
-            <h1 style={{ fontSize: '26px', fontWeight: 700, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>
-              Token Scanner{' '}
-              <span style={{ color: '#2DD4BF' }}>Elite</span>
-            </h1>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner <span style={{ color: '#2DD4BF' }}>Elite</span></h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>Paste a Base contract or token symbol.</p>
           </div>
 
           {/* Input row */}
@@ -406,7 +404,7 @@ export default function TerminalTokenScanner() {
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="0x… contract address"
+              placeholder="Paste Base contract or token symbol"
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
@@ -523,7 +521,7 @@ export default function TerminalTokenScanner() {
                 </div>
               )}
 
-              {/* Contract Risk Signals */}
+              {/* Security Simulation */}
               <ContractRiskSection
                 gp={result.goplus && result.contract
                   ? (result.goplus[result.contract.toLowerCase()] ?? null)
@@ -539,10 +537,10 @@ export default function TerminalTokenScanner() {
                     color: '#3a5268', textTransform: 'uppercase',
                     marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
                   }}>
-                    Pools · {result.pools.length}
+                    Liquidity & Pools · {result.pools.length}
                   </p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {result.pools.map((pool, i) => (
+                    {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
                         key={i}
                         style={{
@@ -619,7 +617,7 @@ export default function TerminalTokenScanner() {
               fontSize: '11px', color: '#1e3a44',
               fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
             }}>
-              scan a token to see Clark's verdict
+              Scan a Base token to generate a structured Clark verdict.
             </p>
           )}
 
@@ -647,15 +645,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Verdict */}
-          {clarkVerdict && (
-            <p style={{
-              fontSize: '12px', lineHeight: 1.8,
-              color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)',
-              whiteSpace: 'pre-wrap', margin: 0,
-            }}>
-              {clarkVerdict}
-            </p>
-          )}
+          {clarkVerdict && (() => { const t=clarkVerdict.toLowerCase(); const v=t.includes('avoid')?'AVOID':t.includes('watch')?'WATCH':t.includes('deeper')?'SCAN DEEPER':'UNKNOWN'; const confidence=t.includes('high')?'High':t.includes('low')?'Low':'Medium'; const key = result?.priceChange24h!=null?`24H change ${fmtPct(result.priceChange24h)}`:'Momentum unverified'; const risk = result?.honeypot?.isHoneypot ? 'Honeypot flagged by simulation' : 'No explicit honeypot flag'; return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'10px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'10px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:v==='AVOID'?'#f87171':v==='WATCH'?'#fbbf24':'#67e8f9'}}>{v}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{fontSize:'12px',color:'#cbd5e1',lineHeight:1.7}}>Clark read: {result?.symbol ?? 'Token'} needs context from liquidity, taxes, and activity before conviction. Treat this as directional intelligence, not certainty.</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Key Signal: {key}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Risk: {risk}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Missing Checks: Holder concentration and LP control may be incomplete.</div><div style={{fontSize:'11px',color:'#67e8f9'}}>Next Action: Validate pool depth and contract controls.</div></div> })()}
         </aside>
 
       </div>
