@@ -22,7 +22,6 @@ export default function PortfolioPage() {
   const [holdings, setHoldings] = useState<Holding[]>([])
   const [loading, setLoading] = useState(false)
   const [portfolioError, setPortfolioError] = useState<string | null>(null)
-  const [clarkText, setClarkText] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [range, setRange] = useState<Range>('24H')
@@ -46,8 +45,17 @@ export default function PortfolioPage() {
   const safety = sorted.length === 0 ? 0 : Math.max(12, Math.min(100, 38 + stable / Math.max(totalValue, 1) * 100 + (concentration < 50 ? 16 : 0)))
   const momentum = hasPnl ? Math.max(10, Math.min(100, 50 + (withPnl.reduce((s, h) => s + (h.change24h ?? 0), 0) / withPnl.length) * 6)) : 0
   const profitability = hasPnl ? Math.max(10, Math.min(100, 50 + (pnlPct ?? 0) * 7)) : 0
-  const avgScore = (profitability + safety + momentum + diversification) / 4
-  const verdict = sorted.length === 0 ? 'NEEDS DATA' : avgScore > 68 ? 'BULLISH' : avgScore > 52 ? 'NEUTRAL' : avgScore > 35 ? 'CAUTIOUS' : 'DEFENSIVE'
+  const verdict = sorted.length === 0 || totalValue <= 0 ? 'NEEDS DATA' : (hasPnl && (pnlPct ?? 0) > 1.5 && sorted.length >= 4 && concentration < 60) ? 'BULLISH' : (concentration > 70 || (hasPnl && (pnlPct ?? 0) < -1)) ? 'CAUTIOUS' : 'NEUTRAL'
+
+  const portfolioSummary = useMemo(() => {
+    if (sorted.length === 0 || totalValue <= 0) return 'Clark needs portfolio holdings before generating a portfolio read.'
+    const partial = sorted.some((h) => h.price <= 0 || h.value <= 0)
+    if (totalValue < 25) return 'Small wallet detected. Clark can track momentum and diversification, but deeper insights need more portfolio history.'
+    const momentumTxt = hasPnl ? ((pnlPct ?? 0) >= 0 ? 'positive short-term momentum' : 'negative short-term momentum') : 'mixed short-term momentum'
+    const concentrationTxt = concentration > 55 ? 'value is concentrated in the top few positions' : 'allocation is reasonably distributed across positions'
+    const base = `Base portfolio with ${momentumTxt}. Holdings are spread across ${sorted.length} assets, and ${concentrationTxt}.`
+    return partial ? `${base} Portfolio read is partial. Some token prices or activity history are unavailable.` : base
+  }, [sorted, totalValue, hasPnl, pnlPct, concentration])
 
   const series = useMemo<Point[]>(() => {
     if (sorted.length === 0) return []
@@ -87,8 +95,8 @@ export default function PortfolioPage() {
 
   useEffect(() => {
     const run = async () => {
-      if (!isConnected || !address) { setHoldings([]); setPortfolioError(null); setClarkText(null); return }
-      setLoading(true); setPortfolioError(null); setClarkText(null)
+      if (!isConnected || !address) { setHoldings([]); setPortfolioError(null); return }
+      setLoading(true); setPortfolioError(null)
       try {
         const res = await fetch('/api/wallet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
         const json = await res.json(); if (!res.ok) throw new Error()
@@ -98,7 +106,7 @@ export default function PortfolioPage() {
           setClarkLoading(true)
           const prompt = `Analyze this Base wallet portfolio in concise portfolio language only. Avoid token-resolution chatter.\n${baseHoldings.map((t: Holding) => `${t.symbol}: ${fmtUSD(t.value)}${typeof t.change24h === 'number' ? ` (${t.change24h.toFixed(2)}% 24h)` : ''}`).join('\n')}`
           const c = await fetch('/api/clark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'portfolio', context: { holdings: baseHoldings } }) })
-          const cj = await c.json(); if (cj?.ok) setClarkText(cj?.data?.reply ?? cj?.data?.analysis ?? null)
+          await c.json()
           setClarkLoading(false)
         }
       } catch { setPortfolioError('Portfolio data is currently unavailable. Please try again shortly.'); setHoldings([]) } finally { setLoading(false) }
@@ -137,7 +145,7 @@ export default function PortfolioPage() {
       </div>
 
       <aside style={{ display: 'grid', gap: 12, alignContent: 'start' }}>
-        <section className='glass' style={{ padding: 14 }}><h3 style={{ marginTop: 0, marginBottom: 8 }}>Clark AI Insights</h3>{clarkLoading || loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : sorted.length === 0 ? <div style={{ color: '#94a3b8' }}>Clark needs portfolio data to generate a stronger read.</div> : <><div style={{ fontSize: 12, color: '#94a3b8' }}>Portfolio Verdict</div><div style={{ fontSize: 38, fontWeight: 900, color: verdict === 'BULLISH' ? '#2dd4bf' : verdict === 'NEUTRAL' ? '#67e8f9' : verdict === 'CAUTIOUS' ? '#f59e0b' : '#fb7185' }}>{verdict}</div>{clarkText && <p style={{ fontSize: 12, color: '#cbd5e1', whiteSpace: 'pre-line', lineHeight: 1.55 }}>{clarkText.split('\n').slice(0, 4).join('\n')}</p>}{[['Profitability', profitability], ['Safety', safety], ['Momentum', momentum], ['Diversification', diversification]].map(([n, sc]) => <div key={String(n)} style={{ marginTop: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>{n}</span><span>{Math.round(sc as number)}/100</span></div><div style={{ height: 6, borderRadius: 999, background: 'rgba(100,116,139,.22)' }}><div style={{ height: '100%', width: `${Math.round(sc as number)}%`, borderRadius: 999, background: 'linear-gradient(90deg,#22d3ee,#a855f7)' }} /></div></div>)}<div className='glass' style={{ marginTop: 12, padding: 10, borderRadius: 12 }}><div style={{ color: '#67e8f9', fontSize: 11 }}>Top Opportunity</div><div>{bestPerformer ? `${bestPerformer.symbol} shows strongest short-term momentum.` : 'No strong opportunity detected yet.'}</div><div style={{ color: '#67e8f9', marginTop: 6 }}>View More →</div></div></>}</section>
+        <section className='glass' style={{ padding: 16, position: 'relative', overflow: 'hidden' }}><div style={{position:'absolute',right:-30,top:-30,width:150,height:150,borderRadius:'50%',background:'radial-gradient(circle,rgba(103,232,249,.22),rgba(168,85,247,.14),transparent 68%)'}} /><h3 style={{ marginTop: 0, marginBottom: 10, position:'relative' }}>Clark AI Insights</h3>{clarkLoading || loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : <><div style={{ fontSize: 12, color: '#94a3b8' }}>Portfolio Verdict</div><div style={{ fontSize: 38, fontWeight: 900, color: verdict === 'BULLISH' ? '#2dd4bf' : verdict === 'NEUTRAL' ? '#67e8f9' : verdict === 'CAUTIOUS' ? '#f59e0b' : '#94a3b8' }}>{verdict}</div><p style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.6, marginTop: 6, marginBottom: 10 }}>{portfolioSummary}</p><div style={{height:1,background:'rgba(148,163,184,.18)',margin:'8px 0 10px'}} />{[['Profitability', profitability], ['Safety', safety], ['Momentum', momentum], ['Diversification', diversification]].map(([n, sc]) => <div key={String(n)} style={{ marginTop: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span style={{color:'#cbd5e1'}}>{n}</span><span style={{color:'#94a3b8'}}>{Math.round(sc as number)}/100</span></div><div style={{ height: 7, borderRadius: 999, background: 'rgba(100,116,139,.22)', marginTop: 3 }}><div style={{ height: '100%', width: `${Math.round(sc as number)}%`, borderRadius: 999, background: 'linear-gradient(90deg,#22d3ee,#60a5fa,#a855f7)' }} /></div></div>)}<div className='glass' style={{ marginTop: 12, padding: 10, borderRadius: 12 }}><div style={{ color: '#67e8f9', fontSize: 11 }}>Top Opportunity</div><div>{bestPerformer ? `${bestPerformer.symbol} leads short-term momentum.` : 'No clear opportunity yet.'}</div><div style={{ color: '#67e8f9', marginTop: 6 }}>Analyze holdings →</div></div></>}</section>
         <section className='glass' style={{ padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><h3 style={{ marginTop: 0 }}>Recent Activity</h3><span style={{ color: '#67e8f9' }}>View All</span></div>{loading ? <div className='sk' style={{ height: 170, borderRadius: 12 }} /> : <div style={{ border: '1px dashed rgba(125,211,252,.2)', borderRadius: 12, padding: 18, color: '#94a3b8', textAlign: 'center' }}>Recent wallet activity will appear here once transactions are detected.</div>}</section>
       </aside>
     </div>
