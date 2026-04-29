@@ -37,7 +37,7 @@ type ScanResult = {
     simulationSuccess: boolean
   } | null
   noActivePools?: boolean
-  holderDistribution?: { top1:number; top5:number; top10:number; top20:number; others:number; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:number;percent:number}> } | null
+  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:number;percent:number|null}> } | null
 }
 
 // ─── Formatters ───────────────────────────────────────────────────────────
@@ -361,6 +361,10 @@ export default function TerminalTokenScanner() {
           .token-main { padding: 20px 14px 120px !important; }
           .token-input-row { flex-direction: column; max-width: 100% !important; }
           .token-input-row button { width: 100%; }
+          .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
+        }
+        @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(5,minmax(0,1fr)) !important;} }
+        @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
         }
       `}</style>
 
@@ -514,9 +518,9 @@ export default function TerminalTokenScanner() {
                   No active Base pools found for this contract.
                 </div>
               ) : (
-                <div style={{
+                <div className="metric-grid" style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+                  gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
                   gap: '10px', marginBottom: '28px',
                 }}>
                   <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
@@ -548,11 +552,11 @@ export default function TerminalTokenScanner() {
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
                 <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
                   <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
-                  {result.holderDistribution ? <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution.top1],['Top 5',result.holderDistribution.top5],['Top 10',result.holderDistribution.top10],['Top 20',result.holderDistribution.top20],['Others',result.holderDistribution.others]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{Number(v).toFixed(1)}%</span></div>)}</div> : <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px'}}>Top holder metrics and distribution context unavailable.</div>}
+                  {result.holderDistribution ? <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution.top1],['Top 5',result.holderDistribution.top5],['Top 10',result.holderDistribution.top10],['Top 20',result.holderDistribution.top20],['Others',result.holderDistribution.others]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div> : <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px',textAlign:'center',padding:'10px'}}><div><div style={{fontWeight:700,color:'#94a3b8'}}>Holder distribution unavailable</div><div>Top-holder percentages were not returned for this token. Clark treats concentration as unverified risk.</div></div></div>}
                 </div>
                 <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
                   <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
-                  {result.holderDistribution?.topHolders?.length ? <div style={{display:'grid',gap:'4px',maxHeight:'160px',overflowY:'auto'}}>{result.holderDistribution.topHolders.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'28px 1fr 56px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{h.percent.toFixed(2)}%</span></div>)}</div> : <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px'}}>No holder data yet for this scan.</div>}
+                  {result.holderDistribution?.topHolders?.length ? <div style={{display:'grid',gap:'4px',maxHeight:'160px',overflowY:'auto'}}>{result.holderDistribution.topHolders.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'28px 1fr 56px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{h.percent == null ? 'N/A' : `${h.percent.toFixed(2)}%`}</span></div>)}</div> : <div style={{height:'160px',display:'grid',placeItems:'center',border:'1px dashed rgba(148,163,184,.22)',borderRadius:'10px',color:'#64748b',fontSize:'12px',textAlign:'center',padding:'10px'}}><div><div style={{fontWeight:700,color:'#94a3b8'}}>No holder rows returned</div><div>Try a larger token or rerun later. Scan still uses market, liquidity, and security evidence.</div></div></div>}
                 </div>
               </div>
 
@@ -565,7 +569,7 @@ export default function TerminalTokenScanner() {
                     marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
                   }}>
                     Liquidity Liquidity & Liquidity & Pools Pools · {result.pools.length} POOLS
-                  </p>
+                  </p><div style={{display:'inline-flex',marginBottom:'10px',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} POOLS</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
@@ -686,8 +690,10 @@ export default function TerminalTokenScanner() {
             const watchReady = (hp?.isHoneypot === false || String(gp?.is_honeypot ?? '') === '0') && !simulationFailed && (buyTax == null || buyTax <= 5) && (sellTax == null || sellTax <= 5) && liq > 50000 && (result.volume24h ?? 0) > 0
             const verdict = !hasMarket && !hp && !gp ? 'UNKNOWN' : strongRisk ? 'AVOID' : watchReady && !ownerHeld ? 'WATCH' : 'SCAN DEEPER'
             const confidence = verdict === 'AVOID' ? 'High' : verdict === 'WATCH' ? 'Medium-High' : verdict === 'SCAN DEEPER' ? 'Medium' : 'Low'
-            const missing = [ownerHeld ? 'Contract ownership renounced' : '', result.marketCap == null && result.fdv == null ? 'Market cap / FDV' : '', 'LP lock/control', 'Holder concentration', 'Deployer behavior'].filter(Boolean)
-            return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'10px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'10px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:verdict==='AVOID'?'#f87171':verdict==='WATCH'?'#2DD4BF':verdict==='SCAN DEEPER'?'#fbbf24':'#94a3b8'}}>{verdict}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{fontSize:'12px',color:'#cbd5e1',lineHeight:1.65}}>{result.symbol ?? 'This token'} has {liq > 0 ? `usable liquidity (${fmtLarge(result.liquidity)})` : 'limited liquidity context'} and {result.volume24h != null ? `24h activity (${fmtLarge(result.volume24h)})` : 'unclear 24h activity'}. {ownerHeld ? 'Owner is still held and deeper control checks are required.' : 'Ownership appears renounced, but LP and holder checks are still required.'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Key Signals: Liquidity {fmtLarge(result.liquidity)}, 24H {fmtPct(result.priceChange24h)}, Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy/Sell Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'} / {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Risks: {strongRisk ? 'High-risk security signal detected.' : ownerHeld ? 'Owner status held.' : 'No critical risk flag in current simulation.'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Missing Checks: {missing.join(', ') || 'None major in current read.'}</div><div style={{fontSize:'11px',color:'#67e8f9'}}>Next Action: Run liquidity and dev-wallet checks before treating this as a watchlist lead.</div></div> })()}
+            const holderMissing = !result.holderDistribution || result.holderDistribution.topHolders.length === 0
+            const holderRisk = result.holderDistribution?.top1 != null && result.holderDistribution.top1 > 25 ? 'Top holder concentration elevated.' : result.holderDistribution?.top5 != null && result.holderDistribution.top5 > 50 ? 'Top 5 holders control over half supply.' : result.holderDistribution?.top10 != null && result.holderDistribution.top10 > 70 ? 'Heavy holder concentration.' : holderMissing ? 'Holder distribution unverified.' : ''
+            const missing = [ownerHeld ? 'Contract ownership renounced' : '', result.marketCap == null && result.fdv == null ? 'Market cap / FDV' : '', 'LP lock/control', holderMissing ? 'Holder concentration' : '', 'Deployer behavior'].filter(Boolean)
+            return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'10px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'10px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:verdict==='AVOID'?'#f87171':verdict==='WATCH'?'#2DD4BF':verdict==='SCAN DEEPER'?'#fbbf24':'#94a3b8'}}>{verdict}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{fontSize:'12px',color:'#cbd5e1',lineHeight:1.65}}>{result.symbol ?? 'This token'} has {liq > 0 ? `usable liquidity (${fmtLarge(result.liquidity)})` : 'limited liquidity context'} and {result.volume24h != null ? `24h activity (${fmtLarge(result.volume24h)})` : 'unclear 24h activity'}. {ownerHeld ? 'Owner is still held and deeper control checks are required.' : 'Ownership appears renounced, but LP and holder checks are still required.'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Key Signals: Liquidity {fmtLarge(result.liquidity)}, 24H {fmtPct(result.priceChange24h)}, Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy/Sell Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'} / {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Risks: {strongRisk ? 'High-risk security signal detected.' : [ownerHeld ? 'Owner status held.' : '', holderRisk].filter(Boolean).join(' ') || 'No critical risk flag in current simulation.'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Missing Checks: {missing.join(', ') || 'None major in current read.'}</div><div style={{fontSize:'11px',color:'#67e8f9'}}>Next Action: Run liquidity and dev-wallet checks before treating this as a watchlist lead.</div></div> })()}
           <div style={{marginTop:'auto',paddingTop:'8px',borderTop:'1px solid rgba(148,163,184,.12)',fontSize:'10px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)'}}>RPC: hidden<br/>We never render RPC URLs or API keys in the interface. Debug via server logs only.</div>
         </aside>
 
