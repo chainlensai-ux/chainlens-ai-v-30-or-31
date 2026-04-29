@@ -3,6 +3,7 @@
 import Image from 'next/image';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 
 type Mode = 'signin' | 'signup';
@@ -14,7 +15,12 @@ export default function AuthPage() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [authCheckLoading, setAuthCheckLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const params = new URLSearchParams(window.location.search);
+    const oauthErr = params.get('error_description') || params.get('error');
+    return oauthErr ? decodeURIComponent(oauthErr.replace(/\+/g, ' ')) : null;
+  });
   const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
@@ -41,11 +47,6 @@ export default function AuthPage() {
         router.replace('/terminal');
       }
     });
-
-    // Surface any OAuth error returned as query params
-    const params = new URLSearchParams(window.location.search);
-    const oauthErr = params.get('error_description') || params.get('error');
-    if (oauthErr) setError(decodeURIComponent(oauthErr.replace(/\+/g, ' ')));
 
     return () => {
       isMounted = false;
@@ -148,15 +149,49 @@ export default function AuthPage() {
       position: 'relative',
       overflow: 'hidden',
     }}>
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 0,
+          pointerEvents: 'none',
+          backgroundImage:
+            'linear-gradient(rgba(148,163,184,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.07) 1px, transparent 1px)',
+          backgroundSize: '42px 42px',
+          maskImage: 'radial-gradient(circle at center, black 22%, transparent 100%)',
+          opacity: 0.28,
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          inset: '18% 10%',
+          borderRadius: '9999px',
+          border: '1px solid rgba(45,212,191,0.10)',
+          boxShadow: '0 0 120px rgba(45,212,191,0.10)',
+          zIndex: 0,
+          pointerEvents: 'none',
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          inset: '22% 14%',
+          borderRadius: '9999px',
+          border: '1px solid rgba(139,92,246,0.12)',
+          zIndex: 0,
+          pointerEvents: 'none',
+        }}
+      />
 
       {/* Radial glows */}
       <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
-        <div style={{ position: 'absolute', top: '30%', left: '20%', width: '500px', height: '400px', borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(45,212,191,0.09) 0%, transparent 70%)', filter: 'blur(40px)' }} />
-        <div style={{ position: 'absolute', top: '25%', right: '18%', width: '460px', height: '380px', borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(139,92,246,0.10) 0%, transparent 70%)', filter: 'blur(40px)' }} />
+        <div style={{ position: 'absolute', top: '28%', left: '16%', width: '560px', height: '440px', borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(45,212,191,0.14) 0%, transparent 72%)', filter: 'blur(46px)' }} />
+        <div style={{ position: 'absolute', top: '20%', right: '14%', width: '520px', height: '410px', borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(139,92,246,0.16) 0%, transparent 72%)', filter: 'blur(46px)' }} />
       </div>
 
       {/* Back to home */}
-      <a href="/" style={{
+      <Link href="/" style={{
         position: 'absolute', top: '20px', left: '24px',
         display: 'flex', alignItems: 'center', gap: '6px',
         color: 'rgba(255,255,255,0.40)',
@@ -173,7 +208,7 @@ export default function AuthPage() {
           <path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
         Back to home
-      </a>
+      </Link>
 
       {/* Card */}
       <div style={{
@@ -181,22 +216,25 @@ export default function AuthPage() {
         zIndex: 1,
         width: '100%',
         maxWidth: '400px',
-        background: '#080c14',
-        border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: '20px',
-        padding: '40px 36px 32px',
-        backdropFilter: 'blur(24px)',
-        WebkitBackdropFilter: 'blur(24px)',
-        boxShadow: '0 0 0 1px rgba(255,255,255,0.04) inset, 0 32px 80px rgba(0,0,0,0.55)',
+        background: 'linear-gradient(180deg, rgba(10,14,28,0.87) 0%, rgba(8,12,20,0.82) 100%)',
+        border: '1px solid rgba(148,163,184,0.22)',
+        borderRadius: '24px',
+        padding: '42px 34px 30px',
+        backdropFilter: 'blur(30px)',
+        WebkitBackdropFilter: 'blur(30px)',
+        boxShadow: '0 0 0 1px rgba(255,255,255,0.05) inset, 0 35px 85px rgba(0,0,0,0.62), 0 14px 44px rgba(45,212,191,0.08), 0 10px 42px rgba(139,92,246,0.08)',
       }}>
 
         {/* Top accent line */}
         <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.45), rgba(139,92,246,0.45), transparent)' }} />
 
         {/* Logo */}
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }}>
           <Image src="/cl-logo.png" alt="ChainLens" width={72} height={72} />
         </div>
+        <p style={{ textAlign: 'center', marginTop: 0, marginBottom: '22px', color: 'rgba(226,232,240,0.72)', fontSize: '12px', letterSpacing: '0.02em' }}>
+          Access your ChainLens terminal.
+        </p>
 
         {/* Mode tabs */}
         <div style={{ display: 'flex', background: 'rgba(255,255,255,0.04)', borderRadius: '10px', padding: '3px', marginBottom: '24px' }}>
@@ -214,8 +252,8 @@ export default function AuthPage() {
                 fontFamily: 'inherit',
                 cursor: 'pointer',
                 transition: 'background 0.15s, color 0.15s',
-                background: mode === m ? 'rgba(255,255,255,0.08)' : 'transparent',
-                color: mode === m ? '#f1f5f9' : '#475569',
+              background: mode === m ? 'rgba(255,255,255,0.08)' : 'transparent',
+                color: mode === m ? '#f1f5f9' : '#64748b',
               }}
             >
               {m === 'signin' ? 'Sign In' : 'Sign Up'}
@@ -230,12 +268,12 @@ export default function AuthPage() {
             style={{
               width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
               gap: '10px', padding: '11px 16px', borderRadius: '11px',
-              background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)',
-              color: '#e2e8f0', fontSize: '13px', fontWeight: 500,
+              background: 'linear-gradient(180deg, rgba(248,250,252,0.08) 0%, rgba(248,250,252,0.05) 100%)', border: '1px solid rgba(248,250,252,0.20)',
+              color: '#f8fafc', fontSize: '13px', fontWeight: 500,
               cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.15s, border-color 0.15s',
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.16)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.08) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.36)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.08) 0%, rgba(248,250,252,0.05) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.20)'; }}
           >
             <svg width="18" height="18" viewBox="0 0 48 48">
               <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -263,8 +301,8 @@ export default function AuthPage() {
             onChange={e => setEmail(e.target.value)}
             required
             style={inputStyle}
-            onFocus={e => (e.currentTarget.style.borderColor = 'rgba(45,212,191,0.40)')}
-            onBlur={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)')}
+            onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15), 0 0 22px rgba(139,92,246,0.14)'; }}
+            onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
           />
           <input
             type="password"
@@ -273,8 +311,8 @@ export default function AuthPage() {
             onChange={e => setPassword(e.target.value)}
             required
             style={inputStyle}
-            onFocus={e => (e.currentTarget.style.borderColor = 'rgba(45,212,191,0.40)')}
-            onBlur={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)')}
+            onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15), 0 0 22px rgba(139,92,246,0.14)'; }}
+            onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
           />
 
           {/* Forgot password — sign in only */}
@@ -329,19 +367,22 @@ export default function AuthPage() {
             disabled={loading}
             style={{
               width: '100%', padding: '12px 16px', borderRadius: '11px',
-              background: loading ? 'rgba(139,92,246,0.35)' : 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+              background: loading ? 'rgba(139,92,246,0.35)' : 'linear-gradient(135deg, #2DD4BF 0%, #0ea5e9 42%, #8b5cf6 100%)',
               border: 'none', color: '#ffffff', fontSize: '13px', fontWeight: 600,
               cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-              boxShadow: loading ? 'none' : '0 0 24px rgba(45,212,191,0.20), 0 0 16px rgba(139,92,246,0.16)',
-              transition: 'opacity 0.15s, box-shadow 0.15s',
+              boxShadow: loading ? 'none' : '0 0 30px rgba(45,212,191,0.24), 0 0 24px rgba(139,92,246,0.20), 0 8px 24px rgba(8,14,28,0.55)',
+              transition: 'opacity 0.15s, box-shadow 0.15s, transform 0.15s',
               marginTop: '4px',
             }}
-            onMouseEnter={e => { if (!loading) e.currentTarget.style.opacity = '0.92'; }}
-            onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+            onMouseEnter={e => { if (!loading) { e.currentTarget.style.opacity = '0.96'; e.currentTarget.style.transform = 'translateY(-1px)'; } }}
+            onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'translateY(0)'; }}
           >
             {loading ? 'Signing in…' : mode === 'signin' ? 'Sign In' : 'Create Account'}
           </button>
         </form>
+        <p style={{ margin: '16px 0 0', textAlign: 'center', color: 'rgba(148,163,184,0.80)', fontSize: '11px' }}>
+          Secure account access for ChainLens AI.
+        </p>
 
         {/* Bottom gradient accent line */}
         <div style={{ position: 'absolute', bottom: 0, left: '15%', right: '15%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(139,92,246,0.30), rgba(45,212,191,0.30), transparent)' }} />
