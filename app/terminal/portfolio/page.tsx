@@ -8,7 +8,11 @@ type Holding = { symbol: string; name: string; chain: string; price: number; bal
 const fmtUSD = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const fmtPrice = (v: number) => v <= 0 ? 'Unpriced' : v >= 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(6)}`
 const fmtBalance = (v: number) => v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)}M` : v >= 1000 ? `${(v / 1000).toFixed(2)}K` : v.toFixed(v < 1 ? 4 : 2)
-const shortAddress = (a: string) => `${a.slice(0, 6)}...${a.slice(-4)}`
+const formatShortAddress = (address?: string | null) => {
+  if (!address) return 'No wallet'
+  if (address.length <= 10) return address
+  return `${address.slice(0, 6)}...${address.slice(-4)}`
+}
 
 const spark = (seed: string, up: boolean) => {
   let x = seed.split('').reduce((s, c) => s + c.charCodeAt(0), 0) % 93
@@ -17,21 +21,6 @@ const spark = (seed: string, up: boolean) => {
     const y = (up ? 32 - i * 0.8 : 15 + i * 0.7) + (x % 11) - 5
     return `${(i / 19) * 100},${Math.max(5, Math.min(36, y))}`
   }).join(' ')
-}
-
-function shortAddress(address: string) {
-  return `${address.slice(0, 6)}...${address.slice(-4)}`
-}
-
-function sparklinePoints(seed: string, positive: boolean) {
-  const points: number[] = []
-  let x = seed.split('').reduce((s, c) => s + c.charCodeAt(0), 0) % 97
-  for (let i = 0; i < 24; i++) {
-    x = (x * 29 + 17) % 97
-    const base = positive ? 40 - i * 0.9 : 15 + i * 0.7
-    points.push(Math.max(4, Math.min(46, base + (x % 10) - 5)))
-  }
-  return points.map((p, i) => `${(i / 23) * 100},${p}`).join(' ')
 }
 
 export default function PortfolioPage() {
@@ -107,7 +96,7 @@ export default function PortfolioPage() {
     <style>{`.glass{background:linear-gradient(165deg,rgba(8,16,32,.88),rgba(5,10,20,.82));border:1px solid rgba(125,211,252,.14);border-radius:18px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.02)}.sk{background:linear-gradient(90deg,rgba(148,163,184,.12),rgba(148,163,184,.22),rgba(148,163,184,.12));background-size:180% 100%;animation:sh 1.45s infinite}@keyframes sh{from{background-position:180% 0}to{background-position:-180% 0}}`}</style>
 
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginBottom: 12 }}>
-      {[['PORTFOLIO VALUE', isConnected ? fmtUSD(totalValue) : '—', totalValue > 0 ? `≈ ${(totalValue / 2600).toFixed(4)} ETH` : ''], ['24H PNL', isConnected ? (hasPnl ? `${totalPnL >= 0 ? '+' : ''}${fmtUSD(totalPnL)}` : 'PnL unavailable') : '—', hasPnl ? `${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}%` : ''], ['TOKENS', isConnected ? `${sorted.length}` : '—', 'Base assets'], ['WALLET', isConnected && address ? shortAddress(address) : 'Not connected', isConnected ? 'View on Explorer ↗' : ''], ['NETWORK', 'Base', 'Healthy']].map(([k, v, s], i) => <div key={String(k)} className='glass' style={{ padding: 14, minHeight: 92 }}>{loading ? <div className='sk' style={{ height: 54, borderRadius: 12 }} /> : <><div style={{ fontSize: 10, letterSpacing: '.15em', color: '#94a3b8' }}>{k}</div><div style={{ fontSize: i === 3 ? 24 : 34, fontWeight: 800, marginTop: 4, color: i === 1 && hasPnl ? ((pnlPct ?? 0) >= 0 ? '#2dd4bf' : '#fb7185') : '#f8fafc' }}>{v}</div><div style={{ fontSize: 12, color: '#67e8f9' }}>{s}</div></>}</div>)}
+      {[['PORTFOLIO VALUE', isConnected ? fmtUSD(totalValue) : '—', totalValue > 0 ? `≈ ${(totalValue / 2600).toFixed(4)} ETH` : ''], ['24H PNL', isConnected ? (hasPnl ? `${totalPnL >= 0 ? '+' : ''}${fmtUSD(totalPnL)}` : 'PnL unavailable') : '—', hasPnl ? `${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}%` : ''], ['TOKENS', isConnected ? `${sorted.length}` : '—', 'Base assets'], ['WALLET', isConnected && address ? formatShortAddress(address) : 'Not connected', isConnected ? 'View on Explorer ↗' : ''], ['NETWORK', 'Base', 'Healthy']].map(([k, v, s], i) => <div key={String(k)} className='glass' style={{ padding: 14, minHeight: 92 }}>{loading ? <div className='sk' style={{ height: 54, borderRadius: 12 }} /> : <><div style={{ fontSize: 10, letterSpacing: '.15em', color: '#94a3b8' }}>{k}</div><div style={{ fontSize: i === 3 ? 24 : 34, fontWeight: 800, marginTop: 4, color: i === 1 && hasPnl ? ((pnlPct ?? 0) >= 0 ? '#2dd4bf' : '#fb7185') : '#f8fafc' }}>{v}</div><div style={{ fontSize: 12, color: '#67e8f9' }}>{s}</div></>}</div>)}
     </div>
 
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2.1fr) minmax(320px,1fr)', gap: 12 }}>
