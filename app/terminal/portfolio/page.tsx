@@ -19,6 +19,21 @@ const spark = (seed: string, up: boolean) => {
   }).join(' ')
 }
 
+function shortAddress(address: string) {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`
+}
+
+function sparklinePoints(seed: string, positive: boolean) {
+  const points: number[] = []
+  let x = seed.split('').reduce((s, c) => s + c.charCodeAt(0), 0) % 97
+  for (let i = 0; i < 24; i++) {
+    x = (x * 29 + 17) % 97
+    const base = positive ? 40 - i * 0.9 : 15 + i * 0.7
+    points.push(Math.max(4, Math.min(46, base + (x % 10) - 5)))
+  }
+  return points.map((p, i) => `${(i / 23) * 100},${p}`).join(' ')
+}
+
 export default function PortfolioPage() {
   const { address, isConnected } = useAccount()
   const { open } = useWeb3Modal()
