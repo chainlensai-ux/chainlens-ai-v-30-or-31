@@ -60,7 +60,7 @@ export default function AuthPage() {
     // can pick up the PKCE code and fire onAuthStateChange → SIGNED_IN
     const { error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}/auth` },
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
     });
     if (oauthError) setError(oauthError.message);
   }
@@ -82,7 +82,7 @@ export default function AuthPage() {
       const { error: signUpError } = await supabase.auth.signUp({
         email,
         password,
-        options: { emailRedirectTo: `${window.location.origin}/terminal` },
+        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
       });
       if (signUpError) {
         setError(signUpError.message);
@@ -149,17 +149,32 @@ export default function AuthPage() {
       position: 'relative',
       overflow: 'hidden',
     }}>
+      <style>{`
+        @keyframes auth-grid-drift {
+          0% { transform: translate3d(0, 0, 0); }
+          100% { transform: translate3d(0, 30px, 0); }
+        }
+        @keyframes auth-orbit-spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        @keyframes auth-horizon-breathe {
+          0%,100% { opacity: 0.35; transform: scaleX(1); }
+          50% { opacity: 0.55; transform: scaleX(1.04); }
+        }
+      `}</style>
       <div
         style={{
           position: 'absolute',
-          inset: 0,
+          inset: '-10%',
           zIndex: 0,
           pointerEvents: 'none',
           backgroundImage:
-            'linear-gradient(rgba(148,163,184,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.07) 1px, transparent 1px)',
-          backgroundSize: '42px 42px',
-          maskImage: 'radial-gradient(circle at center, black 22%, transparent 100%)',
-          opacity: 0.28,
+            'linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px)',
+          backgroundSize: '44px 44px',
+          maskImage: 'radial-gradient(circle at center, black 24%, transparent 90%)',
+          opacity: 0.26,
+          animation: 'auth-grid-drift 20s linear infinite',
         }}
       />
       <div
@@ -171,6 +186,7 @@ export default function AuthPage() {
           boxShadow: '0 0 120px rgba(45,212,191,0.10)',
           zIndex: 0,
           pointerEvents: 'none',
+          animation: 'auth-orbit-spin 36s linear infinite',
         }}
       />
       <div
@@ -181,8 +197,21 @@ export default function AuthPage() {
           border: '1px solid rgba(139,92,246,0.12)',
           zIndex: 0,
           pointerEvents: 'none',
+          animation: 'auth-orbit-spin 42s linear infinite reverse',
         }}
       />
+      <div style={{
+        position: 'absolute',
+        left: '8%',
+        right: '8%',
+        top: '55%',
+        height: '1px',
+        background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.44), rgba(139,92,246,0.34), transparent)',
+        zIndex: 0,
+        pointerEvents: 'none',
+        filter: 'blur(0.2px)',
+        animation: 'auth-horizon-breathe 7s ease-in-out infinite',
+      }} />
 
       {/* Radial glows */}
       <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
@@ -244,7 +273,7 @@ export default function AuthPage() {
               onClick={() => { setMode(m); setError(null); setSuccess(null); }}
               style={{
                 flex: 1,
-                padding: '8px',
+                padding: '9px',
                 borderRadius: '8px',
                 border: 'none',
                 fontSize: '13px',
@@ -252,7 +281,7 @@ export default function AuthPage() {
                 fontFamily: 'inherit',
                 cursor: 'pointer',
                 transition: 'background 0.15s, color 0.15s',
-              background: mode === m ? 'rgba(255,255,255,0.08)' : 'transparent',
+                background: mode === m ? 'linear-gradient(180deg, rgba(148,163,184,0.22), rgba(148,163,184,0.10))' : 'transparent',
                 color: mode === m ? '#f1f5f9' : '#64748b',
               }}
             >
@@ -268,7 +297,7 @@ export default function AuthPage() {
             style={{
               width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
               gap: '10px', padding: '11px 16px', borderRadius: '11px',
-              background: 'linear-gradient(180deg, rgba(248,250,252,0.08) 0%, rgba(248,250,252,0.05) 100%)', border: '1px solid rgba(248,250,252,0.20)',
+              background: 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.06) 100%)', border: '1px solid rgba(248,250,252,0.26)',
               color: '#f8fafc', fontSize: '13px', fontWeight: 500,
               cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.15s, border-color 0.15s',
             }}
@@ -380,10 +409,6 @@ export default function AuthPage() {
             {loading ? 'Signing in…' : mode === 'signin' ? 'Sign In' : 'Create Account'}
           </button>
         </form>
-        <p style={{ margin: '16px 0 0', textAlign: 'center', color: 'rgba(148,163,184,0.80)', fontSize: '11px' }}>
-          Secure account access for ChainLens AI.
-        </p>
-
         {/* Bottom gradient accent line */}
         <div style={{ position: 'absolute', bottom: 0, left: '15%', right: '15%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(139,92,246,0.30), rgba(45,212,191,0.30), transparent)' }} />
       </div>
