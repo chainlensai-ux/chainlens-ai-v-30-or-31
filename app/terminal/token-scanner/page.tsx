@@ -12,6 +12,8 @@ type Pool = {
   liquidity?: number | null
   volume24h?: number | null
   priceChange24h?: number | null
+  marketCap?: number | null
+  fdv?: number | null
 }
 
 type ScanResult = {
@@ -23,6 +25,8 @@ type ScanResult = {
   liquidity?: number | null
   volume24h?: number | null
   priceChange24h?: number | null
+  marketCap?: number | null
+  fdv?: number | null
   pools?: Pool[]
   goplus?: Record<string, Record<string, unknown>> | null
   honeypot?: {
@@ -315,6 +319,8 @@ export default function TerminalTokenScanner() {
           liquidity:      mainPool ? num(attr(mainPool).reserve_in_usd) : null,
           volume24h:      mainPool ? num((attr(mainPool).volume_usd as Record<string, unknown> | undefined)?.h24) : null,
           priceChange24h: mainPool ? num((attr(mainPool).price_change_percentage as Record<string, unknown> | undefined)?.h24) : null,
+          marketCap: num(json.market_cap ?? attr(mainPool).market_cap_usd),
+          fdv: num(json.fdv ?? attr(mainPool).fdv_usd),
           pools: pairs.map((p: Record<string, unknown>) => ({
             name:           (attr(p).name as string | undefined),
             address:        (attr(p).address as string | undefined),
@@ -518,6 +524,11 @@ export default function TerminalTokenScanner() {
                     value={fmtPct(result.priceChange24h)}
                     accent={pctColor(result.priceChange24h)}
                   />
+                  <StatCard
+                    label={result.marketCap != null ? 'Market Cap' : result.fdv != null ? 'FDV' : 'Market Cap'}
+                    value={result.marketCap != null ? fmtLarge(result.marketCap) : result.fdv != null ? fmtLarge(result.fdv) : 'Unverified'}
+                    accent="#a78bfa"
+                  />
                 </div>
               )}
 
@@ -645,7 +656,24 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Verdict */}
-          {clarkVerdict && (() => { const t=clarkVerdict.toLowerCase(); const v=t.includes('avoid')?'AVOID':t.includes('watch')?'WATCH':t.includes('deeper')?'SCAN DEEPER':'UNKNOWN'; const confidence=t.includes('high')?'High':t.includes('low')?'Low':'Medium'; const key = result?.priceChange24h!=null?`24H change ${fmtPct(result.priceChange24h)}`:'Momentum unverified'; const risk = result?.honeypot?.isHoneypot ? 'Honeypot flagged by simulation' : 'No explicit honeypot flag'; return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'10px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'10px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:v==='AVOID'?'#f87171':v==='WATCH'?'#fbbf24':'#67e8f9'}}>{v}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{fontSize:'12px',color:'#cbd5e1',lineHeight:1.7}}>Clark read: {result?.symbol ?? 'Token'} needs context from liquidity, taxes, and activity before conviction. Treat this as directional intelligence, not certainty.</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Key Signal: {key}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Risk: {risk}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Missing Checks: Holder concentration and LP control may be incomplete.</div><div style={{fontSize:'11px',color:'#67e8f9'}}>Next Action: Validate pool depth and contract controls.</div></div> })()}
+          {result && (() => {
+            const hp = result.honeypot
+            const gp = result.goplus && result.contract ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null : null
+            const buyTax = hp?.buyTax ?? (gp?.buy_tax != null ? Number(gp.buy_tax) * 100 : null)
+            const sellTax = hp?.sellTax ?? (gp?.sell_tax != null ? Number(gp.sell_tax) * 100 : null)
+            const transferTax = hp?.transferTax ?? null
+            const simulationFailed = hp ? !hp.simulationSuccess : false
+            const hpFlagged = hp?.isHoneypot === true || String(gp?.is_honeypot ?? '') === '1'
+            const blacklistRisk = String(gp?.is_blacklisted ?? '') === '1' || String(gp?.is_whitelisted ?? '') === '1'
+            const ownerHeld = String(gp?.owner_address ?? '') && String(gp?.owner_address ?? '') !== '0x0000000000000000000000000000000000000000'
+            const liq = result.liquidity ?? 0
+            const hasMarket = (result.price != null) || (result.volume24h != null) || liq > 0
+            const strongRisk = hpFlagged || simulationFailed || (buyTax != null && buyTax >= 15) || (sellTax != null && sellTax >= 15) || (transferTax != null && transferTax >= 15) || blacklistRisk
+            const watchReady = (hp?.isHoneypot === false || String(gp?.is_honeypot ?? '') === '0') && !simulationFailed && (buyTax == null || buyTax <= 5) && (sellTax == null || sellTax <= 5) && liq > 50000 && (result.volume24h ?? 0) > 0
+            const verdict = !hasMarket && !hp && !gp ? 'UNKNOWN' : strongRisk ? 'AVOID' : watchReady && !ownerHeld ? 'WATCH' : 'SCAN DEEPER'
+            const confidence = verdict === 'AVOID' ? 'High' : verdict === 'WATCH' ? 'Medium-High' : verdict === 'SCAN DEEPER' ? 'Medium' : 'Low'
+            const missing = [ownerHeld ? 'Contract ownership renounced' : '', result.marketCap == null && result.fdv == null ? 'Market cap / FDV' : '', 'LP lock/control', 'Holder concentration', 'Deployer behavior'].filter(Boolean)
+            return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'10px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'10px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:verdict==='AVOID'?'#f87171':verdict==='WATCH'?'#2DD4BF':verdict==='SCAN DEEPER'?'#fbbf24':'#94a3b8'}}>{verdict}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{fontSize:'12px',color:'#cbd5e1',lineHeight:1.65}}>{result.symbol ?? 'This token'} has {liq > 0 ? `usable liquidity (${fmtLarge(result.liquidity)})` : 'limited liquidity context'} and {result.volume24h != null ? `24h activity (${fmtLarge(result.volume24h)})` : 'unclear 24h activity'}. {ownerHeld ? 'Owner is still held and deeper control checks are required.' : 'Ownership appears renounced, but LP and holder checks are still required.'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Key Signals: Liquidity {fmtLarge(result.liquidity)}, 24H {fmtPct(result.priceChange24h)}, Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy/Sell Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'} / {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Risks: {strongRisk ? 'High-risk security signal detected.' : ownerHeld ? 'Owner status held.' : 'No critical risk flag in current simulation.'}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>• Missing Checks: {missing.join(', ') || 'None major in current read.'}</div><div style={{fontSize:'11px',color:'#67e8f9'}}>Next Action: Run liquidity and dev-wallet checks before treating this as a watchlist lead.</div></div> })()}
         </aside>
 
       </div>
