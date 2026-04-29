@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -173,6 +174,19 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
   }
 }
 
+
+async function fetchTokenHolders(chain: ChainKey, contract: string): Promise<any> {
+  try {
+    const keyMissing = !process.env.COVALENT_API_KEY
+    if (keyMissing) return { __status: 'unavailable', __reason: 'missing_api_key' }
+    const url = `https://api.covalenthq.com/v1/${chain}/tokens/${contract}/token_holders_v2/?page-size=200&key=${process.env.COVALENT_API_KEY}`
+    const res = await fetch(url, { cache: 'no-store' });
+    console.log('[holders] contract', contract, '[holders] chain', chain, '[holders] status', res.status)
+    if (!res.ok) return { __status: 'error', __reason: 'provider_unavailable' }
+    return await res.json()
+  } catch { return { __status: 'error', __reason: 'provider_unavailable' } }
+}
+
 // ------------------------------
 // Contract analysis
 // ------------------------------
@@ -218,9 +232,10 @@ export async function POST(req: Request) {
     // Token Scanner is Base-only.
     const chain: ChainKey = "base";
 
-    const [bytecode, goldrush, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpRaw] = await Promise.all([
+    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpRaw] = await Promise.all([
       fetchBytecode(chain, contract),
       fetchGoldRush(chain, contract),
+      fetchTokenHolders(chain, contract),
       fetchGeckoTerminal(contract, chain),
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
@@ -322,6 +337,40 @@ ${JSON.stringify(analysis, null, 2)}
       gmgnItem?.decimals ||
       18;
 
+    
+    const holderCandidates = [
+      holdersRaw?.data?.items,
+      holdersRaw?.data?.data?.items,
+      holdersRaw?.items,
+      holdersRaw?.holders,
+      holdersRaw?.token_holders,
+    ]
+    const holderItems: any[] = holderCandidates.find((x) => Array.isArray(x)) ?? []
+    console.log('[holders] items length', holderItems.length)
+
+    const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.data?.pagination?.has_more ?? null
+    const toNum = (v: unknown) => {
+      const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN
+      return Number.isFinite(n) ? n : null
+    }
+    const topHolders = holderItems.slice(0, 20).map((h: any, i: number) => {
+      const address = h.address || h.holder_address || h.wallet_address || h.owner_address || ''
+      const amount = toNum(h.balance) ?? toNum(h.token_balance) ?? toNum(h.balance_quote) ?? 0
+      const pctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.percent_of_supply) ?? toNum(h.share)
+      const supply = toNum(h.total_supply) ?? toNum(goldrush?.data?.items?.[0]?.total_supply)
+      const percent = pctRaw != null ? pctRaw : (supply && amount ? (amount / supply) * 100 : null)
+      return { rank: i + 1, address, amount, percent }
+    }).filter((h: any) => h.address)
+
+    const hasPct = topHolders.some((h: any) => h.percent != null)
+    console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct)
+    const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
+    const top1 = hasPct ? sum(1) : null
+    const top5 = hasPct ? sum(5) : null
+    const top10 = hasPct ? sum(10) : null
+    const top20 = hasPct ? sum(20) : null
+    const holderDistribution = topHolders.length ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders } : null
+    const holderDistributionStatus = holderDistribution ? (hasPct ? { source: 'goldrush', status: 'ok' } : { source: 'goldrush', status: 'empty', reason: 'no_percentages' }) : (holderItems.length ? { source: 'goldrush', status: 'empty', reason: 'no_rows' } : { source: 'unavailable', status: (holdersRaw?.__status ?? 'empty'), reason: (holdersRaw?.__reason ?? 'no_rows') })
     // ------------------------------
     // Final JSON response
     // ------------------------------
@@ -339,6 +388,8 @@ ${JSON.stringify(analysis, null, 2)}
 
       // Extra data
       holders: goldrush?.holders || null,
+      holderDistribution,
+      holderDistributionStatus,
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
 
       pairs: matchingPools,
