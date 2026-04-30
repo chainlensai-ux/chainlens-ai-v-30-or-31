@@ -211,3 +211,8 @@ html, body {
   body { overflow-x: hidden !important; }
   main, section, footer, header { max-width: 100vw !important; overflow-x: hidden !important; }
 }
+
+:root {
+  --font-inter: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-plex-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
