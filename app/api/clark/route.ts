@@ -3151,7 +3151,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   if (liveIntent === "BASE_MARKET") {
     try {
-      const universe = await getBaseMarketUniverse({ origin, mode: "movers", requestedCount: 5, followup: false, excludeAddresses: [], includePoolVariants: false });
+      const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 5, followup: false, excludeAddresses: [], includePoolVariants: false });
       const top = universe.candidates.slice(0, 5);
       if (!top.length) return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };
       return {
@@ -3160,7 +3160,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
         mode: "general_market",
         intent: "market",
         toolsUsed: ["market_get_base_movers"],
-        analysis: ["Top movers on Base right now:", ...top.map((c, i) => `${i + 1}. ${c.symbol ?? "?"} ${pct(c.change24h)}`)].join("\n"),
+        analysis: ["Top movers on Base right now:", ...top.map((c, i) => `${i + 1}. ${c.symbol ?? "?"} ${pct(c.change24h ?? undefined)}`)].join("\n"),
       };
     } catch {
       return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };
