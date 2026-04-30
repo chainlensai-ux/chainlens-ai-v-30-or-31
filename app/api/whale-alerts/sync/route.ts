@@ -96,12 +96,27 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[]) {
 }
 
 export async function POST() {
-  const supabaseUrl = process.env.SUPABASE_URL
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
   const providerKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
 
   if (!supabaseUrl || !serviceRole) {
-    return NextResponse.json({ ok: false, error: 'missing_supabase_env' }, { status: 503 })
+    return NextResponse.json({
+      ok: false,
+      error: 'missing_supabase_env',
+      env: {
+        hasNextPublicSupabaseUrl: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
+        hasSupabaseUrl: Boolean(process.env.SUPABASE_URL),
+        hasNextPublicAnonKey: Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
+        hasServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+        expectedNames: [
+          'NEXT_PUBLIC_SUPABASE_URL',
+          'SUPABASE_URL',
+          'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+          'SUPABASE_SERVICE_ROLE_KEY',
+        ],
+      },
+    }, { status: 503 })
   }
 
   if (!providerKey) {
