@@ -714,31 +714,51 @@ export default function TerminalTokenScanner() {
 
 
               {/* Holder analytics */}
-              {result.holderDistributionStatus?.status === 'ok' && (result.holderDistributionStatus?.normalizedCount ?? 0) > 0 && result.holderDistribution?.topHolders?.length ? (
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
-                  <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
-                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
-                    <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution.top1],['Top 5',result.holderDistribution.top5],['Top 10',result.holderDistribution.top10],['Top 20',result.holderDistribution.top20],['Others',result.holderDistribution.others]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+              {(() => {
+                const holderState = deriveHolderState(result)
+                const fallback = deriveHolderFallbackEvidence(result)
+                if (holderState.kind !== 'noRowsFallback') {
+                  return (
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
+                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                        {result.holderDistribution?.holderCount != null && <p style={{margin:'0 0 10px',fontSize:'11px',color:'#67e8f9'}}>Holder count: {result.holderDistribution.holderCount.toLocaleString()}</p>}
+                        {holderState.kind === 'rowsWithoutPercent' && (
+                          <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets were returned, but supply percentages were not available from the provider.</p>
+                        )}
+                        <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+                      </div>
+                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
+                        <div style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'10px',color:'#64748b',marginBottom:'6px'}}><span>Rank</span><span>Wallet</span><span style={{textAlign:'right'}}>Amount</span><span style={{textAlign:'right'}}>% Supply</span></div>
+                        <div style={{display:'grid',gap:'4px',maxHeight:'210px',overflowY:'auto'}}>{holderState.rows.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{typeof h.amount === 'number' ? h.amount.toLocaleString(undefined,{maximumFractionDigits:2}) : (h.amount ?? 'N/A')}</span><span style={{textAlign:'right'}}>{h.percent == null ? 'N/A' : `${h.percent.toFixed(2)}%`}</span></div>)}</div>
+                      </div>
+                    </div>
+                  )
+                }
+                return (
+                  <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px',padding:'16px'}}>
+                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>Holder Intelligence</p>
+                    <p style={{margin:'0 0 8px',fontSize:'12px',color:'#cbd5e1',fontWeight:700}}>State: {holderSafeReason(normalizeHolderProviderStatus(result.holderDistributionStatus), false)}</p>
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
+                      {[
+                        ['Owner status', fallback.ownerStatus],
+                        ['Pool count', String(fallback.poolCount)],
+                        ['Liquidity depth', fmtLarge(fallback.liquidityDepth)],
+                        ['Market cap vs FDV', fallback.marketCapToFdvLabel],
+                        ['Holder concentration', fallback.holderConcentration],
+                        ['Supply spread', fallback.supplySpread],
+                      ].map(([label,val]) => (
+                        <div key={String(label)} style={{padding:'8px 10px',borderRadius:'10px',background:'rgba(15,23,42,0.42)',border:'1px solid rgba(148,163,184,.18)'}}>
+                          <div style={{fontSize:'9px',color:'#64748b',fontFamily:'var(--font-plex-mono)'}}>{label}</div>
+                          <div style={{fontSize:'11px',color:'#cbd5e1',marginTop:'4px'}}>{val}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8'}}>Holder provider did not return holder rows for this token. This usually happens on new, thin, or low-coverage microcaps, so concentration should be treated as unverified.</p>
                   </div>
-                  <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
-                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
-                    <div style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'10px',color:'#64748b',marginBottom:'6px'}}><span>Rank</span><span>Wallet</span><span style={{textAlign:'right'}}>Amount</span><span style={{textAlign:'right'}}>% Supply</span></div>
-                    <div style={{display:'grid',gap:'4px',maxHeight:'210px',overflowY:'auto'}}>{result.holderDistribution.topHolders.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{typeof h.amount === 'number' ? h.amount.toLocaleString(undefined,{maximumFractionDigits:2}) : (h.amount ?? 'N/A')}</span><span style={{textAlign:'right'}}>{h.percent == null ? 'N/A' : `${h.percent.toFixed(2)}%`}</span></div>)}</div>
-                  </div>
-                </div>
-              ) : (
-                <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px',padding:'16px'}}>
-                  <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>Holder Intelligence</p>
-                  <p style={{margin:'0 0 8px',fontSize:'12px',color:'#cbd5e1',fontWeight:700}}>State: Unverified</p>
-                  <p style={{margin:'0 0 12px',fontSize:'12px',color:'#94a3b8'}}>Top holder data is unavailable for this token.</p>
-                  <div style={{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'10px'}}>
-                    {['Top holders: Unavailable','Concentration: Unverified','Supply spread: Unverified'].map((chip)=>(
-                      <span key={chip} style={{padding:'5px 9px',borderRadius:'999px',fontSize:'10px',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(148,163,184,.26)',color:'#94a3b8'}}>{chip}</span>
-                    ))}
-                  </div>
-                  <p style={{margin:0,fontSize:'11px',color:'#67e8f9'}}>Market, liquidity, and security simulation are still available.</p>
-                </div>
-              )}
+                )
+              })()}
 
               {/* Pools */}
               {result.pools && result.pools.length > 0 && (
