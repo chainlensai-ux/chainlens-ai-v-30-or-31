@@ -49,7 +49,12 @@ type ScanResult = {
   noActivePools?: boolean
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
-  debugHolderStatus?: { providerCalled?: boolean; chain?: string; endpointPath?: string; statusCode?: number|null; itemCount?: number; normalizedCount?: number; reason?: string|null; responseKeys?: string[]|null } | null
+  debugHolderStatus?: {
+    providerCalled?: boolean; chain?: string; endpointPath?: string; authMode?: string;
+    hasGoldrushKey?: boolean; hasCovalentKey?: boolean; statusCode?: number|null;
+    itemCount?: number; normalizedCount?: number; reason?: string|null;
+    responseKeys?: string[]|null; dataKeys?: string[]|null; firstItemKeys?: string[]|null;
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -452,10 +457,12 @@ export default function TerminalTokenScanner() {
     setClarkVerdict(null)
     setClarkError(null)
     try {
+      const debugHolder = typeof window !== 'undefined'
+        && new URLSearchParams(window.location.search).get('debugHolder') === 'true'
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contract: q }),
+        body: JSON.stringify({ contract: q, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       const json = await res.json()
       if (!res.ok || json.error) {
@@ -719,9 +726,24 @@ export default function TerminalTokenScanner() {
               />
 
 
-              {/* Dev-only holder debug card — only rendered when API sends debugHolderStatus */}
+              {/* Holder debug card — only rendered when API returns debugHolderStatus */}
               {result.debugHolderStatus && (() => {
                 const d = result.debugHolderStatus!
+                const rows: [string, string][] = [
+                  ['providerCalled',  String(d.providerCalled ?? '?')],
+                  ['chain',           d.chain ?? '?'],
+                  ['endpointPath',    d.endpointPath ?? '?'],
+                  ['authMode',        d.authMode ?? '?'],
+                  ['hasGoldrushKey',  String(d.hasGoldrushKey ?? '?')],
+                  ['hasCovalentKey',  String(d.hasCovalentKey ?? '?')],
+                  ['statusCode',      d.statusCode != null ? String(d.statusCode) : '—'],
+                  ['itemCount',       d.itemCount != null ? String(d.itemCount) : '—'],
+                  ['normalizedCount', d.normalizedCount != null ? String(d.normalizedCount) : '—'],
+                  ['reason',          d.reason ?? '—'],
+                  ['responseKeys',    d.responseKeys?.join(', ') ?? '—'],
+                  ['dataKeys',        d.dataKeys?.join(', ') ?? '—'],
+                  ['firstItemKeys',   d.firstItemKeys?.join(', ') ?? '—'],
+                ]
                 return (
                   <details style={{
                     marginTop: '16px', marginBottom: '4px',
@@ -729,25 +751,15 @@ export default function TerminalTokenScanner() {
                     border: '1px solid rgba(251,191,36,0.18)',
                     borderRadius: '8px', padding: '8px 12px',
                     fontSize: '10px', fontFamily: 'var(--font-plex-mono)',
-                    color: '#92400e',
                   }}>
                     <summary style={{ cursor: 'pointer', color: '#fbbf24', letterSpacing: '0.10em', fontWeight: 700 }}>
-                      [DEV] Holder Debug {d.statusCode != null ? `· HTTP ${d.statusCode}` : ''} · items:{d.itemCount ?? '?'} norm:{d.normalizedCount ?? '?'}
+                      Holder Debug · HTTP {d.statusCode ?? '?'} · items:{d.itemCount ?? '?'} norm:{d.normalizedCount ?? '?'}
                     </summary>
                     <table style={{ marginTop: '8px', borderCollapse: 'collapse', width: '100%' }}>
                       <tbody>
-                        {([
-                          ['providerCalled', String(d.providerCalled ?? '?')],
-                          ['chain', d.chain ?? '?'],
-                          ['endpointPath', d.endpointPath ?? '?'],
-                          ['statusCode', d.statusCode != null ? String(d.statusCode) : '—'],
-                          ['itemCount', d.itemCount != null ? String(d.itemCount) : '—'],
-                          ['normalizedCount', d.normalizedCount != null ? String(d.normalizedCount) : '—'],
-                          ['reason', d.reason ?? '—'],
-                          ['responseKeys', d.responseKeys ? d.responseKeys.join(', ') : '—'],
-                        ] as [string, string][]).map(([k, v]) => (
+                        {rows.map(([k, v]) => (
                           <tr key={k}>
-                            <td style={{ paddingRight: '12px', color: '#78716c', whiteSpace: 'nowrap' }}>{k}</td>
+                            <td style={{ paddingRight: '12px', color: '#78716c', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{k}</td>
                             <td style={{ color: '#d97706', wordBreak: 'break-all' }}>{v}</td>
                           </tr>
                         ))}

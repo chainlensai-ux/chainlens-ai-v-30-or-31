@@ -288,7 +288,8 @@ export async function POST(req: Request) {
   try {
     console.log("🚀 SCAN ROUTE HIT");
 
-    const { contract } = await req.json();
+    const body = await req.json();
+    const { contract, debugHolder } = body;
 
     if (!contract || !/^0x[a-fA-F0-9]{40}$/.test(contract)) {
       return NextResponse.json({ error: "Invalid contract address" }, { status: 400 });
@@ -479,16 +480,21 @@ ${JSON.stringify(analysis, null, 2)}
       holders: goldrush?.holders || null,
       holderDistribution,
       holderDistributionStatus,
-      ...(process.env.NODE_ENV !== 'production' ? {
+      ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'unavailable',
           chain: 'base-mainnet',
           endpointPath: holdersRaw?.__endpointPath ?? `/v1/base-mainnet/tokens/${contract}/token_holders_v2/`,
+          authMode: 'bearer',
+          hasGoldrushKey: Boolean(process.env.GOLDRUSH_API_KEY),
+          hasCovalentKey: Boolean(process.env.COVALENT_API_KEY),
           statusCode: holdersRaw?.__statusCode ?? null,
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
           reason: holderDistributionStatus?.reason ?? holderDistributionStatus?.status ?? null,
           responseKeys: holdersRaw?.__responseKeys ?? null,
+          dataKeys: holdersRaw?.data ? Object.keys(holdersRaw.data) : null,
+          firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : null,
         }
       } : {}),
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
