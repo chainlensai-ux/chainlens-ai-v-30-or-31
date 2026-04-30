@@ -4,6 +4,10 @@ import { createClient } from '@supabase/supabase-js'
 type TrackedWallet = {
   address: string
   label: string | null
+  category: string | null
+  confidence: number | null
+  source: string | null
+  is_active: boolean
 }
 
 type CovalentTx = {
@@ -127,12 +131,26 @@ export async function POST() {
 
   const { data: wallets, error: walletError } = await supabase
     .from('tracked_wallets')
-    .select('address,label')
+    .select('address,label,category,confidence,source,is_active')
     .eq('is_active', true)
 
   if (walletError) {
     console.error('[whale-sync] wallet load failed', walletError.message)
-    return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
+    return NextResponse.json({
+      ok: false,
+      error: 'wallet_load_failed',
+      details: {
+        table: 'tracked_wallets',
+        code: walletError.code ?? null,
+        message: walletError.message ?? null,
+        hint: walletError.hint ?? null,
+        details: walletError.details ?? null,
+      },
+    }, { status: 500 })
+  }
+
+  if (!wallets || wallets.length === 0) {
+    return NextResponse.json({ ok: false, error: 'no_active_wallets', trackedWallets: 0 }, { status: 404 })
   }
 
   let totalFetched = 0
@@ -192,6 +210,7 @@ export async function POST() {
     provider: 'covalent_goldrush',
     window: '24h',
     walletsProcessed: wallets?.length ?? 0,
+    trackedWallets: wallets?.length ?? 0,
     fetchedCount: totalFetched,
     insertedCount: totalInserted,
     skippedCount: totalSkipped,
