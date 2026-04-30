@@ -16,6 +16,9 @@ async function getAuthenticatedUser(request: NextRequest) {
   if (!token) return { error: 'Missing bearer token.', userId: null };
 
   const supabase = createAnonSupabaseClient();
+  if (!supabase) {
+    return { error: 'Settings service unavailable.', userId: null };
+  }
   const { data, error } = await supabase.auth.getUser(token);
   if (error || !data.user) {
     return { error: 'Unauthorized.', userId: null };

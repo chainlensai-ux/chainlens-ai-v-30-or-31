@@ -2,8 +2,9 @@
 'use client'
 
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
-import ConnectWallet from '@/components/ConnectWallet'
+const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
 

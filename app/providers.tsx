@@ -7,6 +7,12 @@ import { wagmiConfig, projectId, walletConnectEnabled } from '@/lib/wallet'
 import { useEffect } from 'react'
 
 const queryClient = new QueryClient()
+if (typeof window !== 'undefined') {
+  createWeb3Modal({
+    wagmiConfig,
+    projectId: projectId || 'disabled',
+  })
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {

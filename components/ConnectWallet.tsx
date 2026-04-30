@@ -1,11 +1,14 @@
 'use client'
 
-import { useWeb3Modal } from '@web3modal/wagmi/react'
-import { useAccount } from 'wagmi'
+import { useAccount, useConnect } from 'wagmi'
 
 export default function ConnectWallet({ className }: { className?: string }) {
-  const { open } = useWeb3Modal()
   const { address, isConnected } = useAccount()
+  const { connect, connectors } = useConnect()
+  const handleConnect = () => {
+    const connector = connectors[0]
+    if (connector) connect({ connector })
+  }
 
   const baseStyle: React.CSSProperties = {
     display: 'inline-flex',
@@ -39,7 +42,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
   if (isConnected && address) {
     return (
       <button
-        onClick={() => open()}
+        onClick={handleConnect}
         className={className}
         style={connectedStyle}
         onMouseEnter={e => {
@@ -65,7 +68,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
 
   return (
     <button
-      onClick={() => open()}
+      onClick={handleConnect}
       className={className}
       style={baseStyle}
       onMouseEnter={e => {
