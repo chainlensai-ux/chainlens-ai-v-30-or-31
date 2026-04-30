@@ -51,6 +51,41 @@ type ScanResult = {
   holderDistributionStatus?: { source?: string; status?: 'ok'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
 }
 
+type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
+type HolderStateKind = 'rowsWithPercent' | 'rowsWithoutPercent' | 'noRowsFallback'
+type HolderProviderStatus = 'ok' | 'empty' | 'unavailable' | 'error' | 'unknown'
+type OwnerStatus = 'Renounced' | 'Held' | 'Unverified'
+type SecurityChip = { label: string; displayLabel: string; style: PillStyle; source: 'honeypot' | 'contract' }
+
+type HolderFallbackEvidence = {
+  ownerStatus: OwnerStatus
+  poolCount: number
+  liquidityDepth: number | null
+  marketCapToFdvPct: number | null
+  marketCapToFdvLabel: string
+  holderConcentration: 'Unverified'
+  supplySpread: 'Unverified'
+  providerReturnedNoRows: boolean
+}
+
+type DerivedHolderState = {
+  kind: HolderStateKind
+  providerStatus: HolderProviderStatus
+  safeReason: string
+  rows: HolderRow[]
+  hasPercentages: boolean
+}
+
+type VerdictInput = {
+  hasMarketData: boolean
+  hasSecurityData: boolean
+  hasLiquidityData: boolean
+  holderState: DerivedHolderState
+  fallbackEvidence: HolderFallbackEvidence
+  dedupedSecurityChips: SecurityChip[]
+  supports: Array<'verdict'|'marketRead'|'securityRead'|'holderSupplyRead'|'liquidityPoolsRead'|'bullCase'|'bearCase'|'missingChecks'|'nextAction'>
+}
+
 // ─── Formatters ───────────────────────────────────────────────────────────
 
 function fmtPrice(v: number | null | undefined): string {
@@ -82,6 +117,110 @@ function pctColor(v: number | null | undefined): string {
 function shorten(addr: string): string {
   if (addr.length <= 12) return addr
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+function normalizeHolderProviderStatus(
+  status: ScanResult['holderDistributionStatus']
+): HolderProviderStatus {
+  const s = status?.status
+  if (s === 'ok' || s === 'empty' || s === 'unavailable' || s === 'error') return s
+  return 'unknown'
+}
+
+function holderSafeReason(
+  providerStatus: HolderProviderStatus,
+  hasRows: boolean
+): string {
+  if (hasRows) return 'Holder rows available from provider.'
+  if (providerStatus === 'unavailable') return 'Holder provider unavailable for this scan.'
+  if (providerStatus === 'error') return 'Holder source returned no usable rows.'
+  if (providerStatus === 'empty') return 'Holder provider returned no rows for this token.'
+  return 'Holder concentration currently unverified.'
+}
+
+function deriveHolderState(result: ScanResult): DerivedHolderState {
+  const rows = result.holderDistribution?.topHolders ?? []
+  const hasRows = rows.length > 0
+  const hasPercentages = rows.some(r => r.percent != null)
+  const providerStatus = normalizeHolderProviderStatus(result.holderDistributionStatus)
+  const kind: HolderStateKind = !hasRows
+    ? 'noRowsFallback'
+    : hasPercentages
+      ? 'rowsWithPercent'
+      : 'rowsWithoutPercent'
+  return {
+    kind,
+    providerStatus,
+    safeReason: holderSafeReason(providerStatus, hasRows),
+    rows,
+    hasPercentages,
+  }
+}
+
+function deriveOwnerStatus(gp: Record<string, unknown> | null): OwnerStatus {
+  const owner = gp?.owner_address
+  if (owner == null) return 'Unverified'
+  const addr = String(owner)
+  if (!addr || addr === '0x0000000000000000000000000000000000000000') return 'Renounced'
+  return 'Held'
+}
+
+function deriveHolderFallbackEvidence(result: ScanResult): HolderFallbackEvidence {
+  const gp = result.goplus && result.contract
+    ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+    : null
+  const ratio = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0
+    ? (result.marketCapUsd / result.fdvUsd) * 100
+    : null
+  return {
+    ownerStatus: deriveOwnerStatus(gp),
+    poolCount: result.pools?.length ?? 0,
+    liquidityDepth: result.liquidity ?? null,
+    marketCapToFdvPct: ratio,
+    marketCapToFdvLabel: ratio == null ? 'MC unavailable' : `${ratio.toFixed(1)}%`,
+    holderConcentration: 'Unverified',
+    supplySpread: 'Unverified',
+    providerReturnedNoRows: (result.holderDistribution?.topHolders?.length ?? 0) === 0,
+  }
+}
+
+function dedupeSecurityChips(chips: SecurityChip[]): SecurityChip[] {
+  const map = new Map<string, SecurityChip>()
+  for (const chip of chips) {
+    const existing = map.get(chip.label)
+    if (!existing) {
+      map.set(chip.label, chip)
+      continue
+    }
+    if (chip.source === 'honeypot' && existing.source !== 'honeypot') {
+      map.set(chip.label, chip)
+    }
+  }
+  return Array.from(map.values())
+}
+
+function deriveVerdictInput(result: ScanResult): VerdictInput {
+  const gp = result.goplus && result.contract
+    ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+    : null
+  const hp = result.honeypot
+  const baseChips: SecurityChip[] = [
+    { label: 'Honeypot', displayLabel: hp?.isHoneypot === null ? 'Unverified' : hp?.isHoneypot ? 'YES' : 'NO', style: hp?.isHoneypot ? pillDanger() : pillSafe(), source: 'honeypot' },
+    { label: 'Buy Tax', displayLabel: hp?.buyTax == null ? 'N/A' : `${hp.buyTax.toFixed(1)}%`, style: hp?.buyTax == null ? pillMuted() : taxPct(hp.buyTax), source: 'honeypot' },
+    { label: 'Sell Tax', displayLabel: hp?.sellTax == null ? 'N/A' : `${hp.sellTax.toFixed(1)}%`, style: hp?.sellTax == null ? pillMuted() : taxPct(hp.sellTax), source: 'honeypot' },
+    { label: 'Honeypot', displayLabel: String(gp?.is_honeypot ?? 'N/A'), style: String(gp?.is_honeypot ?? '') === '1' ? pillDanger() : pillSafe(), source: 'contract' },
+    { label: 'Buy Tax', displayLabel: gp?.buy_tax != null ? `${(Number(gp.buy_tax) * 100).toFixed(1)}%` : 'N/A', style: gp?.buy_tax != null ? taxPct(Number(gp.buy_tax) * 100) : pillMuted(), source: 'contract' },
+    { label: 'Sell Tax', displayLabel: gp?.sell_tax != null ? `${(Number(gp.sell_tax) * 100).toFixed(1)}%` : 'N/A', style: gp?.sell_tax != null ? taxPct(Number(gp.sell_tax) * 100) : pillMuted(), source: 'contract' },
+  ]
+  return {
+    hasMarketData: result.price != null || result.volume24h != null || result.marketCapUsd != null || result.fdvUsd != null,
+    hasSecurityData: !!gp || !!hp,
+    hasLiquidityData: (result.liquidity ?? 0) > 0 || (result.pools?.length ?? 0) > 0,
+    holderState: deriveHolderState(result),
+    fallbackEvidence: deriveHolderFallbackEvidence(result),
+    dedupedSecurityChips: dedupeSecurityChips(baseChips),
+    supports: ['verdict','marketRead','securityRead','holderSupplyRead','liquidityPoolsRead','bullCase','bearCase','missingChecks','nextAction'],
+  }
 }
 
 // ─── StatCard ─────────────────────────────────────────────────────────────
