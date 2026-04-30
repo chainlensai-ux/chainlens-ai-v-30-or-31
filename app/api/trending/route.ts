@@ -14,6 +14,27 @@ interface MergedToken {
   change24h: number | null;
   source: string;
 }
+type GTPool = {
+  relationships?: { base_token?: { data?: { id?: string } } }
+  attributes?: {
+    base_token_price_usd?: number | string
+    reserve_in_usd?: number | string
+    volume_usd?: { h24?: number | string }
+    price_change_percentage?: { h24?: number | string }
+  }
+}
+type CGCoin = {
+  item?: {
+    id?: string
+    symbol?: string
+    name?: string
+    data?: {
+      price?: number | string
+      total_volume?: number | null
+      price_change_percentage_24h?: { usd?: number | null }
+    }
+  }
+}
 
 /*
 // GoldRush trending (Base) — kept for future use
@@ -42,7 +63,7 @@ function extractTokenMeta(included: Array<{ id?: string; attributes?: { address?
   };
 }
 
-function normalizeGT(pool: Record<string, any>, included: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }>): MergedToken | null {
+function normalizeGT(pool: GTPool, included: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }>): MergedToken | null {
   try {
     const baseTokenId = pool?.relationships?.base_token?.data?.id;
     if (!baseTokenId) return null;
@@ -66,7 +87,7 @@ function normalizeGT(pool: Record<string, any>, included: Array<{ id?: string; a
 
 async function fetchGT(): Promise<{ tokens: MergedToken[]; warning?: string }> {
   try {
-    const result = await getOrFetchCached<{ data?: Record<string, any>[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>({
+    const result = await getOrFetchCached<{ data?: GTPool[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>({
       key: 'coingecko:trending-base',
       ttlMs: 60_000,
       onLog: msg => console.info(`[trending] ${msg}`),
@@ -76,13 +97,13 @@ async function fetchGT(): Promise<{ tokens: MergedToken[]; warning?: string }> {
           { headers: { accept: 'application/json' }, cache: 'no-store' }
         )
         if (!res.ok) throw new Error(`GeckoTerminal trending failed (${res.status})`)
-        return res.json() as Promise<{ data?: Record<string, any>[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>
+        return res.json() as Promise<{ data?: GTPool[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>
       },
     })
 
     const included = Array.isArray(result.data?.included) ? result.data.included : []
     const tokens = (Array.isArray(result.data?.data) ? result.data.data : [])
-      .map((pool: Record<string, any>) => normalizeGT(pool, included))
+      .map((pool: GTPool) => normalizeGT(pool, included))
       .filter((t: MergedToken | null): t is MergedToken => t !== null)
 
     return { tokens, warning: result.warning }
@@ -93,18 +114,18 @@ async function fetchGT(): Promise<{ tokens: MergedToken[]; warning?: string }> {
 
 async function fetchCoinGecko(): Promise<{ tokens: MergedToken[]; warning?: string }> {
   try {
-    const result = await getOrFetchCached<{ coins?: Array<Record<string, any>> }>({
+    const result = await getOrFetchCached<{ coins?: CGCoin[] }>({
       key: 'coingecko:trending-search',
       ttlMs: 120_000,
       onLog: msg => console.info(`[trending] ${msg}`),
       fetcher: async () => {
         const res = await fetch("https://api.coingecko.com/api/v3/search/trending", { cache: "no-store" })
         if (!res.ok) throw new Error(`CoinGecko trending failed (${res.status})`)
-        return res.json() as Promise<{ coins?: Array<Record<string, any>> }>
+        return res.json() as Promise<{ coins?: CGCoin[] }>
       },
     })
 
-    const tokens = (Array.isArray(result.data?.coins) ? result.data.coins : []).map((c: Record<string, any>) => {
+    const tokens = (Array.isArray(result.data?.coins) ? result.data.coins : []).map((c: CGCoin) => {
       const rawPrice = c?.item?.data?.price;
       const price = typeof rawPrice === "number"
         ? rawPrice
