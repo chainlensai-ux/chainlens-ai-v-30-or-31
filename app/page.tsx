@@ -111,6 +111,19 @@ export default function HomePage() {
           33%      { transform: translate(-50px, 50px) scale(1.08); opacity: 0.60; }
           66%      { transform: translate(70px, -30px) scale(0.92); opacity: 0.38; }
         }
+        @keyframes mesh-drift {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1.03); }
+          50% { transform: translate3d(-2%, 1.6%, 0) scale(1.08); }
+        }
+        @keyframes orb-float-soft {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+          50% { transform: translate3d(1.8%, -2.2%, 0) scale(1.06); }
+        }
+        @keyframes texture-shift {
+          0% { transform: translateY(0); opacity: 0.14; }
+          50% { transform: translateY(-10px); opacity: 0.2; }
+          100% { transform: translateY(0); opacity: 0.14; }
+        }
         @keyframes feat-in {
           from { opacity: 0; transform: translateY(22px); }
           to   { opacity: 1; transform: translateY(0); }
@@ -131,6 +144,13 @@ export default function HomePage() {
           50%      { opacity: 0.75; transform: scaleX(1.04); }
         }
         .hero-horizon { animation: horizon-breathe 8s ease-in-out infinite; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .hero-premium-bg * {
+            animation: none !important;
+            transition: none !important;
+          }
+        }
 
         @media (max-width: 767px) {
           .mob-hero-main { padding: 80px 16px 60px !important; }
@@ -240,122 +260,45 @@ export default function HomePage() {
       <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Cinematic background layer ── */}
+        <div className="hero-premium-bg" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+          <div style={{
+            position: 'absolute', inset: '-18%',
+            background: 'radial-gradient(120% 90% at 14% 10%, rgba(45,212,191,0.24) 0%, rgba(45,212,191,0.05) 32%, transparent 55%), radial-gradient(95% 76% at 88% 14%, rgba(168,85,247,0.20) 0%, rgba(236,72,153,0.07) 34%, transparent 60%), radial-gradient(86% 64% at 54% 95%, rgba(56,189,248,0.16) 0%, rgba(99,102,241,0.05) 34%, transparent 62%), linear-gradient(180deg, #07070f 0%, #060914 46%, #07070f 100%)',
+            filter: 'blur(0.2px)',
+            animation: 'mesh-drift 26s ease-in-out infinite',
+            willChange: 'transform',
+          }} />
 
-        {/* Tech grid */}
-        <div style={{
-          position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0,
-          backgroundImage: `
-            linear-gradient(rgba(45,212,191,0.022) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(45,212,191,0.022) 1px, transparent 1px)
-          `,
-          backgroundSize: '56px 56px',
-        }} />
+          <div style={{
+            position: 'absolute', inset: '-8%',
+            background: 'radial-gradient(circle at 24% 24%, rgba(45,212,191,0.25) 0%, rgba(45,212,191,0.08) 30%, transparent 56%), radial-gradient(circle at 76% 20%, rgba(168,85,247,0.20) 0%, rgba(236,72,153,0.10) 28%, transparent 58%), radial-gradient(circle at 56% 76%, rgba(59,130,246,0.14) 0%, rgba(125,211,252,0.05) 36%, transparent 62%)',
+            filter: 'blur(74px)',
+            animation: 'orb-float-soft 30s ease-in-out infinite',
+            willChange: 'transform',
+          }} />
 
-        {/* Star field */}
-        <div style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
-          backgroundImage: [
-            'radial-gradient(1px 1px at 8%  14%, rgba(255,255,255,0.22) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 18% 62%, rgba(255,255,255,0.14) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 32% 28%, rgba(255,255,255,0.18) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 47% 78%, rgba(255,255,255,0.12) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 58% 18%, rgba(255,255,255,0.16) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 68% 48%, rgba(255,255,255,0.13) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 76% 82%, rgba(255,255,255,0.10) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 85% 35%, rgba(255,255,255,0.15) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 92% 68%, rgba(255,255,255,0.12) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 4%  52%, rgba(255,255,255,0.10) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 25% 88%, rgba(255,255,255,0.14) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 55%  8%, rgba(255,255,255,0.17) 0%, transparent 100%)',
-            'radial-gradient(1.5px 1.5px at 38% 45%, rgba(255,255,255,0.10) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 72% 12%, rgba(255,255,255,0.13) 0%, transparent 100%)',
-            'radial-gradient(1px 1px at 96% 24%, rgba(255,255,255,0.11) 0%, transparent 100%)',
-          ].join(', '),
-        }} />
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundImage: 'linear-gradient(rgba(45,212,191,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(45,212,191,0.04) 1px, transparent 1px)',
+            backgroundSize: '72px 72px',
+            maskImage: 'radial-gradient(circle at 50% 38%, black 20%, rgba(0,0,0,0.56) 56%, transparent 100%)',
+            opacity: 0.12,
+          }} />
 
-        {/* Teal volumetric glow — left */}
-        <div style={{
-          position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '700px', height: '700px',
-          top: '-80px', left: '-140px',
-          background: 'radial-gradient(ellipse at center, rgba(45,212,191,0.13) 0%, rgba(45,212,191,0.04) 45%, transparent 70%)',
-          filter: 'blur(60px)',
-          animation: 'orb-teal 16s ease-in-out infinite',
-        }} />
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(255,255,255,0.03) 3px, rgba(255,255,255,0.03) 4px)',
+            animation: 'texture-shift 18s ease-in-out infinite',
+            opacity: 0.16,
+          }} />
 
-        {/* Purple/magenta volumetric glow — right */}
-        <div style={{
-          position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '800px', height: '800px',
-          top: '-120px', right: '-180px',
-          background: 'radial-gradient(ellipse at center, rgba(139,92,246,0.14) 0%, rgba(236,72,153,0.06) 40%, transparent 68%)',
-          filter: 'blur(70px)',
-          animation: 'orb-purple 20s ease-in-out infinite',
-        }} />
-
-        {/* Left curved arc sweep — teal ring */}
-        <div style={{
-          position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '1080px', height: '1080px',
-          borderRadius: '50%',
-          border: '1px solid rgba(45,212,191,0.18)',
-          top: '-360px', left: '-560px',
-          boxShadow: 'inset 0 0 120px rgba(45,212,191,0.08), 0 0 120px rgba(45,212,191,0.12)',
-        }} />
-        <div style={{
-          position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '860px', height: '860px',
-          borderRadius: '50%',
-          border: '1px solid rgba(45,212,191,0.10)',
-          top: '-240px', left: '-460px',
-        }} />
-
-        {/* Right curved arc sweep — purple ring */}
-        <div style={{
-          position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '1120px', height: '1120px',
-          borderRadius: '50%',
-          border: '1px solid rgba(168,85,247,0.18)',
-          top: '-390px', right: '-560px',
-          boxShadow: 'inset 0 0 120px rgba(168,85,247,0.09), 0 0 120px rgba(168,85,247,0.10)',
-        }} />
-        <div style={{
-          position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '880px', height: '880px',
-          borderRadius: '50%',
-          border: '1px solid rgba(236,72,153,0.11)',
-          top: '-250px', right: '-430px',
-        }} />
-
-        {/* Planetary horizon arc — bottom center */}
-        <div
-          className="hero-horizon"
-          style={{
-            position: 'absolute', pointerEvents: 'none', zIndex: 0,
-            width: '130%', height: '320px',
-            borderRadius: '50%',
-            bottom: '-132px', left: '-15%',
-            background: 'radial-gradient(ellipse at 50% 100%, rgba(56,189,248,0.26) 0%, rgba(139,92,246,0.22) 35%, rgba(236,72,153,0.16) 52%, transparent 78%)',
-            filter: 'blur(34px)',
-          }}
-        />
-        {/* Horizon arc border line */}
-        <div style={{
-          position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '120%', height: '600px',
-          borderRadius: '50%',
-          border: '1px solid rgba(45,212,191,0.28)',
-          bottom: '-380px', left: '-10%',
-          boxShadow: '0 0 30px rgba(45,212,191,0.16)',
-        }} />
-        <div style={{
-          position: 'absolute', pointerEvents: 'none', zIndex: 0,
-          width: '110%', height: '500px',
-          borderRadius: '50%',
-          border: '1px solid rgba(168,85,247,0.25)',
-          bottom: '-300px', left: '-5%',
-          boxShadow: '0 0 30px rgba(168,85,247,0.16)',
-        }} />
+          <div style={{
+            position: 'absolute', inset: 0,
+            background: 'radial-gradient(110% 84% at 50% 42%, transparent 46%, rgba(3,6,15,0.42) 72%, rgba(2,4,12,0.78) 100%)',
+          }} />
+        </div>
 
         {/* Hero */}
         <main className="mob-hero-main" style={{
