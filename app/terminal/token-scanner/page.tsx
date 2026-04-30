@@ -814,7 +814,7 @@ export default function TerminalTokenScanner() {
                               <span style={{fontSize:'10px',color:'#475569',fontFamily:'var(--font-plex-mono)'}}>{h.rank}</span>
                               <span style={{fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{shorten(h.address)}</span>
                               <span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{fmtTokenAmt(h.amount, result.decimals ?? 18)}</span>
-                              <span style={{fontSize:'11px',fontWeight:600,textAlign:'right',fontFamily:'var(--font-plex-mono)',color: h.percent != null && h.percent >= 5 ? '#f87171' : h.percent != null && h.percent >= 1 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span>
+                              <span style={{fontSize:'11px',fontWeight:600,textAlign:'right',fontFamily:'var(--font-plex-mono)',color: h.percent != null && h.percent >= 10 ? '#f87171' : h.percent != null && h.percent >= 5 ? '#fb923c' : h.percent != null && h.percent >= 1 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span>
                             </div>
                           ))}
                         </div>
