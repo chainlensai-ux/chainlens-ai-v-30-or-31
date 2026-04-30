@@ -111,13 +111,17 @@ export default function HomePage() {
           33%      { transform: translate(-50px, 50px) scale(1.08); opacity: 0.60; }
           66%      { transform: translate(70px, -30px) scale(0.92); opacity: 0.38; }
         }
-        @keyframes mesh-drift {
-          0%, 100% { transform: translate3d(0, 0, 0) scale(1.03); }
-          50% { transform: translate3d(-2%, 1.6%, 0) scale(1.08); }
-        }
-        @keyframes orb-float-soft {
+        @keyframes aurora-drift {
           0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-          50% { transform: translate3d(1.8%, -2.2%, 0) scale(1.06); }
+          50% { transform: translate3d(-2.4%, 1.6%, 0) scale(1.05); }
+        }
+        @keyframes glow-drift {
+          0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.72; }
+          50% { transform: translate3d(2%, -1.8%, 0) scale(1.08); opacity: 0.9; }
+        }
+        @keyframes arc-sway {
+          0%,100% { transform: translate3d(0,0,0) rotate(0deg); opacity: 0.22; }
+          50% { transform: translate3d(1.2%, -0.8%, 0) rotate(2.2deg); opacity: 0.33; }
         }
         @keyframes texture-shift {
           0% { transform: translateY(0); opacity: 0.14; }
@@ -161,6 +165,7 @@ export default function HomePage() {
           .hero-feat-row > div:last-child { border-bottom: none !important; }
           .hero-cta-row { flex-direction: column !important; width: 100%; }
           .hero-cta-row > * { width: 100% !important; }
+          .hero-premium-bg { opacity: 0.74; }
         }
         @media (max-width: 1023px) {
           .hero-feat-row { gap: 16px !important; }
@@ -262,41 +267,71 @@ export default function HomePage() {
         {/* ── Cinematic background layer ── */}
         <div className="hero-premium-bg" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
-            position: 'absolute', inset: '-18%',
-            background: 'radial-gradient(120% 90% at 14% 10%, rgba(45,212,191,0.24) 0%, rgba(45,212,191,0.05) 32%, transparent 55%), radial-gradient(95% 76% at 88% 14%, rgba(168,85,247,0.20) 0%, rgba(236,72,153,0.07) 34%, transparent 60%), radial-gradient(86% 64% at 54% 95%, rgba(56,189,248,0.16) 0%, rgba(99,102,241,0.05) 34%, transparent 62%), linear-gradient(180deg, #07070f 0%, #060914 46%, #07070f 100%)',
-            filter: 'blur(0.2px)',
-            animation: 'mesh-drift 26s ease-in-out infinite',
+            position: 'absolute', inset: '-15%',
+            background: 'radial-gradient(130% 96% at 64% 40%, rgba(124,58,237,0.28) 0%, rgba(91,33,182,0.15) 30%, rgba(7,7,15,0) 62%), radial-gradient(88% 72% at 82% 52%, rgba(236,72,153,0.14) 0%, rgba(236,72,153,0.06) 26%, rgba(7,7,15,0) 58%), radial-gradient(74% 66% at 28% 16%, rgba(45,212,191,0.10) 0%, rgba(45,212,191,0.02) 34%, rgba(7,7,15,0) 60%), linear-gradient(180deg, #07070f 0%, #060812 48%, #07070f 100%)',
+            animation: 'aurora-drift 38s ease-in-out infinite',
             willChange: 'transform',
           }} />
 
           <div style={{
             position: 'absolute', inset: '-8%',
-            background: 'radial-gradient(circle at 24% 24%, rgba(45,212,191,0.25) 0%, rgba(45,212,191,0.08) 30%, transparent 56%), radial-gradient(circle at 76% 20%, rgba(168,85,247,0.20) 0%, rgba(236,72,153,0.10) 28%, transparent 58%), radial-gradient(circle at 56% 76%, rgba(59,130,246,0.14) 0%, rgba(125,211,252,0.05) 36%, transparent 62%)',
-            filter: 'blur(74px)',
-            animation: 'orb-float-soft 30s ease-in-out infinite',
+            background: 'radial-gradient(34% 34% at 50% 34%, rgba(167,139,250,0.22) 0%, rgba(167,139,250,0.09) 50%, transparent 100%), radial-gradient(28% 30% at 68% 52%, rgba(139,92,246,0.22) 0%, rgba(139,92,246,0.08) 46%, transparent 100%), radial-gradient(22% 24% at 74% 34%, rgba(56,189,248,0.14) 0%, rgba(56,189,248,0.04) 48%, transparent 100%), radial-gradient(24% 24% at 57% 58%, rgba(236,72,153,0.12) 0%, rgba(236,72,153,0.03) 52%, transparent 100%)',
+            filter: 'blur(64px)',
+            animation: 'glow-drift 32s ease-in-out infinite',
             willChange: 'transform',
           }} />
 
           <div style={{
             position: 'absolute',
             inset: 0,
-            backgroundImage: 'linear-gradient(rgba(45,212,191,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(45,212,191,0.04) 1px, transparent 1px)',
-            backgroundSize: '72px 72px',
-            maskImage: 'radial-gradient(circle at 50% 38%, black 20%, rgba(0,0,0,0.56) 56%, transparent 100%)',
-            opacity: 0.12,
+            background: 'radial-gradient(58% 48% at 50% 34%, rgba(160,120,255,0.16) 0%, rgba(110,76,220,0.07) 45%, transparent 100%)',
+            filter: 'blur(36px)',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            left: '-8%',
+            top: '-14%',
+            width: '76%',
+            height: '122%',
+            borderRadius: '50%',
+            border: '1px solid rgba(167,139,250,0.11)',
+            maskImage: 'radial-gradient(circle at 62% 42%, black 42%, transparent 74%)',
+            animation: 'arc-sway 34s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            right: '-22%',
+            top: '-18%',
+            width: '96%',
+            height: '136%',
+            borderRadius: '50%',
+            border: '1px solid rgba(45,212,191,0.07)',
+            maskImage: 'radial-gradient(circle at 38% 46%, black 40%, transparent 74%)',
+            animation: 'arc-sway 42s ease-in-out infinite reverse',
           }} />
 
           <div style={{
             position: 'absolute',
             inset: 0,
-            backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(255,255,255,0.03) 3px, rgba(255,255,255,0.03) 4px)',
-            animation: 'texture-shift 18s ease-in-out infinite',
-            opacity: 0.16,
+            backgroundImage: 'radial-gradient(rgba(255,255,255,0.16) 0.8px, transparent 0.9px)',
+            backgroundSize: '130px 130px',
+            maskImage: 'radial-gradient(88% 70% at 50% 42%, rgba(0,0,0,0.55), transparent)',
+            opacity: 0.14,
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 5px, rgba(255,255,255,0.018) 5px, rgba(255,255,255,0.018) 6px)',
+            animation: 'texture-shift 22s ease-in-out infinite',
+            opacity: 0.09,
           }} />
 
           <div style={{
             position: 'absolute', inset: 0,
-            background: 'radial-gradient(110% 84% at 50% 42%, transparent 46%, rgba(3,6,15,0.42) 72%, rgba(2,4,12,0.78) 100%)',
+            background: 'radial-gradient(100% 74% at 50% 36%, rgba(255,255,255,0.04) 0%, rgba(7,7,15,0) 45%), radial-gradient(112% 84% at 50% 42%, transparent 48%, rgba(3,6,15,0.44) 72%, rgba(2,4,12,0.80) 100%)',
           }} />
         </div>
 
