@@ -227,17 +227,26 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
       console.warn('[holder-debug] contract', contract, 'chain', chainSlug, 'result: missing API key')
       return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath }
     }
-    const url = `https://api.covalenthq.com${endpointPath}?page-size=200`
-    console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'path', endpointPath)
+    // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
+    const url = `https://api.covalenthq.com${endpointPath}?page-number=0&page-size=100`
+    console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'path', endpointPath, 'params page-number=0&page-size=100')
     const res = await fetch(url, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     statusCode = res.status
     if (!res.ok) {
-      const errSnippet = await res.text().catch(() => '').then(t => t.slice(0, 200))
-      console.warn('[holder-debug] non-ok', statusCode, errSnippet)
-      return { __status: 'error', __reason: 'provider_unavailable', __statusCode: statusCode, __endpointPath: endpointPath }
+      // Try to parse JSON error body for a safe reason; fall back to text snippet
+      let safeReason = statusCode === 400 ? 'bad_request_check_endpoint_params' : 'provider_unavailable'
+      try {
+        const errJson = await res.json()
+        if (errJson?.error_message) safeReason = errJson.error_message
+        console.warn('[holder-debug] non-ok', statusCode, 'error_message:', errJson?.error_message ?? '(none)', 'error_code:', errJson?.error_code ?? '(none)')
+      } catch {
+        const errText = await res.text().catch(() => '').then(t => t.slice(0, 200))
+        console.warn('[holder-debug] non-ok', statusCode, errText)
+      }
+      return { __status: 'error', __reason: safeReason, __statusCode: statusCode, __endpointPath: endpointPath }
     }
     const json = await res.json()
     const topKeys = Object.keys(json ?? {})
