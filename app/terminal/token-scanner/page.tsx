@@ -47,6 +47,7 @@ type ScanResult = {
     simulationSuccess: boolean
   } | null
   noActivePools?: boolean
+  decimals?: number
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
   debugHolderStatus?: {
@@ -113,6 +114,21 @@ function fmtLarge(v: number | null | undefined): string {
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return 'N/A'
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+}
+
+// Converts a raw ERC-20 balance (in smallest units) to a compact human-readable amount.
+// e.g. 9.08e26 with decimals=18 → 908.23M
+function fmtTokenAmt(raw: string | number | null, decimals: number): string {
+  if (raw == null) return '—'
+  const n = typeof raw === 'string' ? Number(raw) : raw
+  if (!Number.isFinite(n)) return '—'
+  if (n === 0) return '0'
+  const tok = n / Math.pow(10, decimals)
+  if (tok >= 1e12) return `${(tok / 1e12).toFixed(2)}T`
+  if (tok >= 1e9)  return `${(tok / 1e9).toFixed(2)}B`
+  if (tok >= 1e6)  return `${(tok / 1e6).toFixed(2)}M`
+  if (tok >= 1e3)  return `${(tok / 1e3).toFixed(2)}K`
+  return tok.toFixed(2)
 }
 
 function pctColor(v: number | null | undefined): string {
@@ -476,6 +492,7 @@ export default function TerminalTokenScanner() {
         const mapped: ScanResult = {
           name:           json.name,
           symbol:         json.symbol,
+          decimals:       typeof json.decimals === 'number' ? json.decimals : (json.tokenInfo?.decimals ?? 18),
           contract:       json.contract,
           chain:          json.chain ?? 'base',
           noActivePools:  json.noActivePools ?? false,
@@ -784,10 +801,23 @@ export default function TerminalTokenScanner() {
                         )}
                         <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
                       </div>
-                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px',minWidth:0,overflow:'hidden'}}>
                         <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
-                        <div style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'10px',color:'#64748b',marginBottom:'6px'}}><span>Rank</span><span>Wallet</span><span style={{textAlign:'right'}}>Amount</span><span style={{textAlign:'right'}}>% Supply</span></div>
-                        <div style={{display:'grid',gap:'4px',maxHeight:'210px',overflowY:'auto'}}>{holderState.rows.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{typeof h.amount === 'number' ? h.amount.toLocaleString(undefined,{maximumFractionDigits:2}) : (h.amount ?? 'N/A')}</span><span style={{textAlign:'right'}}>{h.percent == null ? 'N/A' : `${h.percent.toFixed(2)}%`}</span></div>)}</div>
+                        {/* Header */}
+                        <div style={{display:'grid',gridTemplateColumns:'24px minmax(0,1fr) 64px 52px',gap:'8px',fontSize:'9px',letterSpacing:'0.10em',color:'#475569',marginBottom:'6px',fontFamily:'var(--font-plex-mono)'}}>
+                          <span>#</span><span>WALLET</span><span style={{textAlign:'right'}}>AMOUNT</span><span style={{textAlign:'right'}}>%</span>
+                        </div>
+                        {/* Rows */}
+                        <div style={{display:'flex',flexDirection:'column',gap:'1px',maxHeight:'216px',overflowY:'auto'}}>
+                          {holderState.rows.slice(0,20).map((h) => (
+                            <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'24px minmax(0,1fr) 64px 52px',gap:'8px',alignItems:'center',padding:'5px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
+                              <span style={{fontSize:'10px',color:'#475569',fontFamily:'var(--font-plex-mono)'}}>{h.rank}</span>
+                              <span style={{fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{shorten(h.address)}</span>
+                              <span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{fmtTokenAmt(h.amount, result.decimals ?? 18)}</span>
+                              <span style={{fontSize:'11px',fontWeight:600,textAlign:'right',fontFamily:'var(--font-plex-mono)',color: h.percent != null && h.percent >= 5 ? '#f87171' : h.percent != null && h.percent >= 1 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   )
