@@ -140,8 +140,8 @@ export default function HomePage() {
           50% { transform: translate3d(1.4%, -1.2%, 0) scale(1.06); opacity: 0.72; }
         }
         @keyframes ambient-shift {
-          0%,100% { transform: translate3d(0,0,0); opacity: 0.52; }
-          50% { transform: translate3d(0, -1.6%, 0); opacity: 0.68; }
+          0%,100% { transform: translate3d(0,0,0); opacity: 0.28; }
+          50% { transform: translate3d(0, -1.6%, 0); opacity: 0.4; }
         }
         @keyframes texture-shift {
           0% { transform: translateY(0); opacity: 0.14; }
@@ -262,7 +262,7 @@ export default function HomePage() {
 
       <Navbar />
 
-      <div className="relative min-h-screen w-full bg-[#06060d]" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="relative min-h-screen w-full bg-[#05050b]" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Unified page ambient system ── */}
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
@@ -274,8 +274,8 @@ export default function HomePage() {
           <div style={{
             position: 'absolute',
             inset: '-12% -4%',
-            background: 'radial-gradient(48% 18% at 50% 16%, rgba(139,92,246,0.20) 0%, rgba(139,92,246,0.07) 48%, transparent 80%), radial-gradient(58% 26% at 50% 50%, rgba(168,85,247,0.16) 0%, rgba(168,85,247,0.06) 52%, transparent 84%), radial-gradient(62% 30% at 50% 79%, rgba(167,139,250,0.14) 0%, rgba(217,70,239,0.05) 56%, transparent 86%)',
-            filter: 'blur(58px)',
+            background: 'radial-gradient(48% 18% at 50% 16%, rgba(139,92,246,0.14) 0%, rgba(139,92,246,0.04) 48%, transparent 80%), radial-gradient(58% 26% at 50% 50%, rgba(168,85,247,0.12) 0%, rgba(168,85,247,0.04) 52%, transparent 84%), radial-gradient(62% 30% at 50% 79%, rgba(167,139,250,0.10) 0%, rgba(217,70,239,0.03) 56%, transparent 86%)',
+            filter: 'blur(54px)',
             animation: 'ambient-shift 40s ease-in-out infinite',
           }} />
           <div style={{
@@ -283,7 +283,7 @@ export default function HomePage() {
             inset: 0,
             background: 'linear-gradient(90deg, transparent 0%, rgba(128,90,213,0.09) 18%, transparent 34%, transparent 66%, rgba(192,132,252,0.08) 82%, transparent 100%)',
             filter: 'blur(14px)',
-            opacity: 0.38,
+            opacity: 0.24,
           }} />
           <div style={{
             position: 'absolute',
@@ -296,7 +296,7 @@ export default function HomePage() {
         <div className="hero-premium-bg" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
             position: 'absolute', inset: 0,
-            background: 'linear-gradient(180deg, #05050d 0%, #060711 44%, #05050d 100%)',
+            background: 'linear-gradient(180deg, #05050b 0%, #06070f 44%, #05050b 100%)',
             animation: 'aurora-drift 38s ease-in-out infinite',
             willChange: 'transform',
           }} />
@@ -327,41 +327,32 @@ export default function HomePage() {
 
           <div style={{
             position: 'absolute',
-            inset: '-6%',
-            background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.26) 0%, rgba(139,92,246,0.12) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.18) 0%, rgba(217,70,239,0.06) 50%, transparent 100%)',
-            filter: 'blur(56px)',
-            animation: 'halo-drift 36s ease-in-out infinite',
-            willChange: 'transform',
+            left: '-12%',
+            top: '38%',
+            width: '42%',
+            height: '24%',
+            background: 'linear-gradient(100deg, rgba(168,85,247,0) 0%, rgba(168,85,247,0.20) 46%, rgba(236,72,153,0.12) 56%, rgba(236,72,153,0) 100%)',
+            filter: 'blur(7px)',
+            maskImage: 'radial-gradient(120% 90% at 56% 50%, black 8%, rgba(0,0,0,0.72) 48%, transparent 100%)',
+            animation: 'streak-drift-left 46s ease-in-out infinite',
           }} />
 
           <div style={{
             position: 'absolute',
-            left: '-28%',
-            bottom: '-30%',
-            width: '102%',
-            height: '92%',
-            background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
+            right: '-10%',
+            top: '34%',
+            width: '40%',
+            height: '22%',
+            background: 'linear-gradient(258deg, rgba(139,92,246,0) 0%, rgba(139,92,246,0.16) 46%, rgba(217,70,239,0.10) 58%, rgba(217,70,239,0) 100%)',
             filter: 'blur(8px)',
-            maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
-            animation: 'streak-drift-left 42s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            right: '-32%',
-            top: '-10%',
-            width: '92%',
-            height: '88%',
-            background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
-            filter: 'blur(12px)',
-            maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
-            animation: 'streak-drift-right 44s ease-in-out infinite',
+            maskImage: 'radial-gradient(110% 90% at 44% 46%, black 10%, rgba(0,0,0,0.74) 50%, transparent 100%)',
+            animation: 'streak-drift-right 48s ease-in-out infinite',
           }} />
 
           <div style={{
             position: 'absolute',
             inset: '-6%',
-            background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.26) 0%, rgba(139,92,246,0.12) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.18) 0%, rgba(217,70,239,0.06) 50%, transparent 100%)',
+            background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.20) 0%, rgba(139,92,246,0.08) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.13) 0%, rgba(217,70,239,0.04) 50%, transparent 100%)',
             filter: 'blur(56px)',
             animation: 'halo-drift 36s ease-in-out infinite',
             willChange: 'transform',
@@ -393,8 +384,8 @@ export default function HomePage() {
 
           <div style={{
             position: 'absolute', inset: '-8%',
-            background: 'radial-gradient(34% 34% at 50% 34%, rgba(167,139,250,0.20) 0%, rgba(167,139,250,0.08) 50%, transparent 100%), radial-gradient(22% 24% at 72% 54%, rgba(139,92,246,0.18) 0%, rgba(139,92,246,0.06) 46%, transparent 100%), radial-gradient(18% 20% at 76% 36%, rgba(56,189,248,0.05) 0%, rgba(56,189,248,0.01) 48%, transparent 100%), radial-gradient(24% 24% at 82% 68%, rgba(217,70,239,0.13) 0%, rgba(217,70,239,0.03) 52%, transparent 100%)',
-            filter: 'blur(70px)',
+            background: 'radial-gradient(34% 34% at 50% 34%, rgba(167,139,250,0.16) 0%, rgba(167,139,250,0.05) 50%, transparent 100%), radial-gradient(22% 24% at 72% 54%, rgba(139,92,246,0.12) 0%, rgba(139,92,246,0.04) 46%, transparent 100%), radial-gradient(18% 20% at 76% 36%, rgba(56,189,248,0.03) 0%, rgba(56,189,248,0.01) 48%, transparent 100%), radial-gradient(24% 24% at 82% 68%, rgba(217,70,239,0.09) 0%, rgba(217,70,239,0.02) 52%, transparent 100%)',
+            filter: 'blur(62px)',
             animation: 'glow-drift 32s ease-in-out infinite',
             willChange: 'transform',
           }} />
@@ -402,8 +393,8 @@ export default function HomePage() {
           <div style={{
             position: 'absolute',
             inset: 0,
-            background: 'radial-gradient(58% 48% at 50% 34%, rgba(160,120,255,0.22) 0%, rgba(110,76,220,0.08) 45%, transparent 100%)',
-            filter: 'blur(40px)',
+            background: 'radial-gradient(58% 48% at 50% 34%, rgba(160,120,255,0.16) 0%, rgba(110,76,220,0.06) 45%, transparent 100%)',
+            filter: 'blur(34px)',
           }} />
 
           <div style={{
@@ -471,7 +462,7 @@ export default function HomePage() {
 
           <div style={{
             position: 'absolute', inset: 0,
-            background: 'radial-gradient(48% 32% at 50% 35%, rgba(150,118,255,0.20) 0%, rgba(95,61,194,0.09) 40%, rgba(7,7,15,0) 72%), radial-gradient(112% 84% at 50% 42%, transparent 48%, rgba(3,6,15,0.50) 72%, rgba(2,4,12,0.88) 100%)',
+            background: 'radial-gradient(48% 32% at 50% 35%, rgba(150,118,255,0.14) 0%, rgba(95,61,194,0.06) 40%, rgba(7,7,15,0) 72%), radial-gradient(112% 84% at 50% 42%, transparent 48%, rgba(3,6,15,0.56) 72%, rgba(2,4,12,0.92) 100%)',
           }} />
         </div>
 
