@@ -49,6 +49,7 @@ type ScanResult = {
   noActivePools?: boolean
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
+  debugHolderStatus?: { providerCalled?: boolean; chain?: string; endpointPath?: string; statusCode?: number|null; itemCount?: number; normalizedCount?: number; reason?: string|null; responseKeys?: string[]|null } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -494,6 +495,7 @@ export default function TerminalTokenScanner() {
           honeypot: json.honeypot ?? null,
           holderDistribution: json.holderDistribution ?? null,
           holderDistributionStatus: json.holderDistributionStatus ?? null,
+          debugHolderStatus: json.debugHolderStatus ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -716,6 +718,44 @@ export default function TerminalTokenScanner() {
                 hp={result.honeypot ?? null}
               />
 
+
+              {/* Dev-only holder debug card — only rendered when API sends debugHolderStatus */}
+              {result.debugHolderStatus && (() => {
+                const d = result.debugHolderStatus!
+                return (
+                  <details style={{
+                    marginTop: '16px', marginBottom: '4px',
+                    background: 'rgba(251,191,36,0.04)',
+                    border: '1px solid rgba(251,191,36,0.18)',
+                    borderRadius: '8px', padding: '8px 12px',
+                    fontSize: '10px', fontFamily: 'var(--font-plex-mono)',
+                    color: '#92400e',
+                  }}>
+                    <summary style={{ cursor: 'pointer', color: '#fbbf24', letterSpacing: '0.10em', fontWeight: 700 }}>
+                      [DEV] Holder Debug {d.statusCode != null ? `· HTTP ${d.statusCode}` : ''} · items:{d.itemCount ?? '?'} norm:{d.normalizedCount ?? '?'}
+                    </summary>
+                    <table style={{ marginTop: '8px', borderCollapse: 'collapse', width: '100%' }}>
+                      <tbody>
+                        {([
+                          ['providerCalled', String(d.providerCalled ?? '?')],
+                          ['chain', d.chain ?? '?'],
+                          ['endpointPath', d.endpointPath ?? '?'],
+                          ['statusCode', d.statusCode != null ? String(d.statusCode) : '—'],
+                          ['itemCount', d.itemCount != null ? String(d.itemCount) : '—'],
+                          ['normalizedCount', d.normalizedCount != null ? String(d.normalizedCount) : '—'],
+                          ['reason', d.reason ?? '—'],
+                          ['responseKeys', d.responseKeys ? d.responseKeys.join(', ') : '—'],
+                        ] as [string, string][]).map(([k, v]) => (
+                          <tr key={k}>
+                            <td style={{ paddingRight: '12px', color: '#78716c', whiteSpace: 'nowrap' }}>{k}</td>
+                            <td style={{ color: '#d97706', wordBreak: 'break-all' }}>{v}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </details>
+                )
+              })()}
 
               {/* Holder analytics */}
               {(() => {

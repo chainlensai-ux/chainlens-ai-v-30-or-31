@@ -38,6 +38,18 @@ function pickNum(...vals: unknown[]): number | null {
   return null
 }
 
+// BigInt-safe percentage: avoids float precision loss on 18-decimal ERC-20 balances.
+// Returns e.g. 5.23 for 5.23%. Uses BigInt() constructor (not literals) for ES2017 compat.
+function bigIntPct(balanceRaw: unknown, supplyRaw: unknown): number | null {
+  try {
+    if (balanceRaw == null || supplyRaw == null) return null
+    const b = BigInt(String(balanceRaw).split('.')[0])
+    const s = BigInt(String(supplyRaw).split('.')[0])
+    if (s === BigInt(0)) return null
+    return Number(b * BigInt(1000000) / s) / 10000
+  } catch { return null }
+}
+
 function withTimeout(ms = 5000): AbortSignal {
   return AbortSignal.timeout(ms)
 }
@@ -205,18 +217,41 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 
 
 async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<any> {
-  // GoldRush/Covalent requires "base-mainnet" for the Base chain, not "base"
   const chainSlug = 'base-mainnet'
+  const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
+  let statusCode: number | undefined
   try {
-    const apiKey = process.env.COVALENT_API_KEY ?? process.env.GOLDRUSH_API_KEY ?? ''
-    const keyMissing = !apiKey
-    if (keyMissing) return { __status: 'unavailable', __reason: 'missing_api_key' }
-    const url = `https://api.covalenthq.com/v1/${chainSlug}/tokens/${contract}/token_holders_v2/?page-size=200&key=${apiKey}`
-    const res = await fetch(url, { cache: 'no-store' });
-    console.log('[holders] contract', contract, '[holders] chain', chainSlug, '[holders] status', res.status)
-    if (!res.ok) return { __status: 'error', __reason: 'provider_unavailable' }
-    return await res.json()
-  } catch { return { __status: 'error', __reason: 'provider_unavailable' } }
+    // Use GOLDRUSH_API_KEY first (matches proxy/test routes); fall back to COVALENT_API_KEY
+    const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
+    if (!apiKey) {
+      console.warn('[holder-debug] contract', contract, 'chain', chainSlug, 'result: missing API key')
+      return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath }
+    }
+    const url = `https://api.covalenthq.com${endpointPath}?page-size=200`
+    console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'path', endpointPath)
+    const res = await fetch(url, {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    statusCode = res.status
+    if (!res.ok) {
+      const errSnippet = await res.text().catch(() => '').then(t => t.slice(0, 200))
+      console.warn('[holder-debug] non-ok', statusCode, errSnippet)
+      return { __status: 'error', __reason: 'provider_unavailable', __statusCode: statusCode, __endpointPath: endpointPath }
+    }
+    const json = await res.json()
+    const topKeys = Object.keys(json ?? {})
+    const itemCount = json?.data?.items?.length ?? 0
+    console.log('[holder-debug] statusCode', statusCode, 'responseKeys', topKeys, 'data.items.length', itemCount)
+    if (json?.error) {
+      console.warn('[holder-debug] API-level error:', json?.error_message)
+      return { __status: 'error', __reason: json?.error_message ?? 'api_error', __statusCode: statusCode, __endpointPath: endpointPath, __responseKeys: topKeys }
+    }
+    return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys }
+  } catch (err) {
+    console.error('[holder-debug] exception', err)
+    return { __status: 'error', __reason: 'provider_unavailable', __statusCode: statusCode, __endpointPath: endpointPath }
+  }
 }
 
 // ------------------------------
@@ -382,11 +417,17 @@ ${JSON.stringify(analysis, null, 2)}
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? null
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
-      const address = h.address || h.holder_address || h.wallet_address || h.owner_address || ''
-      const amount = toNum(h.balance) ?? toNum(h.token_balance) ?? toNum(h.amount) ?? toNum(h.balance_quote) ?? null
+      const address = h.address || h.holder_address || h.wallet_address || h.owner_address || h.contract_address || ''
+      // Prefer raw string balances for BigInt math; also accept numeric fields
+      const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
+      const amount = toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null
+      // Prefer explicit percent fields; fall back to BigInt division of balance/total_supply
       const pctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage)
-      const supply = toNum(h.total_supply) ?? toNum(h.circulating_supply) ?? toNum(goldrush?.data?.items?.[0]?.total_supply) ?? toNum(gtToken?.total_supply) ?? toNum(gtToken?.circulating_supply)
-      const percent = pctRaw != null ? pctRaw : (supply && amount ? (amount / supply) * 100 : null)
+      const supplyRaw = h.total_supply ?? h.circulating_supply ?? goldrush?.data?.items?.[0]?.total_supply ?? gtToken?.total_supply ?? gtToken?.circulating_supply ?? null
+      const percent = pctRaw != null
+        ? pctRaw
+        : bigIntPct(balanceRaw, supplyRaw)
+          ?? (amount != null && toNum(supplyRaw) != null ? (amount / toNum(supplyRaw)!) * 100 : null)
       return { rank: i + 1, address, amount, percent }
     }).filter((h: any) => h.address)
 
@@ -440,12 +481,14 @@ ${JSON.stringify(analysis, null, 2)}
       holderDistributionStatus,
       ...(process.env.NODE_ENV !== 'production' ? {
         debugHolderStatus: {
-          providerCalled: holdersRaw?.__status == null,
+          providerCalled: holdersRaw?.__status !== 'unavailable',
           chain: 'base-mainnet',
-          statusCode: undefined,
+          endpointPath: holdersRaw?.__endpointPath ?? `/v1/base-mainnet/tokens/${contract}/token_holders_v2/`,
+          statusCode: holdersRaw?.__statusCode ?? null,
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
-          reason: holderDistributionStatus?.reason ?? holderDistributionStatus?.status,
+          reason: holderDistributionStatus?.reason ?? holderDistributionStatus?.status ?? null,
+          responseKeys: holdersRaw?.__responseKeys ?? null,
         }
       } : {}),
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
