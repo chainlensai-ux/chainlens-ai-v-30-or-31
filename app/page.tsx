@@ -359,6 +359,87 @@ export default function HomePage() {
           }} />
 
           <div style={{
+            position: 'absolute',
+            left: '-28%',
+            bottom: '-30%',
+            width: '102%',
+            height: '92%',
+            background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
+            filter: 'blur(8px)',
+            maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
+            animation: 'streak-drift-left 42s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            right: '-32%',
+            top: '-10%',
+            width: '92%',
+            height: '88%',
+            background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
+            filter: 'blur(12px)',
+            maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
+            animation: 'streak-drift-right 44s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            left: '-12%',
+            top: '38%',
+            width: '42%',
+            height: '24%',
+            background: 'linear-gradient(100deg, rgba(168,85,247,0) 0%, rgba(168,85,247,0.20) 46%, rgba(236,72,153,0.12) 56%, rgba(236,72,153,0) 100%)',
+            filter: 'blur(7px)',
+            maskImage: 'radial-gradient(120% 90% at 56% 50%, black 8%, rgba(0,0,0,0.72) 48%, transparent 100%)',
+            animation: 'streak-drift-left 46s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            right: '-10%',
+            top: '34%',
+            width: '40%',
+            height: '22%',
+            background: 'linear-gradient(258deg, rgba(139,92,246,0) 0%, rgba(139,92,246,0.16) 46%, rgba(217,70,239,0.10) 58%, rgba(217,70,239,0) 100%)',
+            filter: 'blur(8px)',
+            maskImage: 'radial-gradient(110% 90% at 44% 46%, black 10%, rgba(0,0,0,0.74) 50%, transparent 100%)',
+            animation: 'streak-drift-right 48s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            inset: '-6%',
+            background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.20) 0%, rgba(139,92,246,0.08) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.13) 0%, rgba(217,70,239,0.04) 50%, transparent 100%)',
+            filter: 'blur(56px)',
+            animation: 'halo-drift 36s ease-in-out infinite',
+            willChange: 'transform',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            left: '-28%',
+            bottom: '-30%',
+            width: '102%',
+            height: '92%',
+            background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
+            filter: 'blur(8px)',
+            maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
+            animation: 'streak-drift-left 42s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            right: '-32%',
+            top: '-10%',
+            width: '92%',
+            height: '88%',
+            background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
+            filter: 'blur(12px)',
+            maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
+            animation: 'streak-drift-right 44s ease-in-out infinite',
+          }} />
+
+          <div style={{
             position: 'absolute', inset: '-8%',
             background: 'radial-gradient(34% 34% at 50% 34%, rgba(167,139,250,0.16) 0%, rgba(167,139,250,0.05) 50%, transparent 100%), radial-gradient(22% 24% at 72% 54%, rgba(139,92,246,0.12) 0%, rgba(139,92,246,0.04) 46%, transparent 100%), radial-gradient(18% 20% at 76% 36%, rgba(56,189,248,0.03) 0%, rgba(56,189,248,0.01) 48%, transparent 100%), radial-gradient(24% 24% at 82% 68%, rgba(217,70,239,0.09) 0%, rgba(217,70,239,0.02) 52%, transparent 100%)',
             filter: 'blur(62px)',
