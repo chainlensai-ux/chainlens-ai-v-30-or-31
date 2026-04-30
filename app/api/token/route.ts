@@ -204,13 +204,16 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 }
 
 
-async function fetchTokenHolders(chain: ChainKey, contract: string): Promise<any> {
+async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<any> {
+  // GoldRush/Covalent requires "base-mainnet" for the Base chain, not "base"
+  const chainSlug = 'base-mainnet'
   try {
-    const keyMissing = !process.env.COVALENT_API_KEY
+    const apiKey = process.env.COVALENT_API_KEY ?? process.env.GOLDRUSH_API_KEY ?? ''
+    const keyMissing = !apiKey
     if (keyMissing) return { __status: 'unavailable', __reason: 'missing_api_key' }
-    const url = `https://api.covalenthq.com/v1/${chain}/tokens/${contract}/token_holders_v2/?page-size=200&key=${process.env.COVALENT_API_KEY}`
+    const url = `https://api.covalenthq.com/v1/${chainSlug}/tokens/${contract}/token_holders_v2/?page-size=200&key=${apiKey}`
     const res = await fetch(url, { cache: 'no-store' });
-    console.log('[holders] contract', contract, '[holders] chain', chain, '[holders] status', res.status)
+    console.log('[holders] contract', contract, '[holders] chain', chainSlug, '[holders] status', res.status)
     if (!res.ok) return { __status: 'error', __reason: 'provider_unavailable' }
     return await res.json()
   } catch { return { __status: 'error', __reason: 'provider_unavailable' } }
@@ -435,6 +438,16 @@ ${JSON.stringify(analysis, null, 2)}
       holders: goldrush?.holders || null,
       holderDistribution,
       holderDistributionStatus,
+      ...(process.env.NODE_ENV !== 'production' ? {
+        debugHolderStatus: {
+          providerCalled: holdersRaw?.__status == null,
+          chain: 'base-mainnet',
+          statusCode: undefined,
+          itemCount: holderItems.length,
+          normalizedCount: normalizedTop.length,
+          reason: holderDistributionStatus?.reason ?? holderDistributionStatus?.status,
+        }
+      } : {}),
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
       market_cap: computedMarketCap,
       marketCapUsd: computedMarketCap,
