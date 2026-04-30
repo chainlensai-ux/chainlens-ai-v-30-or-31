@@ -139,6 +139,10 @@ export default function HomePage() {
           0%,100% { transform: translate3d(0,0,0) scale(1); opacity: 0.55; }
           50% { transform: translate3d(1.4%, -1.2%, 0) scale(1.06); opacity: 0.72; }
         }
+        @keyframes ambient-shift {
+          0%,100% { transform: translate3d(0,0,0); opacity: 0.52; }
+          50% { transform: translate3d(0, -1.6%, 0); opacity: 0.68; }
+        }
         @keyframes texture-shift {
           0% { transform: translateY(0); opacity: 0.14; }
           50% { transform: translateY(-10px); opacity: 0.2; }
@@ -258,14 +262,75 @@ export default function HomePage() {
 
       <Navbar />
 
-      <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="relative min-h-screen w-full bg-[#06060d]" style={{ display: 'flex', flexDirection: 'column' }}>
+
+        {/* ── Unified page ambient system ── */}
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'linear-gradient(180deg, #05050d 0%, #060711 34%, #05050d 100%)',
+          }} />
+          <div style={{
+            position: 'absolute',
+            inset: '-12% -4%',
+            background: 'radial-gradient(48% 18% at 50% 16%, rgba(139,92,246,0.20) 0%, rgba(139,92,246,0.07) 48%, transparent 80%), radial-gradient(58% 26% at 50% 50%, rgba(168,85,247,0.16) 0%, rgba(168,85,247,0.06) 52%, transparent 84%), radial-gradient(62% 30% at 50% 79%, rgba(167,139,250,0.14) 0%, rgba(217,70,239,0.05) 56%, transparent 86%)',
+            filter: 'blur(58px)',
+            animation: 'ambient-shift 40s ease-in-out infinite',
+          }} />
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'linear-gradient(90deg, transparent 0%, rgba(128,90,213,0.09) 18%, transparent 34%, transparent 66%, rgba(192,132,252,0.08) 82%, transparent 100%)',
+            filter: 'blur(14px)',
+            opacity: 0.38,
+          }} />
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'radial-gradient(80% 120% at 50% 50%, transparent 50%, rgba(1,2,7,0.58) 92%)',
+          }} />
+        </div>
 
         {/* ── Cinematic background layer ── */}
         <div className="hero-premium-bg" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
             position: 'absolute', inset: 0,
-            background: 'linear-gradient(180deg, #05050d 0%, #070812 44%, #05050d 100%)',
+            background: 'linear-gradient(180deg, #05050d 0%, #060711 44%, #05050d 100%)',
             animation: 'aurora-drift 38s ease-in-out infinite',
+            willChange: 'transform',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            left: '-28%',
+            bottom: '-30%',
+            width: '102%',
+            height: '92%',
+            background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
+            filter: 'blur(8px)',
+            maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
+            animation: 'streak-drift-left 42s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            right: '-32%',
+            top: '-10%',
+            width: '92%',
+            height: '88%',
+            background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
+            filter: 'blur(12px)',
+            maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
+            animation: 'streak-drift-right 44s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            inset: '-6%',
+            background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.26) 0%, rgba(139,92,246,0.12) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.18) 0%, rgba(217,70,239,0.06) 50%, transparent 100%)',
+            filter: 'blur(56px)',
+            animation: 'halo-drift 36s ease-in-out infinite',
             willChange: 'transform',
           }} />
 
