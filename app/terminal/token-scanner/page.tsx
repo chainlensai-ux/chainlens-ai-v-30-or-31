@@ -51,6 +51,41 @@ type ScanResult = {
   holderDistributionStatus?: { source?: string; status?: 'ok'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
 }
 
+type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
+type HolderStateKind = 'rowsWithPercent' | 'rowsWithoutPercent' | 'noRowsFallback'
+type HolderProviderStatus = 'ok' | 'empty' | 'unavailable' | 'error' | 'unknown'
+type OwnerStatus = 'Renounced' | 'Held' | 'Unverified'
+type SecurityChip = { label: string; displayLabel: string; style: PillStyle; source: 'honeypot' | 'contract' }
+
+type HolderFallbackEvidence = {
+  ownerStatus: OwnerStatus
+  poolCount: number
+  liquidityDepth: number | null
+  marketCapToFdvPct: number | null
+  marketCapToFdvLabel: string
+  holderConcentration: 'Unverified'
+  supplySpread: 'Unverified'
+  providerReturnedNoRows: boolean
+}
+
+type DerivedHolderState = {
+  kind: HolderStateKind
+  providerStatus: HolderProviderStatus
+  safeReason: string
+  rows: HolderRow[]
+  hasPercentages: boolean
+}
+
+type VerdictInput = {
+  hasMarketData: boolean
+  hasSecurityData: boolean
+  hasLiquidityData: boolean
+  holderState: DerivedHolderState
+  fallbackEvidence: HolderFallbackEvidence
+  dedupedSecurityChips: SecurityChip[]
+  supports: Array<'verdict'|'marketRead'|'securityRead'|'holderSupplyRead'|'liquidityPoolsRead'|'bullCase'|'bearCase'|'missingChecks'|'nextAction'>
+}
+
 // ─── Formatters ───────────────────────────────────────────────────────────
 
 function fmtPrice(v: number | null | undefined): string {
@@ -82,6 +117,110 @@ function pctColor(v: number | null | undefined): string {
 function shorten(addr: string): string {
   if (addr.length <= 12) return addr
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+function normalizeHolderProviderStatus(
+  status: ScanResult['holderDistributionStatus']
+): HolderProviderStatus {
+  const s = status?.status
+  if (s === 'ok' || s === 'empty' || s === 'unavailable' || s === 'error') return s
+  return 'unknown'
+}
+
+function holderSafeReason(
+  providerStatus: HolderProviderStatus,
+  hasRows: boolean
+): string {
+  if (hasRows) return 'Holder rows available from provider.'
+  if (providerStatus === 'unavailable') return 'Holder provider unavailable for this scan.'
+  if (providerStatus === 'error') return 'Holder source returned no usable rows.'
+  if (providerStatus === 'empty') return 'Holder provider returned no rows for this token.'
+  return 'Holder concentration currently unverified.'
+}
+
+function deriveHolderState(result: ScanResult): DerivedHolderState {
+  const rows = result.holderDistribution?.topHolders ?? []
+  const hasRows = rows.length > 0
+  const hasPercentages = rows.some(r => r.percent != null)
+  const providerStatus = normalizeHolderProviderStatus(result.holderDistributionStatus)
+  const kind: HolderStateKind = !hasRows
+    ? 'noRowsFallback'
+    : hasPercentages
+      ? 'rowsWithPercent'
+      : 'rowsWithoutPercent'
+  return {
+    kind,
+    providerStatus,
+    safeReason: holderSafeReason(providerStatus, hasRows),
+    rows,
+    hasPercentages,
+  }
+}
+
+function deriveOwnerStatus(gp: Record<string, unknown> | null): OwnerStatus {
+  const owner = gp?.owner_address
+  if (owner == null) return 'Unverified'
+  const addr = String(owner)
+  if (!addr || addr === '0x0000000000000000000000000000000000000000') return 'Renounced'
+  return 'Held'
+}
+
+function deriveHolderFallbackEvidence(result: ScanResult): HolderFallbackEvidence {
+  const gp = result.goplus && result.contract
+    ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+    : null
+  const ratio = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0
+    ? (result.marketCapUsd / result.fdvUsd) * 100
+    : null
+  return {
+    ownerStatus: deriveOwnerStatus(gp),
+    poolCount: result.pools?.length ?? 0,
+    liquidityDepth: result.liquidity ?? null,
+    marketCapToFdvPct: ratio,
+    marketCapToFdvLabel: ratio == null ? 'MC unavailable' : `${ratio.toFixed(1)}%`,
+    holderConcentration: 'Unverified',
+    supplySpread: 'Unverified',
+    providerReturnedNoRows: (result.holderDistribution?.topHolders?.length ?? 0) === 0,
+  }
+}
+
+function dedupeSecurityChips(chips: SecurityChip[]): SecurityChip[] {
+  const map = new Map<string, SecurityChip>()
+  for (const chip of chips) {
+    const existing = map.get(chip.label)
+    if (!existing) {
+      map.set(chip.label, chip)
+      continue
+    }
+    if (chip.source === 'honeypot' && existing.source !== 'honeypot') {
+      map.set(chip.label, chip)
+    }
+  }
+  return Array.from(map.values())
+}
+
+function deriveVerdictInput(result: ScanResult): VerdictInput {
+  const gp = result.goplus && result.contract
+    ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+    : null
+  const hp = result.honeypot
+  const baseChips: SecurityChip[] = [
+    { label: 'Honeypot', displayLabel: hp?.isHoneypot === null ? 'Unverified' : hp?.isHoneypot ? 'YES' : 'NO', style: hp?.isHoneypot ? pillDanger() : pillSafe(), source: 'honeypot' },
+    { label: 'Buy Tax', displayLabel: hp?.buyTax == null ? 'N/A' : `${hp.buyTax.toFixed(1)}%`, style: hp?.buyTax == null ? pillMuted() : taxPct(hp.buyTax), source: 'honeypot' },
+    { label: 'Sell Tax', displayLabel: hp?.sellTax == null ? 'N/A' : `${hp.sellTax.toFixed(1)}%`, style: hp?.sellTax == null ? pillMuted() : taxPct(hp.sellTax), source: 'honeypot' },
+    { label: 'Honeypot', displayLabel: String(gp?.is_honeypot ?? 'N/A'), style: String(gp?.is_honeypot ?? '') === '1' ? pillDanger() : pillSafe(), source: 'contract' },
+    { label: 'Buy Tax', displayLabel: gp?.buy_tax != null ? `${(Number(gp.buy_tax) * 100).toFixed(1)}%` : 'N/A', style: gp?.buy_tax != null ? taxPct(Number(gp.buy_tax) * 100) : pillMuted(), source: 'contract' },
+    { label: 'Sell Tax', displayLabel: gp?.sell_tax != null ? `${(Number(gp.sell_tax) * 100).toFixed(1)}%` : 'N/A', style: gp?.sell_tax != null ? taxPct(Number(gp.sell_tax) * 100) : pillMuted(), source: 'contract' },
+  ]
+  return {
+    hasMarketData: result.price != null || result.volume24h != null || result.marketCapUsd != null || result.fdvUsd != null,
+    hasSecurityData: !!gp || !!hp,
+    hasLiquidityData: (result.liquidity ?? 0) > 0 || (result.pools?.length ?? 0) > 0,
+    holderState: deriveHolderState(result),
+    fallbackEvidence: deriveHolderFallbackEvidence(result),
+    dedupedSecurityChips: dedupeSecurityChips(baseChips),
+    supports: ['verdict','marketRead','securityRead','holderSupplyRead','liquidityPoolsRead','bullCase','bearCase','missingChecks','nextAction'],
+  }
 }
 
 // ─── StatCard ─────────────────────────────────────────────────────────────
@@ -575,31 +714,51 @@ export default function TerminalTokenScanner() {
 
 
               {/* Holder analytics */}
-              {result.holderDistributionStatus?.status === 'ok' && (result.holderDistributionStatus?.normalizedCount ?? 0) > 0 && result.holderDistribution?.topHolders?.length ? (
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
-                  <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
-                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
-                    <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution.top1],['Top 5',result.holderDistribution.top5],['Top 10',result.holderDistribution.top10],['Top 20',result.holderDistribution.top20],['Others',result.holderDistribution.others]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+              {(() => {
+                const holderState = deriveHolderState(result)
+                const fallback = deriveHolderFallbackEvidence(result)
+                if (holderState.kind !== 'noRowsFallback') {
+                  return (
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
+                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                        {result.holderDistribution?.holderCount != null && <p style={{margin:'0 0 10px',fontSize:'11px',color:'#67e8f9'}}>Holder count: {result.holderDistribution.holderCount.toLocaleString()}</p>}
+                        {holderState.kind === 'rowsWithoutPercent' && (
+                          <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets were returned, but supply percentages were not available from the provider.</p>
+                        )}
+                        <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+                      </div>
+                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
+                        <div style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'10px',color:'#64748b',marginBottom:'6px'}}><span>Rank</span><span>Wallet</span><span style={{textAlign:'right'}}>Amount</span><span style={{textAlign:'right'}}>% Supply</span></div>
+                        <div style={{display:'grid',gap:'4px',maxHeight:'210px',overflowY:'auto'}}>{holderState.rows.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{typeof h.amount === 'number' ? h.amount.toLocaleString(undefined,{maximumFractionDigits:2}) : (h.amount ?? 'N/A')}</span><span style={{textAlign:'right'}}>{h.percent == null ? 'N/A' : `${h.percent.toFixed(2)}%`}</span></div>)}</div>
+                      </div>
+                    </div>
+                  )
+                }
+                return (
+                  <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px',padding:'16px'}}>
+                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>Holder Intelligence</p>
+                    <p style={{margin:'0 0 8px',fontSize:'12px',color:'#cbd5e1',fontWeight:700}}>State: {holderSafeReason(normalizeHolderProviderStatus(result.holderDistributionStatus), false)}</p>
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
+                      {[
+                        ['Owner status', fallback.ownerStatus],
+                        ['Pool count', String(fallback.poolCount)],
+                        ['Liquidity depth', fmtLarge(fallback.liquidityDepth)],
+                        ['Market cap vs FDV', fallback.marketCapToFdvLabel],
+                        ['Holder concentration', fallback.holderConcentration],
+                        ['Supply spread', fallback.supplySpread],
+                      ].map(([label,val]) => (
+                        <div key={String(label)} style={{padding:'8px 10px',borderRadius:'10px',background:'rgba(15,23,42,0.42)',border:'1px solid rgba(148,163,184,.18)'}}>
+                          <div style={{fontSize:'9px',color:'#64748b',fontFamily:'var(--font-plex-mono)'}}>{label}</div>
+                          <div style={{fontSize:'11px',color:'#cbd5e1',marginTop:'4px'}}>{val}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8'}}>Holder provider did not return holder rows for this token. This usually happens on new, thin, or low-coverage microcaps, so concentration should be treated as unverified.</p>
                   </div>
-                  <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
-                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
-                    <div style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'10px',color:'#64748b',marginBottom:'6px'}}><span>Rank</span><span>Wallet</span><span style={{textAlign:'right'}}>Amount</span><span style={{textAlign:'right'}}>% Supply</span></div>
-                    <div style={{display:'grid',gap:'4px',maxHeight:'210px',overflowY:'auto'}}>{result.holderDistribution.topHolders.slice(0,20).map((h) => <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'32px 1fr 90px 74px',fontSize:'11px',color:'#cbd5e1',gap:'8px'}}><span style={{color:'#94a3b8'}}>#{h.rank}</span><span>{shorten(h.address)}</span><span style={{textAlign:'right'}}>{typeof h.amount === 'number' ? h.amount.toLocaleString(undefined,{maximumFractionDigits:2}) : (h.amount ?? 'N/A')}</span><span style={{textAlign:'right'}}>{h.percent == null ? 'N/A' : `${h.percent.toFixed(2)}%`}</span></div>)}</div>
-                  </div>
-                </div>
-              ) : (
-                <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px',padding:'16px'}}>
-                  <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>Holder Intelligence</p>
-                  <p style={{margin:'0 0 8px',fontSize:'12px',color:'#cbd5e1',fontWeight:700}}>State: Unverified</p>
-                  <p style={{margin:'0 0 12px',fontSize:'12px',color:'#94a3b8'}}>Top holder data is unavailable for this token.</p>
-                  <div style={{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'10px'}}>
-                    {['Top holders: Unavailable','Concentration: Unverified','Supply spread: Unverified'].map((chip)=>(
-                      <span key={chip} style={{padding:'5px 9px',borderRadius:'999px',fontSize:'10px',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(148,163,184,.26)',color:'#94a3b8'}}>{chip}</span>
-                    ))}
-                  </div>
-                  <p style={{margin:0,fontSize:'11px',color:'#67e8f9'}}>Market, liquidity, and security simulation are still available.</p>
-                </div>
-              )}
+                )
+              })()}
 
               {/* Pools */}
               {result.pools && result.pools.length > 0 && (
