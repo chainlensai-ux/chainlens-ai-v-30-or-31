@@ -201,7 +201,7 @@ export default function AboutPage() {
               <Card>
                 <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.55)', lineHeight: 1.6, margin: '0 0 18px',
                   fontFamily: 'var(--font-inter,Inter,sans-serif)' }}>
-                  Crypto is full of things most traders can't see early:
+                  Crypto is full of things most traders can&apos;t see early:
                 </p>
                 {[
                   'Hidden risks', 'Liquidity traps', 'Unlock events',
@@ -345,7 +345,7 @@ export default function AboutPage() {
               </div>
               <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.40)', margin: '18px 0 0', lineHeight: 1.6,
                 fontFamily: 'var(--font-inter,Inter,sans-serif)', fontStyle: 'italic' }}>
-                If you want to understand what's happening on-chain — ChainLens is for you.
+                If you want to understand what&apos;s happening on-chain — ChainLens is for you.
               </p>
             </Card>
           </div>
