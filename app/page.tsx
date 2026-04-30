@@ -183,23 +183,6 @@ export default function HomePage() {
           .hero-feat-row { gap: 16px !important; }
         }
 
-        /* CRT scanline sweep */
-        @keyframes scanlines-move {
-          from { background-position: 0 0; }
-          to   { background-position: 0 80px; }
-        }
-        .scanline-overlay {
-          position: fixed; inset: 0; pointer-events: none; z-index: 9998;
-          background-image: repeating-linear-gradient(
-            0deg,
-            transparent,
-            transparent 3px,
-            rgba(255,255,255,0.016) 3px,
-            rgba(255,255,255,0.016) 4px
-          );
-          animation: scanlines-move 14s linear infinite;
-        }
-
         /* CORTEX badge teal pulse */
         @keyframes cortex-pulse {
           0%,100% {
@@ -271,9 +254,6 @@ export default function HomePage() {
 
       <Navbar />
 
-      {/* CRT scanline overlay — covers entire page */}
-      <div className="scanline-overlay" />
-
       <div className="relative min-h-screen w-full bg-[#07070f]" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Cinematic background layer ── */}
@@ -289,10 +269,10 @@ export default function HomePage() {
             position: 'absolute',
             left: '-28%',
             bottom: '-30%',
-            width: '94%',
-            height: '84%',
+            width: '102%',
+            height: '92%',
             background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
-            filter: 'blur(10px)',
+            filter: 'blur(8px)',
             maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
             animation: 'streak-drift-left 42s ease-in-out infinite',
           }} />
@@ -301,8 +281,8 @@ export default function HomePage() {
             position: 'absolute',
             right: '-32%',
             top: '-10%',
-            width: '96%',
-            height: '94%',
+            width: '92%',
+            height: '88%',
             background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
             filter: 'blur(12px)',
             maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
@@ -369,7 +349,7 @@ export default function HomePage() {
 
           <div style={{
             position: 'absolute', inset: 0,
-            background: 'radial-gradient(52% 36% at 50% 34%, rgba(150,118,255,0.20) 0%, rgba(95,61,194,0.08) 38%, rgba(7,7,15,0) 72%), radial-gradient(112% 84% at 50% 42%, transparent 48%, rgba(3,6,15,0.46) 72%, rgba(2,4,12,0.82) 100%)',
+            background: 'radial-gradient(48% 32% at 50% 35%, rgba(150,118,255,0.15) 0%, rgba(95,61,194,0.06) 40%, rgba(7,7,15,0) 72%), radial-gradient(112% 84% at 50% 42%, transparent 48%, rgba(3,6,15,0.48) 72%, rgba(2,4,12,0.86) 100%)',
           }} />
         </div>
 
@@ -465,7 +445,7 @@ export default function HomePage() {
             <span style={{ color: '#f8fafc', display: 'block' }}>
               See what whales do
             </span>
-            {/* Line 2 — pink → indigo gradient (merged with "does") */}
+            {/* Line 2 — pink → indigo gradient */}
             <span style={{
               display: 'block',
               background: 'linear-gradient(94deg, #ec4899 0%, #a855f7 32%, #818cf8 64%, #22d3ee 100%)',
@@ -474,7 +454,17 @@ export default function HomePage() {
               backgroundClip: 'text',
               textShadow: '0 0 34px rgba(139,92,246,0.30), 0 0 64px rgba(34,211,238,0.20)',
             }}>
-              before everyone else does.
+              before everyone else
+            </span>
+            <span style={{
+              display: 'block',
+              background: 'linear-gradient(96deg, #a855f7 0%, #818cf8 52%, #60a5fa 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
+              textShadow: '0 0 30px rgba(139,92,246,0.26), 0 0 54px rgba(96,165,250,0.18)',
+            }}>
+              does.
             </span>
           </h1>
 
