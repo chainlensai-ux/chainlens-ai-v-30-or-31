@@ -24,6 +24,10 @@ type CovalentTx = {
 }
 
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
+const DEFAULT_LIMIT = 5
+const MAX_LIMIT = 25
+const DEFAULT_OFFSET = 0
+const SAFETY_TIMEOUT_MS = 19_500
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
@@ -32,6 +36,15 @@ function shortAddress(address: string) {
 function parseNumeric(value: unknown): number | null {
   const num = Number(value)
   return Number.isFinite(num) ? num : null
+}
+
+function parseInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number.parseInt(value, 10)
+    if (Number.isInteger(parsed)) return parsed
+  }
+  return null
 }
 
 function severityFromUsd(amountUsd: number | null): string | null {
@@ -69,13 +82,12 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[]) {
   const alerts: Array<Record<string, unknown>> = []
 
   for (const tx of txs) {
-    const occurredAt = tx.block_signed_at ? new Date(tx.block_signed_at).getTime() : NaN
+    const occurredAt = tx.block_signed_at ? new Date(tx.block_signed_at).getTime() : Number.NaN
     if (!Number.isFinite(occurredAt) || occurredAt < since) continue
     if (tx.successful === false) continue
 
     const eventCount = tx.log_events?.length ?? 0
     const txHash = tx.tx_hash ?? null
-
     if (!txHash) continue
 
     alerts.push({
@@ -99,10 +111,30 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[]) {
   return alerts
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
   const providerKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
+
+  let body: Record<string, unknown> = {}
+  try {
+    if (request.headers.get('content-type')?.includes('application/json')) {
+      body = (await request.json()) as Record<string, unknown>
+    }
+  } catch {
+    body = {}
+  }
+
+  const requestUrl = new URL(request.url)
+  const queryLimit = parseInteger(requestUrl.searchParams.get('limit'))
+  const bodyLimit = parseInteger(body.limit)
+  const rawLimit = queryLimit ?? bodyLimit ?? DEFAULT_LIMIT
+  const limit = Math.max(1, Math.min(MAX_LIMIT, rawLimit))
+
+  const queryOffset = parseInteger(requestUrl.searchParams.get('offset'))
+  const bodyOffset = parseInteger(body.offset)
+  const rawOffset = queryOffset ?? bodyOffset ?? DEFAULT_OFFSET
+  const offset = Math.max(0, rawOffset)
 
   if (!supabaseUrl || !serviceRole) {
     return NextResponse.json({
@@ -129,10 +161,12 @@ export async function POST() {
 
   const supabase = createClient(supabaseUrl, serviceRole)
 
-  const { data: wallets, error: walletError } = await supabase
+  const { data: wallets, error: walletError, count } = await supabase
     .from('tracked_wallets')
-    .select('address,label,category,confidence,source,is_active')
+    .select('address,label,category,confidence,source,is_active', { count: 'exact' })
     .eq('is_active', true)
+    .order('created_at', { ascending: true })
+    .range(offset, offset + limit - 1)
 
   if (walletError) {
     console.error('[whale-sync] wallet load failed', walletError.message)
@@ -149,21 +183,28 @@ export async function POST() {
     }, { status: 500 })
   }
 
+  const trackedWalletsTotal = count ?? 0
   if (!wallets || wallets.length === 0) {
     return NextResponse.json({ ok: false, error: 'no_active_wallets', trackedWallets: 0 }, { status: 404 })
   }
 
-  let totalFetched = 0
-  let totalInserted = 0
-  let totalSkipped = 0
-  const walletSummaries: Array<Record<string, unknown>> = []
+  const startedAt = Date.now()
+  let processed = 0
+  let inserted = 0
+  let skipped = 0
+  let providerErrors = 0
 
-  for (const wallet of (wallets ?? []) as TrackedWallet[]) {
+  for (const wallet of wallets as TrackedWallet[]) {
+    if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) {
+      break
+    }
+
+    processed += 1
     const short = shortAddress(wallet.address)
+
     try {
       const payload = await fetchWalletTransactions(wallet.address, providerKey)
       const txItems = (payload?.data?.items ?? []) as CovalentTx[]
-      totalFetched += txItems.length
 
       const alerts = extractAlerts(wallet, txItems)
       const filteredAlerts = alerts.map((alert) => {
@@ -175,7 +216,7 @@ export async function POST() {
         }
       })
 
-      let inserted = 0
+      let walletInserted = 0
       if (filteredAlerts.length > 0) {
         const { data, error } = await supabase
           .from('whale_alerts')
@@ -186,34 +227,36 @@ export async function POST() {
           .select('id')
 
         if (error) {
+          providerErrors += 1
           console.warn('[whale-sync] insert failed', short, error.message)
         } else {
-          inserted = data?.length ?? 0
+          walletInserted = data?.length ?? 0
         }
       }
 
-      const skipped = Math.max(filteredAlerts.length - inserted, 0)
-      totalInserted += inserted
-      totalSkipped += skipped
+      const walletSkipped = Math.max(filteredAlerts.length - walletInserted, 0)
+      inserted += walletInserted
+      skipped += walletSkipped
 
-      console.info('[whale-sync] wallet', short, 'provider_status=ok', `fetched=${txItems.length}`, `inserted=${inserted}`, `skipped=${skipped}`)
-      walletSummaries.push({ wallet: short, fetched: txItems.length, inserted, skipped, status: 'ok' })
+      console.info('[whale-sync] wallet', short, 'provider_status=ok', `fetched=${txItems.length}`, `inserted=${walletInserted}`, `skipped=${walletSkipped}`)
     } catch (error) {
+      providerErrors += 1
       const message = error instanceof Error ? error.message : 'unknown_error'
       console.warn('[whale-sync] wallet', short, 'provider_status=error', message)
-      walletSummaries.push({ wallet: short, fetched: 0, inserted: 0, skipped: 0, status: 'error' })
     }
   }
 
+  const nextOffset = offset + processed < trackedWalletsTotal ? offset + processed : null
+
   return NextResponse.json({
     ok: true,
-    provider: 'covalent_goldrush',
-    window: '24h',
-    walletsProcessed: wallets?.length ?? 0,
-    trackedWallets: wallets?.length ?? 0,
-    fetchedCount: totalFetched,
-    insertedCount: totalInserted,
-    skippedCount: totalSkipped,
-    walletSummaries,
+    trackedWalletsTotal,
+    processed,
+    offset,
+    limit,
+    nextOffset,
+    inserted,
+    skipped,
+    providerErrors,
   })
 }
