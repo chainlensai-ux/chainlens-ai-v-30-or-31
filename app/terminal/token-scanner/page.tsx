@@ -389,6 +389,10 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
     taxPill('sell_tax', 'Sell Tax'),
     ownerPill(),
   ] : []
+  const deduped = dedupeSecurityChips([
+    ...hpPills.map(p => ({ ...p, source: 'honeypot' as const })),
+    ...gpPills.map(p => ({ ...p, source: 'contract' as const })),
+  ])
 
   return (
     <div style={{ marginTop: '28px' }}>
@@ -402,7 +406,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
-        {[...hpPills, ...gpPills].map(p => (
+        {deduped.map(p => (
           <RiskPill key={p.label} label={p.label} value={{ ...p.style, label: p.displayLabel }} />
         ))}
       </div>
