@@ -383,6 +383,63 @@ export default function HomePage() {
           }} />
 
           <div style={{
+            position: 'absolute',
+            left: '-12%',
+            top: '38%',
+            width: '42%',
+            height: '24%',
+            background: 'linear-gradient(100deg, rgba(168,85,247,0) 0%, rgba(168,85,247,0.20) 46%, rgba(236,72,153,0.12) 56%, rgba(236,72,153,0) 100%)',
+            filter: 'blur(7px)',
+            maskImage: 'radial-gradient(120% 90% at 56% 50%, black 8%, rgba(0,0,0,0.72) 48%, transparent 100%)',
+            animation: 'streak-drift-left 46s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            right: '-10%',
+            top: '34%',
+            width: '40%',
+            height: '22%',
+            background: 'linear-gradient(258deg, rgba(139,92,246,0) 0%, rgba(139,92,246,0.16) 46%, rgba(217,70,239,0.10) 58%, rgba(217,70,239,0) 100%)',
+            filter: 'blur(8px)',
+            maskImage: 'radial-gradient(110% 90% at 44% 46%, black 10%, rgba(0,0,0,0.74) 50%, transparent 100%)',
+            animation: 'streak-drift-right 48s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            inset: '-6%',
+            background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.20) 0%, rgba(139,92,246,0.08) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.13) 0%, rgba(217,70,239,0.04) 50%, transparent 100%)',
+            filter: 'blur(56px)',
+            animation: 'halo-drift 36s ease-in-out infinite',
+            willChange: 'transform',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            left: '-28%',
+            bottom: '-30%',
+            width: '102%',
+            height: '92%',
+            background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
+            filter: 'blur(8px)',
+            maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
+            animation: 'streak-drift-left 42s ease-in-out infinite',
+          }} />
+
+          <div style={{
+            position: 'absolute',
+            right: '-32%',
+            top: '-10%',
+            width: '92%',
+            height: '88%',
+            background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
+            filter: 'blur(12px)',
+            maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
+            animation: 'streak-drift-right 44s ease-in-out infinite',
+          }} />
+
+          <div style={{
             position: 'absolute', inset: '-8%',
             background: 'radial-gradient(34% 34% at 50% 34%, rgba(167,139,250,0.16) 0%, rgba(167,139,250,0.05) 50%, transparent 100%), radial-gradient(22% 24% at 72% 54%, rgba(139,92,246,0.12) 0%, rgba(139,92,246,0.04) 46%, transparent 100%), radial-gradient(18% 20% at 76% 36%, rgba(56,189,248,0.03) 0%, rgba(56,189,248,0.01) 48%, transparent 100%), radial-gradient(24% 24% at 82% 68%, rgba(217,70,239,0.09) 0%, rgba(217,70,239,0.02) 52%, transparent 100%)',
             filter: 'blur(62px)',
@@ -1385,26 +1442,37 @@ export default function HomePage() {
 
       {/* ── Footer ───────────────────────────────────────────────────────────── */}
       <footer style={{
-        background: '#080c14',
+        background: 'linear-gradient(180deg, #05060d 0%, #05050b 100%)',
         position: 'relative', zIndex: 1,
-        padding: '80px 32px 72px',
-        borderTop: '1px solid rgba(255,255,255,0.06)',
+        padding: '72px 32px 64px',
+        borderTop: '1px solid rgba(167,139,250,0.16)',
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
       }}>
-        {/* Full-width teal gradient top border */}
         <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
-          background: 'linear-gradient(90deg, transparent 0%, #2DD4BF 50%, transparent 100%)',
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          background: 'radial-gradient(58% 44% at 50% 0%, rgba(139,92,246,0.18) 0%, rgba(139,92,246,0.06) 40%, transparent 78%), radial-gradient(34% 30% at 76% 18%, rgba(217,70,239,0.11) 0%, transparent 72%)',
         }} />
 
-        <div className="mob-footer-grid" style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '48px', alignItems: 'start' }}>
+        {/* Premium top separator */}
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
+          background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.26) 28%, rgba(167,139,250,0.5) 50%, rgba(45,212,191,0.26) 72%, transparent 100%)',
+        }} />
+        <div style={{
+          position: 'absolute', top: 0, left: '16%', right: '16%', height: '14px',
+          background: 'radial-gradient(closest-side, rgba(139,92,246,0.24), transparent)',
+          filter: 'blur(10px)', pointerEvents: 'none',
+        }} />
+
+        <div className="mob-footer-grid" style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr', gap: '42px', alignItems: 'start', position: 'relative' }}>
 
           {/* Left — brand + socials */}
           <div style={{ position: 'relative' }}>
-            {/* Subtle teal glow behind left section */}
+            {/* Subtle brand glow behind left section */}
             <div style={{
               position: 'absolute', top: '-20px', left: '-40px',
               width: '300px', height: '200px',
-              background: 'radial-gradient(ellipse, rgba(45,212,191,0.07) 0%, transparent 70%)',
+              background: 'radial-gradient(ellipse, rgba(139,92,246,0.14) 0%, rgba(45,212,191,0.05) 44%, transparent 74%)',
               filter: 'blur(30px)', pointerEvents: 'none',
             }} />
             {/* Logo + name */}
@@ -1413,10 +1481,10 @@ export default function HomePage() {
               <span style={{ fontSize: '19px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.02em' }}>ChainLens AI</span>
             </div>
             {/* Tagline */}
-            <div style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.65, marginBottom: '8px', position: 'relative' }}>
+            <div style={{ fontSize: '13px', color: 'rgba(226,232,240,0.74)', lineHeight: 1.65, marginBottom: '6px', position: 'relative' }}>
               onchain intelligence for Base traders
             </div>
-            <div style={{ fontSize: '13px', color: '#475569', lineHeight: 1.65, marginBottom: '24px', position: 'relative', maxWidth: '280px' }}>
+            <div style={{ fontSize: '13px', color: 'rgba(148,163,184,0.48)', lineHeight: 1.62, marginBottom: '22px', position: 'relative', maxWidth: '280px' }}>
               Scan wallets, track whales, detect pumps, and get AI-powered analysis from Clark — all in one terminal.
             </div>
             {/* Social pills */}
@@ -1427,14 +1495,15 @@ export default function HomePage() {
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: '7px',
                   padding: '8px 16px', borderRadius: '999px',
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  fontSize: '12px', fontWeight: 600, color: 'rgba(255,255,255,0.65)',
+                  background: 'rgba(12,14,24,0.72)',
+                  border: '1px solid rgba(167,139,250,0.24)',
+                  boxShadow: '0 0 0 1px rgba(255,255,255,0.02) inset',
+                  fontSize: '12px', fontWeight: 600, color: 'rgba(226,232,240,0.68)',
                   textDecoration: 'none',
-                  transition: 'border-color 150ms, color 150ms, background 150ms',
+                  transition: 'border-color 150ms, color 150ms, background 150ms, box-shadow 150ms',
                 }}
-                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = '#2DD4BF'; el.style.color = '#2DD4BF'; el.style.background = 'rgba(45,212,191,0.06)' }}
-                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(255,255,255,0.12)'; el.style.color = 'rgba(255,255,255,0.65)'; el.style.background = 'rgba(255,255,255,0.05)' }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(167,139,250,0.54)'; el.style.color = '#e9d5ff'; el.style.background = 'rgba(139,92,246,0.10)'; el.style.boxShadow = '0 0 24px rgba(139,92,246,0.20)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(167,139,250,0.24)'; el.style.color = 'rgba(226,232,240,0.68)'; el.style.background = 'rgba(12,14,24,0.72)'; el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.02) inset' }}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.261 5.632zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
@@ -1447,14 +1516,15 @@ export default function HomePage() {
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: '7px',
                   padding: '8px 16px', borderRadius: '999px',
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  fontSize: '12px', fontWeight: 600, color: 'rgba(255,255,255,0.65)',
+                  background: 'rgba(12,14,24,0.72)',
+                  border: '1px solid rgba(167,139,250,0.24)',
+                  boxShadow: '0 0 0 1px rgba(255,255,255,0.02) inset',
+                  fontSize: '12px', fontWeight: 600, color: 'rgba(226,232,240,0.68)',
                   textDecoration: 'none',
-                  transition: 'border-color 150ms, color 150ms, background 150ms',
+                  transition: 'border-color 150ms, color 150ms, background 150ms, box-shadow 150ms',
                 }}
-                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = '#2DD4BF'; el.style.color = '#2DD4BF'; el.style.background = 'rgba(45,212,191,0.06)' }}
-                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(255,255,255,0.12)'; el.style.color = 'rgba(255,255,255,0.65)'; el.style.background = 'rgba(255,255,255,0.05)' }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(167,139,250,0.54)'; el.style.color = '#e9d5ff'; el.style.background = 'rgba(139,92,246,0.10)'; el.style.boxShadow = '0 0 24px rgba(139,92,246,0.20)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(167,139,250,0.24)'; el.style.color = 'rgba(226,232,240,0.68)'; el.style.background = 'rgba(12,14,24,0.72)'; el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.02) inset' }}
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L7.17 13.947l-2.965-.924c-.643-.204-.658-.643.136-.953l11.57-4.461c.537-.194 1.006.131.983.612z"/>
@@ -1466,7 +1536,7 @@ export default function HomePage() {
 
           {/* Center — nav links */}
           <div>
-            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '18px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(167,139,250,0.92)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '16px' }}>
               Navigation
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -1477,8 +1547,8 @@ export default function HomePage() {
                 { label: 'About',     href: '/about'     },
                 { label: 'Terms',     href: '/terms'     },
               ].map(l => (
-                <Link key={l.label} href={l.href} style={{ fontSize: '14px', fontWeight: 500, color: '#fff', textDecoration: 'none', transition: 'color 150ms' }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF' }}
+                <Link key={l.label} href={l.href} style={{ fontSize: '14px', fontWeight: 500, color: 'rgba(226,232,240,0.9)', textDecoration: 'none', transition: 'color 150ms' }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#c4b5fd' }}
                   onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#fff' }}
                 >
                   {l.label}
@@ -1489,7 +1559,7 @@ export default function HomePage() {
 
           {/* Right — Built on Base + copyright */}
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '18px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(167,139,250,0.92)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '16px' }}>
               Infrastructure
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '9px', marginBottom: '16px' }}>
@@ -1500,14 +1570,14 @@ export default function HomePage() {
               }} />
               <span style={{
                 fontSize: '13px', fontWeight: 600,
-                color: 'rgba(255,255,255,0.55)',
+                color: 'rgba(226,232,240,0.62)',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 letterSpacing: '0.04em',
               }}>
                 Built on Base. Powered by CORTEX.
               </span>
             </div>
-            <div style={{ fontSize: '12px', color: '#475569' }}>
+            <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.42)' }}>
               © 2026 ChainLens AI
             </div>
           </div>
