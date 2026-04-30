@@ -880,25 +880,65 @@ export default function TerminalTokenScanner() {
 
           {/* Verdict */}
           {result && (() => {
+            const d = deriveVerdictInput(result)
             const hp = result.honeypot
-            const gp = result.goplus && result.contract ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null : null
-            const buyTax = hp?.buyTax ?? (gp?.buy_tax != null ? Number(gp.buy_tax) * 100 : null)
-            const sellTax = hp?.sellTax ?? (gp?.sell_tax != null ? Number(gp.sell_tax) * 100 : null)
+            const buyTax = hp?.buyTax ?? null
+            const sellTax = hp?.sellTax ?? null
             const transferTax = hp?.transferTax ?? null
-            const simulationFailed = hp ? !hp.simulationSuccess : false
-            const hpFlagged = hp?.isHoneypot === true || String(gp?.is_honeypot ?? '') === '1'
-            const blacklistRisk = String(gp?.is_blacklisted ?? '') === '1' || String(gp?.is_whitelisted ?? '') === '1'
-            const ownerHeld = String(gp?.owner_address ?? '') && String(gp?.owner_address ?? '') !== '0x0000000000000000000000000000000000000000'
             const liq = result.liquidity ?? 0
-            const hasMarket = (result.price != null) || (result.volume24h != null) || liq > 0
-            const strongRisk = hpFlagged || simulationFailed || (buyTax != null && buyTax >= 15) || (sellTax != null && sellTax >= 15) || (transferTax != null && transferTax >= 15) || blacklistRisk
-            const watchReady = (hp?.isHoneypot === false || String(gp?.is_honeypot ?? '') === '0') && !simulationFailed && (buyTax == null || buyTax <= 5) && (sellTax == null || sellTax <= 5) && liq > 50000 && (result.volume24h ?? 0) > 0
-            const verdict = !hasMarket && !hp && !gp ? 'UNKNOWN' : strongRisk ? 'AVOID' : watchReady && !ownerHeld ? 'WATCH' : 'SCAN DEEPER'
-            const confidence = verdict === 'AVOID' ? 'High' : verdict === 'WATCH' ? 'Medium-High' : verdict === 'SCAN DEEPER' ? 'Medium' : 'Low'
-            const holderMissing = result.holderDistributionStatus?.status !== 'ok' || !result.holderDistribution || result.holderDistribution.topHolders.length === 0
-            const holderRisk = result.holderDistribution?.top1 != null && result.holderDistribution.top1 > 25 ? 'Elevated top1 concentration.' : result.holderDistribution?.top5 != null && result.holderDistribution.top5 > 50 ? 'Elevated top5 concentration.' : result.holderDistribution?.top10 != null && result.holderDistribution.top10 > 70 ? 'Concentrated supply distribution.' : holderMissing ? 'Holder concentration unverified.' : ''
-            const missing = [ownerHeld ? 'Contract ownership renounced' : '', result.marketCapUsd == null ? 'Market cap / circulating supply' : '', 'LP lock/control', holderMissing ? 'Holder concentration' : '', 'Deployer behavior'].filter(Boolean)
-            return <div style={{display:'grid',gap:'10px'}}><div style={{padding:'12px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'12px',background:'rgba(10,20,32,.6)'}}><div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div><div style={{fontSize:'24px',fontWeight:800,color:verdict==='AVOID'?'#f87171':verdict==='WATCH'?'#2DD4BF':verdict==='SCAN DEEPER'?'#fbbf24':'#94a3b8'}}>{verdict}</div><div style={{fontSize:'11px',color:'#94a3b8'}}>Confidence: {confidence}</div></div><div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',background:'rgba(255,255,255,0.02)',fontSize:'12px',color:'#cbd5e1',lineHeight:1.6}}>{result.symbol ?? 'This token'} has {liq > 0 ? `usable liquidity (${fmtLarge(result.liquidity)})` : 'limited liquidity context'} and {result.volume24h != null ? `24h activity (${fmtLarge(result.volume24h)})` : 'unclear 24h activity'}. {ownerHeld ? 'Owner is still held and deeper control checks are required.' : 'Ownership appears renounced, but LP and holder checks are still required.'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Key Signals: Liquidity {fmtLarge(result.liquidity)}, 24H {fmtPct(result.priceChange24h)}, {result.marketCapUsd != null ? `Market cap ${fmtLarge(result.marketCapUsd)}, ` : result.fdvUsd != null ? `FDV ${fmtLarge(result.fdvUsd)}, ` : ''}Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy/Sell Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'} / {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Risks: {strongRisk ? 'High-risk security signal detected.' : [ownerHeld ? 'Owner status held.' : '', holderRisk].filter(Boolean).join(' ') || 'No critical risk flag in current simulation.'}</div><div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Missing Checks: {missing.join(', ') || 'None major in current read.'}</div><div style={{padding:'11px 12px',border:'1px solid rgba(45,212,191,.35)',borderRadius:'10px',background:'rgba(45,212,191,.07)',fontSize:'11px',color:'#67e8f9'}}>Next Action: Run liquidity and dev-wallet checks before treating this as a watchlist lead.</div></div> })()}
+            const poolCount = result.pools?.length ?? 0
+            const holderRows = result.holderDistribution?.topHolders ?? []
+            const top10 = result.holderDistribution?.top10
+            const top20 = result.holderDistribution?.top20
+            const mcFdv = d.fallbackEvidence.marketCapToFdvLabel
+            const taxesHigh = (buyTax != null && buyTax > 8) || (sellTax != null && sellTax > 8)
+            const hpBlocked = hp?.isHoneypot === true
+            const verdict =
+              hpBlocked || taxesHigh ? 'AVOID' :
+              !d.hasMarketData && !d.hasSecurityData && !d.hasLiquidityData ? 'UNVERIFIED' :
+              d.hasSecurityData && hp?.isHoneypot === false && liq > 120000 && d.holderState.kind === 'rowsWithPercent' ? 'CLEAN-LOOKING' :
+              d.holderState.kind === 'noRowsFallback' || liq < 40000 ? 'WATCH' : 'CAUTION'
+            const verdictColor = verdict === 'AVOID' ? '#f87171' : verdict === 'CLEAN-LOOKING' ? '#2DD4BF' : verdict === 'WATCH' ? '#fbbf24' : verdict === 'CAUTION' ? '#f59e0b' : '#94a3b8'
+            const bull = [
+              liq > 0 ? 'Liquidity exists.' : '',
+              d.hasMarketData ? 'Market data is available.' : '',
+              hp?.isHoneypot === false ? 'Honeypot simulation did not flag blocked sells.' : '',
+              poolCount > 1 ? 'Multiple pools found.' : '',
+              holderRows.length > 0 ? 'Holder rows were returned.' : '',
+            ].filter(Boolean).slice(0, 3)
+            const bear = [
+              d.holderState.kind === 'noRowsFallback' ? 'Holder data unavailable.' : '',
+              taxesHigh ? 'Taxes are elevated.' : '',
+              liq > 0 && liq < 50000 ? 'Liquidity is thin.' : '',
+              result.marketCapUsd == null ? 'Market cap unavailable.' : '',
+              result.marketCapUsd == null && result.fdvUsd != null ? 'FDV-only context.' : '',
+              hp?.simulationSuccess === false ? 'Honeypot/sell simulation unverified.' : '',
+            ].filter(Boolean).slice(0, 3)
+            const missingChecks = [
+              d.holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : '',
+              'Supply spread',
+              'LP lock',
+              d.fallbackEvidence.ownerStatus === 'Unverified' ? 'Owner status' : '',
+              result.marketCapUsd == null ? 'Market cap' : '',
+              'Contract verification',
+            ].filter(Boolean)
+            return (
+              <div style={{display:'grid',gap:'10px'}}>
+                <div style={{padding:'12px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'12px',background:'rgba(10,20,32,.6)'}}>
+                  <div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div>
+                  <div style={{fontSize:'24px',fontWeight:800,color:verdictColor}}>{verdict}</div>
+                </div>
+                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Market Read: Price {fmtPrice(result.price)}, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Unverified'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}, MC/FDV {mcFdv}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Security Read: Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'}, Sell Tax {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}, Transfer Risk {transferTax != null ? `${transferTax.toFixed(1)}%` : 'N/A'}, Simulation {hp?.simulationSuccess ? 'Verified' : 'Unverified'}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Holder/Supply Read: {result.holderDistribution?.holderCount != null ? `holders ${result.holderDistribution.holderCount.toLocaleString()}, ` : ''}{top10 != null ? `top10 ${top10.toFixed(1)}%, ` : 'holder concentration unverified, '}{top20 != null ? `top20 ${top20.toFixed(1)}%` : 'top20 unavailable'}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Liquidity/Pools Read: pools {poolCount}, primary pool {result.pools?.[0]?.name ?? 'Unverified'}, liquidity depth {fmtLarge(result.pools?.[0]?.liquidity ?? result.liquidity)}, {(liq > 0 && liq < 50000) ? 'liquidity thin.' : liq === 0 ? 'liquidity unverified.' : 'liquidity present.'}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(45,212,191,.2)',borderRadius:'10px',fontSize:'11px',color:'#99f6e4'}}>Bull Case: {bull.length ? bull.join(' ') : 'No strong positive cluster yet.'}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(248,113,113,.2)',borderRadius:'10px',fontSize:'11px',color:'#fca5a5'}}>Bear Case: {bear.length ? bear.join(' ') : 'No major bear signal surfaced yet.'}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Missing Checks: {missingChecks.join(', ')}</div>
+                <div style={{padding:'11px 12px',border:'1px solid rgba(45,212,191,.35)',borderRadius:'10px',background:'rgba(45,212,191,.07)',fontSize:'11px',color:'#67e8f9'}}>Next Action: Monitor liquidity and holder rows before trusting this. Check fresh scans after volume/liquidity changes. Do not treat this as copy-trade advice.</div>
+              </div>
+            )
+          })()}
           <div style={{marginTop:'auto',paddingTop:'8px',borderTop:'1px solid rgba(148,163,184,.12)',fontSize:'10px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)'}}>RPC: hidden<br/>We never render RPC URLs or API keys in the interface. Debug via server logs only.</div>
         </aside>
 
