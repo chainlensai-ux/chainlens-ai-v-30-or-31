@@ -1,8 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useAccount } from 'wagmi'
-import { useWeb3Modal } from '@web3modal/wagmi/react'
+import { useAccount, useConnect } from 'wagmi'
 
 type Holding = { symbol: string; name: string; chain: string; price: number; balance: number; value: number; change24h: number | null }
 type Range = '24H' | '7D' | '30D' | '90D' | 'ALL'
@@ -18,7 +17,7 @@ const rangeToCount: Record<Range, number> = { '24H': 25, '7D': 8, '30D': 10, '90
 
 export default function PortfolioPage() {
   const { address, isConnected } = useAccount()
-  const { open } = useWeb3Modal()
+  const { connect, connectors } = useConnect()
   const [holdings, setHoldings] = useState<Holding[]>([])
   const [loading, setLoading] = useState(false)
   const [portfolioError, setPortfolioError] = useState<string | null>(null)
@@ -150,6 +149,6 @@ export default function PortfolioPage() {
       </aside>
     </div>
 
-    {!isConnected && <div className='glass' style={{ marginTop: 12, padding: 18, textAlign: 'center' }}><div style={{ fontWeight: 700, fontSize: 18 }}>Connect your wallet to unlock your portfolio cockpit.</div><button onClick={() => open()} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(45,212,191,.44)', background: 'rgba(45,212,191,.18)', color: '#99f6e4', padding: '10px 16px' }}>Connect Wallet</button></div>}
+    {!isConnected && <div className='glass' style={{ marginTop: 12, padding: 18, textAlign: 'center' }}><div style={{ fontWeight: 700, fontSize: 18 }}>Connect your wallet to unlock your portfolio cockpit.</div><button onClick={() => { const c = connectors[0]; if (c) connect({ connector: c }) }} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(45,212,191,.44)', background: 'rgba(45,212,191,.18)', color: '#99f6e4', padding: '10px 16px' }}>Connect Wallet</button></div>}
   </div>
 }
