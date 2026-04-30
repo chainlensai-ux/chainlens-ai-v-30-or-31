@@ -6,11 +6,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig, projectId } from '@/lib/wallet'
 
 const queryClient = new QueryClient()
-
-createWeb3Modal({
-  wagmiConfig,
-  projectId
-})
+if (typeof window !== 'undefined') {
+  createWeb3Modal({
+    wagmiConfig,
+    projectId: projectId || 'disabled',
+  })
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (

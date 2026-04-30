@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 
 // Explicitly type starters as a Record of string keys to string values
 const starters: Record<string, string> = {
@@ -17,18 +17,14 @@ interface ClarkChatProps {
 }
 
 export default function ClarkChat({ selectedFeature }: ClarkChatProps) {
-  const [messages, setMessages] = useState<string[]>([]);
-
-  useEffect(() => {
-    if (selectedFeature) {
-      const logs = [
-        "[SCAN] fetching onchain data...",
-        "[AI] CORTEX engine processing...",
-        "[ALERT] anomalies detected",
-        `Clark: ${starters[selectedFeature]}`,
-      ];
-      setMessages((prev) => [...prev, ...logs]);
-    }
+  const messages = useMemo(() => {
+    if (!selectedFeature) return [];
+    return [
+      "[SCAN] fetching onchain data...",
+      "[AI] CORTEX engine processing...",
+      "[ALERT] anomalies detected",
+      `Clark: ${starters[selectedFeature]}`,
+    ];
   }, [selectedFeature]);
 
   return (
