@@ -3,6 +3,7 @@
 
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
+import { useEffect, useState } from 'react'
 import Navbar from '@/components/Navbar'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 
@@ -92,6 +93,17 @@ const FEATURES = [
 ]
 
 export default function HomePage() {
+  const [mobileDebugMode, setMobileDebugMode] = useState<'static' | 'noBlur' | 'noMotion' | 'noDecor' | null>(null)
+
+  useEffect(() => {
+    const mode = new URLSearchParams(window.location.search).get('mobileDebug')
+    if (mode === 'static' || mode === 'noBlur' || mode === 'noMotion' || mode === 'noDecor') {
+      setMobileDebugMode(mode)
+      return
+    }
+    setMobileDebugMode(null)
+  }, [])
+
   return (
     <>
       {/* Keyframes */}
@@ -267,7 +279,7 @@ export default function HomePage() {
 
       <Navbar />
 
-      <div className="home-page relative min-h-screen w-full bg-[#05050b]" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className={`home-page ${mobileDebugMode ? `mobile-debug-${mobileDebugMode}` : ''} relative min-h-screen w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Unified page ambient system ── */}
         <div className="home-heavy-visual" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
@@ -1590,6 +1602,26 @@ export default function HomePage() {
 
         </div>
       </footer>
+
+      {mobileDebugMode && (
+        <div style={{
+          position: 'fixed',
+          right: 10,
+          bottom: 10,
+          zIndex: 9999,
+          background: 'rgba(2,6,23,0.92)',
+          border: '1px solid rgba(45,212,191,0.35)',
+          color: '#67e8f9',
+          borderRadius: 999,
+          padding: '6px 10px',
+          fontSize: 11,
+          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+          letterSpacing: '0.04em',
+          pointerEvents: 'none',
+        }}>
+          Mobile debug: {mobileDebugMode}
+        </div>
+      )}
 
     </>
   )

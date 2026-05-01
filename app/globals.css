@@ -254,6 +254,31 @@ html, body {
     position: relative;
     z-index: 10;
   }
+
+  /* TEMP: homepage mobile flicker isolation modes via ?mobileDebug=... */
+  .home-page.mobile-debug-noDecor .home-heavy-visual,
+  .home-page.mobile-debug-static .home-heavy-visual {
+    display: none !important;
+  }
+
+  .home-page.mobile-debug-noBlur .mobile-static-card,
+  .home-page.mobile-debug-static .mobile-static-card {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    filter: none !important;
+    box-shadow: 0 8px 24px rgba(3, 8, 20, 0.45) !important;
+  }
+
+  .home-page.mobile-debug-noMotion *,
+  .home-page.mobile-debug-static * {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+
+  .home-page.mobile-debug-static * {
+    opacity: 1 !important;
+  }
 }
 
 :root {
