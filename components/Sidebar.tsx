@@ -215,7 +215,7 @@ interface Props {
 export default function Sidebar({ active = 'home', onSelect = () => {} }: Props) {
   return (
     <aside
-      className="w-[272px] h-screen shrink-0 flex flex-col"
+      className="w-[272px] h-dvh shrink-0 flex flex-col"
       style={{ background: '#080c14', borderRight: '1px solid rgba(255,255,255,0.08)' }}
     >
 

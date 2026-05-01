@@ -22,6 +22,7 @@ function TerminalPageContent() {
         }
         @media (max-width: 900px) {
           .terminal-shell { flex-direction: column; }
+          .terminal-ambient { display: none !important; }
           .mob-radar {
             width: 100% !important;
             max-height: 42vh;
