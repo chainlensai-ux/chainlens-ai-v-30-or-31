@@ -23,7 +23,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="w-full h-full">
+      <body className="w-full min-h-dvh overflow-x-hidden">
         <Providers>
           <SupabaseProvider>
             {children}
