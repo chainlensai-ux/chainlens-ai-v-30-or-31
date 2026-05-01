@@ -9,12 +9,25 @@ import { useEffect, useRef, useState } from 'react'
 const queryClient = new QueryClient()
 
 
-function shouldEnableAndroidSafeMode(): { safeMode: boolean; debugMode: boolean } {
+function shouldEnableAndroidSafeMode() {
   const ua = navigator.userAgent
   const isAndroid = /Android/i.test(ua)
   const isMobile = window.innerWidth < 768
-  const debugMode = new URLSearchParams(window.location.search).get('mobileSafe') === 'android'
-  return { safeMode: (isAndroid && isMobile) || debugMode, debugMode }
+  const params = new URLSearchParams(window.location.search)
+  const forcedAndroidSafe = params.get('mobileSafe') === 'android'
+  const debugAndroid = params.get('debugAndroid') === 'true'
+  const safeMode = (isAndroid && isMobile) || forcedAndroidSafe
+
+  return {
+    safeMode,
+    debugMode: forcedAndroidSafe || debugAndroid,
+    diagnostics: {
+      isAndroid,
+      isMobile,
+      innerWidth: window.innerWidth,
+      userAgentSnippet: ua.slice(0, 120),
+    },
+  }
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -24,9 +37,17 @@ export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window === 'undefined') return
 
-    const { safeMode, debugMode } = shouldEnableAndroidSafeMode()
+    const { safeMode, debugMode, diagnostics } = shouldEnableAndroidSafeMode()
     document.body.classList.toggle('android-safe-mode', safeMode)
+    const hasAndroidSafeClass = document.body.classList.contains('android-safe-mode')
     setAndroidDebugBadge(debugMode)
+
+    if (debugMode) {
+      console.info('Android safe diagnostics', {
+        ...diagnostics,
+        hasAndroidSafeClass,
+      })
+    }
 
     return () => {
       document.body.classList.remove('android-safe-mode')
@@ -52,7 +73,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         {children}
         {androidDebugBadge && (
           <div className="fixed bottom-5 right-4 z-[9999] rounded-full border border-cyan-400/40 bg-slate-950/90 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-cyan-300 pointer-events-none">
-            Android safe mode
+            Android safe mode active
           </div>
         )}
       </QueryClientProvider>
