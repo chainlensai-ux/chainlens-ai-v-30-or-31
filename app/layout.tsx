@@ -3,6 +3,7 @@ import Script from 'next/script'
 import './globals.css'
 import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
 import { Providers } from './providers'
+import MobileClarkDrawer from '@/components/MobileClarkDrawer'
 
 export const metadata: Metadata = {
   title: 'ChainLens AI — Crypto Intelligence Platform',
@@ -33,6 +34,7 @@ export default function RootLayout({
             {children}
           </SupabaseProvider>
         </Providers>
+        <MobileClarkDrawer />
       </body>
     </html>
   )
