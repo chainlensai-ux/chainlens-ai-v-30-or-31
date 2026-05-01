@@ -318,6 +318,19 @@ export default function WhaleAlertsPage() {
     return `Review my Whale Alerts setup. No qualifying whale alerts are currently visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain what this means, what may be missing, and what to monitor next. Do not invent alerts or balances.`
   }
 
+  const lastSyncSummary = syncState
+    ? `${syncState.processed ?? 0} scanned / ${syncState.inserted ?? 0} inserted`
+    : 'Unavailable'
+  const providerSummary = syncState
+    ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors ?? 0} errors)` : 'Healthy')
+    : 'Unavailable'
+  const buildClarkPrompt = () => {
+    if (alerts.length > 0) {
+      return `Review my Whale Alerts feed. Current visible alerts: ${alerts.length}. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain the key wallet movement signals and what to monitor next. Do not invent missing data.`
+    }
+    return `Review my Whale Alerts setup. No qualifying whale alerts are currently visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain what this means, what may be missing, and what to monitor next. Do not invent alerts or balances.`
+  }
+
   return (
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden bg-[#06060a] px-4 py-6 text-white md:px-6">
       <div className="mx-auto max-w-7xl space-y-5">
