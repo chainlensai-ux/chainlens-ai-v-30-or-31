@@ -238,13 +238,12 @@ html, body {
     filter: none !important;
   }
   .home-page .mobile-static-card,
-  .home-page .feat-card,
-  .home-page article,
-  .home-page section > div {
+  .home-page .feat-card {
     transform: none !important;
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
-    background-image: none !important;
+    background-color: rgba(8, 12, 24, 0.92) !important;
+    box-shadow: 0 8px 30px rgba(3, 8, 20, 0.5) !important;
   }
   .home-page .home-ticker-track {
     animation: none !important;

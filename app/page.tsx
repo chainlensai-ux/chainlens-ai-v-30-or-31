@@ -657,7 +657,7 @@ export default function HomePage() {
           </p>
 
           {/* Feature icon row */}
-          <div className="hero-feat-row" style={{
+          <div className="hero-feat-row mobile-static-card" style={{
             display: 'flex',
             alignItems: 'stretch',
             gap: '0',
@@ -714,7 +714,7 @@ export default function HomePage() {
                 ),
               },
             ] as { accent: string; heading: string; desc: string; icon: React.ReactNode }[]).map((item, i) => (
-              <div key={i} style={{
+              <div key={i} className="mobile-static-card" style={{
                 flex: 1,
                 padding: '24px 20px',
                 borderRight: i < 3 ? '1px solid rgba(148,163,184,0.22)' : 'none',
@@ -1006,6 +1006,7 @@ export default function HomePage() {
               { handle: '@basedegen99',    name: 'BaseDegen99',    initials: 'BD', grad: 'linear-gradient(135deg,#a78bfa,#3b82f6)', quote: 'clark ai is the real deal. asked about a token and got a full breakdown in 5 seconds. insane.' },
             ].map((t, i) => (
               <div
+                className="mobile-static-card"
                 key={i}
                 style={{
                   background: 'rgba(255,255,255,0.04)',
@@ -1091,7 +1092,7 @@ export default function HomePage() {
               { label: 'Base',                     sub: 'Built Natively On' },
               { label: 'CORTEX',                   sub: 'Powered by Engine' },
             ].map((s, i) => (
-              <div key={i} style={{
+              <div key={i} className="mobile-static-card" style={{
                 textAlign: 'center',
                 borderRight: i < 2 ? '1px solid rgba(255,255,255,0.07)' : 'none',
                 padding: '0 24px',
@@ -1216,7 +1217,7 @@ export default function HomePage() {
             ].map((p, i) => (
               <div
                 key={p.title}
-                className="feat-card"
+                className="feat-card mobile-static-card"
                 style={{
                   background: 'linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
                   border: '1px solid rgba(255,255,255,0.07)',
