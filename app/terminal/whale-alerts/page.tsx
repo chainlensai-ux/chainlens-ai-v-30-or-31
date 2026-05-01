@@ -95,6 +95,8 @@ const severityColor = (sev: string | null | undefined): string => {
   return '#475569'
 }
 
+const compactMonospace = 'font-mono truncate max-w-full inline-block align-bottom'
+
 /* ─── Sub-components ────────────────────────────────────────────────────────── */
 
 function BellIcon({ color }: { color: string }) {
@@ -310,6 +312,19 @@ export default function WhaleAlertsPage() {
     { label: 'Tracked wallets', value: stats.trackedWallets, sub: 'Active',                                                                  color: '#60a5fa', icon: <WalletIcon color="#60a5fa" /> },
   ]
 
+  const lastSyncSummary = syncState
+    ? `${syncState.processed ?? 0} scanned / ${syncState.inserted ?? 0} inserted`
+    : 'Unavailable'
+  const providerSummary = syncState
+    ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors ?? 0} errors)` : 'Healthy')
+    : 'Unavailable'
+  const buildClarkPrompt = () => {
+    if (alerts.length > 0) {
+      return `Review my Whale Alerts feed. Current visible alerts: ${alerts.length}. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain the key wallet movement signals and what to monitor next. Do not invent missing data.`
+    }
+    return `Review my Whale Alerts setup. No qualifying whale alerts are currently visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain what this means, what may be missing, and what to monitor next. Do not invent alerts or balances.`
+  }
+
   return (
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden bg-[#06060a] px-4 py-6 text-white md:px-6">
       <div className="mx-auto max-w-7xl space-y-5">
@@ -472,10 +487,20 @@ export default function WhaleAlertsPage() {
                 Auto-update
               </span>
             </div>
+            <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1`
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[#8b5cf6]/30 bg-[#8b5cf6]/15 px-2.5 py-1 text-xs text-[#c4b5fd] hover:border-[#8b5cf6]/60"
+            >
+              Ask Clark
+            </button>
             <button className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 bg-slate-900/80 text-xs text-slate-400 hover:text-slate-300 hover:border-white/20 transition-colors">
               <PauseIcon />
               Pause
             </button>
+            </div>
           </div>
 
           {loading && (
@@ -531,22 +556,17 @@ export default function WhaleAlertsPage() {
                       <span className="ml-auto text-[11px] text-slate-500">{timeAgo(alert.occurred_at)}</span>
                     </div>
                     <div className="mt-2 grid gap-2 text-xs text-slate-400 md:grid-cols-2">
-                      <div>Wallet: <span className="font-mono text-slate-300">{label || '—'}</span></div>
+                      <div>Wallet: <span className={`${compactMonospace} text-slate-300`} title={alert.wallet_address ?? undefined}>{label || '—'}</span></div>
                       <div>Token: <span className="text-slate-300">{sym || '—'}</span></div>
                       <div>Value: <span className="text-slate-300">{fmtUsd(alert.amount_usd)}</span></div>
                       <div>Severity: <span style={{ color: severityColor(alert.severity) }}>{alert.severity ?? '—'}</span></div>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {alert.wallet_address && <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" className="rounded-lg border border-white/10 px-2 py-1 text-[11px] font-mono text-slate-300 hover:border-white/20">Wallet</a>}
-                      {alert.tx_hash && <a href={`https://basescan.org/tx/${alert.tx_hash}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-300 hover:border-[#2DD4BF]/50 hover:text-[#7ef2da]">Basescan <ExternalLinkIcon /></a>}
+                      {alert.wallet_address && <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" className="rounded-lg border border-white/10 px-2 py-1 text-[11px] font-mono text-slate-300 hover:border-white/20">{short(alert.wallet_address)}</a>}
+                      {alert.tx_hash && <a href={`https://basescan.org/tx/${alert.tx_hash}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-300 hover:border-[#2DD4BF]/50 hover:text-[#7ef2da]"><span className={compactMonospace}>{short(alert.tx_hash)}</span> <ExternalLinkIcon /></a>}
                       <button
                         onClick={() => {
-                          const walletLabelOrAddress = alert.wallet_label || alert.wallet_address || 'unknown wallet'
-                          const tokenSymbol = alert.token_symbol || alert.token_name || 'unknown token'
-                          const sideText = alert.side || 'moved'
-                          const amount = fmtUsd(alert.amount_usd)
-                          const txUrl = alert.tx_hash ? `https://basescan.org/tx/${alert.tx_hash}` : 'Unavailable'
-                          const prompt = `Analyze this Whale Alert: wallet ${walletLabelOrAddress} ${sideText} ${amount} of ${tokenSymbol}. Severity: ${alert.severity ?? 'unknown'}. Tx: ${txUrl}. What should I watch next? Do not give financial advice.`
+                          const prompt = buildClarkPrompt()
                           window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}&autosend=1`
                         }}
                         className="rounded-lg border border-[#8b5cf6]/30 bg-[#8b5cf6]/15 px-2 py-1 text-[11px] text-[#c4b5fd] hover:border-[#8b5cf6]/60"
