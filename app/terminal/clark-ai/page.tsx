@@ -86,6 +86,7 @@ const EMPTY_STATE_CHIPS = [
     prompt: 'Explain the liquidity risk for this Base token and what signals I should check before entering. Token: ',
   },
 ]
+const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
 
 function decodePrompt(value: string | null): string | null {
   if (!value) return null
@@ -99,7 +100,7 @@ function decodePrompt(value: string | null): string | null {
 function ClarkAiContent() {
   const searchParams = useSearchParams()
   const importedPrompt = useMemo(() => decodePrompt(searchParams.get('prompt')), [searchParams])
-  const autoSendRequested = searchParams.get('autoSend') === '1'
+  const autoSendRequested = searchParams.get('autoSend') === '1' || searchParams.get('autosend') === '1'
   const [messages, setMessages] = useState<Message[]>([])
   const [activeMode, setActiveMode] = useState<Mode['key']>(importedPrompt ? 'radar' : 'token')
   const [input, setInput] = useState(importedPrompt ?? '')
@@ -212,7 +213,7 @@ function ClarkAiContent() {
     } catch {
       setMessages((prev) => {
         const next = [...prev]
-        next[next.length - 1] = { role: 'clark', text: 'Clark backend unreachable.' }
+        next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }
         return next
       })
     } finally {

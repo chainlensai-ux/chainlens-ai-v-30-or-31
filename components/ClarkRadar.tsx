@@ -54,6 +54,10 @@ function extractTokenQuery(text: string): string | null {
   return null
 }
 
+function isMobileClient() {
+  return typeof window !== 'undefined' && (window.innerWidth < 768 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))
+}
+
 const WALLET_INTENT = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|holds\b|copy[\s-]?trade?|copytrade|follow|smart\s+money|good\s+wallet|whale\s+wallet|wallet\s+quality)\b/i
 const MARKET_INTENT = /\b(pumping|pump(?:ing)?|hot\b|moving\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?|what\s+should\s+i\s+watch|what'?s\s+on\s+base)\b/i
 
@@ -216,6 +220,10 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   function handleSend() {
     const text = input.trim()
     if (!text || loading) return
+    if (isMobileClient()) {
+      window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(text)}&autosend=1`
+      return
+    }
     setInput('')
     sendToClark(text)
   }

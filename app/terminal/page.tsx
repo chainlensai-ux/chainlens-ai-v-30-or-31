@@ -13,9 +13,8 @@ function TerminalPageContent() {
 
   const shouldRouteMobileToClark = () => {
     if (typeof window === 'undefined') return false
-    const touchCapable = navigator.maxTouchPoints > 0 || 'ontouchstart' in window
     const mobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')
-    return Boolean(touchCapable && (mobileUA || window.innerWidth <= 1024))
+    return Boolean(window.innerWidth < 768 || mobileUA)
   }
 
   return (
@@ -71,7 +70,7 @@ function TerminalPageContent() {
             onSend={(msg) => {
               if (shouldRouteMobileToClark()) {
                 const prompt = encodeURIComponent(msg.trim())
-                router.push(`/terminal/clark-ai?prompt=${prompt}&autoSend=1`)
+                router.push(`/terminal/clark-ai?prompt=${prompt}&autosend=1`)
                 return
               }
               setPendingMessage(msg)
