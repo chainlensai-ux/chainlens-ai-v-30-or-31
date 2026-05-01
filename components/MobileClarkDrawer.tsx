@@ -11,6 +11,7 @@ const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a m
 export default function MobileClarkDrawer() {
   const debugClark = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugClark') === 'true'
   const [isOpen, setIsOpen] = useState(false)
+  const [showOnThisDevice, setShowOnThisDevice] = useState(false)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [messages, setMessages] = useState<Message[]>([{ role: 'clark', text: INITIAL_ASSISTANT_MESSAGE }])
@@ -47,6 +48,21 @@ export default function MobileClarkDrawer() {
     }
   }
 
+
+  useEffect(() => {
+    const detect = () => {
+      const ua = navigator.userAgent || ''
+      const touchCapable = navigator.maxTouchPoints > 0 || 'ontouchstart' in window
+      const mobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(ua)
+      const smallViewport = window.innerWidth <= 1024
+      setShowOnThisDevice(Boolean(touchCapable && (mobileUA || smallViewport)))
+    }
+
+    detect()
+    window.addEventListener('resize', detect)
+    return () => window.removeEventListener('resize', detect)
+  }, [])
+
   useEffect(() => {
     const onOpenEvent = (event: Event) => {
       const detail = (event as CustomEvent<ClarkOpenDetail>).detail ?? {}
@@ -68,15 +84,22 @@ export default function MobileClarkDrawer() {
   return (
     <>
       {debugClark && (
+
         <div className="fixed left-3 top-20 z-[99999] rounded-md bg-black/85 px-3 py-2 text-xs font-semibold text-emerald-300">
           MobileClarkDrawer mounted
         </div>
       )}
 
-      {!isOpen && (
+      {debugClark && !showOnThisDevice && (
+        <div className="fixed left-3 top-32 z-[99999] rounded-md bg-rose-950/90 px-3 py-2 text-xs font-semibold text-rose-200">
+          MobileClark hidden by device detection
+        </div>
+      )}
+
+      {showOnThisDevice && !isOpen && (
         <button
           type="button"
-          className="fixed bottom-5 right-5 z-[99999] flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-[#8b5cf6] via-[#ec4899] to-[#2DD4BF] text-sm font-semibold text-white shadow-2xl md:hidden"
+          className="fixed bottom-5 right-5 z-[99999] flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-[#8b5cf6] via-[#ec4899] to-[#2DD4BF] text-sm font-semibold text-white shadow-2xl "
           onClick={() => setIsOpen(true)}
           aria-label="Open Clark"
           style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 99999 }}
@@ -85,7 +108,7 @@ export default function MobileClarkDrawer() {
         </button>
       )}
 
-      <div data-open={isOpen ? 'true' : 'false'} className={`mobile-clark-drawer fixed inset-x-0 bottom-0 z-[99999] text-white md:hidden ${isOpen ? 'flex' : 'hidden'}`}>
+      <div data-open={isOpen ? 'true' : 'false'} className={`mobile-clark-drawer fixed inset-x-0 bottom-0 z-[99999] text-white  ${isOpen ? 'flex' : 'hidden'}`}>
         <section
           className="fixed inset-x-0 bottom-0 z-[99999] flex min-h-[60dvh] max-h-[85dvh] flex-col rounded-t-2xl border-t border-white/10 bg-[#050814] text-white"
           style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
