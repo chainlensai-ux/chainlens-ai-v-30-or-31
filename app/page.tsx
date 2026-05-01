@@ -267,7 +267,7 @@ export default function HomePage() {
 
       <Navbar />
 
-      <div className="relative min-h-screen w-full bg-[#05050b]" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="home-page relative min-h-screen w-full bg-[#05050b]" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Unified page ambient system ── */}
         <div className="home-heavy-visual" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
