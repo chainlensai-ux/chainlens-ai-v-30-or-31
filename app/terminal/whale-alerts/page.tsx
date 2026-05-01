@@ -304,20 +304,7 @@ export default function WhaleAlertsPage() {
   const severities = useMemo(() => ['all', ...Array.from(new Set(alerts.map((a) => a.severity).filter(Boolean)))], [alerts])
   const sides      = useMemo(() => ['all', ...Array.from(new Set(alerts.map((a) => a.side).filter(Boolean)))], [alerts])
 
-  /* Metric cards config */
-  const lastSyncSummary = syncState
-    ? `${syncState.processed ?? 0} scanned / ${syncState.inserted ?? 0} inserted`
-    : 'Unavailable'
-  const providerSummary = syncState
-    ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors ?? 0} errors)` : 'Healthy')
-    : 'Unavailable'
-  const buildClarkPrompt = () => {
-    if (alerts.length > 0) {
-      return `Review my Whale Alerts feed. Current visible alerts: ${alerts.length}. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain the key wallet movement signals and what to monitor next. Do not invent missing data.`
-    }
-    return `Review my Whale Alerts setup. No qualifying whale alerts are currently visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain what this means, what may be missing, and what to monitor next. Do not invent alerts or balances.`
-  }
-
+  // Clark prompt helpers - single source of truth
   const lastSyncSummary = syncState
     ? `${syncState.processed ?? 0} scanned / ${syncState.inserted ?? 0} inserted`
     : 'Unavailable'
