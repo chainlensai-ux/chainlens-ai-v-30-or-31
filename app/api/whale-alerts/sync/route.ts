@@ -30,8 +30,17 @@ const MAX_LIMIT = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
 
+type SyncWindow = '24h' | '3d' | '7d'
+
+const WINDOW_MS: Record<SyncWindow, number> = {
+  '24h': 24 * 60 * 60 * 1000,
+  '3d': 3 * 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+}
+
 type SkipReason =
   | 'olderThan24h'
+  | 'olderThanWindow'
   | 'noTokenMovements'
   | 'missingTokenAddress'
   | 'missingUsdValue'
@@ -56,6 +65,7 @@ type SkipSample = {
 function makeSkipSummary(): SkipSummary {
   return {
     olderThan24h: 0,
+    olderThanWindow: 0,
     noTokenMovements: 0,
     missingTokenAddress: 0,
     missingUsdValue: 0,
@@ -177,8 +187,8 @@ async function fetchWalletTransactions(address: string, apiKey: string) {
   return response.json()
 }
 
-function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[]) {
-  const since = Date.now() - 24 * 60 * 60 * 1000
+function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: number, selectedWindow: SyncWindow) {
+  const since = Date.now() - windowMs
   const alerts: Array<Record<string, unknown>> = []
   const skipSummary = makeSkipSummary()
   let parsedMovementCount = 0
@@ -186,7 +196,8 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[]) {
   for (const tx of txs) {
     const occurredAt = tx.block_signed_at ? new Date(tx.block_signed_at).getTime() : Number.NaN
     if (!Number.isFinite(occurredAt) || occurredAt < since) {
-      skipSummary.olderThan24h += 1
+      skipSummary.olderThanWindow += 1
+      if (selectedWindow === '24h') skipSummary.olderThan24h += 1
       continue
     }
 
@@ -234,6 +245,12 @@ export async function POST(request: Request) {
 
   const requestUrl = new URL(request.url)
   const debug = requestUrl.searchParams.get('debug') === 'true'
+  const queryWindow = requestUrl.searchParams.get('window')
+  const bodyWindow = typeof body.window === 'string' ? body.window : null
+  const requestedWindow = queryWindow ?? bodyWindow
+  const selectedWindow: SyncWindow = requestedWindow === '3d' || requestedWindow === '7d' ? requestedWindow : '24h'
+  const windowMs = WINDOW_MS[selectedWindow]
+
   const queryLimit = parseInteger(requestUrl.searchParams.get('limit'))
   const bodyLimit = parseInteger(body.limit)
   const rawLimit = queryLimit ?? bodyLimit ?? DEFAULT_LIMIT
@@ -291,7 +308,7 @@ export async function POST(request: Request) {
       const txItems = (payload?.data?.items ?? []) as CovalentTx[]
       fetchedTxCount += txItems.length
 
-      const extracted = extractAlerts(wallet, txItems)
+      const extracted = extractAlerts(wallet, txItems, windowMs, selectedWindow)
       parsedMovementCount += extracted.parsedMovementCount
       alertCandidateCount += extracted.alerts.length
 
@@ -357,6 +374,7 @@ export async function POST(request: Request) {
   const nextOffset = offset + processed < trackedWalletsTotal ? offset + processed : null
   const response: Record<string, unknown> = {
     ok: true,
+    selectedWindow,
     providerSummary: {
       endpointPath: PROVIDER_ENDPOINT_PATH,
       authMode: 'authorization_bearer',
