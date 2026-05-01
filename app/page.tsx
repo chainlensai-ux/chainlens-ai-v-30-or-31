@@ -178,6 +178,10 @@ export default function HomePage() {
         }
 
         @media (max-width: 767px) {
+          .home-heavy-visual { display: none !important; }
+          .home-reveal-anim, .feat-card { animation: none !important; transform: none !important; }
+          .home-reveal-anim:hover, .feat-card:hover { transform: none !important; }
+          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
           .mob-hero-main { padding: 80px 16px 60px !important; }
           .feat-grid { grid-template-columns: 1fr !important; }
           .feat-section { padding: 56px 16px 64px !important; }
@@ -263,10 +267,10 @@ export default function HomePage() {
 
       <Navbar />
 
-      <div className="relative min-h-screen w-full bg-[#05050b]" style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className="home-page relative min-h-screen w-full bg-[#05050b]" style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Unified page ambient system ── */}
-        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+        <div className="home-heavy-visual" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
             position: 'absolute',
             inset: 0,
@@ -294,7 +298,7 @@ export default function HomePage() {
         </div>
 
         {/* ── Cinematic background layer ── */}
-        <div className="hero-premium-bg" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+        <div className="hero-premium-bg home-heavy-visual" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
             position: 'absolute', inset: 0,
             background: 'linear-gradient(180deg, #05050b 0%, #06070f 44%, #05050b 100%)',
@@ -558,7 +562,7 @@ export default function HomePage() {
             { x: '95%', y: '72%', dur: '7.0s', del: '3.4s', sz: 1   },
             { x: '42%', y: '6%',  dur: '9.8s', del: '6.0s', sz: 1.5 },
           ].map((p, i) => (
-            <div key={i} style={{
+            <div key={i} className="home-heavy-visual" style={{
               position: 'absolute',
               left: p.x, top: p.y,
               width: `${p.sz}px`, height: `${p.sz}px`,
@@ -653,7 +657,7 @@ export default function HomePage() {
           </p>
 
           {/* Feature icon row */}
-          <div className="hero-feat-row" style={{
+          <div className="hero-feat-row mobile-static-card" style={{
             display: 'flex',
             alignItems: 'stretch',
             gap: '0',
@@ -710,7 +714,7 @@ export default function HomePage() {
                 ),
               },
             ] as { accent: string; heading: string; desc: string; icon: React.ReactNode }[]).map((item, i) => (
-              <div key={i} style={{
+              <div key={i} className="mobile-static-card" style={{
                 flex: 1,
                 padding: '24px 20px',
                 borderRight: i < 3 ? '1px solid rgba(148,163,184,0.22)' : 'none',
@@ -832,7 +836,7 @@ export default function HomePage() {
         }}>
           <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '80px', background: 'linear-gradient(90deg, #05050c 0%, transparent 100%)', zIndex: 2, pointerEvents: 'none' }} />
           <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '80px', background: 'linear-gradient(270deg, #05050c 0%, transparent 100%)', zIndex: 2, pointerEvents: 'none' }} />
-          <div style={{ display: 'flex', gap: '0', whiteSpace: 'nowrap', animation: 'ticker-scroll 44s linear infinite', willChange: 'transform' }}>
+          <div className="home-ticker-track" style={{ display: 'flex', gap: '0', whiteSpace: 'nowrap', animation: 'ticker-scroll 44s linear infinite', willChange: 'transform' }}>
             {[...TICKER, ...TICKER].map((t, i) => (
               <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '0 32px', fontSize: '11.5px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
                 <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
@@ -1002,6 +1006,7 @@ export default function HomePage() {
               { handle: '@basedegen99',    name: 'BaseDegen99',    initials: 'BD', grad: 'linear-gradient(135deg,#a78bfa,#3b82f6)', quote: 'clark ai is the real deal. asked about a token and got a full breakdown in 5 seconds. insane.' },
             ].map((t, i) => (
               <div
+                className="mobile-static-card"
                 key={i}
                 style={{
                   background: 'rgba(255,255,255,0.04)',
@@ -1087,7 +1092,7 @@ export default function HomePage() {
               { label: 'Base',                     sub: 'Built Natively On' },
               { label: 'CORTEX',                   sub: 'Powered by Engine' },
             ].map((s, i) => (
-              <div key={i} style={{
+              <div key={i} className="mobile-static-card" style={{
                 textAlign: 'center',
                 borderRight: i < 2 ? '1px solid rgba(255,255,255,0.07)' : 'none',
                 padding: '0 24px',
@@ -1212,7 +1217,7 @@ export default function HomePage() {
             ].map((p, i) => (
               <div
                 key={p.title}
-                className="feat-card"
+                className="feat-card mobile-static-card"
                 style={{
                   background: 'linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
                   border: '1px solid rgba(255,255,255,0.07)',

@@ -4,19 +4,16 @@ import { WagmiProvider } from 'wagmi'
 import { createWeb3Modal } from '@web3modal/wagmi/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig, projectId, walletConnectEnabled } from '@/lib/wallet'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 const queryClient = new QueryClient()
-if (typeof window !== 'undefined') {
-  createWeb3Modal({
-    wagmiConfig,
-    projectId: projectId || 'disabled',
-  })
-}
 
 export function Providers({ children }: { children: React.ReactNode }) {
+  const modalInitRef = useRef(false)
+
   useEffect(() => {
-    if (!walletConnectEnabled || typeof window === 'undefined') return
+    if (!walletConnectEnabled || typeof window === 'undefined' || modalInitRef.current) return
+    modalInitRef.current = true
     createWeb3Modal({
       wagmiConfig,
       projectId,
