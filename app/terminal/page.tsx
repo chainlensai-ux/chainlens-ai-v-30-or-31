@@ -1,6 +1,7 @@
 'use client'
 
 import { Suspense, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import ClarkRadar from '@/components/ClarkRadar'
 import HeroSection from '@/components/HeroSection'
 import HomeTokenScreener from '@/components/HomeTokenScreener'
@@ -8,6 +9,14 @@ import HomeTokenScreener from '@/components/HomeTokenScreener'
 function TerminalPageContent() {
   const [isTyping, setIsTyping] = useState(false)
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
+  const router = useRouter()
+
+  const shouldRouteMobileToClark = () => {
+    if (typeof window === 'undefined') return false
+    const touchCapable = navigator.maxTouchPoints > 0 || 'ontouchstart' in window
+    const mobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')
+    return Boolean(touchCapable && (mobileUA || window.innerWidth <= 1024))
+  }
 
   return (
     <>
@@ -60,6 +69,11 @@ function TerminalPageContent() {
           <HeroSection
             onTyping={setIsTyping}
             onSend={(msg) => {
+              if (shouldRouteMobileToClark()) {
+                const prompt = encodeURIComponent(msg.trim())
+                router.push(`/terminal/clark-ai?prompt=${prompt}&autoSend=1`)
+                return
+              }
               setPendingMessage(msg)
             }}
           />
