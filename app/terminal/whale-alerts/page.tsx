@@ -163,6 +163,41 @@ function MetricCard({ label, value, hint }: { label: string; value: string | num
   )
 }
 
+function ControlButton({
+  active,
+  children,
+  onClick,
+  disabled = false,
+}: {
+  active?: boolean
+  children: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+        active
+          ? 'border-[#8b5cf6]/60 bg-[#8b5cf6]/20 text-white shadow-[0_0_18px_rgba(139,92,246,0.25)]'
+          : 'border-white/10 bg-[#07101d] text-slate-300 hover:border-white/20 hover:text-white'
+      } disabled:cursor-not-allowed disabled:opacity-50`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function SyncStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-[#07101d] px-3 py-2">
+      <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-medium text-slate-200">{value}</p>
+    </div>
+  )
+}
+
 /* Decorative sparkline SVG for hero */
 function SparklineVisual() {
   return (
@@ -305,28 +340,24 @@ export default function WhaleAlertsPage() {
         </section>
 
         {/* ── Combined filter + sync panel ───────────────────────────────────── */}
-        <section className="rounded-2xl border border-white/10 bg-slate-950/70 overflow-hidden">
-          <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-white/10">
+        <section className="rounded-2xl border border-white/10 bg-[#080c14]/90 p-4 md:p-5">
+          <div className="grid gap-4 lg:grid-cols-2">
 
             {/* Left: Filters */}
-            <div className="p-4 md:p-5 space-y-4">
+            <div className="space-y-4 rounded-2xl border border-white/10 bg-[#07101d] p-4">
 
               {/* Time window segmented control */}
               <div>
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Time window</div>
-                <div className="flex gap-1.5">
+                <div className="flex flex-wrap gap-2">
                   {WINDOWS.map((w) => (
-                    <button
+                    <ControlButton
                       key={w}
                       onClick={() => setWindowValue(w)}
-                      className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
-                        windowValue === w
-                          ? 'bg-teal-400/20 border-teal-400/40 text-teal-300'
-                          : 'bg-slate-900/80 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-300'
-                      }`}
+                      active={windowValue === w}
                     >
                       {w}
-                    </button>
+                    </ControlButton>
                   ))}
                 </div>
               </div>
@@ -334,19 +365,15 @@ export default function WhaleAlertsPage() {
               {/* Minimum USD chips */}
               <div>
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Minimum USD value</div>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-2">
                   {MIN_OPTIONS.map((m) => (
-                    <button
+                    <ControlButton
                       key={m.value}
                       onClick={() => setMinUsd(m.value)}
-                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-colors ${
-                        minUsd === m.value
-                          ? 'bg-violet-500/20 border-violet-400/50 text-violet-300'
-                          : 'bg-slate-900/80 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-300'
-                      }`}
+                      active={minUsd === m.value}
                     >
                       {m.label}
-                    </button>
+                    </ControlButton>
                   ))}
                 </div>
               </div>
@@ -364,7 +391,7 @@ export default function WhaleAlertsPage() {
                       <select
                         value={f.value}
                         onChange={(e) => (f.set as (v: string) => void)(e.target.value)}
-                        className="wa-select w-full appearance-none bg-slate-950/80 border border-white/10 text-slate-100 rounded-xl px-3 py-2 outline-none text-xs cursor-pointer hover:border-white/20 focus:border-cyan-400/50 transition-colors"
+                        className="wa-select w-full appearance-none rounded-xl border border-white/10 bg-[#060b16] px-3 py-2 text-xs text-slate-100 outline-none transition-colors hover:border-white/20 focus:border-cyan-400/50"
                       >
                         <option value="all">All</option>
                         {f.opts.filter(Boolean).map((o) => (
@@ -381,53 +408,26 @@ export default function WhaleAlertsPage() {
             </div>
 
             {/* Right: Sync status */}
-            <div className="p-4 md:p-5 flex flex-col gap-4">
+            <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-[#07101d] p-4">
               {/* Sync status header */}
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Sync status</div>
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/20 text-[10px] text-emerald-300 font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
-                    Batch Sync Online
-                  </span>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Wallet sync panel</div>
+                  <StatusChip tone="mint">{syncing ? 'Syncing…' : 'Sync Healthy'}</StatusChip>
                 </div>
 
                 {/* Sync stats rows */}
-                <div className="space-y-2">
-                  {([
-                    {
-                      label: 'Processed',
-                      value: syncState
-                        ? `${syncState.processed ?? 0} / ${syncState.trackedWalletsTotal ?? stats.trackedWallets}`
-                        : `– / ${stats.trackedWallets}`,
-                      cls: 'text-slate-200',
-                    },
-                    {
-                      label: 'Inserted',
-                      value: syncState?.inserted != null ? String(syncState.inserted) : '–',
-                      cls: 'text-emerald-300',
-                    },
-                    {
-                      label: 'Next offset',
-                      value: syncState
-                        ? syncState.nextOffset != null
-                          ? `${syncState.offset ?? 0} → Next: ${syncState.nextOffset}`
-                          : 'Complete'
-                        : '–',
-                      cls: 'text-slate-300',
-                    },
-                    {
-                      label: 'Provider errors',
-                      value: syncState?.providerErrors != null ? String(syncState.providerErrors) : '–',
-                      cls: (syncState?.providerErrors ?? 0) > 0 ? 'text-rose-400' : 'text-slate-500',
-                    },
-                  ] as const).map((row) => (
-                    <div key={row.label} className="flex justify-between items-center text-xs">
-                      <span className="text-slate-500">{row.label}</span>
-                      <span className={`tabular-nums font-medium ${row.cls}`}>{row.value}</span>
-                    </div>
-                  ))}
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <SyncStat label="Wallets scanned" value={syncState ? `${syncState.processed ?? 0} / ${syncState.trackedWalletsTotal ?? stats.trackedWallets}` : 'Unavailable'} />
+                  <SyncStat label="Alerts inserted" value={syncState?.inserted != null ? String(syncState.inserted) : 'Unavailable'} />
+                  <SyncStat label="Next offset" value={syncState ? (syncState.nextOffset != null ? String(syncState.nextOffset) : 'Complete') : '—'} />
+                  <SyncStat label="Provider errors" value={syncState?.providerErrors != null ? String(syncState.providerErrors) : '—'} />
                 </div>
+                {(syncState?.providerErrors ?? 0) > 0 && (
+                  <p className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    Provider returned errors for some wallets. Sync is still online, but some alerts may be delayed.
+                  </p>
+                )}
               </div>
 
               {/* Buttons */}
@@ -435,17 +435,17 @@ export default function WhaleAlertsPage() {
                 <button
                   onClick={resetFilters}
                   disabled={syncing}
-                  className="flex-1 px-3 py-2 rounded-xl border border-white/10 bg-slate-900/80 text-xs text-slate-300 font-medium hover:border-white/20 hover:text-white transition-colors disabled:opacity-40"
+                  className="flex-1 rounded-xl border border-white/10 bg-[#060b16] px-3 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-white/20 hover:text-white disabled:opacity-40"
                 >
                   Reset filters
                 </button>
                 <button
                   onClick={() => { void runSync(syncState?.nextOffset ?? 0) }}
                   disabled={syncing}
-                  className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold disabled:opacity-40 transition-opacity"
-                  style={{ background: 'linear-gradient(135deg, #2dd4bf 0%, #8b5cf6 100%)', color: '#030712' }}
+                  className="flex-1 rounded-xl px-3 py-2 text-xs font-semibold text-[#030712] disabled:opacity-40"
+                  style={{ background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 60%, #ec4899 100%)' }}
                 >
-                  {syncing ? 'Syncing…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
+                  {syncing ? 'Scanning…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
                 </button>
               </div>
 
