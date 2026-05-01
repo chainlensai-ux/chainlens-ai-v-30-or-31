@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 
-type Message = { role: 'user' | 'clark'; text: string }
+type Message = { role: 'user' | 'clark'; text: string; pending?: boolean }
 type ClarkOpenDetail = { prompt?: string; autoSend?: boolean; source?: string }
 
 const INITIAL_ASSISTANT_MESSAGE = 'Ask me about Base tokens, wallets, whale alerts, or risk signals.'
