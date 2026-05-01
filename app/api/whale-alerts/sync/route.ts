@@ -59,7 +59,20 @@ type SkipSample = {
   tokenSymbol: string | null
   tokenAddressShort: string | null
   amountUsd: number | null
+  alertType: string | null
+  side: string | null
   occurredAt: string | null
+}
+
+type FinalPipelineSummary = {
+  candidatesSeen: number
+  attemptedInsert: number
+  inserted: number
+  duplicateSkipped: number
+  dbInsertFailed: number
+  missingRequiredField: number
+  belowThresholdSkipped: number
+  unknownSkipped: number
 }
 
 function makeSkipSummary(): SkipSummary {
@@ -129,6 +142,19 @@ function pushProviderErrorSample(
 function pushSkipSample(samples: SkipSample[], sample: SkipSample) {
   if (samples.length >= 5) return
   samples.push(sample)
+}
+
+function makeFinalPipelineSummary(): FinalPipelineSummary {
+  return {
+    candidatesSeen: 0,
+    attemptedInsert: 0,
+    inserted: 0,
+    duplicateSkipped: 0,
+    dbInsertFailed: 0,
+    missingRequiredField: 0,
+    belowThresholdSkipped: 0,
+    unknownSkipped: 0,
+  }
 }
 
 class ProviderRequestError extends Error {
@@ -296,6 +322,8 @@ export async function POST(request: Request) {
   const providerErrorSamples: ProviderErrorSample[] = []
   const skipSummary = makeSkipSummary()
   const skipSamples: SkipSample[] = []
+  const finalPipelineSummary = makeFinalPipelineSummary()
+  const dbInsertErrorSamples: Array<Record<string, string | null>> = []
 
   for (const wallet of wallets as TrackedWallet[]) {
     if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) break
@@ -316,29 +344,60 @@ export async function POST(request: Request) {
         skipSummary[reason] += value
       }
 
-      const filteredAlerts = extracted.alerts.map((alert) => {
+      finalPipelineSummary.candidatesSeen += extracted.alerts.length
+      const filteredAlerts: Array<Record<string, unknown>> = []
+      for (const alert of extracted.alerts) {
         const usd = parseNumeric(alert.amount_usd)
-        if (usd === null) {
-          skipSummary.missingUsdValue += 1
+        const walletAddress = (alert.wallet_address as string | null) ?? null
+        const alertType = (alert.alert_type as string | null) ?? null
+        const occurredAt = (alert.occurred_at as string | null) ?? null
+
+        if (!walletAddress || !alertType || !occurredAt) {
+          finalPipelineSummary.missingRequiredField += 1
+          skipSummary.other += 1
           pushSkipSample(skipSamples, {
             wallet: short,
             txHash: shortHash((alert.tx_hash as string | null) ?? null),
-            reason: 'missingUsdValue',
+            reason: 'other',
             tokenSymbol: (alert.token_symbol as string | null) ?? null,
             tokenAddressShort: shortHash((alert.token_address as string | null) ?? null),
-            amountUsd: null,
-            occurredAt: (alert.occurred_at as string | null) ?? null,
+            amountUsd: usd,
+            alertType,
+            side: (alert.side as string | null) ?? null,
+            occurredAt,
           })
+          continue
         }
-        return {
+
+        if (usd === null) {
+          skipSummary.missingUsdValue += 1
+        } else if (usd < 1000) {
+          finalPipelineSummary.belowThresholdSkipped += 1
+          skipSummary.belowThreshold += 1
+          pushSkipSample(skipSamples, {
+            wallet: short,
+            txHash: shortHash((alert.tx_hash as string | null) ?? null),
+            reason: 'belowThreshold',
+            tokenSymbol: (alert.token_symbol as string | null) ?? null,
+            tokenAddressShort: shortHash((alert.token_address as string | null) ?? null),
+            amountUsd: usd,
+            alertType,
+            side: (alert.side as string | null) ?? null,
+            occurredAt,
+          })
+          continue
+        }
+
+        filteredAlerts.push({
           ...alert,
           amount_usd: usd,
           severity: severityFromUsd(usd),
-        }
-      })
+        })
+      }
 
       let walletInserted = 0
       if (filteredAlerts.length > 0) {
+        finalPipelineSummary.attemptedInsert += filteredAlerts.length
         const { data, error } = await supabase
           .from('whale_alerts')
           .upsert(filteredAlerts, {
@@ -347,14 +406,43 @@ export async function POST(request: Request) {
           })
           .select('id')
 
-        if (!error) walletInserted = data?.length ?? 0
+        if (!error) {
+          walletInserted = data?.length ?? 0
+        } else {
+          finalPipelineSummary.dbInsertFailed += filteredAlerts.length
+          if (dbInsertErrorSamples.length < 3) {
+            dbInsertErrorSamples.push({
+              code: error.code ?? null,
+              message: error.message ?? null,
+              hint: error.hint ?? null,
+              details: error.details ?? null,
+            })
+          }
+        }
       }
 
       const walletSkipped = Math.max(filteredAlerts.length - walletInserted, 0)
       inserted += walletInserted
       skipped += walletSkipped
+      finalPipelineSummary.inserted += walletInserted
+      finalPipelineSummary.duplicateSkipped += walletSkipped
       skipSummary.duplicate += walletSkipped
       skipSummary.dbSkipped += walletSkipped
+      if (walletSkipped > 0 && skipSamples.length < 5) {
+        for (const alert of filteredAlerts.slice(0, Math.min(walletSkipped, 5 - skipSamples.length))) {
+          pushSkipSample(skipSamples, {
+            wallet: short,
+            txHash: shortHash((alert.tx_hash as string | null) ?? null),
+            reason: 'duplicate',
+            tokenSymbol: (alert.token_symbol as string | null) ?? null,
+            tokenAddressShort: shortHash((alert.token_address as string | null) ?? null),
+            amountUsd: parseNumeric(alert.amount_usd),
+            alertType: (alert.alert_type as string | null) ?? null,
+            side: (alert.side as string | null) ?? null,
+            occurredAt: (alert.occurred_at as string | null) ?? null,
+          })
+        }
+      }
     } catch (error) {
       providerErrors += 1
       const statusCode = error instanceof ProviderRequestError ? error.statusCode : null
@@ -397,6 +485,8 @@ export async function POST(request: Request) {
     response.alertCandidateCount = alertCandidateCount
     response.skipSummary = skipSummary
     response.skipSamples = skipSamples
+    response.finalPipelineSummary = finalPipelineSummary
+    response.dbInsertErrorSamples = dbInsertErrorSamples
   }
 
   return NextResponse.json(response)
