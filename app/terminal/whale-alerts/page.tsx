@@ -39,12 +39,12 @@ type SyncResponse = {
 /* ─── Constants ─────────────────────────────────────────────────────────────── */
 
 const MIN_OPTIONS = [
-  { label: 'All movements / testing', value: 0 },
-  { label: '$100+',  value: 100   },
-  { label: '$500+',  value: 500   },
-  { label: '$1k+',   value: 1000  },
-  { label: '$5k+',   value: 5000  },
-  { label: '$10k+',  value: 10000 },
+  { label: 'All',   value: 0     },
+  { label: '$100+', value: 100   },
+  { label: '$500+', value: 500   },
+  { label: '$1k+',  value: 1000  },
+  { label: '$5k+',  value: 5000  },
+  { label: '$10k+', value: 10000 },
 ]
 
 const WINDOWS = ['15m', '1h', '6h', '24h'] as const
@@ -65,7 +65,7 @@ const timeAgo = (iso?: string | null): string => {
 }
 
 const fmtUsd = (n?: number | null): string => {
-  if (n == null) return 'Value unavailable'
+  if (n == null) return '—'
   if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`
   if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`
   return `$${n.toFixed(0)}`
@@ -77,156 +77,143 @@ const actionSummary = (a: AlertItem): string => {
   const amt = fmtUsd(a.amount_usd)
   if (s === 'buy')  return `Bought ${amt} of ${tok}`
   if (s === 'sell') return `Sold ${amt} of ${tok}`
-  if (amt === 'Value unavailable') return `Token transfer · ${tok}`
+  if (amt === '—') return `Token transfer · ${tok}`
   return `Transferred ${amt} of ${tok}`
 }
 
 const getSide = (s: string | null | undefined) => {
   const k = (s ?? '').toLowerCase()
-  if (k === 'buy')  return { border: '#22c55e', chip: 'bg-green-500/20 border-green-400/30 text-green-300', label: 'BUY' }
-  if (k === 'sell') return { border: '#f43f5e', chip: 'bg-rose-500/20 border-rose-400/30 text-rose-300', label: 'SELL' }
-  return               { border: '#8b5cf6', chip: 'bg-violet-500/20 border-violet-400/30 text-violet-300', label: 'TRANSFER' }
+  if (k === 'buy')  return { color: '#22c55e', bg: 'rgba(34,197,94,0.12)',  border: 'rgba(34,197,94,0.30)',  text: '#86efac', label: 'BUY'      }
+  if (k === 'sell') return { color: '#f43f5e', bg: 'rgba(244,63,94,0.12)',  border: 'rgba(244,63,94,0.30)',  text: '#fda4af', label: 'SELL'     }
+  return               { color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)', border: 'rgba(139,92,246,0.30)', text: '#c4b5fd', label: 'TRANSFER' }
 }
 
 const severityColor = (sev: string | null | undefined): string => {
   if (sev === 'major')  return '#f43f5e'
   if (sev === 'large')  return '#fb923c'
   if (sev === 'medium') return '#fbbf24'
-  return '#475569'
+  return '#64748b'
 }
 
-const compactMonospace = 'font-mono truncate max-w-full inline-block align-bottom'
+/* ─── Design tokens ─────────────────────────────────────────────────────────── */
 
-/* ─── Sub-components ────────────────────────────────────────────────────────── */
+const CARD = { background: 'rgba(8,13,22,0.82)', border: '1px solid rgba(255,255,255,0.07)' }
+const CARD_INNER = { background: 'rgba(5,9,18,0.70)', border: '1px solid rgba(255,255,255,0.06)' }
 
-function BellIcon({ color }: { color: string }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-    </svg>
-  )
-}
+/* ─── Micro components ──────────────────────────────────────────────────────── */
 
-function WalletIcon({ color }: { color: string }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="1" y="4" width="22" height="16" rx="2"/>
-      <line x1="1" y1="10" x2="23" y2="10"/>
-    </svg>
-  )
-}
-
-function ExternalLinkIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-      <polyline points="15 3 21 3 21 9"/>
-      <line x1="10" y1="14" x2="21" y2="3"/>
-    </svg>
-  )
-}
-
-function PauseIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
-      <rect x="6"  y="4" width="4" height="16"/>
-      <rect x="14" y="4" width="4" height="16"/>
-    </svg>
-  )
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor">
-      <path d="M0 0l5 6 5-6z"/>
-    </svg>
-  )
-}
-
-function StatusChip({ children, tone = 'neutral' }: { children: string; tone?: 'neutral' | 'mint' | 'purple' | 'pink' | 'cyan' }) {
-  const tones: Record<string, string> = {
-    neutral: 'bg-white/5 border-white/10 text-slate-300',
-    mint: 'bg-[#2DD4BF]/10 border-[#2DD4BF]/30 text-[#7ef2da]',
-    purple: 'bg-[#8b5cf6]/12 border-[#8b5cf6]/30 text-[#c4b5fd]',
-    pink: 'bg-[#ec4899]/12 border-[#ec4899]/30 text-[#f9a8d4]',
-    cyan: 'bg-cyan-400/10 border-cyan-400/30 text-cyan-200',
-  }
-  return <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${tones[tone]}`}>{children}</span>
-}
-
-function MetricCard({ label, value, hint }: { label: string; value: string | number; hint: string }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-[#080c14]/85 p-4">
-      <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{label}</p>
-      <p className="mt-1 text-2xl font-semibold text-white tabular-nums">{value}</p>
-      <p className="mt-1 text-xs text-slate-400">{hint}</p>
-    </div>
-  )
-}
-
-function ControlButton({
-  active,
+function Chip({
   children,
-  onClick,
-  disabled = false,
+  color = 'slate',
+  dot,
 }: {
-  active?: boolean
-  children: string
+  children: React.ReactNode
+  color?: 'slate' | 'teal' | 'purple' | 'pink' | 'cyan' | 'amber'
+  dot?: boolean
+}) {
+  const palettes: Record<string, { bg: string; border: string; text: string; dotColor: string }> = {
+    slate:  { bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.14)', text: '#94a3b8', dotColor: '#64748b' },
+    teal:   { bg: 'rgba(45,212,191,0.09)',  border: 'rgba(45,212,191,0.22)',  text: '#5eead4', dotColor: '#2dd4bf' },
+    purple: { bg: 'rgba(139,92,246,0.09)',  border: 'rgba(139,92,246,0.22)',  text: '#c4b5fd', dotColor: '#8b5cf6' },
+    pink:   { bg: 'rgba(236,72,153,0.09)',  border: 'rgba(236,72,153,0.22)',  text: '#f9a8d4', dotColor: '#ec4899' },
+    cyan:   { bg: 'rgba(34,211,238,0.09)',  border: 'rgba(34,211,238,0.22)',  text: '#67e8f9', dotColor: '#22d3ee' },
+    amber:  { bg: 'rgba(251,191,36,0.09)',  border: 'rgba(251,191,36,0.22)',  text: '#fcd34d', dotColor: '#f59e0b' },
+  }
+  const p = palettes[color]
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+      style={{ background: p.bg, border: `1px solid ${p.border}`, color: p.text }}
+    >
+      {dot && <span className="h-1.5 w-1.5 rounded-full flex-shrink-0 animate-pulse" style={{ background: p.dotColor }} />}
+      {children}
+    </span>
+  )
+}
+
+function FilterBtn({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
   onClick: () => void
-  disabled?: boolean
+  children: React.ReactNode
 }) {
   return (
     <button
       onClick={onClick}
-      disabled={disabled}
-      className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+      className="rounded-xl px-3 py-1.5 text-xs font-semibold transition-all"
+      style={
         active
-          ? 'border-[#8b5cf6]/60 bg-[#8b5cf6]/20 text-white shadow-[0_0_18px_rgba(139,92,246,0.25)]'
-          : 'border-white/10 bg-[#07101d] text-slate-300 hover:border-white/20 hover:text-white'
-      } disabled:cursor-not-allowed disabled:opacity-50`}
+          ? { background: 'rgba(45,212,191,0.13)', border: '1px solid rgba(45,212,191,0.38)', color: '#5eead4', boxShadow: '0 0 14px rgba(45,212,191,0.14)' }
+          : { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8' }
+      }
     >
       {children}
     </button>
   )
 }
 
-function SyncStat({ label, value }: { label: string; value: string }) {
+function DarkSelect({
+  value,
+  onChange,
+  label,
+  children,
+}: {
+  value: string
+  onChange: (v: string) => void
+  label: string
+  children: React.ReactNode
+}) {
   return (
-    <div className="rounded-xl border border-white/10 bg-[#07101d] px-3 py-2">
-      <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">{label}</p>
-      <p className="mt-1 text-sm font-medium text-slate-200">{value}</p>
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{label}</span>
+      <div className="relative">
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="wa-select w-full appearance-none rounded-xl px-3 py-2.5 text-sm outline-none transition-colors cursor-pointer"
+          style={{ background: '#050912', border: '1px solid rgba(255,255,255,0.09)', color: '#e2e8f0' }}
+        >
+          {children}
+        </select>
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-600">
+          <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M0 0l5 6 5-6z"/></svg>
+        </span>
+      </div>
     </div>
   )
 }
 
-/* Decorative sparkline SVG for hero */
-function SparklineVisual() {
+function StatRow({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
-    <div className="hidden md:flex flex-col items-end gap-1.5 flex-shrink-0">
-      <span className="text-[10px] text-emerald-400 font-semibold tracking-wide uppercase">
-        Listening for large wallet movements on Base
-      </span>
-      <div className="relative">
-        <svg width="190" height="46" viewBox="0 0 190 46" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <div className="flex items-center justify-between py-2.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+      <span className="text-xs text-slate-500">{label}</span>
+      <span className={`text-xs font-medium tabular-nums ${accent ? 'text-rose-400' : 'text-slate-200'}`}>{value}</span>
+    </div>
+  )
+}
+
+/* Decorative radar / live visual for hero */
+function LiveRadar() {
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-[10px] font-semibold uppercase tracking-widest text-teal-400">Live wallet movement</p>
+      <div className="relative h-[64px] overflow-hidden rounded-xl" style={{ background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.10)' }}>
+        <svg width="100%" height="64" viewBox="0 0 260 64" preserveAspectRatio="none" fill="none">
           <defs>
-            <linearGradient id="whaSparkFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="#2dd4bf" stopOpacity="0.32"/>
+            <linearGradient id="waSpark" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.28"/>
               <stop offset="100%" stopColor="#2dd4bf" stopOpacity="0"/>
             </linearGradient>
           </defs>
-          <path
-            d="M0 36 L16 32 L30 24 L46 28 L60 16 L74 20 L88 11 L102 16 L116 9 L130 13 L146 7 L160 11 L175 5 L190 7"
-            stroke="#2dd4bf" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-            fill="none" opacity="0.85"
-          />
-          <path
-            d="M0 36 L16 32 L30 24 L46 28 L60 16 L74 20 L88 11 L102 16 L116 9 L130 13 L146 7 L160 11 L175 5 L190 7 L190 46 L0 46Z"
-            fill="url(#whaSparkFill)"
-          />
-          <circle cx="190" cy="7" r="3" fill="#2dd4bf" opacity="0.9"/>
-          <circle cx="190" cy="7" r="5" fill="#2dd4bf" opacity="0.2"/>
+          <path d="M0 48 L22 42 L40 32 L62 38 L80 22 L100 28 L120 15 L140 21 L160 11 L180 17 L200 9 L220 13 L240 6 L260 9" stroke="#2dd4bf" strokeWidth="1.5" strokeLinecap="round" fill="none" opacity="0.75"/>
+          <path d="M0 48 L22 42 L40 32 L62 38 L80 22 L100 28 L120 15 L140 21 L160 11 L180 17 L200 9 L220 13 L240 6 L260 9 L260 64 L0 64Z" fill="url(#waSpark)"/>
+          <circle cx="260" cy="9" r="3.5" fill="#2dd4bf" opacity="0.9"/>
+          <circle cx="260" cy="9" r="6" fill="#2dd4bf" opacity="0.18"/>
         </svg>
+        <span className="absolute bottom-2 right-3 text-[10px] font-mono text-teal-400/60">Base · live</span>
       </div>
     </div>
   )
@@ -318,256 +305,315 @@ export default function WhaleAlertsPage() {
     return `Review my Whale Alerts setup. No qualifying whale alerts are currently visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain what this means, what may be missing, and what to monitor next. Do not invent alerts or balances.`
   }
 
-  return (
-    <div className="whale-alerts-page min-h-dvh overflow-x-hidden bg-[#06060a] px-4 py-6 text-white md:px-6">
-      <div className="mx-auto max-w-7xl space-y-5">
+  const goClark = () => {
+    window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1`
+  }
 
-        {/* ── Hero card ──────────────────────────────────────────────────────── */}
-        <section className="rounded-2xl border border-white/10 bg-[#080c14]/90 p-5 md:p-6" style={{ boxShadow: '0 0 0 1px rgba(255,255,255,0.02), 0 24px 70px rgba(0,0,0,0.45), 0 0 50px rgba(139,92,246,0.12)' }}>
-          <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-start">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">WHALE ALERTS · base mainnet</p>
-              <h1 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">Whale Alerts</h1>
-              <p className="mt-2 max-w-2xl text-sm text-slate-300">Track selected Base wallets for meaningful token movement.</p>
+  return (
+    <div
+      className="whale-alerts-page min-h-dvh overflow-x-hidden text-white"
+      style={{ background: 'radial-gradient(ellipse 80% 50% at 50% -10%, rgba(45,212,191,0.07) 0%, transparent 60%), radial-gradient(ellipse 60% 40% at 90% 10%, rgba(139,92,246,0.07) 0%, transparent 55%), #060810' }}
+    >
+      <div className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8 space-y-5">
+
+        {/* ── Hero ─────────────────────────────────────────────────────────── */}
+        <section
+          className="rounded-[28px] p-5 sm:p-7"
+          style={{ ...CARD, boxShadow: '0 0 80px rgba(45,212,191,0.06), 0 24px 60px rgba(0,0,0,0.5)' }}
+        >
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            {/* Left */}
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Whale Alerts · Base Mainnet</p>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight text-white sm:text-3xl">Whale Alerts</h1>
+              <p className="mt-2 text-sm text-slate-400 max-w-lg">Track selected Base wallets for meaningful token movement.</p>
               <div className="mt-4 flex flex-wrap gap-2">
-                <StatusChip tone="cyan">Base Mainnet</StatusChip>
-                <StatusChip>{stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Tracked wallets loading'}</StatusChip>
-                <StatusChip tone="mint">{syncState ? 'Batch Sync Online' : 'Sync status unavailable'}</StatusChip>
-                <StatusChip tone="purple">CORTEX Watching</StatusChip>
+                <Chip color="cyan" dot>Base Mainnet</Chip>
+                <Chip color="slate">{stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Wallets loading'}</Chip>
+                <Chip color="teal" dot>{syncing ? 'Syncing…' : 'Sync Online'}</Chip>
+                <Chip color="purple">CORTEX Watching</Chip>
               </div>
             </div>
-            <div className="rounded-xl border border-white/10 bg-[#07101d] p-3 lg:min-w-[270px]">
-              <p className="text-[10px] uppercase tracking-[0.13em] text-[#2DD4BF]">LIVE WALLET MOVEMENT</p>
-              <p className="mt-1 text-xs text-slate-300">Listening for high-signal wallet moves on Base.</p>
-              <SparklineVisual />
+            {/* Right: radar panel */}
+            <div className="w-full lg:w-[260px] flex-shrink-0 rounded-2xl p-4" style={CARD_INNER}>
+              <LiveRadar />
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.12)' }}>
+                  <p className="text-[10px] text-teal-400/70 uppercase tracking-widest">15m alerts</p>
+                  <p className="mt-0.5 text-lg font-semibold text-white tabular-nums">{stats.alerts15m}</p>
+                </div>
+                <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.12)' }}>
+                  <p className="text-[10px] text-violet-400/70 uppercase tracking-widest">1h alerts</p>
+                  <p className="mt-0.5 text-lg font-semibold text-white tabular-nums">{stats.alerts1h}</p>
+                </div>
+              </div>
             </div>
           </div>
         </section>
 
-        {/* ── Metric cards ───────────────────────────────────────────────────── */}
-        <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard label="Tracked Wallets" value={stats.trackedWallets || '—'} hint={stats.trackedWallets ? 'Configured in tracked wallets set' : 'Unavailable'} />
-          <MetricCard label="Alerts Found" value={alerts.length || '—'} hint="Current loaded alerts after filters" />
-          <MetricCard label="Last Sync" value={syncState ? `${syncState.processed ?? 0} scanned` : '—'} hint={syncState ? `Inserted ${syncState.inserted ?? 0}` : 'No sync result yet'} />
-          <MetricCard label="Provider Status" value={syncState ? ((syncState.providerErrors ?? 0) > 0 ? 'Degraded' : 'Healthy') : 'Unavailable'} hint={syncState ? `${syncState.providerErrors ?? 0} provider errors` : 'Sync status unavailable'} />
+        {/* ── Metric cards ─────────────────────────────────────────────────── */}
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            { label: 'Tracked Wallets',  value: stats.trackedWallets || '—', hint: stats.trackedWallets ? 'Active on Base' : 'Unavailable',                accent: 'rgba(45,212,191,0.5)' },
+            { label: 'Feed Alerts',      value: alerts.length || '—',        hint: 'After current filters',                                                 accent: 'rgba(139,92,246,0.5)' },
+            { label: 'Last Sync',        value: syncState ? `${syncState.processed ?? 0} scanned` : '—', hint: syncState ? `${syncState.inserted ?? 0} inserted` : 'No sync yet', accent: 'rgba(96,165,250,0.5)' },
+            { label: 'Provider Status',  value: syncState ? ((syncState.providerErrors ?? 0) > 0 ? 'Degraded' : 'Healthy') : '—', hint: syncState ? `${syncState.providerErrors ?? 0} errors` : 'Run sync first', accent: (syncState?.providerErrors ?? 0) > 0 ? 'rgba(244,63,94,0.5)' : 'rgba(34,197,94,0.5)' },
+          ].map((m) => (
+            <div key={m.label} className="rounded-2xl p-5" style={CARD}>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{m.label}</p>
+              <p className="mt-2 text-3xl font-semibold tabular-nums text-white">{m.value}</p>
+              <div className="mt-3 flex items-center gap-2">
+                <span className="h-px flex-1 rounded" style={{ background: m.accent, opacity: 0.4 }} />
+                <p className="text-[11px] text-slate-500">{m.hint}</p>
+              </div>
+            </div>
+          ))}
         </section>
 
-        {/* ── Combined filter + sync panel ───────────────────────────────────── */}
-        <section className="rounded-2xl border border-white/10 bg-[#080c14]/90 p-4 md:p-5">
-          <div className="grid gap-4 lg:grid-cols-2">
+        {/* ── Controls + Sync ───────────────────────────────────────────────── */}
+        <section
+          className="rounded-[24px] overflow-hidden"
+          style={CARD}
+        >
+          <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr]">
 
             {/* Left: Filters */}
-            <div className="space-y-4 rounded-2xl border border-white/10 bg-[#07101d] p-4">
+            <div className="p-5 sm:p-6 space-y-5" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Filters</p>
 
-              {/* Time window segmented control */}
-              <div>
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Time window</div>
+              {/* Time window */}
+              <div className="space-y-2">
+                <p className="text-xs text-slate-500">Time window</p>
                 <div className="flex flex-wrap gap-2">
                   {WINDOWS.map((w) => (
-                    <ControlButton
-                      key={w}
-                      onClick={() => setWindowValue(w)}
-                      active={windowValue === w}
-                    >
-                      {w}
-                    </ControlButton>
+                    <FilterBtn key={w} active={windowValue === w} onClick={() => setWindowValue(w)}>{w}</FilterBtn>
                   ))}
                 </div>
               </div>
 
-              {/* Minimum USD chips */}
-              <div>
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Minimum USD value</div>
+              {/* Min USD */}
+              <div className="space-y-2">
+                <p className="text-xs text-slate-500">Minimum value</p>
                 <div className="flex flex-wrap gap-2">
                   {MIN_OPTIONS.map((m) => (
-                    <ControlButton
-                      key={m.value}
-                      onClick={() => setMinUsd(m.value)}
-                      active={minUsd === m.value}
-                    >
-                      {m.label}
-                    </ControlButton>
+                    <FilterBtn key={m.value} active={minUsd === m.value} onClick={() => setMinUsd(m.value)}>{m.label}</FilterBtn>
                   ))}
                 </div>
               </div>
 
-              {/* Alert type / severity / side selects */}
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                {([
-                  { label: 'Alert type', value: typeFilter,     set: setTypeFilter,     opts: types      },
-                  { label: 'Severity',   value: severityFilter, set: setSeverityFilter, opts: severities },
-                  { label: 'Side',       value: sideFilter,     set: setSideFilter,     opts: sides      },
-                ] as const).map((f) => (
-                  <div key={f.label}>
-                    <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">{f.label}</div>
-                    <div className="relative">
-                      <select
-                        value={f.value}
-                        onChange={(e) => (f.set as (v: string) => void)(e.target.value)}
-                        className="wa-select w-full appearance-none rounded-xl border border-white/10 bg-[#060b16] px-3 py-2 text-xs text-slate-100 outline-none transition-colors hover:border-white/20 focus:border-cyan-400/50"
-                      >
-                        <option value="all">All</option>
-                        {f.opts.filter(Boolean).map((o) => (
-                          <option key={o} value={o ?? ''}>{o}</option>
-                        ))}
-                      </select>
-                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-500">
-                        <ChevronDownIcon />
-                      </span>
-                    </div>
-                  </div>
-                ))}
+              {/* Selects */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <DarkSelect label="Alert type" value={typeFilter} onChange={setTypeFilter}>
+                  <option value="all">All types</option>
+                  {types.filter(Boolean).filter((o) => o !== 'all').map((o) => <option key={o} value={o ?? ''}>{o}</option>)}
+                </DarkSelect>
+                <DarkSelect label="Severity" value={severityFilter} onChange={setSeverityFilter}>
+                  <option value="all">All severity</option>
+                  {severities.filter(Boolean).filter((o) => o !== 'all').map((o) => <option key={o} value={o ?? ''}>{o}</option>)}
+                </DarkSelect>
+                <DarkSelect label="Side" value={sideFilter} onChange={setSideFilter}>
+                  <option value="all">All sides</option>
+                  {sides.filter(Boolean).filter((o) => o !== 'all').map((o) => <option key={o} value={o ?? ''}>{o}</option>)}
+                </DarkSelect>
               </div>
             </div>
 
-            {/* Right: Sync status */}
-            <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-[#07101d] p-4">
-              {/* Sync status header */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Wallet sync panel</div>
-                  <StatusChip tone="mint">{syncing ? 'Syncing…' : 'Sync Healthy'}</StatusChip>
-                </div>
+            {/* Right: Sync panel */}
+            <div className="p-5 sm:p-6 flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Wallet sync</p>
+                <Chip color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Syncing…' : 'Sync Online'}</Chip>
+              </div>
 
-                {/* Sync stats rows */}
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <SyncStat label="Wallets scanned" value={syncState ? `${syncState.processed ?? 0} / ${syncState.trackedWalletsTotal ?? stats.trackedWallets}` : 'Unavailable'} />
-                  <SyncStat label="Alerts inserted" value={syncState?.inserted != null ? String(syncState.inserted) : 'Unavailable'} />
-                  <SyncStat label="Next offset" value={syncState ? (syncState.nextOffset != null ? String(syncState.nextOffset) : 'Complete') : '—'} />
-                  <SyncStat label="Provider errors" value={syncState?.providerErrors != null ? String(syncState.providerErrors) : '—'} />
-                </div>
-                {(syncState?.providerErrors ?? 0) > 0 && (
-                  <p className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                    Provider returned errors for some wallets. Sync is still online, but some alerts may be delayed.
-                  </p>
+              {/* Sync stats */}
+              <div className="flex-1 rounded-xl p-1" style={CARD_INNER}>
+                <StatRow
+                  label="Wallets scanned"
+                  value={syncState ? `${syncState.processed ?? 0} / ${syncState.trackedWalletsTotal ?? stats.trackedWallets}` : '—'}
+                />
+                <StatRow
+                  label="Alerts inserted"
+                  value={syncState?.inserted != null ? String(syncState.inserted) : '—'}
+                />
+                <StatRow
+                  label="Next offset"
+                  value={syncState ? (syncState.nextOffset != null ? String(syncState.nextOffset) : 'Complete') : '—'}
+                />
+                <StatRow
+                  label="Provider errors"
+                  value={syncState?.providerErrors != null ? String(syncState.providerErrors) : '—'}
+                  accent={(syncState?.providerErrors ?? 0) > 0}
+                />
+                {loading && (
+                  <div className="py-2.5 text-center">
+                    <span className="text-[11px] text-slate-500">Refreshing feed…</span>
+                  </div>
                 )}
               </div>
 
+              {(syncState?.providerErrors ?? 0) > 0 && (
+                <p className="rounded-xl px-3 py-2 text-xs text-amber-300" style={{ background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)' }}>
+                  Some provider errors occurred. Sync is online but alerts may be delayed.
+                </p>
+              )}
+
               {/* Buttons */}
-              <div className="flex gap-2 mt-auto">
+              <div className="flex gap-3 mt-auto">
                 <button
                   onClick={resetFilters}
                   disabled={syncing}
-                  className="flex-1 rounded-xl border border-white/10 bg-[#060b16] px-3 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-white/20 hover:text-white disabled:opacity-40"
+                  className="flex-1 rounded-xl py-2.5 text-xs font-medium text-slate-300 transition-all hover:text-white disabled:opacity-40"
+                  style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)' }}
                 >
                   Reset filters
                 </button>
                 <button
                   onClick={() => { void runSync(syncState?.nextOffset ?? 0) }}
                   disabled={syncing}
-                  className="flex-1 rounded-xl px-3 py-2 text-xs font-semibold text-[#030712] disabled:opacity-40"
-                  style={{ background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 60%, #ec4899 100%)' }}
+                  className="flex-1 rounded-xl py-2.5 text-xs font-semibold disabled:opacity-40 transition-opacity"
+                  style={{ background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 60%, #ec4899 100%)', color: '#030712' }}
                 >
                   {syncing ? 'Scanning…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
                 </button>
               </div>
-
-              {loading && (
-                <p className="text-[11px] text-slate-500 text-center -mt-1">Refreshing feed…</p>
-              )}
             </div>
           </div>
         </section>
 
-        {/* ── Alert feed ─────────────────────────────────────────────────────── */}
-        <section>
+        {/* ── Alert feed ───────────────────────────────────────────────────── */}
+        <section className="rounded-[24px] overflow-hidden" style={CARD}>
+
           {/* Feed header */}
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
             <div className="flex items-center gap-3">
-              <h2 className="text-sm font-bold text-white">Alert feed</h2>
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/20 text-[10px] text-emerald-300">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
-                Auto-update
-              </span>
+              <h2 className="text-sm font-semibold text-white">Alert feed</h2>
+              <Chip color="teal" dot>Live</Chip>
+              {alerts.length > 0 && <span className="text-xs text-slate-500">{alerts.length} alerts</span>}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => {
-                window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1`
-              }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-[#8b5cf6]/30 bg-[#8b5cf6]/15 px-2.5 py-1 text-xs text-[#c4b5fd] hover:border-[#8b5cf6]/60"
-            >
-              Ask Clark
-            </button>
-            <button className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 bg-slate-900/80 text-xs text-slate-400 hover:text-slate-300 hover:border-white/20 transition-colors">
-              <PauseIcon />
-              Pause
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={goClark}
+                className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-all"
+                style={{ background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.28)', color: '#c4b5fd' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                Ask Clark
+              </button>
             </div>
           </div>
 
+          {/* Loading skeleton */}
           {loading && (
-            <div className="space-y-2">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="animate-pulse rounded-2xl border border-white/10 bg-[#080c14]/80 p-4">
-                  <div className="mb-2 h-3 w-24 rounded bg-white/10" />
-                  <div className="mb-2 h-3 w-2/3 rounded bg-white/10" />
-                  <div className="h-3 w-1/3 rounded bg-white/10" />
+            <div className="divide-y" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3 px-5 py-4 animate-pulse">
+                  <div className="h-5 w-14 rounded-lg" style={{ background: 'rgba(255,255,255,0.06)' }} />
+                  <div className="h-3 flex-1 rounded" style={{ background: 'rgba(255,255,255,0.04)' }} />
+                  <div className="h-3 w-16 rounded" style={{ background: 'rgba(255,255,255,0.04)' }} />
                 </div>
               ))}
             </div>
           )}
 
+          {/* Error state */}
           {feedError && !loading && (
-            <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-5 text-sm text-rose-100">
-              <p className="font-semibold">Whale Alerts could not load right now.</p>
-              <p className="mt-1 text-rose-200/90">The sync engine may still be online, but the feed request failed.</p>
-              <button onClick={() => void loadAlerts()} className="mt-3 rounded-lg border border-rose-300/40 px-3 py-1.5 text-xs hover:bg-rose-400/10">Retry</button>
+            <div className="px-5 py-8 text-center">
+              <p className="text-sm font-semibold text-rose-300">Feed unavailable</p>
+              <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">The sync engine may still be online, but the feed request failed.</p>
+              <button
+                onClick={() => void loadAlerts()}
+                className="mt-4 rounded-xl px-4 py-2 text-xs font-medium text-slate-200 transition-all"
+                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)' }}
+              >
+                Retry
+              </button>
             </div>
           )}
 
-          {!feedError && alerts.length === 0 && !loading && (
-            <div className="rounded-2xl border border-white/10 bg-[#080c14]/80 p-8 text-center">
-              <p className="text-lg font-semibold text-white">No whale alerts yet</p>
-              <p className="mx-auto mt-2 max-w-xl text-sm text-slate-400">ChainLens is tracking selected Base wallets, but no qualifying movements have been indexed yet.</p>
-              <p className="mt-1 text-xs text-slate-500">Run a sync or check back after new wallet activity is detected.</p>
+          {/* Empty state */}
+          {!feedError && !loading && alerts.length === 0 && (
+            <div className="px-5 py-12 text-center">
+              <div
+                className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl"
+                style={{ background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.14)' }}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                </svg>
+              </div>
+              <p className="text-base font-semibold text-white">No whale alerts yet</p>
+              <p className="mx-auto mt-2 max-w-md text-sm text-slate-400 leading-relaxed">
+                ChainLens is tracking selected Base wallets, but no qualifying movements have been indexed yet.
+              </p>
               <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-                <StatusChip>{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Tracked wallets unavailable'}</StatusChip>
-                <StatusChip tone="mint">{syncState ? 'Sync active' : 'Last sync unavailable'}</StatusChip>
-                <StatusChip tone="purple">{(syncState?.providerErrors ?? 0) > 0 ? 'Provider degraded' : 'Provider stable'}</StatusChip>
+                <Chip color="slate">{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Wallets unavailable'}</Chip>
+                <Chip color="teal">{syncState ? 'Sync active' : 'No sync yet'}</Chip>
+                <Chip color={( syncState?.providerErrors ?? 0) > 0 ? 'amber' : 'purple'}>{(syncState?.providerErrors ?? 0) > 0 ? 'Provider degraded' : 'Provider stable'}</Chip>
               </div>
             </div>
           )}
 
           {/* Alert rows */}
-          {!feedError && alerts.length > 0 && !loading && (
-            <div className="space-y-2">
+          {!feedError && !loading && alerts.length > 0 && (
+            <div>
               {alerts.map((alert, i) => {
                 const side  = getSide(alert.side)
                 const label = alert.wallet_label || short(alert.wallet_address)
                 const sym   = alert.token_symbol || alert.token_name
 
                 return (
-                  <article
+                  <div
                     key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
-                    className="rounded-2xl border border-white/10 bg-[#080c14]/80 p-3 transition-colors hover:border-white/20"
-                    style={{ borderLeftWidth: '3px', borderLeftColor: side.border }}
+                    className="flex flex-wrap items-start gap-3 px-5 py-4 transition-colors"
+                    style={{
+                      borderBottom: '1px solid rgba(255,255,255,0.05)',
+                      borderLeft: `3px solid ${side.color}`,
+                    }}
                   >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-bold tracking-wide ${side.chip}`}>{side.label}</span>
-                      <span className="text-xs text-slate-200">{actionSummary(alert)}</span>
-                      <span className="ml-auto text-[11px] text-slate-500">{timeAgo(alert.occurred_at)}</span>
+                    {/* Side pill */}
+                    <span
+                      className="mt-0.5 flex-shrink-0 rounded-lg px-2.5 py-1 text-[10px] font-bold tracking-wider"
+                      style={{ background: side.bg, border: `1px solid ${side.border}`, color: side.text }}
+                    >
+                      {side.label}
+                    </span>
+
+                    {/* Main content */}
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <p className="text-sm text-slate-100 truncate">{actionSummary(alert)}</p>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <span className="text-xs text-slate-500 font-mono truncate max-w-[140px]" title={alert.wallet_address ?? undefined}>{label}</span>
+                        {sym && <span className="text-xs text-slate-500">{sym}</span>}
+                        {alert.severity && (
+                          <span className="text-xs font-medium" style={{ color: severityColor(alert.severity) }}>{alert.severity}</span>
+                        )}
+                      </div>
                     </div>
-                    <div className="mt-2 grid gap-2 text-xs text-slate-400 md:grid-cols-2">
-                      <div>Wallet: <span className={`${compactMonospace} text-slate-300`} title={alert.wallet_address ?? undefined}>{label || '—'}</span></div>
-                      <div>Token: <span className="text-slate-300">{sym || '—'}</span></div>
-                      <div>Value: <span className="text-slate-300">{alert.amount_usd == null ? 'Not indexed yet' : fmtUsd(alert.amount_usd)}</span></div>
-                      <div>Severity: <span style={{ color: severityColor(alert.severity) }}>{alert.severity ?? '—'}</span></div>
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {alert.wallet_address && <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" className="rounded-lg border border-white/10 px-2 py-1 text-[11px] font-mono text-slate-300 hover:border-white/20">{short(alert.wallet_address)}</a>}
-                      {alert.tx_hash && <a href={`https://basescan.org/tx/${alert.tx_hash}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-300 hover:border-[#2DD4BF]/50 hover:text-[#7ef2da]"><span className={compactMonospace}>{short(alert.tx_hash)}</span> <ExternalLinkIcon /></a>}
+
+                    {/* Right: time + links */}
+                    <div className="flex flex-shrink-0 items-center gap-2">
+                      <span className="text-[11px] tabular-nums text-slate-500">{timeAgo(alert.occurred_at)}</span>
+                      {alert.tx_hash && (
+                        <a
+                          href={`https://basescan.org/tx/${alert.tx_hash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-lg px-2 py-1 text-[11px] text-slate-400 transition-colors hover:text-teal-300"
+                          style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}
+                          title="View on Basescan"
+                        >
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                        </a>
+                      )}
                       <button
-                        onClick={() => {
-                          const prompt = buildClarkPrompt()
-                          window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}&autosend=1`
-                        }}
-                        className="rounded-lg border border-[#8b5cf6]/30 bg-[#8b5cf6]/15 px-2 py-1 text-[11px] text-[#c4b5fd] hover:border-[#8b5cf6]/60"
+                        onClick={goClark}
+                        className="hidden sm:inline-flex rounded-lg px-2 py-1 text-[11px] font-medium text-violet-300 transition-colors"
+                        style={{ background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.20)' }}
                       >
                         Ask Clark
                       </button>
                     </div>
-                  </article>
+                  </div>
                 )
               })}
             </div>
