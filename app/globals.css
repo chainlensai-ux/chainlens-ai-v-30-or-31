@@ -342,3 +342,47 @@ html, body {
 .android-safe-mode .pricing-card:hover {
   transform: none !important;
 }
+
+/* ── Whale Alerts page — scoped browser-default reset ───────────────────────── */
+.whale-alerts-page {
+  background: #030712;
+  color: #ffffff;
+}
+
+/* Force select elements to use our dark styles, overriding UA stylesheet */
+.whale-alerts-page .wa-select,
+.whale-alerts-page select {
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgb(2 6 23 / 0.8);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  color: #e2e8f0;
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  outline: none;
+  width: 100%;
+  cursor: pointer;
+}
+
+.whale-alerts-page .wa-select:focus,
+.whale-alerts-page select:focus {
+  border-color: rgb(34 211 238 / 0.5);
+}
+
+.whale-alerts-page .wa-select option,
+.whale-alerts-page select option {
+  background: #020617;
+  color: #e2e8f0;
+}
+
+/* Force all buttons off browser defaults inside this page */
+.whale-alerts-page button {
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+}

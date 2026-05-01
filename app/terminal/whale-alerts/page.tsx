@@ -83,9 +83,9 @@ const actionSummary = (a: AlertItem): string => {
 
 const getSide = (s: string | null | undefined) => {
   const k = (s ?? '').toLowerCase()
-  if (k === 'buy')  return { border: '#22c55e', chip: 'bg-green-500/15 border-green-400/30 text-green-300',  label: 'BUY'      }
-  if (k === 'sell') return { border: '#f43f5e', chip: 'bg-rose-500/15  border-rose-400/30  text-rose-300',   label: 'SELL'     }
-  return               { border: '#8b5cf6', chip: 'bg-violet-500/15 border-violet-400/30 text-violet-300', label: 'TRANSFER' }
+  if (k === 'buy')  return { border: '#22c55e', chip: 'bg-green-500/20 border-green-400/30 text-green-300', label: 'BUY' }
+  if (k === 'sell') return { border: '#f43f5e', chip: 'bg-rose-500/20 border-rose-400/30 text-rose-300', label: 'SELL' }
+  return               { border: '#8b5cf6', chip: 'bg-violet-500/20 border-violet-400/30 text-violet-300', label: 'TRANSFER' }
 }
 
 const severityColor = (sev: string | null | undefined): string => {
@@ -146,7 +146,7 @@ function ChevronDownIcon() {
 function SparklineVisual() {
   return (
     <div className="hidden md:flex flex-col items-end gap-1.5 flex-shrink-0">
-      <span className="text-[10px] text-emerald-400/80 font-semibold tracking-wide uppercase">
+      <span className="text-[10px] text-emerald-400 font-semibold tracking-wide uppercase">
         Listening for large wallet movements on Base
       </span>
       <div className="relative">
@@ -173,10 +173,6 @@ function SparklineVisual() {
     </div>
   )
 }
-
-/* ─── Glass card shell ──────────────────────────────────────────────────────── */
-
-const GLASS = 'rounded-2xl border border-white/10 bg-[#07101d]/60 backdrop-blur-sm'
 
 /* ─── Page ──────────────────────────────────────────────────────────────────── */
 
@@ -254,14 +250,11 @@ export default function WhaleAlertsPage() {
   ]
 
   return (
-    <div
-      className="min-h-screen text-slate-100"
-      style={{ background: 'radial-gradient(900px 400px at 8% -6%, rgba(59,130,246,0.13), transparent), radial-gradient(700px 350px at 92% 2%, rgba(139,92,246,0.09), transparent), #030712' }}
-    >
-      <div className="mx-auto max-w-[1180px] px-4 md:px-6 py-6 space-y-4">
+    <div className="whale-alerts-page min-h-dvh bg-[#030712] text-white px-4 md:px-6 py-6 overflow-x-hidden">
+      <div className="mx-auto max-w-[1180px] space-y-4">
 
         {/* ── Hero card ──────────────────────────────────────────────────────── */}
-        <section className={`${GLASS} p-5 md:p-6`}>
+        <section className="rounded-2xl border border-white/10 bg-slate-950/70 p-5 md:p-6">
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 min-w-0">
               <h1 className="text-2xl font-bold tracking-tight text-white">Whale Alerts</h1>
@@ -290,7 +283,7 @@ export default function WhaleAlertsPage() {
         {/* ── Metric cards ───────────────────────────────────────────────────── */}
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {METRIC_CARDS.map((card) => (
-            <div key={card.label} className={`${GLASS} p-4 flex items-start gap-3`}>
+            <div key={card.label} className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 flex items-start gap-3">
               <div
                 className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
                 style={{ background: `${card.color}18`, border: `1px solid ${card.color}30` }}
@@ -307,7 +300,7 @@ export default function WhaleAlertsPage() {
         </section>
 
         {/* ── Combined filter + sync panel ───────────────────────────────────── */}
-        <section className={`${GLASS} overflow-hidden`}>
+        <section className="rounded-2xl border border-white/10 bg-slate-950/70 overflow-hidden">
           <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-white/10">
 
             {/* Left: Filters */}
@@ -323,8 +316,8 @@ export default function WhaleAlertsPage() {
                       onClick={() => setWindowValue(w)}
                       className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
                         windowValue === w
-                          ? 'bg-[#2dd4bf]/15 border-[#2dd4bf]/40 text-[#2dd4bf]'
-                          : 'bg-[#070d18]/80 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-300'
+                          ? 'bg-teal-400/20 border-teal-400/40 text-teal-300'
+                          : 'bg-slate-900/80 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-300'
                       }`}
                     >
                       {w}
@@ -344,7 +337,7 @@ export default function WhaleAlertsPage() {
                       className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-colors ${
                         minUsd === m.value
                           ? 'bg-violet-500/20 border-violet-400/50 text-violet-300'
-                          : 'bg-[#070d18]/80 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-300'
+                          : 'bg-slate-900/80 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-300'
                       }`}
                     >
                       {m.label}
@@ -366,12 +359,11 @@ export default function WhaleAlertsPage() {
                       <select
                         value={f.value}
                         onChange={(e) => (f.set as (v: string) => void)(e.target.value)}
-                        className="w-full bg-[#070d18]/80 border border-white/10 rounded-xl text-xs text-slate-100 px-2.5 py-2 appearance-none outline-none cursor-pointer hover:border-white/20 focus:border-[#2dd4bf]/40 transition-colors"
-                        style={{ WebkitAppearance: 'none' }}
+                        className="wa-select w-full appearance-none bg-slate-950/80 border border-white/10 text-slate-100 rounded-xl px-3 py-2 outline-none text-xs cursor-pointer hover:border-white/20 focus:border-cyan-400/50 transition-colors"
                       >
-                        <option value="all" className="bg-[#07101d]">All</option>
+                        <option value="all">All</option>
                         {f.opts.filter(Boolean).map((o) => (
-                          <option key={o} value={o ?? ''} className="bg-[#07101d]">{o}</option>
+                          <option key={o} value={o ?? ''}>{o}</option>
                         ))}
                       </select>
                       <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-500">
@@ -395,7 +387,7 @@ export default function WhaleAlertsPage() {
                   </span>
                 </div>
 
-                {/* Sync stats table */}
+                {/* Sync stats rows */}
                 <div className="space-y-2">
                   {([
                     {
@@ -438,15 +430,15 @@ export default function WhaleAlertsPage() {
                 <button
                   onClick={resetFilters}
                   disabled={syncing}
-                  className="flex-1 px-3 py-2 rounded-xl border border-white/10 bg-[#070d18]/80 text-xs text-slate-300 font-medium hover:border-white/20 hover:text-white transition-colors disabled:opacity-40"
+                  className="flex-1 px-3 py-2 rounded-xl border border-white/10 bg-slate-900/80 text-xs text-slate-300 font-medium hover:border-white/20 hover:text-white transition-colors disabled:opacity-40"
                 >
                   Reset filters
                 </button>
                 <button
                   onClick={() => { void runSync(syncState?.nextOffset ?? 0) }}
                   disabled={syncing}
-                  className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold text-[#030712] disabled:opacity-40 transition-opacity"
-                  style={{ background: 'linear-gradient(135deg, #2dd4bf 0%, #8b5cf6 100%)' }}
+                  className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold disabled:opacity-40 transition-opacity"
+                  style={{ background: 'linear-gradient(135deg, #2dd4bf 0%, #8b5cf6 100%)', color: '#030712' }}
                 >
                   {syncing ? 'Syncing…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
                 </button>
@@ -470,7 +462,7 @@ export default function WhaleAlertsPage() {
                 Auto-update
               </span>
             </div>
-            <button className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 bg-[#070d18]/80 text-xs text-slate-400 hover:text-slate-300 hover:border-white/20 transition-colors">
+            <button className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 bg-slate-900/80 text-xs text-slate-400 hover:text-slate-300 hover:border-white/20 transition-colors">
               <PauseIcon />
               Pause
             </button>
@@ -478,7 +470,7 @@ export default function WhaleAlertsPage() {
 
           {/* Empty state */}
           {alerts.length === 0 && !loading && (
-            <div className={`${GLASS} p-8 text-center`}>
+            <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-8 text-center">
               <div
                 className="w-10 h-10 rounded-xl mx-auto mb-3 flex items-center justify-center"
                 style={{ background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.18)' }}
@@ -505,8 +497,8 @@ export default function WhaleAlertsPage() {
                 return (
                   <article
                     key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
-                    className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-[#07101d]/50 px-3 py-2.5 hover:bg-[#0b1628]/60 hover:border-white/[0.15] transition-colors"
-                    style={{ borderLeft: `3px solid ${side.border}` }}
+                    className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2.5 hover:bg-slate-900/60 hover:border-white/20 transition-colors"
+                    style={{ borderLeftWidth: '3px', borderLeftColor: side.border }}
                   >
                     {/* BUY / SELL / TRANSFER chip */}
                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold tracking-wide border flex-shrink-0 ${side.chip}`}>
@@ -554,7 +546,7 @@ export default function WhaleAlertsPage() {
                         href={`https://basescan.org/tx/${alert.tx_hash}`}
                         target="_blank"
                         rel="noreferrer"
-                        className="flex-shrink-0 text-slate-500 hover:text-[#2dd4bf] transition-colors"
+                        className="flex-shrink-0 text-slate-500 hover:text-teal-400 transition-colors"
                         title="View on Basescan"
                       >
                         <ExternalLinkIcon />
@@ -564,7 +556,7 @@ export default function WhaleAlertsPage() {
                     )}
 
                     {/* Ask Clark button */}
-                    <button className="hidden md:inline-flex flex-shrink-0 items-center gap-1.5 px-2 py-1 rounded-lg border border-white/10 bg-[#070d18]/80 text-[10px] text-slate-400 hover:border-violet-400/30 hover:text-violet-300 transition-colors">
+                    <button className="hidden md:inline-flex flex-shrink-0 items-center gap-1.5 px-2 py-1 rounded-lg border border-white/10 bg-slate-900/80 text-[10px] text-slate-400 hover:border-violet-400/30 hover:text-violet-300 transition-colors">
                       <span
                         className="w-3.5 h-3.5 rounded-full flex-shrink-0"
                         style={{ background: 'rgba(139,92,246,0.20)', border: '1px solid rgba(139,92,246,0.30)' }}
