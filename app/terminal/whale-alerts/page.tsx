@@ -142,6 +142,62 @@ function ChevronDownIcon() {
   )
 }
 
+function StatusChip({ children, tone = 'neutral' }: { children: string; tone?: 'neutral' | 'mint' | 'purple' | 'pink' | 'cyan' }) {
+  const tones: Record<string, string> = {
+    neutral: 'bg-white/5 border-white/10 text-slate-300',
+    mint: 'bg-[#2DD4BF]/10 border-[#2DD4BF]/30 text-[#7ef2da]',
+    purple: 'bg-[#8b5cf6]/12 border-[#8b5cf6]/30 text-[#c4b5fd]',
+    pink: 'bg-[#ec4899]/12 border-[#ec4899]/30 text-[#f9a8d4]',
+    cyan: 'bg-cyan-400/10 border-cyan-400/30 text-cyan-200',
+  }
+  return <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${tones[tone]}`}>{children}</span>
+}
+
+function MetricCard({ label, value, hint }: { label: string; value: string | number; hint: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#080c14]/85 p-4">
+      <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <p className="mt-1 text-2xl font-semibold text-white tabular-nums">{value}</p>
+      <p className="mt-1 text-xs text-slate-400">{hint}</p>
+    </div>
+  )
+}
+
+function ControlButton({
+  active,
+  children,
+  onClick,
+  disabled = false,
+}: {
+  active?: boolean
+  children: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+        active
+          ? 'border-[#8b5cf6]/60 bg-[#8b5cf6]/20 text-white shadow-[0_0_18px_rgba(139,92,246,0.25)]'
+          : 'border-white/10 bg-[#07101d] text-slate-300 hover:border-white/20 hover:text-white'
+      } disabled:cursor-not-allowed disabled:opacity-50`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function SyncStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-[#07101d] px-3 py-2">
+      <p className="text-[10px] uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-medium text-slate-200">{value}</p>
+    </div>
+  )
+}
+
 /* Decorative sparkline SVG for hero */
 function SparklineVisual() {
   return (
@@ -190,10 +246,12 @@ export default function WhaleAlertsPage() {
   const [loading,   setLoading]   = useState(false)
   const [syncing,   setSyncing]   = useState(false)
   const [syncState, setSyncState] = useState<SyncResponse | null>(null)
+  const [feedError, setFeedError] = useState<string | null>(null)
 
   /* Load alerts from API — preserves original fetch logic */
   const loadAlerts = useCallback(async () => {
     setLoading(true)
+    setFeedError(null)
     try {
       const p = new URLSearchParams({ window: windowValue, minUsd: String(minUsd), limit: '100' })
       if (typeFilter    !== 'all') p.set('type',     typeFilter)
@@ -201,8 +259,11 @@ export default function WhaleAlertsPage() {
       if (sideFilter    !== 'all') p.set('side',     sideFilter)
       const res  = await fetch(`/api/whale-alerts?${p.toString()}`, { cache: 'no-store' })
       const json = await res.json()
+      if (!res.ok) throw new Error('feed_unavailable')
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
+    } catch {
+      setFeedError('Whale Alerts could not load right now. The sync engine may still be online, but the feed request failed.')
     } finally {
       setLoading(false)
     }
@@ -250,78 +311,58 @@ export default function WhaleAlertsPage() {
   ]
 
   return (
-    <div className="whale-alerts-page min-h-dvh bg-[#030712] text-white px-4 md:px-6 py-6 overflow-x-hidden">
-      <div className="mx-auto max-w-[1180px] space-y-4">
+    <div className="whale-alerts-page min-h-dvh overflow-x-hidden bg-[#06060a] px-4 py-6 text-white md:px-6">
+      <div className="mx-auto max-w-7xl space-y-5">
 
         {/* ── Hero card ──────────────────────────────────────────────────────── */}
-        <section className="rounded-2xl border border-white/10 bg-slate-950/70 p-5 md:p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex-1 min-w-0">
-              <h1 className="text-2xl font-bold tracking-tight text-white">Whale Alerts</h1>
-              <p className="mt-1 text-sm text-slate-400">Track selected Base wallets for meaningful token movement.</p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                {/* Base Mainnet chip */}
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-400/20 text-xs text-blue-300 font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
-                  Base Mainnet
-                </span>
-                {/* Tracked wallets */}
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300">
-                  {stats.trackedWallets} tracked wallets
-                </span>
-                {/* Sync status */}
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-400/20 text-xs text-emerald-300 font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0 animate-pulse" />
-                  Batch Sync Online
-                </span>
+        <section className="rounded-2xl border border-white/10 bg-[#080c14]/90 p-5 md:p-6" style={{ boxShadow: '0 0 0 1px rgba(255,255,255,0.02), 0 24px 70px rgba(0,0,0,0.45), 0 0 50px rgba(139,92,246,0.12)' }}>
+          <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-start">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">WHALE ALERTS · base mainnet</p>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">Whale Alerts</h1>
+              <p className="mt-2 max-w-2xl text-sm text-slate-300">Track selected Base wallets for meaningful token movement.</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <StatusChip tone="cyan">Base Mainnet</StatusChip>
+                <StatusChip>{stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Tracked wallets loading'}</StatusChip>
+                <StatusChip tone="mint">{syncState ? 'Batch Sync Online' : 'Sync status unavailable'}</StatusChip>
+                <StatusChip tone="purple">CORTEX Watching</StatusChip>
               </div>
             </div>
-            <SparklineVisual />
+            <div className="rounded-xl border border-white/10 bg-[#07101d] p-3 lg:min-w-[270px]">
+              <p className="text-[10px] uppercase tracking-[0.13em] text-[#2DD4BF]">LIVE WALLET MOVEMENT</p>
+              <p className="mt-1 text-xs text-slate-300">Listening for high-signal wallet moves on Base.</p>
+              <SparklineVisual />
+            </div>
           </div>
         </section>
 
         {/* ── Metric cards ───────────────────────────────────────────────────── */}
-        <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {METRIC_CARDS.map((card) => (
-            <div key={card.label} className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 flex items-start gap-3">
-              <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
-                style={{ background: `${card.color}18`, border: `1px solid ${card.color}30` }}
-              >
-                {card.icon}
-              </div>
-              <div className="min-w-0">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{card.label}</div>
-                <div className="mt-0.5 text-2xl font-bold text-white tabular-nums">{card.value}</div>
-                <div className="mt-0.5 text-[11px] text-slate-500">{card.sub}</div>
-              </div>
-            </div>
-          ))}
+        <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="Tracked Wallets" value={stats.trackedWallets || '—'} hint={stats.trackedWallets ? 'Configured in tracked wallets set' : 'Unavailable'} />
+          <MetricCard label="Alerts Found" value={alerts.length || '—'} hint="Current loaded alerts after filters" />
+          <MetricCard label="Last Sync" value={syncState ? `${syncState.processed ?? 0} scanned` : '—'} hint={syncState ? `Inserted ${syncState.inserted ?? 0}` : 'No sync result yet'} />
+          <MetricCard label="Provider Status" value={syncState ? ((syncState.providerErrors ?? 0) > 0 ? 'Degraded' : 'Healthy') : 'Unavailable'} hint={syncState ? `${syncState.providerErrors ?? 0} provider errors` : 'Sync status unavailable'} />
         </section>
 
         {/* ── Combined filter + sync panel ───────────────────────────────────── */}
-        <section className="rounded-2xl border border-white/10 bg-slate-950/70 overflow-hidden">
-          <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-white/10">
+        <section className="rounded-2xl border border-white/10 bg-[#080c14]/90 p-4 md:p-5">
+          <div className="grid gap-4 lg:grid-cols-2">
 
             {/* Left: Filters */}
-            <div className="p-4 md:p-5 space-y-4">
+            <div className="space-y-4 rounded-2xl border border-white/10 bg-[#07101d] p-4">
 
               {/* Time window segmented control */}
               <div>
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Time window</div>
-                <div className="flex gap-1.5">
+                <div className="flex flex-wrap gap-2">
                   {WINDOWS.map((w) => (
-                    <button
+                    <ControlButton
                       key={w}
                       onClick={() => setWindowValue(w)}
-                      className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
-                        windowValue === w
-                          ? 'bg-teal-400/20 border-teal-400/40 text-teal-300'
-                          : 'bg-slate-900/80 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-300'
-                      }`}
+                      active={windowValue === w}
                     >
                       {w}
-                    </button>
+                    </ControlButton>
                   ))}
                 </div>
               </div>
@@ -329,19 +370,15 @@ export default function WhaleAlertsPage() {
               {/* Minimum USD chips */}
               <div>
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Minimum USD value</div>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-2">
                   {MIN_OPTIONS.map((m) => (
-                    <button
+                    <ControlButton
                       key={m.value}
                       onClick={() => setMinUsd(m.value)}
-                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-colors ${
-                        minUsd === m.value
-                          ? 'bg-violet-500/20 border-violet-400/50 text-violet-300'
-                          : 'bg-slate-900/80 border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-300'
-                      }`}
+                      active={minUsd === m.value}
                     >
                       {m.label}
-                    </button>
+                    </ControlButton>
                   ))}
                 </div>
               </div>
@@ -359,7 +396,7 @@ export default function WhaleAlertsPage() {
                       <select
                         value={f.value}
                         onChange={(e) => (f.set as (v: string) => void)(e.target.value)}
-                        className="wa-select w-full appearance-none bg-slate-950/80 border border-white/10 text-slate-100 rounded-xl px-3 py-2 outline-none text-xs cursor-pointer hover:border-white/20 focus:border-cyan-400/50 transition-colors"
+                        className="wa-select w-full appearance-none rounded-xl border border-white/10 bg-[#060b16] px-3 py-2 text-xs text-slate-100 outline-none transition-colors hover:border-white/20 focus:border-cyan-400/50"
                       >
                         <option value="all">All</option>
                         {f.opts.filter(Boolean).map((o) => (
@@ -376,53 +413,26 @@ export default function WhaleAlertsPage() {
             </div>
 
             {/* Right: Sync status */}
-            <div className="p-4 md:p-5 flex flex-col gap-4">
+            <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-[#07101d] p-4">
               {/* Sync status header */}
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Sync status</div>
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/20 text-[10px] text-emerald-300 font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
-                    Batch Sync Online
-                  </span>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Wallet sync panel</div>
+                  <StatusChip tone="mint">{syncing ? 'Syncing…' : 'Sync Healthy'}</StatusChip>
                 </div>
 
                 {/* Sync stats rows */}
-                <div className="space-y-2">
-                  {([
-                    {
-                      label: 'Processed',
-                      value: syncState
-                        ? `${syncState.processed ?? 0} / ${syncState.trackedWalletsTotal ?? stats.trackedWallets}`
-                        : `– / ${stats.trackedWallets}`,
-                      cls: 'text-slate-200',
-                    },
-                    {
-                      label: 'Inserted',
-                      value: syncState?.inserted != null ? String(syncState.inserted) : '–',
-                      cls: 'text-emerald-300',
-                    },
-                    {
-                      label: 'Next offset',
-                      value: syncState
-                        ? syncState.nextOffset != null
-                          ? `${syncState.offset ?? 0} → Next: ${syncState.nextOffset}`
-                          : 'Complete'
-                        : '–',
-                      cls: 'text-slate-300',
-                    },
-                    {
-                      label: 'Provider errors',
-                      value: syncState?.providerErrors != null ? String(syncState.providerErrors) : '–',
-                      cls: (syncState?.providerErrors ?? 0) > 0 ? 'text-rose-400' : 'text-slate-500',
-                    },
-                  ] as const).map((row) => (
-                    <div key={row.label} className="flex justify-between items-center text-xs">
-                      <span className="text-slate-500">{row.label}</span>
-                      <span className={`tabular-nums font-medium ${row.cls}`}>{row.value}</span>
-                    </div>
-                  ))}
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <SyncStat label="Wallets scanned" value={syncState ? `${syncState.processed ?? 0} / ${syncState.trackedWalletsTotal ?? stats.trackedWallets}` : 'Unavailable'} />
+                  <SyncStat label="Alerts inserted" value={syncState?.inserted != null ? String(syncState.inserted) : 'Unavailable'} />
+                  <SyncStat label="Next offset" value={syncState ? (syncState.nextOffset != null ? String(syncState.nextOffset) : 'Complete') : '—'} />
+                  <SyncStat label="Provider errors" value={syncState?.providerErrors != null ? String(syncState.providerErrors) : '—'} />
                 </div>
+                {(syncState?.providerErrors ?? 0) > 0 && (
+                  <p className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    Provider returned errors for some wallets. Sync is still online, but some alerts may be delayed.
+                  </p>
+                )}
               </div>
 
               {/* Buttons */}
@@ -430,17 +440,17 @@ export default function WhaleAlertsPage() {
                 <button
                   onClick={resetFilters}
                   disabled={syncing}
-                  className="flex-1 px-3 py-2 rounded-xl border border-white/10 bg-slate-900/80 text-xs text-slate-300 font-medium hover:border-white/20 hover:text-white transition-colors disabled:opacity-40"
+                  className="flex-1 rounded-xl border border-white/10 bg-[#060b16] px-3 py-2 text-xs font-medium text-slate-300 transition-colors hover:border-white/20 hover:text-white disabled:opacity-40"
                 >
                   Reset filters
                 </button>
                 <button
                   onClick={() => { void runSync(syncState?.nextOffset ?? 0) }}
                   disabled={syncing}
-                  className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold disabled:opacity-40 transition-opacity"
-                  style={{ background: 'linear-gradient(135deg, #2dd4bf 0%, #8b5cf6 100%)', color: '#030712' }}
+                  className="flex-1 rounded-xl px-3 py-2 text-xs font-semibold text-[#030712] disabled:opacity-40"
+                  style={{ background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 60%, #ec4899 100%)' }}
                 >
-                  {syncing ? 'Syncing…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
+                  {syncing ? 'Scanning…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
                 </button>
               </div>
 
@@ -468,27 +478,42 @@ export default function WhaleAlertsPage() {
             </button>
           </div>
 
-          {/* Empty state */}
-          {alerts.length === 0 && !loading && (
-            <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-8 text-center">
-              <div
-                className="w-10 h-10 rounded-xl mx-auto mb-3 flex items-center justify-center"
-                style={{ background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.18)' }}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                </svg>
+          {loading && (
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="animate-pulse rounded-2xl border border-white/10 bg-[#080c14]/80 p-4">
+                  <div className="mb-2 h-3 w-24 rounded bg-white/10" />
+                  <div className="mb-2 h-3 w-2/3 rounded bg-white/10" />
+                  <div className="h-3 w-1/3 rounded bg-white/10" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {feedError && !loading && (
+            <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-5 text-sm text-rose-100">
+              <p className="font-semibold">Whale Alerts could not load right now.</p>
+              <p className="mt-1 text-rose-200/90">The sync engine may still be online, but the feed request failed.</p>
+              <button onClick={() => void loadAlerts()} className="mt-3 rounded-lg border border-rose-300/40 px-3 py-1.5 text-xs hover:bg-rose-400/10">Retry</button>
+            </div>
+          )}
+
+          {!feedError && alerts.length === 0 && !loading && (
+            <div className="rounded-2xl border border-white/10 bg-[#080c14]/80 p-8 text-center">
+              <p className="text-lg font-semibold text-white">No whale alerts yet</p>
+              <p className="mx-auto mt-2 max-w-xl text-sm text-slate-400">ChainLens is tracking selected Base wallets, but no qualifying movements have been indexed yet.</p>
+              <p className="mt-1 text-xs text-slate-500">Run a sync or check back after new wallet activity is detected.</p>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                <StatusChip>{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Tracked wallets unavailable'}</StatusChip>
+                <StatusChip tone="mint">{syncState ? 'Sync active' : 'Last sync unavailable'}</StatusChip>
+                <StatusChip tone="purple">{(syncState?.providerErrors ?? 0) > 0 ? 'Provider degraded' : 'Provider stable'}</StatusChip>
               </div>
-              <p className="text-sm text-slate-400 max-w-sm mx-auto leading-relaxed">
-                No whale alerts in this window yet. Run sync, lower the minimum USD filter, or sync the next wallet batch.
-              </p>
             </div>
           )}
 
           {/* Alert rows */}
-          {alerts.length > 0 && (
-            <div className="space-y-1.5">
+          {!feedError && alerts.length > 0 && !loading && (
+            <div className="space-y-2">
               {alerts.map((alert, i) => {
                 const side  = getSide(alert.side)
                 const label = alert.wallet_label || short(alert.wallet_address)
@@ -497,72 +522,38 @@ export default function WhaleAlertsPage() {
                 return (
                   <article
                     key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
-                    className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2.5 hover:bg-slate-900/60 hover:border-white/20 transition-colors"
+                    className="rounded-2xl border border-white/10 bg-[#080c14]/80 p-3 transition-colors hover:border-white/20"
                     style={{ borderLeftWidth: '3px', borderLeftColor: side.border }}
                   >
-                    {/* BUY / SELL / TRANSFER chip */}
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold tracking-wide border flex-shrink-0 ${side.chip}`}>
-                      {side.label}
-                    </span>
-
-                    {/* Wallet label / address */}
-                    <span
-                      className="text-xs text-slate-400 font-mono w-[84px] flex-shrink-0 truncate"
-                      title={alert.wallet_address ?? undefined}
-                    >
-                      {label}
-                    </span>
-
-                    {/* Severity dot */}
-                    {alert.severity && (
-                      <span
-                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                        style={{ background: severityColor(alert.severity) }}
-                        title={alert.severity}
-                      />
-                    )}
-
-                    {/* Action summary */}
-                    <span className="text-xs text-slate-200 flex-1 min-w-0 truncate">
-                      {actionSummary(alert)}
-                    </span>
-
-                    {/* Token symbol pill */}
-                    {sym && (
-                      <span className="hidden lg:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] text-slate-400 flex-shrink-0">
-                        <span className="w-3 h-3 rounded-full bg-slate-600/80 flex-shrink-0" />
-                        {sym}
-                      </span>
-                    )}
-
-                    {/* Time ago */}
-                    <span className="text-[11px] text-slate-500 flex-shrink-0 w-14 text-right tabular-nums">
-                      {timeAgo(alert.occurred_at)}
-                    </span>
-
-                    {/* Basescan link */}
-                    {alert.tx_hash ? (
-                      <a
-                        href={`https://basescan.org/tx/${alert.tx_hash}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex-shrink-0 text-slate-500 hover:text-teal-400 transition-colors"
-                        title="View on Basescan"
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-bold tracking-wide ${side.chip}`}>{side.label}</span>
+                      <span className="text-xs text-slate-200">{actionSummary(alert)}</span>
+                      <span className="ml-auto text-[11px] text-slate-500">{timeAgo(alert.occurred_at)}</span>
+                    </div>
+                    <div className="mt-2 grid gap-2 text-xs text-slate-400 md:grid-cols-2">
+                      <div>Wallet: <span className="font-mono text-slate-300">{label || '—'}</span></div>
+                      <div>Token: <span className="text-slate-300">{sym || '—'}</span></div>
+                      <div>Value: <span className="text-slate-300">{fmtUsd(alert.amount_usd)}</span></div>
+                      <div>Severity: <span style={{ color: severityColor(alert.severity) }}>{alert.severity ?? '—'}</span></div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {alert.wallet_address && <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" className="rounded-lg border border-white/10 px-2 py-1 text-[11px] font-mono text-slate-300 hover:border-white/20">Wallet</a>}
+                      {alert.tx_hash && <a href={`https://basescan.org/tx/${alert.tx_hash}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-300 hover:border-[#2DD4BF]/50 hover:text-[#7ef2da]">Basescan <ExternalLinkIcon /></a>}
+                      <button
+                        onClick={() => {
+                          const walletLabelOrAddress = alert.wallet_label || alert.wallet_address || 'unknown wallet'
+                          const tokenSymbol = alert.token_symbol || alert.token_name || 'unknown token'
+                          const sideText = alert.side || 'moved'
+                          const amount = fmtUsd(alert.amount_usd)
+                          const txUrl = alert.tx_hash ? `https://basescan.org/tx/${alert.tx_hash}` : 'Unavailable'
+                          const prompt = `Analyze this Whale Alert: wallet ${walletLabelOrAddress} ${sideText} ${amount} of ${tokenSymbol}. Severity: ${alert.severity ?? 'unknown'}. Tx: ${txUrl}. What should I watch next? Do not give financial advice.`
+                          window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}&autosend=1`
+                        }}
+                        className="rounded-lg border border-[#8b5cf6]/30 bg-[#8b5cf6]/15 px-2 py-1 text-[11px] text-[#c4b5fd] hover:border-[#8b5cf6]/60"
                       >
-                        <ExternalLinkIcon />
-                      </a>
-                    ) : (
-                      <span className="w-3 flex-shrink-0" />
-                    )}
-
-                    {/* Ask Clark button */}
-                    <button className="hidden md:inline-flex flex-shrink-0 items-center gap-1.5 px-2 py-1 rounded-lg border border-white/10 bg-slate-900/80 text-[10px] text-slate-400 hover:border-violet-400/30 hover:text-violet-300 transition-colors">
-                      <span
-                        className="w-3.5 h-3.5 rounded-full flex-shrink-0"
-                        style={{ background: 'rgba(139,92,246,0.20)', border: '1px solid rgba(139,92,246,0.30)' }}
-                      />
-                      Ask Clark
-                    </button>
+                        Ask Clark
+                      </button>
+                    </div>
                   </article>
                 )
               })}

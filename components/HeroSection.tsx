@@ -19,20 +19,13 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
   const [query, setQuery] = useState('')
   const [sendClicks, setSendClicks] = useState(0)
   const [lastAction, setLastAction] = useState('idle')
-  const [drawerEventDispatched, setDrawerEventDispatched] = useState(false)
+  const [mobileRedirectArmed, setMobileRedirectArmed] = useState(false)
 
-  const isMobile = () => typeof window !== 'undefined' && window.innerWidth < 768
+  const isMobile = () => typeof window !== 'undefined' && (window.innerWidth < 768 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))
   const debugClark = () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugClark') === 'true'
   const debugLog = (event: string, meta?: Record<string, unknown>) => {
     if (!debugClark()) return
     console.info(event, meta ?? {})
-  }
-
-  const openDrawer = (prompt: string, autoSend = false) => {
-    if (typeof window === 'undefined') return
-    debugLog('hero_dispatch_chainlens_open_clark', { prompt: prompt.slice(0, 80), autoSend })
-    window.dispatchEvent(new CustomEvent('chainlens:open-clark', { detail: { prompt, autoSend, source: 'hero' } }))
-    setDrawerEventDispatched(true)
   }
 
   const handleHeroSend = (event?: { preventDefault?: () => void }) => {
@@ -43,13 +36,11 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
     debugLog('hero_send_button_clicked')
     debugLog('hero_clark_prompt_length', { length: prompt.length })
     if (isMobile()) {
-      debugLog('mobile_drawer_open_requested')
-      debugLog('mobile_drawer_send_requested', { autoSend: prompt.length > 0 })
-      openDrawer(prompt, prompt.length > 0)
-      if (prompt) {
-        setQuery('')
-        onTyping?.(false)
-      }
+      setMobileRedirectArmed(true)
+      const next = prompt
+        ? `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}&autosend=1`
+        : '/terminal/clark-ai'
+      window.location.href = next
       return
     }
     if (prompt && onSend) {
@@ -60,7 +51,6 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
       return
     }
     if (prompt) {
-      openDrawer(prompt, true)
       setQuery('')
       onTyping?.(false)
     }
@@ -367,7 +357,6 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                       debugLog('hero_input_change', { prompt: e.target.value.slice(0, 80) })
                       onTyping?.(e.target.value.length > 0)
                     }}
-                    onFocus={() => { if (isMobile()) { debugLog('hero_clark_focus'); openDrawer(query.trim(), false) } }}
                     onBlur={() => { if (!query) onTyping?.(false) }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
@@ -422,8 +411,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                     <div style={{ fontSize: '11px', color: '#94a3b8' }}>sendClicks: <span style={{ color: '#e2e8f0' }}>{sendClicks}</span></div>
                     <div style={{ fontSize: '11px', color: '#94a3b8' }}>lastAction: <span style={{ color: '#e2e8f0' }}>{lastAction}</span></div>
                     <div style={{ fontSize: '11px', color: '#94a3b8' }}>isMobile: <span style={{ color: '#e2e8f0' }}>{String(isMobile())}</span></div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>drawerEventDispatched: <span style={{ color: '#e2e8f0' }}>{drawerEventDispatched ? 'yes' : 'no'}</span></div>
-                    <button type="button" onClick={() => openDrawer('debug hello', false)} style={{ marginTop: '8px', fontSize: '11px', color: '#67e8f9', border: '1px solid rgba(103,232,249,0.4)', borderRadius: '8px', padding: '6px 10px', background: 'rgba(8,12,24,0.9)' }}>Test dispatch Clark event</button>
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>mobileRedirectArmed: <span style={{ color: '#e2e8f0' }}>{mobileRedirectArmed ? 'yes' : 'no'}</span></div>
                   </div>
                 )}
 
