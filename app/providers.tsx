@@ -5,7 +5,6 @@ import { createWeb3Modal } from '@web3modal/wagmi/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig, projectId, walletConnectEnabled } from '@/lib/wallet'
 import { useEffect, useRef, useState } from 'react'
-import MobileClarkDrawer from '@/components/MobileClarkDrawer'
 
 const queryClient = new QueryClient()
 
@@ -76,7 +75,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         {children}
-        <MobileClarkDrawer />
         {androidDebugBadge && (
           <div className="fixed bottom-5 right-4 z-[9999] rounded-full border border-cyan-400/40 bg-slate-950/90 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-cyan-300 pointer-events-none">
             Android safe mode {androidDebugText}

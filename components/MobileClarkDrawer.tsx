@@ -5,99 +5,171 @@ import { useEffect, useRef, useState } from 'react'
 type Message = { role: 'user' | 'clark'; text: string }
 type ClarkOpenDetail = { prompt?: string; autoSend?: boolean; source?: string }
 
+const INITIAL_ASSISTANT_MESSAGE = 'Ask me about Base tokens, wallets, whale alerts, or risk signals.'
+const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
+
 export default function MobileClarkDrawer() {
-  const [open, setOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [showDock, setShowDock] = useState(false)
+  const [miniInput, setMiniInput] = useState('')
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [messages, setMessages] = useState<Message[]>([])
+  const [lastAction, setLastAction] = useState('mounted')
+  const [messages, setMessages] = useState<Message[]>([{ role: 'clark', text: INITIAL_ASSISTANT_MESSAGE }])
   const [error, setError] = useState('')
   const endRef = useRef<HTMLDivElement | null>(null)
   const loadingRef = useRef(false)
 
-  const isMobile = () => typeof window !== 'undefined' && window.innerWidth < 768
-  const debug = () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugClark') === 'true'
-  const log = (event: string, meta?: Record<string, unknown>) => {
-    if (!debug()) return
-    console.info(event, meta ?? {})
-  }
+  const debugClark = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugClark') === 'true'
+
+  useEffect(() => {
+    const detect = () => {
+      const touchCapable = navigator.maxTouchPoints > 0 || 'ontouchstart' in window
+      const mobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')
+      const mobileishWidth = window.innerWidth <= 1200
+      const shouldShow = Boolean(debugClark || touchCapable || mobileUA || mobileishWidth)
+      setShowDock(shouldShow)
+    }
+
+    detect()
+    window.addEventListener('resize', detect)
+    return () => window.removeEventListener('resize', detect)
+  }, [debugClark])
 
   const sendText = async (raw: string) => {
     const text = raw.trim()
     if (!text || loadingRef.current) return
+
     setError('')
+    setInput('')
+    setMiniInput('')
     setLoading(true)
     loadingRef.current = true
-    setMessages(prev => [...prev, { role: 'user', text }, { role: 'clark', text: 'Clark is thinking...' }])
-    log('clark_send_start', { prompt: text.slice(0, 80) })
+    setLastAction('send')
+    setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: 'Clark is thinking...' }])
+
     try {
-      const res = await fetch('/api/clark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feature: 'clark-ai', prompt: text }) })
-      const json = await res.json()
-      const reply = typeof json?.reply === 'string' ? json.reply : 'Clark is unavailable right now. Try again in a moment.'
-      setMessages(prev => [...prev.slice(0, -1), { role: 'clark', text: reply }])
-      log('clark_send_success', { status: res.status })
+      const res = await fetch('/api/clark', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feature: 'clark-ai', prompt: text }),
+      })
+      const json = await res.json().catch(() => ({}))
+      const reply = typeof json?.reply === 'string' && json.reply.trim() ? json.reply : FALLBACK_ERROR_MESSAGE
+      setMessages((prev) => [...prev.slice(0, -1), { role: 'clark', text: reply }])
+      setLastAction('send-success')
     } catch {
-      setError('Clark is unavailable right now. Try again in a moment.')
-      setMessages(prev => [...prev.slice(0, -1), { role: 'clark', text: 'Clark is unavailable right now. Try again in a moment.' }])
-      log('clark_send_error')
+      setError(FALLBACK_ERROR_MESSAGE)
+      setMessages((prev) => [...prev.slice(0, -1), { role: 'clark', text: FALLBACK_ERROR_MESSAGE }])
+      setLastAction('send-fail')
     } finally {
       setLoading(false)
       loadingRef.current = false
     }
   }
 
+  const expandOnly = () => {
+    setExpanded(true)
+    setLastAction('expand')
+  }
+
+  const expandAndSend = (raw: string) => {
+    const text = raw.trim()
+    setExpanded(true)
+    setLastAction(text ? 'expand-send' : 'expand')
+    if (text) void sendText(text)
+  }
+
   useEffect(() => {
-    log('mobile_drawer_mounted')
-
-    const openDrawer = (detail: ClarkOpenDetail = {}) => {
-      if (!isMobile()) return
-      setOpen(true)
-      log('mobile_drawer_set_open_true')
-      if (detail.prompt != null) setInput(detail.prompt)
-      if (detail.autoSend && detail.prompt?.trim()) {
-        log('mobile_drawer_auto_send_requested')
-        void sendText(detail.prompt)
-      }
-    }
-
     const onOpenEvent = (event: Event) => {
       const detail = (event as CustomEvent<ClarkOpenDetail>).detail ?? {}
-      log('mobile_drawer_event_received', { source: detail.source ?? 'unknown', prompt: (detail.prompt ?? '').slice(0, 80) })
-      openDrawer(detail)
+      setExpanded(true)
+      setLastAction(`event-${detail.source ?? 'unknown'}`)
+      if (typeof detail.prompt === 'string') {
+        setInput(detail.prompt)
+        setMiniInput(detail.prompt)
+      }
+      if (detail.autoSend && detail.prompt?.trim()) {
+        void sendText(detail.prompt)
+      }
     }
 
     window.addEventListener('chainlens:open-clark', onOpenEvent)
     return () => window.removeEventListener('chainlens:open-clark', onOpenEvent)
   }, [])
 
-  useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }) }, [messages, open])
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' })
+  }, [messages, expanded])
+
+  if (!showDock) return null
 
   return (
     <>
-      {debug() && isMobile() && (
-        <button className="fixed bottom-4 right-4 z-[10000] rounded-lg border border-cyan-400/40 bg-slate-950/90 px-3 py-2 text-xs text-cyan-300 md:hidden" onClick={() => { setOpen(true); log('mobile_drawer_set_open_true') }}>
-          Open Clark Debug
-        </button>
+      {debugClark && (
+        <div className="fixed left-3 top-20 z-[99999] rounded bg-black/90 px-2 py-1 text-[10px] text-emerald-300">
+          MobileClark mounted · mode: {expanded ? 'expanded' : 'compact'} · action: {lastAction}
+        </div>
       )}
 
-      <div data-open={open ? 'true' : 'false'} className={`mobile-clark-drawer fixed inset-0 z-[9999] md:hidden ${open ? 'flex' : 'hidden'}`}>
-        <button className="absolute inset-0 bg-black/60" onClick={() => setOpen(false)} aria-label="Close Clark drawer" />
-        <section className="absolute inset-x-0 bottom-0 min-h-[60dvh] max-h-[85dvh] rounded-t-2xl border-t border-white/10 bg-[#050814] shadow-2xl flex flex-col overflow-hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-            <div><p className="text-white font-semibold">Clark AI</p><p className="text-xs text-slate-400">CORTEX onchain assistant</p></div>
-            <button className="text-slate-300" onClick={() => setOpen(false)}>Close</button>
-          </div>
-          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-            {messages.length === 0 && <p className="text-slate-400 text-sm">Ask Clark anything.</p>}
-            {messages.map((m, i) => <div key={i} className={`rounded-xl px-3 py-2 text-sm ${m.role === 'user' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-slate-900 text-slate-200'}`}>{m.text}</div>)}
-            {error && <p className="text-rose-300 text-sm">{error}</p>}
-            <div ref={endRef} />
-          </div>
-          <div className="sticky bottom-0 border-t border-white/10 bg-[#050814] p-3 flex gap-2">
-            <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask Clark anything…" className="flex-1 rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white" />
-            <button disabled={loading} onClick={() => void sendText(input)} className="rounded-xl border border-white/10 bg-cyan-500/20 px-3 py-2 text-sm text-white">Send</button>
-          </div>
-        </section>
-      </div>
+      {!expanded && (
+        <div className="fixed bottom-4 right-4 z-[99999] flex h-12 w-[180px] items-center gap-2 rounded-2xl border border-white/10 bg-[#080c14] px-2 text-white shadow-2xl" style={{ boxShadow: '0 0 0 1px rgba(255,255,255,0.06), 0 12px 28px rgba(0,0,0,0.55), 0 0 24px rgba(139,92,246,0.28)' }}>
+          <button type="button" className="shrink-0 rounded-lg bg-gradient-to-r from-[#2DD4BF] via-[#8b5cf6] to-[#ec4899] px-2 py-1 text-[10px] font-semibold" onClick={expandOnly}>Clark AI</button>
+          <input
+            value={miniInput}
+            onChange={(e) => setMiniInput(e.target.value)}
+            onFocus={expandOnly}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                expandAndSend(miniInput)
+              }
+            }}
+            placeholder="Ask Clark..."
+            className="min-w-0 flex-1 bg-transparent text-xs text-white placeholder:text-slate-400 outline-none"
+          />
+          <button type="button" aria-label="Open Clark" onClick={() => expandAndSend(miniInput)} className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-xs">↗</button>
+        </div>
+      )}
+
+      {expanded && (
+        <div className="fixed inset-x-0 bottom-0 z-[99999] flex text-white lg:inset-x-auto lg:right-4 lg:w-[430px]">
+          <section className="flex min-h-[60dvh] max-h-[85dvh] w-full flex-col rounded-t-2xl border border-white/10 bg-[#050814] lg:rounded-2xl" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+              <div>
+                <p className="font-semibold text-white">Clark AI</p>
+                <p className="text-xs text-slate-400">CORTEX assistant</p>
+              </div>
+              <button type="button" className="text-slate-300" onClick={() => { setExpanded(false); setLastAction('minimize') }}>Minimize</button>
+            </div>
+
+            <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+              {messages.map((m, i) => (
+                <div key={i} className={`rounded-xl px-3 py-2 text-sm ${m.role === 'user' ? 'bg-cyan-500/20 text-cyan-100' : 'bg-slate-900 text-slate-200'}`}>{m.text}</div>
+              ))}
+              {error && <p className="text-sm text-rose-300">{error}</p>}
+              <div ref={endRef} />
+            </div>
+
+            <div className="sticky bottom-0 flex gap-2 border-t border-white/10 bg-[#050814] p-3">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask Clark anything…"
+                rows={2}
+                className="max-h-24 min-h-[44px] flex-1 resize-none rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void sendText(input)
+                  }
+                }}
+              />
+              <button type="button" disabled={loading} onClick={() => void sendText(input)} className="self-end rounded-xl border border-white/10 bg-cyan-500/20 px-3 py-2 text-sm text-white disabled:opacity-60">Send</button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   )
 }
