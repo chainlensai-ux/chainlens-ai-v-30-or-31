@@ -108,6 +108,10 @@ function formatResponse(data: Record<string, unknown>): string {
   return JSON.stringify(data, null, 2)
 }
 
+function isMobileClient() {
+  return typeof window !== 'undefined' && (window.innerWidth < 768 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))
+}
+
 export default function ClarkChat({
   active: _active,
   onTyping,
@@ -222,6 +226,10 @@ export default function ClarkChat({
     console.log('handleSend fired with:', input)
     const text = input.trim()
     if (!text || loading) return
+    if (isMobileClient()) {
+      window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(text)}&autosend=1`
+      return
+    }
     setInput('')
     executeSend(text)
   }
