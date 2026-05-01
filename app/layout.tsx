@@ -1,4 +1,5 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
+import Script from 'next/script'
 import './globals.css'
 import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
 import { Providers } from './providers'
@@ -10,7 +11,7 @@ export const metadata: Metadata = {
   themeColor: '#06060a',
 }
 
-export const viewport = {
+export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
@@ -22,8 +23,11 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
-      <body className="w-full min-h-dvh overflow-x-hidden">
+    <html lang="en" suppressHydrationWarning>
+      <body className="w-full min-h-dvh overflow-x-hidden" suppressHydrationWarning>
+        <Script id="android-safe-prehydrate" strategy="beforeInteractive">
+          {`(function(){try{var ua=navigator.userAgent||'';var isAndroid=/Android/i.test(ua);var isMobile=(window.innerWidth||0)<768;var forced=(new URLSearchParams(window.location.search)).get('mobileSafe')==='android';if((isAndroid&&isMobile)||forced){document.documentElement.classList.add('android-safe-mode');document.body&&document.body.classList.add('android-safe-mode');}}catch(e){}})();`}
+        </Script>
         <Providers>
           <SupabaseProvider>
             {children}

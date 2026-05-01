@@ -322,7 +322,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
     : null
   return (
     <aside
-      className="h-screen shrink-0 flex flex-col mob-featurebar"
+      className="min-h-dvh shrink-0 flex flex-col mob-featurebar"
       style={{
         width: '240px',
         background: '#06060a',
