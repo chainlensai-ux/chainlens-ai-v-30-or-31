@@ -246,10 +246,12 @@ export default function WhaleAlertsPage() {
   const [loading,   setLoading]   = useState(false)
   const [syncing,   setSyncing]   = useState(false)
   const [syncState, setSyncState] = useState<SyncResponse | null>(null)
+  const [feedError, setFeedError] = useState<string | null>(null)
 
   /* Load alerts from API — preserves original fetch logic */
   const loadAlerts = useCallback(async () => {
     setLoading(true)
+    setFeedError(null)
     try {
       const p = new URLSearchParams({ window: windowValue, minUsd: String(minUsd), limit: '100' })
       if (typeFilter    !== 'all') p.set('type',     typeFilter)
@@ -257,8 +259,11 @@ export default function WhaleAlertsPage() {
       if (sideFilter    !== 'all') p.set('side',     sideFilter)
       const res  = await fetch(`/api/whale-alerts?${p.toString()}`, { cache: 'no-store' })
       const json = await res.json()
+      if (!res.ok) throw new Error('feed_unavailable')
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
+    } catch {
+      setFeedError('Whale Alerts could not load right now. The sync engine may still be online, but the feed request failed.')
     } finally {
       setLoading(false)
     }
@@ -473,27 +478,42 @@ export default function WhaleAlertsPage() {
             </button>
           </div>
 
-          {/* Empty state */}
-          {alerts.length === 0 && !loading && (
-            <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-8 text-center">
-              <div
-                className="w-10 h-10 rounded-xl mx-auto mb-3 flex items-center justify-center"
-                style={{ background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.18)' }}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                </svg>
+          {loading && (
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="animate-pulse rounded-2xl border border-white/10 bg-[#080c14]/80 p-4">
+                  <div className="mb-2 h-3 w-24 rounded bg-white/10" />
+                  <div className="mb-2 h-3 w-2/3 rounded bg-white/10" />
+                  <div className="h-3 w-1/3 rounded bg-white/10" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {feedError && !loading && (
+            <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-5 text-sm text-rose-100">
+              <p className="font-semibold">Whale Alerts could not load right now.</p>
+              <p className="mt-1 text-rose-200/90">The sync engine may still be online, but the feed request failed.</p>
+              <button onClick={() => void loadAlerts()} className="mt-3 rounded-lg border border-rose-300/40 px-3 py-1.5 text-xs hover:bg-rose-400/10">Retry</button>
+            </div>
+          )}
+
+          {!feedError && alerts.length === 0 && !loading && (
+            <div className="rounded-2xl border border-white/10 bg-[#080c14]/80 p-8 text-center">
+              <p className="text-lg font-semibold text-white">No whale alerts yet</p>
+              <p className="mx-auto mt-2 max-w-xl text-sm text-slate-400">ChainLens is tracking selected Base wallets, but no qualifying movements have been indexed yet.</p>
+              <p className="mt-1 text-xs text-slate-500">Run a sync or check back after new wallet activity is detected.</p>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                <StatusChip>{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Tracked wallets unavailable'}</StatusChip>
+                <StatusChip tone="mint">{syncState ? 'Sync active' : 'Last sync unavailable'}</StatusChip>
+                <StatusChip tone="purple">{(syncState?.providerErrors ?? 0) > 0 ? 'Provider degraded' : 'Provider stable'}</StatusChip>
               </div>
-              <p className="text-sm text-slate-400 max-w-sm mx-auto leading-relaxed">
-                No whale alerts in this window yet. Run sync, lower the minimum USD filter, or sync the next wallet batch.
-              </p>
             </div>
           )}
 
           {/* Alert rows */}
-          {alerts.length > 0 && (
-            <div className="space-y-1.5">
+          {!feedError && alerts.length > 0 && !loading && (
+            <div className="space-y-2">
               {alerts.map((alert, i) => {
                 const side  = getSide(alert.side)
                 const label = alert.wallet_label || short(alert.wallet_address)
@@ -502,72 +522,38 @@ export default function WhaleAlertsPage() {
                 return (
                   <article
                     key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
-                    className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2.5 hover:bg-slate-900/60 hover:border-white/20 transition-colors"
+                    className="rounded-2xl border border-white/10 bg-[#080c14]/80 p-3 transition-colors hover:border-white/20"
                     style={{ borderLeftWidth: '3px', borderLeftColor: side.border }}
                   >
-                    {/* BUY / SELL / TRANSFER chip */}
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold tracking-wide border flex-shrink-0 ${side.chip}`}>
-                      {side.label}
-                    </span>
-
-                    {/* Wallet label / address */}
-                    <span
-                      className="text-xs text-slate-400 font-mono w-[84px] flex-shrink-0 truncate"
-                      title={alert.wallet_address ?? undefined}
-                    >
-                      {label}
-                    </span>
-
-                    {/* Severity dot */}
-                    {alert.severity && (
-                      <span
-                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                        style={{ background: severityColor(alert.severity) }}
-                        title={alert.severity}
-                      />
-                    )}
-
-                    {/* Action summary */}
-                    <span className="text-xs text-slate-200 flex-1 min-w-0 truncate">
-                      {actionSummary(alert)}
-                    </span>
-
-                    {/* Token symbol pill */}
-                    {sym && (
-                      <span className="hidden lg:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] text-slate-400 flex-shrink-0">
-                        <span className="w-3 h-3 rounded-full bg-slate-600/80 flex-shrink-0" />
-                        {sym}
-                      </span>
-                    )}
-
-                    {/* Time ago */}
-                    <span className="text-[11px] text-slate-500 flex-shrink-0 w-14 text-right tabular-nums">
-                      {timeAgo(alert.occurred_at)}
-                    </span>
-
-                    {/* Basescan link */}
-                    {alert.tx_hash ? (
-                      <a
-                        href={`https://basescan.org/tx/${alert.tx_hash}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex-shrink-0 text-slate-500 hover:text-teal-400 transition-colors"
-                        title="View on Basescan"
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-bold tracking-wide ${side.chip}`}>{side.label}</span>
+                      <span className="text-xs text-slate-200">{actionSummary(alert)}</span>
+                      <span className="ml-auto text-[11px] text-slate-500">{timeAgo(alert.occurred_at)}</span>
+                    </div>
+                    <div className="mt-2 grid gap-2 text-xs text-slate-400 md:grid-cols-2">
+                      <div>Wallet: <span className="font-mono text-slate-300">{label || '—'}</span></div>
+                      <div>Token: <span className="text-slate-300">{sym || '—'}</span></div>
+                      <div>Value: <span className="text-slate-300">{fmtUsd(alert.amount_usd)}</span></div>
+                      <div>Severity: <span style={{ color: severityColor(alert.severity) }}>{alert.severity ?? '—'}</span></div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {alert.wallet_address && <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" className="rounded-lg border border-white/10 px-2 py-1 text-[11px] font-mono text-slate-300 hover:border-white/20">Wallet</a>}
+                      {alert.tx_hash && <a href={`https://basescan.org/tx/${alert.tx_hash}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-300 hover:border-[#2DD4BF]/50 hover:text-[#7ef2da]">Basescan <ExternalLinkIcon /></a>}
+                      <button
+                        onClick={() => {
+                          const walletLabelOrAddress = alert.wallet_label || alert.wallet_address || 'unknown wallet'
+                          const tokenSymbol = alert.token_symbol || alert.token_name || 'unknown token'
+                          const sideText = alert.side || 'moved'
+                          const amount = fmtUsd(alert.amount_usd)
+                          const txUrl = alert.tx_hash ? `https://basescan.org/tx/${alert.tx_hash}` : 'Unavailable'
+                          const prompt = `Analyze this Whale Alert: wallet ${walletLabelOrAddress} ${sideText} ${amount} of ${tokenSymbol}. Severity: ${alert.severity ?? 'unknown'}. Tx: ${txUrl}. What should I watch next? Do not give financial advice.`
+                          window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}&autosend=1`
+                        }}
+                        className="rounded-lg border border-[#8b5cf6]/30 bg-[#8b5cf6]/15 px-2 py-1 text-[11px] text-[#c4b5fd] hover:border-[#8b5cf6]/60"
                       >
-                        <ExternalLinkIcon />
-                      </a>
-                    ) : (
-                      <span className="w-3 flex-shrink-0" />
-                    )}
-
-                    {/* Ask Clark button */}
-                    <button className="hidden md:inline-flex flex-shrink-0 items-center gap-1.5 px-2 py-1 rounded-lg border border-white/10 bg-slate-900/80 text-[10px] text-slate-400 hover:border-violet-400/30 hover:text-violet-300 transition-colors">
-                      <span
-                        className="w-3.5 h-3.5 rounded-full flex-shrink-0"
-                        style={{ background: 'rgba(139,92,246,0.20)', border: '1px solid rgba(139,92,246,0.30)' }}
-                      />
-                      Ask Clark
-                    </button>
+                        Ask Clark
+                      </button>
+                    </div>
                   </article>
                 )
               })}
