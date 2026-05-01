@@ -467,3 +467,10 @@ body.android-safe-mode section,
 body.android-safe-mode div {
   max-width: 100vw !important;
 }
+
+.android-safe-mode .mobile-clark-drawer[data-open="true"] {
+  transform: none !important;
+  opacity: 1 !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+}
