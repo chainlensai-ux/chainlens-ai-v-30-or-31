@@ -27,11 +27,11 @@ export default function AuthPage() {
     let isMounted = true;
 
     async function checkExistingUser() {
-      const { data, error: userError } = await supabase.auth.getUser();
+      const { data, error: sessionError } = await supabase.auth.getSession();
 
       if (!isMounted) return;
 
-      if (!userError && data.user) {
+      if (!sessionError && data.session?.user) {
         router.replace('/terminal');
         return;
       }
