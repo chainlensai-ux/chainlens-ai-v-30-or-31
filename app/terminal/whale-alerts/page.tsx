@@ -142,6 +142,27 @@ function ChevronDownIcon() {
   )
 }
 
+function StatusChip({ children, tone = 'neutral' }: { children: string; tone?: 'neutral' | 'mint' | 'purple' | 'pink' | 'cyan' }) {
+  const tones: Record<string, string> = {
+    neutral: 'bg-white/5 border-white/10 text-slate-300',
+    mint: 'bg-[#2DD4BF]/10 border-[#2DD4BF]/30 text-[#7ef2da]',
+    purple: 'bg-[#8b5cf6]/12 border-[#8b5cf6]/30 text-[#c4b5fd]',
+    pink: 'bg-[#ec4899]/12 border-[#ec4899]/30 text-[#f9a8d4]',
+    cyan: 'bg-cyan-400/10 border-cyan-400/30 text-cyan-200',
+  }
+  return <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${tones[tone]}`}>{children}</span>
+}
+
+function MetricCard({ label, value, hint }: { label: string; value: string | number; hint: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#080c14]/85 p-4">
+      <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <p className="mt-1 text-2xl font-semibold text-white tabular-nums">{value}</p>
+      <p className="mt-1 text-xs text-slate-400">{hint}</p>
+    </div>
+  )
+}
+
 /* Decorative sparkline SVG for hero */
 function SparklineVisual() {
   return (
@@ -250,53 +271,37 @@ export default function WhaleAlertsPage() {
   ]
 
   return (
-    <div className="whale-alerts-page min-h-dvh bg-[#030712] text-white px-4 md:px-6 py-6 overflow-x-hidden">
-      <div className="mx-auto max-w-[1180px] space-y-4">
+    <div className="whale-alerts-page min-h-dvh overflow-x-hidden bg-[#06060a] px-4 py-6 text-white md:px-6">
+      <div className="mx-auto max-w-7xl space-y-5">
 
         {/* ── Hero card ──────────────────────────────────────────────────────── */}
-        <section className="rounded-2xl border border-white/10 bg-slate-950/70 p-5 md:p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex-1 min-w-0">
-              <h1 className="text-2xl font-bold tracking-tight text-white">Whale Alerts</h1>
-              <p className="mt-1 text-sm text-slate-400">Track selected Base wallets for meaningful token movement.</p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                {/* Base Mainnet chip */}
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-400/20 text-xs text-blue-300 font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
-                  Base Mainnet
-                </span>
-                {/* Tracked wallets */}
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-slate-300">
-                  {stats.trackedWallets} tracked wallets
-                </span>
-                {/* Sync status */}
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-400/20 text-xs text-emerald-300 font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0 animate-pulse" />
-                  Batch Sync Online
-                </span>
+        <section className="rounded-2xl border border-white/10 bg-[#080c14]/90 p-5 md:p-6" style={{ boxShadow: '0 0 0 1px rgba(255,255,255,0.02), 0 24px 70px rgba(0,0,0,0.45), 0 0 50px rgba(139,92,246,0.12)' }}>
+          <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-start">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.14em] text-slate-400">WHALE ALERTS · base mainnet</p>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">Whale Alerts</h1>
+              <p className="mt-2 max-w-2xl text-sm text-slate-300">Track selected Base wallets for meaningful token movement.</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <StatusChip tone="cyan">Base Mainnet</StatusChip>
+                <StatusChip>{stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Tracked wallets loading'}</StatusChip>
+                <StatusChip tone="mint">{syncState ? 'Batch Sync Online' : 'Sync status unavailable'}</StatusChip>
+                <StatusChip tone="purple">CORTEX Watching</StatusChip>
               </div>
             </div>
-            <SparklineVisual />
+            <div className="rounded-xl border border-white/10 bg-[#07101d] p-3 lg:min-w-[270px]">
+              <p className="text-[10px] uppercase tracking-[0.13em] text-[#2DD4BF]">LIVE WALLET MOVEMENT</p>
+              <p className="mt-1 text-xs text-slate-300">Listening for high-signal wallet moves on Base.</p>
+              <SparklineVisual />
+            </div>
           </div>
         </section>
 
         {/* ── Metric cards ───────────────────────────────────────────────────── */}
-        <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {METRIC_CARDS.map((card) => (
-            <div key={card.label} className="rounded-2xl border border-white/10 bg-slate-950/70 p-4 flex items-start gap-3">
-              <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
-                style={{ background: `${card.color}18`, border: `1px solid ${card.color}30` }}
-              >
-                {card.icon}
-              </div>
-              <div className="min-w-0">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{card.label}</div>
-                <div className="mt-0.5 text-2xl font-bold text-white tabular-nums">{card.value}</div>
-                <div className="mt-0.5 text-[11px] text-slate-500">{card.sub}</div>
-              </div>
-            </div>
-          ))}
+        <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="Tracked Wallets" value={stats.trackedWallets || '—'} hint={stats.trackedWallets ? 'Configured in tracked wallets set' : 'Unavailable'} />
+          <MetricCard label="Alerts Found" value={alerts.length || '—'} hint="Current loaded alerts after filters" />
+          <MetricCard label="Last Sync" value={syncState ? `${syncState.processed ?? 0} scanned` : '—'} hint={syncState ? `Inserted ${syncState.inserted ?? 0}` : 'No sync result yet'} />
+          <MetricCard label="Provider Status" value={syncState ? ((syncState.providerErrors ?? 0) > 0 ? 'Degraded' : 'Healthy') : 'Unavailable'} hint={syncState ? `${syncState.providerErrors ?? 0} provider errors` : 'Sync status unavailable'} />
         </section>
 
         {/* ── Combined filter + sync panel ───────────────────────────────────── */}
