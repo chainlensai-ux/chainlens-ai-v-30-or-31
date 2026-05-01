@@ -33,14 +33,17 @@ function shouldEnableAndroidSafeMode() {
 export function Providers({ children }: { children: React.ReactNode }) {
   const modalInitRef = useRef(false)
   const [androidDebugBadge, setAndroidDebugBadge] = useState(false)
+  const [androidDebugText, setAndroidDebugText] = useState('')
 
   useEffect(() => {
     if (typeof window === 'undefined') return
 
     const { safeMode, debugMode, diagnostics } = shouldEnableAndroidSafeMode()
+    document.documentElement.classList.toggle('android-safe-mode', safeMode)
     document.body.classList.toggle('android-safe-mode', safeMode)
     const hasAndroidSafeClass = document.body.classList.contains('android-safe-mode')
     setAndroidDebugBadge(debugMode)
+    setAndroidDebugText(`${hasAndroidSafeClass ? 'active' : 'inactive'} · ${diagnostics.innerWidth}px · Android ${diagnostics.isAndroid ? 'yes' : 'no'} · ${new Date().toISOString()}`)
 
     if (debugMode) {
       console.info('Android safe diagnostics', {
@@ -50,6 +53,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     }
 
     return () => {
+      document.documentElement.classList.remove('android-safe-mode')
       document.body.classList.remove('android-safe-mode')
     }
   }, [])
@@ -73,7 +77,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         {children}
         {androidDebugBadge && (
           <div className="fixed bottom-5 right-4 z-[9999] rounded-full border border-cyan-400/40 bg-slate-950/90 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-cyan-300 pointer-events-none">
-            Android safe mode active
+            Android safe mode {androidDebugText}
           </div>
         )}
       </QueryClientProvider>
