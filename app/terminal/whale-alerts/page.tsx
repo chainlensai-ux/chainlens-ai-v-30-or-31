@@ -305,12 +305,18 @@ export default function WhaleAlertsPage() {
   const sides      = useMemo(() => ['all', ...Array.from(new Set(alerts.map((a) => a.side).filter(Boolean)))], [alerts])
 
   /* Metric cards config */
-  const METRIC_CARDS = [
-    { label: 'Alerts 15m',      value: stats.alerts15m,    sub: stats.alerts15m    === 0 ? 'No new alerts' : `+${stats.alerts15m} new`,    color: '#2dd4bf', icon: <BellIcon color="#2dd4bf" /> },
-    { label: 'Alerts 1h',       value: stats.alerts1h,     sub: stats.alerts1h     === 0 ? 'No new alerts' : `+${stats.alerts1h} new`,     color: '#8b5cf6', icon: <BellIcon color="#8b5cf6" /> },
-    { label: 'Alerts 24h',      value: stats.alerts24h,    sub: stats.alerts24h    === 0 ? 'No new alerts' : `+${stats.alerts24h} new`,    color: '#ec4899', icon: <BellIcon color="#ec4899" /> },
-    { label: 'Tracked wallets', value: stats.trackedWallets, sub: 'Active',                                                                  color: '#60a5fa', icon: <WalletIcon color="#60a5fa" /> },
-  ]
+  const lastSyncSummary = syncState
+    ? `${syncState.processed ?? 0} scanned / ${syncState.inserted ?? 0} inserted`
+    : 'Unavailable'
+  const providerSummary = syncState
+    ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors ?? 0} errors)` : 'Healthy')
+    : 'Unavailable'
+  const buildClarkPrompt = () => {
+    if (alerts.length > 0) {
+      return `Review my Whale Alerts feed. Current visible alerts: ${alerts.length}. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain the key wallet movement signals and what to monitor next. Do not invent missing data.`
+    }
+    return `Review my Whale Alerts setup. No qualifying whale alerts are currently visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider status: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${severityFilter}, side ${sideFilter}. Explain what this means, what may be missing, and what to monitor next. Do not invent alerts or balances.`
+  }
 
   const lastSyncSummary = syncState
     ? `${syncState.processed ?? 0} scanned / ${syncState.inserted ?? 0} inserted`
@@ -399,7 +405,7 @@ export default function WhaleAlertsPage() {
               </div>
 
               {/* Alert type / severity / side selects */}
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 {([
                   { label: 'Alert type', value: typeFilter,     set: setTypeFilter,     opts: types      },
                   { label: 'Severity',   value: severityFilter, set: setSeverityFilter, opts: severities },
@@ -479,7 +485,7 @@ export default function WhaleAlertsPage() {
         {/* ── Alert feed ─────────────────────────────────────────────────────── */}
         <section>
           {/* Feed header */}
-          <div className="flex items-center justify-between mb-3">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-3">
               <h2 className="text-sm font-bold text-white">Alert feed</h2>
               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-400/20 text-[10px] text-emerald-300">
@@ -487,7 +493,7 @@ export default function WhaleAlertsPage() {
                 Auto-update
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => {
                 window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1`
@@ -558,7 +564,7 @@ export default function WhaleAlertsPage() {
                     <div className="mt-2 grid gap-2 text-xs text-slate-400 md:grid-cols-2">
                       <div>Wallet: <span className={`${compactMonospace} text-slate-300`} title={alert.wallet_address ?? undefined}>{label || '—'}</span></div>
                       <div>Token: <span className="text-slate-300">{sym || '—'}</span></div>
-                      <div>Value: <span className="text-slate-300">{fmtUsd(alert.amount_usd)}</span></div>
+                      <div>Value: <span className="text-slate-300">{alert.amount_usd == null ? 'Not indexed yet' : fmtUsd(alert.amount_usd)}</span></div>
                       <div>Severity: <span style={{ color: severityColor(alert.severity) }}>{alert.severity ?? '—'}</span></div>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
