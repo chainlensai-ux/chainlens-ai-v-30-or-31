@@ -80,7 +80,7 @@ function TerminalPageContent() {
         </main>
 
         <aside
-          className="shrink-0 overflow-y-auto mob-radar w-full lg:w-auto"
+          className="shrink-0 overflow-hidden mob-radar w-full lg:w-auto"
           style={{
             width: isTyping ? 'min(750px, 42vw)' : 'min(500px, 36vw)',
             transition: 'width 300ms ease',
@@ -88,6 +88,7 @@ function TerminalPageContent() {
             background: '#050816',
             position: 'relative',
             zIndex: 1,
+            height: '100dvh',
           }}
         >
           <ClarkRadar pendingMessage={pendingMessage} />
