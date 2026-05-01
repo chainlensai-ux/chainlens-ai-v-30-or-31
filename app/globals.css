@@ -285,3 +285,60 @@ html, body {
   --font-inter: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-plex-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
+
+/* ── Android Safe Mode ──────────────────────────────────────────────────────
+   Auto-applied on Android mobile (< 768px). Kills heavy GPU layers that cause
+   flickering on Mises, WebView, and low-end Android Chrome.
+   Also activates via ?mobileSafe=android for manual testing.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Hide the two heavy animated background systems */
+.android-safe-mode .home-ambient,
+.android-safe-mode .hero-premium-bg {
+  display: none !important;
+}
+
+/* Hide animated particle field */
+.android-safe-mode .home-particles {
+  display: none !important;
+}
+
+/* Freeze the ticker track — show it static at position 0 */
+.android-safe-mode .home-ticker-track {
+  animation: none !important;
+  transform: none !important;
+}
+
+/* Stop every CSS animation and transition on the page */
+.android-safe-mode *,
+.android-safe-mode *::before,
+.android-safe-mode *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* Remove backdrop-filter blur (biggest GPU offender on Android WebView) */
+.android-safe-mode * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Solid premium dark cards instead of glass */
+.android-safe-mode .feat-card {
+  background: rgba(14, 16, 32, 0.98) !important;
+  transform: none !important;
+  opacity: 1 !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.40) !important;
+}
+
+/* Pricing cards — solid, no glow animation */
+.android-safe-mode .pricing-card {
+  transform: none !important;
+  opacity: 1 !important;
+}
+
+/* Prevent any hover transform trying to fire */
+.android-safe-mode .feat-card:hover,
+.android-safe-mode .pricing-card:hover {
+  transform: none !important;
+}
