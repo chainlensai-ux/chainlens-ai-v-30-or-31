@@ -33,12 +33,12 @@ function TerminalPageContent() {
       `}</style>
 
       <div
-        className="flex h-full overflow-hidden terminal-shell"
+        className="flex min-h-dvh w-full max-w-full overflow-x-hidden overflow-y-hidden terminal-shell"
         style={{ position: 'relative' }}
       >
         {/* Neon ambient glow — fixed, behind everything */}
         <div
-          className="terminal-ambient"
+          className="terminal-ambient terminal-heavy-visual"
           style={{
             position: 'fixed',
             top: '35%',
@@ -67,9 +67,9 @@ function TerminalPageContent() {
         </main>
 
         <aside
-          className="shrink-0 overflow-y-auto mob-radar"
+          className="shrink-0 overflow-y-auto mob-radar w-full lg:w-auto"
           style={{
-            width: isTyping ? '750px' : '500px',
+            width: isTyping ? 'min(750px, 42vw)' : 'min(500px, 36vw)',
             transition: 'width 300ms ease',
             borderLeft: '1px solid rgba(123,92,255,0.18)',
             background: '#050816',
