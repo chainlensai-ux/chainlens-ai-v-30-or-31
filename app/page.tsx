@@ -1,7 +1,7 @@
 
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
@@ -93,40 +93,10 @@ const FEATURES = [
 ]
 
 export default function HomePage() {
-  const [androidSafe, setAndroidSafe] = useState(false)
-  const [showBadge, setShowBadge] = useState(false)
-
-  useEffect(() => {
-    const ua = navigator.userAgent
-    const isAndroid = /Android/i.test(ua)
-    const isMobile = window.innerWidth < 768
-    const hasParam = new URLSearchParams(window.location.search).get('mobileSafe') === 'android'
-    const safe = (isAndroid && isMobile) || hasParam
-    setAndroidSafe(safe)
-    setShowBadge(hasParam)
-  }, [])
 
   return (
     <>
-      {showBadge && (
-        <div style={{
-          position: 'fixed', bottom: '20px', right: '16px', zIndex: 9999,
-          background: 'rgba(6,9,20,0.92)',
-          border: '1px solid rgba(45,212,191,0.38)',
-          borderRadius: '999px',
-          padding: '5px 14px',
-          fontSize: '10px',
-          color: '#2DD4BF',
-          fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-          fontWeight: 700,
-          letterSpacing: '0.08em',
-          pointerEvents: 'none',
-        }}>
-          Android safe mode
-        </div>
-      )}
-
-      {/* Keyframes */}
+            {/* Keyframes */}
       <style>{`
         @keyframes ticker-scroll {
           0%   { transform: translateX(0); }
@@ -299,7 +269,7 @@ export default function HomePage() {
 
       <Navbar />
 
-      <div className={`home-page${androidSafe ? ' android-safe-mode' : ''} relative min-h-screen w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className={`home-page relative min-h-dvh w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Unified page ambient system ── */}
         <div className="home-heavy-visual home-ambient" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
