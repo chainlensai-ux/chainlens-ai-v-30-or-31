@@ -24,7 +24,7 @@ type CovalentTx = {
 }
 
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
-const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/'
+const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=100'
 const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 25
 const DEFAULT_OFFSET = 0
@@ -61,11 +61,19 @@ type ProviderErrorSample = {
   wallet: string
   provider: 'goldrush'
   endpointPath: string
-  statusCode: number | null
+  statusCode?: number | null
   reason: string
-  responseKeys: string[]
+  responseKeys?: string[]
 }
 
+
+function pushProviderErrorSample(
+  samples: ProviderErrorSample[],
+  sample: ProviderErrorSample,
+) {
+  if (samples.length >= 5) return
+  samples.push(sample)
+}
 class ProviderRequestError extends Error {
   statusCode: number | null
   responseKeys: string[]
@@ -89,8 +97,8 @@ function classifyProviderError(statusCode: number | null): string {
 
 async function fetchWalletTransactions(address: string, apiKey: string) {
   const url = new URL(`${COVALENT_BASE}/address/${address}/transactions_v3/`)
+  url.searchParams.set('page-number', '0')
   url.searchParams.set('page-size', '100')
-  url.searchParams.set('no-logs', 'false')
 
   let response: Response
   try {
@@ -273,7 +281,6 @@ export async function POST(request: Request) {
           .select('id')
 
         if (error) {
-          providerErrors += 1
           console.warn('[whale-sync] insert failed', short, error.message)
         } else {
           walletInserted = data?.length ?? 0
@@ -289,19 +296,17 @@ export async function POST(request: Request) {
       providerErrors += 1
 
       const statusCode = error instanceof ProviderRequestError ? error.statusCode : null
-      const reason = error instanceof ProviderRequestError ? error.message : 'network_error'
+      const reason = error instanceof ProviderRequestError ? error.message : 'provider_fetch_failed'
       const responseKeys = error instanceof ProviderRequestError ? error.responseKeys : []
 
-      if (providerErrorSamples.length < 5) {
-        providerErrorSamples.push({
-          wallet: short,
-          provider: 'goldrush',
-          endpointPath: PROVIDER_ENDPOINT_PATH,
-          statusCode,
-          reason,
-          responseKeys,
-        })
-      }
+      pushProviderErrorSample(providerErrorSamples, {
+        wallet: short,
+        provider: 'goldrush',
+        endpointPath: PROVIDER_ENDPOINT_PATH,
+        statusCode,
+        reason,
+        responseKeys,
+      })
 
       console.warn('[whale-sync] wallet', short, 'provider_status=error', `status=${statusCode ?? 'network'}`, reason)
     }
