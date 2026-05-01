@@ -30,8 +30,50 @@ const MAX_LIMIT = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
 
+type SkipReason =
+  | 'olderThan24h'
+  | 'noTokenMovements'
+  | 'missingTokenAddress'
+  | 'missingUsdValue'
+  | 'belowThreshold'
+  | 'duplicate'
+  | 'unclassified'
+  | 'dbSkipped'
+  | 'other'
+
+type SkipSummary = Record<SkipReason, number>
+
+type SkipSample = {
+  wallet: string
+  txHash: string | null
+  reason: SkipReason
+  tokenSymbol: string | null
+  tokenAddressShort: string | null
+  amountUsd: number | null
+  occurredAt: string | null
+}
+
+function makeSkipSummary(): SkipSummary {
+  return {
+    olderThan24h: 0,
+    noTokenMovements: 0,
+    missingTokenAddress: 0,
+    missingUsdValue: 0,
+    belowThreshold: 0,
+    duplicate: 0,
+    unclassified: 0,
+    dbSkipped: 0,
+    other: 0,
+  }
+}
+
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
+}
+
+function shortHash(hash: string | null) {
+  if (!hash) return null
+  return `${hash.slice(0, 6)}...${hash.slice(-4)}`
 }
 
 function parseNumeric(value: unknown): number | null {
@@ -66,7 +108,6 @@ type ProviderErrorSample = {
   responseKeys?: string[]
 }
 
-
 function pushProviderErrorSample(
   samples: ProviderErrorSample[],
   sample: ProviderErrorSample,
@@ -74,6 +115,12 @@ function pushProviderErrorSample(
   if (samples.length >= 5) return
   samples.push(sample)
 }
+
+function pushSkipSample(samples: SkipSample[], sample: SkipSample) {
+  if (samples.length >= 5) return
+  samples.push(sample)
+}
+
 class ProviderRequestError extends Error {
   statusCode: number | null
   responseKeys: string[]
@@ -103,12 +150,12 @@ async function fetchWalletTransactions(address: string, apiKey: string) {
   let response: Response
   try {
     response = await fetch(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'application/json',
-    },
-    cache: 'no-store',
-  })
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+      cache: 'no-store',
+    })
   } catch {
     throw new ProviderRequestError(null, 'network_error', [])
   }
@@ -133,15 +180,22 @@ async function fetchWalletTransactions(address: string, apiKey: string) {
 function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[]) {
   const since = Date.now() - 24 * 60 * 60 * 1000
   const alerts: Array<Record<string, unknown>> = []
+  const skipSummary = makeSkipSummary()
+  let parsedMovementCount = 0
 
   for (const tx of txs) {
     const occurredAt = tx.block_signed_at ? new Date(tx.block_signed_at).getTime() : Number.NaN
-    if (!Number.isFinite(occurredAt) || occurredAt < since) continue
-    if (tx.successful === false) continue
+    if (!Number.isFinite(occurredAt) || occurredAt < since) {
+      skipSummary.olderThan24h += 1
+      continue
+    }
 
-    const eventCount = tx.log_events?.length ?? 0
-    const txHash = tx.tx_hash ?? null
-    if (!txHash) continue
+    if (tx.successful === false || !tx.tx_hash) {
+      skipSummary.unclassified += 1
+      continue
+    }
+
+    parsedMovementCount += 1
 
     alerts.push({
       wallet_address: wallet.address,
@@ -153,15 +207,15 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[]) {
       side: null,
       amount_usd: null,
       amount_token: null,
-      tx_hash: txHash,
+      tx_hash: tx.tx_hash,
       chain: 'base',
       severity: null,
-      summary: `Recent token transfer activity (${eventCount} events)`,
+      summary: `Recent token transfer activity (${tx.log_events?.length ?? 0} events)`,
       occurred_at: new Date(occurredAt).toISOString(),
     })
   }
 
-  return alerts
+  return { alerts, skipSummary, parsedMovementCount }
 }
 
 export async function POST(request: Request) {
@@ -179,6 +233,7 @@ export async function POST(request: Request) {
   }
 
   const requestUrl = new URL(request.url)
+  const debug = requestUrl.searchParams.get('debug') === 'true'
   const queryLimit = parseInteger(requestUrl.searchParams.get('limit'))
   const bodyLimit = parseInteger(body.limit)
   const rawLimit = queryLimit ?? bodyLimit ?? DEFAULT_LIMIT
@@ -190,30 +245,13 @@ export async function POST(request: Request) {
   const offset = Math.max(0, rawOffset)
 
   if (!supabaseUrl || !serviceRole) {
-    return NextResponse.json({
-      ok: false,
-      error: 'missing_supabase_env',
-      env: {
-        hasNextPublicSupabaseUrl: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
-        hasSupabaseUrl: Boolean(process.env.SUPABASE_URL),
-        hasNextPublicAnonKey: Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
-        hasServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
-        expectedNames: [
-          'NEXT_PUBLIC_SUPABASE_URL',
-          'SUPABASE_URL',
-          'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-          'SUPABASE_SERVICE_ROLE_KEY',
-        ],
-      },
-    }, { status: 503 })
+    return NextResponse.json({ ok: false, error: 'missing_supabase_env' }, { status: 503 })
   }
-
   if (!providerKey) {
     return NextResponse.json({ ok: false, error: 'missing_provider_key' }, { status: 503 })
   }
 
   const supabase = createClient(supabaseUrl, serviceRole)
-
   const { data: wallets, error: walletError, count } = await supabase
     .from('tracked_wallets')
     .select('address,label,category,confidence,source,is_active', { count: 'exact' })
@@ -222,18 +260,7 @@ export async function POST(request: Request) {
     .range(offset, offset + limit - 1)
 
   if (walletError) {
-    console.error('[whale-sync] wallet load failed', walletError.message)
-    return NextResponse.json({
-      ok: false,
-      error: 'wallet_load_failed',
-      details: {
-        table: 'tracked_wallets',
-        code: walletError.code ?? null,
-        message: walletError.message ?? null,
-        hint: walletError.hint ?? null,
-        details: walletError.details ?? null,
-      },
-    }, { status: 500 })
+    return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
   }
 
   const trackedWalletsTotal = count ?? 0
@@ -246,12 +273,15 @@ export async function POST(request: Request) {
   let inserted = 0
   let skipped = 0
   let providerErrors = 0
+  let fetchedTxCount = 0
+  let parsedMovementCount = 0
+  let alertCandidateCount = 0
   const providerErrorSamples: ProviderErrorSample[] = []
+  const skipSummary = makeSkipSummary()
+  const skipSamples: SkipSample[] = []
 
   for (const wallet of wallets as TrackedWallet[]) {
-    if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) {
-      break
-    }
+    if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) break
 
     processed += 1
     const short = shortAddress(wallet.address)
@@ -259,10 +289,30 @@ export async function POST(request: Request) {
     try {
       const payload = await fetchWalletTransactions(wallet.address, providerKey)
       const txItems = (payload?.data?.items ?? []) as CovalentTx[]
+      fetchedTxCount += txItems.length
 
-      const alerts = extractAlerts(wallet, txItems)
-      const filteredAlerts = alerts.map((alert) => {
+      const extracted = extractAlerts(wallet, txItems)
+      parsedMovementCount += extracted.parsedMovementCount
+      alertCandidateCount += extracted.alerts.length
+
+      for (const [reason, value] of Object.entries(extracted.skipSummary) as Array<[SkipReason, number]>) {
+        skipSummary[reason] += value
+      }
+
+      const filteredAlerts = extracted.alerts.map((alert) => {
         const usd = parseNumeric(alert.amount_usd)
+        if (usd === null) {
+          skipSummary.missingUsdValue += 1
+          pushSkipSample(skipSamples, {
+            wallet: short,
+            txHash: shortHash((alert.tx_hash as string | null) ?? null),
+            reason: 'missingUsdValue',
+            tokenSymbol: (alert.token_symbol as string | null) ?? null,
+            tokenAddressShort: shortHash((alert.token_address as string | null) ?? null),
+            amountUsd: null,
+            occurredAt: (alert.occurred_at as string | null) ?? null,
+          })
+        }
         return {
           ...alert,
           amount_usd: usd,
@@ -280,25 +330,19 @@ export async function POST(request: Request) {
           })
           .select('id')
 
-        if (error) {
-          console.warn('[whale-sync] insert failed', short, error.message)
-        } else {
-          walletInserted = data?.length ?? 0
-        }
+        if (!error) walletInserted = data?.length ?? 0
       }
 
       const walletSkipped = Math.max(filteredAlerts.length - walletInserted, 0)
       inserted += walletInserted
       skipped += walletSkipped
-
-      console.info('[whale-sync] wallet', short, 'provider_status=ok', `fetched=${txItems.length}`, `inserted=${walletInserted}`, `skipped=${walletSkipped}`)
+      skipSummary.duplicate += walletSkipped
+      skipSummary.dbSkipped += walletSkipped
     } catch (error) {
       providerErrors += 1
-
       const statusCode = error instanceof ProviderRequestError ? error.statusCode : null
       const reason = error instanceof ProviderRequestError ? error.message : 'provider_fetch_failed'
       const responseKeys = error instanceof ProviderRequestError ? error.responseKeys : []
-
       pushProviderErrorSample(providerErrorSamples, {
         wallet: short,
         provider: 'goldrush',
@@ -307,14 +351,11 @@ export async function POST(request: Request) {
         reason,
         responseKeys,
       })
-
-      console.warn('[whale-sync] wallet', short, 'provider_status=error', `status=${statusCode ?? 'network'}`, reason)
     }
   }
 
   const nextOffset = offset + processed < trackedWalletsTotal ? offset + processed : null
-
-  return NextResponse.json({
+  const response: Record<string, unknown> = {
     ok: true,
     providerSummary: {
       endpointPath: PROVIDER_ENDPOINT_PATH,
@@ -330,5 +371,15 @@ export async function POST(request: Request) {
     skipped,
     providerErrors,
     providerErrorSamples,
-  })
+  }
+
+  if (debug) {
+    response.fetchedTxCount = fetchedTxCount
+    response.parsedMovementCount = parsedMovementCount
+    response.alertCandidateCount = alertCandidateCount
+    response.skipSummary = skipSummary
+    response.skipSamples = skipSamples
+  }
+
+  return NextResponse.json(response)
 }
