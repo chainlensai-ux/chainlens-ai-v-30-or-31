@@ -11,13 +11,27 @@ export default function AuthCallbackPage() {
     let active = true;
 
     async function completeAuth() {
+      const callbackUrl = new URL(window.location.href);
+      const nextPath = callbackUrl.searchParams.get('next') || '/terminal';
+      const hasCode = Boolean(callbackUrl.searchParams.get('code'));
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.info('[auth-callback] reached', { hasCode, nextPath });
+      }
+
       const { error } = await supabase.auth.exchangeCodeForSession(window.location.href);
       if (!active) return;
       if (error) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('[auth-callback] exchange failed', { hasCode, nextPath });
+        }
         router.replace(`/auth?error=${encodeURIComponent(error.message)}`);
         return;
       }
-      router.replace('/terminal');
+      if (process.env.NODE_ENV !== 'production') {
+        console.info('[auth-callback] exchange success', { hasCode, redirectTarget: nextPath });
+      }
+      router.replace(nextPath.startsWith('/') ? nextPath : '/terminal');
     }
 
     completeAuth();
