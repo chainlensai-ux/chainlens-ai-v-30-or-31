@@ -376,13 +376,8 @@ html, body {
   color: #e2e8f0;
 }
 
-/* Force all buttons off browser defaults inside this page */
+/* Only reset font/cursor — let Tailwind classes control all other button styles */
 .whale-alerts-page button {
   cursor: pointer;
   font-family: inherit;
-  color: inherit;
-  background: transparent;
-  border: none;
-  padding: 0;
-  margin: 0;
 }
