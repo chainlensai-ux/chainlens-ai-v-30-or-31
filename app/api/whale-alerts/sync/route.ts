@@ -282,6 +282,12 @@ export async function POST(request: Request) {
   const rawLimit = queryLimit ?? bodyLimit ?? DEFAULT_LIMIT
   const limit = Math.max(1, Math.min(MAX_LIMIT, rawLimit))
 
+  const queryMinUsdRaw = requestUrl.searchParams.get('minUsd')
+  const bodyMinUsdRaw = body.minUsd
+  const parsedQueryMinUsd = queryMinUsdRaw === null ? null : Number(queryMinUsdRaw)
+  const parsedBodyMinUsd = typeof bodyMinUsdRaw === 'number' || typeof bodyMinUsdRaw === 'string' ? Number(bodyMinUsdRaw) : null
+  const selectedMinUsd = Math.max(0, Number.isFinite(parsedQueryMinUsd as number) ? (parsedQueryMinUsd as number) : (Number.isFinite(parsedBodyMinUsd as number) ? (parsedBodyMinUsd as number) : 1000))
+
   const queryOffset = parseInteger(requestUrl.searchParams.get('offset'))
   const bodyOffset = parseInteger(body.offset)
   const rawOffset = queryOffset ?? bodyOffset ?? DEFAULT_OFFSET
@@ -371,7 +377,7 @@ export async function POST(request: Request) {
 
         if (usd === null) {
           skipSummary.missingUsdValue += 1
-        } else if (usd < 1000) {
+        } else if (usd < selectedMinUsd) {
           finalPipelineSummary.belowThresholdSkipped += 1
           skipSummary.belowThreshold += 1
           pushSkipSample(skipSamples, {
@@ -388,10 +394,11 @@ export async function POST(request: Request) {
           continue
         }
 
+        const severity = severityFromUsd(usd) ?? (selectedMinUsd < 1000 && usd !== null && usd >= selectedMinUsd ? 'watch' : null)
         filteredAlerts.push({
           ...alert,
           amount_usd: usd,
-          severity: severityFromUsd(usd),
+          severity,
         })
       }
 
@@ -483,6 +490,7 @@ export async function POST(request: Request) {
     response.fetchedTxCount = fetchedTxCount
     response.parsedMovementCount = parsedMovementCount
     response.alertCandidateCount = alertCandidateCount
+    response.selectedMinUsd = selectedMinUsd
     response.skipSummary = skipSummary
     response.skipSamples = skipSamples
     response.finalPipelineSummary = finalPipelineSummary
