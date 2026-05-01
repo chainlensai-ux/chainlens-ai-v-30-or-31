@@ -99,11 +99,13 @@ function decodePrompt(value: string | null): string | null {
 function ClarkAiContent() {
   const searchParams = useSearchParams()
   const importedPrompt = useMemo(() => decodePrompt(searchParams.get('prompt')), [searchParams])
+  const autoSendRequested = searchParams.get('autoSend') === '1'
   const [messages, setMessages] = useState<Message[]>([])
   const [activeMode, setActiveMode] = useState<Mode['key']>(importedPrompt ? 'radar' : 'token')
   const [input, setInput] = useState(importedPrompt ?? '')
   const [loading, setLoading] = useState(false)
   const clarkContextRef = useRef<ClarkContextState>({})
+  const autoSentRef = useRef(false)
 
   useEffect(() => {
     if (importedPrompt) {
@@ -147,8 +149,8 @@ function ClarkAiContent() {
     setInput('')
   }
 
-  async function handleSend() {
-    const text = input.trim()
+  async function handleSendText(raw: string) {
+    const text = raw.trim()
     if (!text || loading) return
 
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: 'Clark is thinking...' }])
@@ -217,6 +219,19 @@ function ClarkAiContent() {
       setLoading(false)
     }
   }
+
+  async function handleSend() {
+    await handleSendText(input)
+  }
+
+  useEffect(() => {
+    if (!autoSendRequested || !importedPrompt || loading || autoSentRef.current) return
+    autoSentRef.current = true
+    setInput(importedPrompt)
+    queueMicrotask(() => {
+      void handleSendText(importedPrompt)
+    })
+  }, [autoSendRequested, importedPrompt, loading])
 
   return (
     <div style={pageStyle}>
