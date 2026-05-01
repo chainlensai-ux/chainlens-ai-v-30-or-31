@@ -24,6 +24,7 @@ type CovalentTx = {
 }
 
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
+const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/'
 const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 25
 const DEFAULT_OFFSET = 0
@@ -56,22 +57,66 @@ function severityFromUsd(amountUsd: number | null): string | null {
   return null
 }
 
+type ProviderErrorSample = {
+  wallet: string
+  provider: 'goldrush'
+  endpointPath: string
+  statusCode: number | null
+  reason: string
+  responseKeys: string[]
+}
+
+class ProviderRequestError extends Error {
+  statusCode: number | null
+  responseKeys: string[]
+
+  constructor(statusCode: number | null, reason: string, responseKeys: string[] = []) {
+    super(reason)
+    this.statusCode = statusCode
+    this.responseKeys = responseKeys
+  }
+}
+
+function classifyProviderError(statusCode: number | null): string {
+  if (statusCode === 400) return 'bad_request_params'
+  if (statusCode === 401) return 'auth_invalid'
+  if (statusCode === 403) return 'forbidden_or_allowlist'
+  if (statusCode === 404) return 'endpoint_or_chain_invalid'
+  if (statusCode === 429) return 'rate_limited'
+  if (statusCode !== null && statusCode >= 500) return 'provider_unavailable'
+  return 'network_error'
+}
+
 async function fetchWalletTransactions(address: string, apiKey: string) {
   const url = new URL(`${COVALENT_BASE}/address/${address}/transactions_v3/`)
   url.searchParams.set('page-size', '100')
   url.searchParams.set('no-logs', 'false')
 
-  const response = await fetch(url.toString(), {
+  let response: Response
+  try {
+    response = await fetch(url.toString(), {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       Accept: 'application/json',
     },
     cache: 'no-store',
   })
+  } catch {
+    throw new ProviderRequestError(null, 'network_error', [])
+  }
 
   if (!response.ok) {
-    const body = await response.text().catch(() => '')
-    throw new Error(`provider_${response.status}_${body.slice(0, 120)}`)
+    let responseKeys: string[] = []
+    try {
+      const payload = (await response.json()) as Record<string, unknown>
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        responseKeys = Object.keys(payload).slice(0, 8)
+      }
+    } catch {
+      responseKeys = []
+    }
+
+    throw new ProviderRequestError(response.status, classifyProviderError(response.status), responseKeys)
   }
 
   return response.json()
@@ -193,6 +238,7 @@ export async function POST(request: Request) {
   let inserted = 0
   let skipped = 0
   let providerErrors = 0
+  const providerErrorSamples: ProviderErrorSample[] = []
 
   for (const wallet of wallets as TrackedWallet[]) {
     if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) {
@@ -241,8 +287,23 @@ export async function POST(request: Request) {
       console.info('[whale-sync] wallet', short, 'provider_status=ok', `fetched=${txItems.length}`, `inserted=${walletInserted}`, `skipped=${walletSkipped}`)
     } catch (error) {
       providerErrors += 1
-      const message = error instanceof Error ? error.message : 'unknown_error'
-      console.warn('[whale-sync] wallet', short, 'provider_status=error', message)
+
+      const statusCode = error instanceof ProviderRequestError ? error.statusCode : null
+      const reason = error instanceof ProviderRequestError ? error.message : 'network_error'
+      const responseKeys = error instanceof ProviderRequestError ? error.responseKeys : []
+
+      if (providerErrorSamples.length < 5) {
+        providerErrorSamples.push({
+          wallet: short,
+          provider: 'goldrush',
+          endpointPath: PROVIDER_ENDPOINT_PATH,
+          statusCode,
+          reason,
+          responseKeys,
+        })
+      }
+
+      console.warn('[whale-sync] wallet', short, 'provider_status=error', `status=${statusCode ?? 'network'}`, reason)
     }
   }
 
@@ -250,6 +311,11 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     ok: true,
+    providerSummary: {
+      endpointPath: PROVIDER_ENDPOINT_PATH,
+      authMode: 'authorization_bearer',
+      chain: 'base-mainnet',
+    },
     trackedWalletsTotal,
     processed,
     offset,
@@ -258,5 +324,6 @@ export async function POST(request: Request) {
     inserted,
     skipped,
     providerErrors,
+    providerErrorSamples,
   })
 }
