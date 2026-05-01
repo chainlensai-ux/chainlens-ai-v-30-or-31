@@ -1,6 +1,7 @@
 'use client'
 
 import { Suspense, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import ClarkRadar from '@/components/ClarkRadar'
 import HeroSection from '@/components/HeroSection'
 import HomeTokenScreener from '@/components/HomeTokenScreener'
@@ -8,6 +9,13 @@ import HomeTokenScreener from '@/components/HomeTokenScreener'
 function TerminalPageContent() {
   const [isTyping, setIsTyping] = useState(false)
   const [pendingMessage, setPendingMessage] = useState<string | null>(null)
+  const router = useRouter()
+
+  const shouldRouteMobileToClark = () => {
+    if (typeof window === 'undefined') return false
+    const mobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')
+    return Boolean(window.innerWidth < 768 || mobileUA)
+  }
 
   return (
     <>
@@ -60,6 +68,11 @@ function TerminalPageContent() {
           <HeroSection
             onTyping={setIsTyping}
             onSend={(msg) => {
+              if (shouldRouteMobileToClark()) {
+                const prompt = encodeURIComponent(msg.trim())
+                router.push(`/terminal/clark-ai?prompt=${prompt}&autosend=1`)
+                return
+              }
               setPendingMessage(msg)
             }}
           />
@@ -67,7 +80,7 @@ function TerminalPageContent() {
         </main>
 
         <aside
-          className="shrink-0 overflow-y-auto mob-radar w-full lg:w-auto"
+          className="shrink-0 overflow-hidden mob-radar w-full lg:w-auto"
           style={{
             width: isTyping ? 'min(750px, 42vw)' : 'min(500px, 36vw)',
             transition: 'width 300ms ease',
@@ -75,6 +88,7 @@ function TerminalPageContent() {
             background: '#050816',
             position: 'relative',
             zIndex: 1,
+            height: '100dvh',
           }}
         >
           <ClarkRadar pendingMessage={pendingMessage} />
