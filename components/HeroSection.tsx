@@ -18,6 +18,39 @@ interface HeroSectionProps {
 export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
   const [query, setQuery] = useState('')
 
+  const isMobile = () => typeof window !== 'undefined' && window.innerWidth < 768
+  const debugClark = () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugClark') === 'true'
+  const debugLog = (event: string, meta?: Record<string, unknown>) => {
+    if (!debugClark()) return
+    console.info(event, meta ?? {})
+  }
+
+  const openDrawer = (prompt: string, autoSend = false) => {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new CustomEvent('chainlens:open-clark', { detail: { prompt, autoSend, source: 'hero' } }))
+  }
+
+  const handleHeroSend = () => {
+    const prompt = query.trim()
+    debugLog('hero_clark_send_click')
+    debugLog('hero_clark_prompt_length', { length: prompt.length })
+    if (isMobile()) {
+      debugLog('mobile_drawer_open_requested')
+      debugLog('mobile_drawer_send_requested', { autoSend: prompt.length > 0 })
+      openDrawer(prompt, prompt.length > 0)
+      if (prompt) {
+        setQuery('')
+        onTyping?.(false)
+      }
+      return
+    }
+    if (prompt) {
+      onSend?.(prompt)
+      setQuery('')
+      onTyping?.(false)
+    }
+  }
+
   return (
     <>
       <style>{`
@@ -317,12 +350,12 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                       setQuery(e.target.value)
                       onTyping?.(e.target.value.length > 0)
                     }}
+                    onFocus={() => { if (isMobile()) { debugLog('hero_clark_focus'); openDrawer(query.trim(), false) } }}
                     onBlur={() => { if (!query) onTyping?.(false) }}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && query.trim()) {
-                        onSend?.(query.trim())
-                        setQuery('')
-                        onTyping?.(false)
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        handleHeroSend()
                       }
                     }}
                     placeholder="Ask Clark what whales are buying today..."
@@ -342,12 +375,9 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                   {/* Send button */}
                   <button
                     className="clark-send-btn"
-                    onClick={() => {
-                      if (query.trim()) {
-                        onSend?.(query.trim())
-                        setQuery('')
-                        onTyping?.(false)
-                      }
+                    onClick={(e) => {
+                      e.preventDefault()
+                      handleHeroSend()
                     }}
                     style={{
                       flexShrink: 0,
