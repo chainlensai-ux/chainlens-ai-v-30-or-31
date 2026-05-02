@@ -161,7 +161,7 @@ export default function WhaleAlertsPage() {
   const runSync = async (offset: number) => {
     setSyncing(true)
     try {
-      const res = await fetch(`/api/whale-alerts/sync?window=7d&limit=5&offset=${offset}&minUsd=${minUsd}`, { method: 'POST' })
+      const res = await fetch(`/api/whale-alerts/sync?window=7d&limit=15&offset=${offset}&minUsd=${minUsd}`, { method: 'POST' })
       const json = (await res.json()) as SyncResponse
       setSyncState(json)
       await loadAlerts()
@@ -185,7 +185,7 @@ export default function WhaleAlertsPage() {
   const covPct = syncState && (syncState.trackedWalletsTotal ?? 0) > 0
     ? Math.min(100, Math.round(((syncState.processed ?? 0) / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
 
-  const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
+  const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
   const providerSummary = syncState ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors} errors)` : 'Healthy') : 'Unavailable'
   const buildClarkPrompt = () => {
     if (alerts.length > 0) return `Review my Whale Alerts feed. Visible alerts: ${alerts.length}. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${sevFilter}, side ${sideFilter}. Explain signals. Do not invent data.`
@@ -379,7 +379,7 @@ export default function WhaleAlertsPage() {
 
               <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Wallets Scanned</p>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Wallets Scanned (Batch)</p>
                   <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
                     {syncState
                       ? <>{syncState.processed ?? 0}<span style={{ fontSize: 16, fontWeight: 400, color: '#475569' }}> / {syncState.trackedWalletsTotal ?? stats.trackedWallets}</span></>
@@ -397,7 +397,7 @@ export default function WhaleAlertsPage() {
               {covPct !== null ? (
                 <div>
                   <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569' }}>Scan Coverage</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569' }}>Batch Scan Coverage</span>
                     <span style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>{covPct}%</span>
                   </div>
                   <div className="w-full overflow-hidden rounded-full" style={{ height: 6, background: 'rgba(255,255,255,0.06)' }}>
