@@ -113,14 +113,14 @@ export default function WhaleAlertsPage() {
               </div>
             </div>
 
-            <div className="space-y-3">
-              <div className="flex flex-wrap gap-2">
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-3">
                 {FILTERS.map((filter) => (
                   <button
                     key={filter}
                     type="button"
                     onClick={() => setFlowFilter(filter)}
-                    className="rounded-xl border px-3 py-1.5 text-xs font-semibold"
+                    className="rounded-xl border bg-[#0a1020] px-4 py-2 text-sm font-semibold"
                     style={{
                       background: flowFilter === filter ? 'rgba(45,212,191,0.16)' : '#0a1020',
                       color: flowFilter === filter ? '#2DD4BF' : '#cbd5e1',
@@ -138,7 +138,7 @@ export default function WhaleAlertsPage() {
                     key={filter}
                     type="button"
                     onClick={() => setTimeFilter(filter)}
-                    className="rounded-xl border border-white/10 bg-[#0a1020] px-3 py-1.5 text-xs font-semibold"
+                    className="rounded-xl border border-white/10 bg-[#0a1020] px-4 py-2 text-sm font-semibold"
                     style={{ color: timeFilter === filter ? '#8b5cf6' : '#cbd5e1' }}
                   >
                     {filter}
@@ -152,7 +152,7 @@ export default function WhaleAlertsPage() {
                     key={value}
                     type="button"
                     onClick={() => setMinValue(value)}
-                    className="rounded-xl border border-white/10 bg-[#0a1020] px-3 py-1.5 text-xs font-semibold"
+                    className="rounded-xl border border-white/10 bg-[#0a1020] px-4 py-2 text-sm font-semibold"
                     style={{ color: minValue === value ? '#2DD4BF' : '#cbd5e1' }}
                   >
                     ${value >= 1000 ? `${value / 1000}k` : value}+
@@ -163,15 +163,15 @@ export default function WhaleAlertsPage() {
           </header>
 
           {filteredAlerts.length === 0 ? (
-            <div className="flex min-h-[340px] flex-col items-center justify-center rounded-2xl border border-white/10 bg-[#080c14] text-center">
+            <div className="flex min-h-[360px] flex-col items-center justify-center rounded-2xl border text-center" style={{ background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.08)" }}>
               <div className="mb-4 text-6xl text-[#2DD4BF]">🔔</div>
               <h2 className="text-2xl font-semibold text-white">No whale alerts yet</h2>
-              <p className="mt-2 text-sm text-slate-400">ChainLens is watching Base wallets for significant moves</p>
+              <p className="mt-2 text-sm text-[#94a3b8]">ChainLens is watching Base wallets for significant moves</p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {filteredAlerts.map((alert) => {
-                const accent = alert.side === 'buy' ? '#2DD4BF' : '#ef4444'
+                const accent = alert.kind === 'EXIT' ? '#ec4899' : alert.side === 'buy' ? '#2DD4BF' : '#ef4444'
                 const amountColor = alert.side === 'buy' ? '#2DD4BF' : '#ef4444'
                 const typeColor = alert.kind === 'ACCUMULATION' ? '#2DD4BF' : alert.kind === 'DISTRIBUTION' ? '#ef4444' : '#ec4899'
                 return (
@@ -180,29 +180,29 @@ export default function WhaleAlertsPage() {
                     href={`https://basescan.org/address/${alert.wallet}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="block rounded-2xl border border-white/10 bg-[#080c14] p-4 transition hover:border-white/20"
-                    style={{ borderLeft: `4px solid ${accent}` }}
+                    className="block min-h-[100px] rounded-2xl border p-4 transition hover:border-white/20"
+                    style={{ borderLeft: `3px solid ${accent}`, background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.08)" }}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="space-y-2">
                         <div className="flex items-center gap-2" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                          <span className="text-sm text-slate-100">{shortWallet(alert.wallet)}</span>
-                          <span className="text-xs text-slate-400">📋</span>
+                          <span className="text-[14px] text-[#2DD4BF]">{shortWallet(alert.wallet)}</span>
+                          <span className="text-xs text-[#94a3b8]">📋</span>
                         </div>
-                        <div className="flex items-center gap-2 text-sm text-slate-300">
+                        <div className="flex items-center gap-2 text-sm font-bold text-white">
                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-700 text-[10px] font-bold">{alert.token[0]}</span>
                           <span>{alert.side === 'buy' ? 'Bought' : 'Sold'} {alert.token}</span>
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className="text-2xl font-bold" style={{ color: amountColor }}>{formatMoney(alert.amountUsd)}</p>
+                        <p className="text-[18px] font-bold" style={{ color: amountColor }}>{formatMoney(alert.amountUsd)}</p>
                         <div className="mt-1 flex items-center justify-end gap-2">
-                          <span className="rounded-full border px-2 py-0.5 text-[10px] font-semibold" style={{ color: typeColor, borderColor: `${typeColor}66`, background: `${typeColor}1a` }}>{alert.kind}</span>
+                          <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold text-white" style={{ background: typeColor }}>{alert.kind}</span>
                           <span className="text-xs text-slate-500">{timeAgo(alert.createdAt)}</span>
                         </div>
                       </div>
                     </div>
-                    <p className="mt-3 text-sm italic text-slate-400">{alert.clarkNote}</p>
+                    <p className="mt-3 text-[13px] italic text-[#94a3b8]">{alert.clarkNote}</p>
                   </a>
                 )
               })}
@@ -211,22 +211,22 @@ export default function WhaleAlertsPage() {
         </section>
 
         <aside className="space-y-4">
-          <div className="rounded-2xl border border-white/10 bg-[#080c14] p-4">
+          <div className="rounded-2xl border p-5" style={{ background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.08)" }}>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Today&apos;s Stats</h3>
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center justify-between"><span className="text-slate-400">Total alerts today</span><span className="font-semibold text-white">{totalAlerts}</span></div>
-              <div className="flex items-center justify-between"><span className="text-slate-400">Largest move today</span><span className="font-semibold text-[#2DD4BF]">{formatMoney(largestMove)}</span></div>
-              <div className="flex items-center justify-between"><span className="text-slate-400">Most active token</span><span className="font-semibold text-[#8b5cf6]">{mostActiveToken}</span></div>
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center justify-between"><span className="text-[#94a3b8]">Total alerts today</span><span className="font-semibold text-white">{totalAlerts}</span></div>
+              <div className="flex items-center justify-between"><span className="text-[#94a3b8]">Largest move today</span><span className="font-bold text-white">{formatMoney(largestMove)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-[#94a3b8]">Most active token</span><span className="font-bold text-white">{mostActiveToken}</span></div>
             </div>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-[#080c14] p-4">
+          <div className="rounded-2xl border p-5" style={{ background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.08)" }}>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Top whale wallets</h3>
             <div className="space-y-2">
               {walletActivity.map(([wallet, count]) => (
-                <div key={wallet} className="flex items-center justify-between rounded-lg border border-white/10 bg-[#0a1020] px-3 py-2">
-                  <span className="text-xs text-slate-200" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{shortWallet(wallet)}</span>
-                  <span className="text-xs font-semibold text-[#2DD4BF]">{count} moves</span>
+                <div key={wallet} className="flex items-center justify-between rounded-lg border px-3 py-2" style={{ background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.08)" }}>
+                  <span className="text-xs text-[#2DD4BF]" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{shortWallet(wallet)}</span>
+                  <span className="text-xs font-semibold text-white">{count} moves</span>
                 </div>
               ))}
             </div>
