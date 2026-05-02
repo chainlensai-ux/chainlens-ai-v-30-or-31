@@ -2210,7 +2210,8 @@ type ClarkToolEvidence = {
   tokenScan?: {
     ok: boolean;
     token: { name: string; symbol: string; address: string } | null;
-    market: { price: number | null; change24h: number | null; volume24h: number | null; liquidity: number | null };
+    market: { price: number | null; change24h: number | null; volume24h: number | null; liquidity: number | null; marketCap: number | null; fdv: number | null };
+    holders?: { top1: number | null; top10: number | null; holderCount: number | null; status: string };
     security: {
       honeypot: boolean | null;
       buyTax: number | null;
@@ -2220,6 +2221,9 @@ type ClarkToolEvidence = {
       securityStatus: "verified" | "partial" | "unverified";
       riskLevel: "low" | "medium" | "high" | "unknown";
       missing: string[];
+      proxy: boolean | null;
+      mintable: boolean | null;
+      ownerRenounced: boolean | null;
     };
     liquidity: { pools: number; topPoolLiquidity: number | null };
     poolDetails?: Array<{ dex: string; pair: string; liquidity: number | null; volume24h: number | null; change24h: number | null; poolAddress: string | null }>;
@@ -2317,22 +2321,31 @@ async function executeClarkToolPlan(input: {
       if (tool.name === "token_scan") {
         const addrArg = String(tool.args.address ?? "").trim();
         const addr = addrArg || String(resolvedAddress ?? "").trim();
-        const tokenData = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await callScanToken(addr, "contract", input.origin) : null;
+        const tokenData = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await callInternalApi(input.origin, "/api/token", { contract: addr }) : null;
+        const tokenJson = tokenData?.ok ? tokenData.json : null;
         const securitySim = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await fetchHoneypotSecurity(addr, "base") : null;
-        const t = (tokenData ?? {}) as Record<string, unknown>;
+        const t = (tokenJson ?? {}) as Record<string, unknown>;
         const g = (t.goplus ?? {}) as Record<string, unknown>;
         const hp = (t.honeypot ?? {}) as Record<string, unknown>;
         const warnings: string[] = [];
-        if (!tokenData) warnings.push("Token scan data is limited right now.");
+        if (!tokenJson) warnings.push("Token scan data is limited right now.");
         if (securitySim?.warnings?.length) warnings.push(...securitySim.warnings);
         evidence.tokenScan = {
-          ok: Boolean(tokenData),
-          token: tokenData ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? addr) } : null,
+          ok: Boolean(tokenJson),
+          token: tokenJson ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? addr) } : null,
           market: {
             price: typeof t.price === "number" ? t.price : null,
             change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : null,
             volume24h: typeof t.volume24h === "number" ? t.volume24h : null,
             liquidity: typeof t.liquidity === "number" ? t.liquidity : null,
+            marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : (typeof t.market_cap === "number" ? t.market_cap : null),
+            fdv: typeof t.fdvUsd === "number" ? t.fdvUsd : (typeof t.fdv === "number" ? t.fdv : null),
+          },
+          holders: {
+            top1: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top1 === "number" ? (t.holderDistribution as Record<string, unknown>).top1 as number : null,
+            top10: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top10 === "number" ? (t.holderDistribution as Record<string, unknown>).top10 as number : null,
+            holderCount: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.holderCount === "number" ? (t.holderDistribution as Record<string, unknown>).holderCount as number : null,
+            status: typeof (t.holderDistributionStatus as Record<string, unknown> | undefined)?.status === "string" ? String((t.holderDistributionStatus as Record<string, unknown>).status) : "unavailable",
           },
           security: {
             honeypot: securitySim?.honeypot ?? (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : (g.is_honeypot != null ? String(g.is_honeypot) === "1" : null)),
@@ -2343,6 +2356,9 @@ async function executeClarkToolPlan(input: {
             securityStatus: securitySim?.securityStatus ?? "unverified",
             riskLevel: securitySim?.riskLevel ?? "unknown",
             missing: securitySim?.missing ?? ["honeypot", "buyTax", "sellTax", "transferTax", "simulationSuccess"],
+            proxy: g.is_proxy != null ? String(g.is_proxy) === "1" : null,
+            mintable: g.is_mintable != null ? String(g.is_mintable) === "1" : null,
+            ownerRenounced: g.owner_address == null ? null : String(g.owner_address).toLowerCase() === "0x0000000000000000000000000000000000000000",
           },
           liquidity: {
             pools: Array.isArray(t.pools) ? t.pools.length : 0,
@@ -2362,7 +2378,7 @@ async function executeClarkToolPlan(input: {
             })
             : [],
           warnings,
-          errorSafeMessage: tokenData ? undefined : "I couldn’t complete a token scan right now.",
+          errorSafeMessage: tokenJson ? undefined : "I couldn’t complete a token scan right now.",
         };
         resolvedAddress = evidence.tokenScan.token?.address ?? resolvedAddress;
         continue;
@@ -3341,17 +3357,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, mode: "casual_help", intent: "strategy", toolsUsed: [], analysis: buildFinancialAdviceReply(prompt) };
   }
 
-  if (liveIntent === "GENERAL_CHAT" && isBaseMoversComparisonPrompt(prompt)) {
-    const moversFromContext = extractStructuredMarketItems(body);
-    const moversFromHistory = extractMarketListItemsFromHistory(body.history);
-    const allMovers = moversFromContext.length > 0
-      ? moversFromContext.map(m => ({ rank: m.rank, symbol: m.symbol }))
-      : moversFromHistory.map(m => ({ rank: m.rank, symbol: m.symbol }));
-    if (allMovers.length > 0) {
-      return buildMoversComparisonReply(allMovers, chain);
-    }
-  }
-
   if (liveIntent === "MARKET_OVERVIEW") {
     try {
       const data = await fetchCoinGeckoMajors();
@@ -3723,7 +3728,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     }
 
     if (plan.tools.some((t) => t.name === "token_resolve") && evidence.tokenResolve?.selected?.contract) {
-      const tokenData = await callScanToken(evidence.tokenResolve.selected.contract, "contract", origin);
+      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract });
+      const tokenData = tokenRes.ok ? tokenRes.json : null;
       const securitySim = await fetchHoneypotSecurity(evidence.tokenResolve.selected.contract, "base");
       if (tokenData) evidence.tokenScan = {
         ok: true,
@@ -3733,6 +3739,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           change24h: typeof (tokenData as Record<string, unknown>).priceChange24h === "number" ? (tokenData as Record<string, unknown>).priceChange24h as number : null,
           volume24h: typeof (tokenData as Record<string, unknown>).volume24h === "number" ? (tokenData as Record<string, unknown>).volume24h as number : null,
           liquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null,
+          marketCap: typeof (tokenData as Record<string, unknown>).marketCapUsd === "number" ? (tokenData as Record<string, unknown>).marketCapUsd as number : null,
+          fdv: typeof (tokenData as Record<string, unknown>).fdvUsd === "number" ? (tokenData as Record<string, unknown>).fdvUsd as number : null,
+        },
+        holders: {
+          top1: typeof ((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown> | undefined)?.top1 === "number" ? (((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown>).top1 as number) : null,
+          top10: typeof ((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown> | undefined)?.top10 === "number" ? (((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown>).top10 as number) : null,
+          holderCount: typeof ((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown> | undefined)?.holderCount === "number" ? (((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown>).holderCount as number) : null,
+          status: typeof ((tokenData as Record<string, unknown>).holderDistributionStatus as Record<string, unknown> | undefined)?.status === "string" ? String(((tokenData as Record<string, unknown>).holderDistributionStatus as Record<string, unknown>).status) : "unavailable",
         },
         security: {
           honeypot: securitySim.honeypot,
@@ -3743,6 +3757,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           securityStatus: securitySim.securityStatus,
           riskLevel: securitySim.riskLevel,
           missing: securitySim.missing,
+          proxy: null,
+          mintable: null,
+          ownerRenounced: null,
         },
         liquidity: { pools: Array.isArray((tokenData as Record<string, unknown>).pools) ? ((tokenData as Record<string, unknown>).pools as unknown[]).length : 0, topPoolLiquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null },
         poolDetails: Array.isArray((tokenData as Record<string, unknown>).pools)

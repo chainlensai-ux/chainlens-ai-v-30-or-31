@@ -373,6 +373,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           opacity: 0; transform: scale(.95); pointer-events: none;
         }
         .clark-orb-thinking::before { animation: clarkRadarPulse 1.8s ease-in-out infinite; opacity: 1; }
+        .clark-msg p { margin: 0; }
+        .clark-msg strong { color: #e2e8f0; font-weight: 600; }
+        .clark-msg-label { color: #c4b5fd; font-weight: 600; letter-spacing: 0.01em; }
         @media (prefers-reduced-motion: reduce) {
           .clark-orb, .clark-orb::before, .radar-dot, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
         }
@@ -418,7 +421,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         >
           {/* Left — icon + title */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-            <ClarkOrb size={26} className="clark-orb" thinking={loading} style={{ flexShrink: 0 }} />
+            <ClarkOrb size={26} className="clark-orb" style={{ flexShrink: 0 }} />
             <span
               style={{
                 fontSize: '13px',
@@ -505,7 +508,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
               }}
             >
               {/* Orb */}
-              <ClarkOrb size={52} className="clark-orb" style={{ boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)' }} />
+              <ClarkOrb size={44} className="clark-orb" style={{ boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)' }} />
 
               <div>
                 <p
@@ -585,19 +588,15 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     wordBreak: 'break-word',
                     overflowWrap: 'anywhere',
                   }}>
-                    {msg.text === 'Clark is thinking...'
-                      ? (
-                        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                          Clark is thinking
-                          <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
-                          <span className="radar-dot">.</span>
-                          <span className="radar-dot">.</span>
-                        </span>
-                      )
-                      : (msg.text.startsWith('{') || msg.text.startsWith('['))
-                      ? msg.text
-                      : <ClarkMessage text={msg.text} />
-                    }
+                    {msg.text === 'Clark is thinking...' ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
+                        <ClarkOrb size={16} className="clark-orb" thinking />
+                        Clark is thinking
+                        <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
+                        <span className="radar-dot">.</span>
+                        <span className="radar-dot">.</span>
+                      </span>
+                    ) : msg.role === 'clark' ? msg.text.split('\n').map((line, idx) => { const cleaned = line.trimStart(); const labels = ["Clark's read:", 'Next:', 'Top movers', 'Verdict:', 'Risk:']; const hit = labels.find((l) => cleaned.toLowerCase().startsWith(l.toLowerCase())); return <p key={idx}>{hit ? <><span className='clark-msg-label'>{line.slice(0, line.indexOf(':') + 1)}</span>{line.slice(line.indexOf(':') + 1)}</> : line || <span>&nbsp;</span>}</p> }) : msg.text}
                   </div>
                 </div>
               ))}
