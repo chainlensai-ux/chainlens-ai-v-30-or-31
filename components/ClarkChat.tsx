@@ -17,6 +17,7 @@ interface Message {
   role: 'user' | 'clark'
   text: string
 }
+const THINKING_MESSAGE = 'Clark is thinking...'
 type ClarkContextState = {
   lastMarketList?: Array<{
     rank: number
@@ -112,6 +113,20 @@ function isMobileClient() {
   return typeof window !== 'undefined' && (window.innerWidth < 768 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))
 }
 
+function ClarkOrb({ size = 20, thinking = false }: { size?: number; thinking?: boolean }) {
+  return <span className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}><span className='clark-orb-ring' /><span className='clark-orb-dot clark-orb-dot-a' /><span className='clark-orb-dot clark-orb-dot-b' /></span>
+}
+
+function renderClarkText(text: string) {
+  const section = /^(Verdict|Read|Why it matters|Risk|Next watch):/i
+  const address = /(0x[a-fA-F0-9]{8,40})/g
+  return text.split('\n').map((line, i) => (
+    <p key={i} style={{ margin: i === 0 ? 0 : '8px 0 0' }}>
+      {section.test(line) ? <span style={{ color: '#99f6e4', fontWeight: 700 }}>{line}</span> : line.split(address).map((part, idx) => address.test(part) ? <code key={idx} style={{ fontFamily: 'var(--font-plex-mono)', background: 'rgba(15,23,42,.65)', border: '1px solid rgba(148,163,184,.24)', borderRadius: 6, padding: '1px 5px' }}>{part}</code> : <span key={idx}>{part}</span>)}
+    </p>
+  ))
+}
+
 export default function ClarkChat({
   active: _active,
   onTyping,
@@ -138,7 +153,7 @@ export default function ClarkChat({
     console.log('executeSend sending:', text)
     setMessages(prev => [...prev, { role: 'user', text }])
     setLoading(true)
-    setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
+    setMessages(prev => [...prev, { role: 'clark', text: THINKING_MESSAGE }])
 
     try {
       const body = parseMessage(text)
@@ -253,13 +268,15 @@ export default function ClarkChat({
           background: rgba(123,92,255,0.30);
           border-radius: 3px;
         }
-        @keyframes clarkThinkingDot {
-          0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
-          40%            { opacity: 1;   transform: translateY(-3px); }
-        }
-        .clark-dot { display: inline-block; animation: clarkThinkingDot 1.2s ease-in-out infinite; }
-        .clark-dot:nth-child(2) { animation-delay: 0.15s; }
-        .clark-dot:nth-child(3) { animation-delay: 0.30s; }
+        .clark-orb-shell { position: relative; display:inline-flex; border-radius:999px; background: radial-gradient(circle at 30% 25%, rgba(148,163,184,.22), rgba(2,6,23,.96) 62%); border:1px solid rgba(148,163,184,.34); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 0 14px rgba(45,212,191,.2),0 0 20px rgba(139,92,246,.15); }
+        .clark-orb-ring { position:absolute; inset:2px; border-radius:999px; border:1px solid rgba(45,212,191,.24); }
+        .clark-orb-dot { position:absolute; width:5px; height:5px; top:42%; border-radius:50%; }
+        .clark-orb-dot-a { left:33%; background:#67e8f9; box-shadow:0 0 10px rgba(103,232,249,.9); animation: clarkDotA 2.3s ease-in-out infinite; }
+        .clark-orb-dot-b { right:30%; background:#c4b5fd; box-shadow:0 0 10px rgba(196,181,253,.88); animation: clarkDotB 2.0s ease-in-out infinite; }
+        .clark-orb-shell.thinking::after { content:''; position:absolute; inset:-5px; border:1px solid rgba(45,212,191,.22); border-radius:999px; animation: clarkPulse 1.6s ease-out infinite; }
+        @keyframes clarkDotA { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(2px,-2px) scale(1.12)} }
+        @keyframes clarkDotB { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-2px,2px) scale(1.1)} }
+        @keyframes clarkPulse { 0%{transform:scale(.94);opacity:.7;} 100%{transform:scale(1.08);opacity:0;} }
         @keyframes clarkThinkingShimmer {
           0%, 100% { background: rgba(0,0,0,0.30); box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
           50%       { background: rgba(123,92,255,0.08); box-shadow: 0 8px 40px rgba(123,92,255,0.18); }
@@ -285,6 +302,7 @@ export default function ClarkChat({
             background: linear-gradient(180deg, rgba(5,8,22,0.65), rgba(5,8,22,0.95)) !important;
           }
         }
+        @media (prefers-reduced-motion: reduce) { .clark-orb-dot, .clark-orb-shell.thinking::after { animation: none !important; } }
       `}</style>
 
       <div className="flex-1 flex flex-col" style={{ background: '#050816', minHeight: 0 }}>
@@ -413,7 +431,7 @@ export default function ClarkChat({
             )}
 
             {messages.map((msg, i) => {
-              const isThinking = msg.role === 'clark' && msg.text === 'Clark is thinking...'
+              const isThinking = msg.role === 'clark' && msg.text === THINKING_MESSAGE
               return (
                 <div
                   key={i}
@@ -422,14 +440,7 @@ export default function ClarkChat({
                     justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
                   }}
                 >
-                  {msg.role === 'clark' && (
-                    <div style={{
-                      width: '9px', height: '9px', borderRadius: '50%',
-                      background: '#2DD4BF',
-                      flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end', marginBottom: '6px',
-                      animation: 'clark-dot-pulse 3s ease-in-out infinite',
-                    }} />
-                  )}
+                  {msg.role === 'clark' && <div style={{ flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end', marginBottom: '4px' }}><ClarkOrb thinking={isThinking} /></div>}
 
                   {isThinking ? (
                     <div style={{
@@ -438,16 +449,11 @@ export default function ClarkChat({
                       border: '1px solid rgba(255,255,255,0.10)',
                       borderRadius: '12px',
                       padding: '10px 16px',
-                      display: 'flex', alignItems: 'center', gap: '2px',
+                      display: 'flex', alignItems: 'center', gap: '8px',
                       animation: 'clarkThinkingShimmer 2s ease-in-out infinite',
                     }}>
-                      <span style={{
-                        fontSize: '12px', color: 'rgba(255,255,255,0.45)',
-                        fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em',
-                      }}>Clark is thinking</span>
-                      <span className="clark-dot" style={{ marginLeft: '2px', color: 'rgba(78,242,197,0.70)' }}>.</span>
-                      <span className="clark-dot" style={{ color: 'rgba(78,242,197,0.70)' }}>.</span>
-                      <span className="clark-dot" style={{ color: 'rgba(78,242,197,0.70)' }}>.</span>
+                      <ClarkOrb thinking />
+                      <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.58)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>Clark is thinking…</span>
                     </div>
                   ) : (
                     <div style={{
@@ -478,7 +484,7 @@ export default function ClarkChat({
                       wordBreak: 'break-word',
                       overflowWrap: 'anywhere',
                     }}>
-                      {msg.text}
+                      {msg.role === 'clark' ? renderClarkText(msg.text) : msg.text}
                     </div>
                   )}
                 </div>
