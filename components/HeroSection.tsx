@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import ClarkOrb from '@/components/ClarkOrb'
 
 const CHIPS = [
   'Scan a Base token',
@@ -126,6 +127,9 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           transform: translateY(-1px);
         }
         .clark-box-input::placeholder { color: rgba(255,255,255,0.40); }
+        @media (prefers-reduced-motion: reduce) {
+          .clark-orb, .clark-send-btn, .clark-send-arrow { animation: none !important; }
+        }
       `}</style>
 
       <section
@@ -329,23 +333,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                     boxShadow: 'inset 0 0 20px rgba(45,212,191,0.08), inset 0 0 14px rgba(236,72,153,0.06), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(139,92,246,0.10), 0 0 8px rgba(45,212,191,0.06)',
                   }}
                 >
-                  {/* Sparkle orb */}
-                  <div
-                    style={{
-                      width: '30px',
-                      height: '30px',
-                      borderRadius: '8px',
-                      background: 'linear-gradient(135deg, rgba(139,92,246,0.28), rgba(236,72,153,0.16))',
-                      border: '1px solid rgba(139,92,246,0.30)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                      boxShadow: '0 0 10px rgba(139,92,246,0.18)',
-                    }}
-                  >
-                    <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#a78bfa', boxShadow: '0 0 8px rgba(139,92,246,0.70)' }} />
-                  </div>
+                  <ClarkOrb size={30} className="clark-orb" style={{ flexShrink: 0, boxShadow: '0 0 10px rgba(139,92,246,0.18)' }} />
 
                   {/* Input */}
                   <input

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import ClarkOrb from '@/components/ClarkOrb'
 
 const HINT_CHIPS = [
   "What's pumping on Base?",
@@ -393,24 +394,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         >
           {/* Left — icon + title */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-            <div
-              style={{
-                width: '26px',
-                height: '26px',
-                borderRadius: '50%',
-                background: 'radial-gradient(circle at 35% 30%, rgba(17,24,39,0.98) 0%, rgba(8,13,30,0.97) 100%)',
-                border: '1px solid rgba(103,232,249,0.40)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: 'inset 0 0 0 1px rgba(167,139,250,0.24), 0 0 14px rgba(139,92,246,0.26)',
-                flexShrink: 0,
-              }}
->
-              <div style={{ position: 'absolute', inset: '5px', borderRadius: '50%', border: '1px solid rgba(167,139,250,0.24)' }} />
-              <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 7px rgba(34,211,238,0.8)' }} />
-              <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 7px rgba(192,132,252,0.78)', marginLeft: '4px' }} />
-            </div>
+            <ClarkOrb size={26} className="clark-orb" style={{ flexShrink: 0 }} />
             <span
               style={{
                 fontSize: '13px',
@@ -497,24 +481,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
               }}
             >
               {/* Orb */}
-              <div
-                className="clark-orb"
-                style={{
-                  width: '44px',
-                  height: '44px',
-                  borderRadius: '50%',
-                  background: 'radial-gradient(circle at 30% 28%, rgba(15,23,42,0.98) 0%, rgba(6,10,28,0.98) 100%)',
-                  border: '1px solid rgba(103,232,249,0.34)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)',
-                }}
-              >
-                <div style={{ position: 'absolute', inset: '8px', borderRadius: '50%', border: '1px solid rgba(167,139,250,0.25)' }} />
-                <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 10px rgba(34,211,238,0.72)' }} />
-                <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 10px rgba(192,132,252,0.70)', marginLeft: '5px' }} />
-              </div>
+              <ClarkOrb size={44} className="clark-orb" style={{ boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)' }} />
 
               <div>
                 <p
@@ -561,22 +528,12 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                   }}
                 >
                   {msg.role === 'clark' && (
-                    <div className={`clark-orb ${msg.text === 'Clark is thinking...' ? 'clark-orb-thinking' : ''}`} style={{
-                      width: '20px',
-                      height: '20px',
-                      borderRadius: '50%',
-                      background: 'radial-gradient(circle at 30% 30%, rgba(15,23,42,0.98) 0%, rgba(6,10,28,0.98) 100%)',
-                      flexShrink: 0,
-                      marginRight: '6px',
-                      alignSelf: 'flex-end',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}>
-                      <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{ position: 'absolute', inset: '3px', borderRadius: '50%', border: '1px solid rgba(167,139,250,0.26)' }} />
-                      <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px rgba(34,211,238,0.75)' }} />
-                      <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 6px rgba(192,132,252,0.72)', marginLeft: '3px' }} />
-                    </div>
+                    <ClarkOrb
+                      size={20}
+                      className="clark-orb"
+                      thinking={msg.text === 'Clark is thinking...'}
+                      style={{ flexShrink: 0, marginRight: '6px', alignSelf: 'flex-end' }}
+                    />
                   )}
                   <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{
                     maxWidth: '82%',
@@ -604,10 +561,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                   }}>
                     {msg.text === 'Clark is thinking...' ? (
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
-                        <span className="clark-orb clark-orb-thinking" style={{ width: '16px', height: '16px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                          <span style={{ width: '3.5px', height: '3.5px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px rgba(34,211,238,0.75)' }} />
-                          <span style={{ width: '3.5px', height: '3.5px', borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 6px rgba(192,132,252,0.72)', marginLeft: '2px' }} />
-                        </span>
+                        <ClarkOrb size={16} className="clark-orb" thinking />
                         Clark is thinking
                         <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
                         <span className="radar-dot">.</span>
