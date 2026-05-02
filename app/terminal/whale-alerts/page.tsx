@@ -92,9 +92,10 @@ function Pill({ children, color = 'slate', dot }: { children: React.ReactNode; c
   }
   const c = m[color] ?? m.slate
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-[5px] text-[11px] font-medium"
-      style={{ background: c.bg, border: `1px solid ${c.bd}`, color: c.tx }}>
-      {dot && <span className="h-1.5 w-1.5 rounded-full" style={{ background: c.dt }} />}
+    <span
+      className="inline-flex shrink-0 items-center rounded-full"
+      style={{ gap: 6, padding: '5px 10px', fontSize: 11, fontWeight: 500, background: c.bg, border: `1px solid ${c.bd}`, color: c.tx }}>
+      {dot && <span className="rounded-full" style={{ width: 6, height: 6, background: c.dt, display: 'inline-block' }} />}
       {children}
     </span>
   )
@@ -110,7 +111,8 @@ function CardSpark({ color, seed = 0 }: { color: string; seed?: number }) {
   const d = paths[seed % 4]
   const uid = `csp${seed}${color.replace('#', '')}`
   return (
-    <svg width="160" height="40" viewBox="0 0 160 40" fill="none" className="absolute bottom-0 right-0 opacity-[0.48]">
+    <svg width="160" height="40" viewBox="0 0 160 40" fill="none"
+      style={{ position: 'absolute', bottom: 0, right: 0, opacity: 0.48, pointerEvents: 'none' }}>
       <defs>
         <linearGradient id={uid} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.26" />
@@ -196,42 +198,42 @@ export default function WhaleAlertsPage() {
     { label: 'TRACKED WALLETS', val: stats.trackedWallets, sub: 'Smart money + manual',  color: '#ec4899' },
   ]
 
-  /* ─── inline tokens for bg/border where Tailwind JIT is unreliable ─── */
+  /* ─── inline design tokens ─── */
   const cardBg   = 'rgba(7,16,27,0.92)'
   const innerBg  = 'rgba(4,10,18,0.95)'
   const bdr      = '1px solid rgba(255,255,255,0.09)'
   const bdrInner = '1px solid rgba(255,255,255,0.06)'
 
-  /* ─── JSX return — fully rebuilt per spec ─── */
+  /* ─── JSX — all semantic Tailwind replaced with inline styles / arbitrary values ─── */
   return (
-    <div className="whale-alerts-page min-h-dvh overflow-x-hidden text-white"
-      style={{ background: 'radial-gradient(ellipse 90% 60% at 50% -8%,rgba(45,212,191,0.09) 0%,transparent 52%),radial-gradient(ellipse 55% 45% at 88% 6%,rgba(139,92,246,0.07) 0%,transparent 46%),#060810' }}>
+    <div className="whale-alerts-page min-h-dvh overflow-x-hidden"
+      style={{ background: 'radial-gradient(ellipse 90% 60% at 50% -8%,rgba(45,212,191,0.09) 0%,transparent 52%),radial-gradient(ellipse 55% 45% at 88% 6%,rgba(139,92,246,0.07) 0%,transparent 46%),#060810', color: '#f1f5f9' }}>
 
       {/* ── centred column ── */}
-      <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mx-auto w-full flex flex-col" style={{ maxWidth: 1280, gap: 24, padding: '24px 16px' }}>
 
         {/* ═══ 1. HERO ════════════════════════════════════════════════ */}
-        <div className="grid grid-cols-1 gap-6 rounded-[28px] border border-white/10 p-6 xl:grid-cols-[1.4fr_360px]"
-          style={{ background: cardBg, boxShadow: '0 0 80px rgba(45,212,191,0.05),0 24px 64px rgba(0,0,0,0.55)' }}>
+        <div className="grid rounded-[28px]"
+          style={{ gridTemplateColumns: '1.4fr 360px', gap: 24, border: bdr, background: cardBg, padding: 24, boxShadow: '0 0 80px rgba(45,212,191,0.05),0 24px 64px rgba(0,0,0,0.55)' }}>
 
           {/* left — eyebrow / title / chips */}
           <div className="flex flex-col justify-center">
-            <div className="mb-3 flex items-center gap-2">
+            <div className="flex items-center" style={{ gap: 8, marginBottom: 12 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
               </svg>
-              <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-teal-400">Whale Alerts</span>
-              <span className="text-slate-700">·</span>
-              <span className="text-[11px] uppercase tracking-[0.12em] text-slate-600">base mainnet</span>
+              <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#2dd4bf' }}>Whale Alerts</span>
+              <span style={{ color: '#1e293b' }}>·</span>
+              <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#334155' }}>base mainnet</span>
             </div>
-            <h1 className="text-[2.6rem] font-extrabold leading-tight tracking-tight text-white">Whale Alerts</h1>
-            <p className="mt-2 max-w-md text-sm leading-relaxed text-slate-500">
+            <h1 style={{ fontSize: '2.6rem', fontWeight: 800, lineHeight: 1.1, letterSpacing: '-0.02em', color: '#f8fafc', margin: 0 }}>Whale Alerts</h1>
+            <p style={{ marginTop: 8, maxWidth: 420, fontSize: 14, lineHeight: 1.6, color: '#64748b' }}>
               Track selected Base wallets for meaningful token movement.
             </p>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="flex flex-wrap" style={{ gap: 8, marginTop: 16 }}>
               <Pill color="cyan" dot>Base Mainnet</Pill>
               <Pill color="slate">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-0.5 opacity-60">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 2, opacity: 0.6 }}>
                   <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
                 </svg>
                 {stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Wallets loading'}
@@ -242,11 +244,10 @@ export default function WhaleAlertsPage() {
           </div>
 
           {/* right — live wallet movement panel */}
-          <div className="flex flex-col justify-center rounded-2xl p-4"
-            style={{ background: innerBg, border: bdrInner }}>
-            <div className="flex items-start gap-4">
+          <div className="flex flex-col justify-center rounded-[16px]" style={{ background: innerBg, border: bdrInner, padding: 16 }}>
+            <div className="flex items-start" style={{ gap: 16 }}>
               {/* CSS radar rings */}
-              <div className="relative mt-0.5 h-[76px] w-[76px] shrink-0">
+              <div className="relative shrink-0" style={{ width: 76, height: 76, marginTop: 2 }}>
                 {([0, 9, 18, 27] as const).map((ins, ri) => (
                   <div key={ri} className="absolute rounded-full" style={{
                     inset: ins,
@@ -254,16 +255,16 @@ export default function WhaleAlertsPage() {
                     background: ri === 3 ? 'rgba(45,212,191,0.09)' : 'transparent',
                   }}/>
                 ))}
-                <div className="absolute inset-[34px] rounded-full"
-                  style={{ background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 10px rgba(45,212,191,0.85)' }}/>
-                <div className="absolute h-[7px] w-[7px] rounded-full"
-                  style={{ top: 9, left: '50%', transform: 'translateX(-50%)', background: '#22c55e', boxShadow: '0 0 8px #22c55e' }}/>
+                <div className="absolute rounded-full"
+                  style={{ inset: 34, background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 10px rgba(45,212,191,0.85)' }}/>
+                <div className="absolute rounded-full"
+                  style={{ width: 7, height: 7, top: 9, left: '50%', transform: 'translateX(-50%)', background: '#22c55e', boxShadow: '0 0 8px #22c55e' }}/>
               </div>
               {/* text + sparkline */}
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-green-400">● Live Wallet Movement</p>
-                <p className="mt-1 text-xs leading-relaxed text-slate-600">Listening for high-signal wallet moves on Base.</p>
-                <div className="mt-3">
+              <div className="flex-1" style={{ minWidth: 0 }}>
+                <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.16em', color: '#4ade80' }}>● Live Wallet Movement</p>
+                <p style={{ marginTop: 4, fontSize: 12, lineHeight: 1.5, color: '#475569' }}>Listening for high-signal wallet moves on Base.</p>
+                <div style={{ marginTop: 12 }}>
                   <svg width="100%" height="28" viewBox="0 0 200 28" preserveAspectRatio="none" fill="none">
                     <defs>
                       <linearGradient id="hero-sp" x1="0" y1="0" x2="0" y2="1">
@@ -285,55 +286,48 @@ export default function WhaleAlertsPage() {
         </div>
 
         {/* ═══ 2. METRICS ══════════════════════════════════════════════ */}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(4,1fr)', gap: 16 }}>
           {metrics.map((m, idx) => (
-            <div key={m.label} className="relative min-h-[132px] overflow-hidden rounded-2xl border border-white/10 p-5"
-              style={{ background: cardBg }}>
+            <div key={m.label} className="relative overflow-hidden rounded-[16px]"
+              style={{ minHeight: 132, border: bdr, background: cardBg, padding: 20 }}>
 
               {/* icon */}
-              <div className="flex h-8 w-8 items-center justify-center rounded-xl"
-                style={{ background: `${m.color}14`, border: `1px solid ${m.color}28` }}>
+              <div className="flex items-center justify-center rounded-[12px]"
+                style={{ width: 32, height: 32, background: `${m.color}14`, border: `1px solid ${m.color}28` }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={m.color} strokeWidth="2.2">
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                 </svg>
               </div>
 
-              {/* label */}
-              <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-600">{m.label}</p>
-              {/* value */}
-              <p className="mt-0.5 text-[2.6rem] font-extrabold leading-none tabular-nums text-white">{m.val}</p>
-              {/* sublabel */}
-              <p className="mt-1.5 text-xs text-slate-600">{m.sub}</p>
+              <p style={{ marginTop: 12, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#475569' }}>{m.label}</p>
+              <p className="tabular-nums" style={{ marginTop: 2, fontSize: '2.6rem', fontWeight: 800, lineHeight: 1, color: '#f8fafc' }}>{m.val}</p>
+              <p style={{ marginTop: 6, fontSize: 12, color: '#475569' }}>{m.sub}</p>
 
-              {/* area sparkline — bottom-right */}
               <CardSpark color={m.color} seed={idx}/>
 
               {/* colored bottom accent */}
-              <div className="absolute bottom-0 left-0 right-0 h-[2px]"
-                style={{ background: `linear-gradient(90deg,${m.color}55,transparent)` }}/>
+              <div className="absolute" style={{ bottom: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,${m.color}55,transparent)` }}/>
             </div>
           ))}
         </div>
 
         {/* ═══ 3. CONTROLS + SYNC ══════════════════════════════════════ */}
-        <div className="rounded-[24px] border border-white/10 p-5"
-          style={{ background: cardBg }}>
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.35fr_0.95fr]">
+        <div className="rounded-[24px]" style={{ border: bdr, background: cardBg, padding: 20 }}>
+          <div className="grid" style={{ gridTemplateColumns: '1.35fr 0.95fr', gap: 20 }}>
 
             {/* ── left: filters ── */}
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col" style={{ gap: 16 }}>
 
               {/* Time Window */}
               <div>
-                <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-600">Time Window</p>
-                <div className="flex w-fit gap-1 rounded-xl p-1"
-                  style={{ background: 'rgba(255,255,255,0.025)', border: bdrInner }}>
+                <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Time Window</p>
+                <div className="flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
                   {WINDOWS.map(w => (
                     <button key={w} onClick={() => setWindowValue(w)}
-                      className="rounded-[9px] px-4 py-1.5 text-xs font-semibold"
+                      className="rounded-[9px]"
                       style={windowValue === w
-                        ? { background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf', boxShadow: '0 0 14px rgba(45,212,191,0.12)' }
-                        : { background: 'transparent', border: '1px solid transparent', color: '#475569' }}>
+                        ? { padding: '6px 16px', fontSize: 12, fontWeight: 600, background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf', boxShadow: '0 0 14px rgba(45,212,191,0.12)' }
+                        : { padding: '6px 16px', fontSize: 12, fontWeight: 600, background: 'transparent', border: '1px solid transparent', color: '#475569' }}>
                       {w}
                     </button>
                   ))}
@@ -342,14 +336,14 @@ export default function WhaleAlertsPage() {
 
               {/* Minimum Value */}
               <div>
-                <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-600">Minimum Value</p>
-                <div className="flex flex-wrap gap-2">
+                <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Minimum Value</p>
+                <div className="flex flex-wrap" style={{ gap: 8 }}>
                   {MIN_OPTIONS.map(opt => (
                     <button key={opt.value} onClick={() => setMinUsd(opt.value)}
-                      className="rounded-full px-3.5 py-1.5 text-xs font-semibold"
+                      className="rounded-full"
                       style={minUsd === opt.value
-                        ? { background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf' }
-                        : { background: 'rgba(255,255,255,0.03)', border: bdrInner, color: '#475569' }}>
+                        ? { padding: '6px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf' }
+                        : { padding: '6px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(255,255,255,0.03)', border: bdrInner, color: '#475569' }}>
                       {opt.label}
                     </button>
                   ))}
@@ -357,21 +351,21 @@ export default function WhaleAlertsPage() {
               </div>
 
               {/* 3 selects */}
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <div className="grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
                 {[
                   { label: 'Alert Type', val: typeFilter, set: setTypeFilter, opts: types },
                   { label: 'Severity',   val: sevFilter,  set: setSevFilter,  opts: sevs  },
                   { label: 'Side',       val: sideFilter, set: setSideFilter, opts: sides },
                 ].map(({ label, val, set, opts }) => (
-                  <div key={label} className="flex flex-col gap-1.5">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-600">{label}</span>
+                  <div key={label} className="flex flex-col" style={{ gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.16em', color: '#475569' }}>{label}</span>
                     <div className="relative">
                       <select value={val} onChange={e => set(e.target.value)}
-                        className="wa-select w-full appearance-none rounded-xl px-3 py-2.5 text-sm outline-none"
-                        style={{ background: innerBg, border: bdr, color: '#94a3b8' }}>
+                        className="wa-select w-full appearance-none rounded-[12px]"
+                        style={{ background: innerBg, border: bdr, color: '#94a3b8', padding: '10px 12px', fontSize: 14, outline: 'none' }}>
                         {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All ${label}s` : o}</option>)}
                       </select>
-                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-600">
+                      <span className="pointer-events-none absolute" style={{ right: 12, top: '50%', transform: 'translateY(-50%)', color: '#475569' }}>
                         <svg width="9" height="5" viewBox="0 0 9 5" fill="currentColor"><path d="M0 0l4.5 5L9 0z"/></svg>
                       </span>
                     </div>
@@ -381,39 +375,40 @@ export default function WhaleAlertsPage() {
             </div>
 
             {/* ── right: wallet sync panel ── */}
-            <div className="flex flex-col gap-3 rounded-2xl border border-purple-400/20 bg-gradient-to-br from-[#141a34] via-[#10192d] to-[#0a1322] p-4">
+            <div className="flex flex-col rounded-[16px]"
+              style={{ gap: 12, border: '1px solid rgba(139,92,246,0.20)', background: 'linear-gradient(135deg,#141a34,#10192d,#0a1322)', padding: 16 }}>
 
               {/* header */}
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-xl"
-                    style={{ background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.28)' }}>
+                <div className="flex items-center" style={{ gap: 10 }}>
+                  <div className="flex items-center justify-center rounded-[12px]"
+                    style={{ width: 32, height: 32, background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.28)' }}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2">
                       <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                     </svg>
                   </div>
                   <div>
-                    <p className="text-sm font-bold text-white">Wallet scan</p>
-                    <p className="text-[11px] text-slate-600">{syncState ? 'Scan complete' : 'No scan yet'}</p>
+                    <p style={{ fontSize: 14, fontWeight: 700, color: '#f8fafc', margin: 0 }}>Wallet scan</p>
+                    <p style={{ fontSize: 11, color: '#475569', margin: 0 }}>{syncState ? 'Scan complete' : 'No scan yet'}</p>
                   </div>
                 </div>
                 <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Syncing…' : 'Sync Healthy'}</Pill>
               </div>
 
               {/* 2 stat cards */}
-              <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-xl p-3" style={{ background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-600">Wallets Scanned</p>
-                  <p className="mt-1.5 text-2xl font-extrabold tabular-nums text-white">
+              <div className="grid grid-cols-2" style={{ gap: 8 }}>
+                <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Wallets Scanned</p>
+                  <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
                     {syncState
-                      ? <>{syncState.processed ?? 0}<span className="text-base font-normal text-slate-600"> / {syncState.trackedWalletsTotal ?? stats.trackedWallets}</span></>
-                      : <span className="text-slate-700">—</span>}
+                      ? <>{syncState.processed ?? 0}<span style={{ fontSize: 16, fontWeight: 400, color: '#475569' }}> / {syncState.trackedWalletsTotal ?? stats.trackedWallets}</span></>
+                      : <span style={{ color: '#334155' }}>—</span>}
                   </p>
                 </div>
-                <div className="rounded-xl p-3" style={{ background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-600">Alerts Found</p>
-                  <p className="mt-1.5 text-2xl font-extrabold tabular-nums text-white">
-                    {syncState?.inserted != null ? syncState.inserted : <span className="text-slate-700">—</span>}
+                <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Alerts Found</p>
+                  <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
+                    {syncState?.inserted != null ? syncState.inserted : <span style={{ color: '#334155' }}>—</span>}
                   </p>
                 </div>
               </div>
@@ -421,39 +416,38 @@ export default function WhaleAlertsPage() {
               {/* coverage bar */}
               {covPct !== null ? (
                 <div>
-                  <div className="mb-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest">
-                    <span className="text-slate-600">Scan Coverage</span>
-                    <span className="text-slate-400">{covPct}%</span>
+                  <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569' }}>Scan Coverage</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>{covPct}%</span>
                   </div>
-                  <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.06)' }}>
-                    <div className="h-full rounded-full transition-all"
-                      style={{ width: `${covPct}%`, background: 'linear-gradient(90deg,#2dd4bf,#8b5cf6)' }}/>
+                  <div className="w-full overflow-hidden rounded-full" style={{ height: 6, background: 'rgba(255,255,255,0.06)' }}>
+                    <div className="rounded-full" style={{ width: `${covPct}%`, height: '100%', background: 'linear-gradient(90deg,#2dd4bf,#8b5cf6)', transition: 'width 0.3s ease' }}/>
                   </div>
                 </div>
               ) : (
-                <p className="text-[11px] text-slate-700">Run sync to see coverage</p>
+                <p style={{ fontSize: 11, color: '#334155' }}>Run sync to see coverage</p>
               )}
 
               {(syncState?.providerErrors ?? 0) > 0 && (
-                <p className="rounded-xl px-3 py-2 text-[11px]"
-                  style={{ background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', color: '#fcd34d' }}>
+                <p className="rounded-[12px]"
+                  style={{ padding: '8px 12px', fontSize: 11, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', color: '#fcd34d' }}>
                   {syncState?.providerErrors} provider error{(syncState?.providerErrors ?? 0) > 1 ? 's' : ''} — some alerts may be delayed.
                 </p>
               )}
 
-              {/* primary + secondary buttons */}
-              <div className="flex gap-2">
+              {/* sync + reset buttons */}
+              <div className="flex" style={{ gap: 8 }}>
                 <button onClick={() => { void runSync(syncState?.nextOffset ?? 0) }} disabled={syncing}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-bold disabled:opacity-50"
-                  style={{ background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)' }}>
+                  className="flex flex-1 items-center justify-center rounded-[12px]"
+                  style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing ? 0.5 : 1, border: 'none' }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
                   {syncing ? 'Scanning…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
-                  className="flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-medium disabled:opacity-40"
-                  style={{ background: 'rgba(255,255,255,0.05)', border: bdr, color: '#64748b' }}>
+                  className="flex items-center rounded-[12px]"
+                  style={{ gap: 6, padding: '10px 16px', fontSize: 14, fontWeight: 500, background: 'rgba(255,255,255,0.05)', border: bdr, color: '#64748b', opacity: syncing ? 0.4 : 1 }}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
@@ -461,8 +455,8 @@ export default function WhaleAlertsPage() {
                 </button>
               </div>
 
-              {/* advanced diagnostics */}
-              <button className="text-left text-[10px] font-bold uppercase tracking-widest text-slate-700 transition-opacity hover:opacity-80">
+              <button className="text-left hover:opacity-80"
+                style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#334155', background: 'none', border: 'none' }}>
                 + Advanced Diagnostics
               </button>
             </div>
@@ -471,34 +465,33 @@ export default function WhaleAlertsPage() {
         </div>
 
         {/* ═══ 4. ALERT FEED ═══════════════════════════════════════════ */}
-        <div className="overflow-hidden rounded-[24px] border border-white/10"
-          style={{ background: cardBg }}>
+        <div className="overflow-hidden rounded-[24px]" style={{ border: bdr, background: cardBg }}>
 
           {/* feed header */}
-          <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4"
-            style={{ borderBottom: bdrInner, background: 'rgba(255,255,255,0.012)' }}>
-            <div className="flex items-center gap-3">
-              <h2 className="text-[15px] font-bold text-white">Alert feed</h2>
+          <div className="flex flex-wrap items-center justify-between"
+            style={{ gap: 12, padding: '16px 20px', borderBottom: bdrInner, background: 'rgba(255,255,255,0.012)' }}>
+            <div className="flex items-center" style={{ gap: 12 }}>
+              <h2 style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc', margin: 0 }}>Alert feed</h2>
               <Pill color="green" dot>Auto-update</Pill>
-              {alerts.length > 0 && <span className="text-xs text-slate-600">{alerts.length} matching</span>}
+              {alerts.length > 0 && <span style={{ fontSize: 12, color: '#475569' }}>{alerts.length} matching</span>}
             </div>
-            <div className="flex items-center gap-2">
-              <button className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-600"
-                style={{ background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
+            <div className="flex items-center" style={{ gap: 8 }}>
+              <button className="flex items-center justify-center rounded-[8px]"
+                style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.04)', border: bdrInner, color: '#475569' }}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
                 </svg>
               </button>
-              <button className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium text-slate-500"
-                style={{ background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
+              <button className="flex items-center rounded-[8px]"
+                style={{ gap: 6, padding: '6px 12px', fontSize: 11, fontWeight: 500, color: '#64748b', background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
                   <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
                 </svg>
                 Pause
               </button>
               <button onClick={goClark}
-                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-opacity hover:opacity-90"
-                style={{ background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.28)', color: '#c4b5fd' }}>
+                className="flex items-center rounded-[8px] hover:opacity-90"
+                style={{ gap: 6, padding: '6px 12px', fontSize: 11, fontWeight: 600, background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.28)', color: '#c4b5fd' }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                 </svg>
@@ -509,51 +502,51 @@ export default function WhaleAlertsPage() {
 
           {/* skeleton */}
           {loading && Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="flex animate-pulse items-center gap-4 px-5 py-4"
-              style={{ borderBottom: bdrInner, borderLeft: '3px solid rgba(255,255,255,0.04)' }}>
-              <div className="h-9 w-9 shrink-0 rounded-xl" style={{ background: 'rgba(255,255,255,0.05)' }}/>
-              <div className="flex-1 space-y-2">
-                <div className="h-3 w-3/5 rounded-full" style={{ background: 'rgba(255,255,255,0.05)' }}/>
-                <div className="h-2.5 w-2/5 rounded-full" style={{ background: 'rgba(255,255,255,0.04)' }}/>
+            <div key={i} className="flex items-center"
+              style={{ gap: 16, padding: '16px 20px', borderBottom: bdrInner, borderLeft: '3px solid rgba(255,255,255,0.04)', opacity: 0.6 }}>
+              <div className="shrink-0 rounded-[12px]" style={{ width: 36, height: 36, background: 'rgba(255,255,255,0.05)' }}/>
+              <div className="flex-1 flex flex-col" style={{ gap: 8 }}>
+                <div className="rounded-full" style={{ height: 12, width: '60%', background: 'rgba(255,255,255,0.05)' }}/>
+                <div className="rounded-full" style={{ height: 10, width: '40%', background: 'rgba(255,255,255,0.04)' }}/>
               </div>
-              <div className="h-5 w-14 rounded-full" style={{ background: 'rgba(255,255,255,0.05)' }}/>
+              <div className="rounded-full" style={{ height: 20, width: 56, background: 'rgba(255,255,255,0.05)' }}/>
             </div>
           ))}
 
           {/* error */}
           {feedError && !loading && (
-            <div className="px-5 py-12 text-center">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl"
-                style={{ background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.18)' }}>
+            <div style={{ padding: '48px 20px', textAlign: 'center' }}>
+              <div className="mx-auto flex items-center justify-center rounded-[16px]"
+                style={{ width: 48, height: 48, marginBottom: 16, background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.18)' }}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" strokeWidth="1.8">
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
               </div>
-              <p className="text-sm font-bold text-rose-300">Feed unavailable</p>
-              <p className="mt-1 text-xs text-slate-600">The request failed. Sync may still be active.</p>
+              <p style={{ fontSize: 14, fontWeight: 700, color: '#fda4af' }}>Feed unavailable</p>
+              <p style={{ marginTop: 4, fontSize: 12, color: '#475569' }}>The request failed. Sync may still be active.</p>
               <button onClick={() => void loadAlerts()}
-                className="mt-4 rounded-xl px-5 py-2 text-xs font-semibold text-white"
-                style={{ background: 'rgba(255,255,255,0.06)', border: bdr }}>
+                className="rounded-[12px] hover:opacity-80"
+                style={{ marginTop: 16, padding: '8px 20px', fontSize: 12, fontWeight: 600, color: '#f8fafc', background: 'rgba(255,255,255,0.06)', border: bdr }}>
                 Retry
               </button>
             </div>
           )}
 
-          {/* polished empty state */}
+          {/* empty state */}
           {!feedError && !loading && alerts.length === 0 && (
-            <div className="px-5 py-16 text-center">
-              <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl"
-                style={{ background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', boxShadow: '0 0 28px rgba(45,212,191,0.07)' }}>
+            <div style={{ padding: '64px 20px', textAlign: 'center' }}>
+              <div className="mx-auto flex items-center justify-center rounded-[16px]"
+                style={{ width: 56, height: 56, marginBottom: 20, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', boxShadow: '0 0 28px rgba(45,212,191,0.07)' }}>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
                   <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
                 </svg>
               </div>
-              <p className="text-[15px] font-bold text-white">No whale alerts yet</p>
-              <p className="mx-auto mt-2 max-w-[380px] text-sm leading-relaxed text-slate-600">
+              <p style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc' }}>No whale alerts yet</p>
+              <p className="mx-auto" style={{ marginTop: 8, maxWidth: 380, fontSize: 14, lineHeight: 1.6, color: '#64748b' }}>
                 ChainLens is watching selected Base wallets. No qualifying movements indexed yet.
               </p>
-              <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+              <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
                 <Pill color="slate">{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Wallets unavailable'}</Pill>
                 <Pill color="teal">{syncState ? 'Sync active' : 'No sync yet'}</Pill>
                 <Pill color={(syncState?.providerErrors ?? 0) > 0 ? 'amber' : 'purple'}>
@@ -577,60 +570,60 @@ export default function WhaleAlertsPage() {
 
             return (
               <div key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
-                className="group transition-colors hover:bg-white/[0.018]"
+                className="transition-opacity hover:opacity-90"
                 style={{ borderBottom: bdrInner, borderLeft: `3px solid ${side.line}` }}>
-                <div className="flex items-start gap-3 px-5 py-3.5">
+                <div className="flex items-start" style={{ gap: 12, padding: '14px 20px' }}>
 
                   {/* token avatar */}
-                  <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[11px] font-extrabold text-white"
-                    style={{ background: side.avatarBg, border: `1px solid ${side.line}22` }}>
+                  <div className="shrink-0 flex items-center justify-center rounded-[12px]"
+                    style={{ width: 36, height: 36, marginTop: 2, fontSize: 11, fontWeight: 800, color: '#f8fafc', background: side.avatarBg, border: `1px solid ${side.line}22` }}>
                     {lbl}
                   </div>
 
                   {/* main content */}
-                  <div className="min-w-0 flex-1">
-                    {/* line 1: action */}
-                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                      <span className="rounded px-2 py-0.5 text-[10px] font-extrabold tracking-wider"
-                        style={{ background: side.chipBg, border: `1px solid ${side.chipBd}`, color: side.chipTx }}>
+                  <div className="flex-1" style={{ minWidth: 0 }}>
+                    {/* line 1 */}
+                    <div className="flex flex-wrap items-center" style={{ gap: '0 6px' }}>
+                      <span className="rounded-[4px]"
+                        style={{ padding: '2px 8px', fontSize: 10, fontWeight: 800, letterSpacing: '0.1em', background: side.chipBg, border: `1px solid ${side.chipBd}`, color: side.chipTx }}>
                         {side.label}
                       </span>
-                      <span className="text-sm font-semibold text-white">
+                      <span style={{ fontSize: 14, fontWeight: 600, color: '#f8fafc' }}>
                         {short(alert.wallet_address)}{' '}
-                        <span className="text-slate-500">{act}</span>{' '}
-                        <span className="font-bold" style={{ color: amtU === '—' ? '#334155' : '#5eead4' }}>{amtU}</span>
-                        <span className="text-slate-500"> of </span>
-                        <span className="font-bold text-white">{tok}</span>
+                        <span style={{ color: '#64748b' }}>{act}</span>{' '}
+                        <span style={{ fontWeight: 700, color: amtU === '—' ? '#334155' : '#5eead4' }}>{amtU}</span>
+                        <span style={{ color: '#64748b' }}> of </span>
+                        <span style={{ fontWeight: 700, color: '#f8fafc' }}>{tok}</span>
                       </span>
                     </div>
-                    {/* line 2: metadata */}
-                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-600">
-                      <span className="rounded px-1.5 py-0.5 text-[9px] font-bold tracking-widest"
-                        style={{ background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', color: '#2dd4bf' }}>
+                    {/* line 2 */}
+                    <div className="flex flex-wrap items-center" style={{ gap: '0 8px', marginTop: 6, fontSize: 11, color: '#475569' }}>
+                      <span className="rounded-[4px]"
+                        style={{ padding: '2px 6px', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', color: '#2dd4bf' }}>
                         TRACKED WALLET
                       </span>
-                      <span className="font-mono">{short(alert.wallet_address)}</span>
+                      <span style={{ fontFamily: 'var(--font-plex-mono,monospace)' }}>{short(alert.wallet_address)}</span>
                       {alert.token_name && <span>· {alert.token_name}</span>}
                       {amtT && <span>· {amtT}</span>}
                     </div>
-                    {/* line 3: description */}
-                    {desc && <p className="mt-0.5 text-[11px] text-slate-700">{desc}</p>}
+                    {/* line 3 */}
+                    {desc && <p style={{ marginTop: 2, fontSize: 11, color: '#334155' }}>{desc}</p>}
                   </div>
 
                   {/* right column */}
-                  <div className="mt-0.5 flex shrink-0 flex-col items-end gap-1.5">
+                  <div className="shrink-0 flex flex-col items-end" style={{ marginTop: 2, gap: 6 }}>
                     {sevL && (
-                      <span className="rounded-full px-2.5 py-0.5 text-[9px] font-extrabold tracking-wider"
-                        style={sevStyle(alert.severity)}>
+                      <span className="rounded-full"
+                        style={{ padding: '2px 10px', fontSize: 9, fontWeight: 800, letterSpacing: '0.1em', ...sevStyle(alert.severity) }}>
                         {sevL}
                       </span>
                     )}
-                    <span className="font-mono text-[11px] text-slate-600">{timeAgo(alert.occurred_at)}</span>
-                    <div className="flex items-center gap-1.5">
+                    <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: 11, color: '#64748b' }}>{timeAgo(alert.occurred_at)}</span>
+                    <div className="flex items-center" style={{ gap: 6 }}>
                       {alert.tx_hash && (
                         <a href={`https://basescan.org/tx/${alert.tx_hash}`} target="_blank" rel="noreferrer"
-                          className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-600 transition-opacity hover:opacity-80"
-                          style={{ background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
+                          className="flex items-center justify-center rounded-[8px] hover:opacity-80"
+                          style={{ width: 24, height: 24, color: '#475569', background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
                             <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
@@ -638,8 +631,8 @@ export default function WhaleAlertsPage() {
                         </a>
                       )}
                       <button onClick={goClark}
-                        className="hidden items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-bold sm:flex transition-opacity hover:opacity-90"
-                        style={{ background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.24)', color: '#c4b5fd' }}>
+                        className="flex items-center rounded-[8px] hover:opacity-90"
+                        style={{ gap: 4, padding: '4px 10px', fontSize: 10, fontWeight: 700, background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.24)', color: '#c4b5fd' }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                         </svg>
@@ -655,14 +648,13 @@ export default function WhaleAlertsPage() {
 
           {/* feed footer */}
           {alerts.length > 0 && (
-            <div className="flex items-center justify-between px-5 py-3"
-              style={{ borderTop: bdrInner }}>
-              <span className="font-mono text-[10px] text-slate-700">stream · base.alerts.v2</span>
-              <div className="flex items-center gap-4 text-[11px]">
+            <div className="flex items-center justify-between" style={{ padding: '12px 20px', borderTop: bdrInner }}>
+              <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: 10, color: '#334155' }}>stream · base.alerts.v2</span>
+              <div className="flex items-center" style={{ gap: 16, fontSize: 11 }}>
                 {[{ c: '#2dd4bf', l: 'BUY' }, { c: '#f43f5e', l: 'SELL' }, { c: '#8b5cf6', l: 'TRANSFER' }].map(({ c, l }) => (
-                  <span key={l} className="flex items-center gap-1.5">
-                    <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: c }}/>
-                    <span className="text-slate-600">{l}</span>
+                  <span key={l} className="flex items-center" style={{ gap: 6 }}>
+                    <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: c }}/>
+                    <span style={{ color: '#475569' }}>{l}</span>
                   </span>
                 ))}
               </div>
