@@ -625,7 +625,41 @@ function inferSelectionIndex(
 
 function isMarketFollowupPrompt(prompt: string): boolean {
   const t = prompt.trim().toLowerCase();
-  return /^(more|give me more|other tokens|other ones|next|show more|continue)$/i.test(t) || /\bgive me (other|20 more|100|500)\b/i.test(t);
+  if (/^(more|give me more|other tokens|other ones|next|show more|continue)$/i.test(t)) return true;
+  if (/\bgive me (other|20 more|100|500)\b/i.test(t)) return true;
+  if (/which (is|one is|looks?|seems?) (safest?|best|cleanest|lowest.?risk|least.?risky|most promising)/i.test(t)) return true;
+  if (/which (should i|would you|do you) (pick|buy|scan|check|go for|recommend|suggest|choose)/i.test(t)) return true;
+  return false;
+}
+
+function isBaseMoversComparisonPrompt(prompt: string): boolean {
+  const t = prompt.trim().toLowerCase();
+  if (/which (is|one is|looks?|seems?) (safest?|best|cleanest|lowest.?risk|least.?risky|most promising)/i.test(t)) return true;
+  if (/which (should i|would you|do you) (pick|buy|scan|check|go for|recommend|suggest|choose)/i.test(t)) return true;
+  if (/\b(safest|lowest risk|cleanest) (one|token|pick|choice)\b/i.test(t)) return true;
+  if (/^which one\??$/i.test(t)) return true;
+  return false;
+}
+
+function buildMoversComparisonReply(movers: Array<{ rank: number; symbol: string }>, chain: string) {
+  const top = movers.slice(0, 5);
+  return {
+    feature: "clark-ai",
+    chain,
+    mode: "analysis",
+    intent: "market",
+    toolsUsed: [] as string[],
+    analysis: [
+      "Clark doesn't certify any token as safe — every Base mover carries execution risk.",
+      "",
+      "What I can do is run a full on-chain report on any one and flag real signals: liquidity depth, holder concentration, honeypot simulation, dev wallet behavior.",
+      "",
+      "Pick a number to scan:",
+      ...top.map(m => `${m.rank}. ${m.symbol} — type "scan ${m.rank}" for a full report`),
+      "",
+      "Liquidity depth and sell-tax simulation are the clearest risk proxies. I'll include both.",
+    ].join("\n"),
+  };
 }
 
 function parseMarketRequest(prompt: string): { count: number; mode: BaseMarketMode; wantsMore: boolean; strictDifferent: boolean; includePoolVariants: boolean } {
@@ -3375,8 +3409,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   if (liveIntent === "BASE_MARKET") {
     try {
-      const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 5, followup: false, excludeAddresses: [], includePoolVariants: false });
-      const top = universe.candidates.slice(0, 5);
+      const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false });
+      const top = universe.candidates.slice(0, 10);
       if (!top.length) return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };
       return {
         feature: "clark-ai",
@@ -3384,7 +3418,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
         mode: "general_market",
         intent: "market",
         toolsUsed: ["market_get_base_movers"],
-        analysis: ["Top movers on Base right now:", ...top.map((c, i) => `${i + 1}. ${c.symbol ?? "?"} ${pct(c.change24h ?? undefined)}`)].join("\n"),
+        analysis: formatBaseMarketReply(top, universe.candidates.length, 0, universe.cappedMessage ?? null),
+        marketContext: {
+          items: top.map((c, i) => ({
+            rank: i + 1,
+            symbol: c.symbol ?? "?",
+            name: c.name ?? null,
+            tokenAddress: c.tokenAddress ?? null,
+            poolAddress: c.poolAddress ?? null,
+            reasonTag: c.reasonTags[0] ?? null,
+          })),
+        },
       };
     } catch {
       return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };

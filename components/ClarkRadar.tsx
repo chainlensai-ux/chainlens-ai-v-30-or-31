@@ -121,6 +121,33 @@ interface ClarkRadarProps {
   pendingMessage?: string | null
 }
 
+// Renders a Clark response with section labels (e.g. "Verdict:", "Risk:") highlighted in cyan.
+function ClarkMessage({ text }: { text: string }) {
+  const LABEL_RE = /^([A-Z][^\n:]{0,22}):\s*/
+  return (
+    <div>
+      {text.split('\n').map((line, i) => {
+        const m = line.match(LABEL_RE)
+        const isLabel = m != null && m[1].trim().split(/\s+/).length <= 3 && !/[,;.!?]/.test(m[1])
+        if (isLabel && m) {
+          const rest = line.slice(m[0].length)
+          return (
+            <div key={i} style={{ lineHeight: 1.7 }}>
+              <span style={{ color: '#5eead4', fontWeight: 600, fontSize: '11.5px' }}>{m[1]}:</span>
+              {rest ? ` ${rest}` : ''}
+            </div>
+          )
+        }
+        return (
+          <div key={i} style={{ lineHeight: 1.7, height: line ? undefined : '6px' }}>
+            {line}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessage }: ClarkRadarProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -541,21 +568,23 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     borderRadius: msg.role === 'user'
                       ? '12px 12px 3px 12px'
                       : '12px 12px 12px 3px',
-                    background: msg.role === 'user'
+                    background: msg.text === 'Clark is thinking...'
+                      ? 'rgba(45,212,191,0.04)'
+                      : msg.role === 'user'
                       ? 'rgba(45,212,191,0.10)'
                       : 'rgba(123,92,255,0.10)',
-                    border: `1px solid ${msg.role === 'user'
+                    border: `1px solid ${msg.text === 'Clark is thinking...'
+                      ? 'rgba(45,212,191,0.12)'
+                      : msg.role === 'user'
                       ? 'rgba(45,212,191,0.18)'
                       : 'rgba(123,92,255,0.18)'}`,
-                    color: msg.text === 'Clark is thinking...'
-                      ? 'rgba(255,255,255,0.40)'
-                      : '#dde4f0',
+                    color: msg.text === 'Clark is thinking...' ? 'rgba(255,255,255,0.45)' : '#dde4f0',
                     fontSize: '12px',
-                    lineHeight: 1.65,
-                    fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
+                    lineHeight: 1.7,
+                    fontFamily: (msg.text.startsWith('{') || msg.text.startsWith('['))
                       ? 'var(--font-plex-mono)'
                       : 'var(--font-inter), Inter, sans-serif',
-                    whiteSpace: 'pre-wrap',
+                    whiteSpace: (msg.text.startsWith('{') || msg.text.startsWith('[')) ? 'pre-wrap' : undefined,
                     wordBreak: 'break-word',
                     overflowWrap: 'anywhere',
                   }}>
