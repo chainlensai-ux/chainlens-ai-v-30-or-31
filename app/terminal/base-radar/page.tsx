@@ -818,6 +818,10 @@ export default function BaseRadarPage() {
           .radar-main { padding: 18px 12px 120px !important; }
           .radar-grid { grid-template-columns: 1fr !important; }
           .radar-stats { position: static !important; }
+          .radar-controls { flex-direction: column !important; align-items: flex-start !important; }
+          .radar-controls > div { width: 100%; justify-content: space-between; }
+          .radar-pulse-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+          .radar-pulse-wrap > * { min-width: 640px; }
         }
       `}</style>
 
@@ -836,9 +840,11 @@ export default function BaseRadarPage() {
             Base launch command center — dense signals for new pools, momentum, and risk context.
           </p>
 
-          <PulseStrip summary={summary} />
+          <div className="radar-pulse-wrap">
+            <PulseStrip summary={summary} />
+          </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+          <div className="radar-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Refresh in {countdown}s</span>
               <button

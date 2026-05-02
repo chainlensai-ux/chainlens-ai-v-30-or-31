@@ -5,6 +5,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
+import Reveal from '@/components/Reveal'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
@@ -866,7 +867,7 @@ export default function HomePage() {
           }} />
 
           {/* Section header */}
-          <div style={{ textAlign: 'center', marginBottom: '60px' }}>
+          <Reveal><div style={{ textAlign: 'center', marginBottom: '60px' }}>
             <div style={{
               display: 'inline-flex', alignItems: 'center', gap: '7px',
               marginBottom: '16px',
@@ -892,7 +893,7 @@ export default function HomePage() {
             }}>
               Eight features. One terminal. Built natively on Base.
             </p>
-          </div>
+          </div></Reveal>
 
           {/* 2 × 2 grid */}
           <div className="feat-grid" style={{
@@ -901,8 +902,7 @@ export default function HomePage() {
             gap: '20px',
           }}>
             {FEATURES.map((f, i) => (
-              <div
-                key={f.title}
+              <Reveal key={f.title} delayMs={i * 110}><div
                 className="feat-card"
                 style={{
                   background: 'linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%)',
@@ -972,7 +972,7 @@ export default function HomePage() {
                 }}>
                   {f.body}
                 </p>
-              </div>
+              </div></Reveal>
             ))}
           </div>
         </section>
@@ -984,7 +984,7 @@ export default function HomePage() {
           maxWidth: '1120px', margin: '0 auto', width: '100%',
         }}>
           {/* Section header */}
-          <div style={{ textAlign: 'center', marginBottom: '56px' }}>
+          <Reveal><div style={{ textAlign: 'center', marginBottom: '56px' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
               <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Traders</span>
@@ -997,7 +997,7 @@ export default function HomePage() {
             }}>
               What Base traders are saying.
             </h2>
-          </div>
+          </div></Reveal>
 
           {/* 3 × 2 grid */}
           <div className="mob-grid-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
@@ -1009,9 +1009,8 @@ export default function HomePage() {
               { handle: '@0xalphahunter', name: '0xAlphaHunter',  initials: '0A', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', quote: 'the liquidity scanner flagged an unlocked lp. token rugged 3 hours later. this thing works.' },
               { handle: '@basedegen99',    name: 'BaseDegen99',    initials: 'BD', grad: 'linear-gradient(135deg,#a78bfa,#3b82f6)', quote: 'clark ai is the real deal. asked about a token and got a full breakdown in 5 seconds. insane.' },
             ].map((t, i) => (
-              <div
+              <Reveal key={i} delayMs={i * 90}><div
                 className="mobile-static-card"
-                key={i}
                 style={{
                   background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.08)',
@@ -1073,7 +1072,7 @@ export default function HomePage() {
                 <p style={{ fontSize: '14px', lineHeight: 1.65, color: 'rgba(255,255,255,0.85)', margin: 0, fontWeight: 400, flex: 1 }}>
                   {t.quote}
                 </p>
-              </div>
+              </div></Reveal>
             ))}
           </div>
         </section>
@@ -1197,7 +1196,7 @@ export default function HomePage() {
         {/* ── Live Intelligence Preview ─────────────────────────────────────── */}
         <section style={{ position: 'relative', zIndex: 1, padding: '0 24px 96px', maxWidth: '1120px', margin: '0 auto', width: '100%' }}>
           {/* Section header */}
-          <div style={{ textAlign: 'center', marginBottom: '52px' }}>
+          <Reveal><div style={{ textAlign: 'center', marginBottom: '52px' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #ec4899)' }} />
               <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#ec4899', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Live Preview</span>
@@ -1209,7 +1208,7 @@ export default function HomePage() {
             <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.38)', maxWidth: '420px', margin: '0 auto', lineHeight: 1.65 }}>
               A glimpse of the intelligence ChainLens surfaces — live, onchain, and AI-powered.
             </p>
-          </div>
+          </div></Reveal>
 
           {/* 2 × 2 grid */}
           <div className="feat-grid mob-grid-1" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
@@ -1219,8 +1218,7 @@ export default function HomePage() {
               { accent: '#8b5cf6', title: 'Liquidity Scanner',  desc: 'An overview of how ChainLens will analyze liquidity health, LP status, and contract safety.' },
               { accent: '#60a5fa', title: 'Token Scan + Clark AI', desc: 'A preview of how ChainLens AI will break down any token and provide insights, risks, and context.' },
             ].map((p, i) => (
-              <div
-                key={p.title}
+              <Reveal key={p.title} delayMs={i * 100}><div
                 className="feat-card mobile-static-card"
                 style={{
                   background: 'linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
@@ -1256,7 +1254,7 @@ export default function HomePage() {
                     <span style={{ fontSize: '12px', color: '#475569', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>Coming Soon</span>
                   </div>
                 </div>
-              </div>
+              </div></Reveal>
             ))}
           </div>
         </section>
@@ -1319,7 +1317,7 @@ export default function HomePage() {
           <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.25), rgba(139,92,246,0.25), transparent)' }} />
 
           {/* Header */}
-          <div style={{ textAlign: 'center', marginBottom: '48px' }}>
+          <Reveal><div style={{ textAlign: 'center', marginBottom: '48px' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
               <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Pricing</span>
@@ -1331,7 +1329,7 @@ export default function HomePage() {
             <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.38)', lineHeight: 1.65, maxWidth: '360px', margin: '0 auto' }}>
               No dark patterns. No regional pricing. Cancel any time. Your data stays yours.
             </p>
-          </div>
+          </div></Reveal>
 
           {/* Cards — Elite gets 1.28× width */}
           <div className="mob-pricing-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.28fr', gap: '14px', maxWidth: '1020px', margin: '0 auto', alignItems: 'start' }}>
@@ -1372,8 +1370,7 @@ export default function HomePage() {
               const checkColor: Record<string,string> = { free: 'rgba(236,72,153,0.55)', pro: '#2DD4BF', elite: '#fbbf24' }
               const secColor:   Record<string,string> = { free: 'rgba(236,72,153,0.60)', pro: 'rgba(45,212,191,0.60)', elite: 'rgba(251,191,36,0.65)' }
               return (
-                <div
-                  key={plan.id}
+                <Reveal key={plan.id} delayMs={plan.id === 'free' ? 0 : plan.id === 'pro' ? 110 : 220}><div
                   className={`pricing-card ${isElite ? 'card-elite' : isPro ? 'card-pro' : 'card-free'}`}
                   style={{
                     position: 'relative',
@@ -1442,7 +1439,7 @@ export default function HomePage() {
                   )}
                   {/* CTA */}
                   <Link href="/pricing" className={`cta-${plan.ctaStyle}`} style={{ display: 'block', textAlign: 'center', padding: isElite ? '10px 16px' : '9px 14px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', textDecoration: 'none', cursor: 'pointer' }}>{plan.cta}</Link>
-                </div>
+                </div></Reveal>
               )
             })}
           </div>
@@ -1477,7 +1474,7 @@ export default function HomePage() {
         <div className="mob-footer-grid" style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr', gap: '42px', alignItems: 'start', position: 'relative' }}>
 
           {/* Left — brand + socials */}
-          <div style={{ position: 'relative' }}>
+          <Reveal delayMs={20}><div style={{ position: 'relative' }}>
             {/* Subtle brand glow behind left section */}
             <div style={{
               position: 'absolute', top: '-20px', left: '-40px',
@@ -1542,10 +1539,10 @@ export default function HomePage() {
                 Telegram
               </Link>
             </div>
-          </div>
+          </div></Reveal>
 
           {/* Center — nav links */}
-          <div>
+          <Reveal delayMs={110}><div>
             <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(167,139,250,0.92)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '16px' }}>
               Navigation
             </div>
@@ -1565,10 +1562,10 @@ export default function HomePage() {
                 </Link>
               ))}
             </div>
-          </div>
+          </div></Reveal>
 
           {/* Right — Built on Base + copyright */}
-          <div style={{ textAlign: 'right' }}>
+          <Reveal delayMs={210}><div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(167,139,250,0.92)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '16px' }}>
               Infrastructure
             </div>
@@ -1590,7 +1587,7 @@ export default function HomePage() {
             <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.42)' }}>
               © 2026 ChainLens AI
             </div>
-          </div>
+          </div></Reveal>
 
         </div>
       </footer>

@@ -32,6 +32,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
       {sidebarOpen && (
         <div
           className="mob-sidebar-overlay"
+          style={{ zIndex: 30 }}
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -42,6 +43,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
         {/* Mobile sidebar toggle button */}
         <button
           className="mob-sidebar-btn"
+          style={{ zIndex: 35 }}
           onClick={() => setSidebarOpen(o => !o)}
           aria-label="Toggle sidebar"
         >

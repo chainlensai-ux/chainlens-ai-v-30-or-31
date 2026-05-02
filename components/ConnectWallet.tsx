@@ -6,7 +6,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
   const { address, isConnected } = useAccount()
   const { connect, connectors } = useConnect()
   const handleConnect = () => {
-    const connector = connectors[0]
+    const connector = connectors.find(c => c.ready) ?? connectors[0]
     if (connector) connect({ connector })
   }
 
