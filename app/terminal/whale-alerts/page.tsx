@@ -18,7 +18,7 @@ type AlertItem = {
   occurred_at?: string | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
-type SyncResponse = { processed?: number; inserted?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
+type SyncResponse = { processed?: number; inserted?: number; skipped?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
 
 const MIN_OPTIONS = [
   { label: 'All', value: 0 }, { label: '$100+', value: 100 }, { label: '$500+', value: 500 },
@@ -565,7 +565,9 @@ export default function WhaleAlertsPage() {
                         {side.label}
                       </span>
                       <span style={{ fontSize: 14, fontWeight: 600, color: '#f8fafc' }}>
-                        {short(alert.wallet_address)}{' '}
+                        {alert.wallet_address
+                          ? <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" style={{ color: '#f8fafc', textDecoration: 'none' }}>{alert.wallet_label || short(alert.wallet_address)}</a>
+                          : (alert.wallet_label || 'Unknown')}{' '}
                         <span style={{ color: '#64748b' }}>{act}</span>{' '}
                         <span style={{ fontWeight: 700, color: amtU === '—' ? '#334155' : '#5eead4' }}>{amtU}</span>
                         <span style={{ color: '#64748b' }}> of </span>
@@ -577,7 +579,9 @@ export default function WhaleAlertsPage() {
                         style={{ padding: '2px 6px', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', color: '#2dd4bf' }}>
                         TRACKED WALLET
                       </span>
-                      <span style={{ fontFamily: 'var(--font-plex-mono,monospace)' }}>{short(alert.wallet_address)}</span>
+                      {alert.wallet_address
+                        ? <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-plex-mono,monospace)', color: '#64748b', textDecoration: 'none' }}>{short(alert.wallet_address)}</a>
+                        : <span style={{ fontFamily: 'var(--font-plex-mono,monospace)' }}>Unknown</span>}
                       {alert.token_name && <span>· {alert.token_name}</span>}
                       {amtT && <span>· {amtT}</span>}
                     </div>
