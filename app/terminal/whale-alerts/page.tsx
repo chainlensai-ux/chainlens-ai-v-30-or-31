@@ -17,6 +17,7 @@ type AlertItem = {
   severity?: string | null
   occurred_at?: string | null
   legs?: number | null
+  repeats?: number | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type SyncResponse = { processed?: number; inserted?: number; skipped?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
@@ -570,58 +571,111 @@ export default function WhaleAlertsPage() {
 
           {/* alert rows */}
           {!feedError && !loading && alerts.length > 0 && alerts.map((alert, i) => {
-            const side = getSide(alert.side)
-            const tok  = alert.token_symbol || alert.token_name || '???'
-            const lbl  = tok.slice(0, 3).toUpperCase()
-            const amtU = fmtUsd(alert.amount_usd)
-            const amtT = fmtToken(alert.amount_token, alert.token_symbol)
-            const desc = rowDesc(alert.severity)
-            const sevL = sevLabel(alert.severity)
-            const s    = alert.side?.toLowerCase() ?? ''
-            const act  = s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'transferred'
+            const sideStyle  = getSide(alert.side)
+            const tok        = alert.token_symbol || alert.token_name || '???'
+            const isMultiTok = tok.includes(' / ')
+            const primarySym = tok.split(' / ')[0]
+            const lbl        = primarySym.slice(0, 4).toUpperCase()
+            const s          = alert.side?.toLowerCase() ?? ''
+            const verb       = isMultiTok ? 'swapped' : s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'moved'
+            const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
+
+            // Amount: prefer USD (valid for both single and summed grouped rows); token amount for singles
+            const amtU    = fmtUsd(alert.amount_usd)
+            const amtT    = isMultiTok ? null : fmtToken(alert.amount_token, alert.token_symbol)
+            const amtShow = amtU !== '—' ? amtU : amtT
+
+            // Token logo — pass-through if DB row carries it; no external fetch
+            const rawAlert = alert as Record<string, unknown>
+            const logoUrl  = (rawAlert.token_image_url ?? rawAlert.logo_url) as string | null | undefined
+
+            const walletName = alert.wallet_label || 'Unknown Wallet'
+            const sevL       = sevLabel(alert.severity)
+            const desc       = rowDesc(alert.severity)
+
+            // Per-row Clark prompt with all relevant fields
+            const rowPrompt = [
+              `Whale alert: ${walletName} ${verb} ${tok}`,
+              amtShow ? `(${amtShow})` : null,
+              `Side: ${alert.side ?? 'unknown'}`,
+              `Amount token: ${alert.amount_token ?? 'unknown'}`,
+              `Legs: ${alert.legs ?? 1}`,
+              alert.tx_hash ? `TX: ${alert.tx_hash}` : null,
+              `Time: ${alert.occurred_at ?? 'unknown'}`,
+              'Analyze this whale movement. Do not invent data.',
+            ].filter(Boolean).join('. ')
+            const goRowClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(rowPrompt)}&autosend=1` }
+
+            // Basescan link: prefer tx, fallback to wallet address
+            const scanHref = alert.tx_hash
+              ? `https://basescan.org/tx/${alert.tx_hash}`
+              : alert.wallet_address ? `https://basescan.org/address/${alert.wallet_address}` : null
 
             return (
               <div key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
                 className="transition-opacity hover:opacity-90"
-                style={{ borderBottom: bdrInner, borderLeft: `3px solid ${side.line}` }}>
+                style={{ borderBottom: bdrInner, borderLeft: `3px solid ${sideStyle.line}` }}>
                 <div className="flex items-start" style={{ gap: 12, padding: '14px 20px' }}>
 
-                  <div className="shrink-0 flex items-center justify-center rounded-[12px]"
-                    style={{ width: 36, height: 36, marginTop: 2, fontSize: 11, fontWeight: 800, color: '#f8fafc', background: side.avatarBg, border: `1px solid ${side.line}22` }}>
-                    {lbl}
+                  {/* Avatar: token logo if available, else symbol bubble */}
+                  <div className="shrink-0 flex items-center justify-center rounded-[12px] overflow-hidden"
+                    style={{ width: 36, height: 36, marginTop: 2, background: sideStyle.avatarBg, border: `1px solid ${sideStyle.line}22`, flexShrink: 0 }}>
+                    {logoUrl ? (
+                      <img src={logoUrl} alt={lbl} width={36} height={36}
+                        style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 12 }}
+                        onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                      />
+                    ) : (
+                      <span style={{ fontSize: 10, fontWeight: 800, color: '#f8fafc' }}>{lbl}</span>
+                    )}
                   </div>
 
+                  {/* Content */}
                   <div className="flex-1" style={{ minWidth: 0 }}>
+
+                    {/* Primary line */}
                     <div className="flex flex-wrap items-center" style={{ gap: '0 6px' }}>
                       <span className="rounded-[4px]"
-                        style={{ padding: '2px 8px', fontSize: 10, fontWeight: 800, letterSpacing: '0.1em', background: side.chipBg, border: `1px solid ${side.chipBd}`, color: side.chipTx }}>
-                        {side.label}
+                        style={{ padding: '2px 8px', fontSize: 10, fontWeight: 800, letterSpacing: '0.1em', background: sideStyle.chipBg, border: `1px solid ${sideStyle.chipBd}`, color: sideStyle.chipTx }}>
+                        {chipLabel}
                       </span>
                       <span style={{ fontSize: 14, fontWeight: 600, color: '#f8fafc' }}>
                         {alert.wallet_address
-                          ? <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" style={{ color: '#f8fafc', textDecoration: 'none' }}>{alert.wallet_label || short(alert.wallet_address)}</a>
-                          : (alert.wallet_label || 'Unknown')}{' '}
-                        <span style={{ color: '#64748b' }}>{act}</span>{' '}
-                        <span style={{ fontWeight: 700, color: amtU === '—' ? '#334155' : '#5eead4' }}>{amtU}</span>
-                        <span style={{ color: '#64748b' }}> of </span>
-                        <span style={{ fontWeight: 700, color: '#f8fafc' }}>{tok}</span>
+                          ? <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" style={{ color: '#f8fafc', textDecoration: 'none' }}>{walletName}</a>
+                          : walletName}{' '}
+                        <span style={{ color: '#64748b' }}>{verb}</span>
+                        {amtShow ? <>{' '}<span style={{ fontWeight: 700, color: '#5eead4' }}>{amtShow}</span></> : null}
+                        {' '}<span style={{ fontWeight: 700, color: '#f8fafc' }}>{tok}</span>
                       </span>
                     </div>
-                    <div className="flex flex-wrap items-center" style={{ gap: '0 8px', marginTop: 6, fontSize: 11, color: '#475569' }}>
+
+                    {/* Subline: metadata chips only — no raw address text */}
+                    <div className="flex flex-wrap items-center" style={{ gap: 4, marginTop: 6 }}>
                       <span className="rounded-[4px]"
                         style={{ padding: '2px 6px', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', color: '#2dd4bf' }}>
                         TRACKED WALLET
                       </span>
-                      {alert.wallet_address
-                        ? <a href={`https://basescan.org/address/${alert.wallet_address}`} target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-plex-mono,monospace)', color: '#64748b', textDecoration: 'none' }}>{short(alert.wallet_address)}</a>
-                        : <span style={{ fontFamily: 'var(--font-plex-mono,monospace)' }}>Unknown</span>}
-                      {alert.token_name && <span>· {alert.token_name}</span>}
-                      {amtT && <span>· {amtT}</span>}
-                      {(alert.legs ?? 1) > 1 && <span>· {alert.legs} legs</span>}
+                      {!isMultiTok && amtT && (
+                        <span style={{ fontSize: 11, color: '#475569' }}>{amtT}</span>
+                      )}
+                      {(alert.legs ?? 1) > 1 && (
+                        <span className="rounded-[4px]"
+                          style={{ padding: '2px 6px', fontSize: 9, fontWeight: 600, background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.20)', color: '#c4b5fd' }}>
+                          {alert.legs} legs
+                        </span>
+                      )}
+                      {(alert.repeats ?? 1) > 1 && (
+                        <span className="rounded-[4px]"
+                          style={{ padding: '2px 6px', fontSize: 9, fontWeight: 600, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', color: '#fcd34d' }}>
+                          ×{alert.repeats} in 5m
+                        </span>
+                      )}
                     </div>
+
                     {desc && <p style={{ marginTop: 2, fontSize: 11, color: '#334155' }}>{desc}</p>}
                   </div>
 
+                  {/* Right column */}
                   <div className="shrink-0 flex flex-col items-end" style={{ marginTop: 2, gap: 6 }}>
                     {sevL && (
                       <span className="rounded-full"
@@ -631,8 +685,8 @@ export default function WhaleAlertsPage() {
                     )}
                     <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: 11, color: '#64748b' }}>{timeAgo(alert.occurred_at)}</span>
                     <div className="flex items-center" style={{ gap: 6 }}>
-                      {alert.tx_hash && (
-                        <a href={`https://basescan.org/tx/${alert.tx_hash}`} target="_blank" rel="noreferrer"
+                      {scanHref && (
+                        <a href={scanHref} target="_blank" rel="noreferrer"
                           className="flex items-center justify-center rounded-[8px] hover:opacity-80"
                           style={{ width: 24, height: 24, color: '#475569', background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -641,7 +695,7 @@ export default function WhaleAlertsPage() {
                           </svg>
                         </a>
                       )}
-                      <button onClick={goClark}
+                      <button onClick={goRowClark}
                         className="flex items-center rounded-[8px] hover:opacity-90"
                         style={{ gap: 4, padding: '4px 10px', fontSize: 10, fontWeight: 700, background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.24)', color: '#c4b5fd' }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

@@ -79,6 +79,55 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
   return result
 }
 
+const STABLECOINS = new Set(['USDC', 'USDT', 'DAI', 'USDbC'])
+
+// Returns true only when every symbol in a (possibly grouped) token_symbol is a stablecoin.
+// "USDC / WETH" → false (mixed); "USDC" → true; "USDC / USDT" → true.
+function isStablecoinOnly(sym: string | null): boolean {
+  if (!sym) return false
+  return sym.split(' / ').every(s => STABLECOINS.has(s.trim()))
+}
+
+// Drop stablecoin-only rows with amount < 1000 (e.g. 200 USDC swaps).
+// Keeps: mixed stable+non-stable pairs, rows with unknown amount (sync rows), amount >= 1000.
+function filterStablecoinNoise(rows: RawRow[]): RawRow[] {
+  return rows.filter(row => {
+    if (!isStablecoinOnly(row.token_symbol as string | null)) return true
+    const amt = row.amount_token as number | null
+    return amt === null || amt >= 1000
+  })
+}
+
+// Collapse rapid repeats: same wallet + token + side appearing multiple times
+// within a 5-minute window becomes one representative row with a `repeats` count.
+// Rows are expected newest-first (occurred_at desc).
+function collapseRapidRepeats(rows: RawRow[]): RawRow[] {
+  const REPEAT_WINDOW_MS = 5 * 60 * 1000
+  const seen = new Map<string, { firstTime: number; idx: number; count: number }>()
+  const result: RawRow[] = []
+
+  for (const row of rows) {
+    const key = [
+      (row.wallet_address as string | null) ?? '',
+      (row.token_symbol as string | null) ?? '',
+      (row.side as string | null) ?? '',
+    ].join('::')
+    const ts = row.occurred_at ? new Date(row.occurred_at as string).getTime() : 0
+
+    const existing = seen.get(key)
+    if (existing && ts > 0 && existing.firstTime > 0 && (existing.firstTime - ts) < REPEAT_WINDOW_MS) {
+      existing.count += 1
+      result[existing.idx] = { ...result[existing.idx], repeats: existing.count }
+    } else {
+      const idx = result.length
+      result.push({ ...row, repeats: 1 })
+      seen.set(key, { firstTime: ts, idx, count: 1 })
+    }
+  }
+
+  return result
+}
+
 // Count distinct tx_hash values in a tx_hash-only result set.
 function distinctTxHashCount(data: unknown): number {
   const rows = data as { tx_hash: string | null }[] | null
@@ -155,7 +204,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500 })
     }
 
-    const grouped = groupAlertsByTx((alertsRes.data ?? []) as RawRow[]).slice(0, limit)
+    // Pipeline: group by tx+wallet → filter stablecoin noise → collapse rapid repeats → limit
+    const grouped = collapseRapidRepeats(
+      filterStablecoinNoise(
+        groupAlertsByTx((alertsRes.data ?? []) as RawRow[])
+      )
+    ).slice(0, limit)
 
     return NextResponse.json({
       alerts: grouped,
