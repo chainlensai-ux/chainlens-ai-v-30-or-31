@@ -1,21 +1,19 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
-type AlertItem = {
-  id?: string
-  wallet_address?: string | null
-  wallet_label?: string | null
-  token_address?: string | null
-  token_symbol?: string | null
-  token_name?: string | null
-  alert_type?: string | null
-  side?: string | null
-  amount_usd?: number | null
-  amount_token?: number | null
-  tx_hash?: string | null
-  severity?: string | null
-  occurred_at?: string | null
+type AlertSide = 'buy' | 'sell'
+type AlertKind = 'ACCUMULATION' | 'DISTRIBUTION' | 'EXIT'
+
+type WhaleAlert = {
+  id: string
+  wallet: string
+  side: AlertSide
+  token: string
+  amountUsd: number
+  kind: AlertKind
+  createdAt: string
+  clarkNote: string
 }
 
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
