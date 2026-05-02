@@ -330,6 +330,27 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         .radar-dot { display: inline-block; animation: radarThinkingDot 1.2s ease-in-out infinite; }
         .radar-dot:nth-child(2) { animation-delay: 0.15s; }
         .radar-dot:nth-child(3) { animation-delay: 0.30s; }
+        @keyframes clarkOrbFloat {
+          0%,100% { transform: translateY(0px) scale(1); }
+          50% { transform: translateY(-2px) scale(1.02); }
+        }
+        @keyframes clarkRadarPulse {
+          0%,100% { opacity: 0.28; transform: scale(0.96); }
+          50% { opacity: 0.55; transform: scale(1.04); }
+        }
+        .clark-orb { position: relative; border-radius: 999px; animation: clarkOrbFloat 4s ease-in-out infinite; }
+        .clark-orb::before {
+          content: ''; position: absolute; inset: -5px; border-radius: inherit;
+          background: radial-gradient(circle, rgba(45,212,191,0.20) 0%, rgba(139,92,246,0.08) 52%, transparent 72%);
+          opacity: 0; transform: scale(.95); pointer-events: none;
+        }
+        .clark-orb-thinking::before { animation: clarkRadarPulse 1.8s ease-in-out infinite; opacity: 1; }
+        .clark-msg p { margin: 0; }
+        .clark-msg strong { color: #e2e8f0; font-weight: 600; }
+        .clark-msg-label { color: #c4b5fd; font-weight: 600; letter-spacing: 0.01em; }
+        @media (prefers-reduced-motion: reduce) {
+          .clark-orb, .clark-orb::before, .radar-dot, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
+        }
       `}</style>
 
       <div
@@ -376,17 +397,19 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
               style={{
                 width: '26px',
                 height: '26px',
-                borderRadius: '8px',
-                background: 'linear-gradient(135deg, rgba(236,72,153,0.25), rgba(139,92,246,0.30))',
-                border: '1px solid rgba(139,92,246,0.40)',
+                borderRadius: '50%',
+                background: 'radial-gradient(circle at 35% 30%, rgba(17,24,39,0.98) 0%, rgba(8,13,30,0.97) 100%)',
+                border: '1px solid rgba(103,232,249,0.40)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 0 12px rgba(139,92,246,0.24), 0 0 5px rgba(236,72,153,0.10)',
+                boxShadow: 'inset 0 0 0 1px rgba(167,139,250,0.24), 0 0 14px rgba(139,92,246,0.26)',
                 flexShrink: 0,
               }}
-            >
-              <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 7px rgba(45,212,191,0.75)' }} />
+>
+              <div style={{ position: 'absolute', inset: '5px', borderRadius: '50%', border: '1px solid rgba(167,139,250,0.24)' }} />
+              <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 7px rgba(34,211,238,0.8)' }} />
+              <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 7px rgba(192,132,252,0.78)', marginLeft: '4px' }} />
             </div>
             <span
               style={{
@@ -475,19 +498,22 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
             >
               {/* Orb */}
               <div
+                className="clark-orb"
                 style={{
                   width: '44px',
                   height: '44px',
-                  borderRadius: '14px',
-                  background: 'linear-gradient(135deg, rgba(236,72,153,0.18), rgba(139,92,246,0.22))',
-                  border: '1px solid rgba(139,92,246,0.28)',
+                  borderRadius: '50%',
+                  background: 'radial-gradient(circle at 30% 28%, rgba(15,23,42,0.98) 0%, rgba(6,10,28,0.98) 100%)',
+                  border: '1px solid rgba(103,232,249,0.34)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)',
                 }}
               >
-                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 10px rgba(45,212,191,0.65)' }} />
+                <div style={{ position: 'absolute', inset: '8px', borderRadius: '50%', border: '1px solid rgba(167,139,250,0.25)' }} />
+                <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 10px rgba(34,211,238,0.72)' }} />
+                <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 10px rgba(192,132,252,0.70)', marginLeft: '5px' }} />
               </div>
 
               <div>
@@ -535,24 +561,24 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                   }}
                 >
                   {msg.role === 'clark' && (
-                    <div style={{
+                    <div className={`clark-orb ${msg.text === 'Clark is thinking...' ? 'clark-orb-thinking' : ''}`} style={{
                       width: '20px',
                       height: '20px',
                       borderRadius: '50%',
-                      background: 'linear-gradient(135deg, #7b5cff, #4ef2c5)',
+                      background: 'radial-gradient(circle at 30% 30%, rgba(15,23,42,0.98) 0%, rgba(6,10,28,0.98) 100%)',
                       flexShrink: 0,
                       marginRight: '6px',
                       alignSelf: 'flex-end',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      fontSize: '8px',
-                      fontWeight: 800,
-                      color: '#050816',
-                      fontFamily: 'var(--font-plex-mono)',
-                    }}>C</div>
+                    }}>
+                      <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{ position: 'absolute', inset: '3px', borderRadius: '50%', border: '1px solid rgba(167,139,250,0.26)' }} />
+                      <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px rgba(34,211,238,0.75)' }} />
+                      <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 6px rgba(192,132,252,0.72)', marginLeft: '3px' }} />
+                    </div>
                   )}
-                  <div style={{
+                  <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{
                     maxWidth: '82%',
                     padding: '9px 12px',
                     borderRadius: msg.role === 'user'
@@ -577,13 +603,17 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     overflowWrap: 'anywhere',
                   }}>
                     {msg.text === 'Clark is thinking...' ? (
-                      <span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
+                        <span className="clark-orb clark-orb-thinking" style={{ width: '16px', height: '16px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <span style={{ width: '3.5px', height: '3.5px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px rgba(34,211,238,0.75)' }} />
+                          <span style={{ width: '3.5px', height: '3.5px', borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 6px rgba(192,132,252,0.72)', marginLeft: '2px' }} />
+                        </span>
                         Clark is thinking
                         <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
                         <span className="radar-dot">.</span>
                         <span className="radar-dot">.</span>
                       </span>
-                    ) : msg.text}
+                    ) : msg.role === 'clark' ? msg.text.split('\n').map((line, idx) => { const cleaned = line.trimStart(); const labels = ["Clark's read:", 'Next:', 'Top movers', 'Verdict:', 'Risk:']; const hit = labels.find((l) => cleaned.toLowerCase().startsWith(l.toLowerCase())); return <p key={idx}>{hit ? <><span className='clark-msg-label'>{line.slice(0, line.indexOf(':') + 1)}</span>{line.slice(line.indexOf(':') + 1)}</> : line || <span>&nbsp;</span>}</p> }) : msg.text}
                   </div>
                 </div>
               ))}
