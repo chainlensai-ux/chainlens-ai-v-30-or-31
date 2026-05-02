@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { getOrFetchCached } from '@/lib/coingeckoCache'
 
 type WindowKey = '15m' | '1h' | '6h' | '24h'
 type RawRow = Record<string, unknown>
@@ -156,6 +157,57 @@ function computeSignalScore(row: RawRow): string {
   return 'LOW'
 }
 
+type MajorPrices = { eth: number | null; btc: number | null }
+
+// Fetch ETH and BTC prices from CoinGecko, cached for 60 s.
+// Never throws — returns null prices on any failure so the feed still loads.
+async function fetchMajorPrices(): Promise<MajorPrices> {
+  try {
+    const result = await getOrFetchCached<Record<string, { usd?: number }>>({
+      key: 'whale-alerts:major-prices',
+      ttlMs: 60_000,
+      fetcher: async () => {
+        const res = await fetch(
+          'https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd',
+          { signal: AbortSignal.timeout(4000) },
+        )
+        if (!res.ok) throw new Error(`coingecko ${res.status}`)
+        return res.json() as Promise<Record<string, { usd?: number }>>
+      },
+    })
+    return {
+      eth: result.data?.ethereum?.usd ?? null,
+      btc: result.data?.bitcoin?.usd ?? null,
+    }
+  } catch {
+    return { eth: null, btc: null }
+  }
+}
+
+// Enrich a single raw row with a computed amount_usd where reliably known:
+//   Stablecoins (USDC/USDT/DAI/USDbC)  → amount_token 1:1
+//   WETH / ETH                          → amount_token × live ETH price
+//   cbBTC / WBTC                        → amount_token × live BTC price
+//   Everything else                     → leave amount_usd unchanged (null or DB value)
+// Never overwrites an existing DB-provided amount_usd.
+function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
+  if ((row.amount_usd as number | null) !== null) return row
+  const sym = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
+  const amt = row.amount_token as number | null
+  if (amt === null || amt <= 0) return row
+
+  let usd: number | null = null
+  if (sym === 'USDC' || sym === 'USDT' || sym === 'DAI' || sym === 'USDBC') {
+    usd = amt
+  } else if (sym === 'WETH' || sym === 'ETH') {
+    usd = prices.eth !== null ? Math.round(amt * prices.eth * 100) / 100 : null
+  } else if (sym === 'CBBTC' || sym === 'WBTC') {
+    usd = prices.btc !== null ? Math.round(amt * prices.btc * 100) / 100 : null
+  }
+
+  return usd !== null ? { ...row, amount_usd: usd } : row
+}
+
 // Count distinct tx_hash values in a tx_hash-only result set.
 function distinctTxHashCount(data: unknown): number {
   const rows = data as { tx_hash: string | null }[] | null
@@ -217,7 +269,7 @@ export async function GET(req: NextRequest) {
     if (side) query = query.eq('side', side)
     if (severity) query = query.eq('severity', severity)
 
-    const [alertsRes, txHash15m, txHash1h, txHash24h, trackedCount] = await Promise.all([
+    const [alertsRes, txHash15m, txHash1h, txHash24h, trackedCount, majorPrices] = await Promise.all([
       query,
       // Fetch tx_hash column only and count distinct values server-side.
       // This counts distinct on-chain transactions, not raw transfer legs.
@@ -225,6 +277,7 @@ export async function GET(req: NextRequest) {
       supabase.from('whale_alerts').select('tx_hash').gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
       supabase.from('whale_alerts').select('tx_hash').gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
       supabase.from('tracked_wallets').select('id', { count: 'exact', head: true }).eq('is_active', true),
+      fetchMajorPrices(),
     ])
 
     if (alertsRes.error) {
@@ -232,10 +285,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500 })
     }
 
-    // Pipeline: group by tx+wallet → score → filter stablecoin noise → collapse rapid repeats → limit
+    // Pipeline: enrich USD → group by tx+wallet → score → filter stablecoin noise → collapse rapid repeats → limit
+    // Enrichment runs before grouping so groupAlertsByTx sums real USD values.
+    const enriched = ((alertsRes.data ?? []) as RawRow[]).map(row => enrichRowUsd(row, majorPrices))
     const grouped = collapseRapidRepeats(
       filterStablecoinNoise(
-        groupAlertsByTx((alertsRes.data ?? []) as RawRow[]).map(row => ({
+        groupAlertsByTx(enriched).map(row => ({
           ...row,
           signal_score: computeSignalScore(row),
         }))
@@ -256,6 +311,10 @@ export async function GET(req: NextRequest) {
         appliedWindow: selectedWindow,
         appliedMinUsd: minUsd ?? 0,
         filtersActive: { type: type ?? null, side: side ?? null, severity: severity ?? null },
+        priceEnrichment: {
+          ethPrice: majorPrices.eth,
+          btcPrice: majorPrices.btc,
+        },
       },
     })
   } catch (error) {
