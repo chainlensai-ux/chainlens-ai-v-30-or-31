@@ -512,28 +512,53 @@ export default function WhaleAlertsPage() {
           )}
 
           {/* empty state */}
-          {!feedError && !loading && alerts.length === 0 && (
-            <div style={{ padding: '64px 20px', textAlign: 'center' }}>
-              <div className="mx-auto flex items-center justify-center rounded-[16px]"
-                style={{ width: 56, height: 56, marginBottom: 20, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', boxShadow: '0 0 28px rgba(45,212,191,0.07)' }}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                </svg>
+          {!feedError && !loading && alerts.length === 0 && (() => {
+            const total   = syncState?.trackedWalletsTotal ?? 0
+            const scanned = syncState?.processed ?? 0
+            const partial = syncState && total > 0 && scanned < total
+            const allDone = syncState && (total === 0 || scanned >= total)
+            const hasProviderErrors = (syncState?.providerErrors ?? 0) > 0
+            const title = partial
+              ? 'Batch scan in progress'
+              : allDone
+                ? 'No qualifying whale alerts found'
+                : 'No whale alerts yet'
+            const body = partial
+              ? `ChainLens scanned ${scanned} of ${total} tracked wallets in this batch. No qualifying whale movements were found yet.`
+              : allDone
+                ? 'No qualifying whale alerts found across tracked wallets yet.'
+                : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
+            return (
+              <div style={{ padding: '64px 20px', textAlign: 'center' }}>
+                <div className="mx-auto flex items-center justify-center rounded-[16px]"
+                  style={{ width: 56, height: 56, marginBottom: 20, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', boxShadow: '0 0 28px rgba(45,212,191,0.07)' }}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                  </svg>
+                </div>
+                <p style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc' }}>{title}</p>
+                <p className="mx-auto" style={{ marginTop: 8, maxWidth: 400, fontSize: 14, lineHeight: 1.6, color: '#64748b' }}>
+                  {body}
+                </p>
+                {hasProviderErrors && (
+                  <p className="mx-auto rounded-[10px]"
+                    style={{ marginTop: 12, maxWidth: 400, padding: '8px 14px', fontSize: 12, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', color: '#fcd34d' }}>
+                    {syncState!.providerErrors} provider error{(syncState!.providerErrors ?? 0) > 1 ? 's' : ''} — some wallets may be delayed.
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
+                  <Pill color="slate">{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Wallets unavailable'}</Pill>
+                  {syncState
+                    ? <Pill color="teal">{scanned} of {total || stats.trackedWallets} scanned</Pill>
+                    : <Pill color="teal">No sync yet</Pill>}
+                  <Pill color={hasProviderErrors ? 'amber' : 'purple'}>
+                    {hasProviderErrors ? 'Provider degraded' : 'Provider healthy'}
+                  </Pill>
+                </div>
               </div>
-              <p style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc' }}>No whale alerts yet</p>
-              <p className="mx-auto" style={{ marginTop: 8, maxWidth: 380, fontSize: 14, lineHeight: 1.6, color: '#64748b' }}>
-                ChainLens is watching selected Base wallets. No qualifying movements indexed yet.
-              </p>
-              <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
-                <Pill color="slate">{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Wallets unavailable'}</Pill>
-                <Pill color="teal">{syncState ? 'Sync active' : 'No sync yet'}</Pill>
-                <Pill color={(syncState?.providerErrors ?? 0) > 0 ? 'amber' : 'purple'}>
-                  {(syncState?.providerErrors ?? 0) > 0 ? 'Provider degraded' : 'Provider healthy'}
-                </Pill>
-              </div>
-            </div>
-          )}
+            )
+          })()}
 
           {/* alert rows */}
           {!feedError && !loading && alerts.length > 0 && alerts.map((alert, i) => {
