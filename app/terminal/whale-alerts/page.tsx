@@ -19,6 +19,10 @@ type AlertItem = {
   legs?: number | null
   repeats?: number | null
   signal_score?: string | null
+  token_image_url?: string | null
+  logo_url?: string | null
+  image?: string | null
+  token_logo?: string | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type SyncResponse = { processed?: number; inserted?: number; skipped?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
@@ -129,6 +133,60 @@ function CardSpark({ color, seed = 0 }: { color: string; seed?: number }) {
       <path d={d} stroke={color} strokeWidth="1.5" strokeLinecap="round" fill="none" />
       <circle cx="160" cy="2" r="2" fill={color} />
     </svg>
+  )
+}
+
+function SymBubble({ label, size, avatarBg, line, small }: { label: string; size: number; avatarBg: string; line: string; small?: boolean }) {
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: '50%',
+      background: avatarBg, border: `1px solid ${line}33`,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+    }}>
+      <span style={{ fontSize: small ? 7 : 10, fontWeight: 800, color: '#f8fafc', lineHeight: 1 }}>{label}</span>
+    </div>
+  )
+}
+
+function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
+  tok: string; logoUrl: string | null | undefined; avatarBg: string; line: string
+}) {
+  const [imgFailed, setImgFailed] = useState(false)
+  const syms = tok.split(' / ').slice(0, 2).map(s => s.trim().slice(0, 4).toUpperCase())
+  const isMulti = syms.length > 1
+
+  if (logoUrl && !imgFailed) {
+    return (
+      <div className="shrink-0 flex items-center justify-center overflow-hidden"
+        style={{ width: 36, height: 36, marginTop: 2, borderRadius: 12, background: avatarBg, border: `1px solid ${line}22`, flexShrink: 0 }}>
+        <img src={logoUrl} alt={syms[0]} width={36} height={36}
+          style={{ width: 36, height: 36, objectFit: 'cover' }}
+          onError={() => setImgFailed(true)}
+        />
+      </div>
+    )
+  }
+
+  if (isMulti) {
+    return (
+      <div className="shrink-0 relative" style={{ width: 36, height: 36, marginTop: 2, flexShrink: 0 }}>
+        {/* back bubble (second token) — sits behind */}
+        <div style={{ position: 'absolute', bottom: 0, right: 0, border: '2px solid #060810', borderRadius: '50%' }}>
+          <SymBubble label={syms[1]} size={22} avatarBg={avatarBg} line={line} small />
+        </div>
+        {/* front bubble (first token) — sits in front */}
+        <div style={{ position: 'absolute', top: 0, left: 0, border: '2px solid #060810', borderRadius: '50%' }}>
+          <SymBubble label={syms[0]} size={22} avatarBg={avatarBg} line={line} small />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="shrink-0 flex items-center justify-center"
+      style={{ width: 36, height: 36, marginTop: 2, borderRadius: 12, background: avatarBg, border: `1px solid ${line}22`, flexShrink: 0 }}>
+      <SymBubble label={syms[0]} size={28} avatarBg={avatarBg} line={line} />
+    </div>
   )
 }
 
@@ -592,9 +650,7 @@ export default function WhaleAlertsPage() {
             const amtT    = isMultiTok ? null : fmtToken(alert.amount_token, alert.token_symbol)
             const amtShow = amtU !== '—' ? amtU : amtT
 
-            // Token logo — pass-through if DB row carries it; no external fetch
-            const rawAlert = alert as Record<string, unknown>
-            const logoUrl  = (rawAlert.token_image_url ?? rawAlert.logo_url) as string | null | undefined
+            const logoUrl = alert.token_image_url ?? alert.logo_url ?? alert.image ?? alert.token_logo ?? null
 
             const walletName = alert.wallet_label || 'Tracked Wallet'
             const signal     = alert.signal_score ?? 'LOW'
@@ -620,18 +676,7 @@ export default function WhaleAlertsPage() {
                 style={{ borderBottom: bdrInner, borderLeft: `3px solid ${sideStyle.line}` }}>
                 <div className="flex items-start" style={{ gap: 12, padding: '14px 20px' }}>
 
-                  {/* Avatar: token logo if available, else symbol bubble */}
-                  <div className="shrink-0 flex items-center justify-center rounded-[12px] overflow-hidden"
-                    style={{ width: 36, height: 36, marginTop: 2, background: sideStyle.avatarBg, border: `1px solid ${sideStyle.line}22`, flexShrink: 0 }}>
-                    {logoUrl ? (
-                      <img src={logoUrl} alt={lbl} width={36} height={36}
-                        style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 12 }}
-                        onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
-                      />
-                    ) : (
-                      <span style={{ fontSize: 10, fontWeight: 800, color: '#f8fafc' }}>{lbl}</span>
-                    )}
-                  </div>
+                  <TokenAvatar tok={tok} logoUrl={logoUrl} avatarBg={sideStyle.avatarBg} line={sideStyle.line} />
 
                   {/* Content */}
                   <div className="flex-1" style={{ minWidth: 0 }}>
