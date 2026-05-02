@@ -94,7 +94,7 @@ export default function BetaPage() {
     return (
       <main style={pageStyle}>
         <div style={cardStyle}>
-          <div style={{ color: '#94a3b8', fontSize: '14px', textAlign: 'center' }}>Checking beta access...</div>
+          <div style={{ color: '#94a3b8', fontSize: '14px', textAlign: 'center' }}>Loading...</div>
         </div>
       </main>
     )
@@ -102,7 +102,7 @@ export default function BetaPage() {
 
   return (
     <main style={pageStyle}>
-      <form onSubmit={handleSubmit} style={cardStyle}>
+      <div style={cardStyle}>
         <div style={{
           width: '100%',
           textAlign: 'center',
@@ -116,31 +116,11 @@ export default function BetaPage() {
           ChainLens
         </div>
 
-        <h1 style={{ margin: '0 0 8px', color: '#f1f5f9', textAlign: 'center', fontSize: '24px' }}>Private Beta Access</h1>
-        <p style={{ margin: '0 0 22px', color: '#94a3b8', textAlign: 'center', fontSize: '13px', lineHeight: 1.6 }}>
-          Enter the beta password to continue.
+        <h1 style={{ margin: '0 0 8px', color: '#f1f5f9', textAlign: 'center', fontSize: '24px' }}>Access Temporarily Closed</h1>
+        <p style={{ margin: '0', color: '#94a3b8', textAlign: 'center', fontSize: '13px', lineHeight: 1.6 }}>
+          ChainLens access is temporarily closed while we prepare the final release.
         </p>
-
-        <input
-          type="password"
-          value={password}
-          onChange={(event) => {
-            setPassword(event.target.value)
-            if (error) setError('')
-          }}
-          placeholder="Enter beta password"
-          required
-          style={inputStyle}
-        />
-
-        {error ? <p style={{ margin: '4px 0 10px', color: '#fca5a5', fontSize: '12px' }}>{error}</p> : null}
-
-        <button type="submit" style={buttonStyle}>Enter Beta</button>
-
-        <p style={{ margin: '14px 0 0', color: 'rgba(255,255,255,0.34)', textAlign: 'center', fontSize: '11px' }}>
-          Early access for approved testers.
-        </p>
-      </form>
+      </div>
     </main>
   )
 }
