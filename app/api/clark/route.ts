@@ -63,6 +63,9 @@ interface ClarkContext {
 }
 
 type ClarkIntent =
+  | "trading_boundary"
+  | "financial_advice"
+  | "capabilities"
   | "casual_help"
   | "general_market"
   | "educational"
@@ -250,6 +253,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   if (explicitMode === "chat") {
     const { intent, address } = detectIntent(prompt);
     if (intent === "casual_help") return "casual_help";
+    if (intent === "trading_boundary" || intent === "financial_advice" || intent === "capabilities") return "casual_help";
     if (intent === "general_market" || intent === "base_radar") return "general_market";
     if (intent === "educational") return "educational";
     if (intent === "routing_help") return "routing_help";
@@ -273,6 +277,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
 
   const { intent, address } = detectIntent(prompt);
   if (intent === "casual_help") return "casual_help";
+  if (intent === "trading_boundary" || intent === "financial_advice" || intent === "capabilities") return "casual_help";
   if (intent === "general_market") return "general_market";
   if (intent === "educational") return "educational";
   if (intent === "routing_help") return "routing_help";
@@ -284,6 +289,40 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   }
   if (/scan|analyz|check|verdict|risk/.test(t) && address) return "analysis";
   return "unknown";
+}
+
+function buildTradingBoundaryReply(): string {
+  return "I can’t trade, execute swaps, or move funds for you. I can help you analyze token risk, wallet behavior, liquidity, holder concentration, and whale activity so you can make your own decision. If you want, send a CA or wallet and I’ll build a checklist.";
+}
+
+function buildFinancialAdviceReply(prompt: string): string {
+  const subject = extractAddress(prompt) ?? extractTokenLookupQuery(prompt) ?? "this setup";
+  return [
+    `I can’t give direct buy/sell orders on ${subject}.`,
+    "Risk read: treat momentum entries as high-risk until liquidity depth, holder concentration, and deployer behavior are verified.",
+    "Bull case: sustained volume with healthy liquidity and no major contract/deployer red flags.",
+    "Bear case: thin liquidity, concentrated holders, or suspicious privilege/flow signals.",
+    "Missing checks: LP control, top holder concentration, tax/honeypot flags, and recent whale flow.",
+    "What to watch next: volume vs liquidity trend, holder concentration changes, and wallet flow quality.",
+    "Not financial advice.",
+  ].join("\n");
+}
+
+function compactHistory(history: ClarkRequestBody["history"]): Array<{ role: "user" | "assistant"; content: string }> {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map((m) => ({
+      role: (m?.role === "assistant" || m?.role === "clark" ? "assistant" : "user") as "user" | "assistant",
+      content: typeof m?.content === "string" ? m.content.trim() : "",
+    }))
+    .filter((m) => m.content.length > 0)
+    .slice(-10);
+}
+
+function buildHistoryContextText(history: ClarkRequestBody["history"]): string {
+  const compact = compactHistory(history);
+  if (!compact.length) return "";
+  return compact.map((m) => `${m.role === "user" ? "User" : "Clark"}: ${m.content}`).join("\n");
 }
 
 function getHistoryMessages(history: ClarkRequestBody["history"]): string[] {
@@ -2137,7 +2176,8 @@ type ClarkToolEvidence = {
   tokenScan?: {
     ok: boolean;
     token: { name: string; symbol: string; address: string } | null;
-    market: { price: number | null; change24h: number | null; volume24h: number | null; liquidity: number | null };
+    market: { price: number | null; change24h: number | null; volume24h: number | null; liquidity: number | null; marketCap: number | null; fdv: number | null };
+    holders?: { top1: number | null; top10: number | null; holderCount: number | null; status: string };
     security: {
       honeypot: boolean | null;
       buyTax: number | null;
@@ -2147,6 +2187,9 @@ type ClarkToolEvidence = {
       securityStatus: "verified" | "partial" | "unverified";
       riskLevel: "low" | "medium" | "high" | "unknown";
       missing: string[];
+      proxy: boolean | null;
+      mintable: boolean | null;
+      ownerRenounced: boolean | null;
     };
     liquidity: { pools: number; topPoolLiquidity: number | null };
     poolDetails?: Array<{ dex: string; pair: string; liquidity: number | null; volume24h: number | null; change24h: number | null; poolAddress: string | null }>;
@@ -2244,22 +2287,31 @@ async function executeClarkToolPlan(input: {
       if (tool.name === "token_scan") {
         const addrArg = String(tool.args.address ?? "").trim();
         const addr = addrArg || String(resolvedAddress ?? "").trim();
-        const tokenData = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await callScanToken(addr, "contract", input.origin) : null;
+        const tokenData = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await callInternalApi(input.origin, "/api/token", { contract: addr }) : null;
+        const tokenJson = tokenData?.ok ? tokenData.json : null;
         const securitySim = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await fetchHoneypotSecurity(addr, "base") : null;
-        const t = (tokenData ?? {}) as Record<string, unknown>;
+        const t = (tokenJson ?? {}) as Record<string, unknown>;
         const g = (t.goplus ?? {}) as Record<string, unknown>;
         const hp = (t.honeypot ?? {}) as Record<string, unknown>;
         const warnings: string[] = [];
-        if (!tokenData) warnings.push("Token scan data is limited right now.");
+        if (!tokenJson) warnings.push("Token scan data is limited right now.");
         if (securitySim?.warnings?.length) warnings.push(...securitySim.warnings);
         evidence.tokenScan = {
-          ok: Boolean(tokenData),
-          token: tokenData ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? addr) } : null,
+          ok: Boolean(tokenJson),
+          token: tokenJson ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? addr) } : null,
           market: {
             price: typeof t.price === "number" ? t.price : null,
             change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : null,
             volume24h: typeof t.volume24h === "number" ? t.volume24h : null,
             liquidity: typeof t.liquidity === "number" ? t.liquidity : null,
+            marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : (typeof t.market_cap === "number" ? t.market_cap : null),
+            fdv: typeof t.fdvUsd === "number" ? t.fdvUsd : (typeof t.fdv === "number" ? t.fdv : null),
+          },
+          holders: {
+            top1: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top1 === "number" ? (t.holderDistribution as Record<string, unknown>).top1 as number : null,
+            top10: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top10 === "number" ? (t.holderDistribution as Record<string, unknown>).top10 as number : null,
+            holderCount: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.holderCount === "number" ? (t.holderDistribution as Record<string, unknown>).holderCount as number : null,
+            status: typeof (t.holderDistributionStatus as Record<string, unknown> | undefined)?.status === "string" ? String((t.holderDistributionStatus as Record<string, unknown>).status) : "unavailable",
           },
           security: {
             honeypot: securitySim?.honeypot ?? (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : (g.is_honeypot != null ? String(g.is_honeypot) === "1" : null)),
@@ -2270,6 +2322,9 @@ async function executeClarkToolPlan(input: {
             securityStatus: securitySim?.securityStatus ?? "unverified",
             riskLevel: securitySim?.riskLevel ?? "unknown",
             missing: securitySim?.missing ?? ["honeypot", "buyTax", "sellTax", "transferTax", "simulationSuccess"],
+            proxy: g.is_proxy != null ? String(g.is_proxy) === "1" : null,
+            mintable: g.is_mintable != null ? String(g.is_mintable) === "1" : null,
+            ownerRenounced: g.owner_address == null ? null : String(g.owner_address).toLowerCase() === "0x0000000000000000000000000000000000000000",
           },
           liquidity: {
             pools: Array.isArray(t.pools) ? t.pools.length : 0,
@@ -2289,7 +2344,7 @@ async function executeClarkToolPlan(input: {
             })
             : [],
           warnings,
-          errorSafeMessage: tokenData ? undefined : "I couldn’t complete a token scan right now.",
+          errorSafeMessage: tokenJson ? undefined : "I couldn’t complete a token scan right now.",
         };
         resolvedAddress = evidence.tokenScan.token?.address ?? resolvedAddress;
         continue;
@@ -3258,6 +3313,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   const liveIntent = detectLiveIntent(prompt);
+  const directIntent = detectIntent(prompt);
+  const historyContext = buildHistoryContextText(body.history);
+
+  if (directIntent.intent === "trading_boundary") {
+    return { feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [], analysis: buildTradingBoundaryReply() };
+  }
+  if (directIntent.intent === "financial_advice") {
+    return { feature: "clark-ai", chain, mode: "casual_help", intent: "strategy", toolsUsed: [], analysis: buildFinancialAdviceReply(prompt) };
+  }
 
   if (liveIntent === "MARKET_OVERVIEW") {
     try {
@@ -3332,7 +3396,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   const replyMode = detectReplyMode(body);
-  const directIntent = detectIntent(prompt);
   const structuredMarketList = extractStructuredMarketItems(body);
   const plan = buildClarkToolPlan({
     message: prompt,
@@ -3347,6 +3410,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     return { feature: "clark-ai", chain, mode: "casual_help", analysis: buildCasualClarkReply(prompt), intent: plan.intent, toolsUsed };
+  }
+  if (directIntent.intent === "capabilities") {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "casual_help",
+      intent: plan.intent,
+      toolsUsed,
+      analysis: "I can scan Base tokens, analyze wallets, explain whale alerts, summarize what’s moving on Base, read liquidity/holder/deployer risk, and explain crypto concepts. I can also help you build watchlists and checklists. I can’t trade, custody funds, or execute transactions.",
+    };
   }
 
   if (replyMode === "educational" || plan.intent === "educational") {
@@ -3611,7 +3684,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     }
 
     if (plan.tools.some((t) => t.name === "token_resolve") && evidence.tokenResolve?.selected?.contract) {
-      const tokenData = await callScanToken(evidence.tokenResolve.selected.contract, "contract", origin);
+      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract });
+      const tokenData = tokenRes.ok ? tokenRes.json : null;
       const securitySim = await fetchHoneypotSecurity(evidence.tokenResolve.selected.contract, "base");
       if (tokenData) evidence.tokenScan = {
         ok: true,
@@ -3621,6 +3695,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           change24h: typeof (tokenData as Record<string, unknown>).priceChange24h === "number" ? (tokenData as Record<string, unknown>).priceChange24h as number : null,
           volume24h: typeof (tokenData as Record<string, unknown>).volume24h === "number" ? (tokenData as Record<string, unknown>).volume24h as number : null,
           liquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null,
+          marketCap: typeof (tokenData as Record<string, unknown>).marketCapUsd === "number" ? (tokenData as Record<string, unknown>).marketCapUsd as number : null,
+          fdv: typeof (tokenData as Record<string, unknown>).fdvUsd === "number" ? (tokenData as Record<string, unknown>).fdvUsd as number : null,
+        },
+        holders: {
+          top1: typeof ((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown> | undefined)?.top1 === "number" ? (((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown>).top1 as number) : null,
+          top10: typeof ((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown> | undefined)?.top10 === "number" ? (((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown>).top10 as number) : null,
+          holderCount: typeof ((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown> | undefined)?.holderCount === "number" ? (((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown>).holderCount as number) : null,
+          status: typeof ((tokenData as Record<string, unknown>).holderDistributionStatus as Record<string, unknown> | undefined)?.status === "string" ? String(((tokenData as Record<string, unknown>).holderDistributionStatus as Record<string, unknown>).status) : "unavailable",
         },
         security: {
           honeypot: securitySim.honeypot,
@@ -3631,6 +3713,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           securityStatus: securitySim.securityStatus,
           riskLevel: securitySim.riskLevel,
           missing: securitySim.missing,
+          proxy: null,
+          mintable: null,
+          ownerRenounced: null,
         },
         liquidity: { pools: Array.isArray((tokenData as Record<string, unknown>).pools) ? ((tokenData as Record<string, unknown>).pools as unknown[]).length : 0, topPoolLiquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null },
         poolDetails: Array.isArray((tokenData as Record<string, unknown>).pools)
@@ -3774,7 +3859,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     walletScan: evidence.walletSnapshot ?? {},
     analysis: body.context ?? {},
   };
-  const analysis = await callAnthropic(prompt, context);
+  const memoryPrompt = historyContext
+    ? `${prompt}\n\nRecent conversation context (use this for follow-ups like "it", "that", "why", "what about holders/liquidity"; ask one concise clarifying question only if reference is ambiguous):\n${historyContext}`
+    : prompt;
+  const analysis = await callAnthropic(memoryPrompt, context);
   return { feature: "clark-ai", chain, mode: replyMode, analysis, intent: plan.intent, toolsUsed };
 }
 

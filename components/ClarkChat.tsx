@@ -158,7 +158,7 @@ export default function ClarkChat({
     try {
       const body = parseMessage(text)
       const history = [...messages, { role: 'user', text }]
-        .slice(-30)
+        .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       console.log('POST → /api/clark')
       const res = await fetch(`/api/clark`, {
