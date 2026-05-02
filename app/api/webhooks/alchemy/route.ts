@@ -30,6 +30,26 @@ type TrackedWallet = {
   label: string | null
 }
 
+type SkipReasons = {
+  no_activity: number
+  no_tx_hash: number
+  no_tracked_wallet_match: number
+  duplicate: number
+  insert_failed: number
+  missing_required_fields: number
+}
+
+function makeSkipReasons(): SkipReasons {
+  return {
+    no_activity: 0,
+    no_tx_hash: 0,
+    no_tracked_wallet_match: 0,
+    duplicate: 0,
+    insert_failed: 0,
+    missing_required_fields: 0,
+  }
+}
+
 function severityFromUsd(usd: number | null): string | null {
   if (usd === null) return null
   if (usd >= 25000) return 'major'
@@ -51,18 +71,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'missing_supabase_env' }, { status: 503 })
   }
 
+  const skipReasons = makeSkipReasons()
+
   // Parse body safely — return 200 even on bad body so Alchemy stops retrying
   let payload: AlchemyPayload = {}
   try {
     payload = (await request.json()) as AlchemyPayload
   } catch {
-    return NextResponse.json({ ok: true, received: false, inserted: 0, skipped: 0 })
+    skipReasons.no_activity += 1
+    console.log('[alchemy-webhook]', { received: 0, trackedWalletCount: 0, matched: 0, inserted: 0, skipped: 1, skipReasons })
+    return NextResponse.json({ ok: true, received: false, trackedWalletCount: 0, matched: 0, inserted: 0, skipped: 1, skipReasons })
   }
 
   const rawActivity = payload?.event?.activity
   if (!Array.isArray(rawActivity) || rawActivity.length === 0) {
-    return NextResponse.json({ ok: true, received: true, inserted: 0, skipped: 0 })
+    skipReasons.no_activity += 1
+    console.log('[alchemy-webhook]', { received: 0, trackedWalletCount: 0, matched: 0, inserted: 0, skipped: 1, skipReasons })
+    return NextResponse.json({ ok: true, received: 0, trackedWalletCount: 0, matched: 0, inserted: 0, skipped: 1, skipReasons })
   }
+
+  const received = rawActivity.length
 
   const supabase = createClient(supabaseUrl, serviceRole)
 
@@ -76,6 +104,8 @@ export async function POST(request: Request) {
     console.error('[alchemy-webhook] wallet load failed', walletError.code)
     return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
   }
+
+  const trackedWalletCount = (wallets ?? []).length
 
   // lowercase address → label for O(1) lookup
   const walletMap = new Map<string, string | null>()
@@ -104,7 +134,11 @@ export async function POST(request: Request) {
     if (toKey && walletMap.has(toKey)) {
       matches.push({ walletKey: toKey, storedAddress: item.toAddress ?? toKey, side: 'buy' })
     }
-    if (matches.length === 0) continue
+
+    if (matches.length === 0) {
+      skipReasons.no_tracked_wallet_match += 1
+      continue
+    }
 
     const txHash       = item.hash ?? null
     const tokenSymbol  = item.asset ?? null
@@ -112,6 +146,10 @@ export async function POST(request: Request) {
     const amountToken  = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value : null
 
     for (const match of matches) {
+      if (!txHash) {
+        skipReasons.no_tx_hash += 1
+        continue
+      }
       candidates.push({
         wallet_address: match.storedAddress,
         wallet_label:   walletMap.get(match.walletKey) ?? null,
@@ -131,8 +169,11 @@ export async function POST(request: Request) {
     }
   }
 
+  const matched = candidates.length
+
   if (candidates.length === 0) {
-    return NextResponse.json({ ok: true, received: true, inserted: 0, skipped: rawActivity.length })
+    console.log('[alchemy-webhook]', { received, trackedWalletCount, matched: 0, inserted: 0, skipped: received, skipReasons })
+    return NextResponse.json({ ok: true, received, trackedWalletCount, matched: 0, inserted: 0, skipped: received, skipReasons })
   }
 
   // Dedupe via the same unique index the sync route uses:
@@ -146,12 +187,17 @@ export async function POST(request: Request) {
     .select('id')
 
   if (insertError) {
+    skipReasons.insert_failed += candidates.length
     console.error('[alchemy-webhook] insert failed', insertError.code)
+    console.log('[alchemy-webhook]', { received, trackedWalletCount, matched, inserted: 0, skipped: candidates.length, skipReasons })
     return NextResponse.json({ ok: false, error: 'insert_failed' }, { status: 500 })
   }
 
   const inserted = data?.length ?? 0
   const skipped  = candidates.length - inserted
+  skipReasons.duplicate += skipped
 
-  return NextResponse.json({ ok: true, received: true, inserted, skipped })
+  console.log('[alchemy-webhook]', { received, trackedWalletCount, matched, inserted, skipped, skipReasons })
+
+  return NextResponse.json({ ok: true, received, trackedWalletCount, matched, inserted, skipped, skipReasons })
 }
