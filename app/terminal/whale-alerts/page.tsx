@@ -586,22 +586,28 @@ export default function WhaleAlertsPage() {
             const allDone = syncState && (total === 0 || scanned >= total)
             const hasProviderErrors = (syncState?.providerErrors ?? 0) > 0
             const insertedSoFar = syncState?.inserted ?? 0
-            const filtersActive = minUsd > 0 || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
+            const filtersActive   = minUsd > 0 || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
             const hiddenByFilters = insertedSoFar > 0 && filtersActive
+            const valueFilterActive = minUsd > 0
+            const minUsdLabel = MIN_OPTIONS.find(o => o.value === minUsd)?.label ?? `$${minUsd.toLocaleString()}+`
             const title = hiddenByFilters
               ? 'Alerts found — hidden by filters'
-              : partial
-                ? 'Batch scan in progress'
-                : allDone
-                  ? 'No qualifying whale alerts found'
-                  : 'No whale alerts yet'
+              : valueFilterActive
+                ? 'No alerts match this value filter.'
+                : partial
+                  ? 'Batch scan in progress'
+                  : allDone
+                    ? 'No qualifying whale alerts found'
+                    : 'No whale alerts yet'
             const body = hiddenByFilters
               ? `${insertedSoFar} alert${insertedSoFar !== 1 ? 's' : ''} found in this batch, but hidden by the current filter settings. Try selecting "All" for Minimum Value or resetting filters.`
-              : partial
-                ? `ChainLens scanned ${scanned} of ${total} tracked wallets in this batch. No qualifying whale movements were found yet.`
-                : allDone
-                  ? 'No qualifying whale alerts found across tracked wallets yet.'
-                  : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
+              : valueFilterActive
+                ? `No alerts in the ${windowValue} window have a verified USD value of ${minUsdLabel}. Try "All" or a lower threshold.`
+                : partial
+                  ? `ChainLens scanned ${scanned} of ${total} tracked wallets in this batch. No qualifying whale movements were found yet.`
+                  : allDone
+                    ? 'No qualifying whale alerts found across tracked wallets yet.'
+                    : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
             return (
               <div style={{ padding: '64px 20px', textAlign: 'center' }}>
                 <div className="mx-auto flex items-center justify-center rounded-[16px]"

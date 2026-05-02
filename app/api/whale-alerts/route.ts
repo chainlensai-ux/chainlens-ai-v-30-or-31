@@ -89,13 +89,14 @@ function isStablecoinOnly(sym: string | null): boolean {
   return sym.split(' / ').every(s => STABLECOINS.has(s.trim()))
 }
 
-// Drop stablecoin-only rows with amount < 1000 (e.g. 200 USDC swaps).
-// Keeps: mixed stable+non-stable pairs, rows with unknown amount (sync rows), amount >= 1000.
+// Drop stablecoin-only rows with amount_token < 100 (dust transfers).
+// Keeps: mixed stable+non-stable pairs, rows with unknown amount (sync rows), amount >= 100.
+// Threshold matches the $100 All quality floor so the two filters stay consistent.
 function filterStablecoinNoise(rows: RawRow[]): RawRow[] {
   return rows.filter(row => {
     if (!isStablecoinOnly(row.token_symbol as string | null)) return true
     const amt = row.amount_token as number | null
-    return amt === null || amt >= 1000
+    return amt === null || amt >= 100
   })
 }
 
@@ -157,6 +158,68 @@ function computeSignalScore(row: RawRow): string {
   return 'LOW'
 }
 
+// Returns true if a post-enrichment row meets the "All" quality floor.
+// Shared by filterByValueFloor (feed) and countStatsFiltered (stats cards).
+function passesQualityFloor(row: RawRow): boolean {
+  const usd  = row.amount_usd as number | null
+  const sym  = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
+  const amt  = row.amount_token as number | null
+  const legs = (row.legs as number | null) ?? 1
+
+  // Multi-leg swaps always pass — the swap itself is notable regardless of leg size.
+  if (legs >= 2) return true
+
+  // Primary check: known USD value must be >= $100.
+  if (usd !== null) return usd >= 100
+
+  // Fallback for rows where enrichment produced no USD (unknown tokens):
+  // apply per-symbol token amount floors.
+  if (sym === 'USDC' || sym === 'USDT' || sym === 'DAI' || sym === 'USDBC') return amt === null || amt >= 100
+  if (sym === 'WETH' || sym === 'ETH') return amt === null || amt >= 0.01
+  if (sym === 'CBBTC' || sym === 'WBTC') return amt === null || amt >= 0.0005
+
+  // Unknown / other tokens: keep (amount > 0 guaranteed by meaningfulFilter).
+  return true
+}
+
+// Post-enrichment, post-grouping value filter.
+// minUsd > 0: require known amount_usd >= minUsd.
+// minUsd = 0 ("All"): apply quality floor — hide known-tiny moves, keep unpriced rows.
+function filterByValueFloor(
+  rows: RawRow[],
+  minUsd: number,
+): { rows: RawRow[]; hiddenByFilter: number; hiddenAsDust: number } {
+  let hiddenByFilter = 0
+  let hiddenAsDust   = 0
+  const result = rows.filter(row => {
+    const usd = row.amount_usd as number | null
+    if (minUsd > 0) {
+      if (usd === null || usd < minUsd) { hiddenByFilter++; return false }
+      return true
+    }
+    if (!passesQualityFloor(row)) { hiddenAsDust++; return false }
+    return true
+  })
+  return { rows: result, hiddenByFilter, hiddenAsDust }
+}
+
+// Count distinct tx_hash values from a stats query result, applying per-row enrichment
+// and the same value floor used for the feed. Used for metric cards.
+function countStatsFiltered(data: unknown, prices: MajorPrices, minUsd: number): number {
+  type StatRow = { tx_hash: string | null; token_symbol?: string | null; amount_token?: number | null; amount_usd?: number | null }
+  const rows = data as StatRow[] | null
+  if (!rows || rows.length === 0) return 0
+  const txHashes = new Set<string>()
+  for (const r of rows) {
+    const enriched = enrichRowUsd(r as RawRow, prices)
+    const passes   = minUsd > 0
+      ? ((enriched.amount_usd as number | null) !== null && (enriched.amount_usd as number) >= minUsd)
+      : passesQualityFloor(enriched)
+    if (passes && r.tx_hash) txHashes.add(r.tx_hash)
+  }
+  return txHashes.size
+}
+
 type MajorPrices = { eth: number | null; btc: number | null }
 
 // Fetch ETH and BTC prices from CoinGecko, cached for 60 s.
@@ -208,12 +271,6 @@ function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
   return usd !== null ? { ...row, amount_usd: usd } : row
 }
 
-// Count distinct tx_hash values in a tx_hash-only result set.
-function distinctTxHashCount(data: unknown): number {
-  const rows = data as { tx_hash: string | null }[] | null
-  if (!rows) return 0
-  return new Set(rows.map(r => r.tx_hash).filter(Boolean)).size
-}
 
 export async function GET(req: NextRequest) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
@@ -261,21 +318,24 @@ export async function GET(req: NextRequest) {
       .order('occurred_at', { ascending: false })
       .limit(internalLimit)
 
-    // Only apply the minimum-usd filter when value is explicitly > 0.
-    // minUsd = 0 means "All" — do not filter, which also preserves rows
-    // where amount_usd IS NULL (webhook and sync rows with unknown value).
-    if (minUsd !== null && minUsd > 0) query = query.gte('amount_usd', minUsd)
+    // minUsd filter is NOT applied at DB level because webhook rows have amount_usd=null
+    // and enrichment (WETH×price, USDC 1:1, etc.) runs JS-side after the fetch.
+    // Applying gte('amount_usd', n) in Supabase would exclude all unenriched rows.
+    // filterByValueFloor() handles this correctly after enrichment.
     if (type) query = query.eq('alert_type', type)
     if (side) query = query.eq('side', side)
     if (severity) query = query.eq('severity', severity)
 
-    const [alertsRes, txHash15m, txHash1h, txHash24h, trackedCount, majorPrices] = await Promise.all([
+    // Stats queries: include token_symbol, amount_token, amount_usd so each row
+    // can be enriched and value-filtered JS-side — keeping stats in sync with the feed.
+    const STATS_SELECT = 'tx_hash, token_symbol, amount_token, amount_usd'
+    const effectiveMinUsd = minUsd ?? 0
+
+    const [alertsRes, stats15m, stats1h, stats24h, trackedCount, majorPrices] = await Promise.all([
       query,
-      // Fetch tx_hash column only and count distinct values server-side.
-      // This counts distinct on-chain transactions, not raw transfer legs.
-      supabase.from('whale_alerts').select('tx_hash').gte('occurred_at', new Date(Date.now() - WINDOW_MS['15m']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
-      supabase.from('whale_alerts').select('tx_hash').gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
-      supabase.from('whale_alerts').select('tx_hash').gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['15m']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
       supabase.from('tracked_wallets').select('id', { count: 'exact', head: true }).eq('is_active', true),
       fetchMajorPrices(),
     ])
@@ -285,36 +345,36 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500 })
     }
 
-    // Pipeline: enrich USD → group by tx+wallet → score → filter stablecoin noise → collapse rapid repeats → limit
-    // Enrichment runs before grouping so groupAlertsByTx sums real USD values.
+    // Pipeline:
+    //   1. Enrich USD JS-side (USDC 1:1, WETH×ETH, cbBTC×BTC)
+    //   2. Group by (tx_hash, wallet_address) — sums enriched USD across legs
+    //   3. Score signal quality
+    //   4. Apply value floor / minUsd filter (JS-side, after enrichment)
+    //   5. Drop stablecoin-only dust as a secondary safety net
+    //   6. Collapse rapid repeats
+    //   7. Limit
     const enriched = ((alertsRes.data ?? []) as RawRow[]).map(row => enrichRowUsd(row, majorPrices))
-    const grouped = collapseRapidRepeats(
-      filterStablecoinNoise(
-        groupAlertsByTx(enriched).map(row => ({
-          ...row,
-          signal_score: computeSignalScore(row),
-        }))
-      )
-    ).slice(0, limit)
+    const scored   = groupAlertsByTx(enriched).map(row => ({ ...row, signal_score: computeSignalScore(row) }))
+    const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueFloor(scored, effectiveMinUsd)
+    const grouped  = collapseRapidRepeats(filterStablecoinNoise(valueFiltered)).slice(0, limit)
 
     return NextResponse.json({
       alerts: grouped,
       stats: {
-        alerts15m:      distinctTxHashCount(txHash15m.data),
-        alerts1h:       distinctTxHashCount(txHash1h.data),
-        alerts24h:      distinctTxHashCount(txHash24h.data),
+        alerts15m:      countStatsFiltered(stats15m.data, majorPrices, effectiveMinUsd),
+        alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, effectiveMinUsd),
+        alerts24h:      countStatsFiltered(stats24h.data, majorPrices, effectiveMinUsd),
         trackedWallets: trackedCount.count ?? 0,
       },
       diagnostics: {
-        returnedCount: grouped.length,
-        rawCount:      (alertsRes.data ?? []).length,
-        appliedWindow: selectedWindow,
-        appliedMinUsd: minUsd ?? 0,
-        filtersActive: { type: type ?? null, side: side ?? null, severity: severity ?? null },
-        priceEnrichment: {
-          ethPrice: majorPrices.eth,
-          btcPrice: majorPrices.btc,
-        },
+        returnedCount:      grouped.length,
+        rawCount:           (alertsRes.data ?? []).length,
+        appliedWindow:      selectedWindow,
+        appliedMinUsd:      effectiveMinUsd,
+        hiddenByFilter,
+        hiddenAsDust,
+        filtersActive:      { type: type ?? null, side: side ?? null, severity: severity ?? null },
+        priceEnrichment:    { ethPrice: majorPrices.eth, btcPrice: majorPrices.btc },
       },
     })
   } catch (error) {
