@@ -19,6 +19,7 @@ type AlertItem = {
   legs?: number | null
   repeats?: number | null
   signal_score?: string | null
+  summary?: string | null
   token_image_url?: string | null
   logo_url?: string | null
   image?: string | null
@@ -255,8 +256,27 @@ export default function WhaleAlertsPage() {
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
   const providerSummary = syncState ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors} errors)` : 'Healthy') : 'Unavailable'
   const buildClarkPrompt = () => {
-    if (alerts.length > 0) return `Review my Whale Alerts feed. Visible alerts: ${alerts.length}. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${sevFilter}, side ${sideFilter}. Explain signals. Do not invent data.`
-    return `Review my Whale Alerts setup. No alerts visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}, type ${typeFilter}, severity ${sevFilter}, side ${sideFilter}. Explain what this means. Do not invent alerts.`
+    if (alerts.length > 0) {
+      const topAlerts = alerts.slice(0, 10).map(a => {
+        const label  = a.wallet_label || 'Tracked Wallet'
+        const tok    = a.token_symbol || a.token_name || 'Unknown token'
+        const side   = a.side ?? 'move'
+        const amtUsd = a.amount_usd != null ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
+        const amtTok = a.amount_token != null ? `${a.amount_token} ${tok}`.trim() : null
+        const amtStr = amtTok ? `${amtTok} (${amtUsd})` : amtUsd
+        const sig    = a.signal_score ?? 'LOW'
+        const legs   = (a.legs ?? 1) > 1 ? ` | ${a.legs} legs` : ''
+        const rep    = (a.repeats ?? 1) > 1 ? ` | ×${a.repeats}` : ''
+        return `[${sig}] ${label}: ${side} ${amtStr}${legs}${rep}`
+      }).join('\n')
+      return [
+        `Summarize my Whale Alerts feed. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Window: ${windowValue}. Alerts visible: ${alerts.length}.`,
+        `Top alerts:\n${topAlerts}`,
+        `Note: wallet_label is an internal ChainLens label, not a verified public identity. USD value unverified for tokens outside USDC/USDT/WETH/cbBTC.`,
+        `What are whales doing, which signals are strongest, and what should I watch next? Do not invent data.`,
+      ].join('\n\n')
+    }
+    return `Review my Whale Alerts setup. No alerts visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}. Explain what this means. Do not invent alerts.`
   }
   const goClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1` }
 
@@ -661,17 +681,25 @@ export default function WhaleAlertsPage() {
             const walletName = alert.wallet_label || 'Tracked Wallet'
             const signal     = alert.signal_score ?? 'LOW'
 
-            // Per-row Clark prompt with all relevant fields
+            // Per-row Clark prompt — structured fields, no raw wallet address
             const rowPrompt = [
-              `Whale alert: ${walletName} ${verb} ${tok}`,
-              amtShow ? `(${amtShow})` : null,
+              `Explain this whale alert. Signal: ${signal}.`,
+              `Label: ${walletName}`,
+              `Token: ${tok}`,
               `Side: ${alert.side ?? 'unknown'}`,
-              `Amount token: ${alert.amount_token ?? 'unknown'}`,
+              alert.amount_token != null
+                ? `Amount (token): ${alert.amount_token} ${alert.token_symbol ?? ''}`.trim()
+                : null,
+              alert.amount_usd != null
+                ? `Amount (USD): $${alert.amount_usd.toFixed(2)}`
+                : 'Amount (USD): unverified',
               `Legs: ${alert.legs ?? 1}`,
+              (alert.repeats ?? 1) > 1 ? `Repeats: ${alert.repeats} times in 5 min` : null,
+              alert.summary ? `Summary: ${alert.summary}` : null,
               alert.tx_hash ? `TX: ${alert.tx_hash}` : null,
               `Time: ${alert.occurred_at ?? 'unknown'}`,
-              'Analyze this whale movement. Do not invent data.',
-            ].filter(Boolean).join('. ')
+              'What does this whale alert mean, how strong is it, and what should I watch next? Do not invent data.',
+            ].filter(Boolean).join('\n')
             const goRowClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(rowPrompt)}&autosend=1` }
 
             const scanHref = alert.tx_hash ? `https://basescan.org/tx/${alert.tx_hash}` : null

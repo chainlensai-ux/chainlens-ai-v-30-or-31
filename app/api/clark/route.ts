@@ -132,7 +132,7 @@ type ClarkReplyMode =
   | "feature_context"
   | "unknown";
 
-type LiveIntent = "MARKET_OVERVIEW" | "TOKEN_QUERY" | "BASE_MARKET" | "WALLET_QUERY" | "GENERAL_CHAT";
+type LiveIntent = "MARKET_OVERVIEW" | "TOKEN_QUERY" | "BASE_MARKET" | "WALLET_QUERY" | "WHALE_FEED" | "GENERAL_CHAT";
 
 // ---------- Chain name maps ----------
 
@@ -889,6 +889,9 @@ function detectLiveIntent(prompt: string): LiveIntent {
   if (/what'?s pumping on base|base trending|moving on base|top movers on base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
   if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
+  if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales doing\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
+  // Row/page-level Ask Clark redirects carry structured alert data in the prompt text
+  if (/\bsignal:\s*(high|watch|low)\b|\btop alerts:/i.test(t)) return "WHALE_FEED";
   return "GENERAL_CHAT";
 }
 
@@ -3094,6 +3097,163 @@ async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
   return { feature: "base-radar", chain: "base", analysis };
 }
 
+// ---------- Whale alert context handling ----------
+
+type WhaleAlertRow = {
+  wallet_label?: string | null
+  token_symbol?: string | null
+  side?: string | null
+  amount_token?: number | null
+  amount_usd?: number | null
+  signal_score?: string | null
+  legs?: number | null
+  repeats?: number | null
+  occurred_at?: string | null
+  summary?: string | null
+  tx_hash?: string | null
+}
+
+function formatWhaleAlertForClark(a: WhaleAlertRow): string {
+  const label  = a.wallet_label || "Tracked Wallet";
+  const tok    = a.token_symbol || "Unknown token";
+  const side   = a.side ?? "move";
+  const amtUsd = a.amount_usd != null ? `$${a.amount_usd.toFixed(0)}` : "USD unverified";
+  const amtTok = a.amount_token != null ? `${a.amount_token} ${tok}`.trim() : null;
+  const amtStr = amtTok ? `${amtTok} (${amtUsd})` : amtUsd;
+  const sig    = a.signal_score ?? "LOW";
+  const extra  = [
+    (a.legs ?? 1) > 1    ? `${a.legs} legs`       : null,
+    (a.repeats ?? 1) > 1 ? `×${a.repeats} in 5m`  : null,
+  ].filter(Boolean).join(" | ");
+  return `[${sig}] ${label} ${side} ${amtStr}${extra ? ` | ${extra}` : ""}`;
+}
+
+// Dedicated Anthropic call for whale alert analysis with a whale-specific system prompt.
+// Keeps whale analysis separate from token/wallet/contract analysis paths.
+async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise<string> {
+  const apiKey    = requireEnv("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY);
+  const userContent = whaleContextXml ? `${prompt}\n\n${whaleContextXml}` : prompt;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 512,
+      system:
+        "You are Clark, ChainLens AI's whale activity analyst for Base mainnet.\n\n" +
+        "DATA FIELDS (from whale_alerts or inline prompt):\n" +
+        "- wallet_label: internal ChainLens tracking label — NOT a verified public identity.\n" +
+        "- signal_score: HIGH SIGNAL / WATCH / LOW — derived from token amount, legs, and recency.\n" +
+        "- amount_usd: null or 'USD unverified' means no reliable price for this token.\n" +
+        "- legs: number of token transfers bundled in one on-chain transaction. More legs = more complex.\n" +
+        "- repeats: same wallet + token + side seen multiple times within 5 minutes.\n" +
+        "- side: buy / sell / transfer.\n" +
+        "- tx_hash: on-chain reference. Do not construct Basescan URLs.\n\n" +
+        "HARD RULES:\n" +
+        "- Use only data present in the prompt or whale_alerts block. Never invent amounts or identities.\n" +
+        "- Never claim insider knowledge, profit certainty, or smart-money status.\n" +
+        "- If amount_usd is null or 'USD unverified', state that clearly.\n" +
+        "- Wallet identity is an internal ChainLens label, not a public claim.\n" +
+        "- Do not expose raw wallet addresses.\n" +
+        "- End every response with 'Not financial advice.'\n\n" +
+        "SINGLE ALERT FORMAT:\n" +
+        "Verdict: HIGH SIGNAL / WATCH / LOW\n" +
+        "Read: 1–2 sentences on what the alert shows.\n" +
+        "Why it matters: up to 2 bullets — strongest data signals only.\n" +
+        "Risk / Unverified: 1 bullet — what is not confirmed.\n" +
+        "Next watch: 1 clear sentence.\n\n" +
+        "SUMMARY FORMAT (multiple alerts):\n" +
+        "Market read: 1–2 sentences.\n" +
+        "Top movements: up to 5 bullets, HIGH SIGNAL first.\n" +
+        "Repeating tokens: list any token appearing in ≥ 2 HIGH or WATCH alerts.\n" +
+        "Active labels: note any wallet label appearing ≥ 2 times.\n" +
+        "Noise / caveats: what may not be meaningful.\n" +
+        "Next watch: 1 sentence.\n\n" +
+        "LENGTH: 100–180 words for a single alert. 150–250 for a summary.",
+      messages: [{ role: "user", content: userContent }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`Anthropic whale ${res.status}: ${errBody.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const textBlock = (data?.content ?? []).find((b: { type: string }) => b.type === "text");
+  return sanitizeFreeform((textBlock?.text ?? "Not enough verified data."), { allowProviderNames: false });
+}
+
+async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, origin: string) {
+  const chain = body.chain ?? "base";
+
+  // Detect whether the prompt already carries structured alert data from the
+  // whale-alerts page (row-level or feed-level "Ask Clark" redirect).
+  const hasInlineContext =
+    /\bsignal:\s*(high signal|high|watch|low)\b/i.test(prompt) ||
+    /\btop alerts:/i.test(prompt) ||
+    /\bexplain this whale alert\b/i.test(prompt);
+
+  try {
+    if (hasInlineContext) {
+      // Prompt already has structured data — analyze directly, no fetch needed.
+      const analysis = await callAnthropicWhale(prompt);
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_context"], analysis };
+    }
+
+    // Organic query (e.g. "what are whales doing right now?") — fetch live data.
+    let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
+    try {
+      const res = await fetch(`${origin}/api/whale-alerts?window=1h&minUsd=0&limit=25`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
+        if (raw.length > 0) {
+          const sigOrder: Record<string, number> = { HIGH: 0, WATCH: 1, LOW: 2 };
+          raw.sort((a, b) => {
+            const sA = sigOrder[a.signal_score ?? "LOW"] ?? 2;
+            const sB = sigOrder[b.signal_score ?? "LOW"] ?? 2;
+            if (sA !== sB) return sA - sB;
+            const usdDiff = (b.amount_usd ?? -1) - (a.amount_usd ?? -1);
+            if (usdDiff !== 0) return usdDiff;
+            const repDiff = (b.repeats ?? 1) - (a.repeats ?? 1);
+            if (repDiff !== 0) return repDiff;
+            return (b.legs ?? 1) - (a.legs ?? 1);
+          });
+          const lines = raw.slice(0, 20).map(formatWhaleAlertForClark);
+          contextXml =
+            `<whale_alerts count="${raw.length}" window="1h">\n` +
+            lines.join("\n") + "\n\n" +
+            "Note: wallet_label is an internal ChainLens label, not a verified public identity.\n" +
+            "USD value shown as 'USD unverified' for tokens outside USDC/USDT/WETH/cbBTC.\n" +
+            "</whale_alerts>";
+        } else {
+          contextXml = `<whale_alerts count="0" window="1h">No whale alerts in the past hour.</whale_alerts>`;
+        }
+      }
+    } catch { /* fall through with unavailable message */ }
+
+    const analysis = await callAnthropicWhale(prompt, contextXml);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed"], analysis };
+  } catch {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      intent: "whale_alert",
+      toolsUsed: ["whale_feed"],
+      analysis: "I couldn't analyze the whale context right now. Try again or paste the alert details directly.",
+    };
+  }
+}
+
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
@@ -3166,6 +3326,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };
     }
   }
+
+  if (liveIntent === "WHALE_FEED") {
+    return await handleWhaleAlertFeed(prompt, body, origin);
+  }
+
   const replyMode = detectReplyMode(body);
   const directIntent = detectIntent(prompt);
   const structuredMarketList = extractStructuredMarketItems(body);
