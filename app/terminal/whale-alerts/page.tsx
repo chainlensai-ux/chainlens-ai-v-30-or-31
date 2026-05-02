@@ -1,26 +1,30 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
-type AlertSide = 'buy' | 'sell'
-type AlertKind = 'ACCUMULATION' | 'DISTRIBUTION' | 'EXIT'
-
-type WhaleAlert = {
-  id: string
-  wallet: string
-  side: AlertSide
-  token: string
-  amountUsd: number
-  kind: AlertKind
-  createdAt: string
-  clarkNote: string
+type AlertItem = {
+  id?: string
+  wallet_address?: string | null
+  wallet_label?: string | null
+  token_address?: string | null
+  token_symbol?: string | null
+  token_name?: string | null
+  alert_type?: string | null
+  side?: string | null
+  amount_usd?: number | null
+  amount_token?: number | null
+  tx_hash?: string | null
+  severity?: string | null
+  occurred_at?: string | null
 }
-
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type SyncResponse = { processed?: number; inserted?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
 
-const minOptions = [0, 100, 500, 1000, 5000, 10000] as const
-const windows = ['15m', '1h', '6h', '24h'] as const
+const MIN_OPTIONS = [
+  { label: 'All', value: 0 }, { label: '$100+', value: 100 }, { label: '$500+', value: 500 },
+  { label: '$1k+', value: 1000 }, { label: '$5k+', value: 5000 }, { label: '$10k+', value: 10000 },
+]
+const WINDOWS = ['15m', '1h', '6h', '24h'] as const
 
 const short = (value?: string | null) => (!value ? 'Unknown' : `${value.slice(0, 6)}...${value.slice(-4)}`)
 const timeAgo = (iso?: string | null) => {
@@ -74,8 +78,6 @@ const rowDesc = (sev: string | null | undefined) => {
   return null
 }
 
-/* ── shared atoms ── */
-
 function Pill({ children, color = 'slate', dot }: { children: React.ReactNode; color?: string; dot?: boolean }) {
   const m: Record<string, { bg: string; bd: string; tx: string; dt: string }> = {
     slate:  { bg: 'rgba(148,163,184,0.08)', bd: 'rgba(148,163,184,0.18)', tx: '#94a3b8', dt: '#64748b' },
@@ -121,39 +123,40 @@ function CardSpark({ color, seed = 0 }: { color: string; seed?: number }) {
   )
 }
 
-/* ── page ── */
-
 export default function WhaleAlertsPage() {
-  const [windowValue, setWindowValue] = useState<(typeof windows)[number]>('24h')
-  const [minUsd, setMinUsd] = useState(100)
-  const [typeFilter, setTypeFilter] = useState('all')
-  const [severityFilter, setSeverityFilter] = useState('all')
-  const [sideFilter, setSideFilter] = useState('all')
-  const [alerts, setAlerts] = useState<AlertItem[]>([])
-  const [stats, setStats] = useState<AlertStats>({ alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
-  const [loading, setLoading] = useState(false)
-  const [syncing, setSyncing] = useState(false)
-  const [syncState, setSyncState] = useState<SyncResponse | null>(null)
+  const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
+  const [minUsd, setMinUsd]           = useState(100)
+  const [typeFilter, setTypeFilter]   = useState('all')
+  const [sevFilter, setSevFilter]     = useState('all')
+  const [sideFilter, setSideFilter]   = useState('all')
+  const [alerts, setAlerts]           = useState<AlertItem[]>([])
+  const [stats, setStats]             = useState<AlertStats>({ alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
+  const [loading, setLoading]         = useState(false)
+  const [syncing, setSyncing]         = useState(false)
+  const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
+  const [feedError, setFeedError]     = useState(false)
 
   const loadAlerts = useCallback(async () => {
     setLoading(true)
+    setFeedError(false)
     try {
       const p = new URLSearchParams({ window: windowValue, minUsd: String(minUsd), limit: '100' })
       if (typeFilter !== 'all') p.set('type', typeFilter)
-      if (severityFilter !== 'all') p.set('severity', severityFilter)
+      if (sevFilter !== 'all')  p.set('severity', sevFilter)
       if (sideFilter !== 'all') p.set('side', sideFilter)
       const res = await fetch(`/api/whale-alerts?${p.toString()}`, { cache: 'no-store' })
+      if (!res.ok) { setFeedError(true); return }
       const json = await res.json()
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
+    } catch {
+      setFeedError(true)
     } finally {
       setLoading(false)
     }
-  }, [windowValue, minUsd, typeFilter, severityFilter, sideFilter])
+  }, [windowValue, minUsd, typeFilter, sevFilter, sideFilter])
 
-  useEffect(() => {
-    void loadAlerts()
-  }, [loadAlerts])
+  useEffect(() => { void loadAlerts() }, [loadAlerts])
 
   const runSync = async (offset: number) => {
     setSyncing(true)
@@ -167,13 +170,21 @@ export default function WhaleAlertsPage() {
     }
   }
 
-  const types = useMemo(() => ['all', ...Array.from(new Set(alerts.map((a) => a.alert_type).filter(Boolean)))], [alerts])
-  const severities = useMemo(() => ['all', ...Array.from(new Set(alerts.map((a) => a.severity).filter(Boolean)))], [alerts])
-  const sides = useMemo(() => ['all', ...Array.from(new Set(alerts.map((a) => a.side).filter(Boolean)))], [alerts])
+  const resetFilters = () => {
+    setTypeFilter('all')
+    setSevFilter('all')
+    setSideFilter('all')
+    setMinUsd(100)
+    setWindowValue('24h')
+  }
 
-  const scanCoverage = syncState?.trackedWalletsTotal ? Math.min(100, Math.round(((syncState.processed ?? 0) / syncState.trackedWalletsTotal) * 100)) : 0
+  const types = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.alert_type).filter(Boolean) as string[]))], [alerts])
+  const sevs  = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.severity).filter(Boolean) as string[]))], [alerts])
+  const sides = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.side).filter(Boolean) as string[]))], [alerts])
 
-  // Clark prompt — single source of truth
+  const covPct = syncState && (syncState.trackedWalletsTotal ?? 0) > 0
+    ? Math.min(100, Math.round(((syncState.processed ?? 0) / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
+
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
   const providerSummary = syncState ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors} errors)` : 'Healthy') : 'Unavailable'
   const buildClarkPrompt = () => {
@@ -182,35 +193,28 @@ export default function WhaleAlertsPage() {
   }
   const goClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1` }
 
-  const covPct = syncState && (syncState.trackedWalletsTotal ?? 0) > 0
-    ? Math.min(100, Math.round(((syncState.processed ?? 0) / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
-
   const metrics = [
-    { label: 'ALERTS · 15M',    val: stats.alerts15m,      sub: 'Last quarter hour',    color: '#2dd4bf' },
-    { label: 'ALERTS · 1H',     val: stats.alerts1h,       sub: 'Past 60 minutes',       color: '#2dd4bf' },
-    { label: 'ALERTS · 24H',    val: stats.alerts24h,      sub: 'Rolling day window',    color: '#8b5cf6' },
-    { label: 'TRACKED WALLETS', val: stats.trackedWallets, sub: 'Smart money + manual',  color: '#ec4899' },
+    { label: 'ALERTS · 15M',    val: stats.alerts15m,      sub: 'Last quarter hour',   color: '#2dd4bf' },
+    { label: 'ALERTS · 1H',     val: stats.alerts1h,       sub: 'Past 60 minutes',      color: '#2dd4bf' },
+    { label: 'ALERTS · 24H',    val: stats.alerts24h,      sub: 'Rolling day window',   color: '#8b5cf6' },
+    { label: 'TRACKED WALLETS', val: stats.trackedWallets, sub: 'Smart money + manual', color: '#ec4899' },
   ]
 
-  /* ─── inline design tokens ─── */
   const cardBg   = 'rgba(7,16,27,0.92)'
   const innerBg  = 'rgba(4,10,18,0.95)'
   const bdr      = '1px solid rgba(255,255,255,0.09)'
   const bdrInner = '1px solid rgba(255,255,255,0.06)'
 
-  /* ─── JSX — all semantic Tailwind replaced with inline styles / arbitrary values ─── */
   return (
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden"
       style={{ background: 'radial-gradient(ellipse 90% 60% at 50% -8%,rgba(45,212,191,0.09) 0%,transparent 52%),radial-gradient(ellipse 55% 45% at 88% 6%,rgba(139,92,246,0.07) 0%,transparent 46%),#060810', color: '#f1f5f9' }}>
 
-      {/* ── centred column ── */}
       <div className="mx-auto w-full flex flex-col" style={{ maxWidth: 1280, gap: 24, padding: '24px 16px' }}>
 
-        {/* ═══ 1. HERO ════════════════════════════════════════════════ */}
+        {/* ═══ 1. HERO ═══════════════════════════════════════════════════════ */}
         <div className="grid rounded-[28px]"
           style={{ gridTemplateColumns: '1.4fr 360px', gap: 24, border: bdr, background: cardBg, padding: 24, boxShadow: '0 0 80px rgba(45,212,191,0.05),0 24px 64px rgba(0,0,0,0.55)' }}>
 
-          {/* left — eyebrow / title / chips */}
           <div className="flex flex-col justify-center">
             <div className="flex items-center" style={{ gap: 8, marginBottom: 12 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -237,10 +241,8 @@ export default function WhaleAlertsPage() {
             </div>
           </div>
 
-          {/* right — live wallet movement panel */}
           <div className="flex flex-col justify-center rounded-[16px]" style={{ background: innerBg, border: bdrInner, padding: 16 }}>
             <div className="flex items-start" style={{ gap: 16 }}>
-              {/* CSS radar rings */}
               <div className="relative shrink-0" style={{ width: 76, height: 76, marginTop: 2 }}>
                 {([0, 9, 18, 27] as const).map((ins, ri) => (
                   <div key={ri} className="absolute rounded-full" style={{
@@ -249,12 +251,9 @@ export default function WhaleAlertsPage() {
                     background: ri === 3 ? 'rgba(45,212,191,0.09)' : 'transparent',
                   }}/>
                 ))}
-                <div className="absolute rounded-full"
-                  style={{ inset: 34, background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 10px rgba(45,212,191,0.85)' }}/>
-                <div className="absolute rounded-full"
-                  style={{ width: 7, height: 7, top: 9, left: '50%', transform: 'translateX(-50%)', background: '#22c55e', boxShadow: '0 0 8px #22c55e' }}/>
+                <div className="absolute rounded-full" style={{ inset: 34, background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 10px rgba(45,212,191,0.85)' }}/>
+                <div className="absolute rounded-full" style={{ width: 7, height: 7, top: 9, left: '50%', transform: 'translateX(-50%)', background: '#22c55e', boxShadow: '0 0 8px #22c55e' }}/>
               </div>
-              {/* text + sparkline */}
               <div className="flex-1" style={{ minWidth: 0 }}>
                 <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.16em', color: '#4ade80' }}>● Live Wallet Movement</p>
                 <p style={{ marginTop: 4, fontSize: 12, lineHeight: 1.5, color: '#475569' }}>Listening for high-signal wallet moves on Base.</p>
@@ -279,40 +278,32 @@ export default function WhaleAlertsPage() {
 
         </div>
 
-        {/* ═══ 2. METRICS ══════════════════════════════════════════════ */}
+        {/* ═══ 2. METRICS ════════════════════════════════════════════════════ */}
         <div className="grid" style={{ gridTemplateColumns: 'repeat(4,1fr)', gap: 16 }}>
           {metrics.map((m, idx) => (
             <div key={m.label} className="relative overflow-hidden rounded-[16px]"
               style={{ minHeight: 132, border: bdr, background: cardBg, padding: 20 }}>
-
-              {/* icon */}
               <div className="flex items-center justify-center rounded-[12px]"
                 style={{ width: 32, height: 32, background: `${m.color}14`, border: `1px solid ${m.color}28` }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={m.color} strokeWidth="2.2">
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                 </svg>
               </div>
-
               <p style={{ marginTop: 12, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#475569' }}>{m.label}</p>
               <p className="tabular-nums" style={{ marginTop: 2, fontSize: '2.6rem', fontWeight: 800, lineHeight: 1, color: '#f8fafc' }}>{m.val}</p>
               <p style={{ marginTop: 6, fontSize: 12, color: '#475569' }}>{m.sub}</p>
-
               <CardSpark color={m.color} seed={idx}/>
-
-              {/* colored bottom accent */}
               <div className="absolute" style={{ bottom: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,${m.color}55,transparent)` }}/>
             </div>
           ))}
         </div>
 
-        {/* ═══ 3. CONTROLS + SYNC ══════════════════════════════════════ */}
+        {/* ═══ 3. CONTROLS + SYNC ════════════════════════════════════════════ */}
         <div className="rounded-[24px]" style={{ border: bdr, background: cardBg, padding: 20 }}>
           <div className="grid" style={{ gridTemplateColumns: '1.35fr 0.95fr', gap: 20 }}>
 
-            {/* ── left: filters ── */}
+            {/* left: filters */}
             <div className="flex flex-col" style={{ gap: 16 }}>
-
-              {/* Time Window */}
               <div>
                 <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Time Window</p>
                 <div className="flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
@@ -328,7 +319,6 @@ export default function WhaleAlertsPage() {
                 </div>
               </div>
 
-              {/* Minimum Value */}
               <div>
                 <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Minimum Value</p>
                 <div className="flex flex-wrap" style={{ gap: 8 }}>
@@ -344,7 +334,6 @@ export default function WhaleAlertsPage() {
                 </div>
               </div>
 
-              {/* 3 selects */}
               <div className="grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
                 {[
                   { label: 'Alert Type', val: typeFilter, set: setTypeFilter, opts: types },
@@ -368,11 +357,10 @@ export default function WhaleAlertsPage() {
               </div>
             </div>
 
-            {/* ── right: wallet sync panel ── */}
+            {/* right: wallet sync panel */}
             <div className="flex flex-col rounded-[16px]"
               style={{ gap: 12, border: '1px solid rgba(139,92,246,0.20)', background: 'linear-gradient(135deg,#141a34,#10192d,#0a1322)', padding: 16 }}>
 
-              {/* header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center" style={{ gap: 10 }}>
                   <div className="flex items-center justify-center rounded-[12px]"
@@ -389,8 +377,7 @@ export default function WhaleAlertsPage() {
                 <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Syncing…' : 'Sync Healthy'}</Pill>
               </div>
 
-              {/* 2 stat cards */}
-              <div className="grid grid-cols-2" style={{ gap: 8 }}>
+              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
                   <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Wallets Scanned</p>
                   <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
@@ -407,7 +394,6 @@ export default function WhaleAlertsPage() {
                 </div>
               </div>
 
-              {/* coverage bar */}
               {covPct !== null ? (
                 <div>
                   <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
@@ -429,7 +415,6 @@ export default function WhaleAlertsPage() {
                 </p>
               )}
 
-              {/* sync + reset buttons */}
               <div className="flex" style={{ gap: 8 }}>
                 <button onClick={() => { void runSync(syncState?.nextOffset ?? 0) }} disabled={syncing}
                   className="flex flex-1 items-center justify-center rounded-[12px]"
@@ -458,7 +443,7 @@ export default function WhaleAlertsPage() {
           </div>
         </div>
 
-        {/* ═══ 4. ALERT FEED ═══════════════════════════════════════════ */}
+        {/* ═══ 4. ALERT FEED ══════════════════════════════════════════════════ */}
         <div className="overflow-hidden rounded-[24px]" style={{ border: bdr, background: cardBg }}>
 
           {/* feed header */}
@@ -568,15 +553,12 @@ export default function WhaleAlertsPage() {
                 style={{ borderBottom: bdrInner, borderLeft: `3px solid ${side.line}` }}>
                 <div className="flex items-start" style={{ gap: 12, padding: '14px 20px' }}>
 
-                  {/* token avatar */}
                   <div className="shrink-0 flex items-center justify-center rounded-[12px]"
                     style={{ width: 36, height: 36, marginTop: 2, fontSize: 11, fontWeight: 800, color: '#f8fafc', background: side.avatarBg, border: `1px solid ${side.line}22` }}>
                     {lbl}
                   </div>
 
-                  {/* main content */}
                   <div className="flex-1" style={{ minWidth: 0 }}>
-                    {/* line 1 */}
                     <div className="flex flex-wrap items-center" style={{ gap: '0 6px' }}>
                       <span className="rounded-[4px]"
                         style={{ padding: '2px 8px', fontSize: 10, fontWeight: 800, letterSpacing: '0.1em', background: side.chipBg, border: `1px solid ${side.chipBd}`, color: side.chipTx }}>
@@ -590,7 +572,6 @@ export default function WhaleAlertsPage() {
                         <span style={{ fontWeight: 700, color: '#f8fafc' }}>{tok}</span>
                       </span>
                     </div>
-                    {/* line 2 */}
                     <div className="flex flex-wrap items-center" style={{ gap: '0 8px', marginTop: 6, fontSize: 11, color: '#475569' }}>
                       <span className="rounded-[4px]"
                         style={{ padding: '2px 6px', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', color: '#2dd4bf' }}>
@@ -600,11 +581,9 @@ export default function WhaleAlertsPage() {
                       {alert.token_name && <span>· {alert.token_name}</span>}
                       {amtT && <span>· {amtT}</span>}
                     </div>
-                    {/* line 3 */}
                     {desc && <p style={{ marginTop: 2, fontSize: 11, color: '#334155' }}>{desc}</p>}
                   </div>
 
-                  {/* right column */}
                   <div className="shrink-0 flex flex-col items-end" style={{ marginTop: 2, gap: 6 }}>
                     {sevL && (
                       <span className="rounded-full"
@@ -653,58 +632,11 @@ export default function WhaleAlertsPage() {
                 ))}
               </div>
             </div>
-          </header>
+          )}
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              { label: 'ALERTS · 15M', value: stats.alerts15m },
-              { label: 'ALERTS · 1H', value: stats.alerts1h },
-              { label: 'ALERTS · 24H', value: stats.alerts24h },
-              { label: 'TRACKED WALLETS', value: stats.trackedWallets },
-            ].map((stat) => (
-              <div key={stat.label} className="rounded-2xl border p-4" style={{ background: 'rgba(255,255,255,0.03)', borderColor: 'rgba(255,255,255,0.08)' }}>
-                <p className="text-xs uppercase tracking-[0.18em] text-[#2DD4BF]" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{stat.label}</p>
-                <p className="mt-3 text-5xl font-bold text-white">{stat.value ?? 0}</p>
-              </div>
-            ))}
-          </div>
+        </div>
 
-          <div className="grid gap-4 rounded-2xl border p-4 lg:grid-cols-[1fr_460px]" style={{ background: 'rgba(8,12,20,0.92)', borderColor: 'rgba(255,255,255,0.08)' }}>
-            <div className="space-y-4">
-              <p className="text-xs uppercase tracking-[0.18em] text-[#94a3b8]" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>TIME WINDOW</p>
-              <div className="flex flex-wrap gap-2">{windows.map((w) => <button key={w} onClick={() => setWindowValue(w)} className="rounded-xl border px-4 py-2 text-sm font-semibold" style={{ background: windowValue === w ? 'rgba(45,212,191,0.15)' : 'rgba(255,255,255,0.02)', color: windowValue === w ? '#2DD4BF' : '#cbd5e1', borderColor: windowValue === w ? 'rgba(45,212,191,0.4)' : 'rgba(255,255,255,0.12)' }}>{w}</button>)}</div>
-              <p className="text-xs uppercase tracking-[0.18em] text-[#94a3b8]" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>MINIMUM VALUE</p>
-              <div className="flex flex-wrap gap-2">{minOptions.map((v) => <button key={v} onClick={() => setMinUsd(v)} className="rounded-xl border px-4 py-2 text-sm font-semibold" style={{ background: minUsd === v ? 'rgba(45,212,191,0.15)' : 'rgba(255,255,255,0.02)', color: minUsd === v ? '#2DD4BF' : '#cbd5e1', borderColor: minUsd === v ? 'rgba(45,212,191,0.4)' : 'rgba(255,255,255,0.12)' }}>{v === 0 ? 'All' : `$${v >= 1000 ? `${v / 1000}k` : v}+`}</button>)}</div>
-              <div className="grid gap-3 md:grid-cols-3">{[
-                { label: 'Alert type', value: typeFilter, set: setTypeFilter, opts: types },
-                { label: 'Severity', value: severityFilter, set: setSeverityFilter, opts: severities },
-                { label: 'Side', value: sideFilter, set: setSideFilter, opts: sides },
-              ].map((f) => <label key={f.label} className="space-y-1 text-sm text-[#94a3b8]"><span className="text-xs uppercase tracking-[0.16em]" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>{f.label}</span><select value={f.value} onChange={(e) => f.set(e.target.value)} className="w-full rounded-xl border border-white/10 bg-[#070d19] px-3 py-2 text-sm font-semibold text-white"><option value="all">All</option>{f.opts.filter(Boolean).map((o) => <option key={o} value={o ?? ''}>{o}</option>)}</select></label>)}</div>
-            </div>
-            <div className="rounded-2xl border p-4" style={{ background: 'linear-gradient(160deg, rgba(23,26,56,0.55), rgba(7,17,31,0.6))', borderColor: 'rgba(139,92,246,0.35)' }}>
-              <div className="flex items-start justify-between"><div><p className="text-2xl font-semibold text-white">Wallet scan</p><p className="text-sm text-[#94a3b8]">Last scan {syncState ? `${Math.max(0, syncState.offset ?? 0)} offset` : 'No sync yet'}</p></div><span className="rounded-full border border-[#2DD4BF]/40 bg-[#2DD4BF]/15 px-3 py-1 text-sm font-semibold text-[#2DD4BF]">● Sync Healthy</span></div>
-              <div className="mt-4 grid grid-cols-2 gap-3"><div className="rounded-xl border border-white/10 bg-black/20 p-3"><p className="text-xs uppercase tracking-[0.14em] text-[#94a3b8]" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>WALLETS SCANNED</p><p className="text-3xl font-bold text-[#2DD4BF]">{syncState?.processed ?? 0} / {syncState?.trackedWalletsTotal ?? stats.trackedWallets ?? 0}</p></div><div className="rounded-xl border border-white/10 bg-black/20 p-3"><p className="text-xs uppercase tracking-[0.14em] text-[#94a3b8]" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>ALERTS FOUND</p><p className="text-3xl font-bold text-white">{stats.alerts24h ?? 0}</p></div></div>
-              <p className="mt-4 text-xs uppercase tracking-[0.16em] text-[#94a3b8]" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>SCAN COVERAGE</p>
-              <div className="mt-2 h-2 w-full rounded-full bg-white/10"><div className="h-2 rounded-full bg-gradient-to-r from-[#2DD4BF] to-[#8b5cf6]" style={{ width: `${scanCoverage}%` }} /></div>
-              <div className="mt-4 flex gap-2"><button disabled={syncing} onClick={() => runSync(syncState?.nextOffset ?? 0)} className="flex-1 rounded-xl border border-[#2DD4BF]/50 bg-gradient-to-r from-[#154b46] to-[#216463] px-4 py-2 text-base font-semibold text-[#d9fffa] disabled:opacity-50">{syncing ? 'Syncing...' : '→ Sync next batch'}</button><button type="button" disabled={syncing} onClick={() => setSyncState(null)} className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-base font-semibold text-slate-200 disabled:opacity-50">Reset</button></div>
-            </div>
-          </div>
-        </section>
-
-        <section className="space-y-4">
-          {alerts.length === 0 && !loading ? (
-            <div className="flex min-h-[360px] flex-col items-center justify-center rounded-2xl border text-center" style={{ background: 'rgba(255,255,255,0.03)', borderColor: 'rgba(255,255,255,0.08)' }}>
-              <div className="mb-4 text-6xl text-[#2DD4BF]">🔔</div><h2 className="text-2xl font-semibold text-white">No whale alerts yet</h2><p className="mt-2 text-sm text-[#94a3b8]">ChainLens is watching Base wallets for significant moves</p>
-            </div>
-          ) : alerts.map((alert, i) => {
-            const isBuy = (alert.side || '').toLowerCase().includes('buy')
-            const isExit = (alert.alert_type || '').toLowerCase().includes('exit')
-            const accent = isExit ? '#ec4899' : isBuy ? '#2DD4BF' : '#ef4444'
-            const clarkPrompt = encodeURIComponent(`Analyze this whale alert on Base: wallet ${alert.wallet_address || 'Unknown'}, token ${alert.token_symbol || alert.token_name || 'Unknown'}, amount ${money(alert.amount_usd)}, side ${alert.side || 'unknown'}, type ${alert.alert_type || 'unknown'}.`)
-            return <article key={alert.id ?? `${alert.tx_hash}-${i}`} className="block min-h-[100px] rounded-2xl border p-4 transition hover:border-white/20" style={{ borderLeft: `3px solid ${accent}`, background: 'rgba(255,255,255,0.03)', borderColor: 'rgba(255,255,255,0.08)' }}><div className="flex flex-wrap items-center justify-between gap-3"><div className="space-y-2"><div className="flex items-center gap-2" style={{ fontFamily: 'IBM Plex Mono, monospace' }}><span className="text-[14px] text-[#2DD4BF]">{alert.wallet_label || short(alert.wallet_address)}</span><span className="text-xs text-[#94a3b8]">{timeAgo(alert.occurred_at)}</span></div><div className="flex items-center gap-2 text-sm font-bold text-white"><span>{alert.side || 'Transfer'} {alert.token_symbol || alert.token_name || 'Unknown'}</span></div></div><div className="text-right"><p className="text-[18px] font-bold" style={{ color: isBuy ? '#2DD4BF' : '#ef4444' }}>{money(alert.amount_usd)}</p></div></div><div className="mt-3 flex flex-wrap items-center gap-3 text-xs"><span className="rounded-full px-2 py-0.5 font-semibold text-white" style={{ background: accent }}>{alert.alert_type || 'Unknown'}</span>{alert.tx_hash ? <a href={`https://basescan.org/tx/${alert.tx_hash}`} target="_blank" rel="noreferrer" className="text-[#2DD4BF] hover:underline">View tx</a> : <span className="text-slate-500">No transaction hash</span>}<a href={`/terminal/clark-ai?prompt=${clarkPrompt}&autosend=1`} className="rounded-lg border border-white/15 bg-slate-800/70 px-2 py-1 text-slate-200">Ask Clark</a></div></article>
-          })}
-        </section>
       </div>
-    </main>
+    </div>
   )
 }
