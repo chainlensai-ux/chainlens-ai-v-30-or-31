@@ -73,43 +73,50 @@ export async function POST(request: Request) {
 
   const skipReasons = makeSkipReasons()
 
+  // Load tracked wallets first so trackedWalletCount is always real in diagnostics,
+  // even when the payload has no activity (e.g. Alchemy test pings).
+  const supabase = createClient(supabaseUrl, serviceRole)
+
+  const { data: wallets, error: walletError } = await supabase
+    .from('tracked_wallets')
+    .select('address,label')
+    .eq('is_active', true)
+    .order('created_at', { ascending: true })
+
+  const trackedWalletQueryOk = !walletError
+  const trackedWalletCount   = (wallets ?? []).length
+  const trackedWalletLoadErrorCode = walletError?.code ?? null
+
+  if (walletError) {
+    console.error('[alchemy-webhook] wallet load failed', walletError.code)
+    console.log('[alchemy-webhook]', { trackedWalletQueryOk, trackedWalletCount, trackedWalletLoadErrorCode })
+    return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
+  }
+
   // Parse body safely — return 200 even on bad body so Alchemy stops retrying
   let payload: AlchemyPayload = {}
   try {
     payload = (await request.json()) as AlchemyPayload
   } catch {
     skipReasons.no_activity += 1
-    console.log('[alchemy-webhook]', { received: 0, trackedWalletCount: 0, matched: 0, inserted: 0, skipped: 1, skipReasons })
-    return NextResponse.json({ ok: true, received: false, trackedWalletCount: 0, matched: 0, inserted: 0, skipped: 1, skipReasons })
+    const diag = { received: 0, trackedWalletQueryOk, trackedWalletCount, matched: 0, inserted: 0, skipped: 1, skipReasons }
+    console.log('[alchemy-webhook]', diag)
+    return NextResponse.json({ ok: true, ...diag })
   }
 
   const rawActivity = payload?.event?.activity
   if (!Array.isArray(rawActivity) || rawActivity.length === 0) {
     skipReasons.no_activity += 1
-    console.log('[alchemy-webhook]', { received: 0, trackedWalletCount: 0, matched: 0, inserted: 0, skipped: 1, skipReasons })
-    return NextResponse.json({ ok: true, received: 0, trackedWalletCount: 0, matched: 0, inserted: 0, skipped: 1, skipReasons })
+    const diag = { received: 0, trackedWalletQueryOk, trackedWalletCount, matched: 0, inserted: 0, skipped: 1, skipReasons }
+    console.log('[alchemy-webhook]', diag)
+    return NextResponse.json({ ok: true, ...diag })
   }
 
   const received = rawActivity.length
 
-  const supabase = createClient(supabaseUrl, serviceRole)
-
-  // Load ALL active tracked wallets for membership check
-  const { data: wallets, error: walletError } = await supabase
-    .from('tracked_wallets')
-    .select('address,label')
-    .eq('is_active', true)
-
-  if (walletError) {
-    console.error('[alchemy-webhook] wallet load failed', walletError.code)
-    return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
-  }
-
-  const trackedWalletCount = (wallets ?? []).length
-
   // lowercase address → label for O(1) lookup
   const walletMap = new Map<string, string | null>()
-  for (const w of (wallets ?? []) as TrackedWallet[]) {
+  for (const w of wallets as TrackedWallet[]) {
     walletMap.set(w.address.toLowerCase(), w.label)
   }
 
@@ -172,8 +179,9 @@ export async function POST(request: Request) {
   const matched = candidates.length
 
   if (candidates.length === 0) {
-    console.log('[alchemy-webhook]', { received, trackedWalletCount, matched: 0, inserted: 0, skipped: received, skipReasons })
-    return NextResponse.json({ ok: true, received, trackedWalletCount, matched: 0, inserted: 0, skipped: received, skipReasons })
+    const diag = { received, trackedWalletQueryOk, trackedWalletCount, matched: 0, inserted: 0, skipped: received, skipReasons }
+    console.log('[alchemy-webhook]', diag)
+    return NextResponse.json({ ok: true, ...diag })
   }
 
   // Dedupe via the same unique index the sync route uses:
@@ -189,7 +197,8 @@ export async function POST(request: Request) {
   if (insertError) {
     skipReasons.insert_failed += candidates.length
     console.error('[alchemy-webhook] insert failed', insertError.code)
-    console.log('[alchemy-webhook]', { received, trackedWalletCount, matched, inserted: 0, skipped: candidates.length, skipReasons })
+    const diag = { received, trackedWalletQueryOk, trackedWalletCount, matched, inserted: 0, skipped: candidates.length, skipReasons }
+    console.log('[alchemy-webhook]', diag)
     return NextResponse.json({ ok: false, error: 'insert_failed' }, { status: 500 })
   }
 
@@ -197,7 +206,7 @@ export async function POST(request: Request) {
   const skipped  = candidates.length - inserted
   skipReasons.duplicate += skipped
 
-  console.log('[alchemy-webhook]', { received, trackedWalletCount, matched, inserted, skipped, skipReasons })
-
-  return NextResponse.json({ ok: true, received, trackedWalletCount, matched, inserted, skipped, skipReasons })
+  const diag = { received, trackedWalletQueryOk, trackedWalletCount, matched, inserted, skipped, skipReasons }
+  console.log('[alchemy-webhook]', diag)
+  return NextResponse.json({ ok: true, ...diag })
 }
