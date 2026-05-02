@@ -16,6 +16,7 @@ type AlertItem = {
   tx_hash?: string | null
   severity?: string | null
   occurred_at?: string | null
+  legs?: number | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type SyncResponse = { processed?: number; inserted?: number; skipped?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
@@ -616,6 +617,7 @@ export default function WhaleAlertsPage() {
                         : <span style={{ fontFamily: 'var(--font-plex-mono,monospace)' }}>Unknown</span>}
                       {alert.token_name && <span>· {alert.token_name}</span>}
                       {amtT && <span>· {amtT}</span>}
+                      {(alert.legs ?? 1) > 1 && <span>· {alert.legs} legs</span>}
                     </div>
                     {desc && <p style={{ marginTop: 2, fontSize: 11, color: '#334155' }}>{desc}</p>}
                   </div>
