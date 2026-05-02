@@ -87,6 +87,7 @@ const EMPTY_STATE_CHIPS = [
   },
 ]
 const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
+const THINKING_MESSAGE = 'Clark is thinking...'
 
 function decodePrompt(value: string | null): string | null {
   if (!value) return null
@@ -95,6 +96,18 @@ function decodePrompt(value: string | null): string | null {
   } catch {
     return value
   }
+}
+
+function ClarkOrb({ size = 44, thinking = false }: { size?: number; thinking?: boolean }) {
+  return (
+    <div className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}>
+      <div className='clark-orb-ring' />
+      <div className='clark-orb-core'>
+        <span className='clark-orb-dot clark-orb-dot-a' />
+        <span className='clark-orb-dot clark-orb-dot-b' />
+      </div>
+    </div>
+  )
 }
 
 function ClarkAiContent() {
@@ -154,7 +167,7 @@ function ClarkAiContent() {
     const text = raw.trim()
     if (!text || loading) return
 
-    setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: 'Clark is thinking...' }])
+    setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
     setInput('')
     setLoading(true)
 
@@ -294,6 +307,36 @@ function ClarkAiContent() {
         .clark-send-button:active:not(:disabled) {
           transform: scale(1.02);
         }
+        .clark-orb-shell {
+          border-radius: 999px;
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          background: radial-gradient(circle at 30% 25%, rgba(148,163,184,0.24), rgba(2,6,23,0.96) 62%);
+          border: 1px solid rgba(148,163,184,0.34);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 20px rgba(45,212,191,0.22), 0 0 28px rgba(139,92,246,0.2);
+          overflow: hidden;
+        }
+        .clark-orb-ring {
+          position: absolute; inset: 3px; border-radius: 999px;
+          border: 1px solid rgba(45,212,191,0.25);
+          opacity: .9;
+        }
+        .clark-orb-core { position: relative; width: 100%; height: 100%; border-radius: 999px; }
+        .clark-orb-dot { position: absolute; width: 7px; height: 7px; border-radius: 999px; filter: blur(.1px); }
+        .clark-orb-dot-a { left: 34%; top: 44%; background: #67e8f9; box-shadow: 0 0 16px rgba(103,232,249,.95); animation: clarkDotA 2.4s ease-in-out infinite; }
+        .clark-orb-dot-b { right: 30%; top: 44%; background: #c4b5fd; box-shadow: 0 0 16px rgba(196,181,253,.9); animation: clarkDotB 2.1s ease-in-out infinite; }
+        .clark-orb-shell.thinking::after {
+          content: ''; position: absolute; inset: -6px; border-radius: 999px;
+          border: 1px solid rgba(45,212,191,0.22); animation: clarkPulse 1.6s ease-out infinite;
+        }
+        @keyframes clarkDotA { 0%,100%{ transform: translate(0,0) scale(1);} 50% { transform: translate(2px,-2px) scale(1.18);} }
+        @keyframes clarkDotB { 0%,100%{ transform: translate(0,0) scale(1);} 50% { transform: translate(-2px,2px) scale(1.16);} }
+        @keyframes clarkPulse { 0%{ transform: scale(.94); opacity:.7;} 100%{ transform: scale(1.08); opacity:0;} }
+        @media (prefers-reduced-motion: reduce) {
+          .clark-orb-dot, .clark-orb-shell.thinking::after { animation: none !important; }
+        }
         @media (max-width: 1080px) {
           .clark-main-grid { grid-template-columns: 1fr; }
           .clark-mode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -309,12 +352,7 @@ function ClarkAiContent() {
       <div className='clark-shell clark-grid-bg'>
         <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', marginBottom: '14px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={orbShellStyle}>
-              <div style={orbCoreStyle}>
-                <span style={orbEyeLeftStyle} />
-                <span style={orbEyeRightStyle} />
-              </div>
-            </div>
+            <ClarkOrb />
             <div>
               <h1 style={{ margin: 0, fontSize: '26px', letterSpacing: '-0.02em', color: '#e2e8f0' }}>Clark AI</h1>
               <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#94a3b8' }}>Base-native AI analyst for tokens, wallets, and on-chain risk.</p>
@@ -366,12 +404,7 @@ function ClarkAiContent() {
                 <div style={{ height: '360px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.10)', background: 'linear-gradient(180deg, rgba(2,6,23,0.58), rgba(2,6,23,0.80))', padding: '12px', overflowY: 'auto' }}>
                   {messages.length === 0 ? (
                     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: '#94a3b8' }}>
-                      <div style={{ ...orbShellStyle, width: '58px', height: '58px', marginBottom: '10px', boxShadow: '0 0 20px rgba(139,92,246,0.4), 0 0 34px rgba(45,212,191,0.22)' }}>
-                        <div style={{ ...orbCoreStyle, border: '1px solid rgba(255,255,255,0.14)' }}>
-                          <span style={{ ...orbEyeLeftStyle, left: '18px', top: '26px' }} />
-                          <span style={{ ...orbEyeRightStyle, right: '18px', top: '26px' }} />
-                        </div>
-                      </div>
+                      <div style={{ marginBottom: '10px' }}><ClarkOrb size={58} /></div>
                       <p style={{ margin: 0, fontSize: '14px', color: '#cbd5e1' }}>Import a token, paste a wallet, or ask Clark what’s moving on Base.</p>
                       <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#94a3b8' }}>
                         Clark can explain token quality, wallet behavior, contract risk, and Base Radar signals.
@@ -386,14 +419,20 @@ function ClarkAiContent() {
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      {messages.map((msg, idx) => (
-                        <div key={idx} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '88%', padding: '10px 11px', borderRadius: '12px', border: '1px solid', borderColor: msg.role === 'user' ? 'rgba(45,212,191,0.35)' : 'rgba(148,163,184,0.20)', background: msg.role === 'user' ? 'rgba(45,212,191,0.14)' : 'rgba(15,23,42,0.72)' }}>
+                      {messages.map((msg, idx) => {
+                        const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
+                        return (<div key={idx} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '88%', padding: '10px 11px', borderRadius: '12px', border: '1px solid', borderColor: msg.role === 'user' ? 'rgba(45,212,191,0.35)' : 'rgba(148,163,184,0.20)', background: msg.role === 'user' ? 'rgba(45,212,191,0.14)' : 'rgba(15,23,42,0.72)' }}>
                           <p style={{ margin: '0 0 4px', fontSize: '10px', color: msg.role === 'user' ? '#99f6e4' : '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>
                             {msg.role === 'user' ? 'YOU' : 'CLARK'}
                           </p>
+                          {isThinking && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                              <ClarkOrb size={24} thinking />
+                              <span style={{ fontSize: '12px', color: '#94a3b8' }}>Clark is thinking…</span>
+                            </div>
+                          )}
                           <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.45, color: '#e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{msg.text}</p>
-                        </div>
-                      ))}
+                        </div>)})}
                     </div>
                   )}
                 </div>
@@ -513,41 +552,6 @@ const pageStyle: CSSProperties = {
     'radial-gradient(circle at 12% 12%, rgba(45,212,191,0.16), transparent 40%), radial-gradient(circle at 86% 10%, rgba(236,72,153,0.14), transparent 40%), radial-gradient(circle at 60% 0%, rgba(139,92,246,0.20), transparent 36%), linear-gradient(180deg, #030712 0%, #040815 45%, #030611 100%)',
 }
 
-const orbShellStyle: CSSProperties = {
-  width: '44px',
-  height: '44px',
-  borderRadius: '999px',
-  position: 'relative',
-  background: 'conic-gradient(from 180deg, #2DD4BF, #8B5CF6, #EC4899, #2DD4BF)',
-  padding: '2px',
-  boxShadow: '0 0 24px rgba(139,92,246,0.35), 0 0 32px rgba(45,212,191,0.25)',
-}
-
-const orbCoreStyle: CSSProperties = {
-  width: '100%',
-  height: '100%',
-  borderRadius: '999px',
-  background: 'radial-gradient(circle at 50% 40%, rgba(255,255,255,0.11), rgba(15,23,42,0.95) 50%, rgba(2,6,23,1) 75%)',
-  border: '1px solid rgba(255,255,255,0.10)',
-  position: 'relative',
-}
-
-const orbEyeLeftStyle: CSSProperties = {
-  position: 'absolute',
-  width: '6px',
-  height: '6px',
-  borderRadius: '50%',
-  background: '#e0f2fe',
-  left: '13px',
-  top: '18px',
-  boxShadow: '0 0 12px rgba(224,242,254,0.9)',
-}
-
-const orbEyeRightStyle: CSSProperties = {
-  ...orbEyeLeftStyle,
-  left: 'auto',
-  right: '13px',
-}
 
 const chipButtonStyle: CSSProperties = {
   borderRadius: '999px',

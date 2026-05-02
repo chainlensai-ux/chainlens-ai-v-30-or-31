@@ -41,7 +41,7 @@ function TerminalPageContent() {
       `}</style>
 
       <div
-        className="flex min-h-dvh w-full max-w-full overflow-x-hidden overflow-y-hidden terminal-shell"
+        className="flex h-dvh min-h-dvh w-full max-w-full overflow-hidden terminal-shell"
         style={{ position: 'relative' }}
       >
         {/* Neon ambient glow — fixed, behind everything */}
@@ -62,8 +62,8 @@ function TerminalPageContent() {
         />
 
         <main
-          className="flex-1 overflow-y-auto min-w-0 flex flex-col mob-terminal-main"
-          style={{ position: 'relative', zIndex: 1 }}
+          className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden mob-terminal-main"
+          style={{ position: 'relative', zIndex: 1, height: '100dvh' }}
         >
           <HeroSection
             onTyping={setIsTyping}

@@ -14,6 +14,34 @@ interface MergedToken {
   change24h: number | null;
   source: string;
 }
+
+function parseNumeric(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.toLowerCase() === "nan") return null;
+    const normalized = trimmed.replace(/[$,\s]/g, "");
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function pickVolume(pool: GTPool): number | null {
+  const attrs = pool.attributes;
+  const candidates = [
+    attrs?.volume_usd?.h24,
+    (attrs as { volume_usd?: unknown } | undefined)?.volume_usd,
+    (attrs as { h24_volume_usd?: unknown } | undefined)?.h24_volume_usd,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = parseNumeric(candidate);
+    if (parsed !== null) return parsed;
+  }
+
+  return null;
+}
 type GTPool = {
   relationships?: { base_token?: { data?: { id?: string } } }
   attributes?: {
@@ -74,10 +102,10 @@ function normalizeGT(pool: GTPool, included: Array<{ id?: string; attributes?: {
       symbol: meta.symbol,
       name: meta.name,
       chain: "base",
-      price: Number(pool.attributes?.base_token_price_usd) || null,
-      liquidity: Number(pool.attributes?.reserve_in_usd) || null,
-      volume: Number(pool.attributes?.volume_usd?.h24) || null,
-      change24h: Number(pool.attributes?.price_change_percentage?.h24) || null,
+      price: parseNumeric(pool.attributes?.base_token_price_usd),
+      liquidity: parseNumeric(pool.attributes?.reserve_in_usd),
+      volume: pickVolume(pool),
+      change24h: parseNumeric(pool.attributes?.price_change_percentage?.h24),
       source: "geckoterminal",
     };
   } catch {
