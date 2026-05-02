@@ -58,7 +58,10 @@ export async function GET(req: NextRequest) {
       .order('occurred_at', { ascending: false })
       .limit(limit)
 
-    if (minUsd !== null) query = query.gte('amount_usd', minUsd)
+    // Only apply the minimum-usd filter when value is explicitly > 0.
+    // minUsd = 0 means "All" — do not filter, which also preserves rows
+    // where amount_usd IS NULL (webhook and sync rows with unknown value).
+    if (minUsd !== null && minUsd > 0) query = query.gte('amount_usd', minUsd)
     if (type) query = query.eq('alert_type', type)
     if (side) query = query.eq('side', side)
     if (severity) query = query.eq('severity', severity)
@@ -76,13 +79,20 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500 })
     }
 
+    const returnedAlerts = alertsRes.data ?? []
     return NextResponse.json({
-      alerts: alertsRes.data ?? [],
+      alerts: returnedAlerts,
       stats: {
         alerts15m: count15m.count ?? 0,
         alerts1h: count1h.count ?? 0,
         alerts24h: count24h.count ?? 0,
         trackedWallets: trackedCount.count ?? 0,
+      },
+      diagnostics: {
+        returnedCount: returnedAlerts.length,
+        appliedWindow: selectedWindow,
+        appliedMinUsd: minUsd ?? 0,
+        filtersActive: { type: type ?? null, side: side ?? null, severity: severity ?? null },
       },
     })
   } catch (error) {
