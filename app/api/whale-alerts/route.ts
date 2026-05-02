@@ -51,10 +51,15 @@ export async function GET(req: NextRequest) {
 
     const windowStartIso = new Date(Date.now() - WINDOW_MS[selectedWindow]).toISOString()
 
+    // Exclude zero-value internal ETH noise: rows where token_symbol='ETH' AND
+    // token_address IS NULL AND amount_token=0 are all spam from Alchemy internal calls.
+    // The OR filter keeps any row where at least one of the three noise conditions is absent,
+    // so real ERC-20 transfers and real native ETH with value > 0 both pass through.
     let query = supabase
       .from('whale_alerts')
       .select('*')
       .gte('occurred_at', windowStartIso)
+      .or('token_symbol.neq.ETH,token_address.not.is.null,amount_token.neq.0')
       .order('occurred_at', { ascending: false })
       .limit(limit)
 

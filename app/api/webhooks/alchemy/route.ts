@@ -37,6 +37,7 @@ type SkipReasons = {
   duplicate: number
   insert_failed: number
   missing_required_fields: number
+  zero_value_internal: number
 }
 
 function makeSkipReasons(): SkipReasons {
@@ -47,6 +48,7 @@ function makeSkipReasons(): SkipReasons {
     duplicate: 0,
     insert_failed: 0,
     missing_required_fields: 0,
+    zero_value_internal: 0,
   }
 }
 
@@ -151,6 +153,17 @@ export async function POST(request: Request) {
     const tokenSymbol  = item.asset ?? null
     const tokenAddress = item.rawContract?.address ?? null
     const amountToken  = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value : null
+
+    // Skip zero-value internal/native ETH noise: no contract address, ETH symbol,
+    // category "internal", or zero/missing value. Real native ETH transfers with
+    // value > 0 are kept; ERC-20 tokens always have a contract address so pass through.
+    const isNativeEth = tokenAddress === null && (tokenSymbol === 'ETH' || tokenSymbol === null)
+    const isInternal  = item.category === 'internal'
+    const isZeroValue = amountToken === null || amountToken === 0
+    if ((isNativeEth && isZeroValue) || isInternal) {
+      skipReasons.zero_value_internal += matches.length
+      continue
+    }
 
     for (const match of matches) {
       if (!txHash) {
