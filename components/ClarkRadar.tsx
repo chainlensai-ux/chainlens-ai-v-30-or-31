@@ -121,6 +121,33 @@ interface ClarkRadarProps {
   pendingMessage?: string | null
 }
 
+// Renders a Clark response with section labels (e.g. "Verdict:", "Risk:") highlighted in cyan.
+function ClarkMessage({ text }: { text: string }) {
+  const LABEL_RE = /^([A-Z][^\n:]{0,22}):\s*/
+  return (
+    <div>
+      {text.split('\n').map((line, i) => {
+        const m = line.match(LABEL_RE)
+        const isLabel = m != null && m[1].trim().split(/\s+/).length <= 3 && !/[,;.!?]/.test(m[1])
+        if (isLabel && m) {
+          const rest = line.slice(m[0].length)
+          return (
+            <div key={i} style={{ lineHeight: 1.7 }}>
+              <span style={{ color: '#5eead4', fontWeight: 600, fontSize: '11.5px' }}>{m[1]}:</span>
+              {rest ? ` ${rest}` : ''}
+            </div>
+          )
+        }
+        return (
+          <div key={i} style={{ lineHeight: 1.7, height: line ? undefined : '6px' }}>
+            {line}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessage }: ClarkRadarProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -346,9 +373,6 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           opacity: 0; transform: scale(.95); pointer-events: none;
         }
         .clark-orb-thinking::before { animation: clarkRadarPulse 1.8s ease-in-out infinite; opacity: 1; }
-        .clark-msg p { margin: 0; }
-        .clark-msg strong { color: #e2e8f0; font-weight: 600; }
-        .clark-msg-label { color: #c4b5fd; font-weight: 600; letter-spacing: 0.01em; }
         @media (prefers-reduced-motion: reduce) {
           .clark-orb, .clark-orb::before, .radar-dot, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
         }
@@ -394,7 +418,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         >
           {/* Left — icon + title */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-            <ClarkOrb size={26} className="clark-orb" style={{ flexShrink: 0 }} />
+            <ClarkOrb size={26} className="clark-orb" thinking={loading} style={{ flexShrink: 0 }} />
             <span
               style={{
                 fontSize: '13px',
@@ -481,7 +505,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
               }}
             >
               {/* Orb */}
-              <ClarkOrb size={44} className="clark-orb" style={{ boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)' }} />
+              <ClarkOrb size={52} className="clark-orb" style={{ boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)' }} />
 
               <div>
                 <p
@@ -541,33 +565,39 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     borderRadius: msg.role === 'user'
                       ? '12px 12px 3px 12px'
                       : '12px 12px 12px 3px',
-                    background: msg.role === 'user'
+                    background: msg.text === 'Clark is thinking...'
+                      ? 'rgba(45,212,191,0.04)'
+                      : msg.role === 'user'
                       ? 'rgba(45,212,191,0.10)'
                       : 'rgba(123,92,255,0.10)',
-                    border: `1px solid ${msg.role === 'user'
+                    border: `1px solid ${msg.text === 'Clark is thinking...'
+                      ? 'rgba(45,212,191,0.12)'
+                      : msg.role === 'user'
                       ? 'rgba(45,212,191,0.18)'
                       : 'rgba(123,92,255,0.18)'}`,
-                    color: msg.text === 'Clark is thinking...'
-                      ? 'rgba(255,255,255,0.40)'
-                      : '#dde4f0',
+                    color: msg.text === 'Clark is thinking...' ? 'rgba(255,255,255,0.45)' : '#dde4f0',
                     fontSize: '12px',
-                    lineHeight: 1.65,
-                    fontFamily: msg.text.startsWith('{') || msg.text.startsWith('[')
+                    lineHeight: 1.7,
+                    fontFamily: (msg.text.startsWith('{') || msg.text.startsWith('['))
                       ? 'var(--font-plex-mono)'
                       : 'var(--font-inter), Inter, sans-serif',
-                    whiteSpace: 'pre-wrap',
+                    whiteSpace: (msg.text.startsWith('{') || msg.text.startsWith('[')) ? 'pre-wrap' : undefined,
                     wordBreak: 'break-word',
                     overflowWrap: 'anywhere',
                   }}>
-                    {msg.text === 'Clark is thinking...' ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
-                        <ClarkOrb size={16} className="clark-orb" thinking />
-                        Clark is thinking
-                        <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
-                        <span className="radar-dot">.</span>
-                        <span className="radar-dot">.</span>
-                      </span>
-                    ) : msg.role === 'clark' ? msg.text.split('\n').map((line, idx) => { const cleaned = line.trimStart(); const labels = ["Clark's read:", 'Next:', 'Top movers', 'Verdict:', 'Risk:']; const hit = labels.find((l) => cleaned.toLowerCase().startsWith(l.toLowerCase())); return <p key={idx}>{hit ? <><span className='clark-msg-label'>{line.slice(0, line.indexOf(':') + 1)}</span>{line.slice(line.indexOf(':') + 1)}</> : line || <span>&nbsp;</span>}</p> }) : msg.text}
+                    {msg.text === 'Clark is thinking...'
+                      ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                          Clark is thinking
+                          <span className="radar-dot" style={{ marginLeft: '2px' }}>.</span>
+                          <span className="radar-dot">.</span>
+                          <span className="radar-dot">.</span>
+                        </span>
+                      )
+                      : (msg.text.startsWith('{') || msg.text.startsWith('['))
+                      ? msg.text
+                      : <ClarkMessage text={msg.text} />
+                    }
                   </div>
                 </div>
               ))}
