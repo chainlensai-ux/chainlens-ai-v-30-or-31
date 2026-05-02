@@ -25,20 +25,44 @@ interface MergedToken {
   source: string
 }
 
+function parseNumeric(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed || trimmed.toLowerCase() === 'nan') return null
+    const parsed = Number(trimmed.replace(/[$,\s]/g, ''))
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function formatUsd(value: unknown): string {
+  const numeric = parseNumeric(value)
+  if (!isFiniteNumber(numeric)) return 'Unverified'
+  if (numeric >= 1_000_000) return `$${(numeric / 1_000_000).toFixed(2)}M`
+  if (numeric >= 1_000) return `$${(numeric / 1_000).toFixed(1)}K`
+  if (numeric >= 1) return `$${numeric.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+  return `$${numeric.toLocaleString(undefined, { maximumFractionDigits: 4 })}`
+}
+
 function TokenCard({ data }: { data: DexPair }) {
-  const change = data.priceChange?.h24 ?? 0
+  const change = parseNumeric(data.priceChange?.h24) ?? 0
   const changeColor = change > 0 ? '#2DD4BF' : change < 0 ? '#f87171' : 'rgba(255,255,255,0.40)'
-  const price = data.priceUsd ? `$${Number(data.priceUsd).toFixed(6)}` : '—'
-  const vol = data.volume?.h24
-    ? `$${Number(data.volume.h24).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-    : '—'
+  const priceNumeric = parseNumeric(data.priceUsd)
+  const price = isFiniteNumber(priceNumeric) ? `$${priceNumeric.toFixed(6)}` : '—'
+  const vol = formatUsd(data.volume?.h24)
 
   return (
     <div
       style={{
         display: 'grid',
         gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
-        padding: '8px 16px',
+        padding: '0 16px',
+        minHeight: '44px',
         borderBottom: '1px solid rgba(255,255,255,0.03)',
         alignItems: 'center',
       }}
@@ -55,7 +79,7 @@ function TokenCard({ data }: { data: DexPair }) {
       <span style={{ fontSize: '11px', color: changeColor, fontFamily: 'var(--font-plex-mono)' }}>
         {change !== 0 ? `${change > 0 ? '+' : ''}${change.toFixed(2)}%` : '—'}
       </span>
-      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-plex-mono)' }}>
+      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {vol}
       </span>
     </div>
@@ -101,7 +125,7 @@ export default function HomeTokenScreener() {
         .screener-scroll { scrollbar-width: thin; scrollbar-color: rgba(45,212,191,0.18) transparent; }
       `}</style>
 
-      <section style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, minHeight: 0 }}>
+      <section style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, minHeight: 0, width: '100%', maxWidth: '100%', overflowX: 'hidden' }}>
         <div
           style={{
             flex: 1,
@@ -114,6 +138,7 @@ export default function HomeTokenScreener() {
             backdropFilter: 'blur(12px)',
             WebkitBackdropFilter: 'blur(12px)',
             overflow: 'hidden',
+            height: '100%',
             boxShadow: [
               '0 0 20px rgba(45,212,191,0.05)',
               '0 0 12px rgba(139,92,246,0.04)',
@@ -153,7 +178,7 @@ export default function HomeTokenScreener() {
           </div>
 
           {/* Column headers */}
-          <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', padding: '6px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+          <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', padding: '8px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)', minHeight: '34px', alignItems: 'center' }}>
             {COLS.map(col => (
               <span key={col} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', color: '#3e5c78', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 {col}
@@ -170,6 +195,7 @@ export default function HomeTokenScreener() {
               minHeight: 0,
               display: 'flex',
               flexDirection: 'column',
+              maxHeight: '100%',
             }}
           >
             <div style={{ padding: '4px 16px', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em', color: lastUpdate ? '#2DD4BF' : 'rgba(255,255,255,0.22)', flexShrink: 0 }}>
