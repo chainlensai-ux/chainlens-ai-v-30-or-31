@@ -51,15 +51,25 @@ export async function GET(req: NextRequest) {
 
     const windowStartIso = new Date(Date.now() - WINDOW_MS[selectedWindow]).toISOString()
 
-    // Exclude zero-value internal ETH noise: rows where token_symbol='ETH' AND
-    // token_address IS NULL AND amount_token=0 are all spam from Alchemy internal calls.
-    // The OR filter keeps any row where at least one of the three noise conditions is absent,
-    // so real ERC-20 transfers and real native ETH with value > 0 both pass through.
+    // Keep only meaningful token movements. A row passes if ANY branch matches:
+    //   1. amount_token IS NULL  — sync rows where token amount is unknown (keep them)
+    //   2. USDC with amount >= 100
+    //   3. WETH or ETH with amount >= 0.01
+    //   4. Any other named token with amount > 0
+    //   5. Null-symbol token with amount > 0 (unknown asset, but has a real value)
+    // Thresholds mirror the webhook insert filter so future inserts stay consistent.
+    const meaningfulFilter =
+      'amount_token.is.null,' +
+      'and(token_symbol.eq.USDC,amount_token.gte.100),' +
+      'and(token_symbol.in.(WETH,ETH),amount_token.gte.0.01),' +
+      'and(token_symbol.neq.USDC,token_symbol.neq.WETH,token_symbol.neq.ETH,token_symbol.not.is.null,amount_token.gt.0),' +
+      'and(token_symbol.is.null,amount_token.gt.0)'
+
     let query = supabase
       .from('whale_alerts')
       .select('*')
       .gte('occurred_at', windowStartIso)
-      .or('token_symbol.neq.ETH,token_address.not.is.null,amount_token.neq.0')
+      .or(meaningfulFilter)
       .order('occurred_at', { ascending: false })
       .limit(limit)
 
@@ -73,13 +83,9 @@ export async function GET(req: NextRequest) {
 
     const [alertsRes, count15m, count1h, count24h, trackedCount] = await Promise.all([
       query,
-      // Phase 2 TODO: deduplicate by tx_hash at insert time to eliminate inflated
-      // counts from high-frequency internal ETH events (amount_token=0) that Alchemy
-      // fires for every internal call across tracked wallets.
-      // For now, exclude zero-value rows from stats counts only; feed is unaffected.
-      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['15m']).toISOString()).or('amount_token.is.null,amount_token.gt.0'),
-      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or('amount_token.is.null,amount_token.gt.0'),
-      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or('amount_token.is.null,amount_token.gt.0'),
+      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['15m']).toISOString()).or(meaningfulFilter),
+      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter),
+      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter),
       supabase.from('tracked_wallets').select('id', { count: 'exact', head: true }).eq('is_active', true),
     ])
 

@@ -38,6 +38,7 @@ type SkipReasons = {
   insert_failed: number
   missing_required_fields: number
   zero_value_internal: number
+  below_symbol_threshold: number
 }
 
 function makeSkipReasons(): SkipReasons {
@@ -49,7 +50,18 @@ function makeSkipReasons(): SkipReasons {
     insert_failed: 0,
     missing_required_fields: 0,
     zero_value_internal: 0,
+    below_symbol_threshold: 0,
   }
+}
+
+// Symbol-aware minimum thresholds. amount=null means value is unknown — keep it.
+// USDC: 100 tokens (~$100). WETH/ETH: 0.01 tokens (~$25+). Everything else: any positive amount.
+function isBelowSymbolThreshold(symbol: string | null, amount: number | null): boolean {
+  if (amount === null) return false
+  const sym = symbol?.toUpperCase() ?? ''
+  if (sym === 'USDC') return amount < 100
+  if (sym === 'WETH' || sym === 'ETH') return amount < 0.01
+  return amount <= 0
 }
 
 function severityFromUsd(usd: number | null): string | null {
@@ -162,6 +174,12 @@ export async function POST(request: Request) {
     const isZeroValue = amountToken === null || amountToken === 0
     if ((isNativeEth && isZeroValue) || isInternal) {
       skipReasons.zero_value_internal += matches.length
+      continue
+    }
+
+    // Skip dust/micro transfers below symbol-aware thresholds.
+    if (isBelowSymbolThreshold(tokenSymbol, amountToken)) {
+      skipReasons.below_symbol_threshold += matches.length
       continue
     }
 
