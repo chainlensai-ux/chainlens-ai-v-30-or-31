@@ -68,9 +68,13 @@ export async function GET(req: NextRequest) {
 
     const [alertsRes, count15m, count1h, count24h, trackedCount] = await Promise.all([
       query,
-      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['15m']).toISOString()),
-      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()),
-      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()),
+      // Phase 2 TODO: deduplicate by tx_hash at insert time to eliminate inflated
+      // counts from high-frequency internal ETH events (amount_token=0) that Alchemy
+      // fires for every internal call across tracked wallets.
+      // For now, exclude zero-value rows from stats counts only; feed is unaffected.
+      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['15m']).toISOString()).or('amount_token.is.null,amount_token.gt.0'),
+      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or('amount_token.is.null,amount_token.gt.0'),
+      supabase.from('whale_alerts').select('id', { count: 'exact', head: true }).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or('amount_token.is.null,amount_token.gt.0'),
       supabase.from('tracked_wallets').select('id', { count: 'exact', head: true }).eq('is_active', true),
     ])
 
