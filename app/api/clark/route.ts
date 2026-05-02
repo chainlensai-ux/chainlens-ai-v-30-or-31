@@ -407,6 +407,7 @@ function resolveClarkContext(message: string, history: ClarkRequestBody["history
   const marketText = historyLines.slice(-3).join("\n");
   const lastMarketSymbols = [...marketText.matchAll(/\b[A-Z]{2,6}\b/g)].map((m) => m[0]).slice(0, 5);
   const followupWords = /\b(it|this|this token|this wallet|what about|go deeper|why|is it safe|dev wallet|liquidity|holders|risks|more)\b/i.test(normalized);
+  const shortFollowup = /^(go|next|continue|deeper|full report|why|is it risky|what should i watch)$/i.test(normalized);
   const lastIntent: ClarkPlannerIntent | "unknown" =
     /CLARK FULL REPORT|Bull case|Bear case/i.test(marketText) ? "token_full_report_request" :
     /Which Base token should I run the full report on/i.test(marketText) ? "token_full_report_request" :
@@ -423,7 +424,7 @@ function resolveClarkContext(message: string, history: ClarkRequestBody["history
     lastWallet,
     lastMarketSymbols,
     lastIntent,
-    userWantsFollowup: followupWords,
+    userWantsFollowup: followupWords || shortFollowup,
     explicitAddress,
     explicitSymbol,
     questionType,
@@ -458,6 +459,7 @@ function classifyClarkQuestionType(
   if (/(good wallet|worth tracking|copy trade|smart money|wallet quality|is this a good wallet)/.test(normalized) && (ctx.explicitAddress || ctx.lastWallet || ctx.followupWords)) return "wallet_quality";
   if (/copy trade|wallet worth tracking|why is this wallet worth tracking/.test(normalized)) return "wallet_strategy";
   if (/compare .*wallet/.test(normalized)) return "compare_request";
+  if (/^(go|next|continue|deeper|full report|why|is it risky|what should i watch)$/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_scan";
   if (/scan|check|token scan|contract/.test(normalized) || ctx.explicitAddress || ctx.explicitSymbol) return "token_scan";
   return "unknown_general";
 }
@@ -2477,8 +2479,17 @@ type ClarkFullReportEvidence = {
     volume24h: number | null;
     liquidity: number | null;
     fdv: number | null;
+    marketCap: number | null;
     poolAge: string | null;
     marketSourceAvailable: boolean;
+  };
+  holders: {
+    holderCount: number | null;
+    holderRows: number | null;
+    topHolderPct: number | null;
+    top10Pct: number | null;
+    status: string | null;
+    reason: string | null;
   };
   contract: {
     openSource: boolean | null;
@@ -2533,7 +2544,7 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   const tokenAddress = evidence.tokenScan?.token?.address ?? evidence.liquidity?.token?.address ?? resolvedAddress ?? null;
   const tokenName = evidence.tokenScan?.token?.name ?? evidence.liquidity?.token?.name ?? null;
   const tokenSymbol = evidence.tokenScan?.token?.symbol ?? evidence.liquidity?.token?.symbol ?? null;
-  const market = evidence.tokenScan?.market ?? { price: null, change24h: null, volume24h: null, liquidity: null };
+  const market = evidence.tokenScan?.market ?? { price: null, change24h: null, volume24h: null, liquidity: null, marketCap: null, fdv: null };
   const contractWarnings = [...(evidence.tokenScan?.warnings ?? [])];
   const devWarnings = [...(evidence.devWallet?.warnings ?? [])];
   const liqWarnings = [...(evidence.liquidity?.warnings ?? [])];
@@ -2548,8 +2559,17 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
       volume24h: market.volume24h,
       liquidity: market.liquidity,
       fdv: null,
+      marketCap: market.marketCap ?? null,
       poolAge: null,
       marketSourceAvailable: market.price != null || market.volume24h != null || market.liquidity != null,
+    },
+    holders: {
+      holderCount: evidence.tokenScan?.holders?.holderCount ?? null,
+      holderRows: evidence.tokenScan?.holders?.holderCount ?? null,
+      topHolderPct: evidence.tokenScan?.holders?.top1 ?? null,
+      top10Pct: evidence.tokenScan?.holders?.top10 ?? null,
+      status: evidence.tokenScan?.holders?.status ?? null,
+      reason: null,
     },
     contract: {
       openSource: null,
@@ -2591,6 +2611,7 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   if (out.contract.sellTax === null) out.missing.push("Sell tax check");
   if (out.contract.transferTax === null) out.missing.push("Transfer tax check");
   if (out.contract.simulationSuccess === null) out.missing.push("Security simulation");
+  if (out.holders.holderCount === null && out.holders.top10Pct === null) out.missing.push("Holder distribution");
   if (out.liquidity.lpLocked === null) out.missing.push("LP lock/control");
   if (out.devWallet.likelyDeployer === null) out.missing.push("Likely deployer identity");
 
@@ -2745,17 +2766,34 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     "Quick read:",
     quickRead,
     "",
-    "Contract/security:",
+    "Market / liquidity:",
+    `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
+    `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
+    `- 24h volume: ${formatUsdShort(report.market.volume24h)}`,
+    `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : "Unavailable"}`,
+    `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
+    "",
+    "Security / simulation:",
     `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? "Not flagged" : "Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
-    `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unverified"}`,
+    `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unavailable"}`,
+    `- Proxy / mint / ownership: ${boolToWord(report.contract.proxy)} / ${boolToWord(report.contract.mintable)} / ${boolToWord(report.devWallet.likelyDeployer ? false : null)}`,
     "",
-    "Signals:",
+    "Holder / distribution:",
+    `- Holder count: ${report.holders.holderCount != null ? formatInt(report.holders.holderCount) : (report.holders.top10Pct != null ? "Holder rows available; total holder count unavailable" : "Unavailable")}`,
+    `- Top holder: ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(2)}%` : "Unavailable"}`,
+    `- Top 10: ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(2)}%` : "Unavailable"}`,
+    `- Status: ${report.holders.status ?? "unavailable"}`,
+    "",
+    "Bull case:",
     ...(signals.length ? signals.map((s) => `- ${s}`) : ["- No strong positive signal confirmed yet."]),
     "",
-    "Risks:",
+    "Bear case:",
     ...(risks.length ? risks.map((r) => `- ${r}`) : ["- No major risk flag confirmed in available fields."]),
+    "",
+    "Missing checks:",
+    ...report.missing.slice(0, 4).map((m) => `- ${m}`),
     "",
     "Next:",
     verdict.nextAction,
@@ -3873,7 +3911,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, mode: "analysis", analysis, intent: plan.intent, toolsUsed };
   }
 
-  if ((replyMode === "analysis" || replyMode === "feature_context") && !resolvedAddress && directIntent.intent !== "token_name_lookup") {
+  if ((replyMode === "analysis" || replyMode === "feature_context") && !resolvedAddress && !plan.followupContext.lastTokenAddress && directIntent.intent !== "token_name_lookup") {
     return {
       feature: "clark-ai",
       chain,
