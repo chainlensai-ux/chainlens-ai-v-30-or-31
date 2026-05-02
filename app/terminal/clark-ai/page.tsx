@@ -173,7 +173,7 @@ function ClarkAiContent() {
 
     try {
       const history = [...messages, { role: 'user', text }]
-        .slice(-30)
+        .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       const res = await fetch('/api/clark', {
         method: 'POST',
