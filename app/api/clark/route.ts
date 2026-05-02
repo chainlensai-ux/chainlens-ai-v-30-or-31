@@ -63,6 +63,9 @@ interface ClarkContext {
 }
 
 type ClarkIntent =
+  | "trading_boundary"
+  | "financial_advice"
+  | "capabilities"
   | "casual_help"
   | "general_market"
   | "educational"
@@ -250,6 +253,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   if (explicitMode === "chat") {
     const { intent, address } = detectIntent(prompt);
     if (intent === "casual_help") return "casual_help";
+    if (intent === "trading_boundary" || intent === "financial_advice" || intent === "capabilities") return "casual_help";
     if (intent === "general_market" || intent === "base_radar") return "general_market";
     if (intent === "educational") return "educational";
     if (intent === "routing_help") return "routing_help";
@@ -273,6 +277,7 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
 
   const { intent, address } = detectIntent(prompt);
   if (intent === "casual_help") return "casual_help";
+  if (intent === "trading_boundary" || intent === "financial_advice" || intent === "capabilities") return "casual_help";
   if (intent === "general_market") return "general_market";
   if (intent === "educational") return "educational";
   if (intent === "routing_help") return "routing_help";
@@ -284,6 +289,40 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
   }
   if (/scan|analyz|check|verdict|risk/.test(t) && address) return "analysis";
   return "unknown";
+}
+
+function buildTradingBoundaryReply(): string {
+  return "I can’t trade, execute swaps, or move funds for you. I can help you analyze token risk, wallet behavior, liquidity, holder concentration, and whale activity so you can make your own decision. If you want, send a CA or wallet and I’ll build a checklist.";
+}
+
+function buildFinancialAdviceReply(prompt: string): string {
+  const subject = extractAddress(prompt) ?? extractTokenLookupQuery(prompt) ?? "this setup";
+  return [
+    `I can’t give direct buy/sell orders on ${subject}.`,
+    "Risk read: treat momentum entries as high-risk until liquidity depth, holder concentration, and deployer behavior are verified.",
+    "Bull case: sustained volume with healthy liquidity and no major contract/deployer red flags.",
+    "Bear case: thin liquidity, concentrated holders, or suspicious privilege/flow signals.",
+    "Missing checks: LP control, top holder concentration, tax/honeypot flags, and recent whale flow.",
+    "What to watch next: volume vs liquidity trend, holder concentration changes, and wallet flow quality.",
+    "Not financial advice.",
+  ].join("\n");
+}
+
+function compactHistory(history: ClarkRequestBody["history"]): Array<{ role: "user" | "assistant"; content: string }> {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map((m) => ({
+      role: (m?.role === "assistant" || m?.role === "clark" ? "assistant" : "user") as "user" | "assistant",
+      content: typeof m?.content === "string" ? m.content.trim() : "",
+    }))
+    .filter((m) => m.content.length > 0)
+    .slice(-10);
+}
+
+function buildHistoryContextText(history: ClarkRequestBody["history"]): string {
+  const compact = compactHistory(history);
+  if (!compact.length) return "";
+  return compact.map((m) => `${m.role === "user" ? "User" : "Clark"}: ${m.content}`).join("\n");
 }
 
 function getHistoryMessages(history: ClarkRequestBody["history"]): string[] {
@@ -3258,6 +3297,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   const liveIntent = detectLiveIntent(prompt);
+  const directIntent = detectIntent(prompt);
+  const historyContext = buildHistoryContextText(body.history);
+
+  if (directIntent.intent === "trading_boundary") {
+    return { feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [], analysis: buildTradingBoundaryReply() };
+  }
+  if (directIntent.intent === "financial_advice") {
+    return { feature: "clark-ai", chain, mode: "casual_help", intent: "strategy", toolsUsed: [], analysis: buildFinancialAdviceReply(prompt) };
+  }
 
   if (liveIntent === "MARKET_OVERVIEW") {
     try {
@@ -3332,7 +3380,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
 
   const replyMode = detectReplyMode(body);
-  const directIntent = detectIntent(prompt);
   const structuredMarketList = extractStructuredMarketItems(body);
   const plan = buildClarkToolPlan({
     message: prompt,
@@ -3347,6 +3394,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     return { feature: "clark-ai", chain, mode: "casual_help", analysis: buildCasualClarkReply(prompt), intent: plan.intent, toolsUsed };
+  }
+  if (directIntent.intent === "capabilities") {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "casual_help",
+      intent: plan.intent,
+      toolsUsed,
+      analysis: "I can scan Base tokens, analyze wallets, explain whale alerts, summarize what’s moving on Base, read liquidity/holder/deployer risk, and explain crypto concepts. I can also help you build watchlists and checklists. I can’t trade, custody funds, or execute transactions.",
+    };
   }
 
   if (replyMode === "educational" || plan.intent === "educational") {
@@ -3774,7 +3831,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     walletScan: evidence.walletSnapshot ?? {},
     analysis: body.context ?? {},
   };
-  const analysis = await callAnthropic(prompt, context);
+  const memoryPrompt = historyContext
+    ? `${prompt}\n\nRecent conversation context (use this for follow-ups like "it", "that", "why", "what about holders/liquidity"; ask one concise clarifying question only if reference is ambiguous):\n${historyContext}`
+    : prompt;
+  const analysis = await callAnthropic(memoryPrompt, context);
   return { feature: "clark-ai", chain, mode: replyMode, analysis, intent: plan.intent, toolsUsed };
 }
 

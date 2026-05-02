@@ -146,7 +146,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       const body = parseMessage(text, clarkMode)
       const requestMode = body.feature === 'clark-ai' ? clarkMode : 'analyst'
       const history = [...messages, { role: 'user', text }]
-        .slice(-30)
+        .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       const res = await fetch(`/api/clark`, {
         method: 'POST',
