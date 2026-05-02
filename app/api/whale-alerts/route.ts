@@ -128,6 +128,34 @@ function collapseRapidRepeats(rows: RawRow[]): RawRow[] {
   return result
 }
 
+// Derive a signal quality score from token symbol, amount, and leg count.
+// HIGH: large USDC/WETH/cbBTC move or complex multi-leg transaction.
+// WATCH: moderate move or 2-leg swap.
+// LOW: everything else.
+function computeSignalScore(row: RawRow): string {
+  const sym  = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
+  const amt  = row.amount_token as number | null
+  const legs = (row.legs as number | null) ?? 1
+
+  if (legs >= 3) return 'HIGH'
+  if (legs >= 2) return 'WATCH'
+
+  if (sym === 'USDC' || sym === 'USDT') {
+    if (amt !== null && amt >= 1000) return 'HIGH'
+    if (amt !== null && amt >= 100)  return 'WATCH'
+  }
+  if (sym === 'WETH' || sym === 'ETH') {
+    if (amt !== null && amt >= 0.25) return 'HIGH'
+    if (amt !== null && amt >= 0.01) return 'WATCH'
+  }
+  if (sym === 'CBBTC' || sym === 'WBTC') {
+    if (amt !== null && amt >= 0.01) return 'HIGH'
+    if (amt !== null && amt > 0)     return 'WATCH'
+  }
+
+  return 'LOW'
+}
+
 // Count distinct tx_hash values in a tx_hash-only result set.
 function distinctTxHashCount(data: unknown): number {
   const rows = data as { tx_hash: string | null }[] | null
@@ -204,10 +232,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500 })
     }
 
-    // Pipeline: group by tx+wallet → filter stablecoin noise → collapse rapid repeats → limit
+    // Pipeline: group by tx+wallet → score → filter stablecoin noise → collapse rapid repeats → limit
     const grouped = collapseRapidRepeats(
       filterStablecoinNoise(
-        groupAlertsByTx((alertsRes.data ?? []) as RawRow[])
+        groupAlertsByTx((alertsRes.data ?? []) as RawRow[]).map(row => ({
+          ...row,
+          signal_score: computeSignalScore(row),
+        }))
       )
     ).slice(0, limit)
 
