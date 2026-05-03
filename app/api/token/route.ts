@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -143,30 +144,7 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
   }
 }
 
-async function fetchHoneypot(contract: string, chain: ChainKey): Promise<any> {
-  try {
-    const chainIdMap: Record<ChainKey, number> = {
-      eth:     1,
-      base:    8453,
-      polygon: 137,
-      bnb:     56,
-    };
-    const chainId = chainIdMap[chain];
-    if (!chainId) return null;
-    const res = await fetch(
-      `https://api.honeypot.is/v2/IsHoneypot?address=${contract}&chainID=${chainId}`,
-      { cache: 'no-store' }
-    );
-    if (!res.ok) {
-      console.error('Honeypot.is error:', res.status);
-      return null;
-    }
-    return await res.json();
-  } catch (err) {
-    console.error('Error fetching honeypot.is:', err);
-    return null;
-  }
-}
+const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
 
 async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> {
@@ -309,7 +287,7 @@ export async function POST(req: Request) {
     // Token Scanner is Base-only.
     const chain: ChainKey = "base";
 
-    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpRaw] = await Promise.all([
+    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpResult] = await Promise.all([
       fetchBytecode(chain, contract),
       fetchGoldRush(chain, contract),
       fetchTokenHolders(chain, contract),
@@ -318,7 +296,7 @@ export async function POST(req: Request) {
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
       fetchGoPlus(chain, contract),
-      fetchHoneypot(contract, chain),
+      fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chain]),
     ]);
 
     const analysis = analyzeContract(bytecode);
@@ -356,7 +334,7 @@ BYTECODE ANALYSIS:
 ${JSON.stringify(analysis, null, 2)}
 `;
 
-    const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpRaw);
+    const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok);
     let aiSummary = "Unverified on Base — insufficient data for a risk verdict.";
 
     if (!noActivePools || hasSecurityData) {
@@ -470,9 +448,19 @@ ${JSON.stringify(analysis, null, 2)}
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'unavailable'
     console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] marketCap available', computedMarketCap != null, '[gt-market] fdv available', fdv != null)
-    // ------------------------------
+    // GoPlus fallback security data (used when Honeypot.is is unavailable)
+    const gpResultObj = (gpRaw as Record<string, unknown>)?.result as Record<string, unknown> ?? {};
+    const gpToken = gpResultObj[contract.toLowerCase()] as Record<string, unknown> ?? {};
+    const gpHasData = Object.keys(gpToken).length > 0;
+    const gpHoneypot = gpHasData ? {
+      isHoneypot:        gpToken.is_honeypot != null ? String(gpToken.is_honeypot) === "1" : null,
+      buyTax:            gpToken.buy_tax != null && gpToken.buy_tax !== "" ? Number(gpToken.buy_tax) : null,
+      sellTax:           gpToken.sell_tax != null && gpToken.sell_tax !== "" ? Number(gpToken.sell_tax) : null,
+      transferTax:       gpToken.transfer_tax != null && gpToken.transfer_tax !== "" ? Number(gpToken.transfer_tax) : null,
+      simulationSuccess: null as boolean | null,
+    } : null;
+
     // Final JSON response
-    // ------------------------------
     return NextResponse.json({
       chain,
       contract,
@@ -524,14 +512,19 @@ ${JSON.stringify(analysis, null, 2)}
       // GoPlus security data — keyed by lowercase contract address
       goplus: (gpRaw as Record<string, unknown>)?.result ?? null,
 
-      // Honeypot.is simulation results
-      honeypot: hpRaw ? {
-        isHoneypot:        hpRaw.honeypotResult?.isHoneypot        ?? null,
-        buyTax:            hpRaw.simulationResult?.buyTax           ?? null,
-        sellTax:           hpRaw.simulationResult?.sellTax          ?? null,
-        transferTax:       hpRaw.simulationResult?.transferTax      ?? null,
-        simulationSuccess: hpRaw.simulationSuccess                  ?? false,
-      } : null,
+      // Security simulation — Honeypot.is primary, GoPlus fallback
+      honeypot: hpResult.ok ? {
+        isHoneypot:        hpResult.honeypot,
+        buyTax:            hpResult.buyTax,
+        sellTax:           hpResult.sellTax,
+        transferTax:       hpResult.transferTax,
+        simulationSuccess: hpResult.simulationSuccess,
+      } : gpHoneypot,
+      securityDiagnostics: {
+        honeypotProvider: hpResult.ok ? "ok" : (gpHasData ? "goplus_fallback" : hpResult.honeypotProvider),
+        honeypotSource:   hpResult.ok ? "honeypot.is" : (gpHasData ? "goplus" : "unavailable"),
+        honeypotChecked:  true,
+      },
 
       // Contract analysis
       analysis,

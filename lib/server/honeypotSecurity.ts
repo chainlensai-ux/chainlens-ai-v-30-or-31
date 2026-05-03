@@ -1,6 +1,8 @@
 export type HoneypotSecurityResult = {
   ok: boolean;
   securityStatus: "verified" | "partial" | "unverified";
+  honeypotProvider: "ok" | "unavailable" | "unsupported" | "error";
+  honeypotSource: string;
   honeypot: boolean | null;
   buyTax: number | null;
   sellTax: number | null;
@@ -15,6 +17,8 @@ export type HoneypotSecurityResult = {
 const UNVERIFIED: HoneypotSecurityResult = {
   ok: false,
   securityStatus: "unverified",
+  honeypotProvider: "unavailable",
+  honeypotSource: "honeypot.is",
   honeypot: null,
   buyTax: null,
   sellTax: null,
@@ -47,11 +51,13 @@ function parseBool(value: unknown): boolean | null {
 }
 
 function pickAddress(raw: Record<string, unknown>): string | null {
+  const pair = raw.pair as Record<string, unknown> | undefined;
+  const pairInfo = pair?.pair as Record<string, unknown> | undefined;
   const candidates = [
-    raw.pair?.toString(),
-    (raw.pair as Record<string, unknown> | undefined)?.toString?.(),
-    (raw as { pairAddress?: unknown }).pairAddress,
-    ((raw.pair as Record<string, unknown> | undefined)?.pair as unknown),
+    pairInfo?.address,
+    pair?.address,
+    (raw as Record<string, unknown>).pairAddress,
+    raw.pair_address,
   ];
   for (const c of candidates) {
     if (typeof c === "string" && /^0x[a-fA-F0-9]{40}$/.test(c)) return c;
@@ -97,6 +103,8 @@ function normalize(raw: Record<string, unknown>): HoneypotSecurityResult {
   return {
     ok: securityStatus !== "unverified" || honeypot !== null || buyTax !== null || sellTax !== null,
     securityStatus,
+    honeypotProvider: "ok" as const,
+    honeypotSource: "honeypot.is",
     honeypot,
     buyTax,
     sellTax,
@@ -110,26 +118,41 @@ function normalize(raw: Record<string, unknown>): HoneypotSecurityResult {
 }
 
 export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwork: string | number = "base"): Promise<HoneypotSecurityResult> {
-  if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) return { ...UNVERIFIED, warnings: ["Security simulation unavailable"], ok: false };
+  if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
+    return { ...UNVERIFIED, honeypotProvider: "error", warnings: ["Invalid token address"], ok: false };
+  }
 
   const chainID = chainIdOrNetwork === "base" ? "8453" : String(chainIdOrNetwork || "8453");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-  try {
-    const primary = `https://api.honeypot.is/v2/IsHoneypot?address=${tokenAddress}&chainID=${chainID}`;
-    let response = await fetch(primary, { method: "GET", signal: controller.signal, headers: { "accept": "application/json" }, cache: "no-store" });
+  const endpoint = `/v2/IsHoneypot?address=${tokenAddress}&chainID=${chainID}`;
+  const url = `https://api.honeypot.is${endpoint}`;
 
-    if (!response.ok && chainIdOrNetwork === "base") {
-      const fallback = `https://api.honeypot.is/v2/IsHoneypot?address=${tokenAddress}&chain=base`;
-      response = await fetch(fallback, { method: "GET", signal: controller.signal, headers: { "accept": "application/json" }, cache: "no-store" });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { "accept": "application/json", "user-agent": "ChainLens/1.0" },
+      cache: "no-store",
+    });
+
+    if (response.status === 404 || response.status === 403) {
+      const reason = response.status === 403 ? "unsupported" : "unavailable";
+      console.warn(`[honeypot] ${reason} chainID=${chainID} status=${response.status} endpoint=${endpoint}`);
+      return { ...UNVERIFIED, honeypotProvider: reason as "unsupported" | "unavailable", warnings: ["Honeypot check unavailable for this token"] };
     }
 
-    if (!response.ok) return { ...UNVERIFIED };
+    if (!response.ok) {
+      console.warn(`[honeypot] provider_error chainID=${chainID} status=${response.status} endpoint=${endpoint}`);
+      return { ...UNVERIFIED, honeypotProvider: "error" };
+    }
+
     const json = await response.json();
-    if (!json || typeof json !== "object") return { ...UNVERIFIED };
+    if (!json || typeof json !== "object") return { ...UNVERIFIED, honeypotProvider: "error" };
     return normalize(json as Record<string, unknown>);
   } catch {
-    return { ...UNVERIFIED };
+    console.warn(`[honeypot] provider_error chainID=${chainID} endpoint=${endpoint} (fetch threw)`);
+    return { ...UNVERIFIED, honeypotProvider: "error" };
   } finally {
     clearTimeout(timeout);
   }
