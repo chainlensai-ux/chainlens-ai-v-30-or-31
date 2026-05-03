@@ -26,6 +26,7 @@ export interface RadarToken {
   ageMinutes: number
   liquidityUsd: number
   volume24h: number
+  fdvUsd: number | null
   riskLevel: RiskLevel
   honeypot: HoneypotResult | null
   clarkVerdict: string | null
@@ -132,24 +133,37 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
   }
 }
 
+const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCommonRisk: 'SAFE', dangerCount: 0, cautionCount: 0, safeCount: 0 }
+
 export async function GET() {
+  // Fetch new Base pools (shared cache for beta traffic)
+  let gtResult: Awaited<ReturnType<typeof getOrFetchCached<Record<string, unknown>>>>
   try {
-    // 1. Fetch new Base pools (shared cache for beta traffic)
-    const gtResult = await getOrFetchCached<Record<string, unknown>>({
+    gtResult = await getOrFetchCached<Record<string, unknown>>({
       key: 'coingecko:base-radar',
       ttlMs: 60_000,
       onLog: msg => console.info(`[radar] ${msg}`),
       fetcher: async () => {
-        const gtRes = await fetch(
-          'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=1&include=base_token%2Cquote_token',
-          { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store' }
-        )
-        if (!gtRes.ok) {
-          throw new Error(`GeckoTerminal unavailable (${gtRes.status})`)
+        const ac = new AbortController()
+        const tid = setTimeout(() => ac.abort(), 6000)
+        try {
+          const gtRes = await fetch(
+            'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=1&include=base_token%2Cquote_token',
+            { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: ac.signal }
+          )
+          if (!gtRes.ok) throw new Error(`GeckoTerminal unavailable (${gtRes.status})`)
+          return gtRes.json() as Promise<Record<string, unknown>>
+        } finally {
+          clearTimeout(tid)
         }
-        return gtRes.json() as Promise<Record<string, unknown>>
       },
     })
+  } catch (err) {
+    console.error('[radar] data source unavailable:', err)
+    return NextResponse.json({ tokens: [], stats: EMPTY_STATS, fetchedAt: new Date().toISOString() })
+  }
+
+  try {
 
     const gtData = gtResult.data
     const pools    = Array.isArray(gtData?.data)     ? (gtData.data     as Record<string, unknown>[]) : []
@@ -204,9 +218,10 @@ export async function GET() {
       if (seen.has(key)) continue
       seen.add(key)
 
+      const fdvUsd = parseFloat(String(attrs?.fdv_usd ?? '0')) || null
       candidates.push({
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
-        ageMinutes, liquidityUsd, volume24h, riskLevel: 'SAFE', honeypot: null,
+        ageMinutes, liquidityUsd, volume24h, fdvUsd, riskLevel: 'SAFE', honeypot: null,
       })
     }
 
@@ -251,7 +266,7 @@ export async function GET() {
 
     return NextResponse.json({ tokens, stats, fetchedAt: new Date().toISOString(), warning: gtResult.warning })
   } catch (err) {
-    console.error('[radar] fatal error:', err)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    console.error('[radar] processing error:', err)
+    return NextResponse.json({ tokens: [], stats: EMPTY_STATS, fetchedAt: new Date().toISOString() })
   }
 }
