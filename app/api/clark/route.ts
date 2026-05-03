@@ -2327,7 +2327,9 @@ async function executeClarkToolPlan(input: {
         const tokenJson = tokenData?.ok ? tokenData.json : null;
         const securitySim = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await fetchHoneypotSecurity(addr, "base") : null;
         const t = (tokenJson ?? {}) as Record<string, unknown>;
-        const g = (t.goplus ?? {}) as Record<string, unknown>;
+        // GoPlus result is keyed by lowercase contract address — extract the token-specific entry
+        const gpResultRaw = (t.goplus ?? {}) as Record<string, unknown>;
+        const g = (gpResultRaw[addr.toLowerCase()] ?? gpResultRaw[addr] ?? {}) as Record<string, unknown>;
         const hp = (t.honeypot ?? {}) as Record<string, unknown>;
         const warnings: string[] = [];
         if (!tokenJson) warnings.push("Token scan data is limited right now.");
@@ -2354,7 +2356,9 @@ async function executeClarkToolPlan(input: {
             buyTax: securitySim?.buyTax ?? (typeof hp.buyTax === "number" ? hp.buyTax : (g.buy_tax != null ? Number(g.buy_tax) : null)),
             sellTax: securitySim?.sellTax ?? (typeof hp.sellTax === "number" ? hp.sellTax : (g.sell_tax != null ? Number(g.sell_tax) : null)),
             transferTax: securitySim?.transferTax ?? null,
-            simulationSuccess: securitySim?.simulationSuccess ?? null,
+            simulationSuccess: securitySim?.simulationSuccess
+              ?? (typeof hp.simulationSuccess === "boolean" ? hp.simulationSuccess : null)
+              ?? (securitySim?.ok && (securitySim.buyTax != null || securitySim.sellTax != null) ? true : null),
             securityStatus: securitySim?.securityStatus ?? "unverified",
             riskLevel: securitySim?.riskLevel ?? "unknown",
             missing: securitySim?.missing ?? ["honeypot", "buyTax", "sellTax", "transferTax", "simulationSuccess"],
@@ -2573,8 +2577,8 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
     },
     contract: {
       openSource: null,
-      proxy: null,
-      mintable: null,
+      proxy: evidence.tokenScan?.security.proxy ?? null,
+      mintable: evidence.tokenScan?.security.mintable ?? null,
       buyTax: evidence.tokenScan?.security.buyTax ?? null,
       sellTax: evidence.tokenScan?.security.sellTax ?? null,
       transferTax: evidence.tokenScan?.security.transferTax ?? null,
@@ -2770,11 +2774,11 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
     `- 24h volume: ${formatUsdShort(report.market.volume24h)}`,
-    `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : "Unavailable"}`,
+    `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : "Unavailable — circulating supply not verified"}`,
     `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
     "",
     "Security / simulation:",
-    `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? "Not flagged" : "Unverified"}`,
+    `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? (report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged") : "Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
     `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unavailable"}`,
@@ -2851,13 +2855,13 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
     `- Volume (24h): ${formatUsdShort(report.market.volume24h)}`,
-    `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : report.market.fdv != null ? `Unavailable — FDV around ${formatUsdShort(report.market.fdv)}` : "Unavailable"}`,
+    `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : "Unavailable — circulating supply not verified"}`,
     `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
     `- Pool depth: ${formatUsdShort(report.liquidity.liquidityUsd)}`,
     `- LP control: ${lpControl}`,
     "",
     "Security / simulation:",
-    `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? "Not flagged" : "Unverified"}`,
+    `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? (report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged") : "Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
     `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unavailable"}`,
