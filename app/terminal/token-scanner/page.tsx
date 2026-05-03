@@ -35,6 +35,7 @@ type ScanResult = {
   marketCapUsd?: number | null
   fdvUsd?: number | null
   marketCapSource?: 'geckoterminal' | 'coingecko_terminal' | 'computed' | 'unavailable'
+  marketCapStatus?: string | null
   fdvSource?: 'geckoterminal' | 'coingecko_terminal' | 'unavailable'
   circulatingSupply?: number | null
   pools?: Pool[]
@@ -500,11 +501,12 @@ export default function TerminalTokenScanner() {
           liquidity:      mainPool ? num(attr(mainPool).reserve_in_usd) : null,
           volume24h:      mainPool ? num((attr(mainPool).volume_usd as Record<string, unknown> | undefined)?.h24) : null,
           priceChange24h: mainPool ? num((attr(mainPool).price_change_percentage as Record<string, unknown> | undefined)?.h24) : null,
-          marketCap: num(json.market_cap ?? attr(mainPool).market_cap_usd),
-          marketCapUsd: num(json.marketCapUsd ?? json.market_cap ?? attr(mainPool).market_cap_usd),
+          marketCap: num(json.marketCapUsd),
+          marketCapUsd: num(json.marketCapUsd),
+          marketCapStatus: json.marketCapStatus ?? 'unavailable',
           circulatingSupply: num(json.circulating_supply),
-          fdv: num(json.fdv ?? attr(mainPool).fdv_usd),
-          fdvUsd: num(json.fdvUsd ?? json.fdv ?? attr(mainPool).fdv_usd),
+          fdv: num(json.fdvUsd ?? json.fdv),
+          fdvUsd: num(json.fdvUsd ?? json.fdv),
           marketCapSource: json.marketCapSource ?? 'unavailable',
           fdvSource: json.fdvSource ?? 'unavailable',
           pools: pairs.map((p: Record<string, unknown>) => ({
@@ -722,7 +724,7 @@ export default function TerminalTokenScanner() {
                   <StatCard
                     label='Market Cap'
                     value={result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Unverified'}
-                    helper={result.marketCapUsd != null ? (result.marketCapSource === 'computed' ? 'Computed from price × circulating supply' : 'Live GT data') : 'Circulating supply unavailable'}
+                    helper={result.marketCapUsd != null ? 'Live GT data' : 'Circulating supply unavailable'}
                     accent="#a78bfa"
                   />
                   <StatCard

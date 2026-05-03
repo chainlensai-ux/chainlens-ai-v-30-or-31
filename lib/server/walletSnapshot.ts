@@ -17,6 +17,15 @@ export type WalletSnapshot = {
   txCount: number | null
   firstTxDate: string | null
   walletAgeDays: number | null
+  _diagnostics?: {
+    walletProviderFieldsPresent: {
+      holdings: boolean
+      totalValue: boolean
+      txCount: boolean
+      walletAgeDays: boolean
+    }
+    missingReasons: string[]
+  }
 }
 
 const ZERION_KEY       = process.env.ZERION_KEY!
@@ -139,5 +148,19 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     txCount,
     firstTxDate: firstTxDate?.toISOString() ?? null,
     walletAgeDays,
+    _diagnostics: {
+      walletProviderFieldsPresent: {
+        holdings: holdings.length > 0,
+        totalValue: totalValue > 0,
+        txCount: txCount !== null,
+        walletAgeDays: walletAgeDays !== null,
+      },
+      missingReasons: [
+        holdings.length === 0 ? 'holdings: Zerion returned no positions' : '',
+        totalValue === 0 ? 'totalValue: portfolio endpoint returned zero' : '',
+        txCount === null ? 'txCount: Alchemy nonce unavailable' : '',
+        walletAgeDays === null ? 'walletAgeDays: no first-tx found on ETH or Base' : '',
+      ].filter(Boolean),
+    },
   }
 }

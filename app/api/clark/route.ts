@@ -1124,9 +1124,9 @@ function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["wall
   const risks = [
     snapshot.dustOrUnpricedHidden ? "Dust or unpriced holdings exist and are hidden in this summary" : "Major holdings are mostly priced",
     breadth < 5 ? "Low breadth increases single-asset dependency risk" : "Breadth is acceptable for watchlist monitoring",
-    activity < 10 ? "Low observed activity can indicate low signal quality" : "Observed activity is sufficient for behavior tracking",
+    "Liquidity exposure not calculated for wallet scan",
   ];
-  const read = `This looks like a ${profile}. I can rate it as a watch wallet, not proven smart money, unless timing/PnL evidence is added.`;
+  const read = `This looks like a ${profile}. Based on balance evidence alone, trust signals are incomplete without behavioral confirmation.`;
   const copyTradePrompt = /\bcopy[\s-]?trade\b/i.test(prompt ?? "");
   const nextAction = copyTradePrompt
     ? "Do not copy from balance alone. Track entries/exits, sizing, and repeat behavior first."
@@ -2336,11 +2336,11 @@ async function executeClarkToolPlan(input: {
           ok: Boolean(tokenJson),
           token: tokenJson ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? addr) } : null,
           market: {
-            price: typeof t.price === "number" ? t.price : null,
+            price: typeof t.priceUsd === "number" ? t.priceUsd : (typeof t.price === "number" ? t.price : null),
             change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : null,
-            volume24h: typeof t.volume24h === "number" ? t.volume24h : null,
-            liquidity: typeof t.liquidity === "number" ? t.liquidity : null,
-            marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : (typeof t.market_cap === "number" ? t.market_cap : null),
+            volume24h: typeof t.volume24hUsd === "number" ? t.volume24hUsd : (typeof t.volume24h === "number" ? t.volume24h : null),
+            liquidity: typeof t.liquidityUsd === "number" ? t.liquidityUsd : (typeof t.liquidity === "number" ? t.liquidity : null),
+            marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : null,
             fdv: typeof t.fdvUsd === "number" ? t.fdvUsd : (typeof t.fdv === "number" ? t.fdv : null),
           },
           holders: {
@@ -2558,7 +2558,7 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
       change24h: market.change24h,
       volume24h: market.volume24h,
       liquidity: market.liquidity,
-      fdv: null,
+      fdv: market.fdv ?? null,
       marketCap: market.marketCap ?? null,
       poolAge: null,
       marketSourceAvailable: market.price != null || market.volume24h != null || market.liquidity != null,
@@ -2856,6 +2856,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     `- 24h move: ${report.market.change24h != null ? `${report.market.change24h.toFixed(2)}%` : "Unverified"}`,
     `- Volume: ${formatUsdShort(report.market.volume24h)}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
+    `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : report.market.fdv != null ? `Unavailable — FDV around ${formatUsdShort(report.market.fdv)}` : "Unavailable"}`,
     `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unverified"}`,
     `- Momentum read: ${marketSignal}`,
     "",
