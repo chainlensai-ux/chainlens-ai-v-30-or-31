@@ -24,7 +24,7 @@ type FilterKey = 'ALL' | PumpCategory
 
 const CATEGORY_LABEL: Record<PumpCategory, string> = {
   HIGH_MOMENTUM: 'High Momentum',
-  VOLUME_EXPANSION: 'Volume Expansion',
+  VOLUME_EXPANSION: 'Vol Expansion',
   THIN_MOONSHOT: 'Thin Moonshot',
   WATCH: 'Watch',
 }
@@ -62,10 +62,16 @@ const RISK_BG: Record<PumpRisk, string> = {
   LOW: 'rgba(74,222,128,0.10)',
 }
 
+const RISK_LABEL: Record<PumpRisk, string> = {
+  HIGH: 'HIGH RISK',
+  MEDIUM: 'WATCH RISK',
+  LOW: 'LOWER RISK',
+}
+
 const FILTER_CHIPS: Array<{ key: FilterKey; label: string }> = [
   { key: 'ALL', label: 'All' },
   { key: 'HIGH_MOMENTUM', label: 'High Momentum' },
-  { key: 'VOLUME_EXPANSION', label: 'Volume Expansion' },
+  { key: 'VOLUME_EXPANSION', label: 'Vol Expansion' },
   { key: 'THIN_MOONSHOT', label: 'Thin Moonshot' },
   { key: 'WATCH', label: 'Watch' },
 ]
@@ -88,19 +94,6 @@ function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
 }
 
-function StatCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p style={{ margin: '0 0 2px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.12em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
-        {label}
-      </p>
-      <p style={{ margin: 0, fontSize: '11px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
-        {value}
-      </p>
-    </div>
-  )
-}
-
 function AlertCard({ alert, onScan, onAskClark }: {
   alert: PumpAlert
   onScan: () => void
@@ -113,7 +106,13 @@ function AlertCard({ alert, onScan, onAskClark }: {
   const riskColor = RISK_COLOR[alert.riskLevel]
   const riskBg = RISK_BG[alert.riskLevel]
   const changePositive = (alert.change24h ?? 0) >= 0
-  const avatarText = (alert.symbol || alert.name || '?').slice(0, 2).toUpperCase()
+
+  const stats = [
+    { label: 'Price', value: fmtPrice(alert.priceUsd) },
+    { label: 'Vol 24h', value: fmtUSD(alert.volume24hUsd) },
+    { label: 'Liq', value: fmtUSD(alert.liquidityUsd) },
+    { label: 'FDV', value: fmtUSD(alert.fdvUsd) },
+  ]
 
   return (
     <div
@@ -122,8 +121,8 @@ function AlertCard({ alert, onScan, onAskClark }: {
       style={{
         background: hovered ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.03)',
         border: `1px solid ${hovered ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.08)'}`,
-        borderRadius: '14px',
-        padding: '13px',
+        borderRadius: '10px',
+        padding: '9px 11px',
         transition: 'background 0.15s, border-color 0.15s',
         position: 'relative',
         overflow: 'hidden',
@@ -132,115 +131,91 @@ function AlertCard({ alert, onScan, onAskClark }: {
     >
       <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: catColor, opacity: 0.7 }} />
 
-      {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '9px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
-          <div style={{
-            width: '30px', height: '30px', borderRadius: '50%', flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: '10px', fontWeight: 700, color: '#e2e8f0',
-            background: 'linear-gradient(135deg, rgba(45,212,191,0.22), rgba(168,85,247,0.20))',
-            border: '1px solid rgba(255,255,255,0.14)',
-            fontFamily: 'var(--font-plex-mono)',
-          }}>
-            {avatarText}
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '14px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {alert.name}
-              </span>
-              <span style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>
-                {alert.symbol}
-              </span>
-            </div>
-            <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
-              {shortAddr(alert.contract)}
-            </span>
-          </div>
+      {/* Row 1: identity + change + chips */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '5px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0, overflow: 'hidden' }}>
+          <span style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {alert.name}
+          </span>
+          <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
+            {alert.symbol}
+          </span>
+          <span style={{ fontSize: '9px', color: '#2d3f52', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
+            {shortAddr(alert.contract)}
+          </span>
         </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+          {alert.change24h != null && (
+            <span style={{
+              fontSize: '10px', fontWeight: 700,
+              color: changePositive ? '#4ade80' : '#f87171',
+              fontFamily: 'var(--font-plex-mono)',
+            }}>
+              {changePositive ? '+' : ''}{alert.change24h.toFixed(1)}%
+            </span>
+          )}
           <span style={{
-            padding: '3px 8px', borderRadius: '99px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em',
+            padding: '2px 6px', borderRadius: '99px', fontSize: '8.5px', fontWeight: 700, letterSpacing: '0.06em',
             color: catColor, background: catBg, border: `1px solid ${catBorder}`,
             fontFamily: 'var(--font-plex-mono)',
           }}>
             {CATEGORY_LABEL[alert.category]}
           </span>
           <span style={{
-            padding: '3px 8px', borderRadius: '99px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em',
+            padding: '2px 6px', borderRadius: '99px', fontSize: '8.5px', fontWeight: 700, letterSpacing: '0.06em',
             color: riskColor, background: riskBg, border: `1px solid ${riskColor}33`,
             fontFamily: 'var(--font-plex-mono)',
           }}>
-            {alert.riskLevel}
+            {RISK_LABEL[alert.riskLevel]}
           </span>
         </div>
       </div>
 
-      {/* Stats row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '10px', marginBottom: '9px' }}>
-        <StatCell label='Price' value={fmtPrice(alert.priceUsd)} />
-        <StatCell label='24h Change' value={alert.change24h != null ? `${changePositive ? '+' : ''}${alert.change24h.toFixed(1)}%` : 'N/A'} />
-        <StatCell label='Volume 24h' value={fmtUSD(alert.volume24hUsd)} />
-        <StatCell label='Liquidity' value={fmtUSD(alert.liquidityUsd)} />
-        <StatCell label='FDV' value={fmtUSD(alert.fdvUsd)} />
+      {/* Row 2: inline stats */}
+      <div style={{ display: 'flex', gap: '14px', marginBottom: '5px', flexWrap: 'wrap' }}>
+        {stats.map(s => (
+          <div key={s.label} style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+            <span style={{ fontSize: '8px', fontWeight: 700, color: '#3a5268', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
+              {s.label}
+            </span>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
+              {s.value}
+            </span>
+          </div>
+        ))}
       </div>
 
-      {/* Change highlight */}
-      {alert.change24h != null && (
-        <div style={{
-          display: 'inline-flex', alignItems: 'center',
-          padding: '3px 8px', borderRadius: '6px', marginBottom: '8px',
-          background: changePositive ? 'rgba(74,222,128,0.08)' : 'rgba(248,113,113,0.08)',
-          border: `1px solid ${changePositive ? 'rgba(74,222,128,0.20)' : 'rgba(248,113,113,0.20)'}`,
-          fontSize: '11px', fontWeight: 700,
-          color: changePositive ? '#4ade80' : '#f87171',
-          fontFamily: 'var(--font-plex-mono)',
-        }}>
-          {changePositive ? '▲' : '▼'} {changePositive ? '+' : ''}{alert.change24h.toFixed(1)}% 24h
-        </div>
-      )}
-
-      {/* Reason */}
-      <p style={{
-        margin: '0 0 8px', fontSize: '11px', color: '#94a3b8', lineHeight: 1.4,
-        borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px',
-      }}>
-        {alert.reason}
-      </p>
-
-      {/* Risk note */}
-      {alert.riskLevel === 'HIGH' && (
-        <p style={{ margin: '0 0 8px', fontSize: '10px', color: '#f87171', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.35 }}>
-          ⚠ Thin liquidity — exits may be difficult. Not a recommendation.
+      {/* Row 3: reason + buttons */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+        <p style={{ margin: 0, fontSize: '10.5px', color: '#94a3b8', lineHeight: 1.35, flex: 1, minWidth: 0 }}>
+          {alert.riskLevel === 'HIGH' && <span style={{ color: '#f87171' }}>⚠ </span>}
+          {alert.reason}
+          {alert.riskLevel === 'HIGH' && <span style={{ color: '#f87171', fontSize: '10px' }}> · thin liquidity</span>}
         </p>
-      )}
-
-      {/* Actions */}
-      <div style={{ display: 'flex', gap: '6px' }}>
-        <button
-          onClick={onScan}
-          style={{
-            padding: '5px 12px', borderRadius: '8px', fontSize: '9px', fontWeight: 700,
-            letterSpacing: '0.08em', textTransform: 'uppercase',
-            border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.08)',
-            color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-          }}
-        >
-          Scan Token
-        </button>
-        <button
-          onClick={onAskClark}
-          style={{
-            padding: '5px 12px', borderRadius: '8px', fontSize: '9px', fontWeight: 700,
-            letterSpacing: '0.08em', textTransform: 'uppercase',
-            border: '1px solid rgba(168,85,247,0.28)', background: 'rgba(168,85,247,0.08)',
-            color: '#a855f7', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-          }}
-        >
-          Ask Clark
-        </button>
+        <div style={{ display: 'flex', gap: '5px', flexShrink: 0 }}>
+          <button
+            onClick={onScan}
+            style={{
+              padding: '4px 9px', borderRadius: '6px', fontSize: '8.5px', fontWeight: 700,
+              letterSpacing: '0.07em', textTransform: 'uppercase',
+              border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.08)',
+              color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            }}
+          >
+            Scan
+          </button>
+          <button
+            onClick={onAskClark}
+            style={{
+              padding: '4px 9px', borderRadius: '6px', fontSize: '8.5px', fontWeight: 700,
+              letterSpacing: '0.07em', textTransform: 'uppercase',
+              border: '1px solid rgba(168,85,247,0.28)', background: 'rgba(168,85,247,0.08)',
+              color: '#a855f7', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            }}
+          >
+            Clark
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -337,7 +312,7 @@ export default function PumpAlertsPage() {
       `Volume 24h: ${fmtUSD(alert.volume24hUsd)}`,
       `Liquidity: ${fmtUSD(alert.liquidityUsd)}`,
       `FDV: ${fmtUSD(alert.fdvUsd)}`,
-      `Risk: ${alert.riskLevel}`,
+      `Risk: ${RISK_LABEL[alert.riskLevel]}`,
       `Signal: ${alert.reason}`,
     ].join('\n')
     router.push(`/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`)
@@ -465,15 +440,15 @@ export default function PumpAlertsPage() {
 
         {/* Feed */}
         <div>
-          <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
+          <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px' }}>
             Alerts {filtered.length > 0 && `— ${filtered.length}`}
           </p>
 
           {/* Loading skeletons */}
           {loading && alerts.length === 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {[...Array(4)].map((_, i) => (
-                <div key={i} style={{ height: '130px', borderRadius: '14px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', animation: 'pumpSlideIn 0.3s ease both', animationDelay: `${i * 80}ms` }} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {[...Array(6)].map((_, i) => (
+                <div key={i} style={{ height: '76px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', animation: 'pumpSlideIn 0.3s ease both', animationDelay: `${i * 60}ms` }} />
               ))}
             </div>
           )}
@@ -494,9 +469,9 @@ export default function PumpAlertsPage() {
           )}
 
           {/* Alert cards */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {filtered.map((alert, i) => (
-              <div key={`${alert.contract}-${refreshKey}`} style={{ animationDelay: `${i * 40}ms` }}>
+              <div key={`${alert.contract}-${refreshKey}`} style={{ animationDelay: `${i * 35}ms` }}>
                 <AlertCard
                   alert={alert}
                   onScan={() => openToken(alert.contract)}

@@ -76,11 +76,12 @@ function categorize(
       riskLevel: 'HIGH',
     }
   }
-  if (liq >= 50_000 && vol >= 100_000) {
+  if (liq >= 20_000 && vol >= 15_000) {
+    const volFmt = vol >= 1_000_000 ? `$${(vol / 1_000_000).toFixed(1)}M` : `$${(vol / 1000).toFixed(0)}K`
     return {
       category: 'WATCH',
-      reason: `$${(liq / 1000).toFixed(0)}K liquidity depth with sustained volume`,
-      riskLevel: 'LOW',
+      reason: `$${(liq / 1000).toFixed(0)}K liquidity with ${volFmt} volume`,
+      riskLevel: liq >= 50_000 ? 'LOW' : 'MEDIUM',
     }
   }
   return null
