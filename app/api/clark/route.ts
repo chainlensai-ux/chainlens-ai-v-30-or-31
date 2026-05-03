@@ -2610,7 +2610,9 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   if (out.contract.openSource === null) out.missing.push("Contract open-source verification");
   if (out.contract.proxy === null) out.missing.push("Proxy status");
   if (out.contract.mintable === null) out.missing.push("Mintability");
-  if (out.contract.honeypot === null) out.missing.push("Honeypot check");
+  if (out.contract.honeypot === null) out.missing.push(
+    out.contract.buyTax != null || out.contract.sellTax != null ? "Full sell simulation" : "Honeypot check"
+  );
   if (out.contract.buyTax === null) out.missing.push("Buy tax check");
   if (out.contract.sellTax === null) out.missing.push("Sell tax check");
   if (out.contract.transferTax === null) out.missing.push("Transfer tax check");
@@ -2759,7 +2761,13 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     verdict.verdict === "UNKNOWN" ? "Coverage is too thin for a clean safety call." :
     "This token needs deeper verification before conviction.";
   const signals = dedupeLines(verdict.signals).slice(0, 3);
-  const risks = dedupeLines(verdict.risks).slice(0, 3);
+  const risks = dedupeLines([
+    ...verdict.risks,
+    report.holders.topHolderPct != null ? `Top holder controls ${report.holders.topHolderPct.toFixed(1)}% of supply.` : "",
+    report.holders.top10Pct != null && report.holders.top10Pct > 40 ? `Top 10 holders control ${report.holders.top10Pct.toFixed(1)}% of supply.` : "",
+    report.market.marketCap == null && report.market.fdv != null ? "Market cap unverified — FDV only." : "",
+    report.liquidity.lpLocked === null ? "LP control not confirmed." : "",
+  ]).filter(Boolean).slice(0, 5);
   return [
     "CLARK TOKEN SCAN",
     `Asset: ${name} (${symbol})`,
@@ -2778,7 +2786,7 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
     "",
     "Security / simulation:",
-    `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? (report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged") : "Unverified"}`,
+    `- ${report.contract.honeypot === true ? "Honeypot: Flagged" : report.contract.honeypot === false ? `Honeypot: ${report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged"}` : (report.contract.buyTax != null || report.contract.sellTax != null) ? "Honeypot simulation: Unavailable" : "Honeypot: Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
     `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unavailable"}`,
@@ -2832,8 +2840,11 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     (report.contract.buyTax ?? 0) > 15 || (report.contract.sellTax ?? 0) > 15 ? "High transfer tax present." : "",
     (report.devWallet.linkedWallets ?? 0) > 0 ? `Linked deployer cluster detected (${report.devWallet.linkedWallets}).` : "",
     (report.liquidity.liquidityUsd ?? 0) > 0 && (report.liquidity.liquidityUsd ?? 0) < 20_000 ? "Liquidity depth is thin for clean exits." : "",
-    report.missing.length > 3 ? "Critical evidence gaps across contract/liquidity/deployer checks." : "",
-  ]).filter(Boolean).slice(0, 3);
+    report.holders.topHolderPct != null ? `Top holder controls ${report.holders.topHolderPct.toFixed(1)}% of supply.` : "",
+    report.holders.top10Pct != null && report.holders.top10Pct > 40 ? `Top 10 holders control ${report.holders.top10Pct.toFixed(1)}% of supply.` : "",
+    report.market.marketCap == null && report.market.fdv != null ? "Market cap unverified — FDV only." : "",
+    report.liquidity.lpLocked === null ? "LP control not confirmed." : "",
+  ]).filter(Boolean).slice(0, 5);
 
   const lpControl = report.liquidity.lpLocked === true
     ? "Locked (confirmed)"
@@ -2861,7 +2872,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     `- LP control: ${lpControl}`,
     "",
     "Security / simulation:",
-    `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? (report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged") : "Unverified"}`,
+    `- ${report.contract.honeypot === true ? "Honeypot: Flagged" : report.contract.honeypot === false ? `Honeypot: ${report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged"}` : (report.contract.buyTax != null || report.contract.sellTax != null) ? "Honeypot simulation: Unavailable" : "Honeypot: Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
     `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unavailable"}`,
