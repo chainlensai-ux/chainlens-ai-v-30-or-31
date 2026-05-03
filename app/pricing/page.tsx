@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import Image from 'next/image'
+import Navbar from '@/components/Navbar'
 
 type Plan = {
   id: 'free' | 'pro' | 'elite'
@@ -27,7 +27,6 @@ export default function PricingPage() {
       {/* TODO: Pricing limits displayed here are marketing copy only; backend plan gating/usage enforcement must be validated separately. */}
       <style>{`
         .glass{background:linear-gradient(170deg,rgba(10,17,33,.88),rgba(5,9,20,.82));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.18);border-radius:18px}
-        .nav-pill{border-radius:999px;border:1px solid rgba(125,211,252,.22);background:linear-gradient(120deg,rgba(3,9,24,.86),rgba(14,22,39,.88));box-shadow:0 0 24px rgba(34,211,238,.08),0 0 26px rgba(168,85,247,.08),inset 0 0 0 1px rgba(255,255,255,.04)}
         .cta{display:block;text-align:center;border-radius:11px;padding:12px 14px;font-weight:800;font-size:12px;letter-spacing:.09em;text-decoration:none;transition:.2s transform,.2s box-shadow,.2s opacity}.cta:hover{transform:translateY(-2px)}
         .cta-free{border:1px solid rgba(148,163,184,.36);color:#e2e8f0;background:rgba(15,23,42,.55)}
         .cta-pro{color:#fff;background:linear-gradient(98deg,#7c3aed,#a855f7,#ec4899);box-shadow:0 12px 30px rgba(168,85,247,.55)}
@@ -35,34 +34,21 @@ export default function PricingPage() {
         .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.17;background:repeating-linear-gradient(135deg,rgba(217,70,239,.45) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
         .energy-left{position:absolute;left:-130px;top:120px;width:420px;height:340px;opacity:.12;background:radial-gradient(circle at 25% 50%, rgba(56,189,248,.28), transparent 65%)}
         @media(max-width:1250px){.hero{grid-template-columns:1fr !important}.plan-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}.stats{max-width:340px}.intro{min-height:auto !important}}
-        @media(max-width:860px){.plan-grid{grid-template-columns:1fr !important}.nav-links{display:none}}
+        @media(max-width:860px){.plan-grid{grid-template-columns:1fr !important}}
       `}</style>
 
-      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(7,12,24,0.2) 0%, rgba(3,6,15,0.0) 55%)' }} />
+      <Navbar />
+
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(7,12,24,0.2) 0%, rgba(3,6,15,0.0) 55%)', pointerEvents: 'none' }} />
       <div className='energy-right' />
       <div className='energy-left' />
-      <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 18% 22%, rgba(34,211,238,.22), transparent 35%), radial-gradient(circle at 84% 20%, rgba(217,70,239,.22), transparent 34%), radial-gradient(circle at 60% 8%, rgba(129,140,248,.15), transparent 38%)' }} />
-      <div style={{ position: 'absolute', inset: 'auto -28% -320px -28%', height: 620, background: 'radial-gradient(ellipse at 50% 10%, rgba(11,25,56,.96) 0%, rgba(7,14,33,.92) 38%, rgba(4,8,19,.55) 63%, rgba(3,6,15,.08) 86%, transparent 100%)' }} />
-      <div style={{ position: 'absolute', left: '-24%', right: '-24%', bottom: -255, height: 520, borderTop: '2px solid rgba(56,189,248,.82)', borderRadius: '58% 58% 0 0 / 100% 100% 0 0', boxShadow: '0 -24px 95px rgba(34,211,238,.54), 0 -16px 130px rgba(59,130,246,.32)' }} />
-      <div style={{ position: 'absolute', left: '-20%', right: '-20%', bottom: -276, height: 520, borderTop: '1px solid rgba(217,70,239,.48)', borderRadius: '54% 54% 0 0 / 100% 100% 0 0', boxShadow: '0 -10px 68px rgba(217,70,239,.2)' }} />
-      <div style={{ position: 'absolute', left: '-14%', right: '-14%', bottom: -240, height: 400, background: 'radial-gradient(ellipse at 50% 0%, rgba(34,211,238,.14), rgba(147,197,253,.1) 28%, rgba(217,70,239,.08) 48%, transparent 78%)' }} />
+      <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 18% 22%, rgba(34,211,238,.22), transparent 35%), radial-gradient(circle at 84% 20%, rgba(217,70,239,.22), transparent 34%), radial-gradient(circle at 60% 8%, rgba(129,140,248,.15), transparent 38%)', pointerEvents: 'none' }} />
+      <div style={{ position: 'absolute', inset: 'auto -28% -320px -28%', height: 620, background: 'radial-gradient(ellipse at 50% 10%, rgba(11,25,56,.96) 0%, rgba(7,14,33,.92) 38%, rgba(4,8,19,.55) 63%, rgba(3,6,15,.08) 86%, transparent 100%)', pointerEvents: 'none' }} />
+      <div style={{ position: 'absolute', left: '-24%', right: '-24%', bottom: -255, height: 520, borderTop: '2px solid rgba(56,189,248,.82)', borderRadius: '58% 58% 0 0 / 100% 100% 0 0', boxShadow: '0 -24px 95px rgba(34,211,238,.54), 0 -16px 130px rgba(59,130,246,.32)', pointerEvents: 'none' }} />
+      <div style={{ position: 'absolute', left: '-20%', right: '-20%', bottom: -276, height: 520, borderTop: '1px solid rgba(217,70,239,.48)', borderRadius: '54% 54% 0 0 / 100% 100% 0 0', boxShadow: '0 -10px 68px rgba(217,70,239,.2)', pointerEvents: 'none' }} />
+      <div style={{ position: 'absolute', left: '-14%', right: '-14%', bottom: -240, height: 400, background: 'radial-gradient(ellipse at 50% 0%, rgba(34,211,238,.14), rgba(147,197,253,.1) 28%, rgba(217,70,239,.08) 48%, transparent 78%)', pointerEvents: 'none' }} />
 
-      <div style={{ position: 'relative', zIndex: 2, maxWidth: 1680, margin: '0 auto', padding: '18px 22px 52px' }}>
-        <nav className='nav-pill' style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 22px', marginBottom: 24 }}>
-          <Link href='/' style={{ display: 'flex', alignItems: 'center', gap: 13, textDecoration: 'none' }}>
-            <Image src='/cl-logo.png' alt='ChainLens logo' width={38} height={38} style={{ width: 38, height: 38, objectFit: 'contain' }} priority />
-            <span>
-              <span style={{ display: 'block', fontWeight: 800, letterSpacing: '.005em', lineHeight: 1, fontSize: 22 }}>
-                <span style={{ color: '#f8fafc' }}>Chain</span><span style={{ background: 'linear-gradient(90deg,#7dd3fc,#a78bfa,#e879f9)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Lens</span>
-              </span>
-              <span style={{ display: 'block', fontSize: 10, color: '#67e8f9', marginTop: 2 }}>AI Intelligence</span>
-            </span>
-          </Link>
-          <div className='nav-links' style={{ display: 'flex', gap: 24, color: '#94a3b8', fontSize: 14 }}>
-            <Link href='/dashboard/tokens' style={{ color: 'inherit', textDecoration: 'none' }}>Tools</Link><Link href='/terminal' style={{ color: 'inherit', textDecoration: 'none' }}>Terminal</Link><Link href='/pricing' style={{ color: '#e2e8f0', textDecoration: 'none' }}>Pricing</Link><Link href='/affiliate' style={{ color: 'inherit', textDecoration: 'none' }}>Affiliate</Link><Link href='/about' style={{ color: 'inherit', textDecoration: 'none' }}>About</Link>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}><span style={{ fontSize: 10, borderRadius: 999, border: '1px solid rgba(34,197,94,.45)', padding: '2px 8px', color: '#86efac', background: 'rgba(22,163,74,.12)' }}>LIVE</span><span style={{ fontSize: 11, color: '#67e8f9' }}>Powered by CORTEX</span><Link href='/app' style={{ marginLeft: 8, textDecoration: 'none', padding: '9px 14px', borderRadius: 999, border: '1px solid rgba(45,212,191,.54)', color: '#99f6e4', background: 'rgba(45,212,191,.13)', fontWeight: 700 }}>Get Access</Link></div>
-        </nav>
+      <div style={{ position: 'relative', zIndex: 2, maxWidth: 1680, margin: '0 auto', padding: '24px 22px 52px' }}>
 
         <section className='hero' style={{ display: 'grid', gridTemplateColumns: '1.02fr 2.65fr .72fr', gap: 12, alignItems: 'stretch' }}>
           <div className='intro' style={{ padding: '18px 12px 8px 6px', minHeight: 468 }}>

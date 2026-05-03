@@ -487,22 +487,6 @@ export default function DevWalletPage() {
             background: 'radial-gradient(circle, rgba(45,212,191,0.10), rgba(45,212,191,0))',
             filter: 'blur(2px)',
           }} />
-        {/* Back */}
-        <Link href="/terminal" style={{
-          display: 'inline-flex', alignItems: 'center', gap: '6px',
-          color: 'rgba(255,255,255,0.30)', fontSize: '12px',
-          textDecoration: 'none', marginBottom: '24px',
-          fontFamily: 'var(--font-inter, Inter, sans-serif)',
-        }}
-          onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.70)' }}
-          onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(255,255,255,0.30)' }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          Back
-        </Link>
-
         {/* Header */}
         <div style={{ marginBottom: '28px' }}>
           <div style={{

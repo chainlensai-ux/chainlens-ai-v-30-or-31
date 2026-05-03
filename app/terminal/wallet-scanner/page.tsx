@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -255,33 +254,6 @@ export default function WalletScannerPage() {
 
         {/* ── Left: scrollable main area ───────────────────────────────── */}
         <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px' }}>
-
-          {/* Back */}
-          <Link href="/terminal" style={{
-            display: 'inline-flex', alignItems: 'center', gap: '7px',
-            background: '#080c14',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: '8px',
-            padding: '7px 14px',
-            color: '#f1f5f9', fontSize: '12px', fontWeight: 500,
-            textDecoration: 'none', marginBottom: '28px',
-            fontFamily: 'var(--font-inter, Inter, sans-serif)',
-            transition: 'border-color 0.15s, color 0.15s',
-          }}
-            onMouseEnter={e => {
-              (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(45,212,191,0.45)'
-              ;(e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF'
-            }}
-            onMouseLeave={e => {
-              (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(255,255,255,0.08)'
-              ;(e.currentTarget as HTMLAnchorElement).style.color = '#f1f5f9'
-            }}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M19 12H5M11 6l-6 6 6 6"/>
-            </svg>
-            Back
-          </Link>
 
           {/* Header */}
           <div style={{ marginBottom: '32px' }}>
