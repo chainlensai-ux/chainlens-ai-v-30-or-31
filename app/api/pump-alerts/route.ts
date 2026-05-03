@@ -76,11 +76,16 @@ function categorize(
       riskLevel: 'HIGH',
     }
   }
-  if (liq >= 20_000 && vol >= 15_000) {
+  if (liq >= 25_000 || vol >= 75_000 || Math.abs(ch) >= 8) {
     const volFmt = vol >= 1_000_000 ? `$${(vol / 1_000_000).toFixed(1)}M` : `$${(vol / 1000).toFixed(0)}K`
+    const liqFmt = `$${(liq / 1000).toFixed(0)}K`
+    const parts: string[] = []
+    if (Math.abs(ch) >= 8) parts.push(`${ch >= 0 ? '+' : ''}${ch.toFixed(1)}% move`)
+    if (vol >= 75_000) parts.push(`${volFmt} volume`)
+    if (liq >= 25_000) parts.push(`${liqFmt} liquidity`)
     return {
       category: 'WATCH',
-      reason: `$${(liq / 1000).toFixed(0)}K liquidity with ${volFmt} volume`,
+      reason: parts.join(' · ') || `${liqFmt} liquidity`,
       riskLevel: liq >= 50_000 ? 'LOW' : 'MEDIUM',
     }
   }
@@ -94,34 +99,63 @@ const CATEGORY_ORDER: Record<PumpCategory, number> = {
   WATCH: 3,
 }
 
+async function fetchGTPage(page: number, signal: AbortSignal): Promise<{ data?: GTPool[]; included?: GTIncluded[] }> {
+  const res = await fetch(
+    `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token,quote_token`,
+    { headers: { accept: 'application/json' }, cache: 'no-store', signal },
+  )
+  if (!res.ok) throw new Error(`GT ${res.status}`)
+  return res.json()
+}
+
 export async function GET() {
   let pools: GTPool[] = []
   let included: GTIncluded[] = []
 
   try {
-    const result = await getOrFetchCached<{ data?: GTPool[]; included?: GTIncluded[] }>({
-      key: 'coingecko:trending-base',
-      ttlMs: 60_000,
-      onLog: msg => console.info(`[pump-alerts] ${msg}`),
-      fetcher: async () => {
-        const ac = new AbortController()
-        const tid = setTimeout(() => ac.abort(), 6000)
-        try {
-          const res = await fetch(
-            'https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token',
-            { headers: { accept: 'application/json' }, cache: 'no-store', signal: ac.signal },
-          )
-          if (!res.ok) throw new Error(`GT ${res.status}`)
-          return res.json()
-        } finally {
-          clearTimeout(tid)
-        }
-      },
-    })
-    pools = Array.isArray(result.data?.data) ? (result.data.data as GTPool[]) : []
-    included = Array.isArray(result.data?.included) ? (result.data.included as GTIncluded[]) : []
+    const ac = new AbortController()
+    const tid = setTimeout(() => ac.abort(), 9000)
+    try {
+      const [p1, p2] = await Promise.allSettled([
+        fetchGTPage(1, ac.signal),
+        fetchGTPage(2, ac.signal),
+      ])
+      const pages = [p1, p2].flatMap(r => r.status === 'fulfilled' ? [r.value] : [])
+      for (const page of pages) {
+        if (Array.isArray(page.data)) pools.push(...(page.data as GTPool[]))
+        if (Array.isArray(page.included)) included.push(...(page.included as GTIncluded[]))
+      }
+      if (pools.length === 0) throw new Error('no data')
+    } finally {
+      clearTimeout(tid)
+    }
   } catch {
-    return NextResponse.json({ alerts: [], fetchedAt: new Date().toISOString() })
+    // Try cached fallback via shared cache key for page 1 only
+    try {
+      const result = await getOrFetchCached<{ data?: GTPool[]; included?: GTIncluded[] }>({
+        key: 'coingecko:trending-base',
+        ttlMs: 60_000,
+        onLog: msg => console.info(`[pump-alerts] ${msg}`),
+        fetcher: async () => {
+          const ac = new AbortController()
+          const tid = setTimeout(() => ac.abort(), 6000)
+          try {
+            const res = await fetch(
+              'https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token',
+              { headers: { accept: 'application/json' }, cache: 'no-store', signal: ac.signal },
+            )
+            if (!res.ok) throw new Error(`GT ${res.status}`)
+            return res.json()
+          } finally {
+            clearTimeout(tid)
+          }
+        },
+      })
+      pools = Array.isArray(result.data?.data) ? (result.data.data as GTPool[]) : []
+      included = Array.isArray(result.data?.included) ? (result.data.included as GTIncluded[]) : []
+    } catch {
+      return NextResponse.json({ alerts: [], fetchedAt: new Date().toISOString() })
+    }
   }
 
   const seen = new Set<string>()
@@ -168,5 +202,5 @@ export async function GET() {
     return od !== 0 ? od : (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)
   })
 
-  return NextResponse.json({ alerts: alerts.slice(0, 30), fetchedAt: new Date().toISOString() })
+  return NextResponse.json({ alerts: alerts.slice(0, 25), fetchedAt: new Date().toISOString() })
 }

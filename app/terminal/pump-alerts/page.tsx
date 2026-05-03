@@ -25,8 +25,8 @@ type FilterKey = 'ALL' | PumpCategory
 const CATEGORY_LABEL: Record<PumpCategory, string> = {
   HIGH_MOMENTUM: 'High Momentum',
   VOLUME_EXPANSION: 'Vol Expansion',
-  THIN_MOONSHOT: 'Thin Moonshot',
-  WATCH: 'Watch',
+  THIN_MOONSHOT: 'Thin Liquidity',
+  WATCH: 'Watchlist',
 }
 
 const CATEGORY_COLOR: Record<PumpCategory, string> = {
@@ -72,8 +72,8 @@ const FILTER_CHIPS: Array<{ key: FilterKey; label: string }> = [
   { key: 'ALL', label: 'All' },
   { key: 'HIGH_MOMENTUM', label: 'High Momentum' },
   { key: 'VOLUME_EXPANSION', label: 'Vol Expansion' },
-  { key: 'THIN_MOONSHOT', label: 'Thin Moonshot' },
-  { key: 'WATCH', label: 'Watch' },
+  { key: 'WATCH', label: 'Watchlist' },
+  { key: 'THIN_MOONSHOT', label: 'Thin Liquidity' },
 ]
 
 function fmtUSD(v: number | null): string {
@@ -466,6 +466,13 @@ export default function PumpAlertsPage() {
                 Alerts appear when real Base tokens meet momentum thresholds.
               </p>
             </div>
+          )}
+
+          {/* Low-count notice */}
+          {!loading && alerts.length > 0 && alerts.length < 10 && (
+            <p style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px', padding: '6px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              Limited candidates from current provider window. Refresh shortly.
+            </p>
           )}
 
           {/* Alert cards */}
