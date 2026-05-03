@@ -103,54 +103,71 @@ const CATEGORY_ORDER: Record<PumpCategory, number> = {
   WATCH: 3,
 }
 
-// Per-category cap to avoid one category dominating output
-const CAT_CAP: Record<PumpCategory, number> = {
-  HIGH_MOMENTUM: 8,
-  VOLUME_EXPANSION: 8,
-  THIN_MOONSHOT: 6,
-  WATCH: 12,
+// Loose per-category caps applied only to fresh candidates (diversity nudge, not a hard filter)
+const FRESH_CAT_CAP: Record<PumpCategory, number> = {
+  HIGH_MOMENTUM: 10,
+  VOLUME_EXPANSION: 10,
+  THIN_MOONSHOT: 8,
+  WATCH: 15,
 }
 
-function applyRotationAndDiversity(scored: PumpAlert[]): PumpAlert[] {
-  const recentAddrs = new Set(shownBatches.flat())
+interface RotationResult {
+  alerts: PumpAlert[]
+  freshCount: number
+  staleCount: number
+  fallbackUsed: boolean
+}
 
-  // Prefer tokens not shown in recent batches
+function applyRotationAndDiversity(scored: PumpAlert[]): RotationResult {
+  if (scored.length === 0) return { alerts: [], freshCount: 0, staleCount: 0, fallbackUsed: false }
+
+  const recentAddrs = new Set(shownBatches.flat())
   const fresh = scored.filter(a => !recentAddrs.has(a.contract.toLowerCase()))
   const stale = scored.filter(a =>  recentAddrs.has(a.contract.toLowerCase()))
 
-  function pickWithCaps(pool: PumpAlert[], limit: number): PumpAlert[] {
-    const counts: Record<string, number> = {}
-    const out: PumpAlert[] = []
-    for (const a of pool) {
-      if (out.length >= limit) break
-      const c = counts[a.category] ?? 0
-      if (c >= CAT_CAP[a.category]) continue
-      out.push(a)
-      counts[a.category] = c + 1
-    }
-    return out
+  const output: PumpAlert[] = []
+  const taken = new Set<string>()
+
+  // Pass 1: fresh candidates with loose diversity caps
+  const counts: Record<string, number> = {}
+  for (const a of fresh) {
+    if (output.length >= 25) break
+    const c = counts[a.category] ?? 0
+    if (c >= FRESH_CAT_CAP[a.category]) continue
+    output.push(a)
+    taken.add(a.contract.toLowerCase())
+    counts[a.category] = c + 1
   }
 
-  // Fill primarily from fresh; backfill from stale when pool is thin
-  const primary = pickWithCaps(fresh, 20)
-  const taken = new Set(primary.map(a => a.contract.toLowerCase()))
-  const backfill = pickWithCaps(
-    stale.filter(a => !taken.has(a.contract.toLowerCase())),
-    25 - primary.length,
-  )
-  const output = [...primary, ...backfill]
+  // Pass 2: stale backfill — NO category caps, just fill remaining slots
+  for (const a of stale) {
+    if (output.length >= 25) break
+    if (!taken.has(a.contract.toLowerCase())) {
+      output.push(a)
+      taken.add(a.contract.toLowerCase())
+    }
+  }
 
-  // Final sort: category priority, then volume desc within category
+  // Hard fallback: if rotation logic somehow produced empty, use scored directly
+  let fallbackUsed = false
+  if (output.length === 0) {
+    output.push(...scored.slice(0, 25))
+    fallbackUsed = true
+  }
+
+  // Sort by quality for display
   output.sort((a, b) => {
     const od = CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category]
     return od !== 0 ? od : (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)
   })
 
-  // Record this batch; trim ring buffer
-  shownBatches.push(output.map(a => a.contract.toLowerCase()))
-  if (shownBatches.length > MAX_HISTORY_BATCHES) shownBatches.shift()
+  // Record batch only when we have real results
+  if (output.length > 0) {
+    shownBatches.push(output.map(a => a.contract.toLowerCase()))
+    if (shownBatches.length > MAX_HISTORY_BATCHES) shownBatches.shift()
+  }
 
-  return output
+  return { alerts: output, freshCount: fresh.length, staleCount: stale.length, fallbackUsed }
 }
 
 async function fetchGTPage(page: number, signal: AbortSignal): Promise<{ data?: GTPool[]; included?: GTIncluded[] }> {
@@ -214,19 +231,13 @@ export async function GET() {
     }
   }
 
-  // Deduplicate included tokens (3-page fetch may have duplicates)
-  const includedById = new Map<string, GTIncluded>()
-  for (const item of included) {
-    if (item.id && !includedById.has(item.id)) includedById.set(item.id, item)
-  }
-
   const seen = new Set<string>()
   const allScored: PumpAlert[] = []
 
   for (const pool of pools) {
     const tokenId = pool.relationships?.base_token?.data?.id
     if (!tokenId) continue
-    const meta = includedById.get(tokenId)
+    const meta = included.find(i => i.id === tokenId)
     if (!meta?.attributes?.address) continue
 
     const sym = (meta.attributes.symbol ?? '').toUpperCase()
@@ -265,7 +276,18 @@ export async function GET() {
     return od !== 0 ? od : (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)
   })
 
-  const alerts = applyRotationAndDiversity(allScored)
+  const { alerts, freshCount, staleCount, fallbackUsed } = applyRotationAndDiversity(allScored)
 
-  return NextResponse.json({ alerts, fetchedAt: new Date().toISOString() })
+  return NextResponse.json({
+    alerts,
+    fetchedAt: new Date().toISOString(),
+    _debug: {
+      rawCount: pools.length,
+      scoredCount: allScored.length,
+      freshCount,
+      staleCount,
+      selectedCount: alerts.length,
+      fallbackUsed,
+    },
+  })
 }
