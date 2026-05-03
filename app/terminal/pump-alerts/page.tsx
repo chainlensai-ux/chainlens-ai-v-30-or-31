@@ -44,10 +44,10 @@ const CATEGORY_BG: Record<PumpCategory, string> = {
 }
 
 const CATEGORY_BORDER: Record<PumpCategory, string> = {
-  HIGH_MOMENTUM: 'rgba(34,211,238,0.30)',
-  VOLUME_EXPANSION: 'rgba(168,85,247,0.28)',
-  THIN_MOONSHOT: 'rgba(249,115,22,0.28)',
-  WATCH: 'rgba(45,212,191,0.25)',
+  HIGH_MOMENTUM: 'rgba(34,211,238,0.32)',
+  VOLUME_EXPANSION: 'rgba(168,85,247,0.30)',
+  THIN_MOONSHOT: 'rgba(249,115,22,0.30)',
+  WATCH: 'rgba(45,212,191,0.26)',
 }
 
 const RISK_COLOR: Record<PumpRisk, string> = {
@@ -77,14 +77,14 @@ const FILTER_CHIPS: Array<{ key: FilterKey; label: string }> = [
 ]
 
 function fmtUSD(v: number | null): string {
-  if (v == null) return 'N/A'
+  if (v == null) return '—'
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
   if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`
   return `$${v.toFixed(2)}`
 }
 
 function fmtPrice(v: number | null): string {
-  if (v == null) return 'N/A'
+  if (v == null) return '—'
   if (v >= 1) return `$${v.toFixed(4)}`
   if (v >= 0.0001) return `$${v.toFixed(6)}`
   return `$${v.toExponential(3)}`
@@ -92,6 +92,19 @@ function fmtPrice(v: number | null): string {
 
 function shortAddr(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+function StatMetric({ label, value, dimValue }: { label: string; value: string; dimValue?: boolean }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
+      <span style={{ fontSize: '8px', fontWeight: 700, color: '#3a5268', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
+        {label}
+      </span>
+      <span style={{ fontSize: '11.5px', fontWeight: 700, color: dimValue ? '#64748b' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
+        {value}
+      </span>
+    </div>
+  )
 }
 
 function AlertCard({ alert, onScan, onAskClark }: {
@@ -106,100 +119,117 @@ function AlertCard({ alert, onScan, onAskClark }: {
   const riskColor = RISK_COLOR[alert.riskLevel]
   const riskBg = RISK_BG[alert.riskLevel]
   const changePositive = (alert.change24h ?? 0) >= 0
-
-  const stats = [
-    { label: 'Price', value: fmtPrice(alert.priceUsd) },
-    { label: 'Vol 24h', value: fmtUSD(alert.volume24hUsd) },
-    { label: 'Liq', value: fmtUSD(alert.liquidityUsd) },
-    { label: 'FDV', value: fmtUSD(alert.fdvUsd) },
-  ]
+  const avatarText = (alert.symbol || '?').slice(0, 2).toUpperCase()
 
   return (
     <div
+      className="pump-card"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        background: hovered ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.03)',
-        border: `1px solid ${hovered ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.08)'}`,
+        background: hovered ? 'rgba(255,255,255,0.048)' : 'rgba(255,255,255,0.026)',
+        border: `1px solid ${hovered ? `${catColor}28` : 'rgba(255,255,255,0.08)'}`,
+        borderLeft: `3px solid ${catColor}`,
         borderRadius: '10px',
-        padding: '9px 11px',
-        transition: 'background 0.15s, border-color 0.15s',
-        position: 'relative',
-        overflow: 'hidden',
+        padding: '10px 12px',
+        transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s',
+        boxShadow: hovered ? `0 0 22px ${catColor}16` : 'none',
+        display: 'flex',
+        alignItems: 'stretch',
+        gap: '0',
         animation: 'pumpSlideIn 0.3s ease both',
+        overflow: 'hidden',
       }}
     >
-      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: catColor, opacity: 0.7 }} />
-
-      {/* Row 1: identity + change + chips */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '5px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0, overflow: 'hidden' }}>
-          <span style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {alert.name}
-          </span>
-          <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
-            {alert.symbol}
-          </span>
-          <span style={{ fontSize: '9px', color: '#2d3f52', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
-            {shortAddr(alert.contract)}
-          </span>
+      {/* LEFT: identity */}
+      <div
+        className="pump-card-left"
+        style={{
+          display: 'flex', alignItems: 'center', gap: '9px',
+          width: '185px', flexShrink: 0,
+          paddingRight: '12px', borderRight: '1px solid rgba(255,255,255,0.06)',
+        }}
+      >
+        <div style={{
+          width: '28px', height: '28px', borderRadius: '8px', flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '9.5px', fontWeight: 800, color: catColor,
+          background: `${catColor}1a`, border: `1px solid ${catColor}2e`,
+          fontFamily: 'var(--font-plex-mono)',
+        }}>
+          {avatarText}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {alert.name}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>
+            <span style={{ color: '#64748b', fontWeight: 700 }}>{alert.symbol}</span>
+            <span style={{ color: '#2d3f52' }}>·</span>
+            <span style={{ color: '#374a5c' }}>{shortAddr(alert.contract)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* CENTER: metrics + reason */}
+      <div
+        className="pump-card-center"
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 12px', gap: '4px', minWidth: 0 }}
+      >
+        <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'baseline' }}>
+          <StatMetric label="Price" value={fmtPrice(alert.priceUsd)} />
           {alert.change24h != null && (
-            <span style={{
-              fontSize: '10px', fontWeight: 700,
-              color: changePositive ? '#4ade80' : '#f87171',
-              fontFamily: 'var(--font-plex-mono)',
-            }}>
-              {changePositive ? '+' : ''}{alert.change24h.toFixed(1)}%
-            </span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
+              <span style={{ fontSize: '8px', fontWeight: 700, color: '#3a5268', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>24h</span>
+              <span style={{ fontSize: '12px', fontWeight: 800, color: changePositive ? '#4ade80' : '#f87171', fontFamily: 'var(--font-plex-mono)' }}>
+                {changePositive ? '▲' : '▼'}{Math.abs(alert.change24h).toFixed(1)}%
+              </span>
+            </div>
           )}
+          <StatMetric label="Vol" value={fmtUSD(alert.volume24hUsd)} dimValue={alert.volume24hUsd == null} />
+          <StatMetric label="Liq" value={fmtUSD(alert.liquidityUsd)} dimValue={alert.liquidityUsd == null} />
+          <StatMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dimValue={alert.fdvUsd == null} />
+        </div>
+        <p style={{ margin: 0, fontSize: '10px', color: '#4a6278', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {alert.riskLevel === 'HIGH' && <span style={{ color: '#f87171' }}>⚠ </span>}
+          {alert.reason}
+        </p>
+      </div>
+
+      {/* RIGHT: chips + actions */}
+      <div
+        className="pump-card-right"
+        style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
+          justifyContent: 'space-between', gap: '6px',
+          flexShrink: 0, paddingLeft: '12px', borderLeft: '1px solid rgba(255,255,255,0.06)',
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-end' }}>
           <span style={{
-            padding: '2px 6px', borderRadius: '99px', fontSize: '8.5px', fontWeight: 700, letterSpacing: '0.06em',
+            padding: '2px 7px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.07em',
             color: catColor, background: catBg, border: `1px solid ${catBorder}`,
-            fontFamily: 'var(--font-plex-mono)',
+            fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
             {CATEGORY_LABEL[alert.category]}
           </span>
           <span style={{
-            padding: '2px 6px', borderRadius: '99px', fontSize: '8.5px', fontWeight: 700, letterSpacing: '0.06em',
+            padding: '2px 7px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.07em',
             color: riskColor, background: riskBg, border: `1px solid ${riskColor}33`,
-            fontFamily: 'var(--font-plex-mono)',
+            fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
             {RISK_LABEL[alert.riskLevel]}
           </span>
         </div>
-      </div>
-
-      {/* Row 2: inline stats */}
-      <div style={{ display: 'flex', gap: '14px', marginBottom: '5px', flexWrap: 'wrap' }}>
-        {stats.map(s => (
-          <div key={s.label} style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-            <span style={{ fontSize: '8px', fontWeight: 700, color: '#3a5268', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
-              {s.label}
-            </span>
-            <span style={{ fontSize: '11px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
-              {s.value}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* Row 3: reason + buttons */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
-        <p style={{ margin: 0, fontSize: '10.5px', color: '#94a3b8', lineHeight: 1.35, flex: 1, minWidth: 0 }}>
-          {alert.riskLevel === 'HIGH' && <span style={{ color: '#f87171' }}>⚠ </span>}
-          {alert.reason}
-          {alert.riskLevel === 'HIGH' && <span style={{ color: '#f87171', fontSize: '10px' }}> · thin liquidity</span>}
-        </p>
-        <div style={{ display: 'flex', gap: '5px', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: '4px' }}>
           <button
             onClick={onScan}
             style={{
-              padding: '4px 9px', borderRadius: '6px', fontSize: '8.5px', fontWeight: 700,
+              padding: '4px 9px', borderRadius: '6px', fontSize: '8px', fontWeight: 700,
               letterSpacing: '0.07em', textTransform: 'uppercase',
-              border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.08)',
+              border: '1px solid rgba(45,212,191,0.32)', background: 'rgba(45,212,191,0.09)',
               color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+              transition: 'background 0.12s, border-color 0.12s',
             }}
           >
             Scan
@@ -207,10 +237,11 @@ function AlertCard({ alert, onScan, onAskClark }: {
           <button
             onClick={onAskClark}
             style={{
-              padding: '4px 9px', borderRadius: '6px', fontSize: '8.5px', fontWeight: 700,
+              padding: '4px 9px', borderRadius: '6px', fontSize: '8px', fontWeight: 700,
               letterSpacing: '0.07em', textTransform: 'uppercase',
-              border: '1px solid rgba(168,85,247,0.28)', background: 'rgba(168,85,247,0.08)',
+              border: '1px solid rgba(168,85,247,0.30)', background: 'rgba(168,85,247,0.09)',
               color: '#a855f7', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+              transition: 'background 0.12s, border-color 0.12s',
             }}
           >
             Clark
@@ -224,30 +255,30 @@ function AlertCard({ alert, onScan, onAskClark }: {
 function SummaryStrip({ alerts }: { alerts: PumpAlert[] }) {
   const highMomentum = alerts.filter(a => a.category === 'HIGH_MOMENTUM').length
   const volExp = alerts.filter(a => a.category === 'VOLUME_EXPANSION').length
-  const thinMoon = alerts.filter(a => a.category === 'THIN_MOONSHOT').length
+  const thinLiq = alerts.filter(a => a.category === 'THIN_MOONSHOT').length
   const watch = alerts.filter(a => a.category === 'WATCH').length
   const highRisk = alerts.filter(a => a.riskLevel === 'HIGH').length
 
   const items = [
-    { label: 'Total Alerts', value: String(alerts.length), glow: 'rgba(45,212,191,0.24)' },
-    { label: 'High Momentum', value: String(highMomentum), glow: 'rgba(34,211,238,0.22)' },
-    { label: 'Vol Expansion', value: String(volExp), glow: 'rgba(168,85,247,0.22)' },
-    { label: 'Thin Moonshot', value: String(thinMoon), glow: 'rgba(249,115,22,0.22)' },
-    { label: 'Watch', value: String(watch), glow: 'rgba(45,212,191,0.18)' },
-    { label: 'High Risk', value: String(highRisk), glow: 'rgba(248,113,113,0.20)' },
+    { label: 'Total', value: String(alerts.length), glow: 'rgba(45,212,191,0.22)' },
+    { label: 'High Momentum', value: String(highMomentum), glow: 'rgba(34,211,238,0.20)' },
+    { label: 'Vol Expansion', value: String(volExp), glow: 'rgba(168,85,247,0.20)' },
+    { label: 'Watchlist', value: String(watch), glow: 'rgba(45,212,191,0.16)' },
+    { label: 'Thin Liquidity', value: String(thinLiq), glow: 'rgba(249,115,22,0.20)' },
+    { label: 'High Risk', value: String(highRisk), glow: 'rgba(248,113,113,0.18)' },
   ]
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '8px', marginBottom: '16px' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '7px', marginBottom: '16px' }}>
       {items.map(item => (
         <div key={item.label} style={{
-          background: 'linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))',
-          border: '1px solid rgba(255,255,255,0.09)',
-          borderRadius: '10px',
-          padding: '10px',
-          boxShadow: `0 0 18px ${item.glow}`,
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.015))',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: '9px',
+          padding: '9px 10px',
+          boxShadow: `0 0 16px ${item.glow}`,
         }}>
-          <p style={{ margin: '0 0 4px', fontSize: '8px', color: '#3a5268', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
+          <p style={{ margin: '0 0 3px', fontSize: '8px', color: '#3a5268', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
             {item.label}
           </p>
           <p style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
@@ -308,7 +339,7 @@ export default function PumpAlertsPage() {
       `Token: ${alert.name} (${alert.symbol})`,
       `Contract: ${alert.contract}`,
       `Category: ${CATEGORY_LABEL[alert.category]}`,
-      `24h Change: ${alert.change24h != null ? `+${alert.change24h.toFixed(1)}%` : 'N/A'}`,
+      `24h Change: ${alert.change24h != null ? `${(alert.change24h >= 0 ? '+' : '')}${alert.change24h.toFixed(1)}%` : 'N/A'}`,
       `Volume 24h: ${fmtUSD(alert.volume24hUsd)}`,
       `Liquidity: ${fmtUSD(alert.liquidityUsd)}`,
       `FDV: ${fmtUSD(alert.fdvUsd)}`,
@@ -327,7 +358,7 @@ export default function PumpAlertsPage() {
     <>
       <style>{`
         @keyframes pumpSlideIn {
-          from { opacity: 0; transform: translateY(-8px); }
+          from { opacity: 0; transform: translateY(-6px); }
           to   { opacity: 1; transform: translateY(0); }
         }
         @keyframes livePulse {
@@ -339,9 +370,14 @@ export default function PumpAlertsPage() {
           100% { transform: rotate(360deg); }
         }
         @media (max-width: 768px) {
-          .pump-main  { padding: 16px 12px 120px !important; }
-          .pump-strip { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
-          .pump-filters { flex-wrap: wrap !important; }
+          .pump-main   { padding: 16px 12px 120px !important; }
+          .pump-strip  { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+        }
+        @media (max-width: 640px) {
+          .pump-card       { flex-direction: column !important; }
+          .pump-card-left  { width: auto !important; border-right: none !important; padding-right: 0 !important; padding-bottom: 8px !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; }
+          .pump-card-center { padding: 4px 0 !important; }
+          .pump-card-right { flex-direction: row !important; align-items: center !important; border-left: none !important; padding-left: 0 !important; padding-top: 8px !important; border-top: 1px solid rgba(255,255,255,0.06) !important; justify-content: space-between !important; }
         }
       `}</style>
 
@@ -368,48 +404,45 @@ export default function PumpAlertsPage() {
             High-momentum Base tokens scored by volume, liquidity, and 24h price change. Not financial advice.
           </p>
 
-          {/* Summary strip */}
           <div className="pump-strip">
             <SummaryStrip alerts={alerts} />
           </div>
 
           {/* Controls */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap', marginBottom: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
-                Refresh in {countdown}s
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '12px' }}>
+            <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+              Refresh in {countdown}s
+            </span>
+            <button
+              onClick={() => { setCountdown(60); fetchAlerts() }}
+              disabled={loading}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '5px 12px', borderRadius: '8px',
+                background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.20)',
+                color: loading ? '#3a5268' : '#2DD4BF',
+                fontSize: '10px', fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer',
+                fontFamily: 'var(--font-plex-mono)',
+              }}
+            >
+              <svg width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.5' strokeLinecap='round' strokeLinejoin='round'
+                style={{ animation: loading ? 'spinRefresh 0.8s linear infinite' : 'none' }}>
+                <path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8' />
+                <path d='M21 3v5h-5' />
+                <path d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16' />
+                <path d='M8 16H3v5' />
+              </svg>
+              {loading ? 'Scanning…' : 'Refresh'}
+            </button>
+            {fetchedAt && (
+              <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+                Updated {new Date(fetchedAt).toLocaleTimeString()}
               </span>
-              <button
-                onClick={() => { setCountdown(60); fetchAlerts() }}
-                disabled={loading}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '6px',
-                  padding: '5px 12px', borderRadius: '8px',
-                  background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.20)',
-                  color: loading ? '#3a5268' : '#2DD4BF',
-                  fontSize: '10px', fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer',
-                  fontFamily: 'var(--font-plex-mono)',
-                }}
-              >
-                <svg width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.5' strokeLinecap='round' strokeLinejoin='round'
-                  style={{ animation: loading ? 'spinRefresh 0.8s linear infinite' : 'none' }}>
-                  <path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8' />
-                  <path d='M21 3v5h-5' />
-                  <path d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16' />
-                  <path d='M8 16H3v5' />
-                </svg>
-                {loading ? 'Scanning…' : 'Refresh'}
-              </button>
-              {fetchedAt && (
-                <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
-                  Updated {new Date(fetchedAt).toLocaleTimeString()}
-                </span>
-              )}
-            </div>
+            )}
           </div>
 
           {/* Filter chips */}
-          <div className="pump-filters" style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
             {FILTER_CHIPS.map(chip => {
               const active = chip.key === activeFilter
               const color = chip.key !== 'ALL' ? CATEGORY_COLOR[chip.key as PumpCategory] : '#2DD4BF'
@@ -418,17 +451,19 @@ export default function PumpAlertsPage() {
                   key={chip.key}
                   onClick={() => setActiveFilter(chip.key)}
                   style={{
-                    padding: '5px 10px', borderRadius: '99px', fontSize: '9px', fontWeight: 700,
+                    padding: '5px 11px', borderRadius: '99px', fontSize: '9px', fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase', cursor: 'pointer',
                     border: `1px solid ${active ? `${color}55` : 'rgba(255,255,255,0.10)'}`,
-                    background: active ? `${color}18` : 'rgba(255,255,255,0.03)',
+                    background: active ? `${color}1c` : 'rgba(255,255,255,0.03)',
                     color: active ? color : '#94a3b8',
                     fontFamily: 'var(--font-plex-mono)',
+                    boxShadow: active ? `0 0 12px ${color}18` : 'none',
+                    transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s',
                   }}
                 >
                   {chip.label}
                   {chip.key !== 'ALL' && (
-                    <span style={{ marginLeft: '5px', opacity: 0.65 }}>
+                    <span style={{ marginLeft: '5px', opacity: 0.60 }}>
                       {alerts.filter(a => a.category === chip.key).length}
                     </span>
                   )}
@@ -447,8 +482,8 @@ export default function PumpAlertsPage() {
           {/* Loading skeletons */}
           {loading && alerts.length === 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {[...Array(6)].map((_, i) => (
-                <div key={i} style={{ height: '76px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', animation: 'pumpSlideIn 0.3s ease both', animationDelay: `${i * 60}ms` }} />
+              {[...Array(7)].map((_, i) => (
+                <div key={i} style={{ height: '66px', borderRadius: '10px', borderLeft: '3px solid rgba(45,212,191,0.18)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', animation: 'pumpSlideIn 0.3s ease both', animationDelay: `${i * 55}ms` }} />
               ))}
             </div>
           )}
@@ -460,7 +495,7 @@ export default function PumpAlertsPage() {
               <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 6px', color: '#64748b' }}>
                 {activeFilter !== 'ALL' && activeFilter in CATEGORY_LABEL
                   ? `No ${CATEGORY_LABEL[activeFilter as PumpCategory]} alerts right now.`
-                  : 'No pump alerts right now. Base radar will refresh shortly.'}
+                  : 'No pump alerts right now. Refreshing shortly.'}
               </p>
               <p style={{ fontSize: '11px', margin: 0, color: '#3a5268' }}>
                 Alerts appear when real Base tokens meet momentum thresholds.
@@ -470,15 +505,15 @@ export default function PumpAlertsPage() {
 
           {/* Low-count notice */}
           {!loading && alerts.length > 0 && alerts.length < 10 && (
-            <p style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px', padding: '6px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              Limited candidates from current provider window. Refresh shortly.
+            <p style={{ fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px', padding: '5px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              Limited fresh candidates right now — refresh shortly for more.
             </p>
           )}
 
           {/* Alert cards */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {filtered.map((alert, i) => (
-              <div key={`${alert.contract}-${refreshKey}`} style={{ animationDelay: `${i * 35}ms` }}>
+              <div key={`${alert.contract}-${refreshKey}`} style={{ animationDelay: `${i * 30}ms` }}>
                 <AlertCard
                   alert={alert}
                   onScan={() => openToken(alert.contract)}
@@ -490,7 +525,7 @@ export default function PumpAlertsPage() {
 
           {/* Disclaimer */}
           {filtered.length > 0 && (
-            <p style={{ marginTop: '20px', fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
+            <p style={{ marginTop: '20px', fontSize: '10px', color: '#2d3f52', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
               Pump Alerts surface tokens meeting momentum thresholds based on live GeckoTerminal data. This is not financial advice. Always verify independently before acting.
             </p>
           )}
