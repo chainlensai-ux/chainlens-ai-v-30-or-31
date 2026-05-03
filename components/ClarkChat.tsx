@@ -9,12 +9,37 @@ interface ClarkChatProps {
   onTyping?: (typing: boolean) => void
   onSend?: (text: string) => void
   initialMessage?: string | null
+  prefillOnlyInitial?: boolean
   mode?: 'full' | 'panel' | 'hero' | 'chat-only'
 }
 
 interface Message {
   role: 'user' | 'clark'
   text: string
+}
+const THINKING_MESSAGE = 'Clark is thinking...'
+type ClarkContextState = {
+  lastMarketList?: Array<{
+    rank: number
+    symbol: string
+    name?: string | null
+    tokenAddress?: string | null
+    poolAddress?: string | null
+    reasonTag?: string | null
+  }>
+  lastToken?: string | null
+  lastWallet?: string | null
+  lastIntent?: string | null
+  previousIntent?: string | null
+  lastSelectedRank?: number | null
+  marketCursor?: {
+    offset: number
+    returnedCount: number
+    requestedCount: number
+    totalCandidates: number
+  } | null
+  seenMarketAddresses?: string[]
+  seenMarketSymbols?: string[]
 }
 
 // Try to pull a token name from a message like "is brett safe?" or "toshi price"
@@ -38,24 +63,31 @@ function extractTokenQuery(text: string): string | null {
   return null
 }
 
+const WALLET_INTENT = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|holds\b|copy[\s-]?trade?|copytrade|follow|smart\s+money|good\s+wallet|whale\s+wallet|wallet\s+quality)\b/i
+const MARKET_INTENT = /\b(pumping|pump(?:ing)?|hot\b|moving\b|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?|what\s+should\s+i\s+watch|what'?s\s+on\s+base)\b/i
+
 function parseMessage(raw: string): Record<string, string> {
   const t = raw.trim().toLowerCase()
   const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
   const address = addrMatch?.[0]
 
-  // Wallet / chain-level features (keep as-is)
+  // Explicit wallet commands
   if (t.startsWith('scan wallet') && address)
-    return { feature: 'wallet-scanner', walletAddress: address }
+    return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
   if (t.startsWith('dev wallet') && address)
     return { feature: 'dev-wallet-detector', tokenAddress: address }
   if (t.startsWith('whale alert') && address)
     return { feature: 'whale-alerts', walletAddress: address }
 
-  // Trending / base radar
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes("what's hot"))
+  // Wallet intent + address — higher priority than market check
+  if (address && WALLET_INTENT.test(t))
+    return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
+
+  // Market / radar — checked after wallet intent to avoid collision
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes("what's hot") || MARKET_INTENT.test(t))
     return { feature: 'base-radar' }
 
-  // Contract address → scan-token (preferred over old token-scanner)
+  // Bare address → scan-token
   if (address)
     return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
 
@@ -77,13 +109,39 @@ function formatResponse(data: Record<string, unknown>): string {
   return JSON.stringify(data, null, 2)
 }
 
-export default function ClarkChat({ active, onTyping, onSend, initialMessage, mode = 'full' }: ClarkChatProps) {
+function isMobileClient() {
+  return typeof window !== 'undefined' && (window.innerWidth < 768 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))
+}
+
+function ClarkOrb({ size = 20, thinking = false }: { size?: number; thinking?: boolean }) {
+  return <span className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}><span className='clark-orb-ring' /><span className='clark-orb-dot clark-orb-dot-a' /><span className='clark-orb-dot clark-orb-dot-b' /></span>
+}
+
+function renderClarkText(text: string) {
+  const section = /^(Verdict|Read|Why it matters|Risk|Next watch):/i
+  const address = /(0x[a-fA-F0-9]{8,40})/g
+  return text.split('\n').map((line, i) => (
+    <p key={i} style={{ margin: i === 0 ? 0 : '8px 0 0' }}>
+      {section.test(line) ? <span style={{ color: '#99f6e4', fontWeight: 700 }}>{line}</span> : line.split(address).map((part, idx) => address.test(part) ? <code key={idx} style={{ fontFamily: 'var(--font-plex-mono)', background: 'rgba(15,23,42,.65)', border: '1px solid rgba(148,163,184,.24)', borderRadius: 6, padding: '1px 5px' }}>{part}</code> : <span key={idx}>{part}</span>)}
+    </p>
+  ))
+}
+
+export default function ClarkChat({
+  active: _active,
+  onTyping,
+  onSend,
+  initialMessage,
+  prefillOnlyInitial = false,
+  mode = 'full',
+}: ClarkChatProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const lastSentInitialRef = useRef<string | null>(null)
+  const clarkContextRef = useRef<ClarkContextState>({})
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -91,28 +149,63 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
     }
   }, [messages])
 
-  // Stable send function — callable from both the UI and the initialMessage effect.
-  // useState setters and refs are guaranteed stable by React, so [] deps is correct.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const executeSend = useCallback(async (text: string) => {
     console.log('executeSend sending:', text)
     setMessages(prev => [...prev, { role: 'user', text }])
     setLoading(true)
-    setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
+    setMessages(prev => [...prev, { role: 'clark', text: THINKING_MESSAGE }])
 
     try {
       const body = parseMessage(text)
+      const history = [...messages, { role: 'user', text }]
+        .slice(-10)
+        .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       console.log('POST → /api/clark')
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          ...body,
+          message: text,
+          mode: body.feature,
+          uiModeHint: mode,
+          context: null,
+          history,
+          clarkContext: clarkContextRef.current,
+        }),
       })
       console.log('Response status:', res.status)
 
       const json = await res.json()
+      const payload = (json.data as Record<string, unknown>) ?? {}
+      const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
+        ? payload.marketContext as { items?: unknown }
+        : null
+      const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
+      if (nextItems && nextItems.length > 0) {
+        clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
+        const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
+        const symSet = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
+        for (const item of nextItems as Array<Record<string, unknown>>) {
+          const token = typeof item.tokenAddress === 'string' ? item.tokenAddress.toLowerCase() : null
+          const pool = typeof item.poolAddress === 'string' ? item.poolAddress.toLowerCase() : null
+          const sym = typeof item.symbol === 'string' ? item.symbol.toUpperCase() : null
+          if (token) addrSet.add(token)
+          if (pool) addrSet.add(pool)
+          if (sym) symSet.add(sym)
+        }
+        clarkContextRef.current.seenMarketAddresses = [...addrSet]
+        clarkContextRef.current.seenMarketSymbols = [...symSet]
+      }
+      const cursor = (marketContext && typeof marketContext === 'object' && (marketContext as Record<string, unknown>).cursor && typeof (marketContext as Record<string, unknown>).cursor === 'object')
+        ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor']
+        : null
+      if (cursor) clarkContextRef.current.marketCursor = cursor
+      clarkContextRef.current.previousIntent = clarkContextRef.current.lastIntent ?? null
+      clarkContextRef.current.lastIntent = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
+      clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
       const reply = json.ok
-        ? formatResponse(json.data as Record<string, unknown>)
+        ? (String(payload?.reply ?? formatResponse(payload)))
         : (json.error ?? 'Something went wrong.')
 
       setMessages(prev => {
@@ -130,20 +223,28 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
       setLoading(false)
       inputRef.current?.focus()
     }
-  }, [])
+  }, [messages, mode])
 
-  // Fire once per unique initialMessage value — lets the homepage panel pre-send a query.
+  // Fire once per unique initialMessage value.
   useEffect(() => {
     if (initialMessage && initialMessage !== lastSentInitialRef.current) {
       lastSentInitialRef.current = initialMessage
-      executeSend(initialMessage)
+      if (prefillOnlyInitial) {
+        queueMicrotask(() => setInput(initialMessage))
+      } else {
+        queueMicrotask(() => { void executeSend(initialMessage) })
+      }
     }
-  }, [initialMessage, executeSend])
+  }, [initialMessage, executeSend, prefillOnlyInitial])
 
   function handleSend() {
     console.log('handleSend fired with:', input)
     const text = input.trim()
     if (!text || loading) return
+    if (isMobileClient()) {
+      window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(text)}&autosend=1`
+      return
+    }
     setInput('')
     executeSend(text)
   }
@@ -167,13 +268,15 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
           background: rgba(123,92,255,0.30);
           border-radius: 3px;
         }
-        @keyframes clarkThinkingDot {
-          0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
-          40%            { opacity: 1;   transform: translateY(-3px); }
-        }
-        .clark-dot { display: inline-block; animation: clarkThinkingDot 1.2s ease-in-out infinite; }
-        .clark-dot:nth-child(2) { animation-delay: 0.15s; }
-        .clark-dot:nth-child(3) { animation-delay: 0.30s; }
+        .clark-orb-shell { position: relative; display:inline-flex; border-radius:999px; background: radial-gradient(circle at 30% 25%, rgba(148,163,184,.22), rgba(2,6,23,.96) 62%); border:1px solid rgba(148,163,184,.34); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 0 14px rgba(45,212,191,.2),0 0 20px rgba(139,92,246,.15); }
+        .clark-orb-ring { position:absolute; inset:2px; border-radius:999px; border:1px solid rgba(45,212,191,.24); }
+        .clark-orb-dot { position:absolute; width:5px; height:5px; top:42%; border-radius:50%; }
+        .clark-orb-dot-a { left:33%; background:#67e8f9; box-shadow:0 0 10px rgba(103,232,249,.9); animation: clarkDotA 2.3s ease-in-out infinite; }
+        .clark-orb-dot-b { right:30%; background:#c4b5fd; box-shadow:0 0 10px rgba(196,181,253,.88); animation: clarkDotB 2.0s ease-in-out infinite; }
+        .clark-orb-shell.thinking::after { content:''; position:absolute; inset:-5px; border:1px solid rgba(45,212,191,.22); border-radius:999px; animation: clarkPulse 1.6s ease-out infinite; }
+        @keyframes clarkDotA { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(2px,-2px) scale(1.12)} }
+        @keyframes clarkDotB { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-2px,2px) scale(1.1)} }
+        @keyframes clarkPulse { 0%{transform:scale(.94);opacity:.7;} 100%{transform:scale(1.08);opacity:0;} }
         @keyframes clarkThinkingShimmer {
           0%, 100% { background: rgba(0,0,0,0.30); box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
           50%       { background: rgba(123,92,255,0.08); box-shadow: 0 8px 40px rgba(123,92,255,0.18); }
@@ -190,6 +293,16 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
           0%, 100% { box-shadow: 0 0 6px rgba(45,212,191,0.80), 0 0 14px rgba(45,212,191,0.40); opacity: 1; }
           50%       { box-shadow: 0 0 12px rgba(45,212,191,1.0), 0 0 24px rgba(45,212,191,0.65); opacity: 0.85; }
         }
+        @media (max-width: 768px) {
+          .clark-chat-shell { padding-bottom: 96px; }
+          .clark-chat-input-row {
+            position: sticky !important;
+            bottom: 0 !important;
+            z-index: 15 !important;
+            background: linear-gradient(180deg, rgba(5,8,22,0.65), rgba(5,8,22,0.95)) !important;
+          }
+        }
+        @media (prefers-reduced-motion: reduce) { .clark-orb-dot, .clark-orb-shell.thinking::after { animation: none !important; } }
       `}</style>
 
       <div className="flex-1 flex flex-col" style={{ background: '#050816', minHeight: 0 }}>
@@ -245,7 +358,7 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
         )}
 
         {/* ── Chat UI ──────────────────────────────────── */}
-        {mode !== 'hero' && <div style={{
+        {mode !== 'hero' && <div className="clark-chat-shell" style={{
           display: 'flex', flexDirection: 'column',
           flex: mode === 'chat-only' ? 1 : 'none',
           minHeight: 0,
@@ -296,7 +409,7 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
             className="clark-msg-scroll"
             style={{
               flex: mode === 'chat-only' ? 1 : 'none',
-              height: mode === 'chat-only' ? undefined : '380px',
+              height: mode === 'chat-only' ? undefined : 'min(380px, 48vh)',
               overflowY: 'auto',
               padding: mode === 'chat-only' ? '20px 16px' : '16px 20px',
               display: 'flex', flexDirection: 'column', gap: '14px',
@@ -318,7 +431,7 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
             )}
 
             {messages.map((msg, i) => {
-              const isThinking = msg.role === 'clark' && msg.text === 'Clark is thinking...'
+              const isThinking = msg.role === 'clark' && msg.text === THINKING_MESSAGE
               return (
                 <div
                   key={i}
@@ -327,14 +440,7 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
                     justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
                   }}
                 >
-                  {msg.role === 'clark' && (
-                    <div style={{
-                      width: '9px', height: '9px', borderRadius: '50%',
-                      background: '#2DD4BF',
-                      flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end', marginBottom: '6px',
-                      animation: 'clark-dot-pulse 3s ease-in-out infinite',
-                    }} />
-                  )}
+                  {msg.role === 'clark' && <div style={{ flexShrink: 0, marginRight: '8px', alignSelf: 'flex-end', marginBottom: '4px' }}><ClarkOrb thinking={isThinking} /></div>}
 
                   {isThinking ? (
                     <div style={{
@@ -343,16 +449,11 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
                       border: '1px solid rgba(255,255,255,0.10)',
                       borderRadius: '12px',
                       padding: '10px 16px',
-                      display: 'flex', alignItems: 'center', gap: '2px',
+                      display: 'flex', alignItems: 'center', gap: '8px',
                       animation: 'clarkThinkingShimmer 2s ease-in-out infinite',
                     }}>
-                      <span style={{
-                        fontSize: '12px', color: 'rgba(255,255,255,0.45)',
-                        fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em',
-                      }}>Clark is thinking</span>
-                      <span className="clark-dot" style={{ marginLeft: '2px', color: 'rgba(78,242,197,0.70)' }}>.</span>
-                      <span className="clark-dot" style={{ color: 'rgba(78,242,197,0.70)' }}>.</span>
-                      <span className="clark-dot" style={{ color: 'rgba(78,242,197,0.70)' }}>.</span>
+                      <ClarkOrb thinking />
+                      <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.58)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>Clark is thinking…</span>
                     </div>
                   ) : (
                     <div style={{
@@ -381,8 +482,9 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
                         : 'var(--font-inter), Inter, sans-serif',
                       whiteSpace: 'pre-wrap',
                       wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',
                     }}>
-                      {msg.text}
+                      {msg.role === 'clark' ? renderClarkText(msg.text) : msg.text}
                     </div>
                   )}
                 </div>
@@ -392,7 +494,7 @@ export default function ClarkChat({ active, onTyping, onSend, initialMessage, mo
 
           {/* Input row — full and chat-only modes */}
           {(mode === 'full' || mode === 'chat-only') && (
-            <div style={{
+            <div className="clark-chat-input-row" style={{
               padding: '10px 14px 14px',
               borderTop: '1px solid rgba(255,255,255,0.05)',
               position: 'relative', zIndex: 1,

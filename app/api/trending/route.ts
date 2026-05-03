@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getOrFetchCached } from "@/lib/coingeckoCache";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,55 @@ interface MergedToken {
   volume: number | null;
   change24h: number | null;
   source: string;
+}
+
+function parseNumeric(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.toLowerCase() === "nan") return null;
+    const normalized = trimmed.replace(/[$,\s]/g, "");
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function pickVolume(pool: GTPool): number | null {
+  const attrs = pool.attributes;
+  const candidates = [
+    attrs?.volume_usd?.h24,
+    (attrs as { volume_usd?: unknown } | undefined)?.volume_usd,
+    (attrs as { h24_volume_usd?: unknown } | undefined)?.h24_volume_usd,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = parseNumeric(candidate);
+    if (parsed !== null) return parsed;
+  }
+
+  return null;
+}
+type GTPool = {
+  relationships?: { base_token?: { data?: { id?: string } } }
+  attributes?: {
+    base_token_price_usd?: number | string
+    reserve_in_usd?: number | string
+    volume_usd?: { h24?: number | string }
+    price_change_percentage?: { h24?: number | string }
+  }
+}
+type CGCoin = {
+  item?: {
+    id?: string
+    symbol?: string
+    name?: string
+    data?: {
+      price?: number | string
+      total_volume?: number | null
+      price_change_percentage_24h?: { usd?: number | null }
+    }
+  }
 }
 
 /*
@@ -31,8 +81,8 @@ const goldrushTokens = (grData?.results || []).map((t: {
 }));
 */
 
-function extractTokenMeta(included: any[], tokenId: string) {
-  const item = included.find((i: any) => i.id === tokenId);
+function extractTokenMeta(included: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }>, tokenId: string) {
+  const item = included.find((i) => i.id === tokenId);
   if (!item) return null;
   return {
     address: item.attributes?.address ?? "",
@@ -41,7 +91,7 @@ function extractTokenMeta(included: any[], tokenId: string) {
   };
 }
 
-function normalizeGT(pool: any, included: any[]): MergedToken | null {
+function normalizeGT(pool: GTPool, included: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }>): MergedToken | null {
   try {
     const baseTokenId = pool?.relationships?.base_token?.data?.id;
     if (!baseTokenId) return null;
@@ -52,10 +102,10 @@ function normalizeGT(pool: any, included: any[]): MergedToken | null {
       symbol: meta.symbol,
       name: meta.name,
       chain: "base",
-      price: Number(pool.attributes?.base_token_price_usd) || null,
-      liquidity: Number(pool.attributes?.reserve_in_usd) || null,
-      volume: Number(pool.attributes?.volume_usd?.h24) || null,
-      change24h: Number(pool.attributes?.price_change_percentage?.h24) || null,
+      price: parseNumeric(pool.attributes?.base_token_price_usd),
+      liquidity: parseNumeric(pool.attributes?.reserve_in_usd),
+      volume: pickVolume(pool),
+      change24h: parseNumeric(pool.attributes?.price_change_percentage?.h24),
       source: "geckoterminal",
     };
   } catch {
@@ -63,26 +113,47 @@ function normalizeGT(pool: any, included: any[]): MergedToken | null {
   }
 }
 
-async function fetchGT(baseUrl: string): Promise<MergedToken[]> {
+async function fetchGT(): Promise<{ tokens: MergedToken[]; warning?: string }> {
   try {
-    const res = await fetch(`${baseUrl}/api/proxy/gt?network=base`, { cache: "no-store" });
-    if (!res.ok) return [];
-    const data = await res.json();
-    const included: any[] = Array.isArray(data?.included) ? data.included : [];
-    return (Array.isArray(data?.data) ? data.data : [])
-      .map((pool: any) => normalizeGT(pool, included))
-      .filter((t: MergedToken | null): t is MergedToken => t !== null);
+    const result = await getOrFetchCached<{ data?: GTPool[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>({
+      key: 'coingecko:trending-base',
+      ttlMs: 60_000,
+      onLog: msg => console.info(`[trending] ${msg}`),
+      fetcher: async () => {
+        const res = await fetch(
+          'https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token',
+          { headers: { accept: 'application/json' }, cache: 'no-store' }
+        )
+        if (!res.ok) throw new Error(`GeckoTerminal trending failed (${res.status})`)
+        return res.json() as Promise<{ data?: GTPool[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>
+      },
+    })
+
+    const included = Array.isArray(result.data?.included) ? result.data.included : []
+    const tokens = (Array.isArray(result.data?.data) ? result.data.data : [])
+      .map((pool: GTPool) => normalizeGT(pool, included))
+      .filter((t: MergedToken | null): t is MergedToken => t !== null)
+
+    return { tokens, warning: result.warning }
   } catch {
-    return [];
+    return { tokens: [] }
   }
 }
 
-async function fetchCoinGecko(): Promise<MergedToken[]> {
+async function fetchCoinGecko(): Promise<{ tokens: MergedToken[]; warning?: string }> {
   try {
-    const res = await fetch("https://api.coingecko.com/api/v3/search/trending", { cache: "no-store" });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (Array.isArray(data?.coins) ? data.coins : []).map((c: any) => {
+    const result = await getOrFetchCached<{ coins?: CGCoin[] }>({
+      key: 'coingecko:trending-search',
+      ttlMs: 120_000,
+      onLog: msg => console.info(`[trending] ${msg}`),
+      fetcher: async () => {
+        const res = await fetch("https://api.coingecko.com/api/v3/search/trending", { cache: "no-store" })
+        if (!res.ok) throw new Error(`CoinGecko trending failed (${res.status})`)
+        return res.json() as Promise<{ coins?: CGCoin[] }>
+      },
+    })
+
+    const tokens = (Array.isArray(result.data?.coins) ? result.data.coins : []).map((c: CGCoin) => {
       const rawPrice = c?.item?.data?.price;
       const price = typeof rawPrice === "number"
         ? rawPrice
@@ -100,22 +171,22 @@ async function fetchCoinGecko(): Promise<MergedToken[]> {
         change24h: c?.item?.data?.price_change_percentage_24h?.usd ?? null,
         source: "coingecko",
       };
-    });
+    })
+
+    return { tokens, warning: result.warning }
   } catch {
-    return [];
+    return { tokens: [] }
   }
 }
 
 export async function GET() {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
-
-    const [gtTokens, cgTokens] = await Promise.all([
-      fetchGT(baseUrl),
+    const [gtResult, cgResult] = await Promise.all([
+      fetchGT(),
       fetchCoinGecko(),
     ]);
 
-    const merged = [...gtTokens, ...cgTokens];
+    const merged = [...gtResult.tokens, ...cgResult.tokens];
 
     const deduped = Object.values(
       merged.reduce<Record<string, MergedToken>>((acc, t) => {
@@ -130,7 +201,7 @@ export async function GET() {
       return (b.volume ?? 0) - (a.volume ?? 0);
     });
 
-    return NextResponse.json({ data: deduped });
+    return NextResponse.json({ data: deduped, warning: gtResult.warning ?? cgResult.warning });
   } catch (err) {
     console.error("Trending API error:", err);
     return NextResponse.json({ data: [], error: "trending_failed" }, { status: 200 });

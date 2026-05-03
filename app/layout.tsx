@@ -1,20 +1,9 @@
-import type { Metadata } from 'next'
-import { Inter, IBM_Plex_Mono } from 'next/font/google'
+import type { Metadata, Viewport } from 'next'
+import Script from 'next/script'
 import './globals.css'
 import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
-
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-inter',
-  display: 'swap',
-})
-
-const ibmPlexMono = IBM_Plex_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-plex-mono',
-  display: 'swap',
-})
+import { Providers } from './providers'
+import MobileClarkDrawer from '@/components/MobileClarkDrawer'
 
 export const metadata: Metadata = {
   title: 'ChainLens AI — Crypto Intelligence Platform',
@@ -23,19 +12,30 @@ export const metadata: Metadata = {
   themeColor: '#06060a',
 }
 
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+}
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className={`${inter.variable} ${ibmPlexMono.variable}`}>
-      <body className="w-full h-full">
-        <SupabaseProvider>
-          {children}
-        </SupabaseProvider>
+    <html lang="en" suppressHydrationWarning>
+      <body className="w-full min-h-dvh overflow-x-hidden" suppressHydrationWarning>
+        <Script id="android-safe-prehydrate" strategy="beforeInteractive">
+          {`(function(){try{var ua=navigator.userAgent||'';var isAndroid=/Android/i.test(ua);var isMobile=(window.innerWidth||0)<768;var forced=(new URLSearchParams(window.location.search)).get('mobileSafe')==='android';if((isAndroid&&isMobile)||forced){document.documentElement.classList.add('android-safe-mode');document.body&&document.body.classList.add('android-safe-mode');}}catch(e){}})();`}
+        </Script>
+        <Providers>
+          <SupabaseProvider>
+            {children}
+          </SupabaseProvider>
+        </Providers>
+        <MobileClarkDrawer />
       </body>
     </html>
   )
 }
-

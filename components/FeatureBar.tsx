@@ -3,8 +3,11 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
+import ConnectWallet from '@/components/ConnectWallet'
+import { supabase } from '@/lib/supabaseClient'
 
 
 
@@ -126,7 +129,7 @@ type Item = { key: string; label: string; icon: ReactNode; accent: string; iconC
 
 const MAIN_NAV: Item[] = [
   { key: 'dashboard', label: 'Dashboard', icon: <IcDashboard />,    accent: MINT,   iconColor: MINT,   href: '/terminal' },
-  { key: 'portfolio', label: 'Portfolio', icon: <IcPortfolio />,    accent: WHITE,  iconColor: WHITE  },
+  { key: 'portfolio', label: 'Portfolio', icon: <IcPortfolio />,    accent: WHITE,  iconColor: WHITE,  href: '/terminal/portfolio' },
   { key: 'settings',  label: 'Settings',  icon: <IcSettings />,     accent: SLATE,  iconColor: SLATE,  href: '/terminal/settings' },
 ]
 
@@ -164,105 +167,121 @@ function SectionLabel({ children }: { children: ReactNode }) {
 // ─── NavItem ──────────────────────────────────────────────────────────────
 
 function NavItem({ item, active, onSelect }: { item: Item; active: string | null; onSelect: (k: string) => void }) {
-  const router    = useRouter()
   const on        = active === item.key
   const accent    = item.accent
   const iconColor = item.iconColor
 
-  // Per-accent active backgrounds
   const activeBg =
     accent === PURPLE ? 'linear-gradient(90deg, rgba(139,92,246,0.22), rgba(139,92,246,0.06))'
     : accent === PINK ? 'linear-gradient(90deg, rgba(236,72,153,0.20), rgba(236,72,153,0.05))'
     : accent === WHITE ? 'linear-gradient(90deg, rgba(226,232,240,0.10), rgba(226,232,240,0.02))'
     : accent === SLATE ? 'linear-gradient(90deg, rgba(148,163,184,0.10), rgba(148,163,184,0.02))'
-    : /* MINT */ 'linear-gradient(90deg, rgba(45,212,191,0.26), rgba(45,212,191,0.06))'
+    : 'linear-gradient(90deg, rgba(45,212,191,0.26), rgba(45,212,191,0.06))'
 
-  // Per-accent active shadow (left glow + top inset shimmer)
   const activeGlow =
     accent === PURPLE ? `0 0 24px rgba(139,92,246,0.26), inset 0 1px 0 rgba(139,92,246,0.22)`
     : accent === PINK ? `0 0 22px rgba(236,72,153,0.22), inset 0 1px 0 rgba(236,72,153,0.20)`
     : accent === WHITE ? `inset 0 1px 0 rgba(226,232,240,0.16)`
     : accent === SLATE ? `inset 0 1px 0 rgba(148,163,184,0.14)`
-    : /* MINT */ `0 0 36px rgba(45,212,191,0.42), 0 0 14px rgba(45,212,191,0.18), inset 0 1px 0 rgba(45,212,191,0.30)`
+    : `0 0 36px rgba(45,212,191,0.42), 0 0 14px rgba(45,212,191,0.18), inset 0 1px 0 rgba(45,212,191,0.30)`
 
-  // Idle icon colour — dim but readable version of each accent
   const idleIconColor =
     accent === PURPLE ? '#5a4492'
     : accent === PINK  ? '#7e3060'
     : accent === WHITE ? '#4e6880'
     : accent === SLATE ? '#445870'
-    : /* MINT */ '#286060'
+    : '#286060'
 
-  return (
-    <motion.button
-      onClick={() => item.href ? router.push(item.href) : onSelect(item.key)}
+  const sharedStyle: React.CSSProperties = {
+    height: '36px',
+    borderRadius: '10px',
+    paddingLeft: on ? '11px' : '12px',
+    paddingRight: '12px',
+    background: on ? activeBg : 'transparent',
+    borderLeft:   on ? `2.5px solid ${accent}` : '2.5px solid transparent',
+    borderTop:    '1px solid transparent',
+    borderRight:  '1px solid transparent',
+    borderBottom: '1px solid transparent',
+    boxShadow: on ? activeGlow : 'none',
+    color: on ? accent : '#6a8da8',
+    fontSize: '12px',
+    fontWeight: on ? 600 : 500,
+    fontFamily: 'var(--font-inter)',
+    cursor: 'pointer',
+    textAlign: 'left',
+    transition: 'color 0.12s, background 0.12s, box-shadow 0.12s, transform 0.1s',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    width: '100%',
+    position: 'relative',
+    textDecoration: 'none',
+    boxSizing: 'border-box',
+  }
 
-      className="w-full flex items-center gap-3 relative"
-      style={{
-        height: '36px',
-        borderRadius: '10px',
-        paddingLeft: on ? '11px' : '12px',
-        paddingRight: '12px',
-        background: on ? activeBg : 'transparent',
-        borderLeft:   on ? `2.5px solid ${accent}` : '2.5px solid transparent',
-        borderTop:    '1px solid transparent',
-        borderRight:  '1px solid transparent',
-        borderBottom: '1px solid transparent',
-        boxShadow: on ? activeGlow : 'none',
-        color: on ? accent : '#6a8da8',
-        fontSize: '12px',
-        fontWeight: on ? 600 : 500,
-        fontFamily: 'var(--font-inter)',
-        cursor: 'pointer',
-        textAlign: 'left',
-        transition: 'color 0.12s, background 0.12s, box-shadow 0.12s',
-      }}
-      whileHover={!on ? { x: 2 } : {}}
-      transition={{ duration: 0.1 }}
-      onMouseEnter={e => {
-        if (!on) {
-          const el = e.currentTarget as HTMLButtonElement
-          const hoverGlow =
-            accent === PURPLE ? '0 0 12px rgba(139,92,246,0.18), inset 0 1px 0 rgba(139,92,246,0.10)'
-            : accent === PINK  ? '0 0 12px rgba(236,72,153,0.16), inset 0 1px 0 rgba(236,72,153,0.10)'
-            : accent === WHITE ? 'inset 0 1px 0 rgba(255,255,255,0.06)'
-            : accent === SLATE ? 'inset 0 1px 0 rgba(148,163,184,0.08)'
-            : '0 0 14px rgba(45,212,191,0.16), inset 0 1px 0 rgba(45,212,191,0.12)'
-          const hoverColor =
-            accent === PURPLE ? '#a78bfa'
-            : accent === PINK  ? '#f472b6'
-            : accent === WHITE ? '#b0c4d8'
-            : accent === SLATE ? '#94a3b8'
-            : '#5eead4'
-          el.style.color      = hoverColor
-          el.style.background = `rgba(255,255,255,0.04)`
-          el.style.boxShadow  = hoverGlow
-        }
-      }}
-      onMouseLeave={e => {
-        if (!on) {
-          const el = e.currentTarget as HTMLButtonElement
+  const hoverColor =
+    accent === PURPLE ? '#a78bfa'
+    : accent === PINK  ? '#f472b6'
+    : accent === WHITE ? '#b0c4d8'
+    : accent === SLATE ? '#94a3b8'
+    : '#5eead4'
 
+  const hoverGlow =
+    accent === PURPLE ? '0 0 12px rgba(139,92,246,0.18), inset 0 1px 0 rgba(139,92,246,0.10)'
+    : accent === PINK  ? '0 0 12px rgba(236,72,153,0.16), inset 0 1px 0 rgba(236,72,153,0.10)'
+    : accent === WHITE ? 'inset 0 1px 0 rgba(255,255,255,0.06)'
+    : accent === SLATE ? 'inset 0 1px 0 rgba(148,163,184,0.08)'
+    : '0 0 14px rgba(45,212,191,0.16), inset 0 1px 0 rgba(45,212,191,0.12)'
 
-          el.style.color      = '#6a8da8'
-          el.style.background = 'transparent'
-          el.style.boxShadow  = 'none'
-        }
-      }}
-    >
-      <span style={{
-        color: on ? iconColor : idleIconColor,
-        display: 'flex',
-        alignItems: 'center',
-        flexShrink: 0,
-        transition: 'color 0.12s',
-      }}>
+  function onMouseEnter(e: React.MouseEvent) {
+    if (!on) {
+      const el = e.currentTarget as HTMLElement
+      el.style.color      = hoverColor
+      el.style.background = 'rgba(255,255,255,0.04)'
+      el.style.boxShadow  = hoverGlow
+      el.style.transform  = 'translateX(2px)'
+    }
+  }
+
+  function onMouseLeave(e: React.MouseEvent) {
+    if (!on) {
+      const el = e.currentTarget as HTMLElement
+      el.style.color      = '#6a8da8'
+      el.style.background = 'transparent'
+      el.style.boxShadow  = 'none'
+      el.style.transform  = ''
+    }
+  }
+
+  const itemContent = (
+    <>
+      <span style={{ color: on ? iconColor : idleIconColor, display: 'flex', alignItems: 'center', flexShrink: 0, transition: 'color 0.12s' }}>
         {item.icon}
       </span>
       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {item.label}
       </span>
+    </>
+  )
 
+  if (item.href) {
+    return (
+      <Link href={item.href} style={sharedStyle} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
+        {itemContent}
+      </Link>
+    )
+  }
+
+  return (
+    <motion.button
+      onClick={() => onSelect(item.key)}
+      style={sharedStyle}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      whileHover={!on ? { x: 2 } : {}}
+      transition={{ duration: 0.1 }}
+    >
+      {itemContent}
     </motion.button>
   )
 }
@@ -281,9 +300,29 @@ interface Props {
 
 export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }: Props) {
   const router = useRouter()
+  const [accountEmail, setAccountEmail] = useState<string | null>(null)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setAccountEmail(data.session?.user?.email ?? null)
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAccountEmail(session?.user?.email ?? null)
+    })
+
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
+  const initials = (accountEmail?.[0] ?? 'A').toUpperCase()
+  const shortEmail = accountEmail
+    ? accountEmail.length > 18
+      ? `${accountEmail.slice(0, 7)}…${accountEmail.slice(-7)}`
+      : accountEmail
+    : null
   return (
     <aside
-      className="h-screen shrink-0 flex flex-col"
+      className="min-h-dvh shrink-0 flex flex-col mob-featurebar"
       style={{
         width: '240px',
         background: '#06060a',
@@ -366,105 +405,99 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
           gap: '6px',
         }}
       >
-        {/* Connect Wallet — full width, premium mint */}
-        <button
-          className="w-full active:scale-[0.98]"
-          style={{
-            height: '36px',
-            borderRadius: '10px',
-            background: 'linear-gradient(90deg, #2DD4BF 0%, #0d9488 100%)',
-            color: '#021a18',
-            fontSize: '13px',
-            fontWeight: 700,
-            letterSpacing: '0.025em',
-            border: 'none',
-            cursor: 'pointer',
-            fontFamily: 'var(--font-inter)',
-            boxShadow: '0 0 28px rgba(45,212,191,0.35), 0 2px 8px rgba(0,0,0,0.4)',
-            transition: 'box-shadow 0.15s, opacity 0.15s',
-          }}
-          onMouseEnter={e => {
-            const el = e.currentTarget as HTMLButtonElement
-            el.style.boxShadow = '0 0 44px rgba(45,212,191,0.55), 0 2px 10px rgba(0,0,0,0.4)'
-            el.style.opacity   = '0.94'
-          }}
-          onMouseLeave={e => {
-            const el = e.currentTarget as HTMLButtonElement
-            el.style.boxShadow = '0 0 28px rgba(45,212,191,0.35), 0 2px 8px rgba(0,0,0,0.4)'
-            el.style.opacity   = '1'
+        {/* Connect Wallet — full width */}
+        <ConnectWallet className="w-full active:scale-[0.98]" />
 
-          }}
-        >
-          Connect Wallet
-        </button>
-
-
-=======
-        {/* Sign In | Sign Up */}
-        <div className="flex" style={{ gap: '6px' }}>
-          {/* Sign In — dark neutral ghost */}
+        {accountEmail ? (
           <button
-            className="flex-1"
-            onClick={() => router.push('/auth')}
+            className="w-full"
+            onClick={() => router.push('/terminal/settings')}
             style={{
-              height: '30px',
+              height: '34px',
               borderRadius: '8px',
-              background: 'rgba(255,255,255,0.03)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              color: '#5a7490',
-              fontSize: '12px',
+              background: 'linear-gradient(135deg, rgba(45,212,191,0.10) 0%, rgba(139,92,246,0.14) 100%)',
+              border: '1px solid rgba(45,212,191,0.30)',
+              color: '#d1fae5',
+              fontSize: '11px',
               fontWeight: 500,
               cursor: 'pointer',
               fontFamily: 'var(--font-inter)',
-              transition: 'color 0.12s, border-color 0.12s, background 0.12s',
+              transition: 'border-color 0.12s, box-shadow 0.12s',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0 8px',
             }}
             onMouseEnter={e => {
               const el = e.currentTarget as HTMLButtonElement
-              el.style.color       = '#94a3b8'
-              el.style.borderColor = 'rgba(255,255,255,0.16)'
-              el.style.background  = 'rgba(255,255,255,0.06)'
+              el.style.borderColor = 'rgba(45,212,191,0.48)'
+              el.style.boxShadow = '0 0 18px rgba(45,212,191,0.20)'
             }}
             onMouseLeave={e => {
               const el = e.currentTarget as HTMLButtonElement
-              el.style.color       = '#5a7490'
-              el.style.borderColor = 'rgba(255,255,255,0.08)'
-              el.style.background  = 'rgba(255,255,255,0.03)'
+              el.style.borderColor = 'rgba(45,212,191,0.30)'
+              el.style.boxShadow = 'none'
             }}
           >
-            Sign In
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
+              <span style={{
+                width: '18px',
+                height: '18px',
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                color: '#04101a',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '10px',
+              }}>{initials}</span>
+              <span>{shortEmail}</span>
+            </span>
+            <span style={{ color: '#5eead4', fontSize: '9px', letterSpacing: '0.09em', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.9)' }} />
+              SIGNED IN
+            </span>
           </button>
-          {/* Sign Up — purple tint */}
-          <button
-            className="flex-1 active:scale-[0.98]"
-            onClick={() => router.push('/auth')}
-            style={{
-              height: '30px',
-              borderRadius: '8px',
-              background: 'rgba(139,92,246,0.12)',
-              border: '1px solid rgba(139,92,246,0.28)',
-              color: '#a78bfa',
-              fontSize: '12px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              fontFamily: 'var(--font-inter)',
-              transition: 'background 0.12s, border-color 0.12s, box-shadow 0.12s',
-            }}
-            onMouseEnter={e => {
-              const el = e.currentTarget as HTMLButtonElement
-              el.style.background  = 'rgba(139,92,246,0.22)'
-              el.style.borderColor = 'rgba(139,92,246,0.48)'
-              el.style.boxShadow   = '0 0 16px rgba(139,92,246,0.22)'
-            }}
-            onMouseLeave={e => {
-              const el = e.currentTarget as HTMLButtonElement
-              el.style.background  = 'rgba(139,92,246,0.12)'
-              el.style.borderColor = 'rgba(139,92,246,0.28)'
-              el.style.boxShadow   = 'none'
-            }}
-          >
-            Sign Up
-          </button>
-        </div>
+        ) : (
+          <div className="flex" style={{ gap: '6px' }}>
+            <button
+              className="flex-1"
+              onClick={() => router.push('/sign-in')}
+              style={{
+                height: '30px',
+                borderRadius: '8px',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                color: '#5a7490',
+                fontSize: '12px',
+                fontWeight: 500,
+                cursor: 'pointer',
+                fontFamily: 'var(--font-inter)',
+                transition: 'color 0.12s, border-color 0.12s, background 0.12s',
+              }}
+            >
+              Sign In
+            </button>
+            <button
+              className="flex-1 active:scale-[0.98]"
+              onClick={() => router.push('/sign-in')}
+              style={{
+                height: '30px',
+                borderRadius: '8px',
+                background: 'rgba(139,92,246,0.12)',
+                border: '1px solid rgba(139,92,246,0.28)',
+                color: '#a78bfa',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'var(--font-inter)',
+              }}
+            >
+              Sign Up
+            </button>
+          </div>
+        )}
             </div>
     </aside>
   )

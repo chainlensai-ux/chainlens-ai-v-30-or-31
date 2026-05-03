@@ -49,13 +49,29 @@ export default function LiquiditySafetyPage() {
         .lp-scan-btn:not(:disabled):hover { filter: brightness(1.08); transform: translateY(-1px); }
         .lp-scan-btn { transition: all 0.15s; }
         @keyframes lp-dot { 0%,80%,100%{opacity:.25;transform:scale(.75)} 40%{opacity:1;transform:scale(1)} }
+        @media (max-width: 768px) {
+          .lp-shell { flex-direction: column !important; height: auto !important; }
+          .lp-main { padding: 20px 14px 120px !important; }
+          .lp-input-row { flex-direction: column; }
+          .lp-input-row button { width: 100%; }
+          .lp-card { padding: 16px 14px !important; max-width: 100% !important; }
+          .lp-report {
+            width: 100% !important;
+            border-left: none !important;
+            border-top: 1px solid rgba(255,255,255,0.08) !important;
+            max-height: 56dvh !important;
+            min-height: 240px;
+            overflow: hidden !important;
+          }
+          .lp-report-body { overflow-y: auto !important; min-height: 0 !important; }
+        }
       `}</style>
 
       {/* ── Two-column shell ──────────────────────────────────────────── */}
-      <div style={{ display: 'flex', height: '100%', overflow: 'hidden', color: '#e2e8f0' }}>
+      <div className="lp-shell" style={{ display: 'flex', height: '100%', overflow: 'hidden', color: '#e2e8f0' }}>
 
         {/* ── Left: scrollable main content ─────────────────────────── */}
-        <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '40px 48px' }}>
+        <div className="lp-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px' }}>
 
           {/* Back button */}
           <Link href="/terminal" style={{
@@ -102,7 +118,7 @@ export default function LiquiditySafetyPage() {
           </div>
 
           {/* Search */}
-          <div style={{
+          <div className="lp-card" style={{
             background: '#080c14', border: '1px solid rgba(255,255,255,0.08)',
             borderRadius: '14px', padding: '20px 24px', marginBottom: '28px', maxWidth: '680px',
           }}>
@@ -112,7 +128,7 @@ export default function LiquiditySafetyPage() {
             }}>
               Token Address or Name
             </p>
-            <div style={{ display: 'flex', gap: '10px' }}>
+            <div className="lp-input-row" style={{ display: 'flex', gap: '10px' }}>
               <input
                 value={input}
                 onChange={e => setInput(e.target.value)}
@@ -218,7 +234,7 @@ export default function LiquiditySafetyPage() {
         </div>
 
         {/* ── Right: Extended LP Safety panel (420px) ───────────────── */}
-        <aside style={{
+        <aside className="lp-report" style={{
           width: '520px',
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
@@ -255,7 +271,7 @@ export default function LiquiditySafetyPage() {
 
           {/* Extended box — flush to top, full width, scrollable */}
           {result && (
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div className="lp-report-body" style={{ flex: 1, overflowY: 'auto' }}>
               <LPSafetyExtendedBox data={result} />
             </div>
           )}

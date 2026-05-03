@@ -1,10 +1,13 @@
 'use client'
 
 import { useState } from 'react'
+import ClarkOrb from '@/components/ClarkOrb'
 
 const CHIPS = [
-  'Scan Wallet',
-  'Trending on Base',
+  'Scan a Base token',
+  'Check wallet behavior',
+  'Explain liquidity risk',
+  'What can Clark do?',
 ]
 
 
@@ -15,6 +18,44 @@ interface HeroSectionProps {
 
 export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
   const [query, setQuery] = useState('')
+  const [sendClicks, setSendClicks] = useState(0)
+  const [lastAction, setLastAction] = useState('idle')
+  const [mobileRedirectArmed, setMobileRedirectArmed] = useState(false)
+
+  const isMobile = () => typeof window !== 'undefined' && (window.innerWidth < 768 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))
+  const debugClark = () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugClark') === 'true'
+  const debugLog = (event: string, meta?: Record<string, unknown>) => {
+    if (!debugClark()) return
+    console.info(event, meta ?? {})
+  }
+
+  const handleHeroSend = (event?: { preventDefault?: () => void }) => {
+    event?.preventDefault?.()
+    const prompt = query.trim()
+    setSendClicks(c => c + 1)
+    setLastAction('send_click')
+    debugLog('hero_send_button_clicked')
+    debugLog('hero_clark_prompt_length', { length: prompt.length })
+    if (isMobile()) {
+      setMobileRedirectArmed(true)
+      const next = prompt
+        ? `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}&autosend=1`
+        : '/terminal/clark-ai'
+      window.location.href = next
+      return
+    }
+    if (prompt && onSend) {
+      debugLog('hero_desktop_onSend_called', { prompt: prompt.slice(0, 80) })
+      onSend(prompt)
+      setQuery('')
+      onTyping?.(false)
+      return
+    }
+    if (prompt) {
+      setQuery('')
+      onTyping?.(false)
+    }
+  }
 
   return (
     <>
@@ -86,6 +127,9 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           transform: translateY(-1px);
         }
         .clark-box-input::placeholder { color: rgba(255,255,255,0.40); }
+        @media (prefers-reduced-motion: reduce) {
+          .clark-orb, .clark-send-btn, .clark-send-arrow { animation: none !important; }
+        }
       `}</style>
 
       <section
@@ -289,23 +333,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                     boxShadow: 'inset 0 0 20px rgba(45,212,191,0.08), inset 0 0 14px rgba(236,72,153,0.06), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(139,92,246,0.10), 0 0 8px rgba(45,212,191,0.06)',
                   }}
                 >
-                  {/* Sparkle orb */}
-                  <div
-                    style={{
-                      width: '30px',
-                      height: '30px',
-                      borderRadius: '8px',
-                      background: 'linear-gradient(135deg, rgba(139,92,246,0.28), rgba(236,72,153,0.16))',
-                      border: '1px solid rgba(139,92,246,0.30)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                      boxShadow: '0 0 10px rgba(139,92,246,0.18)',
-                    }}
-                  >
-                    <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#a78bfa', boxShadow: '0 0 8px rgba(139,92,246,0.70)' }} />
-                  </div>
+                  <ClarkOrb size={30} className="clark-orb" style={{ flexShrink: 0, boxShadow: '0 0 10px rgba(139,92,246,0.18)' }} />
 
                   {/* Input */}
                   <input
@@ -313,14 +341,17 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                     value={query}
                     onChange={(e) => {
                       setQuery(e.target.value)
+                      setLastAction('input_change')
+                      debugLog('hero_input_change', { prompt: e.target.value.slice(0, 80) })
                       onTyping?.(e.target.value.length > 0)
                     }}
                     onBlur={() => { if (!query) onTyping?.(false) }}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && query.trim()) {
-                        onSend?.(query.trim())
-                        setQuery('')
-                        onTyping?.(false)
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        setLastAction('enter_pressed')
+                        debugLog('hero_enter_pressed')
+                        handleHeroSend(e)
                       }
                     }}
                     placeholder="Ask Clark what whales are buying today..."
@@ -340,12 +371,9 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                   {/* Send button */}
                   <button
                     className="clark-send-btn"
-                    onClick={() => {
-                      if (query.trim()) {
-                        onSend?.(query.trim())
-                        setQuery('')
-                        onTyping?.(false)
-                      }
+                    type="button"
+                    onClick={(e) => {
+                      handleHeroSend(e)
                     }}
                     style={{
                       flexShrink: 0,
@@ -363,6 +391,17 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                     <span className="clark-send-arrow" style={{ color: '#fff', fontSize: '14px', lineHeight: 1 }}>→</span>
                   </button>
                 </div>
+
+
+                {debugClark() && (
+                  <div style={{ marginBottom: '10px', border: '1px solid rgba(45,212,191,0.35)', borderRadius: '10px', padding: '10px', background: 'rgba(2,6,23,0.9)', textAlign: 'left' }}>
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>inputValue: <span style={{ color: '#e2e8f0' }}>{query || '∅'}</span></div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>sendClicks: <span style={{ color: '#e2e8f0' }}>{sendClicks}</span></div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>lastAction: <span style={{ color: '#e2e8f0' }}>{lastAction}</span></div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>isMobile: <span style={{ color: '#e2e8f0' }}>{String(isMobile())}</span></div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>mobileRedirectArmed: <span style={{ color: '#e2e8f0' }}>{mobileRedirectArmed ? 'yes' : 'no'}</span></div>
+                  </div>
+                )}
 
                 {/* Chips — 2 centered */}
                 <div
