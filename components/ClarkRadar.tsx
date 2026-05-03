@@ -123,23 +123,26 @@ interface ClarkRadarProps {
 
 // Renders a Clark response with section labels (e.g. "Verdict:", "Risk:") highlighted in cyan.
 function ClarkMessage({ text }: { text: string }) {
-  const LABEL_RE = /^([A-Z][^\n:]{0,22}):\s*/
+  const LABEL_RE = /^([A-Z][^\n:]{0,28}):\s*/
   return (
-    <div>
+    <div style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
       {text.split('\n').map((line, i) => {
         const m = line.match(LABEL_RE)
-        const isLabel = m != null && m[1].trim().split(/\s+/).length <= 3 && !/[,;.!?]/.test(m[1])
+        const isLabel = m != null && m[1].trim().split(/\s+/).length <= 4 && !/[,;.!?]/.test(m[1])
         if (isLabel && m) {
           const rest = line.slice(m[0].length)
           return (
-            <div key={i} style={{ lineHeight: 1.7 }}>
-              <span style={{ color: '#5eead4', fontWeight: 600, fontSize: '11.5px' }}>{m[1]}:</span>
-              {rest ? ` ${rest}` : ''}
+            <div key={i} style={{ lineHeight: 1.8, marginTop: i === 0 ? 0 : '2px' }}>
+              <span style={{ color: '#5eead4', fontWeight: 700, fontSize: '11.5px', letterSpacing: '0.01em' }}>{m[1]}:</span>
+              {rest ? <span style={{ color: 'inherit' }}> {rest}</span> : ''}
             </div>
           )
         }
+        if (!line) {
+          return <div key={i} style={{ height: '8px' }} />
+        }
         return (
-          <div key={i} style={{ lineHeight: 1.7, height: line ? undefined : '6px' }}>
+          <div key={i} style={{ lineHeight: 1.8 }}>
             {line}
           </div>
         )
@@ -596,7 +599,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                         <span className="radar-dot">.</span>
                         <span className="radar-dot">.</span>
                       </span>
-                    ) : msg.role === 'clark' ? msg.text.split('\n').map((line, idx) => { const cleaned = line.trimStart(); const labels = ["Clark's read:", 'Next:', 'Top movers', 'Verdict:', 'Risk:']; const hit = labels.find((l) => cleaned.toLowerCase().startsWith(l.toLowerCase())); return <p key={idx}>{hit ? <><span className='clark-msg-label'>{line.slice(0, line.indexOf(':') + 1)}</span>{line.slice(line.indexOf(':') + 1)}</> : line || <span>&nbsp;</span>}</p> }) : msg.text}
+                    ) : msg.role === 'clark' ? <ClarkMessage text={msg.text} /> : msg.text}
                   </div>
                 </div>
               ))}

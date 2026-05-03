@@ -2635,7 +2635,7 @@ function buildClarkEvidencePack(report: ClarkFullReportEvidence, wallet?: ClarkT
   ];
   const liquidityFacts = [
     `Pool depth: ${formatUsdShort(report.liquidity.liquidityUsd)}`,
-    `LP control: ${boolToWord(report.liquidity.lpLocked)}`,
+    `LP control: ${report.liquidity.lpLocked === true ? "Locked (confirmed)" : report.liquidity.lpLocked === false ? "Unlocked (confirmed)" : "LP lock/control: Unverified"}`,
     `Volume/liquidity: ${report.liquidity.volumeToLiquidity != null ? report.liquidity.volumeToLiquidity.toFixed(2) : "Unverified"}`,
   ];
   const devFacts = [
@@ -2795,7 +2795,7 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     "Missing checks:",
     ...report.missing.slice(0, 4).map((m) => `- ${m}`),
     "",
-    "Next:",
+    "Next action:",
     verdict.nextAction,
   ].join("\n");
 }
@@ -2805,103 +2805,80 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
   const name = report.token.name ?? "Unknown token";
   const symbol = report.token.symbol ?? "?";
   const address = report.token.address ?? "Unresolved";
-  const executiveRead =
-    verdict.verdict === "AVOID"
-      ? "Risk flags are concrete enough to keep this offside for now. Price action alone is not worth overriding confirmed contract or exit hazards."
-      : verdict.verdict === "WATCH"
-        ? "This has enough market activity to stay on watch. The setup is not clean enough for blind trust until liquidity control and deployer behavior are better verified."
-        : verdict.verdict === "UNKNOWN"
-          ? "Coverage is still too incomplete for a hard call. The token may be active, but key safety fields are still unverified."
-          : "There are usable signals, but too many missing risk checks for a conviction rating.";
 
-  const marketSignal = report.market.change24h != null
-    ? (report.market.change24h > 8 ? "Momentum is strong but needs confirmation from depth and holder behavior." : report.market.change24h < -8 ? "Momentum is weak and could stay fragile without stronger bid support." : "Momentum is mixed and not yet decisive.")
-    : "Momentum is unverified with current market coverage.";
-  const holderSummary = report.missing.some((m) => /holder/i.test(m))
-    ? "Holder distribution is not fully available in this pass."
-    : "Holder distribution does not show a clear concentration warning in available fields.";
+  const quickRead =
+    verdict.verdict === "AVOID"
+      ? "Risk flags are confirmed enough to keep this offside right now."
+      : verdict.verdict === "WATCH"
+        ? "Market depth is usable and no confirmed contract red flags — monitor actively."
+        : verdict.verdict === "UNKNOWN"
+          ? "Coverage is too incomplete for a reliable call. Key fields are still unverified."
+          : "Usable signals are present, but missing risk checks prevent a conviction rating.";
 
   const bullCase = dedupeLines([
-    report.market.liquidity != null ? `Liquidity is visible at ${formatUsdShort(report.market.liquidity)}.` : "",
-    report.market.volume24h != null ? `24h volume is active around ${formatUsdShort(report.market.volume24h)}.` : "",
-    report.contract.honeypot === false ? "No honeypot flag was detected in current checks." : "",
+    report.market.liquidity != null ? `Liquidity visible at ${formatUsdShort(report.market.liquidity)}.` : "",
+    report.market.volume24h != null ? `24h volume active around ${formatUsdShort(report.market.volume24h)}.` : "",
+    report.contract.honeypot === false ? "No honeypot flag detected in current checks." : "",
     report.contract.buyTax != null && report.contract.sellTax != null && report.contract.buyTax <= 5 && report.contract.sellTax <= 5
-      ? "Transfer tax profile looks reasonable in this snapshot."
-      : "",
+      ? "Tax profile looks reasonable in this snapshot." : "",
   ]).filter(Boolean).slice(0, 3);
+
   const bearCase = dedupeLines([
     report.contract.honeypot === true ? "Honeypot risk is flagged." : "",
-    (report.contract.buyTax ?? 0) > 15 || (report.contract.sellTax ?? 0) > 15 ? "High transfer tax risk is present." : "",
+    (report.contract.buyTax ?? 0) > 15 || (report.contract.sellTax ?? 0) > 15 ? "High transfer tax present." : "",
     (report.devWallet.linkedWallets ?? 0) > 0 ? `Linked deployer cluster detected (${report.devWallet.linkedWallets}).` : "",
-    (report.liquidity.liquidityUsd ?? 0) > 0 && (report.liquidity.liquidityUsd ?? 0) < 20_000 ? "Liquidity depth is thin for cleaner exits." : "",
-    report.missing.length > 3 ? "Critical evidence gaps remain across contract/liquidity/deployer checks." : "",
+    (report.liquidity.liquidityUsd ?? 0) > 0 && (report.liquidity.liquidityUsd ?? 0) < 20_000 ? "Liquidity depth is thin for clean exits." : "",
+    report.missing.length > 3 ? "Critical evidence gaps across contract/liquidity/deployer checks." : "",
   ]).filter(Boolean).slice(0, 3);
-  const missing = report.missing.length ? dedupeLines(report.missing).map((m) => `- ${m}`).join("\n") : "- No major gaps in the currently available scan fields.";
+
+  const lpControl = report.liquidity.lpLocked === true
+    ? "Locked (confirmed)"
+    : report.liquidity.lpLocked === false
+      ? "Unlocked (confirmed)"
+      : "Not confirmed — verify before exit";
 
   return [
-    "CLARK FULL REPORT",
+    "CLARK TOKEN SCAN",
+    `Asset: ${name} (${symbol})`,
+    `Contract: ${address}`,
+    `Verdict: ${verdict.verdict}`,
+    `Confidence: ${verdict.confidence}`,
     "",
-    `Asset:\n${name} (${symbol}) — Base`,
-    `Contract:\n${address}`,
+    "Quick read:",
+    quickRead,
     "",
-    `Verdict:\n${verdict.verdict}`,
-    "",
-    `Confidence:\n${verdict.confidence}`,
-    "",
-    "Executive read:",
-    executiveRead,
-    "",
-    "Market picture:",
-    `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unverified"}`,
-    `- 24h move: ${report.market.change24h != null ? `${report.market.change24h.toFixed(2)}%` : "Unverified"}`,
-    `- Volume: ${formatUsdShort(report.market.volume24h)}`,
+    "Market / liquidity:",
+    `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
+    `- Volume (24h): ${formatUsdShort(report.market.volume24h)}`,
     `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : report.market.fdv != null ? `Unavailable — FDV around ${formatUsdShort(report.market.fdv)}` : "Unavailable"}`,
-    `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unverified"}`,
-    `- Momentum read: ${marketSignal}`,
+    `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
+    `- Pool depth: ${formatUsdShort(report.liquidity.liquidityUsd)}`,
+    `- LP control: ${lpControl}`,
     "",
-    "Contract check:",
-    `- Open source: ${boolToWord(report.contract.openSource)}`,
-    `- Proxy: ${boolToWord(report.contract.proxy)}`,
-    `- Mint: ${boolToWord(report.contract.mintable)}`,
+    "Security / simulation:",
     `- Honeypot: ${report.contract.honeypot === true ? "Flagged" : report.contract.honeypot === false ? "Not flagged" : "Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
-    `- Transfer tax: ${report.contract.transferTax != null ? `${report.contract.transferTax}%` : "Unverified"}`,
-    `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unverified"}`,
+    `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unavailable"}`,
     `- Transfer controls: ${report.contract.proxy === true || report.contract.mintable === true ? "Potentially elevated control surface" : "Unverified"}`,
-    "",
-    "Liquidity / exit risk:",
-    `- Pool depth: ${formatUsdShort(report.liquidity.liquidityUsd)}`,
-    `- LP control: ${boolToWord(report.liquidity.lpLocked)}${report.liquidity.lpOwner ? ` (owner: ${shortAddress(report.liquidity.lpOwner)})` : ""}`,
-    `- Concentration: ${report.liquidity.lpConcentration != null ? `${report.liquidity.lpConcentration.toFixed(2)}%` : "Unverified"}`,
-    `- Volume/liquidity read: ${report.liquidity.volumeToLiquidity != null ? report.liquidity.volumeToLiquidity.toFixed(2) : "Unverified"} (${(report.liquidity.volumeToLiquidity ?? 0) > 1.2 ? "high churn" : "normal/unknown"})`,
-    "",
-    "Dev wallet / deployer:",
     `- Deployer: ${report.devWallet.likelyDeployer ? shortAddress(report.devWallet.likelyDeployer) : "Unverified"}`,
-    `- Linked wallets: ${report.devWallet.linkedWallets != null ? report.devWallet.linkedWallets : "Unverified"}`,
-    `- Suspicious patterns: ${report.devWallet.suspiciousPatterns.length ? report.devWallet.suspiciousPatterns.join("; ") : "None confirmed from available scan"}`,
-    `- Confidence: ${report.devWallet.confidence ?? "Unverified"}`,
     "",
     "Holder / distribution:",
-    "- Holder count: Unverified",
-    "- Top holder: Unverified",
-    `- Distribution read: ${holderSummary}`,
-    "- Missing fields: holder concentration and top-holder ownership are not yet fully available in this route.",
+    `- Holder count: ${report.holders.holderCount != null ? formatInt(report.holders.holderCount) : "Unavailable"}`,
+    `- Top holder: ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(2)}%` : "Unavailable"}`,
+    `- Top 10: ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(2)}%` : "Unavailable"}`,
     "",
     "Bull case:",
-    ...(bullCase.length ? bullCase.map((s) => `- ${s}`) : ["- No strong bullish case yet from verified fields."]),
+    ...(bullCase.length ? bullCase.map((s) => `- ${s}`) : ["- No strong positive signal confirmed yet."]),
     "",
     "Bear case:",
-    ...(bearCase.length ? bearCase.map((s) => `- ${s}`) : ["- No major bear-case flag confirmed in available fields."]),
+    ...(bearCase.length ? bearCase.map((r) => `- ${r}`) : ["- No major risk flag confirmed in available fields."]),
     "",
-    "What’s missing:",
-    missing,
+    "Missing checks:",
+    ...(report.missing.length ? report.missing.slice(0, 5).map((m) => `- ${m}`) : ["- No major gaps in currently available scan fields."]),
     "",
-    "Clark’s call:",
-    verdict.clarkRead,
-    "",
-    "Next move:",
+    "Next action:",
     verdict.nextAction,
   ].join("\n");
 }
