@@ -448,7 +448,8 @@ ${JSON.stringify(analysis, null, 2)}
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'unavailable'
     console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] marketCap available', computedMarketCap != null, '[gt-market] fdv available', fdv != null)
-    // GoPlus fallback security data (used when Honeypot.is is unavailable)
+    // Optional GoPlus data — only used if already present and Honeypot.is is unavailable.
+    // GoPlus is not a core ChainLens security provider; treat its data as low-confidence fallback only.
     const gpResultObj = (gpRaw as Record<string, unknown>)?.result as Record<string, unknown> ?? {};
     const gpToken = gpResultObj[contract.toLowerCase()] as Record<string, unknown> ?? {};
     const gpHasData = Object.keys(gpToken).length > 0;
@@ -512,7 +513,8 @@ ${JSON.stringify(analysis, null, 2)}
       // GoPlus security data — keyed by lowercase contract address
       goplus: (gpRaw as Record<string, unknown>)?.result ?? null,
 
-      // Security simulation — Honeypot.is primary, GoPlus fallback
+      // Security simulation — Honeypot.is is the preferred provider.
+      // GoPlus is an optional low-confidence fallback only; not a core provider.
       honeypot: hpResult.ok ? {
         isHoneypot:        hpResult.honeypot,
         buyTax:            hpResult.buyTax,
@@ -521,8 +523,8 @@ ${JSON.stringify(analysis, null, 2)}
         simulationSuccess: hpResult.simulationSuccess,
       } : gpHoneypot,
       securityDiagnostics: {
-        honeypotProvider: hpResult.ok ? "ok" : (gpHasData ? "goplus_fallback" : hpResult.honeypotProvider),
-        honeypotSource:   hpResult.ok ? "honeypot.is" : (gpHasData ? "goplus" : "unavailable"),
+        honeypotProvider: hpResult.ok ? "ok" : (gpHasData ? "optional_fallback_goplus" : hpResult.honeypotProvider),
+        honeypotSource:   hpResult.ok ? "honeypot.is" : (gpHasData ? "goplus_optional_fallback" : "unavailable"),
         honeypotChecked:  true,
       },
 
