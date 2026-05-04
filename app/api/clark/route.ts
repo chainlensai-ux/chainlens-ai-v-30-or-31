@@ -400,6 +400,17 @@ function extractLastWalletContext(historyLines: string[]): string | null {
   return null;
 }
 
+function extractLastTokenScanFromHistory(history: ClarkRequestBody["history"]): { contractAddress: string; scanText: string } | null {
+  const lines = getHistoryMessages(history);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const msg = lines[i] ?? "";
+    if (!msg.includes("CLARK TOKEN SCAN")) continue;
+    const m = msg.match(/Contract:\s*(0x[a-fA-F0-9]{40})/i);
+    if (m?.[1]) return { contractAddress: m[1], scanText: msg };
+  }
+  return null;
+}
+
 function resolveClarkContext(message: string, history: ClarkRequestBody["history"]): ClarkResolvedContext {
   const historyLines = getHistoryMessages(history);
   const normalized = message.trim().toLowerCase();
@@ -2736,7 +2747,7 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
 
   const nextAction = verdict === "AVOID"
     ? "Avoid until the flagged risks are resolved and re-verified."
-    : "Run follow-up checks on LP control, deployer behavior, and holder structure before sizing any position.";
+    : "Check LP control if available, review holder concentration, and inspect deployer behavior before treating this as more than a watchlist token.";
 
   return { verdict, confidence, signals: signals.slice(0, 5), risks: risks.slice(0, 5), clarkRead: safeLine, nextAction };
 }
@@ -2946,6 +2957,162 @@ function renderLiquidityFocusedRead(
     "- Volume/liquidity: based on available pool turnover and depth signals.",
     `- Exit risk: ${exitRisk}`,
   ].join("\n");
+}
+
+// ---------- Follow-up and casual chat routing ----------
+
+type TokenFollowupType = "lp" | "deployer" | "holders" | "combined";
+
+function detectTokenFollowup(
+  prompt: string,
+  history: ClarkRequestBody["history"]
+): { type: TokenFollowupType; contractAddress: string; scanText: string } | null {
+  const t = prompt.trim().toLowerCase();
+  const GENERIC_RE = /^(go|do it|run it|check that|next|continue|run follow[\s-]?up checks?|proceed|yes|yep)$/i;
+  const LP_RE = /\b(check lp|what about lp|lp check|check liquidity|what about liquidity|lp control|liquidity check)\b/i;
+  const DEPLOYER_RE = /\b(check deployer|what about deployer|check dev wallet|deployer check|deployer behavior|check dev)\b/i;
+  const HOLDERS_RE = /\b(check holders?|what about holders?|holder check|holder distribution|who holds|holder concentration)\b/i;
+
+  const isFollowup = GENERIC_RE.test(t) || LP_RE.test(t) || DEPLOYER_RE.test(t) || HOLDERS_RE.test(t);
+  if (!isFollowup) return null;
+
+  const lastScan = extractLastTokenScanFromHistory(history);
+  if (!lastScan) return null;
+
+  const type: TokenFollowupType = LP_RE.test(t) ? "lp" : DEPLOYER_RE.test(t) ? "deployer" : HOLDERS_RE.test(t) ? "holders" : "combined";
+  return { type, ...lastScan };
+}
+
+function buildTokenFollowupReply(type: TokenFollowupType, contractAddress: string, scanText: string): string {
+  const ex = (label: string) => {
+    const m = scanText.match(new RegExp(`(?:^|\\n)[-\\s]*${label}:\\s*([^\\n]+)`, "i"));
+    return m?.[1]?.trim() ?? null;
+  };
+  const nameRaw = ex("Asset") ?? "";
+  const tokenName = nameRaw.split("(")[0].trim() || "Unknown";
+  const symbol = nameRaw.match(/\(([^)]+)\)/)?.[1] ?? "?";
+  const short = `${contractAddress.slice(0, 6)}...${contractAddress.slice(-4)}`;
+
+  if (type === "lp") {
+    const liq = ex("Liquidity") ?? ex("Pool depth") ?? "Unavailable";
+    const lpControl = ex("LP control");
+    return [
+      `Liquidity / LP — ${tokenName} (${symbol})`,
+      `Contract: ${short}`,
+      "",
+      `Pool depth: ${liq}`,
+      `LP control: ${lpControl ?? "Not confirmed from current data"}`,
+      "",
+      "LP lock and control are not verified in this scan. Use Liquidity Safety with this contract for confirmed LP control status.",
+      `Next: Liquidity Safety → ${contractAddress}`,
+    ].join("\n");
+  }
+
+  if (type === "deployer") {
+    return [
+      `Deployer check — ${tokenName} (${symbol})`,
+      `Contract: ${short}`,
+      "",
+      "Deployer behavior check is not fully wired in Clark chat follow-ups.",
+      "Current scan only covers owner/proxy/mint/security fields.",
+      "",
+      "To check the deployer cluster: use Dev Wallet Detector with this contract.",
+      `Next: Dev Wallet Detector → ${contractAddress}`,
+    ].join("\n");
+  }
+
+  if (type === "holders") {
+    const holderCount = ex("Holder count") ?? "Unavailable";
+    const topHolder = ex("Top holder") ?? "Unavailable";
+    const top10 = ex("Top 10") ?? "Unavailable";
+    const status = ex("Status") ?? "unavailable";
+    const top10Num = parseFloat(top10.replace("%", ""));
+    const conc = Number.isFinite(top10Num) ? (top10Num >= 60 ? "High" : top10Num >= 30 ? "Medium" : "Low") : "Unknown";
+    return [
+      `Holder distribution — ${tokenName} (${symbol})`,
+      `Contract: ${short}`,
+      "",
+      `Holder count: ${holderCount}`,
+      `Top holder: ${topHolder}`,
+      `Top 10 holders: ${top10}`,
+      `Concentration: ${conc}`,
+      `Data status: ${status}`,
+      "",
+      "Holder identity is not verified — these are on-chain distribution counts only.",
+    ].join("\n");
+  }
+
+  // combined
+  const liq = ex("Liquidity") ?? ex("Pool depth") ?? "Not available";
+  const lpControl = ex("LP control") ?? "Not confirmed";
+  const holderCount = ex("Holder count") ?? "Not available";
+  const top10 = ex("Top 10") ?? "Not available";
+  const missingMatch = scanText.match(/Missing checks:\n([\s\S]*?)(?:\n\n|\nNext action:|$)/i);
+  const missingLines = missingMatch?.[1]
+    ?.split("\n").filter(l => l.trim().startsWith("-")).slice(0, 3).map(l => l.trim()).join("\n")
+    ?? "- LP control\n- Deployer behavior";
+  return [
+    `Follow-up — ${tokenName} (${symbol})`,
+    `Contract: ${short}`,
+    "",
+    `LP check: pool depth ${liq}, LP control ${lpControl}`,
+    `Holder check: count ${holderCount}, top 10 at ${top10}`,
+    "Deployer check: not wired in Clark chat — use Dev Wallet Detector for confirmed deployer analysis.",
+    "",
+    "Still missing from this scan:",
+    missingLines,
+    "",
+    "Next: Dev Wallet Detector for deployer, Liquidity Safety for LP control confirmation.",
+  ].join("\n");
+}
+
+function buildCasualContextualReply(prompt: string, lastScanText: string | null, recentContext: string): string {
+  const t = prompt.trim().toLowerCase();
+  if (/what do you think|is that bad|risky\??$/i.test(t)) {
+    if (lastScanText) {
+      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
+      const name = lastScanText.match(/Asset:\s*([^(\n]+)/i)?.[1]?.trim() ?? "that token";
+      return `Last scan for ${name}: ${verdict}. ${
+        verdict === "AVOID" ? "Risk flags are confirmed — I'd stay out." :
+        verdict === "WATCH" ? "Watch-only. LP control and deployer are still unverified." :
+        verdict === "TRUSTWORTHY" ? "No confirmed red flags, but verify LP and deployer independently before sizing." :
+        "Coverage is thin — not enough to call it safe or unsafe yet."
+      } What specifically do you want to dig into?`;
+    }
+    return "Share the contract or scan result and I can give you a clearer read.";
+  }
+  if (/^why$/i.test(t)) {
+    if (lastScanText) {
+      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
+      return `The ${verdict} verdict comes from what the scanner could and couldn't verify. ${
+        verdict === "AVOID" ? "The bear case signals are confirmed enough to flag it." :
+        verdict === "WATCH" ? "No confirmed red flag, but LP control and deployer are unverified — that's the gap." :
+        "The scanner didn't have enough data coverage for a stronger call."
+      } What part do you want broken down?`;
+    }
+    return "Why what? Share context or a contract and I can break it down.";
+  }
+  if (/^explain this$/i.test(t)) {
+    if (recentContext.includes("CLARK TOKEN SCAN")) {
+      const verdict = recentContext.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
+      return `The token came back ${verdict}. ${
+        verdict === "AVOID" ? "Confirmed risk flags from security simulation or contract checks." :
+        verdict === "WATCH" ? "No confirmed red flags yet, but LP lock, deployer cluster, and some contract fields are unverified." :
+        verdict === "TRUSTWORTHY" ? "No major flags in this scan — still verify LP and deployer before conviction." :
+        "Not enough evidence for a confident call."
+      } What part do you want me to break down?`;
+    }
+    return "Explain what? Paste a scan result or contract and I'll break it down.";
+  }
+  if (/^(yo|hey|bro|man|dude)\b/i.test(t)) {
+    if (lastScanText) {
+      const name = lastScanText.match(/Asset:\s*([^(\n]+)/i)?.[1]?.trim() ?? "that last token";
+      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
+      return `Still on ${name} (${verdict}). Want to go deeper on something specific?`;
+    }
+    return "Clark here. What are we looking at?";
+  }
+  return "What do you want me to look at? Paste a contract, wallet, or ask about something specific.";
 }
 
 // ---------- Feature handlers ----------
@@ -3412,6 +3579,33 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
   if (directIntent.intent === "wallet_analysis" && !directIntent.address) {
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data." };
+  }
+
+  // Follow-up action — intercept before plan execution to avoid re-running the full scan
+  const tokenFollowup = detectTokenFollowup(prompt, body.history);
+  if (tokenFollowup) {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      intent: "token_analysis",
+      toolsUsed: [],
+      analysis: buildTokenFollowupReply(tokenFollowup.type, tokenFollowup.contractAddress, tokenFollowup.scanText),
+    };
+  }
+
+  // Casual chat — short-circuit before plan execution
+  const CASUAL_CHAT_RE = /^(yo|hey|bro|man|dude)\b|^what do you think(\s+about this)?$|^is that bad\??$|^risky\??$|^why$|^explain this$|^can you help\??$/i;
+  if (CASUAL_CHAT_RE.test(prompt.trim()) && !extractAddress(prompt)) {
+    const lastScan = extractLastTokenScanFromHistory(body.history);
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "casual_help",
+      intent: "casual",
+      toolsUsed: [],
+      analysis: buildCasualContextualReply(prompt, lastScan?.scanText ?? null, historyContext),
+    };
   }
 
   if (liveIntent === "MARKET_OVERVIEW") {
@@ -3960,6 +4154,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     walletScan: evidence.walletSnapshot ?? {},
     analysis: body.context ?? {},
   };
+  // Do not call Anthropic generically when nothing was resolved and intent is unknown
+  if (replyMode === "unknown" && !resolvedAddress && !evidence.tokenScan && !evidence.walletSnapshot && !evidence.market?.ok) {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "casual_help",
+      intent: plan.intent,
+      toolsUsed,
+      analysis: "I can't do that yet. I can help with token scans, wallet reads, Whale Alerts, Pump Alerts, Base Radar, liquidity checks, and risk explanations.",
+    };
+  }
   const memoryPrompt = historyContext
     ? `${prompt}\n\nRecent conversation context (use this for follow-ups like "it", "that", "why", "what about holders/liquidity"; ask one concise clarifying question only if reference is ambiguous):\n${historyContext}`
     : prompt;
