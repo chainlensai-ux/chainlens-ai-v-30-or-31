@@ -213,7 +213,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
     return { intent: "base_radar", address };
   }
   // Unsupported capabilities — trading, funds movement, privacy evasion, key recovery
-  if (/\b(trade for me|execute.*trade|place.*order|snipe.*token|buy.*for me|sell.*for me|hide.*transaction|obfuscat.*transaction|launder|move.*my funds|send.*eth.*for me|transfer.*eth.*for me|private key|seed phrase|mnemonic|recover.*wallet|bypass.*kyc)\b/i.test(t)) {
+  if (/\b(trade for me|execute.*trade|place.*order|snipe.*token|buy.*for me|sell.*for me|hide[\s\w]*transactions?|obfuscat[\s\w]*transactions?|launder|move.*my funds|send.*eth.*for me|transfer.*eth.*for me|private key|seed phrase|mnemonic|recover.*wallet|bypass.*kyc)\b/i.test(t)) {
     return { intent: "trading_boundary", address };
   }
   // Wallet balance/holdings takes priority when address is present
@@ -409,6 +409,20 @@ function extractLastTokenScanFromHistory(history: ClarkRequestBody["history"]): 
     if (m?.[1]) return { contractAddress: m[1], scanText: msg };
   }
   return null;
+}
+
+function isBareAddressPrompt(prompt: string): boolean {
+  const stripped = prompt.replace(/0x[a-fA-F0-9]{40}/gi, "").trim();
+  return /^(here|this|that|it|here it is|this is it)?[\s,.\-:]*$/i.test(stripped);
+}
+
+function hasRecentWalletContext(history: ClarkRequestBody["history"]): boolean {
+  const WALLET_CONTEXT_RE = /\b(wallet[\s-]?scan|base[\s-]?wallet|check[\s-]?wallet|analyze[\s-]?wallet|this[\s-]?is[\s-]?a[\s-]?wallet|scan[\s-]?a[\s-]?wallet|wallet[\s-]?address|wallet[\s-]?analysis)\b/i;
+  const lines = getHistoryMessages(history);
+  for (let i = Math.max(0, lines.length - 6); i < lines.length; i++) {
+    if (WALLET_CONTEXT_RE.test(lines[i] ?? "")) return true;
+  }
+  return false;
 }
 
 function resolveClarkContext(message: string, history: ClarkRequestBody["history"]): ClarkResolvedContext {
@@ -3579,6 +3593,27 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
   if (directIntent.intent === "wallet_analysis" && !directIntent.address) {
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data." };
+  }
+
+  // Hard guard: hide/private transaction requests — specific public-ledger explanation
+  if (/\bhide\b[\s\w]*transactions?|\bhide\b[\s\w]*\btx\b|private\s+transaction\s+hid|make[\s\w]*transactions?\s+private/i.test(prompt)) {
+    console.log("[clark-intent] detected=unsupported_capability");
+    return {
+      feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [],
+      analysis: "I can't hide on-chain transactions. Base transactions are public. I can help with private simulations/watchlists, token scans, wallet reads, Whale Alerts, Pump Alerts, Base Radar, liquidity and risk checks.",
+    };
+  }
+
+  // Hard guard: bare 0x address after recent wallet-context turn → wallet analysis
+  if (directIntent.address && isBareAddressPrompt(prompt) && hasRecentWalletContext(body.history)) {
+    console.log("[clark-intent] detected=wallet_analysis reason=history_wallet_context");
+    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address });
+    const w = (walletRes.json ?? {}) as Record<string, unknown>;
+    if (walletRes.ok && Object.keys(w).length > 0) {
+      const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: formatWalletBalanceSummary(snapshot) };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: "I couldn't pull wallet data for that address right now. Try pasting again or use Wallet Scanner directly." };
   }
 
   // Follow-up action — intercept before plan execution to avoid re-running the full scan
