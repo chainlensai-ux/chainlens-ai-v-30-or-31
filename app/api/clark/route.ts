@@ -212,6 +212,10 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/base radar/.test(t)) {
     return { intent: "base_radar", address };
   }
+  // Unsupported capabilities — trading, funds movement, privacy evasion, key recovery
+  if (/\b(trade for me|execute.*trade|place.*order|snipe.*token|buy.*for me|sell.*for me|hide.*transaction|obfuscat.*transaction|launder|move.*my funds|send.*eth.*for me|transfer.*eth.*for me|private key|seed phrase|mnemonic|recover.*wallet|bypass.*kyc)\b/i.test(t)) {
+    return { intent: "trading_boundary", address };
+  }
   // Wallet balance/holdings takes priority when address is present
   if (address && WALLET_INTENT_RE.test(t)) {
     return { intent: "wallet_analysis", address };
@@ -220,8 +224,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
     return { intent: "general_market", address };
   }
   if (/whale|smart money/i.test(t)) {
-    if (address) return { intent: "whale_alert", address };
-    return { intent: "unknown", address };
+    return { intent: "whale_alert", address };
   }
   if (/dev wallet|deployer|who deployed/i.test(t)) {
     return { intent: "dev_wallet", address };
@@ -964,7 +967,7 @@ function detectLiveIntent(prompt: string): LiveIntent {
   if (/what'?s pumping on base|base trending|moving on base|top movers on base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
   if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
-  if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales doing\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
+  if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales? (?:doing|buying)\b|\bwhales? buying\b|\bwhale buys?\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
   // Row/page-level Ask Clark redirects carry structured alert data in the prompt text
   if (/\bsignal:\s*(high|watch|low)\b|\btop alerts:/i.test(t)) return "WHALE_FEED";
   return "GENERAL_CHAT";
@@ -3312,6 +3315,22 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
 async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
 
+  // Honest response for unsupported time windows (API max is 24h)
+  const daysMatch = prompt.match(/\b(\d+)\s*days?\b/i);
+  if (daysMatch) {
+    const days = parseInt(daysMatch[1]);
+    if (days > 1) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "whale_alert",
+        toolsUsed: [],
+        analysis: `The whale alerts feed covers up to 24 hours — I can't look back ${days} days. For longer-term whale tracking, use Wallet Scanner to monitor specific addresses over time. Want me to summarize the last 24h of whale activity instead?`,
+      };
+    }
+  }
+
   // Detect whether the prompt already carries structured alert data from the
   // whale-alerts page (row-level or feed-level "Ask Clark" redirect).
   const hasInlineContext =
@@ -3327,17 +3346,20 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     }
 
     // Organic query (e.g. "what are whales doing right now?") — fetch live data.
+    const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b/i.test(prompt);
+    const window = isBuyQuery ? "24h" : "1h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
-      const res = await fetch(`${origin}/api/whale-alerts?window=1h&minUsd=0&limit=25`, {
+      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, {
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
         const json = await res.json();
         const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
-        if (raw.length > 0) {
+        const filtered = isBuyQuery ? raw.filter(a => (a as Record<string, unknown>).side === "buy" || !(a as Record<string, unknown>).side) : raw;
+        if (filtered.length > 0) {
           const sigOrder: Record<string, number> = { HIGH: 0, WATCH: 1, LOW: 2 };
-          raw.sort((a, b) => {
+          filtered.sort((a, b) => {
             const sA = sigOrder[a.signal_score ?? "LOW"] ?? 2;
             const sB = sigOrder[b.signal_score ?? "LOW"] ?? 2;
             if (sA !== sB) return sA - sB;
@@ -3347,15 +3369,16 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             if (repDiff !== 0) return repDiff;
             return (b.legs ?? 1) - (a.legs ?? 1);
           });
-          const lines = raw.slice(0, 20).map(formatWhaleAlertForClark);
+          const lines = filtered.slice(0, 20).map(formatWhaleAlertForClark);
           contextXml =
-            `<whale_alerts count="${raw.length}" window="1h">\n` +
+            `<whale_alerts count="${filtered.length}" window="${window}"${isBuyQuery ? ' side="buy"' : ""}>\n` +
             lines.join("\n") + "\n\n" +
+            (isBuyQuery ? "Focus: summarize which tokens whales are buying, using wallet_label where available (not raw addresses). Group by token.\n" : "") +
             "Note: wallet_label is an internal ChainLens label, not a verified public identity.\n" +
             "USD value shown as 'USD unverified' for tokens outside USDC/USDT/WETH/cbBTC.\n" +
             "</whale_alerts>";
         } else {
-          contextXml = `<whale_alerts count="0" window="1h">No whale alerts in the past hour.</whale_alerts>`;
+          contextXml = `<whale_alerts count="0" window="${window}">No whale ${isBuyQuery ? "buy " : ""}alerts in the past ${window}.</whale_alerts>`;
         }
       }
     } catch { /* fall through with unavailable message */ }
@@ -3386,6 +3409,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
   if (directIntent.intent === "financial_advice") {
     return { feature: "clark-ai", chain, mode: "casual_help", intent: "strategy", toolsUsed: [], analysis: buildFinancialAdviceReply(prompt) };
+  }
+  if (directIntent.intent === "wallet_analysis" && !directIntent.address) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data." };
   }
 
   if (liveIntent === "MARKET_OVERVIEW") {
