@@ -212,6 +212,10 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/base radar/.test(t)) {
     return { intent: "base_radar", address };
   }
+  // Unsupported capabilities — trading, funds movement, privacy evasion, key recovery
+  if (/\b(trade for me|execute.*trade|place.*order|snipe.*token|buy.*for me|sell.*for me|hide.*transaction|obfuscat.*transaction|launder|move.*my funds|send.*eth.*for me|transfer.*eth.*for me|private key|seed phrase|mnemonic|recover.*wallet|bypass.*kyc)\b/i.test(t)) {
+    return { intent: "trading_boundary", address };
+  }
   // Wallet balance/holdings takes priority when address is present
   if (address && WALLET_INTENT_RE.test(t)) {
     return { intent: "wallet_analysis", address };
@@ -220,8 +224,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
     return { intent: "general_market", address };
   }
   if (/whale|smart money/i.test(t)) {
-    if (address) return { intent: "whale_alert", address };
-    return { intent: "unknown", address };
+    return { intent: "whale_alert", address };
   }
   if (/dev wallet|deployer|who deployed/i.test(t)) {
     return { intent: "dev_wallet", address };
@@ -393,6 +396,17 @@ function extractLastWalletContext(historyLines: string[]): string | null {
       const addr = extractAddress(line);
       if (addr) return addr;
     }
+  }
+  return null;
+}
+
+function extractLastTokenScanFromHistory(history: ClarkRequestBody["history"]): { contractAddress: string; scanText: string } | null {
+  const lines = getHistoryMessages(history);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const msg = lines[i] ?? "";
+    if (!msg.includes("CLARK TOKEN SCAN")) continue;
+    const m = msg.match(/Contract:\s*(0x[a-fA-F0-9]{40})/i);
+    if (m?.[1]) return { contractAddress: m[1], scanText: msg };
   }
   return null;
 }
@@ -964,7 +978,7 @@ function detectLiveIntent(prompt: string): LiveIntent {
   if (/what'?s pumping on base|base trending|moving on base|top movers on base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
   if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
-  if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales doing\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
+  if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales? (?:doing|buying)\b|\bwhales? buying\b|\bwhale buys?\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
   // Row/page-level Ask Clark redirects carry structured alert data in the prompt text
   if (/\bsignal:\s*(high|watch|low)\b|\btop alerts:/i.test(t)) return "WHALE_FEED";
   return "GENERAL_CHAT";
@@ -2733,7 +2747,7 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
 
   const nextAction = verdict === "AVOID"
     ? "Avoid until the flagged risks are resolved and re-verified."
-    : "Run follow-up checks on LP control, deployer behavior, and holder structure before sizing any position.";
+    : "Check LP control if available, review holder concentration, and inspect deployer behavior before treating this as more than a watchlist token.";
 
   return { verdict, confidence, signals: signals.slice(0, 5), risks: risks.slice(0, 5), clarkRead: safeLine, nextAction };
 }
@@ -2943,6 +2957,162 @@ function renderLiquidityFocusedRead(
     "- Volume/liquidity: based on available pool turnover and depth signals.",
     `- Exit risk: ${exitRisk}`,
   ].join("\n");
+}
+
+// ---------- Follow-up and casual chat routing ----------
+
+type TokenFollowupType = "lp" | "deployer" | "holders" | "combined";
+
+function detectTokenFollowup(
+  prompt: string,
+  history: ClarkRequestBody["history"]
+): { type: TokenFollowupType; contractAddress: string; scanText: string } | null {
+  const t = prompt.trim().toLowerCase();
+  const GENERIC_RE = /^(go|do it|run it|check that|next|continue|run follow[\s-]?up checks?|proceed|yes|yep)$/i;
+  const LP_RE = /\b(check lp|what about lp|lp check|check liquidity|what about liquidity|lp control|liquidity check)\b/i;
+  const DEPLOYER_RE = /\b(check deployer|what about deployer|check dev wallet|deployer check|deployer behavior|check dev)\b/i;
+  const HOLDERS_RE = /\b(check holders?|what about holders?|holder check|holder distribution|who holds|holder concentration)\b/i;
+
+  const isFollowup = GENERIC_RE.test(t) || LP_RE.test(t) || DEPLOYER_RE.test(t) || HOLDERS_RE.test(t);
+  if (!isFollowup) return null;
+
+  const lastScan = extractLastTokenScanFromHistory(history);
+  if (!lastScan) return null;
+
+  const type: TokenFollowupType = LP_RE.test(t) ? "lp" : DEPLOYER_RE.test(t) ? "deployer" : HOLDERS_RE.test(t) ? "holders" : "combined";
+  return { type, ...lastScan };
+}
+
+function buildTokenFollowupReply(type: TokenFollowupType, contractAddress: string, scanText: string): string {
+  const ex = (label: string) => {
+    const m = scanText.match(new RegExp(`(?:^|\\n)[-\\s]*${label}:\\s*([^\\n]+)`, "i"));
+    return m?.[1]?.trim() ?? null;
+  };
+  const nameRaw = ex("Asset") ?? "";
+  const tokenName = nameRaw.split("(")[0].trim() || "Unknown";
+  const symbol = nameRaw.match(/\(([^)]+)\)/)?.[1] ?? "?";
+  const short = `${contractAddress.slice(0, 6)}...${contractAddress.slice(-4)}`;
+
+  if (type === "lp") {
+    const liq = ex("Liquidity") ?? ex("Pool depth") ?? "Unavailable";
+    const lpControl = ex("LP control");
+    return [
+      `Liquidity / LP — ${tokenName} (${symbol})`,
+      `Contract: ${short}`,
+      "",
+      `Pool depth: ${liq}`,
+      `LP control: ${lpControl ?? "Not confirmed from current data"}`,
+      "",
+      "LP lock and control are not verified in this scan. Use Liquidity Safety with this contract for confirmed LP control status.",
+      `Next: Liquidity Safety → ${contractAddress}`,
+    ].join("\n");
+  }
+
+  if (type === "deployer") {
+    return [
+      `Deployer check — ${tokenName} (${symbol})`,
+      `Contract: ${short}`,
+      "",
+      "Deployer behavior check is not fully wired in Clark chat follow-ups.",
+      "Current scan only covers owner/proxy/mint/security fields.",
+      "",
+      "To check the deployer cluster: use Dev Wallet Detector with this contract.",
+      `Next: Dev Wallet Detector → ${contractAddress}`,
+    ].join("\n");
+  }
+
+  if (type === "holders") {
+    const holderCount = ex("Holder count") ?? "Unavailable";
+    const topHolder = ex("Top holder") ?? "Unavailable";
+    const top10 = ex("Top 10") ?? "Unavailable";
+    const status = ex("Status") ?? "unavailable";
+    const top10Num = parseFloat(top10.replace("%", ""));
+    const conc = Number.isFinite(top10Num) ? (top10Num >= 60 ? "High" : top10Num >= 30 ? "Medium" : "Low") : "Unknown";
+    return [
+      `Holder distribution — ${tokenName} (${symbol})`,
+      `Contract: ${short}`,
+      "",
+      `Holder count: ${holderCount}`,
+      `Top holder: ${topHolder}`,
+      `Top 10 holders: ${top10}`,
+      `Concentration: ${conc}`,
+      `Data status: ${status}`,
+      "",
+      "Holder identity is not verified — these are on-chain distribution counts only.",
+    ].join("\n");
+  }
+
+  // combined
+  const liq = ex("Liquidity") ?? ex("Pool depth") ?? "Not available";
+  const lpControl = ex("LP control") ?? "Not confirmed";
+  const holderCount = ex("Holder count") ?? "Not available";
+  const top10 = ex("Top 10") ?? "Not available";
+  const missingMatch = scanText.match(/Missing checks:\n([\s\S]*?)(?:\n\n|\nNext action:|$)/i);
+  const missingLines = missingMatch?.[1]
+    ?.split("\n").filter(l => l.trim().startsWith("-")).slice(0, 3).map(l => l.trim()).join("\n")
+    ?? "- LP control\n- Deployer behavior";
+  return [
+    `Follow-up — ${tokenName} (${symbol})`,
+    `Contract: ${short}`,
+    "",
+    `LP check: pool depth ${liq}, LP control ${lpControl}`,
+    `Holder check: count ${holderCount}, top 10 at ${top10}`,
+    "Deployer check: not wired in Clark chat — use Dev Wallet Detector for confirmed deployer analysis.",
+    "",
+    "Still missing from this scan:",
+    missingLines,
+    "",
+    "Next: Dev Wallet Detector for deployer, Liquidity Safety for LP control confirmation.",
+  ].join("\n");
+}
+
+function buildCasualContextualReply(prompt: string, lastScanText: string | null, recentContext: string): string {
+  const t = prompt.trim().toLowerCase();
+  if (/what do you think|is that bad|risky\??$/i.test(t)) {
+    if (lastScanText) {
+      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
+      const name = lastScanText.match(/Asset:\s*([^(\n]+)/i)?.[1]?.trim() ?? "that token";
+      return `Last scan for ${name}: ${verdict}. ${
+        verdict === "AVOID" ? "Risk flags are confirmed — I'd stay out." :
+        verdict === "WATCH" ? "Watch-only. LP control and deployer are still unverified." :
+        verdict === "TRUSTWORTHY" ? "No confirmed red flags, but verify LP and deployer independently before sizing." :
+        "Coverage is thin — not enough to call it safe or unsafe yet."
+      } What specifically do you want to dig into?`;
+    }
+    return "Share the contract or scan result and I can give you a clearer read.";
+  }
+  if (/^why$/i.test(t)) {
+    if (lastScanText) {
+      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
+      return `The ${verdict} verdict comes from what the scanner could and couldn't verify. ${
+        verdict === "AVOID" ? "The bear case signals are confirmed enough to flag it." :
+        verdict === "WATCH" ? "No confirmed red flag, but LP control and deployer are unverified — that's the gap." :
+        "The scanner didn't have enough data coverage for a stronger call."
+      } What part do you want broken down?`;
+    }
+    return "Why what? Share context or a contract and I can break it down.";
+  }
+  if (/^explain this$/i.test(t)) {
+    if (recentContext.includes("CLARK TOKEN SCAN")) {
+      const verdict = recentContext.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
+      return `The token came back ${verdict}. ${
+        verdict === "AVOID" ? "Confirmed risk flags from security simulation or contract checks." :
+        verdict === "WATCH" ? "No confirmed red flags yet, but LP lock, deployer cluster, and some contract fields are unverified." :
+        verdict === "TRUSTWORTHY" ? "No major flags in this scan — still verify LP and deployer before conviction." :
+        "Not enough evidence for a confident call."
+      } What part do you want me to break down?`;
+    }
+    return "Explain what? Paste a scan result or contract and I'll break it down.";
+  }
+  if (/^(yo|hey|bro|man|dude)\b/i.test(t)) {
+    if (lastScanText) {
+      const name = lastScanText.match(/Asset:\s*([^(\n]+)/i)?.[1]?.trim() ?? "that last token";
+      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
+      return `Still on ${name} (${verdict}). Want to go deeper on something specific?`;
+    }
+    return "Clark here. What are we looking at?";
+  }
+  return "What do you want me to look at? Paste a contract, wallet, or ask about something specific.";
 }
 
 // ---------- Feature handlers ----------
@@ -3312,6 +3482,22 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
 async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
 
+  // Honest response for unsupported time windows (API max is 24h)
+  const daysMatch = prompt.match(/\b(\d+)\s*days?\b/i);
+  if (daysMatch) {
+    const days = parseInt(daysMatch[1]);
+    if (days > 1) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "whale_alert",
+        toolsUsed: [],
+        analysis: `The whale alerts feed covers up to 24 hours — I can't look back ${days} days. For longer-term whale tracking, use Wallet Scanner to monitor specific addresses over time. Want me to summarize the last 24h of whale activity instead?`,
+      };
+    }
+  }
+
   // Detect whether the prompt already carries structured alert data from the
   // whale-alerts page (row-level or feed-level "Ask Clark" redirect).
   const hasInlineContext =
@@ -3327,17 +3513,20 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     }
 
     // Organic query (e.g. "what are whales doing right now?") — fetch live data.
+    const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b/i.test(prompt);
+    const window = isBuyQuery ? "24h" : "1h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
-      const res = await fetch(`${origin}/api/whale-alerts?window=1h&minUsd=0&limit=25`, {
+      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, {
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
         const json = await res.json();
         const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
-        if (raw.length > 0) {
+        const filtered = isBuyQuery ? raw.filter(a => (a as Record<string, unknown>).side === "buy" || !(a as Record<string, unknown>).side) : raw;
+        if (filtered.length > 0) {
           const sigOrder: Record<string, number> = { HIGH: 0, WATCH: 1, LOW: 2 };
-          raw.sort((a, b) => {
+          filtered.sort((a, b) => {
             const sA = sigOrder[a.signal_score ?? "LOW"] ?? 2;
             const sB = sigOrder[b.signal_score ?? "LOW"] ?? 2;
             if (sA !== sB) return sA - sB;
@@ -3347,15 +3536,16 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             if (repDiff !== 0) return repDiff;
             return (b.legs ?? 1) - (a.legs ?? 1);
           });
-          const lines = raw.slice(0, 20).map(formatWhaleAlertForClark);
+          const lines = filtered.slice(0, 20).map(formatWhaleAlertForClark);
           contextXml =
-            `<whale_alerts count="${raw.length}" window="1h">\n` +
+            `<whale_alerts count="${filtered.length}" window="${window}"${isBuyQuery ? ' side="buy"' : ""}>\n` +
             lines.join("\n") + "\n\n" +
+            (isBuyQuery ? "Focus: summarize which tokens whales are buying, using wallet_label where available (not raw addresses). Group by token.\n" : "") +
             "Note: wallet_label is an internal ChainLens label, not a verified public identity.\n" +
             "USD value shown as 'USD unverified' for tokens outside USDC/USDT/WETH/cbBTC.\n" +
             "</whale_alerts>";
         } else {
-          contextXml = `<whale_alerts count="0" window="1h">No whale alerts in the past hour.</whale_alerts>`;
+          contextXml = `<whale_alerts count="0" window="${window}">No whale ${isBuyQuery ? "buy " : ""}alerts in the past ${window}.</whale_alerts>`;
         }
       }
     } catch { /* fall through with unavailable message */ }
@@ -3386,6 +3576,36 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
   if (directIntent.intent === "financial_advice") {
     return { feature: "clark-ai", chain, mode: "casual_help", intent: "strategy", toolsUsed: [], analysis: buildFinancialAdviceReply(prompt) };
+  }
+  if (directIntent.intent === "wallet_analysis" && !directIntent.address) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data." };
+  }
+
+  // Follow-up action — intercept before plan execution to avoid re-running the full scan
+  const tokenFollowup = detectTokenFollowup(prompt, body.history);
+  if (tokenFollowup) {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      intent: "token_analysis",
+      toolsUsed: [],
+      analysis: buildTokenFollowupReply(tokenFollowup.type, tokenFollowup.contractAddress, tokenFollowup.scanText),
+    };
+  }
+
+  // Casual chat — short-circuit before plan execution
+  const CASUAL_CHAT_RE = /^(yo|hey|bro|man|dude)\b|^what do you think(\s+about this)?$|^is that bad\??$|^risky\??$|^why$|^explain this$|^can you help\??$/i;
+  if (CASUAL_CHAT_RE.test(prompt.trim()) && !extractAddress(prompt)) {
+    const lastScan = extractLastTokenScanFromHistory(body.history);
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "casual_help",
+      intent: "casual",
+      toolsUsed: [],
+      analysis: buildCasualContextualReply(prompt, lastScan?.scanText ?? null, historyContext),
+    };
   }
 
   if (liveIntent === "MARKET_OVERVIEW") {
@@ -3934,6 +4154,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     walletScan: evidence.walletSnapshot ?? {},
     analysis: body.context ?? {},
   };
+  // Do not call Anthropic generically when nothing was resolved and intent is unknown
+  if (replyMode === "unknown" && !resolvedAddress && !evidence.tokenScan && !evidence.walletSnapshot && !evidence.market?.ok) {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "casual_help",
+      intent: plan.intent,
+      toolsUsed,
+      analysis: "I can't do that yet. I can help with token scans, wallet reads, Whale Alerts, Pump Alerts, Base Radar, liquidity checks, and risk explanations.",
+    };
+  }
   const memoryPrompt = historyContext
     ? `${prompt}\n\nRecent conversation context (use this for follow-ups like "it", "that", "why", "what about holders/liquidity"; ask one concise clarifying question only if reference is ambiguous):\n${historyContext}`
     : prompt;
