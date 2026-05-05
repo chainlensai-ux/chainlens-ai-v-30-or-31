@@ -3505,18 +3505,18 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
   const chain = body.chain ?? "base";
   const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
 
-  // Honest response for unsupported time windows (API max is 24h)
+  // Honest response for unsupported time windows.
   const daysMatch = prompt.match(/\b(\d+)\s*days?\b/i);
   if (daysMatch) {
     const days = parseInt(daysMatch[1]);
-    if (days > 1) {
+    if (days > 7) {
       return {
         feature: "clark-ai",
         chain,
         mode: "analysis",
         intent: "whale_alert",
         toolsUsed: [],
-        analysis: `The whale alerts feed covers up to 24 hours — I can't look back ${days} days. For longer-term whale tracking, use Wallet Scanner to monitor specific addresses over time. Want me to summarize the last 24h of whale activity instead?`,
+        analysis: `I can summarize stored Whale Alerts up to 7 days right now, but not ${days} days. Want a 7-day stored summary instead?`,
       };
     }
   }
@@ -3537,8 +3537,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
     // Organic query (e.g. "what are whales doing right now?") — use stored feed only.
     const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b|\bsmart wallets? buying\b/i.test(prompt);
-    const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
-    const window = isBuyQuery ? "24h" : "1h";
+    const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b|\blast week whale activity\b|\b7d whale flows\b|\bwhat were whales buying last 7 days\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
+    const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b/i.test(prompt.toLowerCase());
+    const window = is7dQuery ? "7d" : (isBuyQuery ? "24h" : "1h");
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
       const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, {
@@ -3580,6 +3581,13 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             const strongest = ranked[0]?.[0] ?? "No repeated token yet"
             const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000)
             const staleText = stale ? "Data may be stale." : "Data appears recent."
+            const oldestTs = filtered.reduce((min, r) => {
+              const ts = r.occurred_at ? new Date(r.occurred_at).getTime() : 0
+              if (!Number.isFinite(ts) || ts <= 0) return min
+              return min === 0 ? ts : Math.min(min, ts)
+            }, 0)
+            const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000
+            const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs)
             const usdText = usdSeen > 0 ? `~$${Math.round(totalUsd).toLocaleString()} across priced alerts` : "USD mostly unverified"
             return {
               feature: "clark-ai",
@@ -3593,6 +3601,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
                 `Approximate total USD: ${usdText}.`,
                 `Strongest repeated token: ${strongest}.`,
                 staleText,
+                incomplete7d ? "I only have stored Whale Alerts from the available saved window, so this may not cover the full 7 days yet." : "",
                 "Open Whale Alerts to refresh the feed.",
               ].join(" "),
             }

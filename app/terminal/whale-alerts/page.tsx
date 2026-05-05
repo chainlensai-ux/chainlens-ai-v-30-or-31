@@ -46,7 +46,7 @@ const MIN_OPTIONS = [
   { label: 'All', value: 0 }, { label: '$100+', value: 100 }, { label: '$500+', value: 500 },
   { label: '$1k+', value: 1000 }, { label: '$5k+', value: 5000 }, { label: '$10k+', value: 10000 },
 ]
-const WINDOWS = ['15m', '1h', '6h', '24h'] as const
+const WINDOWS = ['15m', '1h', '6h', '24h', '7d'] as const
 const CLIENT_SYNC_COOLDOWN_MS = 10 * 60 * 1000
 const CLIENT_FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
 const CLIENT_SYNC_CACHE_KEY = 'whale_alerts_last_sync_at'
