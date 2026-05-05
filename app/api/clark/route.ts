@@ -10,6 +10,14 @@ const {
   BASESCAN_API_KEY,
 } = process.env;
 
+const CLARK_CACHE_TTL_MS = 90 * 1000
+const clarkCache = new Map<string, { exp: number; payload: unknown }>()
+const clarkRate = new Map<string, { count: number; resetAt: number }>()
+const CLARK_RATE_BY_PLAN: Record<string, number> = { free: 10, pro: 30, elite: 90 }
+function clarkPlan(req: NextRequest): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
+function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
+function clarkAllowed(req: NextRequest): boolean { const plan=clarkPlan(req); const key=`${plan}:${clarkIp(req)}`; const now=Date.now(); const cur=clarkRate.get(key); const lim=CLARK_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){ clarkRate.set(key,{count:1,resetAt:now+60000}); return true } if(cur.count>=lim) return false; cur.count+=1; return true }
+
 // ---------- Types ----------
 
 type SupportedChain = "base" | "ethereum" | "polygon" | "bnb";
@@ -4210,8 +4218,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 // ---------- Main handler ----------
 
 export async function POST(req: NextRequest) {
+  if (!clarkAllowed(req)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
     const body = (await req.json()) as ClarkRequestBody;
+    const cacheKey = JSON.stringify({ feature: body.feature, prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
+    const cached = clarkCache.get(cacheKey)
+    if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     if (body.message && !body.prompt) body.prompt = body.message;
     // Derive origin from the incoming request — always correct for any deployment
     const origin = req.nextUrl.origin;

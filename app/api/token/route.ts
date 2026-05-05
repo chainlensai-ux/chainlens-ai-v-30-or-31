@@ -16,6 +16,34 @@ const CHAIN_RPC_MAP = {
 
 type ChainKey = keyof typeof CHAIN_RPC_MAP;
 
+const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
+const TOKEN_RATE_WINDOW_MS = 60 * 1000
+const TOKEN_RATE_BY_PLAN: Record<string, number> = { free: 12, pro: 40, elite: 120 }
+const tokenResponseCache = new Map<string, { exp: number; payload: unknown }>()
+const tokenRateMap = new Map<string, { count: number; resetAt: number }>()
+
+function getClientIp(req: Request): string {
+  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+}
+function getPlan(req: Request): 'free' | 'pro' | 'elite' {
+  const raw = (req.headers.get('x-user-plan') ?? '').toLowerCase()
+  if (raw === 'elite') return 'elite'
+  if (raw === 'pro') return 'pro'
+  return 'free'
+}
+function checkRate(req: Request): boolean {
+  const ip = getClientIp(req)
+  const plan = getPlan(req)
+  const key = `${plan}:${ip}`
+  const now = Date.now()
+  const cur = tokenRateMap.get(key)
+  const limit = TOKEN_RATE_BY_PLAN[plan]
+  if (!cur || cur.resetAt <= now) { tokenRateMap.set(key, { count: 1, resetAt: now + TOKEN_RATE_WINDOW_MS }); return true }
+  if (cur.count >= limit) return false
+  cur.count += 1
+  return true
+}
+
 type HolderDistribution = {
   top1: number | null
   top5: number | null
@@ -272,14 +300,19 @@ function analyzeContract(bytecode: string | null): any {
 // POST handler
 // ------------------------------
 export async function POST(req: Request) {
+  if (!checkRate(req)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
+
   try {
     console.log("🚀 SCAN ROUTE HIT");
 
     const body = await req.json();
     const { contract, debugHolder } = body;
+    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base" })
+    const cached = tokenResponseCache.get(cacheKey)
+    if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
 
     if (!contract || !/^0x[a-fA-F0-9]{40}$/.test(contract)) {
-      return NextResponse.json({ error: "Invalid contract address" }, { status: 400 });
+      return NextResponse.json({ error: "Invalid contract address" }, { status: 400 })
     }
 
     console.log("Incoming scan request:", contract);
@@ -465,7 +498,7 @@ ${JSON.stringify(analysis, null, 2)}
     } : null;
 
     // Final JSON response
-    return NextResponse.json({
+    const responsePayload = {
       chain,
       contract,
 
@@ -569,7 +602,9 @@ ${JSON.stringify(analysis, null, 2)}
         symbol: resolvedSymbol,
         decimals: resolvedDecimals,
       },
-    });
+    }
+    tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
+    return NextResponse.json(responsePayload)
   } catch (err) {
     console.error("Fatal backend error:", err);
     return NextResponse.json(
