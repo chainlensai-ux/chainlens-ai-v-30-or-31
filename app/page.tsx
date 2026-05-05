@@ -1,12 +1,12 @@
 
 'use client'
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
-import Reveal from '@/components/Reveal'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
+const Reveal = ({ children }: { children: ReactNode; [key: string]: unknown }) => <>{children}</>
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
 
