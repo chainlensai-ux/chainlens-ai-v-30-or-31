@@ -27,7 +27,18 @@ type AlertItem = {
   token_logo?: string | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
-type SyncResponse = { processed?: number; inserted?: number; skipped?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
+type SyncResponse = {
+  processed?: number
+  inserted?: number
+  skipped?: number
+  nextOffset?: number | null
+  hasMore?: boolean
+  providerErrors?: number
+  trackedWalletsTotal?: number
+  offset?: number
+  skipReasons?: Record<string, number>
+  message?: string
+}
 type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number }
 
 const MIN_OPTIONS = [
@@ -230,10 +241,12 @@ export default function WhaleAlertsPage() {
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
 
-  const runSync = async (offset: number) => {
+  const runSync = async (offset?: number) => {
     setSyncing(true)
     try {
-      const res = await fetch(`/api/whale-alerts/sync?window=7d&limit=15&offset=${offset}&minUsd=${minUsd}`, { method: 'POST' })
+      const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd) })
+      if (typeof offset === 'number') params.set('offset', String(offset))
+      const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, { method: 'POST' })
       const json = (await res.json()) as SyncResponse
       setSyncState(json)
       await loadAlerts()
@@ -507,13 +520,13 @@ export default function WhaleAlertsPage() {
               )}
 
               <div className="flex" style={{ gap: 8 }}>
-                <button onClick={() => { void runSync(syncState?.nextOffset ?? 0) }} disabled={syncing}
+                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined) }} disabled={syncing}
                   className="flex flex-1 items-center justify-center rounded-[12px]"
                   style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing ? 0.5 : 1, border: 'none' }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Scanning…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
+                  {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue sync' : 'Run sync'}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
                   className="flex items-center rounded-[12px]"
@@ -632,9 +645,9 @@ export default function WhaleAlertsPage() {
               : valueFilterActive
                 ? `No alerts in the ${windowValue} window have a verified USD value of ${minUsdLabel}. Try "All" or a lower threshold.`
                 : partial
-                  ? `ChainLens scanned ${scanned} of ${total} tracked wallets in this batch. No qualifying whale movements were found yet.`
+                  ? `Scanned ${scanned} of ${total} wallets. No qualifying recent whale activity found in this batch.`
                   : allDone
-                    ? 'No qualifying whale alerts found across tracked wallets yet.'
+                    ? 'No qualifying recent whale activity found in this batch.'
                     : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
             return (
               <div style={{ padding: '64px 20px', textAlign: 'center' }}>
@@ -660,6 +673,8 @@ export default function WhaleAlertsPage() {
                   {syncState
                     ? <Pill color="teal">{scanned} of {total || stats.trackedWallets} scanned</Pill>
                     : <Pill color="teal">No sync yet</Pill>}
+                  {syncState && <Pill color="purple">Found {syncState.inserted ?? 0} qualifying alerts</Pill>}
+                  {syncState && <Pill color="amber">{syncState.skipped ?? 0} skipped (stable/routing/duplicate/no recent movement)</Pill>}
                   <Pill color={hasProviderErrors ? 'amber' : 'purple'}>
                     {hasProviderErrors ? 'Provider degraded' : 'Provider healthy'}
                   </Pill>
