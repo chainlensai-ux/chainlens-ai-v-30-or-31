@@ -349,7 +349,7 @@ export default function WhaleAlertsPage() {
     : isFullInProgress
       ? 'Full refresh in progress'
       : syncState
-        ? (syncState.mode === 'full' && !isFullInProgress && !isPartial ? 'Recently refreshed' : (isPartial ? 'Partial refresh complete' : 'Recently refreshed'))
+        ? (syncState.mode === 'full' && !isFullInProgress && !isPartial ? 'Full refresh complete' : 'Recently refreshed')
         : 'Ready to sync'
 
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
@@ -596,6 +596,11 @@ export default function WhaleAlertsPage() {
                     : `Last refresh checked ${scannedCount} / ${trackedCount || stats.trackedWallets} tracked wallets`}
                 </p>
               )}
+              {syncState && trackedCount > 0 && (
+                <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
+                  {scannedCount} of {trackedCount} wallets checked
+                </p>
+              )}
 
               {(syncState?.providerErrors ?? 0) > 0 && (
                 <p className="rounded-[12px]"
@@ -611,12 +616,14 @@ export default function WhaleAlertsPage() {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Cooldown active' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
+                  {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
                 </button>
                 <button onClick={() => { void runSync(syncState?.mode === 'full' && syncState?.hasMore ? (syncState?.nextOffset ?? 0) : 0, 'full') }} disabled={syncing || fullSyncCooldownLeftMs > 0}
                   className="flex items-center rounded-[12px]"
                   style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
-                  {syncState?.mode === 'full' && syncState?.hasMore ? 'Continue full refresh' : 'Full refresh'}
+                  {syncState?.mode === 'full' && syncState?.hasMore
+                    ? (fullSyncCooldownLeftMs > 0 ? 'Continue shortly' : 'Continue refresh')
+                    : (syncState?.mode === 'full' && !syncState?.hasMore && trackedCount > 0 && scannedCount >= trackedCount ? 'Full refresh complete' : 'Full refresh')}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
                   className="flex items-center rounded-[12px]"
