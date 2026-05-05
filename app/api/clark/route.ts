@@ -16,7 +16,8 @@ const clarkRate = new Map<string, { count: number; resetAt: number }>()
 const CLARK_RATE_BY_PLAN: Record<string, number> = { free: 10, pro: 30, elite: 90 }
 function clarkPlan(req: NextRequest): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
-function clarkAllowed(req: NextRequest): boolean { const plan=clarkPlan(req); const key=`${plan}:${clarkIp(req)}`; const now=Date.now(); const cur=clarkRate.get(key); const lim=CLARK_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){ clarkRate.set(key,{count:1,resetAt:now+60000}); return true } if(cur.count>=lim) return false; cur.count+=1; return true }
+function clarkActor(req: NextRequest): string { return req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}` }
+function clarkAllowed(req: NextRequest): boolean { const plan=clarkPlan(req); const key=`${plan}:${clarkActor(req)}`; const now=Date.now(); const cur=clarkRate.get(key); const lim=CLARK_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){ clarkRate.set(key,{count:1,resetAt:now+60000}); return true } if(cur.count>=lim) return false; cur.count+=1; return true }
 
 // ---------- Types ----------
 
@@ -180,6 +181,11 @@ function idToAddress(id: string): string {
 
 function extractTokenLookupQuery(prompt: string): string | null {
   const t = prompt.trim().toLowerCase();
+  const blockedQueries = new Set([
+    "holder", "holders", "holder count", "holder distribution", "holder concentration",
+    "liquidity", "lp", "lp lock", "lp control", "deployer", "dev wallet", "transfer controls",
+    "security", "tax", "taxes",
+  ]);
   const patterns = [
     /(?:scan|analyze|analyse|check)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
     /(?:full report on|complete report on|deep scan|full analysis of|full analysis on|run all checks on)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
@@ -189,7 +195,11 @@ function extractTokenLookupQuery(prompt: string): string | null {
   ];
   for (const p of patterns) {
     const m = t.match(p);
-    if (m?.[1]) return m[1].trim();
+    if (m?.[1]) {
+      const q = m[1].trim().toLowerCase();
+      if (blockedQueries.has(q)) continue;
+      return q;
+    }
   }
   return null;
 }
@@ -208,8 +218,11 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/(<token_data>|<wallet_scan>|<analysis>|feature context|ask clark)/i.test(prompt)) {
     return { intent: "feature_context", address };
   }
-  if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|help|who are you|what is chainlens/i.test(t)) {
+  if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|what can u do|help|who are you|what is chainlens|yo what can u do clark/i.test(t)) {
     return { intent: "casual_help", address };
+  }
+  if (/\b(should i buy this|should i ape|should i buy)\b/i.test(t)) {
+    return { intent: "financial_advice", address };
   }
   if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock|what is slippage|explain slippage/i.test(t)) {
     return { intent: "educational", address };
@@ -997,13 +1010,95 @@ function buildClarkStrategyReply(prompt: string): string {
 function detectLiveIntent(prompt: string): LiveIntent {
   const t = prompt.toLowerCase().trim();
   if (/scan\s+0x[a-f0-9]{40}|check wallet|wallet\b/.test(t)) return "WALLET_QUERY";
-  if (/what'?s pumping on base|base trending|moving on base|top movers on base/.test(t)) return "BASE_MARKET";
+  if (/what'?s pumping on base|what'?s pumping|what is pumping early|early pump detection|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
   if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
   if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales? (?:doing|buying)\b|\bwhales? buying\b|\bwhale buys?\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
   // Row/page-level Ask Clark redirects carry structured alert data in the prompt text
   if (/\bsignal:\s*(high|watch|low)\b|\btop alerts:/i.test(t)) return "WHALE_FEED";
   return "GENERAL_CHAT";
+}
+
+function isWhaleFlowPrompt(message: string, history?: ClarkRequestBody["history"]): boolean {
+  const t = message.toLowerCase().trim();
+  if (extractAddress(message)) return false;
+  const directWhalePrompt = /\b(show base whales|base whales|show whales|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
+  if (directWhalePrompt) return true;
+  const followupWhalePrompt = /\b(what are they rotating into|what are they buying|last 7 days|last week|7d)\b/i.test(t);
+  if (!followupWhalePrompt) return false;
+  const historyText = getHistoryMessages(history).join("\n").toLowerCase();
+  return /\b(whale|whales|whale flow|whale alerts|smart money on base|whale rotation|whale activity|whale_feed_stored)\b/i.test(historyText);
+}
+
+async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, origin: string) {
+  const chain = body.chain ?? "base";
+  const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH']);
+  const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\blast 7 days\b/i.test(prompt.toLowerCase());
+  const window = is7dQuery ? "7d" : "24h";
+  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I can’t read stored Whale Alerts right now. Open Whale Alerts and refresh the feed, then ask again." };
+  }
+  const json = await res.json();
+  const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
+  if (raw.length === 0) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I don’t have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again." };
+  }
+  const tokenCounts = new Map<string, number>();
+  let pricedFlow = 0;
+  let pricedCount = 0;
+  let latestTs = 0;
+  let oldestTs = 0;
+  for (const row of raw) {
+    const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase();
+    const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null;
+    if (firstNonRouting) {
+      tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1);
+      if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
+        pricedFlow += row.amount_usd;
+        pricedCount += 1;
+      }
+    }
+    const ts = row.occurred_at ? new Date(row.occurred_at).getTime() : 0;
+    if (Number.isFinite(ts) && ts > 0) {
+      latestTs = Math.max(latestTs, ts);
+      oldestTs = oldestTs === 0 ? ts : Math.min(oldestTs, ts);
+    }
+  }
+  const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1]);
+  if (ranked.length === 0) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don’t have a clean non-stable token signal yet. Open Whale Alerts and run a sync to refresh." };
+  }
+  const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000);
+  const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000;
+  const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs);
+  const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ");
+  const strongest = ranked[0]?.[0] ?? "No repeated token yet";
+  const estimatedPricedFlow = pricedCount > 0 ? `~$${Math.round(pricedFlow).toLocaleString()} across ${pricedCount} priced alert${pricedCount === 1 ? "" : "s"}` : "USD mostly unverified";
+  const flowQuality = stale ? "Mixed quality (data may be stale)." : "Healthy quality (recent non-stable flow present).";
+  const marketRead = `Whale focus is clustering into ${strongest} with rotation across ${ranked.length} non-stable token${ranked.length === 1 ? "" : "s"}.`;
+  const nextChecks = incomplete7d
+    ? "Run Whale Alerts sync to fill the full 7d window, then re-check concentration and repeat strength."
+    : "Watch if top token repeats persist and whether non-stable flow broadens or fades.";
+  return {
+    feature: "clark-ai",
+    chain,
+    mode: "analysis",
+    intent: "whale_alert",
+    toolsUsed: ["whale_feed_stored"],
+    analysis: [
+      "WHALE FLOW SNAPSHOT",
+      "Source: Stored Whale Alerts only",
+      `Window: ${window}`,
+      `Top whale tokens: ${topTokens}`,
+      `Estimated priced flow: ${estimatedPricedFlow}`,
+      `Strongest repeat: ${strongest}`,
+      `Flow quality: ${flowQuality}`,
+      `Market read: ${marketRead}`,
+      `Next checks: ${nextChecks}`,
+      incomplete7d ? "I only have stored Whale Alerts from the available saved window, so this may not cover the full 7 days yet." : "",
+    ].filter(Boolean).join("\n"),
+  };
 }
 
 async function fetchCoinGeckoMajors() {
@@ -1028,6 +1123,39 @@ function buildRoutingHelpReply(prompt: string): string {
   if (/deployer|dev wallet/.test(t)) return "Use Dev Wallet Detector with the token contract to check likely deployer links and suspicious wallet clusters.";
   if (/scan a token|token/.test(t)) return "Use Token Scanner with the contract address for contract and risk checks, then ask Clark for a final read.";
   return "Use Base Radar for discovery, Token Scanner for contract checks, Wallet Scanner for behavior, and Dev Wallet Detector for deployer risk.";
+}
+
+function isHolderQuestion(prompt: string): boolean {
+  return /\b(how many holders|holders?\??|what about holders|holder count|holder distribution)\b/i.test(prompt.trim().toLowerCase());
+}
+function isPumpFeedPrompt(prompt: string): boolean {
+  return /\b(what are pump alerts right now|pump alerts|what'?s pumping|what is pumping early|early pump detection)\b/i.test(prompt.toLowerCase());
+}
+function isBaseRadarPrompt(prompt: string): boolean {
+  return /\b(what'?s happening on base radar|base radar|base movers|what'?s moving on base)\b/i.test(prompt.toLowerCase());
+}
+function isFeedSafestFollowup(prompt: string): boolean {
+  return /\b(which one is safest|which is safest|what'?s the safest|which is cleanest|which one should i watch)\b/i.test(prompt.toLowerCase());
+}
+
+async function handlePumpFeedSnapshot(origin: string) {
+  const res = await fetch(`${origin}/api/pump-alerts?window=24h&limit=10`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is unavailable right now.";
+  const json = await res.json();
+  const alerts = Array.isArray(json?.alerts) ? json.alerts : [];
+  if (!alerts.length) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is empty right now.";
+  const rows = alerts.slice(0, 5).map((a: Record<string, unknown>, i: number) => `${i + 1}. ${String(a.symbol ?? a.token_symbol ?? "Unknown")} | 24h ${typeof a.price_change_24h === "number" ? `${a.price_change_24h.toFixed(2)}%` : "N/A"} | LQ ${formatUsdShort(typeof a.liquidity_usd === "number" ? a.liquidity_usd : null)} | Vol ${formatUsdShort(typeof a.volume_24h_usd === "number" ? a.volume_24h_usd : null)}${a.category ? ` | ${String(a.category)}` : ""}`);
+  return ["PUMP ALERTS SNAPSHOT", ...rows].join("\n");
+}
+
+async function handleBaseRadarSnapshot(origin: string) {
+  const res = await fetch(`${origin}/api/radar?window=24h&limit=10`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) return "BASE RADAR SNAPSHOT\nBase Radar feed is unavailable right now.";
+  const json = await res.json();
+  const items = Array.isArray(json?.items) ? json.items : [];
+  if (!items.length) return "BASE RADAR SNAPSHOT\nBase Radar feed is empty right now.";
+  const rows = items.slice(0, 6).map((a: Record<string, unknown>, i: number) => `${i + 1}. ${String(a.symbol ?? a.token_symbol ?? "Unknown")} | 24h ${typeof a.price_change_24h === "number" ? `${a.price_change_24h.toFixed(2)}%` : "N/A"} | LQ ${formatUsdShort(typeof a.liquidity_usd === "number" ? a.liquidity_usd : null)} | Vol ${formatUsdShort(typeof a.volume_24h_usd === "number" ? a.volume_24h_usd : null)}`);
+  return ["BASE RADAR SNAPSHOT", ...rows].join("\n");
 }
 
 function formatUsdShort(value: number | null | undefined): string {
@@ -3538,8 +3666,8 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     // Organic query (e.g. "what are whales doing right now?") — use stored feed only.
     const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b|\bsmart wallets? buying\b/i.test(prompt);
     const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b|\blast week whale activity\b|\b7d whale flows\b|\bwhat were whales buying last 7 days\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
-    const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b/i.test(prompt.toLowerCase());
-    const window = is7dQuery ? "7d" : (isBuyQuery ? "24h" : "1h");
+    const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b|\blast 7 days\b/i.test(prompt.toLowerCase());
+    const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
       const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, {
@@ -3658,6 +3786,36 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
+  if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
+    return { feature: "clark-ai", chain, mode: "casual_help", intent: "help", toolsUsed: [], analysis: "I can scan tokens and wallets, read Whale Flows, Pump Alerts, and Base Radar, check liquidity/security/holders where data exists, run dev-wallet checks, and explain risk signals." };
+  }
+  if (isWhaleFlowPrompt(prompt, body.history)) {
+    return await handleStoredWhaleFlow(prompt, body, origin);
+  }
+  if (isPumpFeedPrompt(prompt)) {
+    const analysis = await handlePumpFeedSnapshot(origin);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["pump_alerts_feed"], analysis };
+  }
+  if (isBaseRadarPrompt(prompt)) {
+    const analysis = await handleBaseRadarSnapshot(origin);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_radar_feed"], analysis };
+  }
+  if (isFeedSafestFollowup(prompt)) {
+    const marketItems = extractStructuredMarketItems(body);
+    if (marketItems.length) {
+      const ranked = [...marketItems].sort((a, b) => a.rank - b.rank);
+      const pick = ranked[0];
+      const second = ranked[1];
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "market",
+        toolsUsed: ["market_context"],
+        analysis: `Cleanest watch candidate: ${pick?.symbol ?? "No clear candidate"}.\nWhy: strongest available liquidity/volume profile in the current list.\nLimit: this is not a safety guarantee.\nIf you want higher confidence, run Token Scanner on ${pick?.symbol ?? "top candidate"}${second?.symbol ? ` and ${second.symbol}` : ""}.`,
+      };
+    }
+  }
   const liveIntent = detectLiveIntent(prompt);
   const directIntent = detectIntent(prompt);
   const historyContext = buildHistoryContextText(body.history);
@@ -3704,6 +3862,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       toolsUsed: [],
       analysis: buildTokenFollowupReply(tokenFollowup.type, tokenFollowup.contractAddress, tokenFollowup.scanText),
     };
+  }
+  if (isHolderQuestion(prompt)) {
+    const lastScan = extractLastTokenScanFromHistory(body.history);
+    if (!lastScan) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "token_analysis",
+        toolsUsed: [],
+        analysis: "I can check holder distribution, but I need a token symbol or contract first.",
+      };
+    }
   }
 
   // Casual chat — short-circuit before plan execution
@@ -3816,6 +3987,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain });
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
+    if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "casual_help",
+        intent: "help",
+        toolsUsed: [],
+        analysis: [
+          "I can help with:",
+          "- Scan tokens and contracts",
+          "- Scan wallets and summarize behavior",
+          "- Read Whale Alerts (stored feed)",
+          "- Read Pump Alerts",
+          "- Read Base Radar / Base movers",
+          "- Check liquidity, security, and holders where data exists",
+          "- Explain risk signals and missing checks",
+        ].join("\n"),
+      };
+    }
     return { feature: "clark-ai", chain, mode: "casual_help", analysis: buildCasualClarkReply(prompt), intent: plan.intent, toolsUsed };
   }
   if (directIntent.intent === "capabilities") {
@@ -4290,7 +4480,7 @@ export async function POST(req: NextRequest) {
   if (!clarkAllowed(req)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
     const body = (await req.json()) as ClarkRequestBody;
-    const cacheKey = JSON.stringify({ feature: body.feature, prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
+    const cacheKey = JSON.stringify({ actor: clarkActor(req), feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     if (body.message && !body.prompt) body.prompt = body.message;
@@ -4341,10 +4531,10 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    return NextResponse.json(
-      { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) },
-      { status: 200 }
-    );
+    const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) }
+    const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
+    clarkCache.set(cacheKey, { exp: Date.now() + cacheTtl, payload: normalized })
+    return NextResponse.json(normalized, { status: 200 });
   } catch (err: unknown) {
     console.error("[Clark]", err instanceof Error ? err.message : err);
     const safeMsg = "Clark could not fetch that data right now. Try again in a moment or open the matching scanner.";
