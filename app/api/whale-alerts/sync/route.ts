@@ -29,6 +29,12 @@ const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
+const SYNC_COOLDOWN_MS = 60 * 1000
+const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
+const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
+function syncPlan(req: Request): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
+function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
+function syncAllowed(req: Request): { ok: boolean; cooldown: boolean } { const plan=syncPlan(req); const key=`${plan}:${syncIp(req)}`; const now=Date.now(); const cur=syncRate.get(key); const lim=SYNC_RATE_BY_PLAN[plan]; if(cur && now-cur.lastRunAt < SYNC_COOLDOWN_MS) return { ok:false, cooldown:true }; if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } }
 
 type SyncWindow = '24h' | '3d' | '7d'
 
@@ -256,6 +262,8 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
 }
 
 export async function POST(request: Request) {
+  const allow = syncAllowed(request)
+  if (!allow.ok) return NextResponse.json({ ok: false, error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
   const providerKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
