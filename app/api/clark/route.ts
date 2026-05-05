@@ -1006,6 +1006,12 @@ function detectLiveIntent(prompt: string): LiveIntent {
   return "GENERAL_CHAT";
 }
 
+function isWhaleFlowPrompt(message: string): boolean {
+  const t = message.toLowerCase().trim();
+  if (extractAddress(message)) return false;
+  return /\b(show base whales|base whales|show whales|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
+}
+
 async function fetchCoinGeckoMajors() {
   const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true", { cache: "no-store" });
   if (!res.ok) throw new Error("coingecko majors failed");
@@ -3538,8 +3544,8 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     // Organic query (e.g. "what are whales doing right now?") — use stored feed only.
     const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b|\bsmart wallets? buying\b/i.test(prompt);
     const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b|\blast week whale activity\b|\b7d whale flows\b|\bwhat were whales buying last 7 days\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
-    const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b/i.test(prompt.toLowerCase());
-    const window = is7dQuery ? "7d" : (isBuyQuery ? "24h" : "1h");
+    const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b|\blast 7 days\b/i.test(prompt.toLowerCase());
+    const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
       const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, {
@@ -3670,6 +3676,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   }
   if (directIntent.intent === "wallet_analysis" && !directIntent.address) {
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data." };
+  }
+
+  if (isWhaleFlowPrompt(prompt)) {
+    return await handleWhaleAlertFeed(prompt, body, origin);
   }
 
   // Hard guard: hide/private transaction requests — specific public-ledger explanation
