@@ -1009,7 +1009,7 @@ function detectLiveIntent(prompt: string): LiveIntent {
 function isWhaleFlowPrompt(message: string): boolean {
   const t = message.toLowerCase().trim();
   if (extractAddress(message)) return false;
-  return /\b(show base whales|base whales|show whales|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
+  return /\b(show base whales|base whales|show whales|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
 }
 
 async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, origin: string) {
@@ -1027,12 +1027,20 @@ async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, ori
     return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I don’t have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again." };
   }
   const tokenCounts = new Map<string, number>();
+  let pricedFlow = 0;
+  let pricedCount = 0;
   let latestTs = 0;
   let oldestTs = 0;
   for (const row of raw) {
     const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase();
     const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null;
-    if (firstNonRouting) tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1);
+    if (firstNonRouting) {
+      tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1);
+      if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
+        pricedFlow += row.amount_usd;
+        pricedCount += 1;
+      }
+    }
     const ts = row.occurred_at ? new Date(row.occurred_at).getTime() : 0;
     if (Number.isFinite(ts) && ts > 0) {
       latestTs = Math.max(latestTs, ts);
@@ -1046,6 +1054,14 @@ async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, ori
   const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000);
   const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000;
   const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs);
+  const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ");
+  const strongest = ranked[0]?.[0] ?? "No repeated token yet";
+  const estimatedPricedFlow = pricedCount > 0 ? `~$${Math.round(pricedFlow).toLocaleString()} across ${pricedCount} priced alert${pricedCount === 1 ? "" : "s"}` : "USD mostly unverified";
+  const flowQuality = stale ? "Mixed quality (data may be stale)." : "Healthy quality (recent non-stable flow present).";
+  const marketRead = `Whale focus is clustering into ${strongest} with rotation across ${ranked.length} non-stable token${ranked.length === 1 ? "" : "s"}.`;
+  const nextChecks = incomplete7d
+    ? "Run Whale Alerts sync to fill the full 7d window, then re-check concentration and repeat strength."
+    : "Watch if top token repeats persist and whether non-stable flow broadens or fades.";
   return {
     feature: "clark-ai",
     chain,
@@ -1053,13 +1069,17 @@ async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, ori
     intent: "whale_alert",
     toolsUsed: ["whale_feed_stored"],
     analysis: [
-      `From stored Whale Alerts only: ${raw.length} alert${raw.length === 1 ? "" : "s"} in the ${window} window.`,
-      `Top focused/bought tokens: ${ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ")}.`,
-      `Strongest repeated token: ${ranked[0]?.[0] ?? "No repeated token yet"}.`,
-      stale ? "Data may be stale." : "Data appears recent.",
+      "WHALE FLOW SNAPSHOT",
+      "Source: Stored Whale Alerts only",
+      `Window: ${window}`,
+      `Top whale tokens: ${topTokens}`,
+      `Estimated priced flow: ${estimatedPricedFlow}`,
+      `Strongest repeat: ${strongest}`,
+      `Flow quality: ${flowQuality}`,
+      `Market read: ${marketRead}`,
+      `Next checks: ${nextChecks}`,
       incomplete7d ? "I only have stored Whale Alerts from the available saved window, so this may not cover the full 7 days yet." : "",
-      "Open Whale Alerts to refresh the feed.",
-    ].join(" "),
+    ].filter(Boolean).join("\n"),
   };
 }
 
