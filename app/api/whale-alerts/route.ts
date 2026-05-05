@@ -80,7 +80,21 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
   return result
 }
 
-const STABLECOINS = new Set(['USDC', 'USDT', 'DAI', 'USDbC'])
+const STABLECOINS = new Set(['USDC', 'USDT', 'DAI', 'USDbC', 'EURC'])
+const LOW_SIGNAL_ROUTING = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
+
+function splitSymbols(sym: string | null): string[] {
+  if (!sym) return []
+  return sym
+    .split(' / ')
+    .map(s => s.trim().toUpperCase())
+    .filter(Boolean)
+}
+
+function firstNonRoutingSymbol(sym: string | null): string | null {
+  const symbols = splitSymbols(sym)
+  return symbols.find(s => !LOW_SIGNAL_ROUTING.has(s)) ?? null
+}
 
 const GT_BASE_URL     = 'https://api.geckoterminal.com/api/v2'
 const GT_REQ_HEADERS  = { accept: 'application/json', origin: 'https://chainlens.ai' }
@@ -104,6 +118,55 @@ function filterStablecoinNoise(rows: RawRow[]): RawRow[] {
     const amt = row.amount_token as number | null
     return amt === null || amt >= 100
   })
+}
+
+// Suppress swaps that are only routing/stable/major assets (e.g., USDC/WETH, EURC/USDC).
+function filterRoutingOnlySwaps(rows: RawRow[]): RawRow[] {
+  return rows.filter(row => {
+    const symbols = splitSymbols((row.token_symbol as string | null) ?? null)
+    if (symbols.length <= 1) return true
+    return symbols.some(sym => !LOW_SIGNAL_ROUTING.has(sym))
+  })
+}
+
+
+function getRowUsdValue(row: RawRow): number {
+  const usd = row.amount_usd as number | null
+  return usd !== null && Number.isFinite(usd) ? usd : 0
+}
+
+function applyDiversityCap(rows: RawRow[]): { rows: RawRow[]; cappedTokenCounts: Record<string, number> } {
+  const sorted = [...rows].sort((a, b) => getRowUsdValue(b) - getRowUsdValue(a))
+  const selected = new Set<number>()
+  const perToken = new Map<string, number>()
+  const cappedTokenCounts: Record<string, number> = {}
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const row = sorted[i]
+    const focus = ((row.focus_token_symbol as string | null) ?? firstNonRoutingSymbol((row.token_symbol as string | null) ?? null) ?? '').toUpperCase().trim()
+    if (!focus) {
+      selected.add(i)
+      continue
+    }
+    const usd = getRowUsdValue(row)
+    const cap = usd < 10000 ? 2 : 3
+    const used = perToken.get(focus) ?? 0
+    if (used < cap) {
+      perToken.set(focus, used + 1)
+      selected.add(i)
+    } else {
+      cappedTokenCounts[focus] = (cappedTokenCounts[focus] ?? 0) + 1
+    }
+  }
+
+  const kept = sorted.filter((_, i) => selected.has(i))
+  return { rows: kept, cappedTokenCounts }
+}
+
+function applyHeadlineTokenFocus(row: RawRow): RawRow {
+  const focus = firstNonRoutingSymbol((row.token_symbol as string | null) ?? null)
+  if (!focus) return row
+  return { ...row, focus_token_symbol: focus }
 }
 
 // Collapse rapid repeats: same wallet + token + side appearing multiple times
@@ -461,7 +524,9 @@ export async function GET(req: NextRequest) {
 
     const scored   = groupAlertsByTx(enriched).map(row => ({ ...row, signal_score: computeSignalScore(row) }))
     const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueFloor(scored, effectiveMinUsd)
-    const grouped  = collapseRapidRepeats(filterStablecoinNoise(valueFiltered)).slice(0, limit)
+    const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(valueFiltered)).map(applyHeadlineTokenFocus)
+    const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
+    const grouped  = collapseRapidRepeats(diversityCapped).slice(0, limit)
 
     return NextResponse.json({
       alerts: grouped,
@@ -474,6 +539,10 @@ export async function GET(req: NextRequest) {
       diagnostics: {
         returnedCount:            grouped.length,
         rawCount:                 (alertsRes.data ?? []).length,
+        rawRows:                  (alertsRes.data ?? []).length,
+        afterStableRoutingFilter: deNoised.length,
+        afterDiversityCap:        diversityCapped.length,
+        cappedTokenCounts,
         appliedWindow:            selectedWindow,
         appliedMinUsd:            effectiveMinUsd,
         hiddenByFilter,
