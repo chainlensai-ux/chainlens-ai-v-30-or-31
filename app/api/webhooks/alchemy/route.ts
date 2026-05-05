@@ -29,7 +29,7 @@ type TrackedWallet = {
   label: string | null
 }
 
-const STABLE_ROUTING_ONLY = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'EURC', 'WETH', 'ETH'])
+const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
 const WEBHOOK_EVENT_CAP_PER_MINUTE = 150
 
 const minuteBuckets = new Map<string, number>()
@@ -58,6 +58,22 @@ function isBelowSymbolThreshold(symbol: string | null, amount: number | null): b
   return amount <= 0
 }
 
+function isLikelyApproval(category: string | null, rawValue: string | null, amountToken: number | null): boolean {
+  const cat = (category ?? '').toLowerCase()
+  if (cat.includes('approval') || cat.includes('allowance')) return true
+  if (amountToken !== null) return false
+  return rawValue === '0' || rawValue === '0x0'
+}
+
+function shouldEnrichCandidate(symbol: string | null, amountToken: number | null, category: string | null): boolean {
+  const sym = symbol?.toUpperCase() ?? null
+  const cat = (category ?? '').toLowerCase()
+  const nonRouting = sym !== null && !ROUTING_ONLY_SYMBOLS.has(sym)
+  const aboveThreshold = amountToken !== null && !isBelowSymbolThreshold(sym, amountToken)
+  const meaningfulType = cat.includes('swap') || cat.includes('transfer') || cat.includes('erc20')
+  return nonRouting || aboveThreshold || meaningfulType
+}
+
 function severityFromUsd(usd: number | null): string | null {
   if (usd === null) return null
   if (usd >= 25000) return 'major'
@@ -72,6 +88,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const webhooksEnabled = (process.env.WEBHOOKS_ENABLED ?? 'true').toLowerCase() !== 'false'
+  if (!webhooksEnabled) {
+    return NextResponse.json({ ok: true, disabled: true })
+  }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
 
@@ -83,13 +104,13 @@ export async function POST(request: Request) {
   try {
     payload = (await request.json()) as AlchemyPayload
   } catch {
-    console.log('[alchemy-webhook]', { received: 0, duplicateSkipped: 0, dustSkipped: 0, earlyFiltered: 1, enriched: 0, inserted: 0 })
+    console.log('[alchemy-webhook]', { received: 0, earlySkipped: 1, duplicateSkipped: 0, relevantForEnrichment: 0, enriched: 0, inserted: 0 })
     return NextResponse.json({ ok: true, received: 0, inserted: 0 })
   }
 
   const rawActivity = payload?.event?.activity
   if (!Array.isArray(rawActivity) || rawActivity.length === 0) {
-    console.log('[alchemy-webhook]', { received: 0, duplicateSkipped: 0, dustSkipped: 0, earlyFiltered: 1, enriched: 0, inserted: 0 })
+    console.log('[alchemy-webhook]', { received: 0, earlySkipped: 1, duplicateSkipped: 0, relevantForEnrichment: 0, enriched: 0, inserted: 0 })
     return NextResponse.json({ ok: true, received: 0, inserted: 0 })
   }
 
@@ -116,27 +137,32 @@ export async function POST(request: Request) {
   const candidates: Record<string, unknown>[] = []
 
   let duplicateSkipped = 0
-  let dustSkipped = 0
-  let earlyFiltered = budget.deferred
+  let earlySkipped = budget.deferred
+  let relevantForEnrichment = 0
 
   for (let i = 0; i < budget.allowed; i += 1) {
     const item = rawActivity[i] as AlchemyActivity
     const txHash = item.hash?.trim() ?? null
     if (!txHash) {
-      earlyFiltered += 1
+      earlySkipped += 1
       continue
     }
 
     const tokenSymbol = item.asset?.toUpperCase() ?? null
     const tokenAddress = item.rawContract?.address ?? null
+    const rawValue = item.rawContract?.rawValue ?? null
     const amountToken = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value : null
 
+    if (isLikelyApproval(item.category ?? null, rawValue, amountToken)) {
+      earlySkipped += 1
+      continue
+    }
+
     const isInternal = item.category === 'internal'
-    const isNativeNoise = tokenAddress === null && (tokenSymbol === 'ETH' || tokenSymbol === null) && (amountToken === null || amountToken <= 0)
-    const isDust = isBelowSymbolThreshold(tokenSymbol, amountToken)
-    const isStableRoutingOnly = tokenSymbol !== null && STABLE_ROUTING_ONLY.has(tokenSymbol) && amountToken !== null && amountToken < 100
-    if (isInternal || isNativeNoise || isDust || isStableRoutingOnly) {
-      dustSkipped += 1
+    const isZeroValue = amountToken !== null && amountToken <= 0
+    const isNativeDust = tokenAddress === null && (tokenSymbol === 'ETH' || tokenSymbol === null) && (amountToken === null || amountToken < 0.01)
+    if (isZeroValue || isInternal || isNativeDust) {
+      earlySkipped += 1
       continue
     }
 
@@ -148,7 +174,7 @@ export async function POST(request: Request) {
     if (toKey && walletMap.has(toKey)) matches.push({ walletKey: toKey, storedAddress: item.toAddress ?? toKey, side: 'buy' })
 
     if (matches.length === 0) {
-      earlyFiltered += 1
+      earlySkipped += 1
       continue
     }
 
@@ -159,6 +185,11 @@ export async function POST(request: Request) {
         continue
       }
       dedupePairs.add(pairKey)
+      if (!shouldEnrichCandidate(tokenSymbol, amountToken, item.category ?? null)) {
+        earlySkipped += 1
+        continue
+      }
+      relevantForEnrichment += 1
 
       candidates.push({
         wallet_address: match.storedAddress,
@@ -182,7 +213,7 @@ export async function POST(request: Request) {
   const enriched = candidates.length
 
   if (candidates.length === 0) {
-    console.log('[alchemy-webhook]', { received, duplicateSkipped, dustSkipped, earlyFiltered, enriched: 0, inserted: 0 })
+    console.log('[alchemy-webhook]', { received, earlySkipped, duplicateSkipped, relevantForEnrichment, enriched: 0, inserted: 0 })
     return NextResponse.json({ ok: true, received, inserted: 0 })
   }
 
@@ -201,6 +232,6 @@ export async function POST(request: Request) {
   const inserted = data?.length ?? 0
   duplicateSkipped += Math.max(0, candidates.length - inserted)
 
-  console.log('[alchemy-webhook]', { received, duplicateSkipped, dustSkipped, earlyFiltered, enriched, inserted })
+  console.log('[alchemy-webhook]', { received, earlySkipped, duplicateSkipped, relevantForEnrichment, enriched, inserted })
   return NextResponse.json({ ok: true, received, inserted })
 }

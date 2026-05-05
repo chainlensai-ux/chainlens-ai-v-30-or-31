@@ -46,6 +46,8 @@ const MIN_OPTIONS = [
   { label: '$1k+', value: 1000 }, { label: '$5k+', value: 5000 }, { label: '$10k+', value: 10000 },
 ]
 const WINDOWS = ['15m', '1h', '6h', '24h'] as const
+const CLIENT_SYNC_COOLDOWN_MS = 10 * 60 * 1000
+const CLIENT_SYNC_CACHE_KEY = 'whale_alerts_last_sync_at'
 
 const short = (value?: string | null) => (!value ? 'Unknown' : `${value.slice(0, 6)}...${value.slice(-4)}`)
 const timeAgo = (iso?: string | null) => {
@@ -217,6 +219,7 @@ export default function WhaleAlertsPage() {
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
   const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
+  const [syncCooldownLeftMs, setSyncCooldownLeftMs] = useState(0)
 
   const loadAlerts = useCallback(async () => {
     setLoading(true)
@@ -242,6 +245,13 @@ export default function WhaleAlertsPage() {
   useEffect(() => { void loadAlerts() }, [loadAlerts])
 
   const runSync = async (offset?: number) => {
+    const now = Date.now()
+    const lastSyncAt = Number(window.localStorage.getItem(CLIENT_SYNC_CACHE_KEY) ?? '0')
+    const elapsed = now - lastSyncAt
+    if (elapsed < CLIENT_SYNC_COOLDOWN_MS) {
+      setSyncCooldownLeftMs(CLIENT_SYNC_COOLDOWN_MS - elapsed)
+      return
+    }
     setSyncing(true)
     try {
       const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd) })
@@ -249,11 +259,32 @@ export default function WhaleAlertsPage() {
       const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, { method: 'POST' })
       const json = (await res.json()) as SyncResponse
       setSyncState(json)
+      window.localStorage.setItem(CLIENT_SYNC_CACHE_KEY, String(now))
+      setSyncCooldownLeftMs(CLIENT_SYNC_COOLDOWN_MS)
       await loadAlerts()
     } finally {
       setSyncing(false)
     }
   }
+
+  useEffect(() => {
+    const tick = () => {
+      const lastSyncAt = Number(window.localStorage.getItem(CLIENT_SYNC_CACHE_KEY) ?? '0')
+      const left = Math.max(0, CLIENT_SYNC_COOLDOWN_MS - (Date.now() - lastSyncAt))
+      setSyncCooldownLeftMs(left)
+    }
+    tick()
+    const id = window.setInterval(tick, 30_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    if (syncing) return
+    if (syncCooldownLeftMs > 0) return
+    const hasCachedSync = Number(window.localStorage.getItem(CLIENT_SYNC_CACHE_KEY) ?? '0') > 0
+    if (!hasCachedSync) void runSync()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncing, syncCooldownLeftMs])
 
   const resetFilters = () => {
     setTypeFilter('all')
@@ -340,7 +371,7 @@ export default function WhaleAlertsPage() {
                 </svg>
                 {stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Wallets loading'}
               </Pill>
-              <Pill color="teal" dot>{syncing ? 'Syncing…' : 'Batch Sync Online'}</Pill>
+              <Pill color="teal" dot>{syncing ? 'Syncing…' : 'On-demand sync mode'}</Pill>
               <Pill color="purple" dot>CORTEX Watching</Pill>
             </div>
           </div>
@@ -520,13 +551,13 @@ export default function WhaleAlertsPage() {
               )}
 
               <div className="flex" style={{ gap: 8 }}>
-                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined) }} disabled={syncing}
+                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined) }} disabled={syncing || syncCooldownLeftMs > 0}
                   className="flex flex-1 items-center justify-center rounded-[12px]"
                   style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing ? 0.5 : 1, border: 'none' }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue sync' : 'Run sync'}
+                  {syncing ? 'Scanning…' : syncCooldownLeftMs > 0 ? 'Sync cooldown active' : (syncState?.hasMore ? 'Continue sync' : 'Run sync')}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
                   className="flex items-center rounded-[12px]"
@@ -817,3 +848,6 @@ export default function WhaleAlertsPage() {
     </div>
   )
 }
+            <p style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: '#94a3b8' }}>
+              Whale Alerts refreshes on demand during beta to reduce infrastructure waste.
+            </p>
