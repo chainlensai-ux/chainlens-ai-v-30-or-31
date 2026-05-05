@@ -187,6 +187,7 @@ function extractTokenLookupQuery(prompt: string): string | null {
     "security", "tax", "taxes",
   ]);
   const patterns = [
+    /\b([a-z0-9._-]{2,32})\s+(?:full report|run full report|give me full report|full analysis)\b/i,
     /(?:scan|analyze|analyse|check)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
     /(?:full report on|complete report on|deep scan|full analysis of|full analysis on|run all checks on)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
     /what about\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
@@ -1132,10 +1133,14 @@ function isPumpFeedPrompt(prompt: string): boolean {
   return /\b(what are pump alerts right now|pump alerts|what'?s pumping|what is pumping early|early pump detection)\b/i.test(prompt.toLowerCase());
 }
 function isBaseRadarPrompt(prompt: string): boolean {
-  return /\b(what'?s happening on base radar|base radar|base movers|what'?s moving on base)\b/i.test(prompt.toLowerCase());
+  return /\b(what'?s happening on base radar|show base radar|open base radar|base radar|base movers|what'?s moving on base)\b/i.test(prompt.toLowerCase());
 }
 function isFeedSafestFollowup(prompt: string): boolean {
   return /\b(which one is safest|which is safest|what'?s the safest|which is cleanest|which one should i watch)\b/i.test(prompt.toLowerCase());
+}
+function wasLastFeedEmpty(history: ClarkRequestBody["history"]): boolean {
+  const h = getHistoryMessages(history).slice(-4).join("\n").toLowerCase();
+  return /(whale flow snapshot|pump alerts snapshot|base radar snapshot)/i.test(h) && /(feed is empty|feed is unavailable|no clean non-stable token signal|no clean candidates|empty right now|unavailable right now)/i.test(h);
 }
 
 async function handlePumpFeedSnapshot(origin: string) {
@@ -3801,6 +3806,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_radar_feed"], analysis };
   }
   if (isFeedSafestFollowup(prompt)) {
+    if (wasLastFeedEmpty(body.history)) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "market",
+        toolsUsed: ["market_context"],
+        analysis: "No clean candidates from the last feed yet. Open the matching scanner/refresh the feed, then ask again.",
+      };
+    }
     const marketItems = extractStructuredMarketItems(body);
     if (marketItems.length) {
       const ranked = [...marketItems].sort((a, b) => a.rank - b.rank);
