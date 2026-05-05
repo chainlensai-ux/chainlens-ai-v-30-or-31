@@ -505,54 +505,54 @@ export default function WhaleAlertsPage() {
             </div>
 
             {/* right: wallet sync panel */}
-            <div className="flex flex-col rounded-[16px]"
-              style={{ gap: 12, border: '1px solid rgba(139,92,246,0.20)', background: 'linear-gradient(135deg,#141a34,#10192d,#0a1322)', padding: 16 }}>
+            <div className="flex flex-col rounded-[18px]"
+              style={{ gap: 14, border: '1px solid rgba(139,92,246,0.24)', background: 'linear-gradient(160deg,rgba(13,18,33,0.98),rgba(9,15,30,0.94) 60%,rgba(8,12,24,0.98))', padding: 18, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 14px 40px rgba(0,0,0,0.38)' }}>
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center" style={{ gap: 10 }}>
                   <div className="flex items-center justify-center rounded-[12px]"
-                    style={{ width: 32, height: 32, background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.28)' }}>
+                    style={{ width: 34, height: 34, background: 'rgba(139,92,246,0.16)', border: '1px solid rgba(139,92,246,0.30)' }}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2">
                       <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                     </svg>
                   </div>
                   <div>
-                    <p style={{ fontSize: 14, fontWeight: 700, color: '#f8fafc', margin: 0 }}>Wallet scan</p>
-                    <p style={{ fontSize: 11, color: '#475569', margin: 0 }}>{syncState ? 'Scan complete' : 'No scan yet'}</p>
+                    <p style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.01em', color: '#f8fafc', margin: 0 }}>Whale sync</p>
+                    <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>{syncState ? 'Latest run recorded' : 'No sync run yet'}</p>
                   </div>
                 </div>
-                <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Syncing…' : 'Sync Healthy'}</Pill>
+                <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Sync in progress' : 'Ready to sync'}</Pill>
               </div>
 
-              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Wallets Scanned (Batch)</p>
-                  <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
+              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Batch scanned</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
                     {syncState
                       ? <>{syncState.processed ?? 0}<span style={{ fontSize: 16, fontWeight: 400, color: '#475569' }}> / {syncState.trackedWalletsTotal ?? stats.trackedWallets}</span></>
                       : <span style={{ color: '#334155' }}>—</span>}
                   </p>
                 </div>
-                <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Alerts Found</p>
-                  <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
+                <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Alerts found</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
                     {syncState?.inserted != null ? syncState.inserted : <span style={{ color: '#334155' }}>—</span>}
                   </p>
                 </div>
               </div>
 
               {covPct !== null ? (
-                <div>
+                <div className="rounded-[12px]" style={{ padding: 10, background: 'rgba(5,10,20,0.55)', border: '1px solid rgba(148,163,184,0.12)' }}>
                   <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569' }}>Batch Scan Coverage</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>{covPct}%</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b' }}>Coverage</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#cbd5e1' }}>{covPct}%</span>
                   </div>
-                  <div className="w-full overflow-hidden rounded-full" style={{ height: 6, background: 'rgba(255,255,255,0.06)' }}>
+                  <div className="w-full overflow-hidden rounded-full" style={{ height: 5, background: 'rgba(255,255,255,0.08)' }}>
                     <div className="rounded-full" style={{ width: `${covPct}%`, height: '100%', background: 'linear-gradient(90deg,#2dd4bf,#8b5cf6)', transition: 'width 0.3s ease' }}/>
                   </div>
                 </div>
               ) : (
-                <p style={{ fontSize: 11, color: '#334155' }}>Run sync to see coverage</p>
+                <p style={{ fontSize: 11, color: '#475569' }}>Run a sync to see coverage progress.</p>
               )}
 
               {(syncState?.providerErrors ?? 0) > 0 && (
@@ -587,7 +587,7 @@ export default function WhaleAlertsPage() {
               </div>
 
               <button className="text-left hover:opacity-80"
-                style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#334155', background: 'none', border: 'none' }}>
+                style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', background: 'none', border: 'none' }}>
                 + Advanced Diagnostics
               </button>
               <p style={{ margin: 0, fontSize: 11, color: '#fbbf24' }}>
