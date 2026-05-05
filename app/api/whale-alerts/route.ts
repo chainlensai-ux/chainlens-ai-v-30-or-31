@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 
-type WindowKey = '15m' | '1h' | '6h' | '24h'
+type WindowKey = '15m' | '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
 
 const WINDOW_MS: Record<WindowKey, number> = {
@@ -10,10 +10,11 @@ const WINDOW_MS: Record<WindowKey, number> = {
   '1h': 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
 }
 
 function parseWindow(value: string | null): WindowKey {
-  if (value === '15m' || value === '1h' || value === '6h' || value === '24h') return value
+  if (value === '15m' || value === '1h' || value === '6h' || value === '24h' || value === '7d') return value
   return '24h'
 }
 
