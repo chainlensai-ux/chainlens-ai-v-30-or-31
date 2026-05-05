@@ -36,7 +36,7 @@ const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: nu
 const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
 function syncPlan(req: Request): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
 function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
-function syncAllowed(req: Request, mode: 'batch' | 'full'): { ok: boolean; cooldown: boolean } { const plan=syncPlan(req); const key=`${mode}:${plan}:${syncIp(req)}`; const now=Date.now(); const cur=syncRate.get(key); const lim=mode === 'full' ? 1 : SYNC_RATE_BY_PLAN[plan]; const cooldownMs = mode === 'full' ? FULL_SYNC_COOLDOWN_MS : SYNC_COOLDOWN_MS; if(cur && now-cur.lastRunAt < cooldownMs) return { ok:false, cooldown:true }; if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } }
+function syncAllowed(req: Request, mode: 'batch' | 'full', isFullContinuation = false): { ok: boolean; cooldown: boolean } { const plan=syncPlan(req); const key=`${mode}:${plan}:${syncIp(req)}`; const now=Date.now(); const cur=syncRate.get(key); const lim=mode === 'full' ? 1 : SYNC_RATE_BY_PLAN[plan]; const cooldownMs = mode === 'full' ? FULL_SYNC_COOLDOWN_MS : SYNC_COOLDOWN_MS; if(mode === 'full' && isFullContinuation){ if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } } if(cur && now-cur.lastRunAt < cooldownMs) return { ok:false, cooldown:true }; if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } }
 
 type SyncWindow = '24h' | '3d' | '7d'
 
@@ -266,8 +266,6 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
 export async function POST(request: Request) {
   const requestUrl = new URL(request.url)
   const mode = requestUrl.searchParams.get('mode') === 'full' ? 'full' : 'batch'
-  const allow = syncAllowed(request, mode)
-  if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly." }, { status: 429 })
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
   const providerKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
@@ -304,6 +302,9 @@ export async function POST(request: Request) {
   const bodyOffset = parseInteger(body.offset)
   const rawOffset = queryOffset ?? bodyOffset ?? DEFAULT_OFFSET
   const offset = Math.max(0, rawOffset)
+  const isFullContinuation = mode === 'full' && offset > 0
+  const allow = syncAllowed(request, mode, isFullContinuation)
+  if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly." }, { status: 429 })
   const usingAutomaticBatch = queryOffset === null && bodyOffset === null
 
   if (!supabaseUrl || !serviceRole) {

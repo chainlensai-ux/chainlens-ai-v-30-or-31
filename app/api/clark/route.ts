@@ -1006,10 +1006,15 @@ function detectLiveIntent(prompt: string): LiveIntent {
   return "GENERAL_CHAT";
 }
 
-function isWhaleFlowPrompt(message: string): boolean {
+function isWhaleFlowPrompt(message: string, history?: ClarkRequestBody["history"]): boolean {
   const t = message.toLowerCase().trim();
   if (extractAddress(message)) return false;
-  return /\b(show base whales|base whales|show whales|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
+  const directWhalePrompt = /\b(show base whales|base whales|show whales|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
+  if (directWhalePrompt) return true;
+  const followupWhalePrompt = /\b(what are they rotating into|what are they buying|last 7 days|last week|7d)\b/i.test(t);
+  if (!followupWhalePrompt) return false;
+  const historyText = getHistoryMessages(history).join("\n").toLowerCase();
+  return /\b(whale|whales|whale flow|whale alerts|smart money on base|whale rotation|whale activity|whale_feed_stored)\b/i.test(historyText);
 }
 
 async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, origin: string) {
@@ -1019,7 +1024,7 @@ async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, ori
   const window = is7dQuery ? "7d" : "24h";
   const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I don’t have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again." };
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I can’t read stored Whale Alerts right now. Open Whale Alerts and refresh the feed, then ask again." };
   }
   const json = await res.json();
   const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
@@ -3735,7 +3740,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
-  if (isWhaleFlowPrompt(prompt)) {
+  if (isWhaleFlowPrompt(prompt, body.history)) {
     return await handleStoredWhaleFlow(prompt, body, origin);
   }
   const liveIntent = detectLiveIntent(prompt);

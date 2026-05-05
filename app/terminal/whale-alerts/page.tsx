@@ -265,9 +265,10 @@ export default function WhaleAlertsPage() {
     const now = Date.now()
     const cacheKey = mode === 'full' ? CLIENT_FULL_SYNC_CACHE_KEY : CLIENT_SYNC_CACHE_KEY
     const cooldownMs = mode === 'full' ? CLIENT_FULL_SYNC_COOLDOWN_MS : CLIENT_SYNC_COOLDOWN_MS
+    const isFullContinuation = mode === 'full' && typeof offset === 'number' && offset > 0
     const lastSyncAt = Number(window.localStorage.getItem(cacheKey) ?? '0')
     const elapsed = now - lastSyncAt
-    if (elapsed < cooldownMs) {
+    if (!isFullContinuation && elapsed < cooldownMs) {
       if (mode === 'full') setFullSyncCooldownLeftMs(cooldownMs - elapsed)
       else setSyncCooldownLeftMs(cooldownMs - elapsed)
       return
@@ -301,9 +302,17 @@ export default function WhaleAlertsPage() {
           }
       setSyncState(merged)
       window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
-      window.localStorage.setItem(cacheKey, String(now))
-      if (mode === 'full') setFullSyncCooldownLeftMs(cooldownMs)
-      else setSyncCooldownLeftMs(cooldownMs)
+      if (mode === 'full') {
+        if (!merged.hasMore) {
+          window.localStorage.setItem(cacheKey, String(now))
+          setFullSyncCooldownLeftMs(cooldownMs)
+        } else {
+          setFullSyncCooldownLeftMs(0)
+        }
+      } else {
+        window.localStorage.setItem(cacheKey, String(now))
+        setSyncCooldownLeftMs(cooldownMs)
+      }
       await loadAlerts()
     } finally {
       setSyncing(false)
@@ -618,7 +627,7 @@ export default function WhaleAlertsPage() {
                   </svg>
                   {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
                 </button>
-                <button onClick={() => { void runSync(syncState?.mode === 'full' && syncState?.hasMore ? (syncState?.nextOffset ?? 0) : 0, 'full') }} disabled={syncing || fullSyncCooldownLeftMs > 0}
+                <button onClick={() => { void runSync(syncState?.mode === 'full' && syncState?.hasMore ? (syncState?.nextOffset ?? 0) : 0, 'full') }} disabled={syncing || (fullSyncCooldownLeftMs > 0 && !(syncState?.mode === 'full' && syncState?.hasMore))}
                   className="flex items-center rounded-[12px]"
                   style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
                   {syncState?.mode === 'full' && syncState?.hasMore
