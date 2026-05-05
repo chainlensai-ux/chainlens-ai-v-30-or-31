@@ -3830,6 +3830,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data." };
   }
 
+  if (isWhaleFlowPrompt(prompt)) {
+    return await handleWhaleAlertFeed(prompt, body, origin);
+  }
+
   // Hard guard: hide/private transaction requests — specific public-ledger explanation
   if (/\bhide\b[\s\w]*transactions?|\bhide\b[\s\w]*\btx\b|private\s+transaction\s+hid|make[\s\w]*transactions?\s+private/i.test(prompt)) {
     console.log("[clark-intent] detected=unsupported_capability");
