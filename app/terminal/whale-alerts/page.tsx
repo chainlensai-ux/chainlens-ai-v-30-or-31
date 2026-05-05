@@ -8,6 +8,7 @@ type AlertItem = {
   wallet_label?: string | null
   token_address?: string | null
   token_symbol?: string | null
+  focus_token_symbol?: string | null
   token_name?: string | null
   alert_type?: string | null
   side?: string | null
@@ -663,17 +664,19 @@ export default function WhaleAlertsPage() {
           {/* alert rows */}
           {!feedError && !loading && alerts.length > 0 && alerts.map((alert, i) => {
             const sideStyle  = getSide(alert.side)
-            const tok        = alert.token_symbol || alert.token_name || 'Unknown token'
-            const isMultiTok = tok.includes(' / ')
+            const rawTok     = alert.token_symbol || alert.token_name || 'Unknown token'
+            const focusTok    = alert.focus_token_symbol || null
+            const tok         = focusTok ?? rawTok
+            const isMultiTok  = rawTok.includes(' / ')
             const primarySym = tok.split(' / ')[0]
             const lbl        = primarySym.slice(0, 4).toUpperCase()
             const s          = alert.side?.toLowerCase() ?? ''
-            const verb       = isMultiTok ? 'swapped' : s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'moved'
+            const verb       = focusTok ? (s === 'buy' ? 'bought' : 'swapped into') : (isMultiTok ? 'swapped' : s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'moved')
             const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
 
             // Amount: prefer USD (valid for both single and summed grouped rows); token amount for singles
             const amtU    = fmtUsd(alert.amount_usd)
-            const amtT    = isMultiTok ? null : fmtToken(alert.amount_token, alert.token_symbol)
+            const amtT    = isMultiTok ? null : fmtToken(alert.amount_token, focusTok ?? alert.token_symbol)
             const amtShow = amtU !== '—' ? amtU : amtT
 
             const logoUrl = alert.token_image_url ?? alert.logo_url ?? alert.image ?? alert.token_logo ?? null

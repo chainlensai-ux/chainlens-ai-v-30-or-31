@@ -80,7 +80,21 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
   return result
 }
 
-const STABLECOINS = new Set(['USDC', 'USDT', 'DAI', 'USDbC'])
+const STABLECOINS = new Set(['USDC', 'USDT', 'DAI', 'USDbC', 'EURC'])
+const LOW_SIGNAL_ROUTING = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
+
+function splitSymbols(sym: string | null): string[] {
+  if (!sym) return []
+  return sym
+    .split(' / ')
+    .map(s => s.trim().toUpperCase())
+    .filter(Boolean)
+}
+
+function firstNonRoutingSymbol(sym: string | null): string | null {
+  const symbols = splitSymbols(sym)
+  return symbols.find(s => !LOW_SIGNAL_ROUTING.has(s)) ?? null
+}
 
 const GT_BASE_URL     = 'https://api.geckoterminal.com/api/v2'
 const GT_REQ_HEADERS  = { accept: 'application/json', origin: 'https://chainlens.ai' }
@@ -104,6 +118,21 @@ function filterStablecoinNoise(rows: RawRow[]): RawRow[] {
     const amt = row.amount_token as number | null
     return amt === null || amt >= 100
   })
+}
+
+// Suppress swaps that are only routing/stable/major assets (e.g., USDC/WETH, EURC/USDC).
+function filterRoutingOnlySwaps(rows: RawRow[]): RawRow[] {
+  return rows.filter(row => {
+    const symbols = splitSymbols((row.token_symbol as string | null) ?? null)
+    if (symbols.length <= 1) return true
+    return symbols.some(sym => !LOW_SIGNAL_ROUTING.has(sym))
+  })
+}
+
+function applyHeadlineTokenFocus(row: RawRow): RawRow {
+  const focus = firstNonRoutingSymbol((row.token_symbol as string | null) ?? null)
+  if (!focus) return row
+  return { ...row, focus_token_symbol: focus }
 }
 
 // Collapse rapid repeats: same wallet + token + side appearing multiple times
@@ -461,7 +490,8 @@ export async function GET(req: NextRequest) {
 
     const scored   = groupAlertsByTx(enriched).map(row => ({ ...row, signal_score: computeSignalScore(row) }))
     const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueFloor(scored, effectiveMinUsd)
-    const grouped  = collapseRapidRepeats(filterStablecoinNoise(valueFiltered)).slice(0, limit)
+    const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(valueFiltered)).map(applyHeadlineTokenFocus)
+    const grouped  = collapseRapidRepeats(deNoised).slice(0, limit)
 
     return NextResponse.json({
       alerts: grouped,
