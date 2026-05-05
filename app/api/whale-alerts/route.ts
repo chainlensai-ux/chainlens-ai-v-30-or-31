@@ -129,6 +129,40 @@ function filterRoutingOnlySwaps(rows: RawRow[]): RawRow[] {
   })
 }
 
+
+function getRowUsdValue(row: RawRow): number {
+  const usd = row.amount_usd as number | null
+  return usd !== null && Number.isFinite(usd) ? usd : 0
+}
+
+function applyDiversityCap(rows: RawRow[]): { rows: RawRow[]; cappedTokenCounts: Record<string, number> } {
+  const sorted = [...rows].sort((a, b) => getRowUsdValue(b) - getRowUsdValue(a))
+  const selected = new Set<number>()
+  const perToken = new Map<string, number>()
+  const cappedTokenCounts: Record<string, number> = {}
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const row = sorted[i]
+    const focus = ((row.focus_token_symbol as string | null) ?? firstNonRoutingSymbol((row.token_symbol as string | null) ?? null) ?? '').toUpperCase().trim()
+    if (!focus) {
+      selected.add(i)
+      continue
+    }
+    const usd = getRowUsdValue(row)
+    const cap = usd < 10000 ? 2 : 3
+    const used = perToken.get(focus) ?? 0
+    if (used < cap) {
+      perToken.set(focus, used + 1)
+      selected.add(i)
+    } else {
+      cappedTokenCounts[focus] = (cappedTokenCounts[focus] ?? 0) + 1
+    }
+  }
+
+  const kept = sorted.filter((_, i) => selected.has(i))
+  return { rows: kept, cappedTokenCounts }
+}
+
 function applyHeadlineTokenFocus(row: RawRow): RawRow {
   const focus = firstNonRoutingSymbol((row.token_symbol as string | null) ?? null)
   if (!focus) return row
@@ -491,7 +525,8 @@ export async function GET(req: NextRequest) {
     const scored   = groupAlertsByTx(enriched).map(row => ({ ...row, signal_score: computeSignalScore(row) }))
     const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueFloor(scored, effectiveMinUsd)
     const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(valueFiltered)).map(applyHeadlineTokenFocus)
-    const grouped  = collapseRapidRepeats(deNoised).slice(0, limit)
+    const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
+    const grouped  = collapseRapidRepeats(diversityCapped).slice(0, limit)
 
     return NextResponse.json({
       alerts: grouped,
@@ -504,6 +539,10 @@ export async function GET(req: NextRequest) {
       diagnostics: {
         returnedCount:            grouped.length,
         rawCount:                 (alertsRes.data ?? []).length,
+        rawRows:                  (alertsRes.data ?? []).length,
+        afterStableRoutingFilter: deNoised.length,
+        afterDiversityCap:        diversityCapped.length,
+        cappedTokenCounts,
         appliedWindow:            selectedWindow,
         appliedMinUsd:            effectiveMinUsd,
         hiddenByFilter,

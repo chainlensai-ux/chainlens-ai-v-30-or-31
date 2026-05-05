@@ -28,6 +28,7 @@ type AlertItem = {
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type SyncResponse = { processed?: number; inserted?: number; skipped?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
+type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number }
 
 const MIN_OPTIONS = [
   { label: 'All', value: 0 }, { label: '$100+', value: 100 }, { label: '$500+', value: 500 },
@@ -204,6 +205,7 @@ export default function WhaleAlertsPage() {
   const [syncing, setSyncing]         = useState(false)
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
+  const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
 
   const loadAlerts = useCallback(async () => {
     setLoading(true)
@@ -218,6 +220,7 @@ export default function WhaleAlertsPage() {
       const json = await res.json()
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
+      setFeedDiagnostics(json?.diagnostics ?? null)
     } catch {
       setFeedError(true)
     } finally {
@@ -540,7 +543,11 @@ export default function WhaleAlertsPage() {
             <div className="flex items-center" style={{ gap: 12 }}>
               <h2 style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc', margin: 0 }}>Alert feed</h2>
               <Pill color="green" dot>Auto-update</Pill>
-              {alerts.length > 0 && <span style={{ fontSize: 12, color: '#475569' }}>{alerts.length} matching</span>}
+              {alerts.length > 0 && (
+                <span style={{ fontSize: 12, color: '#475569' }}>
+                  {alerts.length} shown{(feedDiagnostics?.afterDiversityCap ?? 0) > alerts.length ? ` of ${feedDiagnostics?.afterDiversityCap} matching` : ' matching'}
+                </span>
+              )}
             </div>
             <div className="flex items-center" style={{ gap: 8 }}>
               <button className="flex items-center justify-center rounded-[8px]"
