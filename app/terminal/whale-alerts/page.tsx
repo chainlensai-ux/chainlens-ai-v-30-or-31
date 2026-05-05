@@ -518,23 +518,19 @@ export default function WhaleAlertsPage() {
                   </div>
                   <div>
                     <p style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.01em', color: '#f8fafc', margin: 0 }}>Whale sync</p>
-                    <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>{syncState ? 'Latest run recorded' : 'No sync run yet'}</p>
+                    <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>Refreshes latest tracked-wallet activity</p>
                   </div>
                 </div>
-                <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Sync in progress' : 'Ready to sync'}</Pill>
+                <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Sync in progress' : (syncCooldownLeftMs > 0 ? 'Recently refreshed' : 'Ready to sync')}</Pill>
               </div>
 
               <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Batch scanned</p>
-                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
-                    {syncState
-                      ? <>{syncState.processed ?? 0}<span style={{ fontSize: 16, fontWeight: 400, color: '#475569' }}> / {syncState.trackedWalletsTotal ?? stats.trackedWallets}</span></>
-                      : <span style={{ color: '#334155' }}>—</span>}
-                  </p>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Tracked set</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>60+ wallets</p>
                 </div>
                 <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Alerts found</p>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Signals found</p>
                   <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
                     {syncState?.inserted != null ? syncState.inserted : <span style={{ color: '#334155' }}>—</span>}
                   </p>
@@ -569,12 +565,12 @@ export default function WhaleAlertsPage() {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Scanning…' : syncCooldownLeftMs > 0 ? 'Sync cooldown active' : (syncState?.hasMore ? 'Continue sync' : 'Run sync')}
+                  {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Recently refreshed' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
                 </button>
                 <button onClick={() => { void runSync(syncState?.mode === 'full' && syncState?.hasMore ? (syncState?.nextOffset ?? 0) : 0, 'full') }} disabled={syncing || fullSyncCooldownLeftMs > 0}
                   className="flex items-center rounded-[12px]"
                   style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
-                  {fullSyncCooldownLeftMs > 0 ? 'Full sync cooldown' : (syncState?.mode === 'full' && syncState?.hasMore ? 'Continue full sync' : 'Scan all 68 wallets')}
+                  {syncState?.mode === 'full' && syncState?.hasMore ? 'Continue full refresh' : 'Full refresh'}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
                   className="flex items-center rounded-[12px]"
@@ -591,8 +587,13 @@ export default function WhaleAlertsPage() {
                 + Advanced Diagnostics
               </button>
               <p style={{ margin: 0, fontSize: 11, color: '#fbbf24' }}>
-                Full sync scans all tracked wallets and may use more Alchemy CUs.
+                Full sync refreshes the complete tracked-wallet set.
               </p>
+              {syncState?.mode === 'full' && syncState?.hasMore && (
+                <p style={{ margin: 0, fontSize: 11, color: '#94a3b8' }}>
+                  Full refresh in progress.
+                </p>
+              )}
             </div>
 
           </div>

@@ -505,10 +505,12 @@ export async function POST(request: Request) {
     skipReasons: skipSummary,
     providerErrors,
     message: processed === 0
-      ? 'No active wallets were scanned in this batch.'
-      : inserted > 0
-        ? `Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'} in this batch.`
-        : 'No qualifying recent whale activity found in this batch.',
+      ? (mode === 'full' ? 'No active wallets were scanned for full refresh.' : 'No active wallets were scanned in this batch.')
+      : mode === 'full' && hasMore
+        ? 'Full refresh in progress.'
+        : inserted > 0
+          ? `Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'} in this ${mode === 'full' ? 'refresh' : 'batch'}.`
+          : `No qualifying recent whale activity found in this ${mode === 'full' ? 'refresh' : 'batch'}.`,
   }
 
   if (debug) {
