@@ -1006,6 +1006,88 @@ function detectLiveIntent(prompt: string): LiveIntent {
   return "GENERAL_CHAT";
 }
 
+function isWhaleFlowPrompt(message: string, history?: ClarkRequestBody["history"]): boolean {
+  const t = message.toLowerCase().trim();
+  if (extractAddress(message)) return false;
+  const directWhalePrompt = /\b(show base whales|base whales|show whales|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
+  if (directWhalePrompt) return true;
+  const followupWhalePrompt = /\b(what are they rotating into|what are they buying|last 7 days|last week|7d)\b/i.test(t);
+  if (!followupWhalePrompt) return false;
+  const historyText = getHistoryMessages(history).join("\n").toLowerCase();
+  return /\b(whale|whales|whale flow|whale alerts|smart money on base|whale rotation|whale activity|whale_feed_stored)\b/i.test(historyText);
+}
+
+async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, origin: string) {
+  const chain = body.chain ?? "base";
+  const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH']);
+  const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\blast 7 days\b/i.test(prompt.toLowerCase());
+  const window = is7dQuery ? "7d" : "24h";
+  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I can’t read stored Whale Alerts right now. Open Whale Alerts and refresh the feed, then ask again." };
+  }
+  const json = await res.json();
+  const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
+  if (raw.length === 0) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I don’t have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again." };
+  }
+  const tokenCounts = new Map<string, number>();
+  let pricedFlow = 0;
+  let pricedCount = 0;
+  let latestTs = 0;
+  let oldestTs = 0;
+  for (const row of raw) {
+    const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase();
+    const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null;
+    if (firstNonRouting) {
+      tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1);
+      if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
+        pricedFlow += row.amount_usd;
+        pricedCount += 1;
+      }
+    }
+    const ts = row.occurred_at ? new Date(row.occurred_at).getTime() : 0;
+    if (Number.isFinite(ts) && ts > 0) {
+      latestTs = Math.max(latestTs, ts);
+      oldestTs = oldestTs === 0 ? ts : Math.min(oldestTs, ts);
+    }
+  }
+  const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1]);
+  if (ranked.length === 0) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don’t have a clean non-stable token signal yet. Open Whale Alerts and run a sync to refresh." };
+  }
+  const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000);
+  const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000;
+  const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs);
+  const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ");
+  const strongest = ranked[0]?.[0] ?? "No repeated token yet";
+  const estimatedPricedFlow = pricedCount > 0 ? `~$${Math.round(pricedFlow).toLocaleString()} across ${pricedCount} priced alert${pricedCount === 1 ? "" : "s"}` : "USD mostly unverified";
+  const flowQuality = stale ? "Mixed quality (data may be stale)." : "Healthy quality (recent non-stable flow present).";
+  const marketRead = `Whale focus is clustering into ${strongest} with rotation across ${ranked.length} non-stable token${ranked.length === 1 ? "" : "s"}.`;
+  const nextChecks = incomplete7d
+    ? "Run Whale Alerts sync to fill the full 7d window, then re-check concentration and repeat strength."
+    : "Watch if top token repeats persist and whether non-stable flow broadens or fades.";
+  return {
+    feature: "clark-ai",
+    chain,
+    mode: "analysis",
+    intent: "whale_alert",
+    toolsUsed: ["whale_feed_stored"],
+    analysis: [
+      "WHALE FLOW SNAPSHOT",
+      "Source: Stored Whale Alerts only",
+      `Window: ${window}`,
+      `Top whale tokens: ${topTokens}`,
+      `Estimated priced flow: ${estimatedPricedFlow}`,
+      `Strongest repeat: ${strongest}`,
+      `Flow quality: ${flowQuality}`,
+      `Market read: ${marketRead}`,
+      `Next checks: ${nextChecks}`,
+      incomplete7d ? "I only have stored Whale Alerts from the available saved window, so this may not cover the full 7 days yet." : "",
+    ].filter(Boolean).join("\n"),
+  };
+}
+
 async function fetchCoinGeckoMajors() {
   const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true", { cache: "no-store" });
   if (!res.ok) throw new Error("coingecko majors failed");
@@ -3538,8 +3620,8 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     // Organic query (e.g. "what are whales doing right now?") — use stored feed only.
     const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b|\bsmart wallets? buying\b/i.test(prompt);
     const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b|\blast week whale activity\b|\b7d whale flows\b|\bwhat were whales buying last 7 days\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
-    const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b/i.test(prompt.toLowerCase());
-    const window = is7dQuery ? "7d" : (isBuyQuery ? "24h" : "1h");
+    const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b|\blast 7 days\b/i.test(prompt.toLowerCase());
+    const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
       const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, {
@@ -3658,6 +3740,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
+  if (isWhaleFlowPrompt(prompt, body.history)) {
+    return await handleStoredWhaleFlow(prompt, body, origin);
+  }
   const liveIntent = detectLiveIntent(prompt);
   const directIntent = detectIntent(prompt);
   const historyContext = buildHistoryContextText(body.history);
