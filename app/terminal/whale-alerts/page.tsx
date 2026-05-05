@@ -28,6 +28,7 @@ type AlertItem = {
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type SyncResponse = {
+  savedAt?: number
   mode?: 'batch' | 'full'
   processed?: number
   processedTotal?: number
@@ -234,7 +235,15 @@ export default function WhaleAlertsPage() {
       const raw = window.localStorage.getItem(CLIENT_SYNC_STATE_CACHE_KEY)
       if (!raw) return
       const parsed = JSON.parse(raw) as SyncResponse
-      if (parsed && typeof parsed === 'object') setSyncState(parsed)
+      if (!parsed || typeof parsed !== 'object') return
+      const savedAt = Number(parsed.savedAt ?? 0)
+      const maxAgeMs = 24 * 60 * 60 * 1000
+      const looksInvalid = (parsed.trackedWalletsTotal ?? 0) < 0 || (parsed.processedTotal ?? 0) < 0
+      if (looksInvalid || !Number.isFinite(savedAt) || savedAt <= 0 || (Date.now() - savedAt) > maxAgeMs) {
+        window.localStorage.removeItem(CLIENT_SYNC_STATE_CACHE_KEY)
+        return
+      }
+      setSyncState(parsed)
     } catch {}
   }, [])
 
@@ -293,12 +302,14 @@ export default function WhaleAlertsPage() {
               processedTotal: cappedProcessed,
               insertedTotal,
               refreshStatus: json.hasMore ? 'full_in_progress' : 'full_complete',
+              savedAt: now,
             }
           })()
         : {
             ...json,
             processedTotal: json.processed ?? 0,
             insertedTotal: json.inserted ?? 0,
+            savedAt: now,
           }
       setSyncState(merged)
       window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
@@ -340,6 +351,14 @@ export default function WhaleAlertsPage() {
     setMinUsd(100)
     setWindowValue('24h')
   }
+  const clearSyncState = () => {
+    window.localStorage.removeItem(CLIENT_SYNC_STATE_CACHE_KEY)
+    window.localStorage.removeItem(CLIENT_SYNC_CACHE_KEY)
+    window.localStorage.removeItem(CLIENT_FULL_SYNC_CACHE_KEY)
+    setSyncCooldownLeftMs(0)
+    setFullSyncCooldownLeftMs(0)
+    setSyncState(null)
+  }
 
   const types = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.alert_type).filter(Boolean) as string[]))], [alerts])
   const sevs  = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.severity).filter(Boolean) as string[]))], [alerts])
@@ -358,7 +377,7 @@ export default function WhaleAlertsPage() {
     : isFullInProgress
       ? 'Full refresh in progress'
       : syncState
-        ? (syncState.mode === 'full' && !isFullInProgress && !isPartial ? 'Full refresh complete' : 'Recently refreshed')
+        ? (isPartial ? 'Partial refresh' : (syncState.mode === 'full' ? 'Full refresh complete' : 'Recently refreshed'))
         : 'Ready to sync'
 
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
@@ -641,6 +660,11 @@ export default function WhaleAlertsPage() {
                     <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
                   Reset
+                </button>
+                <button onClick={clearSyncState} disabled={syncing}
+                  className="flex items-center rounded-[12px]"
+                  style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.28)', color: '#cbd5e1', opacity: syncing ? 0.4 : 1 }}>
+                  Clear sync state
                 </button>
               </div>
 
