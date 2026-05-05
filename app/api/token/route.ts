@@ -277,9 +277,9 @@ function analyzeContract(bytecode: string | null): any {
 
   if (!bytecode || bytecode === "0x") {
     return {
-      ownerStatus: "Owner status not fully analyzed",
-      liquidityStatus: "No liquidity lock patterns detected",
-      honeypot: "No obvious honeypot pattern detected",
+      ownerStatus: "Owner/deployer unavailable from current source",
+      liquidityStatus: "LP lock/control unavailable from current source",
+      honeypot: "Security simulation unavailable from current source",
       suspiciousFunctions: suspicious,
     };
   }
@@ -289,9 +289,9 @@ function analyzeContract(bytecode: string | null): any {
   }
 
   return {
-    ownerStatus: "Owner status not fully analyzed",
-    liquidityStatus: "No liquidity lock patterns detected",
-    honeypot: "No obvious honeypot pattern detected",
+    ownerStatus: "Owner/deployer unavailable from current source",
+    liquidityStatus: "LP lock/control unavailable from current source",
+    honeypot: "Security simulation unavailable from current source",
     suspiciousFunctions: suspicious,
   };
 }
