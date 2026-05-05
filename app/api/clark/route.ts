@@ -16,7 +16,8 @@ const clarkRate = new Map<string, { count: number; resetAt: number }>()
 const CLARK_RATE_BY_PLAN: Record<string, number> = { free: 10, pro: 30, elite: 90 }
 function clarkPlan(req: NextRequest): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
-function clarkAllowed(req: NextRequest): boolean { const plan=clarkPlan(req); const key=`${plan}:${clarkIp(req)}`; const now=Date.now(); const cur=clarkRate.get(key); const lim=CLARK_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){ clarkRate.set(key,{count:1,resetAt:now+60000}); return true } if(cur.count>=lim) return false; cur.count+=1; return true }
+function clarkActor(req: NextRequest): string { return req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}` }
+function clarkAllowed(req: NextRequest): boolean { const plan=clarkPlan(req); const key=`${plan}:${clarkActor(req)}`; const now=Date.now(); const cur=clarkRate.get(key); const lim=CLARK_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){ clarkRate.set(key,{count:1,resetAt:now+60000}); return true } if(cur.count>=lim) return false; cur.count+=1; return true }
 
 // ---------- Types ----------
 
@@ -4427,7 +4428,7 @@ export async function POST(req: NextRequest) {
   if (!clarkAllowed(req)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
     const body = (await req.json()) as ClarkRequestBody;
-    const cacheKey = JSON.stringify({ feature: body.feature, prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
+    const cacheKey = JSON.stringify({ actor: clarkActor(req), feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     if (body.message && !body.prompt) body.prompt = body.message;
@@ -4478,10 +4479,10 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    return NextResponse.json(
-      { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) },
-      { status: 200 }
-    );
+    const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) }
+    const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
+    clarkCache.set(cacheKey, { exp: Date.now() + cacheTtl, payload: normalized })
+    return NextResponse.json(normalized, { status: 200 });
   } catch (err: unknown) {
     console.error("[Clark]", err instanceof Error ? err.message : err);
     const safeMsg = "Clark could not fetch that data right now. Try again in a moment or open the matching scanner.";
