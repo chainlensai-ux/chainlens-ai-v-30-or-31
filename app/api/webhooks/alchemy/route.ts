@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
-// Alchemy ADDRESS_ACTIVITY webhook payload shape
 type AlchemyActivity = {
   fromAddress?: string | null
   toAddress?: string | null
@@ -30,36 +29,31 @@ type TrackedWallet = {
   label: string | null
 }
 
-type SkipReasons = {
-  no_activity: number
-  no_tx_hash: number
-  no_tracked_wallet_match: number
-  duplicate: number
-  insert_failed: number
-  missing_required_fields: number
-  zero_value_internal: number
-  below_symbol_threshold: number
-}
+const STABLE_ROUTING_ONLY = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'EURC', 'WETH', 'ETH'])
+const WEBHOOK_EVENT_CAP_PER_MINUTE = 150
 
-function makeSkipReasons(): SkipReasons {
-  return {
-    no_activity: 0,
-    no_tx_hash: 0,
-    no_tracked_wallet_match: 0,
-    duplicate: 0,
-    insert_failed: 0,
-    missing_required_fields: 0,
-    zero_value_internal: 0,
-    below_symbol_threshold: 0,
+const minuteBuckets = new Map<string, number>()
+
+function consumeMinuteBudget(requested: number): { allowed: number; deferred: number } {
+  const now = new Date()
+  const minuteKey = now.toISOString().slice(0, 16)
+
+  for (const key of minuteBuckets.keys()) {
+    if (key !== minuteKey) minuteBuckets.delete(key)
   }
+
+  const used = minuteBuckets.get(minuteKey) ?? 0
+  const remaining = Math.max(0, WEBHOOK_EVENT_CAP_PER_MINUTE - used)
+  const allowed = Math.min(requested, remaining)
+  minuteBuckets.set(minuteKey, used + allowed)
+
+  return { allowed, deferred: Math.max(0, requested - allowed) }
 }
 
-// Symbol-aware minimum thresholds. amount=null means value is unknown — keep it.
-// USDC: 100 tokens (~$100). WETH/ETH: 0.01 tokens (~$25+). Everything else: any positive amount.
 function isBelowSymbolThreshold(symbol: string | null, amount: number | null): boolean {
   if (amount === null) return false
   const sym = symbol?.toUpperCase() ?? ''
-  if (sym === 'USDC') return amount < 100
+  if (sym === 'USDC' || sym === 'USDT' || sym === 'DAI' || sym === 'USDBC' || sym === 'EURC') return amount < 100
   if (sym === 'WETH' || sym === 'ETH') return amount < 0.01
   return amount <= 0
 }
@@ -85,138 +79,113 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'missing_supabase_env' }, { status: 503 })
   }
 
-  const skipReasons = makeSkipReasons()
-
-  // Load tracked wallets first so trackedWalletCount is always real in diagnostics,
-  // even when the payload has no activity (e.g. Alchemy test pings).
-  const supabase = createClient(supabaseUrl, serviceRole)
-
-  const { data: wallets, error: walletError } = await supabase
-    .from('tracked_wallets')
-    .select('address,label')
-    .eq('is_active', true)
-    .order('created_at', { ascending: true })
-
-  const trackedWalletQueryOk = !walletError
-  const trackedWalletCount   = (wallets ?? []).length
-  const trackedWalletLoadErrorCode = walletError?.code ?? null
-
-  if (walletError) {
-    console.error('[alchemy-webhook] wallet load failed', walletError.code)
-    console.log('[alchemy-webhook]', { trackedWalletQueryOk, trackedWalletCount, trackedWalletLoadErrorCode })
-    return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
-  }
-
-  // Parse body safely — return 200 even on bad body so Alchemy stops retrying
   let payload: AlchemyPayload = {}
   try {
     payload = (await request.json()) as AlchemyPayload
   } catch {
-    skipReasons.no_activity += 1
-    const diag = { received: 0, trackedWalletQueryOk, trackedWalletCount, matched: 0, inserted: 0, skipped: 1, skipReasons }
-    console.log('[alchemy-webhook]', diag)
-    return NextResponse.json({ ok: true, ...diag })
+    console.log('[alchemy-webhook]', { received: 0, duplicateSkipped: 0, dustSkipped: 0, earlyFiltered: 1, enriched: 0, inserted: 0 })
+    return NextResponse.json({ ok: true, received: 0, inserted: 0 })
   }
 
   const rawActivity = payload?.event?.activity
   if (!Array.isArray(rawActivity) || rawActivity.length === 0) {
-    skipReasons.no_activity += 1
-    const diag = { received: 0, trackedWalletQueryOk, trackedWalletCount, matched: 0, inserted: 0, skipped: 1, skipReasons }
-    console.log('[alchemy-webhook]', diag)
-    return NextResponse.json({ ok: true, ...diag })
+    console.log('[alchemy-webhook]', { received: 0, duplicateSkipped: 0, dustSkipped: 0, earlyFiltered: 1, enriched: 0, inserted: 0 })
+    return NextResponse.json({ ok: true, received: 0, inserted: 0 })
   }
 
   const received = rawActivity.length
+  const budget = consumeMinuteBudget(received)
 
-  // lowercase address → label for O(1) lookup
+  const supabase = createClient(supabaseUrl, serviceRole)
+  const { data: wallets, error: walletError } = await supabase
+    .from('tracked_wallets')
+    .select('address,label')
+    .eq('is_active', true)
+
+  if (walletError) {
+    return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
+  }
+
   const walletMap = new Map<string, string | null>()
-  for (const w of wallets as TrackedWallet[]) {
+  for (const w of (wallets ?? []) as TrackedWallet[]) {
     walletMap.set(w.address.toLowerCase(), w.label)
   }
 
-  // Use webhook createdAt as occurred_at; fall back to now
-  const occurredAt = payload.createdAt
-    ? new Date(payload.createdAt).toISOString()
-    : new Date().toISOString()
-
+  const occurredAt = payload.createdAt ? new Date(payload.createdAt).toISOString() : new Date().toISOString()
+  const dedupePairs = new Set<string>()
   const candidates: Record<string, unknown>[] = []
 
-  for (const raw of rawActivity) {
-    const item = raw as AlchemyActivity
-    const fromKey = item.fromAddress?.toLowerCase() ?? null
-    const toKey   = item.toAddress?.toLowerCase() ?? null
+  let duplicateSkipped = 0
+  let dustSkipped = 0
+  let earlyFiltered = budget.deferred
 
-    // One candidate per matched tracked wallet in this activity item
-    type Match = { walletKey: string; storedAddress: string; side: 'buy' | 'sell' }
-    const matches: Match[] = []
-    if (fromKey && walletMap.has(fromKey)) {
-      matches.push({ walletKey: fromKey, storedAddress: item.fromAddress ?? fromKey, side: 'sell' })
+  for (let i = 0; i < budget.allowed; i += 1) {
+    const item = rawActivity[i] as AlchemyActivity
+    const txHash = item.hash?.trim() ?? null
+    if (!txHash) {
+      earlyFiltered += 1
+      continue
     }
-    if (toKey && walletMap.has(toKey)) {
-      matches.push({ walletKey: toKey, storedAddress: item.toAddress ?? toKey, side: 'buy' })
+
+    const tokenSymbol = item.asset?.toUpperCase() ?? null
+    const tokenAddress = item.rawContract?.address ?? null
+    const amountToken = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value : null
+
+    const isInternal = item.category === 'internal'
+    const isNativeNoise = tokenAddress === null && (tokenSymbol === 'ETH' || tokenSymbol === null) && (amountToken === null || amountToken <= 0)
+    const isDust = isBelowSymbolThreshold(tokenSymbol, amountToken)
+    const isStableRoutingOnly = tokenSymbol !== null && STABLE_ROUTING_ONLY.has(tokenSymbol) && amountToken !== null && amountToken < 100
+    if (isInternal || isNativeNoise || isDust || isStableRoutingOnly) {
+      dustSkipped += 1
+      continue
     }
+
+    const fromKey = item.fromAddress?.toLowerCase() ?? null
+    const toKey = item.toAddress?.toLowerCase() ?? null
+
+    const matches: Array<{ walletKey: string; storedAddress: string; side: 'buy' | 'sell' }> = []
+    if (fromKey && walletMap.has(fromKey)) matches.push({ walletKey: fromKey, storedAddress: item.fromAddress ?? fromKey, side: 'sell' })
+    if (toKey && walletMap.has(toKey)) matches.push({ walletKey: toKey, storedAddress: item.toAddress ?? toKey, side: 'buy' })
 
     if (matches.length === 0) {
-      skipReasons.no_tracked_wallet_match += 1
-      continue
-    }
-
-    const txHash       = item.hash ?? null
-    const tokenSymbol  = item.asset ?? null
-    const tokenAddress = item.rawContract?.address ?? null
-    const amountToken  = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value : null
-
-    // Skip zero-value internal/native ETH noise: no contract address, ETH symbol,
-    // category "internal", or zero/missing value. Real native ETH transfers with
-    // value > 0 are kept; ERC-20 tokens always have a contract address so pass through.
-    const isNativeEth = tokenAddress === null && (tokenSymbol === 'ETH' || tokenSymbol === null)
-    const isInternal  = item.category === 'internal'
-    const isZeroValue = amountToken === null || amountToken === 0
-    if ((isNativeEth && isZeroValue) || isInternal) {
-      skipReasons.zero_value_internal += matches.length
-      continue
-    }
-
-    // Skip dust/micro transfers below symbol-aware thresholds.
-    if (isBelowSymbolThreshold(tokenSymbol, amountToken)) {
-      skipReasons.below_symbol_threshold += matches.length
+      earlyFiltered += 1
       continue
     }
 
     for (const match of matches) {
-      if (!txHash) {
-        skipReasons.no_tx_hash += 1
+      const pairKey = `${txHash}::${match.walletKey}`
+      if (dedupePairs.has(pairKey)) {
+        duplicateSkipped += 1
         continue
       }
+      dedupePairs.add(pairKey)
+
       candidates.push({
         wallet_address: match.storedAddress,
-        wallet_label:   walletMap.get(match.walletKey) ?? null,
-        token_address:  tokenAddress,
-        token_symbol:   tokenSymbol,
-        token_name:     null,
-        alert_type:     'token_transfer',
-        side:           match.side,
-        amount_usd:     null,
-        amount_token:   amountToken,
-        tx_hash:        txHash,
-        chain:          'base',
-        severity:       severityFromUsd(null),
-        summary:        `Alchemy webhook: ${match.side} ${tokenSymbol ?? 'token'} via ${item.category ?? 'transaction'}`,
-        occurred_at:    occurredAt,
+        wallet_label: walletMap.get(match.walletKey) ?? null,
+        token_address: tokenAddress,
+        token_symbol: tokenSymbol,
+        token_name: null,
+        alert_type: 'token_transfer',
+        side: match.side,
+        amount_usd: null,
+        amount_token: amountToken,
+        tx_hash: txHash,
+        chain: 'base',
+        severity: severityFromUsd(null),
+        summary: `Alchemy webhook: ${match.side} ${tokenSymbol ?? 'token'} via ${item.category ?? 'transaction'}`,
+        occurred_at: occurredAt,
       })
     }
   }
 
-  const matched = candidates.length
+  const enriched = candidates.length
 
   if (candidates.length === 0) {
-    const diag = { received, trackedWalletQueryOk, trackedWalletCount, matched: 0, inserted: 0, skipped: received, skipReasons }
-    console.log('[alchemy-webhook]', diag)
-    return NextResponse.json({ ok: true, ...diag })
+    console.log('[alchemy-webhook]', { received, duplicateSkipped, dustSkipped, earlyFiltered, enriched: 0, inserted: 0 })
+    return NextResponse.json({ ok: true, received, inserted: 0 })
   }
 
-  // Dedupe via the same unique index the sync route uses:
-  // uq_whale_alerts_tx_wallet_token_type on (tx_hash, wallet_address, token_address, alert_type)
   const { data, error: insertError } = await supabase
     .from('whale_alerts')
     .upsert(candidates, {
@@ -226,18 +195,12 @@ export async function POST(request: Request) {
     .select('id')
 
   if (insertError) {
-    skipReasons.insert_failed += candidates.length
-    console.error('[alchemy-webhook] insert failed', insertError.code)
-    const diag = { received, trackedWalletQueryOk, trackedWalletCount, matched, inserted: 0, skipped: candidates.length, skipReasons }
-    console.log('[alchemy-webhook]', diag)
     return NextResponse.json({ ok: false, error: 'insert_failed' }, { status: 500 })
   }
 
   const inserted = data?.length ?? 0
-  const skipped  = candidates.length - inserted
-  skipReasons.duplicate += skipped
+  duplicateSkipped += Math.max(0, candidates.length - inserted)
 
-  const diag = { received, trackedWalletQueryOk, trackedWalletCount, matched, inserted, skipped, skipReasons }
-  console.log('[alchemy-webhook]', diag)
-  return NextResponse.json({ ok: true, ...diag })
+  console.log('[alchemy-webhook]', { received, duplicateSkipped, dustSkipped, earlyFiltered, enriched, inserted })
+  return NextResponse.json({ ok: true, received, inserted })
 }
