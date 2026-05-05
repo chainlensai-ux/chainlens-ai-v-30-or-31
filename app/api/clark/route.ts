@@ -3503,6 +3503,7 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
 
 async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
+  const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
 
   // Honest response for unsupported time windows (API max is 24h)
   const daysMatch = prompt.match(/\b(\d+)\s*days?\b/i);
@@ -3534,8 +3535,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
       return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_context"], analysis };
     }
 
-    // Organic query (e.g. "what are whales doing right now?") — fetch live data.
-    const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b/i.test(prompt);
+    // Organic query (e.g. "what are whales doing right now?") — use stored feed only.
+    const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b|\bsmart wallets? buying\b/i.test(prompt);
+    const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
     const window = isBuyQuery ? "24h" : "1h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
@@ -3547,6 +3549,54 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
         const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
         const filtered = isBuyQuery ? raw.filter(a => (a as Record<string, unknown>).side === "buy" || !(a as Record<string, unknown>).side) : raw;
         if (filtered.length > 0) {
+          if (isStoredWhaleQuestion) {
+            const tokenCounts = new Map<string, number>()
+            let totalUsd = 0
+            let usdSeen = 0
+            let latestTs = 0
+            for (const row of filtered) {
+              const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase()
+              const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null
+              if (firstNonRouting) tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1)
+              if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
+                totalUsd += row.amount_usd
+                usdSeen += 1
+              }
+              const ts = row.occurred_at ? new Date(row.occurred_at).getTime() : 0
+              if (Number.isFinite(ts) && ts > latestTs) latestTs = ts
+            }
+            const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1])
+            if (ranked.length === 0) {
+              return {
+                feature: "clark-ai",
+                chain,
+                mode: "analysis",
+                intent: "whale_alert",
+                toolsUsed: ["whale_feed_stored"],
+                analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don’t have a clean non-stable token signal yet.",
+              }
+            }
+            const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ") || "No dominant token"
+            const strongest = ranked[0]?.[0] ?? "No repeated token yet"
+            const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000)
+            const staleText = stale ? "Data may be stale." : "Data appears recent."
+            const usdText = usdSeen > 0 ? `~$${Math.round(totalUsd).toLocaleString()} across priced alerts` : "USD mostly unverified"
+            return {
+              feature: "clark-ai",
+              chain,
+              mode: "analysis",
+              intent: "whale_alert",
+              toolsUsed: ["whale_feed_stored"],
+              analysis: [
+                `From stored Whale Alerts only: ${filtered.length} alert${filtered.length === 1 ? "" : "s"} in the ${window} window.`,
+                `Top focused/bought tokens: ${topTokens}.`,
+                `Approximate total USD: ${usdText}.`,
+                `Strongest repeated token: ${strongest}.`,
+                staleText,
+                "Open Whale Alerts to refresh the feed.",
+              ].join(" "),
+            }
+          }
           const sigOrder: Record<string, number> = { HIGH: 0, WATCH: 1, LOW: 2 };
           filtered.sort((a, b) => {
             const sA = sigOrder[a.signal_score ?? "LOW"] ?? 2;
@@ -3567,6 +3617,16 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             "USD value shown as 'USD unverified' for tokens outside USDC/USDT/WETH/cbBTC.\n" +
             "</whale_alerts>";
         } else {
+          if (isStoredWhaleQuestion) {
+            return {
+              feature: "clark-ai",
+              chain,
+              mode: "analysis",
+              intent: "whale_alert",
+              toolsUsed: ["whale_feed_stored"],
+              analysis: "I don’t have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again.",
+            }
+          }
           contextXml = `<whale_alerts count="0" window="${window}">No whale ${isBuyQuery ? "buy " : ""}alerts in the past ${window}.</whale_alerts>`;
         }
       }
