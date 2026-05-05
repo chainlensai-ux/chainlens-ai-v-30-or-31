@@ -27,6 +27,7 @@ const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
 const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=100'
 const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 25
+const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
 const SYNC_COOLDOWN_MS = 60 * 1000
@@ -300,6 +301,7 @@ export async function POST(request: Request) {
   const bodyOffset = parseInteger(body.offset)
   const rawOffset = queryOffset ?? bodyOffset ?? DEFAULT_OFFSET
   const offset = Math.max(0, rawOffset)
+  const usingAutomaticBatch = queryOffset === null && bodyOffset === null
 
   if (!supabaseUrl || !serviceRole) {
     return NextResponse.json({ ok: false, error: 'missing_supabase_env' }, { status: 503 })
@@ -314,13 +316,17 @@ export async function POST(request: Request) {
     .select('address,label,category,confidence,source,is_active', { count: 'exact' })
     .eq('is_active', true)
     .order('created_at', { ascending: true })
-    .range(offset, offset + limit - 1)
+    .range(
+      usingAutomaticBatch ? DEFAULT_OFFSET : offset,
+      (usingAutomaticBatch ? DEFAULT_OFFSET : offset) + (usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit) - 1,
+    )
 
   if (walletError) {
     return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
   }
 
   const trackedWalletsTotal = count ?? 0
+  const effectiveOffset = usingAutomaticBatch ? DEFAULT_OFFSET : offset
   if (!wallets || wallets.length === 0) {
     return NextResponse.json({ ok: false, error: 'no_active_wallets', trackedWallets: 0 }, { status: 404 })
   }
@@ -474,7 +480,8 @@ export async function POST(request: Request) {
     }
   }
 
-  const nextOffset = offset + processed < trackedWalletsTotal ? offset + processed : null
+  const nextOffset = effectiveOffset + processed < trackedWalletsTotal ? effectiveOffset + processed : null
+  const hasMore = nextOffset !== null
   const response: Record<string, unknown> = {
     ok: true,
     selectedWindow,
@@ -485,16 +492,23 @@ export async function POST(request: Request) {
     },
     trackedWalletsTotal,
     processed,
-    offset,
-    limit,
+    offset: effectiveOffset,
+    limit: usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit,
     nextOffset,
+    hasMore,
     inserted,
     skipped,
+    skipReasons: skipSummary,
     providerErrors,
-    providerErrorSamples,
+    message: processed === 0
+      ? 'No active wallets were scanned in this batch.'
+      : inserted > 0
+        ? `Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'} in this batch.`
+        : 'No qualifying recent whale activity found in this batch.',
   }
 
   if (debug) {
+    response.providerErrorSamples = providerErrorSamples
     response.fetchedTxCount = fetchedTxCount
     response.parsedMovementCount = parsedMovementCount
     response.alertCandidateCount = alertCandidateCount
