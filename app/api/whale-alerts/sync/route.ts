@@ -485,6 +485,16 @@ export async function POST(request: Request) {
 
   const nextOffset = effectiveOffset + processed < trackedWalletsTotal ? effectiveOffset + processed : null
   const hasMore = nextOffset !== null
+  const refreshStatus =
+    processed === 0
+      ? 'empty'
+      : mode === 'full' && hasMore
+        ? 'full_in_progress'
+        : hasMore
+          ? 'partial_complete'
+          : mode === 'full'
+            ? 'full_complete'
+            : 'complete'
   const response: Record<string, unknown> = {
     ok: true,
     mode,
@@ -500,6 +510,7 @@ export async function POST(request: Request) {
     limit: mode === 'full' ? limit : (usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit),
     nextOffset,
     hasMore,
+    refreshStatus,
     inserted,
     skipped,
     skipReasons: skipSummary,

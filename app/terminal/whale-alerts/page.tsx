@@ -51,6 +51,7 @@ const CLIENT_SYNC_COOLDOWN_MS = 10 * 60 * 1000
 const CLIENT_FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
 const CLIENT_SYNC_CACHE_KEY = 'whale_alerts_last_sync_at'
 const CLIENT_FULL_SYNC_CACHE_KEY = 'whale_alerts_last_full_sync_at'
+const CLIENT_SYNC_STATE_CACHE_KEY = 'whale_alerts_last_sync_state_v1'
 
 const short = (value?: string | null) => (!value ? 'Unknown' : `${value.slice(0, 6)}...${value.slice(-4)}`)
 const timeAgo = (iso?: string | null) => {
@@ -225,6 +226,15 @@ export default function WhaleAlertsPage() {
   const [syncCooldownLeftMs, setSyncCooldownLeftMs] = useState(0)
   const [fullSyncCooldownLeftMs, setFullSyncCooldownLeftMs] = useState(0)
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CLIENT_SYNC_STATE_CACHE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as SyncResponse
+      if (parsed && typeof parsed === 'object') setSyncState(parsed)
+    } catch {}
+  }, [])
+
   const loadAlerts = useCallback(async () => {
     setLoading(true)
     setFeedError(false)
@@ -267,6 +277,7 @@ export default function WhaleAlertsPage() {
       const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, { method: 'POST' })
       const json = (await res.json()) as SyncResponse
       setSyncState(json)
+      window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(json))
       window.localStorage.setItem(cacheKey, String(now))
       if (mode === 'full') setFullSyncCooldownLeftMs(cooldownMs)
       else setSyncCooldownLeftMs(cooldownMs)
@@ -290,14 +301,6 @@ export default function WhaleAlertsPage() {
     return () => window.clearInterval(id)
   }, [])
 
-  useEffect(() => {
-    if (syncing) return
-    if (syncCooldownLeftMs > 0) return
-    const hasCachedSync = Number(window.localStorage.getItem(CLIENT_SYNC_CACHE_KEY) ?? '0') > 0
-    if (!hasCachedSync) void runSync()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncing, syncCooldownLeftMs])
-
   const resetFilters = () => {
     setTypeFilter('all')
     setSevFilter('all')
@@ -312,6 +315,17 @@ export default function WhaleAlertsPage() {
 
   const covPct = syncState && (syncState.trackedWalletsTotal ?? 0) > 0
     ? Math.min(100, Math.round(((syncState.processed ?? 0) / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
+  const scannedCount = syncState?.processed ?? 0
+  const trackedCount = syncState?.trackedWalletsTotal ?? 0
+  const isPartial = trackedCount > 0 && scannedCount < trackedCount
+  const isFullInProgress = syncState?.mode === 'full' && Boolean(syncState?.hasMore)
+  const syncStatusText = syncing
+    ? 'Sync in progress'
+    : isFullInProgress
+      ? 'Full refresh in progress'
+      : syncState
+        ? (isPartial ? 'Partial refresh complete' : 'Recently refreshed')
+        : 'Ready to sync'
 
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
   const providerSummary = syncState ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors} errors)` : 'Healthy') : 'Unavailable'
@@ -521,7 +535,7 @@ export default function WhaleAlertsPage() {
                     <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>Refreshes latest tracked-wallet activity</p>
                   </div>
                 </div>
-                <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Sync in progress' : (syncCooldownLeftMs > 0 ? 'Recently refreshed' : 'Ready to sync')}</Pill>
+                <Pill color={syncing || isFullInProgress ? 'amber' : 'teal'} dot>{syncStatusText}</Pill>
               </div>
 
               <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -550,6 +564,13 @@ export default function WhaleAlertsPage() {
               ) : (
                 <p style={{ fontSize: 11, color: '#475569' }}>Run a sync to see coverage progress.</p>
               )}
+              {syncState && (
+                <p style={{ margin: 0, fontSize: 11, color: '#94a3b8' }}>
+                  {isFullInProgress
+                    ? `Full refresh progress: ${scannedCount} / ${trackedCount || stats.trackedWallets}`
+                    : `Last refresh checked ${scannedCount} / ${trackedCount || stats.trackedWallets} tracked wallets`}
+                </p>
+              )}
 
               {(syncState?.providerErrors ?? 0) > 0 && (
                 <p className="rounded-[12px]"
@@ -565,7 +586,7 @@ export default function WhaleAlertsPage() {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Recently refreshed' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
+                  {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Cooldown active' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
                 </button>
                 <button onClick={() => { void runSync(syncState?.mode === 'full' && syncState?.hasMore ? (syncState?.nextOffset ?? 0) : 0, 'full') }} disabled={syncing || fullSyncCooldownLeftMs > 0}
                   className="flex items-center rounded-[12px]"
