@@ -30,7 +30,7 @@ const MAX_LIMIT = 25
 const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
-const SYNC_COOLDOWN_MS = 60 * 1000
+const SYNC_COOLDOWN_MS = 10 * 60 * 1000
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
 const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
 function syncPlan(req: Request): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
