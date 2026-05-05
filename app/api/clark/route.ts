@@ -1128,6 +1128,35 @@ function buildRoutingHelpReply(prompt: string): string {
 function isHolderQuestion(prompt: string): boolean {
   return /\b(how many holders|holders?\??|what about holders|holder count|holder distribution)\b/i.test(prompt.trim().toLowerCase());
 }
+function isPumpFeedPrompt(prompt: string): boolean {
+  return /\b(what are pump alerts right now|pump alerts|what'?s pumping|what is pumping early|early pump detection)\b/i.test(prompt.toLowerCase());
+}
+function isBaseRadarPrompt(prompt: string): boolean {
+  return /\b(what'?s happening on base radar|base radar|base movers|what'?s moving on base)\b/i.test(prompt.toLowerCase());
+}
+function isFeedSafestFollowup(prompt: string): boolean {
+  return /\b(which one is safest|which is safest|what'?s the safest|which is cleanest|which one should i watch)\b/i.test(prompt.toLowerCase());
+}
+
+async function handlePumpFeedSnapshot(origin: string) {
+  const res = await fetch(`${origin}/api/pump-alerts?window=24h&limit=10`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is unavailable right now.";
+  const json = await res.json();
+  const alerts = Array.isArray(json?.alerts) ? json.alerts : [];
+  if (!alerts.length) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is empty right now.";
+  const rows = alerts.slice(0, 5).map((a: Record<string, unknown>, i: number) => `${i + 1}. ${String(a.symbol ?? a.token_symbol ?? "Unknown")} | 24h ${typeof a.price_change_24h === "number" ? `${a.price_change_24h.toFixed(2)}%` : "N/A"} | LQ ${formatUsdShort(typeof a.liquidity_usd === "number" ? a.liquidity_usd : null)} | Vol ${formatUsdShort(typeof a.volume_24h_usd === "number" ? a.volume_24h_usd : null)}${a.category ? ` | ${String(a.category)}` : ""}`);
+  return ["PUMP ALERTS SNAPSHOT", ...rows].join("\n");
+}
+
+async function handleBaseRadarSnapshot(origin: string) {
+  const res = await fetch(`${origin}/api/radar?window=24h&limit=10`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) return "BASE RADAR SNAPSHOT\nBase Radar feed is unavailable right now.";
+  const json = await res.json();
+  const items = Array.isArray(json?.items) ? json.items : [];
+  if (!items.length) return "BASE RADAR SNAPSHOT\nBase Radar feed is empty right now.";
+  const rows = items.slice(0, 6).map((a: Record<string, unknown>, i: number) => `${i + 1}. ${String(a.symbol ?? a.token_symbol ?? "Unknown")} | 24h ${typeof a.price_change_24h === "number" ? `${a.price_change_24h.toFixed(2)}%` : "N/A"} | LQ ${formatUsdShort(typeof a.liquidity_usd === "number" ? a.liquidity_usd : null)} | Vol ${formatUsdShort(typeof a.volume_24h_usd === "number" ? a.volume_24h_usd : null)}`);
+  return ["BASE RADAR SNAPSHOT", ...rows].join("\n");
+}
 
 function formatUsdShort(value: number | null | undefined): string {
   if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
@@ -3757,8 +3786,35 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
+  if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
+    return { feature: "clark-ai", chain, mode: "casual_help", intent: "help", toolsUsed: [], analysis: "I can scan tokens and wallets, read Whale Flows, Pump Alerts, and Base Radar, check liquidity/security/holders where data exists, run dev-wallet checks, and explain risk signals." };
+  }
   if (isWhaleFlowPrompt(prompt, body.history)) {
     return await handleStoredWhaleFlow(prompt, body, origin);
+  }
+  if (isPumpFeedPrompt(prompt)) {
+    const analysis = await handlePumpFeedSnapshot(origin);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["pump_alerts_feed"], analysis };
+  }
+  if (isBaseRadarPrompt(prompt)) {
+    const analysis = await handleBaseRadarSnapshot(origin);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_radar_feed"], analysis };
+  }
+  if (isFeedSafestFollowup(prompt)) {
+    const marketItems = extractStructuredMarketItems(body);
+    if (marketItems.length) {
+      const ranked = [...marketItems].sort((a, b) => a.rank - b.rank);
+      const pick = ranked[0];
+      const second = ranked[1];
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "market",
+        toolsUsed: ["market_context"],
+        analysis: `Cleanest watch candidate: ${pick?.symbol ?? "No clear candidate"}.\nWhy: strongest available liquidity/volume profile in the current list.\nLimit: this is not a safety guarantee.\nIf you want higher confidence, run Token Scanner on ${pick?.symbol ?? "top candidate"}${second?.symbol ? ` and ${second.symbol}` : ""}.`,
+      };
+    }
   }
   const liveIntent = detectLiveIntent(prompt);
   const directIntent = detectIntent(prompt);
