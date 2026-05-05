@@ -88,6 +88,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const webhooksEnabled = (process.env.WEBHOOKS_ENABLED ?? 'true').toLowerCase() !== 'false'
+  if (!webhooksEnabled) {
+    return NextResponse.json({ ok: true, disabled: true })
+  }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
 
