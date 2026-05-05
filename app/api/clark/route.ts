@@ -180,6 +180,11 @@ function idToAddress(id: string): string {
 
 function extractTokenLookupQuery(prompt: string): string | null {
   const t = prompt.trim().toLowerCase();
+  const blockedQueries = new Set([
+    "holder", "holders", "holder count", "holder distribution", "holder concentration",
+    "liquidity", "lp", "lp lock", "lp control", "deployer", "dev wallet", "transfer controls",
+    "security", "tax", "taxes",
+  ]);
   const patterns = [
     /(?:scan|analyze|analyse|check)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
     /(?:full report on|complete report on|deep scan|full analysis of|full analysis on|run all checks on)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
@@ -189,7 +194,11 @@ function extractTokenLookupQuery(prompt: string): string | null {
   ];
   for (const p of patterns) {
     const m = t.match(p);
-    if (m?.[1]) return m[1].trim();
+    if (m?.[1]) {
+      const q = m[1].trim().toLowerCase();
+      if (blockedQueries.has(q)) continue;
+      return q;
+    }
   }
   return null;
 }
@@ -208,8 +217,11 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/(<token_data>|<wallet_scan>|<analysis>|feature context|ask clark)/i.test(prompt)) {
     return { intent: "feature_context", address };
   }
-  if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|help|who are you|what is chainlens/i.test(t)) {
+  if (/^(hi|hey|hello|yo|gm|sup)\b|what can you do|what can u do|help|who are you|what is chainlens|yo what can u do clark/i.test(t)) {
     return { intent: "casual_help", address };
+  }
+  if (/\b(should i buy this|should i ape|should i buy)\b/i.test(t)) {
+    return { intent: "financial_advice", address };
   }
   if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock|what is slippage|explain slippage/i.test(t)) {
     return { intent: "educational", address };
@@ -997,7 +1009,7 @@ function buildClarkStrategyReply(prompt: string): string {
 function detectLiveIntent(prompt: string): LiveIntent {
   const t = prompt.toLowerCase().trim();
   if (/scan\s+0x[a-f0-9]{40}|check wallet|wallet\b/.test(t)) return "WALLET_QUERY";
-  if (/what'?s pumping on base|base trending|moving on base|top movers on base/.test(t)) return "BASE_MARKET";
+  if (/what'?s pumping on base|what'?s pumping|what is pumping early|early pump detection|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
   if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
   if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales? (?:doing|buying)\b|\bwhales? buying\b|\bwhale buys?\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
@@ -1110,6 +1122,10 @@ function buildRoutingHelpReply(prompt: string): string {
   if (/deployer|dev wallet/.test(t)) return "Use Dev Wallet Detector with the token contract to check likely deployer links and suspicious wallet clusters.";
   if (/scan a token|token/.test(t)) return "Use Token Scanner with the contract address for contract and risk checks, then ask Clark for a final read.";
   return "Use Base Radar for discovery, Token Scanner for contract checks, Wallet Scanner for behavior, and Dev Wallet Detector for deployer risk.";
+}
+
+function isHolderQuestion(prompt: string): boolean {
+  return /\b(how many holders|holders?\??|what about holders|holder count|holder distribution)\b/i.test(prompt.trim().toLowerCase());
 }
 
 function formatUsdShort(value: number | null | undefined): string {
@@ -3794,6 +3810,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       analysis: buildTokenFollowupReply(tokenFollowup.type, tokenFollowup.contractAddress, tokenFollowup.scanText),
     };
   }
+  if (isHolderQuestion(prompt)) {
+    const lastScan = extractLastTokenScanFromHistory(body.history);
+    if (!lastScan) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "token_analysis",
+        toolsUsed: [],
+        analysis: "I can check holder distribution, but I need a token symbol or contract first.",
+      };
+    }
+  }
 
   // Casual chat — short-circuit before plan execution
   const CASUAL_CHAT_RE = /^(yo|hey|bro|man|dude)\b|^what do you think(\s+about this)?$|^is that bad\??$|^risky\??$|^why$|^explain this$|^can you help\??$/i;
@@ -3905,6 +3934,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain });
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
+    if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "casual_help",
+        intent: "help",
+        toolsUsed: [],
+        analysis: [
+          "I can help with:",
+          "- Scan tokens and contracts",
+          "- Scan wallets and summarize behavior",
+          "- Read Whale Alerts (stored feed)",
+          "- Read Pump Alerts",
+          "- Read Base Radar / Base movers",
+          "- Check liquidity, security, and holders where data exists",
+          "- Explain risk signals and missing checks",
+        ].join("\n"),
+      };
+    }
     return { feature: "clark-ai", chain, mode: "casual_help", analysis: buildCasualClarkReply(prompt), intent: plan.intent, toolsUsed };
   }
   if (directIntent.intent === "capabilities") {
