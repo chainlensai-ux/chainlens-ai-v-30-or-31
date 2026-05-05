@@ -30,10 +30,13 @@ type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trac
 type SyncResponse = {
   mode?: 'batch' | 'full'
   processed?: number
+  processedTotal?: number
   inserted?: number
+  insertedTotal?: number
   skipped?: number
   nextOffset?: number | null
   hasMore?: boolean
+  refreshStatus?: string
   providerErrors?: number
   trackedWalletsTotal?: number
   offset?: number
@@ -276,8 +279,28 @@ export default function WhaleAlertsPage() {
       params.set('mode', mode)
       const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, { method: 'POST' })
       const json = (await res.json()) as SyncResponse
-      setSyncState(json)
-      window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(json))
+      const merged: SyncResponse = mode === 'full'
+        ? (() => {
+            const prev = syncState?.mode === 'full' ? syncState : null
+            const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
+            const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
+            const trackedWalletsTotal = Number(json.trackedWalletsTotal ?? prev?.trackedWalletsTotal ?? 0)
+            const cappedProcessed = trackedWalletsTotal > 0 ? Math.min(processedTotal, trackedWalletsTotal) : processedTotal
+            return {
+              ...json,
+              mode: 'full',
+              processedTotal: cappedProcessed,
+              insertedTotal,
+              refreshStatus: json.hasMore ? 'full_in_progress' : 'full_complete',
+            }
+          })()
+        : {
+            ...json,
+            processedTotal: json.processed ?? 0,
+            insertedTotal: json.inserted ?? 0,
+          }
+      setSyncState(merged)
+      window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
       window.localStorage.setItem(cacheKey, String(now))
       if (mode === 'full') setFullSyncCooldownLeftMs(cooldownMs)
       else setSyncCooldownLeftMs(cooldownMs)
@@ -313,9 +336,11 @@ export default function WhaleAlertsPage() {
   const sevs  = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.severity).filter(Boolean) as string[]))], [alerts])
   const sides = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.side).filter(Boolean) as string[]))], [alerts])
 
+  const effectiveProcessed = syncState?.mode === 'full' ? (syncState?.processedTotal ?? 0) : (syncState?.processed ?? 0)
+  const effectiveInserted = syncState?.mode === 'full' ? (syncState?.insertedTotal ?? 0) : (syncState?.inserted ?? 0)
   const covPct = syncState && (syncState.trackedWalletsTotal ?? 0) > 0
-    ? Math.min(100, Math.round(((syncState.processed ?? 0) / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
-  const scannedCount = syncState?.processed ?? 0
+    ? Math.min(100, Math.round((effectiveProcessed / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
+  const scannedCount = effectiveProcessed
   const trackedCount = syncState?.trackedWalletsTotal ?? 0
   const isPartial = trackedCount > 0 && scannedCount < trackedCount
   const isFullInProgress = syncState?.mode === 'full' && Boolean(syncState?.hasMore)
@@ -324,7 +349,7 @@ export default function WhaleAlertsPage() {
     : isFullInProgress
       ? 'Full refresh in progress'
       : syncState
-        ? (isPartial ? 'Partial refresh complete' : 'Recently refreshed')
+        ? (syncState.mode === 'full' && !isFullInProgress && !isPartial ? 'Recently refreshed' : (isPartial ? 'Partial refresh complete' : 'Recently refreshed'))
         : 'Ready to sync'
 
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
@@ -546,7 +571,7 @@ export default function WhaleAlertsPage() {
                 <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
                   <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Signals found</p>
                   <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
-                    {syncState?.inserted != null ? syncState.inserted : <span style={{ color: '#334155' }}>—</span>}
+                    {effectiveInserted != null ? effectiveInserted : <span style={{ color: '#334155' }}>—</span>}
                   </p>
                 </div>
               </div>
@@ -613,6 +638,11 @@ export default function WhaleAlertsPage() {
               {syncState?.mode === 'full' && syncState?.hasMore && (
                 <p style={{ margin: 0, fontSize: 11, color: '#94a3b8' }}>
                   Full refresh in progress.
+                </p>
+              )}
+              {syncState?.mode === 'full' && !syncState?.hasMore && trackedCount > 0 && scannedCount >= trackedCount && (
+                <p style={{ margin: 0, fontSize: 11, color: '#86efac' }}>
+                  Full refresh complete — {scannedCount} / {trackedCount} checked
                 </p>
               )}
             </div>
