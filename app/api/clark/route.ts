@@ -3503,6 +3503,7 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
 
 async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, origin: string) {
   const chain = body.chain ?? "base";
+  const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
 
   // Honest response for unsupported time windows (API max is 24h)
   const daysMatch = prompt.match(/\b(\d+)\s*days?\b/i);
@@ -3535,8 +3536,8 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     }
 
     // Organic query (e.g. "what are whales doing right now?") — use stored feed only.
-    const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b/i.test(prompt);
-    const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bwhales? buying\b|\bwhale buys?\b/i.test(prompt.toLowerCase());
+    const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b|\bsmart wallets? buying\b/i.test(prompt);
+    const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
     const window = isBuyQuery ? "24h" : "1h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
@@ -3554,9 +3555,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             let usdSeen = 0
             let latestTs = 0
             for (const row of filtered) {
-              const focusRaw = ((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? ''
-              const focus = focusRaw.split(' / ')[0]?.trim().toUpperCase()
-              if (focus) tokenCounts.set(focus, (tokenCounts.get(focus) ?? 0) + 1)
+              const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase()
+              const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null
+              if (firstNonRouting) tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1)
               if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
                 totalUsd += row.amount_usd
                 usdSeen += 1
@@ -3565,6 +3566,16 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
               if (Number.isFinite(ts) && ts > latestTs) latestTs = ts
             }
             const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1])
+            if (ranked.length === 0) {
+              return {
+                feature: "clark-ai",
+                chain,
+                mode: "analysis",
+                intent: "whale_alert",
+                toolsUsed: ["whale_feed_stored"],
+                analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don’t have a clean non-stable token signal yet.",
+              }
+            }
             const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ") || "No dominant token"
             const strongest = ranked[0]?.[0] ?? "No repeated token yet"
             const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000)
