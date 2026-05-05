@@ -30,12 +30,13 @@ const MAX_LIMIT = 25
 const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
-const SYNC_COOLDOWN_MS = 60 * 1000
+const SYNC_COOLDOWN_MS = 10 * 60 * 1000
+const FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
 const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
 function syncPlan(req: Request): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
 function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
-function syncAllowed(req: Request): { ok: boolean; cooldown: boolean } { const plan=syncPlan(req); const key=`${plan}:${syncIp(req)}`; const now=Date.now(); const cur=syncRate.get(key); const lim=SYNC_RATE_BY_PLAN[plan]; if(cur && now-cur.lastRunAt < SYNC_COOLDOWN_MS) return { ok:false, cooldown:true }; if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } }
+function syncAllowed(req: Request, mode: 'batch' | 'full'): { ok: boolean; cooldown: boolean } { const plan=syncPlan(req); const key=`${mode}:${plan}:${syncIp(req)}`; const now=Date.now(); const cur=syncRate.get(key); const lim=mode === 'full' ? 1 : SYNC_RATE_BY_PLAN[plan]; const cooldownMs = mode === 'full' ? FULL_SYNC_COOLDOWN_MS : SYNC_COOLDOWN_MS; if(cur && now-cur.lastRunAt < cooldownMs) return { ok:false, cooldown:true }; if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } }
 
 type SyncWindow = '24h' | '3d' | '7d'
 
@@ -263,8 +264,10 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
 }
 
 export async function POST(request: Request) {
-  const allow = syncAllowed(request)
-  if (!allow.ok) return NextResponse.json({ ok: false, error: "Rate limit reached. Try again shortly." }, { status: 429 })
+  const requestUrl = new URL(request.url)
+  const mode = requestUrl.searchParams.get('mode') === 'full' ? 'full' : 'batch'
+  const allow = syncAllowed(request, mode)
+  if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly." }, { status: 429 })
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
   const providerKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
@@ -278,7 +281,6 @@ export async function POST(request: Request) {
     body = {}
   }
 
-  const requestUrl = new URL(request.url)
   const debug = requestUrl.searchParams.get('debug') === 'true'
   const queryWindow = requestUrl.searchParams.get('window')
   const bodyWindow = typeof body.window === 'string' ? body.window : null
@@ -288,7 +290,8 @@ export async function POST(request: Request) {
 
   const queryLimit = parseInteger(requestUrl.searchParams.get('limit'))
   const bodyLimit = parseInteger(body.limit)
-  const rawLimit = queryLimit ?? bodyLimit ?? DEFAULT_LIMIT
+  const defaultLimitForMode = mode === 'full' ? MAX_LIMIT : DEFAULT_LIMIT
+  const rawLimit = queryLimit ?? bodyLimit ?? defaultLimitForMode
   const limit = Math.max(1, Math.min(MAX_LIMIT, rawLimit))
 
   const queryMinUsdRaw = requestUrl.searchParams.get('minUsd')
@@ -484,6 +487,7 @@ export async function POST(request: Request) {
   const hasMore = nextOffset !== null
   const response: Record<string, unknown> = {
     ok: true,
+    mode,
     selectedWindow,
     providerSummary: {
       endpointPath: PROVIDER_ENDPOINT_PATH,
@@ -493,7 +497,7 @@ export async function POST(request: Request) {
     trackedWalletsTotal,
     processed,
     offset: effectiveOffset,
-    limit: usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit,
+    limit: mode === 'full' ? limit : (usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit),
     nextOffset,
     hasMore,
     inserted,

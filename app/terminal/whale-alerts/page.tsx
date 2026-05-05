@@ -28,6 +28,7 @@ type AlertItem = {
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type SyncResponse = {
+  mode?: 'batch' | 'full'
   processed?: number
   inserted?: number
   skipped?: number
@@ -46,6 +47,10 @@ const MIN_OPTIONS = [
   { label: '$1k+', value: 1000 }, { label: '$5k+', value: 5000 }, { label: '$10k+', value: 10000 },
 ]
 const WINDOWS = ['15m', '1h', '6h', '24h'] as const
+const CLIENT_SYNC_COOLDOWN_MS = 10 * 60 * 1000
+const CLIENT_FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
+const CLIENT_SYNC_CACHE_KEY = 'whale_alerts_last_sync_at'
+const CLIENT_FULL_SYNC_CACHE_KEY = 'whale_alerts_last_full_sync_at'
 
 const short = (value?: string | null) => (!value ? 'Unknown' : `${value.slice(0, 6)}...${value.slice(-4)}`)
 const timeAgo = (iso?: string | null) => {
@@ -217,6 +222,8 @@ export default function WhaleAlertsPage() {
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
   const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
+  const [syncCooldownLeftMs, setSyncCooldownLeftMs] = useState(0)
+  const [fullSyncCooldownLeftMs, setFullSyncCooldownLeftMs] = useState(0)
 
   const loadAlerts = useCallback(async () => {
     setLoading(true)
@@ -241,19 +248,55 @@ export default function WhaleAlertsPage() {
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
 
-  const runSync = async (offset?: number) => {
+  const runSync = async (offset?: number, mode: 'batch' | 'full' = 'batch') => {
+    const now = Date.now()
+    const cacheKey = mode === 'full' ? CLIENT_FULL_SYNC_CACHE_KEY : CLIENT_SYNC_CACHE_KEY
+    const cooldownMs = mode === 'full' ? CLIENT_FULL_SYNC_COOLDOWN_MS : CLIENT_SYNC_COOLDOWN_MS
+    const lastSyncAt = Number(window.localStorage.getItem(cacheKey) ?? '0')
+    const elapsed = now - lastSyncAt
+    if (elapsed < cooldownMs) {
+      if (mode === 'full') setFullSyncCooldownLeftMs(cooldownMs - elapsed)
+      else setSyncCooldownLeftMs(cooldownMs - elapsed)
+      return
+    }
     setSyncing(true)
     try {
       const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd) })
       if (typeof offset === 'number') params.set('offset', String(offset))
+      params.set('mode', mode)
       const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, { method: 'POST' })
       const json = (await res.json()) as SyncResponse
       setSyncState(json)
+      window.localStorage.setItem(cacheKey, String(now))
+      if (mode === 'full') setFullSyncCooldownLeftMs(cooldownMs)
+      else setSyncCooldownLeftMs(cooldownMs)
       await loadAlerts()
     } finally {
       setSyncing(false)
     }
   }
+
+  useEffect(() => {
+    const tick = () => {
+      const lastSyncAt = Number(window.localStorage.getItem(CLIENT_SYNC_CACHE_KEY) ?? '0')
+      const lastFullSyncAt = Number(window.localStorage.getItem(CLIENT_FULL_SYNC_CACHE_KEY) ?? '0')
+      const left = Math.max(0, CLIENT_SYNC_COOLDOWN_MS - (Date.now() - lastSyncAt))
+      const fullLeft = Math.max(0, CLIENT_FULL_SYNC_COOLDOWN_MS - (Date.now() - lastFullSyncAt))
+      setSyncCooldownLeftMs(left)
+      setFullSyncCooldownLeftMs(fullLeft)
+    }
+    tick()
+    const id = window.setInterval(tick, 30_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    if (syncing) return
+    if (syncCooldownLeftMs > 0) return
+    const hasCachedSync = Number(window.localStorage.getItem(CLIENT_SYNC_CACHE_KEY) ?? '0') > 0
+    if (!hasCachedSync) void runSync()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncing, syncCooldownLeftMs])
 
   const resetFilters = () => {
     setTypeFilter('all')
@@ -340,7 +383,7 @@ export default function WhaleAlertsPage() {
                 </svg>
                 {stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Wallets loading'}
               </Pill>
-              <Pill color="teal" dot>{syncing ? 'Syncing…' : 'Batch Sync Online'}</Pill>
+              <Pill color="teal" dot>{syncing ? 'Syncing…' : 'On-demand sync mode'}</Pill>
               <Pill color="purple" dot>CORTEX Watching</Pill>
             </div>
           </div>
@@ -462,54 +505,54 @@ export default function WhaleAlertsPage() {
             </div>
 
             {/* right: wallet sync panel */}
-            <div className="flex flex-col rounded-[16px]"
-              style={{ gap: 12, border: '1px solid rgba(139,92,246,0.20)', background: 'linear-gradient(135deg,#141a34,#10192d,#0a1322)', padding: 16 }}>
+            <div className="flex flex-col rounded-[18px]"
+              style={{ gap: 14, border: '1px solid rgba(139,92,246,0.24)', background: 'linear-gradient(160deg,rgba(13,18,33,0.98),rgba(9,15,30,0.94) 60%,rgba(8,12,24,0.98))', padding: 18, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 14px 40px rgba(0,0,0,0.38)' }}>
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center" style={{ gap: 10 }}>
                   <div className="flex items-center justify-center rounded-[12px]"
-                    style={{ width: 32, height: 32, background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.28)' }}>
+                    style={{ width: 34, height: 34, background: 'rgba(139,92,246,0.16)', border: '1px solid rgba(139,92,246,0.30)' }}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2">
                       <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                     </svg>
                   </div>
                   <div>
-                    <p style={{ fontSize: 14, fontWeight: 700, color: '#f8fafc', margin: 0 }}>Wallet scan</p>
-                    <p style={{ fontSize: 11, color: '#475569', margin: 0 }}>{syncState ? 'Scan complete' : 'No scan yet'}</p>
+                    <p style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.01em', color: '#f8fafc', margin: 0 }}>Whale sync</p>
+                    <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>{syncState ? 'Latest run recorded' : 'No sync run yet'}</p>
                   </div>
                 </div>
-                <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Syncing…' : 'Sync Healthy'}</Pill>
+                <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Sync in progress' : 'Ready to sync'}</Pill>
               </div>
 
-              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Wallets Scanned (Batch)</p>
-                  <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
+              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Batch scanned</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
                     {syncState
                       ? <>{syncState.processed ?? 0}<span style={{ fontSize: 16, fontWeight: 400, color: '#475569' }}> / {syncState.trackedWalletsTotal ?? stats.trackedWallets}</span></>
                       : <span style={{ color: '#334155' }}>—</span>}
                   </p>
                 </div>
-                <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Alerts Found</p>
-                  <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
+                <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Alerts found</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
                     {syncState?.inserted != null ? syncState.inserted : <span style={{ color: '#334155' }}>—</span>}
                   </p>
                 </div>
               </div>
 
               {covPct !== null ? (
-                <div>
+                <div className="rounded-[12px]" style={{ padding: 10, background: 'rgba(5,10,20,0.55)', border: '1px solid rgba(148,163,184,0.12)' }}>
                   <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569' }}>Batch Scan Coverage</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>{covPct}%</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b' }}>Coverage</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#cbd5e1' }}>{covPct}%</span>
                   </div>
-                  <div className="w-full overflow-hidden rounded-full" style={{ height: 6, background: 'rgba(255,255,255,0.06)' }}>
+                  <div className="w-full overflow-hidden rounded-full" style={{ height: 5, background: 'rgba(255,255,255,0.08)' }}>
                     <div className="rounded-full" style={{ width: `${covPct}%`, height: '100%', background: 'linear-gradient(90deg,#2dd4bf,#8b5cf6)', transition: 'width 0.3s ease' }}/>
                   </div>
                 </div>
               ) : (
-                <p style={{ fontSize: 11, color: '#334155' }}>Run sync to see coverage</p>
+                <p style={{ fontSize: 11, color: '#475569' }}>Run a sync to see coverage progress.</p>
               )}
 
               {(syncState?.providerErrors ?? 0) > 0 && (
@@ -520,13 +563,18 @@ export default function WhaleAlertsPage() {
               )}
 
               <div className="flex" style={{ gap: 8 }}>
-                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined) }} disabled={syncing}
+                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }} disabled={syncing || syncCooldownLeftMs > 0}
                   className="flex flex-1 items-center justify-center rounded-[12px]"
                   style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing ? 0.5 : 1, border: 'none' }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue sync' : 'Run sync'}
+                  {syncing ? 'Scanning…' : syncCooldownLeftMs > 0 ? 'Sync cooldown active' : (syncState?.hasMore ? 'Continue sync' : 'Run sync')}
+                </button>
+                <button onClick={() => { void runSync(syncState?.mode === 'full' && syncState?.hasMore ? (syncState?.nextOffset ?? 0) : 0, 'full') }} disabled={syncing || fullSyncCooldownLeftMs > 0}
+                  className="flex items-center rounded-[12px]"
+                  style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
+                  {fullSyncCooldownLeftMs > 0 ? 'Full sync cooldown' : (syncState?.mode === 'full' && syncState?.hasMore ? 'Continue full sync' : 'Scan all 68 wallets')}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
                   className="flex items-center rounded-[12px]"
@@ -539,9 +587,12 @@ export default function WhaleAlertsPage() {
               </div>
 
               <button className="text-left hover:opacity-80"
-                style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#334155', background: 'none', border: 'none' }}>
+                style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', background: 'none', border: 'none' }}>
                 + Advanced Diagnostics
               </button>
+              <p style={{ margin: 0, fontSize: 11, color: '#fbbf24' }}>
+                Full sync scans all tracked wallets and may use more Alchemy CUs.
+              </p>
             </div>
 
           </div>
@@ -817,3 +868,6 @@ export default function WhaleAlertsPage() {
     </div>
   )
 }
+            <p style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: '#94a3b8' }}>
+              Whale Alerts refreshes on demand during beta to reduce infrastructure waste.
+            </p>
