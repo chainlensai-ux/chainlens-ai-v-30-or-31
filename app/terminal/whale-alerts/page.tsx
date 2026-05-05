@@ -371,7 +371,14 @@ export default function WhaleAlertsPage() {
   const scannedCount = effectiveProcessed
   const trackedCount = syncState?.trackedWalletsTotal ?? 0
   const isPartial = trackedCount > 0 && scannedCount < trackedCount
-  const isFullInProgress = syncState?.mode === 'full' && Boolean(syncState?.hasMore)
+  const fullNeedsContinue = syncState?.mode === 'full' && trackedCount > 0 && scannedCount < trackedCount
+  const isFullInProgress = Boolean(syncState?.mode === 'full' && (syncState?.hasMore || fullNeedsContinue))
+  const computedFullNextOffset = (() => {
+    if (syncState?.mode !== 'full') return 0
+    if (typeof syncState.nextOffset === 'number' && syncState.nextOffset >= 0) return syncState.nextOffset
+    if (fullNeedsContinue) return Math.max(0, scannedCount)
+    return 0
+  })()
   const syncStatusText = syncing
     ? 'Sync in progress'
     : isFullInProgress
@@ -646,10 +653,10 @@ export default function WhaleAlertsPage() {
                   </svg>
                   {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
                 </button>
-                <button onClick={() => { void runSync(syncState?.mode === 'full' && syncState?.hasMore ? (syncState?.nextOffset ?? 0) : 0, 'full') }} disabled={syncing || (fullSyncCooldownLeftMs > 0 && !(syncState?.mode === 'full' && syncState?.hasMore))}
+                <button onClick={() => { void runSync(syncState?.mode === 'full' && isFullInProgress ? computedFullNextOffset : 0, 'full') }} disabled={syncing || (fullSyncCooldownLeftMs > 0 && !isFullInProgress)}
                   className="flex items-center rounded-[12px]"
                   style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
-                  {syncState?.mode === 'full' && syncState?.hasMore
+                  {syncState?.mode === 'full' && isFullInProgress
                     ? (fullSyncCooldownLeftMs > 0 ? 'Continue shortly' : 'Continue refresh')
                     : (syncState?.mode === 'full' && !syncState?.hasMore && trackedCount > 0 && scannedCount >= trackedCount ? 'Full refresh complete' : 'Full refresh')}
                 </button>
