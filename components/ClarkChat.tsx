@@ -91,9 +91,14 @@ function parseMessage(raw: string): Record<string, string> {
   if (t.startsWith('base radar') || t.includes('trending') || t.includes("what's hot") || MARKET_INTENT.test(t))
     return { feature: 'base-radar' }
 
-  // Bare address → scan-token
-  if (address)
+  // Explicit token/contract intent with address → scan-token
+  if (address && /\b(scan\s+token|token\s+scan|contract\b)/i.test(t))
     return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
+
+  // Bare or ambiguous address → clark-ai for smarter routing
+  // Backend detects wallet intent from history and falls back to wallet scan if token not found
+  if (address)
+    return { feature: 'clark-ai', prompt: raw.trim() }
 
   // Token name + signal keyword → scan-token
   const TOKEN_SIGNALS = /\b(price|liquidity|volume|safe|safety|pools?|rug|trap|pump|pumping|dump|degen|volatile|volatility|risk|cap|chart|scan|check|analyze|analysis|is\s+it|verdict)\b/i

@@ -4715,6 +4715,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       };
     }
     if (!token) {
+      // Bare address paste — token scan found nothing. Try wallet scan before giving up.
+      if (isBareAddressPrompt(prompt) && resolvedAddress) {
+        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolvedAddress });
+        const w = (walletRes.json ?? {}) as Record<string, unknown>;
+        if (walletRes.ok && Array.isArray(w.holdings) && (w.holdings as unknown[]).length > 0) {
+          const snapshot = normalizeWalletSnapshotEvidence(w, resolvedAddress);
+          return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [...toolsUsed, "wallet_get_snapshot"], analysis: buildWalletQualityVerdict(snapshot, resolvedAddress, prompt) };
+        }
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: plan.intent, toolsUsed,
+          analysis: "I couldn’t resolve this as a Base token or wallet with current providers. To be explicit: ‘scan token 0x...’ for tokens or ‘scan wallet 0x...’ for wallets.",
+        };
+      }
       if (resolvedAddress) {
         const fallbackReport = buildFullReportEvidence(evidence, resolvedAddress);
         if (/why is it moving|why is token\s+\d+\s+moving|explain the move/i.test(prompt.toLowerCase())) {
