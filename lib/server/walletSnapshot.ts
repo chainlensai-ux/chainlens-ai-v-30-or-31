@@ -10,6 +10,20 @@ type Holding = {
   verified: boolean
 }
 
+export type WalletBehavior = {
+  status: 'ok' | 'partial' | 'unavailable'
+  source: 'alchemy' | 'unavailable'
+  txCount: number | null
+  activeDays: number | null
+  topTokens: string[]
+  topContracts: string[]
+  inboundCount: number | null
+  outboundCount: number | null
+  stablecoinActivity: boolean
+  recentActivitySummary: string
+  reason: string
+}
+
 export type WalletSnapshot = {
   address: string
   totalValue: number
@@ -22,6 +36,7 @@ export type WalletSnapshot = {
   holdingsCount: number
   totalUsdAvailable: boolean
   reason: string
+  walletBehavior: WalletBehavior
   _diagnostics?: {
     walletProviderFieldsPresent: {
       holdings: boolean
@@ -129,6 +144,66 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
   }
 }
 
+const BEHAVIOR_EMPTY: WalletBehavior = {
+  status: 'unavailable', source: 'unavailable',
+  txCount: null, activeDays: null, topTokens: [], topContracts: [],
+  inboundCount: null, outboundCount: null, stablecoinActivity: false,
+  recentActivitySummary: 'Activity data unavailable.', reason: '',
+}
+
+async function fetchWalletBehavior(address: string, baseUrl: string): Promise<WalletBehavior> {
+  if (!ALCHEMY_BASE_KEY) return { ...BEHAVIOR_EMPTY, reason: 'Base key not configured.' }
+  try {
+    const base = {
+      fromBlock: '0x0', category: ['external', 'erc20'],
+      withMetadata: true, maxCount: '0x32', order: 'desc',
+    }
+    const [sentRes, recvRes] = await Promise.allSettled([
+      alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{ ...base, fromAddress: address }]),
+      alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{ ...base, toAddress: address }]),
+    ])
+    type Tx = { to: string | null; asset: string | null; metadata?: { blockTimestamp?: string } }
+    const sent: Tx[] = sentRes.status === 'fulfilled' ? (sentRes.value?.transfers ?? []) : []
+    const recv: Tx[] = recvRes.status === 'fulfilled' ? (recvRes.value?.transfers ?? []) : []
+    const all = [...sent, ...recv]
+    if (all.length === 0) {
+      return { ...BEHAVIOR_EMPTY, status: 'ok', source: 'alchemy', txCount: 0, activeDays: 0, recentActivitySummary: 'No recent Base activity found.' }
+    }
+    const STABLES = /^(USDC|USDT|DAI|USDBC|EURC|LUSD)$/i
+    const days = new Set(all.map(t => t.metadata?.blockTimestamp?.slice(0, 10)).filter(Boolean) as string[])
+    const tokenFreq = new Map<string, number>()
+    const contractFreq = new Map<string, number>()
+    for (const t of all) {
+      if (t.asset && t.asset !== 'ETH') tokenFreq.set(t.asset, (tokenFreq.get(t.asset) ?? 0) + 1)
+    }
+    for (const t of sent) {
+      if (t.to && t.to.toLowerCase() !== address.toLowerCase()) {
+        const k = t.to.toLowerCase()
+        contractFreq.set(k, (contractFreq.get(k) ?? 0) + 1)
+      }
+    }
+    const topTokens = [...tokenFreq].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s]) => s)
+    const topContracts = [...contractFreq].sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([a]) => `${a.slice(0, 6)}…${a.slice(-4)}`)
+    const stablecoinActivity = all.some(t => t.asset && STABLES.test(t.asset))
+    return {
+      status: 'ok', source: 'alchemy',
+      txCount: all.length, activeDays: days.size,
+      topTokens, topContracts,
+      inboundCount: recv.length, outboundCount: sent.length,
+      stablecoinActivity,
+      recentActivitySummary: [
+        `${all.length} recent transfers across ${days.size} active days on Base.`,
+        topTokens.length ? `Top tokens: ${topTokens.slice(0, 3).join(', ')}.` : '',
+        stablecoinActivity ? 'Includes stablecoin movement.' : '',
+      ].filter(Boolean).join(' '),
+      reason: '',
+    }
+  } catch {
+    return { ...BEHAVIOR_EMPTY, status: 'unavailable', reason: 'Behavior fetch failed.' }
+  }
+}
+
 export async function fetchWalletSnapshot(address: string): Promise<WalletSnapshot> {
   const addr: string = (address ?? '').trim()
   if (!addr || !/^0x[0-9a-fA-F]{40}$/i.test(addr)) {
@@ -147,6 +222,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     ethFirst,
     baseFirst,
     nonceRes,
+    behaviorRes,
   ] = await Promise.allSettled([
     ZERION_KEY
       ? zerionGet(`wallets/${addr}/positions/`, {
@@ -169,6 +245,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     getFirstTxOnChain(addr, ethUrl),
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(ethUrl, 'eth_getTransactionCount', [addr, 'latest']),
+    fetchWalletBehavior(addr, baseUrl),
   ])
 
   // ── Tx / age / nonce (from Alchemy — unchanged path) ──
@@ -261,6 +338,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     holdingsCount: holdings.length,
     totalUsdAvailable: totalValue > 0,
     reason,
+    walletBehavior: behaviorRes.status === 'fulfilled' ? behaviorRes.value : { ...BEHAVIOR_EMPTY, reason: 'Behavior fetch did not complete.' },
     _diagnostics: {
       walletProviderFieldsPresent: {
         holdings: holdings.length > 0,

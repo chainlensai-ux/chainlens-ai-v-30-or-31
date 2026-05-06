@@ -1393,7 +1393,23 @@ function enforceWalletAssetLabel(text: string, address: string): string {
   return `${walletLine}\n${text.trim()}`;
 }
 
-function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>, address: string, prompt?: string): string {
+type WalletBehaviorCtx = {
+  status?: string;
+  txCount?: number | null;
+  activeDays?: number | null;
+  topTokens?: string[];
+  inboundCount?: number | null;
+  outboundCount?: number | null;
+  stablecoinActivity?: boolean;
+  recentActivitySummary?: string;
+};
+
+function buildWalletQualityVerdict(
+  snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>,
+  address: string,
+  prompt?: string,
+  behavior?: WalletBehaviorCtx | null
+): string {
   const top = snapshot.holdingsTop10;
   const topValue = top.reduce((s, h) => s + h.value, 0);
   const top1 = top[0]?.value ?? 0;
@@ -1401,6 +1417,9 @@ function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["wall
   const breadth = snapshot.tokenCount;
   const stablePct = snapshot.totalValue > 0 ? (snapshot.stablecoinExposureUsd / snapshot.totalValue) * 100 : 0;
   const activity = snapshot.txCount ?? 0;
+  const behOk = behavior?.status === "ok";
+  const behTxCount = behOk ? (behavior?.txCount ?? 0) : 0;
+  const behActiveDays = behOk ? (behavior?.activeDays ?? 0) : 0;
 
   let verdict: "WATCH" | "SCAN DEEPER" | "AVOID" | "TRUSTWORTHY" = "WATCH";
   let confidence: "Low" | "Medium" | "High" = "Medium";
@@ -1415,33 +1434,48 @@ function buildWalletQualityVerdict(snapshot: NonNullable<ClarkToolEvidence["wall
     verdict = "WATCH";
     confidence = "High";
   }
+  // Upgrade confidence when behavior data confirms real activity
+  if (behOk && behTxCount >= 20 && behActiveDays >= 5 && confidence === "Low") confidence = "Medium";
+  if (behOk && behTxCount >= 50 && snapshot.totalValue >= 5_000 && confidence === "Medium") confidence = "High";
 
   const profile =
-    snapshot.totalValue >= 25_000 && activity >= 20 ? "tracker-worthy whale/watch wallet" :
+    snapshot.totalValue >= 25_000 && (activity >= 20 || behTxCount >= 30) ? "tracker-worthy whale/watch wallet" :
     breadth >= 20 ? "broad rotation/farmer-style wallet" :
     "lower-signal concentrated wallet";
 
-  const signals = [
+  const signals: string[] = [
     `Portfolio value: ${formatUsdShort(snapshot.totalValue)}`,
     `Concentration: top holding is ${concentration.toFixed(1)}% of visible top holdings`,
     `Stablecoin exposure: ${formatUsdShort(snapshot.stablecoinExposureUsd)} (${stablePct.toFixed(1)}%)`,
   ];
+  if (behOk) {
+    signals.push(`Base activity: ${behTxCount} recent transfers across ${behActiveDays} active days`);
+    if (behavior?.topTokens?.length) signals.push(`Top Base interactions: ${behavior.topTokens.slice(0, 3).join(", ")}`);
+    if (behavior?.stablecoinActivity) signals.push("Stablecoin movement present in recent Base activity");
+  }
+
   const risks = [
     snapshot.dustOrUnpricedHidden ? "Dust or unpriced holdings exist and are hidden in this summary" : "Major holdings are mostly priced",
     breadth < 5 ? "Low breadth increases single-asset dependency risk" : "Breadth is acceptable for watchlist monitoring",
-    "Liquidity exposure not calculated for wallet scan",
+    behOk ? (behTxCount < 10 ? "Low recent Base activity — wallet may be dormant or cross-chain" : "Liquidity exposure not calculated") : "Behavioral confirmation unavailable — balance data only",
   ];
-  const read = `This looks like a ${profile}. Based on balance evidence alone, trust signals are incomplete without behavioral confirmation.`;
+  const behaviorNote = behOk && behavior?.recentActivitySummary ? `Activity: ${behavior.recentActivitySummary}` : "";
+  const read = [
+    `This looks like a ${profile}.`,
+    behOk ? `Behavior confirms on-chain presence.` : `Balance evidence only — behavioral confirmation adds confidence.`,
+  ].join(" ");
   const copyTradePrompt = /\bcopy[\s-]?trade\b/i.test(prompt ?? "");
   const nextAction = copyTradePrompt
     ? "Do not copy from balance alone. Track entries/exits, sizing, and repeat behavior first."
-    : "Track this wallet’s future entries/exits before treating it as a lead wallet.";
+    : behOk && behTxCount >= 20
+      ? "Monitor this wallet’s next moves — behavior pattern suggests active on-chain presence."
+      : "Track this wallet’s future entries/exits before treating it as a lead wallet.";
 
   return enforceWalletAssetLabel(
     buildStructuredVerdict(
       verdict,
       confidence,
-      read,
+      behaviorNote ? `${read}\n${behaviorNote}` : read,
       signals,
       risks,
       nextAction
@@ -4074,7 +4108,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
       walletAgeDays: null,
       dataQuality,
     };
-    const analysis = buildWalletQualityVerdict(snapshot, walletAddr, prompt);
+    const rawBehavior = ctx.walletBehavior;
+    const behavior: WalletBehaviorCtx | null = rawBehavior && typeof rawBehavior === "object"
+      ? rawBehavior as WalletBehaviorCtx : null;
+    const analysis = buildWalletQualityVerdict(snapshot, walletAddr, prompt, behavior);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis };
   }
 
