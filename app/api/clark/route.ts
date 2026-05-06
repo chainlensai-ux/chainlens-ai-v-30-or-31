@@ -1969,6 +1969,17 @@ function cleanLine(line: string): string {
     .trim();
 }
 
+function humanizeProviderReason(reason: string): string {
+  const map: Record<string, string> = {
+    contract_bytecode_unavailable_from_rpc: "Unavailable from RPC",
+    unavailable_circulating_supply_not_verified: "Circulating supply not verified",
+    honeypot_simulation_unavailable_from_provider: "Simulation unavailable from provider",
+    no_active_liquidity_pool_found: "No active liquidity pool found",
+  };
+  if (map[reason]) return map[reason];
+  return /^[a-z0-9_]+$/.test(reason) ? reason.replace(/_/g, " ") : reason;
+}
+
 function buildCleanRead(text: string): string {
   const readSection = extractSection(text, "Read:", ["Key signals:", "Risks:", "Next action:"]);
   const source = readSection || text;
@@ -2839,7 +2850,7 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   const liqWarnings = [...(evidence.liquidity?.warnings ?? [])];
   const lpControlStatus = evidence.tokenScan?.lpControl?.status ?? "unverified";
   const lpLocked = lpControlStatus === "burned" || lpControlStatus === "locked" ? true : lpControlStatus === "team_controlled" ? false : null;
-  if (evidence.tokenScan?.lpControl?.reason) liqWarnings.push(`LP control: ${evidence.tokenScan.lpControl.reason}`);
+  if (evidence.tokenScan?.lpControl?.reason) liqWarnings.push(`LP control: ${humanizeProviderReason(evidence.tokenScan.lpControl.reason)}`);
   const liqUsd = evidence.liquidity?.liquidityUsd ?? market.liquidity ?? null;
   const volumeToLiquidity = (market.volume24h != null && liqUsd != null && liqUsd > 0) ? (market.volume24h / liqUsd) : null;
 
@@ -2907,6 +2918,7 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   if (out.contract.simulationSuccess === null) out.missing.push("Security simulation");
   if (out.holders.holderCount === null && out.holders.top10Pct === null) out.missing.push("Holder distribution");
   if (out.liquidity.lpLocked === null) out.missing.push("LP lock/control");
+  if (out.market.poolAge === null) out.missing.push("Pool age / new pool status");
   if (out.devWallet.likelyDeployer === null) out.missing.push("Likely deployer identity");
 
   return out;
@@ -2992,11 +3004,31 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
   let confidence: "Low" | "Medium" | "High" = "Medium";
 
   const critical = report.contract.honeypot === true || (report.contract.buyTax ?? 0) > 20 || (report.contract.sellTax ?? 0) > 20;
+  const lowCap = buildLowCapRead(report).isLowCap;
+  const lowLiq = (report.market.liquidity ?? 0) < 100_000;
+  const missingLp = report.liquidity.lpLocked === null;
+  const missingHolders = report.holders.holderCount == null && report.holders.top10Pct == null;
+  const strongWatchSetup = (report.market.liquidity ?? 0) >= 50_000
+    && report.holders.top10Pct != null
+    && report.contract.honeypot === false
+    && (report.contract.buyTax ?? 999) === 0
+    && (report.contract.sellTax ?? 999) === 0
+    && report.liquidity.lpLocked === true;
+  const cautionSetup = report.liquidity.lpLocked === false || (report.holders.topHolderPct != null && report.holders.topHolderPct >= 20) || (report.holders.top10Pct != null && report.holders.top10Pct >= 60);
   if (critical) {
     verdict = "AVOID";
     confidence = report.contract.securityStatus === "verified" ? "High" : "Medium";
   } else if (!report.token.address || (!report.market.marketSourceAvailable && report.missing.length >= 5)) {
     verdict = "UNKNOWN";
+    confidence = "Low";
+  } else if (lowCap && lowLiq && missingLp && missingHolders) {
+    verdict = "SCAN DEEPER";
+    confidence = "Low";
+  } else if (strongWatchSetup) {
+    verdict = "WATCH";
+    confidence = "Medium";
+  } else if (cautionSetup) {
+    verdict = "SCAN DEEPER";
     confidence = "Low";
   } else if (report.contract.securityStatus === "unverified") {
     verdict = "SCAN DEEPER";
@@ -3021,7 +3053,7 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
 
   const nextAction = verdict === "AVOID"
     ? "Avoid until the flagged risks are resolved and re-verified."
-    : "Check LP control if available, review holder concentration, and inspect deployer behavior before treating this as more than a watchlist token.";
+    : "Treat this as watchlist-only until LP control, holder concentration, contract checks, and deployer behavior are verified on fresh scans.";
 
   return { verdict, confidence, signals: signals.slice(0, 5), risks: risks.slice(0, 5), clarkRead: safeLine, nextAction };
 }
@@ -3038,6 +3070,27 @@ function dedupeLines(lines: string[]): string[] {
   return out;
 }
 
+function buildLowCapRead(report: ClarkFullReportEvidence): { isLowCap: boolean; lines: string[] } {
+  const liq = report.market.liquidity ?? 0;
+  const vol = report.market.volume24h ?? 0;
+  const mcap = report.market.marketCap;
+  const fdv = report.market.fdv;
+  const holderCount = report.holders.holderCount;
+  const vtl = (report.market.volume24h != null && report.market.liquidity != null && report.market.liquidity > 0)
+    ? report.market.volume24h / report.market.liquidity
+    : null;
+  const isLowCap = liq < 100_000 || vol < 100_000 || mcap == null || mcap < 5_000_000 || (fdv != null && fdv < 5_000_000) || holderCount == null || holderCount < 500;
+  if (!isLowCap) return { isLowCap: false, lines: [] };
+  const lines = [
+    `Depth: liquidity ${formatUsdShort(report.market.liquidity)}, volume ${formatUsdShort(report.market.volume24h)}.`,
+    `Flow quality: volume/liquidity ratio ${vtl != null ? vtl.toFixed(2) : "unavailable"} (${vtl != null && vtl > 1.5 ? "fast-turnover microcap flow" : "thin/uncertain turnover"}).`,
+    `Holder pressure: top holder ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(1)}%` : "unavailable"}, top10 ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(1)}%` : "unavailable"}.`,
+    `LP control: ${report.liquidity.lpLocked === true ? "burned/locked signal present" : report.liquidity.lpLocked === false ? "team-controlled / unlocked risk" : "unverified"}.`,
+    `Security sim: honeypot ${report.contract.honeypot === true ? "flagged" : report.contract.honeypot === false ? "not flagged" : "unverified"}, taxes ${report.contract.buyTax != null && report.contract.sellTax != null ? `${report.contract.buyTax}% / ${report.contract.sellTax}%` : "unverified"}.`,
+  ];
+  return { isLowCap: true, lines };
+}
+
 function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
   const verdict = evaluateFullReportVerdict(report);
   const name = report.token.name ?? "Unknown token";
@@ -3049,6 +3102,7 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     verdict.verdict === "UNKNOWN" ? "Coverage is too thin for a clean safety call." :
     "This token needs deeper verification before conviction.";
   const signals = dedupeLines(verdict.signals).slice(0, 3);
+  const lowCap = buildLowCapRead(report);
   const risks = dedupeLines([
     ...verdict.risks,
     report.holders.topHolderPct != null ? `Top holder controls ${report.holders.topHolderPct.toFixed(1)}% of supply.` : "",
@@ -3066,6 +3120,8 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     "Quick read:",
     quickRead,
     "",
+    ...(lowCap.isLowCap ? ["Low-cap read:", ...lowCap.lines, ""] : []),
+    ...(lowCap.isLowCap ? [""] : []),
     "Market / liquidity:",
     `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
@@ -3139,6 +3195,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     : report.liquidity.lpLocked === false
       ? "Unlocked (confirmed)"
       : "Not confirmed — verify before exit";
+  const lowCap = buildLowCapRead(report);
 
   return [
     "CLARK TOKEN SCAN",
@@ -3150,6 +3207,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     "Quick read:",
     quickRead,
     "",
+    ...(lowCap.isLowCap ? ["Low-cap read:", ...lowCap.lines, ""] : []),
     "Market / liquidity:",
     `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,

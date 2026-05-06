@@ -151,6 +151,31 @@ function pctColor(v: number | null | undefined): string {
   return v >= 0 ? '#2DD4BF' : '#f87171'
 }
 
+function humanizeReasonCode(reason?: string): string {
+  if (!reason) return 'Additional verification is required.'
+  const map: Record<string, string> = {
+    contract_bytecode_unavailable_from_rpc: 'Unavailable from RPC.',
+    unavailable_circulating_supply_not_verified: 'Circulating supply is not verified by provider.',
+    honeypot_simulation_unavailable_from_provider: 'Security simulation is unavailable from provider.',
+    no_active_liquidity_pool_found: 'No active liquidity pool was found.',
+  }
+  if (map[reason]) return map[reason]
+  if (/^[a-z0-9_]+$/.test(reason)) return reason.replace(/_/g, ' ')
+  return reason
+}
+
+function humanizeSectionLine(source?: string, status?: string, reason?: string): string {
+  const sourceMap: Record<string, string> = {
+    base_rpc: 'Contract verification',
+    geckoterminal: 'Market data',
+    goldrush: 'Holder data',
+    honeypot: 'Security simulation',
+  }
+  const sourceLabel = sourceMap[source ?? ''] ?? 'Provider check'
+  const statusLabel = status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Unavailable'
+  return `${sourceLabel}: ${statusLabel}${reason ? ` — ${humanizeReasonCode(reason)}` : ''}`
+}
+
 function shorten(addr: string): string {
   if (addr.length <= 12) return addr
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
@@ -739,7 +764,7 @@ export default function TerminalTokenScanner() {
                   {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]
                     .filter((s): s is { status?: string; reason?: string; source?: string } => Boolean(s && s.status && s.status !== 'ok'))
                     .map((s, i) => (
-                      <div key={i}>- {s.source ?? 'provider'}: {s.status} {s.reason ? `(${s.reason})` : ''}</div>
+                      <div key={i}>- {humanizeSectionLine(s.source, s.status, s.reason)}</div>
                     ))}
                 </div>
               )}
