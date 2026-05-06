@@ -513,7 +513,7 @@ export default function PumpAlertsPage() {
           {/* Alert cards */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {filtered.map((alert, i) => (
-              <div key={`${alert.contract}-${refreshKey}`} style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={alert.contract} style={{ animationDelay: `${i * 30}ms` }}>
                 <AlertCard
                   alert={alert}
                   onScan={() => openToken(alert.contract)}
