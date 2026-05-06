@@ -846,7 +846,7 @@ function formatBaseMarketReply(candidates: BaseMarketCandidate[], total: number,
     const addr = c.tokenAddress ?? c.poolAddress ?? "unresolved";
     return `${idx}. ${c.symbol ?? "?"} — ${move}, vol ${vol}, liq ${liq} — ${reason}\n   Contract: ${addr}`;
   });
-  const header = extended ? "Base Market — extended list:" : "Base Market:";
+  const header = extended ? "BASE MOVERS — extended list:" : "BASE MOVERS";
   const read = candidates.some((c) => (c.liquidityUsd ?? 0) > 100_000)
     ? "This list is led by tokens with real liquidity, but there are still noisy runners mixed in."
     : "This feed is mostly thinner-liquidity momentum; treat fast moves as high-risk until depth confirms.";
@@ -858,12 +858,12 @@ function formatBaseMarketReply(candidates: BaseMarketCandidate[], total: number,
     "Moving now:",
     ...rows,
     "",
-    "Clark’s read:",
+    "Short read:",
     read,
     "Use market momentum as discovery only, then run single-token analysis before conviction.",
     "",
     "Next:",
-    "Pick a number or symbol and I’ll run a full report.",
+    "Reply with a rank or symbol and I’ll scan it.",
   ].filter(Boolean).join("\n");
 }
 
@@ -1070,7 +1070,7 @@ function buildClarkStrategyReply(prompt: string): string {
 function detectLiveIntent(prompt: string): LiveIntent {
   const t = prompt.toLowerCase().trim();
   if (/scan\s+0x[a-f0-9]{40}|check wallet|wallet\b/.test(t)) return "WALLET_QUERY";
-  if (/what'?s pumping on base|what'?s pumping|what is pumping early|early pump detection|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base/.test(t)) return "BASE_MARKET";
+  if (/what'?s pumping on base|what'?s trending on base|show base movers|what'?s moving on base|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
   if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
   if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales? (?:doing|buying)\b|\bwhales? buying\b|\bwhale buys?\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
@@ -1189,7 +1189,7 @@ function isHolderQuestion(prompt: string): boolean {
   return /\b(how many holders|holders?\??|what about holders|holder count|holder distribution)\b/i.test(prompt.trim().toLowerCase());
 }
 function isPumpFeedPrompt(prompt: string): boolean {
-  return /\b(what are pump alerts right now|pump alerts|what'?s pumping|what is pumping early|early pump detection)\b/i.test(prompt.toLowerCase());
+  return /\b(what are pump alerts right now|pump alerts|show pump alerts|open pump alerts|pump alert feed|high momentum alerts)\b/i.test(prompt.toLowerCase());
 }
 
 function isPumpSourceFollowupPrompt(prompt: string): boolean {
