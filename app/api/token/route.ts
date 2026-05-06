@@ -498,6 +498,29 @@ ${JSON.stringify(analysis, null, 2)}
     } : null;
 
     // Final JSON response
+    const marketStatus: "ok" | "partial" | "unavailable" | "error" =
+      (priceUsd != null && liquidityUsd != null && volume24hUsd != null) ? "ok" :
+      (priceUsd != null || liquidityUsd != null || volume24hUsd != null || fdv != null) ? "partial" : "unavailable";
+    const marketReason = marketStatus === "ok" ? null
+      : marketCapFromGt == null ? "unavailable_circulating_supply_not_verified"
+      : "partial_market_fields_from_provider";
+    const securityStatus: "ok" | "partial" | "unavailable" | "error" =
+      hpResult.ok ? "ok" : gpHasData ? "partial" : "unavailable";
+    const securityReason = hpResult.ok ? null : (gpHasData ? "honeypot_provider_unavailable_using_limited_fallback" : "honeypot_simulation_unavailable_from_provider");
+    const holdersStatus: "ok" | "partial" | "unavailable" | "error" =
+      holderDistribution && hasPct ? "ok" :
+      holderDistribution ? "partial" :
+      (holdersRaw?.__status === "error" ? "error" : "unavailable");
+    const holdersReason = holdersStatus === "ok" ? null : (holderDistributionStatus?.reason ?? "holder_data_unavailable");
+    const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
+      mainPool ? "ok" : (matchingPools.length > 0 ? "partial" : "unavailable");
+    const liquidityReason = mainPool ? null : "no_active_liquidity_pool_found";
+    const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
+      bytecode && bytecode !== "0x" ? "partial" : "unavailable";
+    const contractChecksReason = contractChecksStatus === "unavailable"
+      ? "contract_bytecode_unavailable_from_rpc"
+      : "proxy_mint_owner_checks_unverified_from_available_sources";
+
     const responsePayload = {
       chain,
       contract,
@@ -540,7 +563,7 @@ ${JSON.stringify(analysis, null, 2)}
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
       market_cap: marketCapFromGt,
       marketCapUsd: marketCapFromGt,
-      marketCapStatus: marketCapFromGt != null ? 'ok' : 'unavailable',
+      marketCapStatus: marketCapFromGt != null ? 'ok' : 'unavailable_circulating_supply_not_verified',
       marketCapSource,
       circulating_supply: circulatingSupply,
       fdv,
@@ -601,6 +624,52 @@ ${JSON.stringify(analysis, null, 2)}
         name: resolvedName,
         symbol: resolvedSymbol,
         decimals: resolvedDecimals,
+      },
+      sections: {
+        market: {
+          status: marketStatus,
+          reason: marketReason,
+          source: "geckoterminal",
+          price: priceUsd,
+          liquidity: liquidityUsd,
+          volume24h: volume24hUsd,
+          change24h: pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24),
+          marketCap: marketCapFromGt,
+          fdv,
+        },
+        security: {
+          status: securityStatus,
+          reason: securityReason,
+          source: hpResult.ok ? "honeypot.is" : (gpHasData ? "goplus_limited_fallback" : "unavailable"),
+          honeypot: hpResult.ok ? hpResult.honeypot : null,
+          buyTax: hpResult.ok ? hpResult.buyTax : null,
+          sellTax: hpResult.ok ? hpResult.sellTax : null,
+          simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : null,
+        },
+        holders: {
+          status: holdersStatus,
+          reason: holdersReason,
+          source: "goldrush",
+          holderCount: holderCount ?? null,
+          top1, top5, top10, top20,
+        },
+        liquidity: {
+          status: liquidityStatus,
+          reason: liquidityReason,
+          source: "geckoterminal",
+          poolCount: matchingPools.length,
+          primaryPair: mainPool?.attributes?.name ?? null,
+          liquidityDepth: liquidityUsd,
+          lpControl: "unverified",
+        },
+        contractChecks: {
+          status: contractChecksStatus,
+          reason: contractChecksReason,
+          source: "base_rpc",
+          proxy: null,
+          mintable: null,
+          ownerRenounced: null,
+        },
       },
     }
     tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
