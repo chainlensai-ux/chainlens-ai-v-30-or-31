@@ -83,6 +83,25 @@ function withTimeout(ms = 5000): AbortSignal {
   return AbortSignal.timeout(ms)
 }
 
+async function rpcCall(chain: ChainKey, method: string, params: unknown[]): Promise<string | null> {
+  try {
+    const rpcUrl = CHAIN_RPC_MAP[chain];
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: withTimeout(),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return typeof json?.result === "string" ? json.result : null;
+  } catch { return null; }
+}
+
+function pad32HexAddress(address: string): string {
+  return `000000000000000000000000${address.toLowerCase().replace(/^0x/, "")}`;
+}
+
 // ------------------------------
 // Fetch helpers
 // ------------------------------
@@ -405,16 +424,41 @@ export async function POST(req: Request) {
       const topHolder = top[0] ?? null;
       const burnPct = top.filter((x) => DEAD.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
       const lockerPct = top.filter((x) => KNOWN_LOCKERS.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
+      const confidenceFor = (pct: number) => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
       if (burnPct >= 50) {
-        lpControl = { status: "burned", confidence: "high", poolType, source: "goldrush_lp_holders", reason: "Majority LP appears in burn/dead addresses.", evidence: [`burn_share=${burnPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
+        lpControl = { status: "burned", confidence: confidenceFor(burnPct), poolType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${burnPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
       } else if (lockerPct >= 50) {
-        lpControl = { status: "locked", confidence: "medium", poolType, source: "goldrush_lp_holders", reason: "Majority LP appears in known locker addresses.", evidence: [`locker_share=${lockerPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
-      } else if (topHolder && (topHolder.pct ?? 0) >= 70 && !DEAD.has(topHolder.address) && !KNOWN_LOCKERS.has(topHolder.address)) {
-        lpControl = { status: "team_controlled", confidence: "medium", poolType, source: "goldrush_lp_holders", reason: "Single non-burn wallet dominates LP holder share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
-      } else if (lpItems.length === 0) {
-        lpControl = { status: "unverified", confidence: "low", poolType, source: "goldrush_lp_holders", reason: "LP holder rows unavailable from provider.", evidence: [`pool=${primaryPoolAddress}`] };
+        lpControl = { status: "locked", confidence: confidenceFor(lockerPct), poolType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers.", evidence: [`locker_share=${lockerPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
+      } else if (topHolder && (topHolder.pct ?? 0) >= 80 && !DEAD.has(topHolder.address) && !KNOWN_LOCKERS.has(topHolder.address)) {
+        lpControl = { status: "team_controlled", confidence: "high", poolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
+      } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
+        // Alchemy RPC fallback only when holder percentages are unavailable/incomplete.
+        const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress, data: "0x18160ddd" }, "latest"]);
+        const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
+        if (!totalSupply || totalSupply <= 0) {
+          lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+alchemy_rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
+        } else {
+          const readPct = async (addr: string) => {
+            const data = `0x70a08231${pad32HexAddress(addr)}`;
+            const balHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress, data }, "latest"]);
+            if (!balHex) return 0;
+            return (Number(BigInt(balHex)) / totalSupply) * 100;
+          };
+          const burn0 = await readPct("0x0000000000000000000000000000000000000000");
+          const burnDead = await readPct("0x000000000000000000000000000000000000dEaD");
+          const lockerShares = await Promise.all([...KNOWN_LOCKERS].map(readPct));
+          const burnShare = burn0 + burnDead;
+          const lockerShare = lockerShares.reduce((a, b) => a + b, 0);
+          if (burnShare >= 50) {
+            lpControl = { status: "burned", confidence: confidenceFor(burnShare), poolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`] };
+          } else if (lockerShare >= 50) {
+            lpControl = { status: "locked", confidence: confidenceFor(lockerShare), poolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`] };
+          } else {
+            lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+alchemy_rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
+          }
+        }
       } else {
-        lpControl = { status: "unverified", confidence: "low", poolType, source: "goldrush_lp_holders", reason: "LP holder distribution does not prove burn/lock/team control.", evidence: [`top_rows=${top.length}`] };
+        lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+goldrush", reason: "LP holder distribution does not prove burned/locked/team control.", evidence: [`top_rows=${top.length}`] };
       }
     }
 
