@@ -4010,6 +4010,74 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
     return { feature: "clark-ai", chain, mode: "casual_help", intent: "help", toolsUsed: [], analysis: "I can scan tokens and wallets, read Whale Flows, Pump Alerts, and Base Radar, check liquidity/security/holders where data exists, run dev-wallet checks, and explain risk signals." };
   }
+  // Wallet Scanner sends pre-loaded context — build verdict directly without a second /api/wallet call
+  if (
+    String(body.mode ?? "").toLowerCase() === "wallet-analysis" &&
+    body.walletAddress &&
+    body.context &&
+    typeof body.context === "object"
+  ) {
+    const ctx = body.context as Record<string, unknown>;
+    const walletAddr = String(body.walletAddress);
+    const topRaw = Array.isArray(ctx.topHoldings) ? (ctx.topHoldings as Array<Record<string, unknown>>) : [];
+    const holdingsTop10 = topRaw
+      .map((h) => ({
+        symbol: String(h.symbol ?? "?"),
+        value: typeof h.valueUsd === "number" ? h.valueUsd : typeof h.value === "number" ? h.value : 0,
+        balance: typeof h.balance === "number" ? h.balance : 0,
+      }))
+      .filter((h) => h.value > 0.01)
+      .slice(0, 8);
+    const totalValue = typeof ctx.portfolioValueUsd === "number" ? ctx.portfolioValueUsd : holdingsTop10.reduce((s, h) => s + h.value, 0);
+    const stablecoinExposureUsd = typeof ctx.stablecoinExposureUsd === "number" ? ctx.stablecoinExposureUsd : 0;
+    const tokenCount = typeof ctx.tokenCount === "number" ? ctx.tokenCount : holdingsTop10.length;
+    const txCount = typeof ctx.transactionCount === "number" ? ctx.transactionCount : null;
+    const rawDq = typeof ctx.dataQuality === "string" ? ctx.dataQuality : "Partial";
+    const dataQuality: "Complete" | "Partial" | "Limited" = rawDq === "Complete" ? "Complete" : rawDq === "Limited" ? "Limited" : "Partial";
+
+    if (holdingsTop10.length === 0 && totalValue <= 0) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [],
+        analysis: [
+          "Verdict: SCAN DEEPER",
+          "Confidence: Low",
+          "",
+          "Read:",
+          "No priced holdings found in this scan. The wallet may be empty, unsupported chains only, or the data provider returned nothing.",
+          "",
+          "Key signals:",
+          "- No priced token balances retrieved",
+          "- Portfolio value is zero or unavailable",
+          "- Data quality is limited",
+          "",
+          "Risks:",
+          "- Cannot evaluate wallet behavior without balance data",
+          "- May be a new wallet or one on unsupported chains",
+          "- Retry after syncing or try a different address",
+          "",
+          "Next action:",
+          "Retry the scan or paste the wallet in Clark AI for a fresh pull.",
+        ].join("\n"),
+      };
+    }
+
+    const snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]> = {
+      ok: true,
+      address: walletAddr,
+      totalValue,
+      holdingsTop10,
+      hiddenHoldingsCount: Math.max(tokenCount - holdingsTop10.length, 0),
+      dustOrUnpricedHidden: tokenCount > holdingsTop10.length,
+      stablecoinExposureUsd,
+      tokenCount,
+      txCount,
+      walletAgeDays: null,
+      dataQuality,
+    };
+    const analysis = buildWalletQualityVerdict(snapshot, walletAddr, prompt);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis };
+  }
+
   if (isWhaleFlowPrompt(prompt, body.history)) {
     return await handleStoredWhaleFlow(prompt, body, origin);
   }
