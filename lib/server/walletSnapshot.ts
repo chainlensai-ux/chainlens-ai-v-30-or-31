@@ -17,6 +17,11 @@ export type WalletSnapshot = {
   txCount: number | null
   firstTxDate: string | null
   walletAgeDays: number | null
+  providerUsed: 'zerion' | 'goldrush' | 'none'
+  providerStatus: 'ok' | 'partial' | 'failed'
+  holdingsCount: number
+  totalUsdAvailable: boolean
+  reason: string
   _diagnostics?: {
     walletProviderFieldsPresent: {
       holdings: boolean
@@ -28,20 +33,25 @@ export type WalletSnapshot = {
   }
 }
 
-const ZERION_KEY       = process.env.ZERION_KEY!
+const ZERION_KEY       = process.env.ZERION_KEY ?? ''
 const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
+const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-function zerionAuth() {
+function zerionAuth(): string | null {
+  if (!ZERION_KEY) return null
   return `Basic ${Buffer.from(`${ZERION_KEY}:`).toString('base64')}`
 }
 
 async function zerionGet(path: string, params: Record<string, string> = {}) {
+  const auth = zerionAuth()
+  if (!auth) throw new Error('Zerion key not configured')
   const url = new URL(`https://api.zerion.io/v1/${path}`)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
   const res = await fetch(url.toString(), {
-    headers: { Accept: 'application/json', Authorization: zerionAuth() },
+    headers: { Accept: 'application/json', Authorization: auth },
     cache: 'no-store',
+    signal: AbortSignal.timeout(10_000),
   })
   if (!res.ok) throw new Error(`Zerion ${res.status} ${path}`)
   return res.json()
@@ -53,6 +63,7 @@ async function alchemyRpc(url: string, method: string, params: unknown[]) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: 1, jsonrpc: '2.0', method, params }),
     cache: 'no-store',
+    signal: AbortSignal.timeout(8_000),
   })
   const json = await res.json()
   return json.result ?? null
@@ -70,13 +81,52 @@ async function getFirstTxOnChain(address: string, alchemyUrl: string): Promise<D
     alchemyRpc(alchemyUrl, 'alchemy_getAssetTransfers', [{ ...baseParams, fromAddress: address }]),
     alchemyRpc(alchemyUrl, 'alchemy_getAssetTransfers', [{ ...baseParams, toAddress: address }]),
   ])
-
   const dates: Date[] = []
   for (const r of [sent, received]) {
     const ts = r.status === 'fulfilled' && r.value?.transfers?.[0]?.metadata?.blockTimestamp
     if (ts) dates.push(new Date(ts as string))
   }
   return dates.length > 0 ? new Date(Math.min(...dates.map(d => d.getTime()))) : null
+}
+
+async function fetchGoldrushBalances(address: string, chainName: string, apiKey: string): Promise<Holding[]> {
+  try {
+    const url = `https://api.covalenthq.com/v1/${chainName}/address/${address}/balances_v2/?no-spam=true&no-nft-fetch=true`
+    const res = await fetch(url, {
+      cache: 'no-store',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) return []
+    const json = await res.json()
+    if (json?.error) return []
+    const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items : []
+    const chainShort = chainName.replace(/-mainnet$/, '')
+    return items
+      .map((item) => {
+        const it = item as Record<string, unknown>
+        const decimals = typeof it.contract_decimals === 'number' ? it.contract_decimals : 18
+        const rawBal = String(it.balance ?? '0')
+        const balance = parseFloat(rawBal) / Math.pow(10, decimals)
+        const value = typeof it.quote === 'number' ? it.quote : 0
+        const price = typeof it.quote_rate === 'number' && it.quote_rate > 0 ? it.quote_rate : null
+        const logo = typeof it.logo_url === 'string' && it.logo_url.startsWith('http') ? it.logo_url : null
+        return {
+          name: typeof it.contract_name === 'string' ? it.contract_name : 'Unknown',
+          symbol: typeof it.contract_ticker_symbol === 'string' ? it.contract_ticker_symbol : '?',
+          icon: logo,
+          chain: chainShort,
+          balance,
+          value,
+          price,
+          change24h: null,
+          verified: it.is_spam === false,
+        } as Holding
+      })
+      .filter(h => h.value > 0.01)
+  } catch {
+    return []
+  }
 }
 
 export async function fetchWalletSnapshot(address: string): Promise<WalletSnapshot> {
@@ -88,47 +138,42 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
   const ethUrl  = `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_ETH_KEY}`
   const baseUrl = `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_BASE_KEY}`
 
-  const [positionsRes, portfolioRes, ethFirst, baseFirst, nonceRes] = await Promise.allSettled([
-    zerionGet(`wallets/${addr}/positions/`, {
-      currency: 'usd',
-      'filter[positions]': 'only_simple',
-      'filter[trash]': 'only_non_trash',
-      sort: '-value',
-      'page[size]': '50',
-    }),
-    zerionGet(`wallets/${addr}/portfolio/`, { currency: 'usd' }),
+  // Run all providers in parallel: Zerion (primary), GoldRush (fallback), Alchemy tx/nonce
+  const [
+    positionsRes,
+    portfolioRes,
+    grEthRes,
+    grBaseRes,
+    ethFirst,
+    baseFirst,
+    nonceRes,
+  ] = await Promise.allSettled([
+    ZERION_KEY
+      ? zerionGet(`wallets/${addr}/positions/`, {
+          currency: 'usd',
+          'filter[positions]': 'only_simple',
+          'filter[trash]': 'only_non_trash',
+          sort: '-value',
+          'page[size]': '50',
+        })
+      : Promise.reject(new Error('Zerion key not configured')),
+    ZERION_KEY
+      ? zerionGet(`wallets/${addr}/portfolio/`, { currency: 'usd' })
+      : Promise.reject(new Error('Zerion key not configured')),
+    GOLDRUSH_KEY
+      ? fetchGoldrushBalances(addr, 'eth-mainnet', GOLDRUSH_KEY)
+      : Promise.resolve([] as Holding[]),
+    GOLDRUSH_KEY
+      ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY)
+      : Promise.resolve([] as Holding[]),
     getFirstTxOnChain(addr, ethUrl),
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(ethUrl, 'eth_getTransactionCount', [addr, 'latest']),
   ])
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rawPos: any[] = positionsRes.status === 'fulfilled' ? (positionsRes.value?.data ?? []) : []
-  const holdings = rawPos
-    .map(pos => {
-      const a  = pos.attributes ?? {}
-      const fi = a.fungible_info ?? {}
-      return {
-        name:      fi.name      ?? 'Unknown',
-        symbol:    fi.symbol    ?? '?',
-        icon:      fi.icon?.url ?? null,
-        chain:     pos.relationships?.chain?.data?.id ?? null,
-        balance:   a.quantity?.float   ?? 0,
-        value:     a.value             ?? 0,
-        price:     a.price             ?? null,
-        change24h: a.changes?.percent_1d ?? null,
-        verified:  fi.flags?.verified  ?? false,
-      }
-    })
-    .filter(h => h.value > 0.01)
-
-  const totalValue: number =
-    portfolioRes.status === 'fulfilled'
-      ? (portfolioRes.value?.data?.attributes?.total?.positions ?? 0)
-      : holdings.reduce((s, h) => s + h.value, 0)
-
+  // ── Tx / age / nonce (from Alchemy — unchanged path) ──
   const firstCandidates: Date[] = []
-  if (ethFirst.status  === 'fulfilled' && ethFirst.value)  firstCandidates.push(ethFirst.value)
+  if (ethFirst.status === 'fulfilled' && ethFirst.value) firstCandidates.push(ethFirst.value)
   if (baseFirst.status === 'fulfilled' && baseFirst.value) firstCandidates.push(baseFirst.value)
   const firstTxDate = firstCandidates.length > 0
     ? new Date(Math.min(...firstCandidates.map(d => d.getTime())))
@@ -136,10 +181,73 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
   const walletAgeDays = firstTxDate
     ? Math.floor((Date.now() - firstTxDate.getTime()) / 86_400_000)
     : null
-
   const txCount = nonceRes.status === 'fulfilled' && nonceRes.value
     ? parseInt(nonceRes.value as string, 16)
     : null
+
+  // ── Provider selection: Zerion first, GoldRush fallback ──
+  let holdings: Holding[] = []
+  let totalValue = 0
+  let providerUsed: 'zerion' | 'goldrush' | 'none' = 'none'
+  let providerStatus: 'ok' | 'partial' | 'failed' = 'failed'
+  let reason = ''
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawPos: any[] = positionsRes.status === 'fulfilled' ? (positionsRes.value?.data ?? []) : []
+
+  if (rawPos.length > 0) {
+    holdings = rawPos
+      .map(pos => {
+        const a  = pos.attributes ?? {}
+        const fi = a.fungible_info ?? {}
+        return {
+          name:      fi.name      ?? 'Unknown',
+          symbol:    fi.symbol    ?? '?',
+          icon:      fi.icon?.url ?? null,
+          chain:     pos.relationships?.chain?.data?.id ?? null,
+          balance:   a.quantity?.float   ?? 0,
+          value:     a.value             ?? 0,
+          price:     a.price             ?? null,
+          change24h: a.changes?.percent_1d ?? null,
+          verified:  fi.flags?.verified  ?? false,
+        }
+      })
+      .filter(h => h.value > 0.01)
+    totalValue = portfolioRes.status === 'fulfilled'
+      ? (portfolioRes.value?.data?.attributes?.total?.positions ?? holdings.reduce((s, h) => s + h.value, 0))
+      : holdings.reduce((s, h) => s + h.value, 0)
+    providerUsed = 'zerion'
+    providerStatus = 'ok'
+  } else {
+    // Zerion returned empty or failed — reason for diagnostic logging
+    reason = positionsRes.status === 'rejected'
+      ? 'Primary provider unavailable.'
+      : 'Primary provider returned no positions for this wallet.'
+  }
+
+  // GoldRush fallback when Zerion yielded no holdings
+  if (holdings.length === 0) {
+    const grHoldings = [
+      ...(grEthRes.status === 'fulfilled' ? grEthRes.value : []),
+      ...(grBaseRes.status === 'fulfilled' ? grBaseRes.value : []),
+    ].sort((a, b) => b.value - a.value)
+
+    if (grHoldings.length > 0) {
+      holdings = grHoldings
+      totalValue = holdings.reduce((s, h) => s + h.value, 0)
+      providerUsed = 'goldrush'
+      providerStatus = 'ok'
+      reason = ''
+    } else if (GOLDRUSH_KEY) {
+      reason = reason || 'No priced holdings found on Ethereum or Base for this wallet.'
+    } else {
+      reason = reason || 'Wallet data provider not configured.'
+    }
+  }
+
+  if (holdings.length === 0 && !reason) {
+    reason = 'No token balances found on supported chains.'
+  }
 
   return {
     address: addr,
@@ -148,6 +256,11 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     txCount,
     firstTxDate: firstTxDate?.toISOString() ?? null,
     walletAgeDays,
+    providerUsed,
+    providerStatus,
+    holdingsCount: holdings.length,
+    totalUsdAvailable: totalValue > 0,
+    reason,
     _diagnostics: {
       walletProviderFieldsPresent: {
         holdings: holdings.length > 0,
@@ -156,10 +269,10 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
         walletAgeDays: walletAgeDays !== null,
       },
       missingReasons: [
-        holdings.length === 0 ? 'holdings: Zerion returned no positions' : '',
-        totalValue === 0 ? 'totalValue: portfolio endpoint returned zero' : '',
+        holdings.length === 0 ? `holdings: ${reason}` : '',
+        totalValue === 0 ? 'totalValue: no priced holdings found' : '',
         txCount === null ? 'txCount: Alchemy nonce unavailable' : '',
-        walletAgeDays === null ? 'walletAgeDays: no first-tx found on ETH or Base' : '',
+        walletAgeDays === null ? 'walletAgeDays: no first-tx on ETH or Base' : '',
       ].filter(Boolean),
     },
   }

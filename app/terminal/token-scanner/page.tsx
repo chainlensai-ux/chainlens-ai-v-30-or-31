@@ -159,7 +159,7 @@ function pctColor(v: number | null | undefined): string {
 function humanizeReasonCode(reason?: string): string {
   if (!reason) return 'Additional verification is required.'
   const map: Record<string, string> = {
-    contract_bytecode_unavailable_from_rpc: 'Unavailable from RPC.',
+    contract_bytecode_unavailable_from_rpc: 'Unavailable from current checks.',
     unavailable_circulating_supply_not_verified: 'Circulating supply is not verified by provider.',
     honeypot_simulation_unavailable_from_provider: 'Security simulation is unavailable from provider.',
     no_active_liquidity_pool_found: 'No active liquidity pool was found.',
@@ -178,7 +178,12 @@ function humanizeSectionLine(source?: string, status?: string, reason?: string):
   }
   const sourceLabel = sourceMap[source ?? ''] ?? 'Provider check'
   const statusLabel = status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Unavailable'
-  return `${sourceLabel}: ${statusLabel}${reason ? ` — ${humanizeReasonCode(reason)}` : ''}`
+  const reasonText = reason ? humanizeReasonCode(reason) : ''
+  // Avoid "Unavailable — Unavailable from ..." double-unavailable: use reason as the suffix directly
+  if (reasonText && reasonText.toLowerCase().startsWith(statusLabel.toLowerCase())) {
+    return `${sourceLabel}: ${reasonText}`
+  }
+  return `${sourceLabel}: ${statusLabel}${reasonText ? ` — ${reasonText}` : ''}`
 }
 
 function shorten(addr: string): string {

@@ -23,6 +23,11 @@ type WalletResult = {
   txCount: number | null
   firstTxDate: string | null
   walletAgeDays: number | null
+  providerUsed?: 'zerion' | 'goldrush' | 'none' | null
+  providerStatus?: 'ok' | 'partial' | 'failed' | null
+  holdingsCount?: number | null
+  totalUsdAvailable?: boolean
+  reason?: string | null
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────
@@ -420,7 +425,7 @@ export default function WalletScannerPage() {
                     letterSpacing: '-0.03em', lineHeight: 1,
                     marginBottom: '14px',
                   }}>
-                    {result.totalValue > 0 ? fmtUSD(result.totalValue) : 'Unavailable'}
+                    {result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value unavailable' : 'Unavailable'}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <span style={{
@@ -435,7 +440,7 @@ export default function WalletScannerPage() {
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                 {[
-                  { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : 'Unavailable', sub: 'From wallet balances', color: '#2DD4BF' },
+                  { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value unavailable' : 'Unavailable', sub: result.providerUsed && result.providerUsed !== 'none' ? `Via ${result.providerUsed}` : 'From wallet balances', color: '#2DD4BF' },
                   { label: 'Token Count', value: sorted.length.toLocaleString(), sub: 'Visible token balances', color: '#a78bfa' },
                   { label: 'Largest Holding', value: largest ? largest.symbol : 'Unavailable', sub: largest ? fmtUSD(largest.value) : 'No holdings found', color: '#fbbf24' },
                   { label: 'Data Quality', value: quality, sub: 'Complete / Partial / Limited', color: quality === 'Complete' ? '#2DD4BF' : quality === 'Partial' ? '#fbbf24' : '#f87171' },
@@ -654,7 +659,12 @@ export default function WalletScannerPage() {
                   borderRadius: '14px', color: 'rgba(255,255,255,0.30)',
                   fontSize: '13px', fontFamily: 'var(--font-inter, Inter, sans-serif)',
                 }}>
-                  Wallet balances unavailable right now. Try again.
+                  {result.reason
+                    ? result.reason
+                    : 'No token balances found for this wallet.'}
+                  <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.18)', marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    {result.providerUsed && result.providerUsed !== 'none' ? `Checked via ${result.providerUsed}` : 'All data providers checked'} · Try a different wallet or check back later
+                  </div>
                 </div>
               )}
             </div>
