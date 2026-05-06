@@ -63,6 +63,14 @@ type ScanResult = {
     liquidity?: { status?: string; reason?: string; source?: string } | null
     contractChecks?: { status?: string; reason?: string; source?: string } | null
   } | null
+  lpControl?: {
+    status?: string
+    confidence?: string
+    poolType?: string
+    source?: string
+    reason?: string
+    evidence?: string[]
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -529,6 +537,7 @@ export default function TerminalTokenScanner() {
           holderDistributionStatus: json.holderDistributionStatus ?? null,
           debugHolderStatus: json.debugHolderStatus ?? null,
           sections: json.sections ?? null,
+          lpControl: json.lpControl ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -732,6 +741,11 @@ export default function TerminalTokenScanner() {
                     .map((s, i) => (
                       <div key={i}>- {s.source ?? 'provider'}: {s.status} {s.reason ? `(${s.reason})` : ''}</div>
                     ))}
+                </div>
+              )}
+              {result.lpControl && (
+                <div style={{ marginBottom: '18px', padding: '10px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', fontSize: '12px', color: '#cbd5e1' }}>
+                  <strong>LP Control:</strong> {result.lpControl.status ?? 'unverified'} ({result.lpControl.confidence ?? 'low'}) — {result.lpControl.reason ?? 'No provider-backed LP lock proof yet.'}
                 </div>
               )}
 

@@ -2502,6 +2502,7 @@ type ClarkToolEvidence = {
       ownerRenounced: boolean | null;
     };
     liquidity: { pools: number; topPoolLiquidity: number | null };
+    lpControl?: { status: string; reason?: string | null; confidence?: string | null; source?: string | null } | null;
     poolDetails?: Array<{ dex: string; pair: string; liquidity: number | null; volume24h: number | null; change24h: number | null; poolAddress: string | null }>;
     warnings: string[];
     errorSafeMessage?: string;
@@ -2648,6 +2649,12 @@ async function executeClarkToolPlan(input: {
             pools: Array.isArray(t.pools) ? t.pools.length : 0,
             topPoolLiquidity: typeof t.liquidity === "number" ? t.liquidity : null,
           },
+          lpControl: (t.lpControl && typeof t.lpControl === "object") ? {
+            status: typeof (t.lpControl as Record<string, unknown>).status === "string" ? String((t.lpControl as Record<string, unknown>).status) : "unverified",
+            reason: typeof (t.lpControl as Record<string, unknown>).reason === "string" ? String((t.lpControl as Record<string, unknown>).reason) : null,
+            confidence: typeof (t.lpControl as Record<string, unknown>).confidence === "string" ? String((t.lpControl as Record<string, unknown>).confidence) : null,
+            source: typeof (t.lpControl as Record<string, unknown>).source === "string" ? String((t.lpControl as Record<string, unknown>).source) : null,
+          } : null,
           poolDetails: Array.isArray(t.pools)
             ? (t.pools as Array<Record<string, unknown>>).map((p) => {
               const a = (p.attributes ?? p) as Record<string, unknown>;
@@ -2830,6 +2837,9 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   const contractWarnings = [...(evidence.tokenScan?.warnings ?? [])];
   const devWarnings = [...(evidence.devWallet?.warnings ?? [])];
   const liqWarnings = [...(evidence.liquidity?.warnings ?? [])];
+  const lpControlStatus = evidence.tokenScan?.lpControl?.status ?? "unverified";
+  const lpLocked = lpControlStatus === "burned" || lpControlStatus === "locked" ? true : lpControlStatus === "team_controlled" ? false : null;
+  if (evidence.tokenScan?.lpControl?.reason) liqWarnings.push(`LP control: ${evidence.tokenScan.lpControl.reason}`);
   const liqUsd = evidence.liquidity?.liquidityUsd ?? market.liquidity ?? null;
   const volumeToLiquidity = (market.volume24h != null && liqUsd != null && liqUsd > 0) ? (market.volume24h / liqUsd) : null;
 
@@ -2867,7 +2877,7 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
     },
     liquidity: {
       liquidityUsd: liqUsd,
-      lpLocked: null,
+      lpLocked,
       lpOwner: null,
       lpConcentration: null,
       volumeToLiquidity,
