@@ -181,6 +181,16 @@ function idToAddress(id: string): string {
   return idx === -1 ? id : id.slice(idx + 1);
 }
 
+// Query-level aliases: normalize common token names/phrases to canonical search query.
+// Applied in extractTokenLookupQuery before sending to searchBaseTokenCandidates.
+const KNOWN_BASE_TOKEN_ALIASES: Record<string, string> = {
+  "aerodrome finance": "aero",
+  "aerodrome": "aero",
+  "virtual protocol": "virtual",
+  "virtuals protocol": "virtual",
+  "virtuals": "virtual",
+};
+
 function extractTokenLookupQuery(prompt: string): string | null {
   const t = prompt.trim().toLowerCase();
   const blockedQueries = new Set([
@@ -191,8 +201,8 @@ function extractTokenLookupQuery(prompt: string): string | null {
   const patterns = [
     /\b([a-z0-9._-]{2,32})\s+(?:full report|run full report|give me full report|full analysis)\b/i,
     /(?:scan|analyze|analyse|check)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
-    /(?:full report on|complete report on|deep scan|full analysis of|full analysis on|run all checks on)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
-    /what about\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /(?:full report on|report on|complete report on|deep scan|full analysis of|full analysis on|run all checks on)\s+([a-z0-9._-]{2,32}(?:\s+[a-z0-9._-]{2,32})?)(?:\s+on\s+base)?\b/i,
+    /what about\s+([a-z0-9._-]{2,32}(?:\s+[a-z0-9._-]{2,32})?)(?:\s+on\s+base)?\b/i,
     /is\s+([a-z0-9._-]{2,32})\s+safe\b/i,
     /what'?s happening with\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
   ];
@@ -201,7 +211,8 @@ function extractTokenLookupQuery(prompt: string): string | null {
     if (m?.[1]) {
       const q = m[1].trim().toLowerCase();
       if (blockedQueries.has(q)) continue;
-      return q;
+      // Normalize multi-word names and common aliases to canonical search query
+      return KNOWN_BASE_TOKEN_ALIASES[q] ?? q;
     }
   }
   return null;
@@ -521,7 +532,8 @@ function planClarkInvestigation(context: ClarkResolvedContext): { intent: ClarkP
     case "casual": return { intent: "casual", forceAddress: null };
     case "education": return { intent: "educational", forceAddress: null };
     case "market_overview": return { intent: "market", forceAddress: null };
-    case "token_full_report": return { intent: "token_full_report_request", forceAddress: context.explicitAddress ?? context.lastToken.address };
+    // Explicit token name wins — only fall back to lastToken when the user hasn't named a different token
+    case "token_full_report": return { intent: "token_full_report_request", forceAddress: context.explicitAddress ?? (context.explicitSymbol ? null : context.lastToken.address) };
     case "token_liquidity_followup": return { intent: "liquidity_safety", forceAddress: context.explicitAddress ?? context.lastToken.address };
     case "token_dev_followup": return { intent: "dev_wallet", forceAddress: context.explicitAddress ?? context.lastToken.address };
     case "token_safety_followup": return { intent: "token_full_report_request", forceAddress: context.explicitAddress ?? context.lastToken.address };
@@ -530,7 +542,7 @@ function planClarkInvestigation(context: ClarkResolvedContext): { intent: ClarkP
     case "wallet_quality":
     case "wallet_strategy": return { intent: "wallet_quality", forceAddress: context.explicitAddress ?? context.lastWallet };
     case "compare_request": return { intent: "wallet_compare_request", forceAddress: null };
-    case "token_scan": return { intent: "token_analysis", forceAddress: context.explicitAddress ?? context.lastToken.address };
+    case "token_scan": return { intent: "token_analysis", forceAddress: context.explicitAddress ?? (context.explicitSymbol ? null : context.lastToken.address) };
     default: return { intent: "strategy", forceAddress: null };
   }
 }
@@ -949,6 +961,11 @@ function buildClarkToolPlan(input: {
   if (!fallbackAddress && resolvedMarketItem && (resolvedMarketItem.symbol || resolvedMarketItem.name)) {
     plannerIntent = "token_analysis";
   }
+  // An explicit new token name always wins — do not inherit the previous scanned token's address.
+  // This prevents "scan aero" after KAGE from silently rescanning KAGE.
+  if (!directAddress && resolvedContext.explicitSymbol) {
+    fallbackAddress = null;
+  }
   if (plannerIntent === "unknown" && tokenFollowupPrompt && (fallbackAddress || resolvedMarketItem)) {
     plannerIntent = /dev wallet|deployer/.test(trimmed)
       ? "dev_wallet"
@@ -1032,6 +1049,20 @@ function buildClarkToolPlan(input: {
       break;
   }
 
+  if (process.env.NODE_ENV !== 'production') {
+    const routeDecision = !directAddress && resolvedContext.explicitSymbol ? 'explicit_token'
+      : directAddress ? 'contract'
+      : selectedOptionIndex != null ? 'movers_followup'
+      : tokenFollowupPrompt || explicitFollowupRef ? 'vague_followup'
+      : 'fallback';
+    console.log('[clark-route]', JSON.stringify({
+      message: message.slice(0, 80),
+      intent: plannerIntent,
+      routeDecision,
+      address: fallbackAddress,
+      symbol: resolvedContext.explicitSymbol,
+    }));
+  }
   return {
     intent: plannerIntent,
     tools,
@@ -1694,11 +1725,10 @@ type BaseTokenCandidate = {
 };
 
 const BASE_TOKEN_ALIAS_MAP: Record<string, BaseTokenCandidate> = {
-  brett: {
-    name: "Brett",
-    symbol: "BRETT",
-    contract: "0x532f27101965dd16442e59d40670faf5ebb142e4",
-  },
+  brett: { name: "Brett", symbol: "BRETT", contract: "0x532f27101965dd16442e59d40670faf5ebb142e4" },
+  aero: { name: "Aerodrome Finance", symbol: "AERO", contract: "0x940181a94a35a4569e4529a3cdfb74e38fd98631" },
+  aerodrome: { name: "Aerodrome Finance", symbol: "AERO", contract: "0x940181a94a35a4569e4529a3cdfb74e38fd98631" },
+  "aerodrome finance": { name: "Aerodrome Finance", symbol: "AERO", contract: "0x940181a94a35a4569e4529a3cdfb74e38fd98631" },
 };
 
 async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandidate[]> {
