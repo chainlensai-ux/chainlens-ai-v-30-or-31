@@ -10,6 +10,7 @@ type Plan = {
   features: string[]
   note?: string
   cta: string
+  ctaHref: string
   ctaClass: string
   badge?: string
 }
@@ -33,7 +34,8 @@ const plans: Plan[] = [
       'No Whale / Pump Alerts',
       'No Base Radar',
     ],
-    cta: 'GET STARTED FREE',
+    cta: 'Enter Terminal',
+    ctaHref: '/terminal',
     ctaClass: 'cta-free',
   },
   {
@@ -57,7 +59,8 @@ const plans: Plan[] = [
       'Portfolio + saved settings',
       'Fair-use Clark AI limits',
     ],
-    cta: 'START PRO',
+    cta: 'Upgrade to Pro',
+    ctaHref: 'https://chainlens-ai.lemonsqueezy.com/checkout/buy/a9ab7a81-bcde-4efe-9ed7-705d83471061',
     ctaClass: 'cta-pro',
     badge: 'MOST POPULAR',
   },
@@ -77,7 +80,8 @@ const plans: Plan[] = [
       'Early access to new ChainLens features',
       'Priority CORTEX processing where available',
     ],
-    cta: 'UNLOCK ELITE',
+    cta: 'Upgrade to Elite',
+    ctaHref: 'https://chainlens-ai.lemonsqueezy.com/checkout/buy/7848d92a-f82f-41a6-8c2d-f14e9c041f90',
     ctaClass: 'cta-elite',
   },
 ]
@@ -147,7 +151,11 @@ export default function PricingPage() {
                   })}
                 </div>
                 {plan.id === 'elite' && <div style={{ border: '1px solid rgba(250,204,21,.4)', background: 'rgba(250,204,21,.1)', color: '#fde68a', borderRadius: 11, padding: 10, fontSize: 12, marginBottom: 10 }}>Everything in Pro — plus higher limits and CORTEX tools where available.</div>}
-                <Link href='/app' className={`cta ${plan.ctaClass}`}>{plan.cta}</Link>
+                {plan.ctaHref.startsWith('http') ? (
+                  <a href={plan.ctaHref} target="_blank" rel="noopener noreferrer" className={`cta ${plan.ctaClass}`}>{plan.cta}</a>
+                ) : (
+                  <Link href={plan.ctaHref} className={`cta ${plan.ctaClass}`}>{plan.cta}</Link>
+                )}
               </div>
             ))}
           </div>
