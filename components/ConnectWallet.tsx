@@ -36,6 +36,18 @@ export default function ConnectWallet({ className }: { className?: string }) {
     return () => window.clearTimeout(t)
   }, [unavailableMsg])
 
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development' && !walletConnectEnabled) {
+      console.warn('[wallet] WalletConnect unavailable: missing NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!unavailableMsg) return
+    const t = window.setTimeout(() => setUnavailableMsg(null), 3200)
+    return () => window.clearTimeout(t)
+  }, [unavailableMsg])
+
   const handleConnect = () => {
     if (!walletConnectEnabled) {
       setUnavailableMsg('Wallet config missing.')
