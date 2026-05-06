@@ -3233,7 +3233,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     ? "Locked (confirmed)"
     : report.liquidity.lpLocked === false
       ? "Unlocked (confirmed)"
-      : "Not confirmed — verify before exit";
+      : "Not confirmed — LP lock status unverified.";
   const lowCap = buildLowCapRead(report);
 
   return [
@@ -3314,10 +3314,10 @@ function renderLiquidityFocusedRead(
   liquidity: NonNullable<ClarkToolEvidence["liquidity"]>
 ): string {
   const exitRisk = liquidity.riskTier === "low"
-    ? "Exit risk looks moderate, but still verify LP control before size."
+    ? "LP control not confirmed — provider-backed verification required."
     : liquidity.riskTier === "extreme"
-      ? "Exit risk is elevated. Liquidity structure is fragile for clean exits."
-      : "Exit risk is uncertain due to limited LP-control visibility.";
+      ? "Liquidity structure is fragile. LP control not confirmed from provider."
+      : "LP control not confirmed — limited visibility from available data.";
   return [
     "Liquidity read:",
     `- Asset: ${tokenName} (${tokenSymbol})`,
@@ -4692,7 +4692,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
             `- Verified now: ${pack.confidenceDrivers.length ? pack.confidenceDrivers.join(" ") : "Only partial market/security checks."}`,
             `- Risks seen: ${pack.riskDrivers.length ? pack.riskDrivers.join(" ") : "No critical risk flag confirmed yet."}`,
             `- Not verified yet: ${pack.missing.length ? pack.missing.join(", ") : "No major missing fields."}`,
-            "- What to check next: confirm LP control and deployer behavior before treating this as safe."
+            "- Still unconfirmed: LP control and deployer behavior have not been verified."
           ].join("\n")
         : /why is it moving|why is token\s+\d+\s+moving|explain the move/.test(lower)
           ? [
