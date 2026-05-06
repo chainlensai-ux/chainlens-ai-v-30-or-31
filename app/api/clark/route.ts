@@ -560,6 +560,10 @@ type StructuredMarketItem = {
   tokenAddress?: string | null;
   poolAddress?: string | null;
   reasonTag?: string | null;
+  price?: number | null;
+  liquidity?: number | null;
+  volume24h?: number | null;
+  change24h?: number | null;
 };
 
 function normalizeStructuredMarketItems(source: unknown): StructuredMarketItem[] {
@@ -573,8 +577,6 @@ function normalizeStructuredMarketItems(source: unknown): StructuredMarketItem[]
     const symbol = typeof row.symbol === "string" ? row.symbol.trim() : "";
     const tokenAddress = typeof row.tokenAddress === "string" ? row.tokenAddress.trim() : null;
     const poolAddress = typeof row.poolAddress === "string" ? row.poolAddress.trim() : null;
-    const preferredAddress = tokenAddress || poolAddress;
-    if (!preferredAddress) continue;
     items.push({
       rank: Math.floor(rank),
       symbol: symbol || "?",
@@ -582,6 +584,10 @@ function normalizeStructuredMarketItems(source: unknown): StructuredMarketItem[]
       tokenAddress,
       poolAddress,
       reasonTag: typeof row.reasonTag === "string" ? row.reasonTag : null,
+      price: typeof row.price === "number" ? row.price : null,
+      liquidity: typeof row.liquidity === "number" ? row.liquidity : null,
+      volume24h: typeof row.volume24h === "number" ? row.volume24h : null,
+      change24h: typeof row.change24h === "number" ? row.change24h : null,
     });
   }
   return items.sort((a, b) => a.rank - b.rank);
@@ -673,6 +679,33 @@ function inferSelectionIndex(
     return list[0]?.rank ?? null;
   }
   return null;
+}
+
+function resolveMarketTokenFromFollowup(
+  trimmed: string,
+  list: StructuredMarketItem[],
+  lastSelectedRank?: number | null
+): { item: StructuredMarketItem | null; ambiguous: StructuredMarketItem[] } {
+  if (!list.length) return { item: null, ambiguous: [] };
+  const ordered = [...list].sort((a, b) => a.rank - b.rank);
+  const byRank = (rank: number) => ordered.find((x) => x.rank === rank) ?? null;
+  const directRank = inferSelectionIndex(trimmed, [], ordered.map((m) => ({ rank: m.rank })), lastSelectedRank) ?? null;
+  if (directRank) return { item: byRank(directRank), ambiguous: [] };
+  if (/\b(that one|this one|it)\b/.test(trimmed) && lastSelectedRank) return { item: byRank(lastSelectedRank), ambiguous: [] };
+  if (/\bnext\b/.test(trimmed)) {
+    const nextRank = lastSelectedRank ? lastSelectedRank + 1 : ordered[0].rank;
+    return { item: byRank(nextRank), ambiguous: [] };
+  }
+  const rawToken = trimmed.match(/^(?:scan|check|analy[sz]e|full report on|report on)?\s*([a-z0-9$._-]{2,32})$/i)?.[1]?.toLowerCase() ?? null;
+  if (!rawToken) return { item: null, ambiguous: [] };
+  const matches = ordered.filter((m) => {
+    const symbol = (m.symbol ?? "").toLowerCase();
+    const name = (m.name ?? "").toLowerCase();
+    return symbol === rawToken || name === rawToken || symbol.includes(rawToken) || name.includes(rawToken);
+  });
+  if (matches.length === 1) return { item: matches[0], ambiguous: [] };
+  if (matches.length > 1) return { item: null, ambiguous: matches.slice(0, 3) };
+  return { item: null, ambiguous: [] };
 }
 
 function isMarketFollowupPrompt(prompt: string): boolean {
@@ -856,7 +889,7 @@ function buildClarkToolPlan(input: {
     symbol: m.symbol ?? "?",
     address: m.tokenAddress ?? m.poolAddress ?? "",
     line: `${m.rank}. ${m.symbol ?? "?"}`,
-  })).filter((m) => !!m.address);
+  }));
   const marketItems = structuredMarketRows.length ? structuredMarketRows : extractMarketListItemsFromHistory(input.history);
   const selectedOptionIndex = inferSelectionIndex(trimmed, input.history, marketItems, input.clarkContext?.lastSelectedRank);
   const directAddress = extractAddress(message);
@@ -864,6 +897,8 @@ function buildClarkToolPlan(input: {
     ? (marketItems.find((m) => m.rank === selectedOptionIndex)?.address ?? pickAddressBySelection(historyLines, selectedOptionIndex))
     : null;
   const tokenContext = extractLastTokenContext(historyLines);
+  const followupResolution = resolveMarketTokenFromFollowup(trimmed, input.structuredMarketList ?? [], input.clarkContext?.lastSelectedRank);
+  const resolvedMarketItem = followupResolution.item;
   const resolvedContext = resolveClarkContext(message, input.history);
   const investigation = planClarkInvestigation(resolvedContext);
   const inferredAddress = directAddress ?? selectedAddress;
@@ -890,11 +925,18 @@ function buildClarkToolPlan(input: {
   }
   const reportFollowupIntent = plannerIntent === "token_full_report_request" || plannerIntent === "dev_wallet" || plannerIntent === "liquidity_safety";
   const allowHistoryEntity = Boolean(selectedOptionIndex || marketFollowup || explicitFollowupRef || reportFollowupIntent);
-  let fallbackAddress = inferredAddress ?? investigation.forceAddress ?? (allowHistoryEntity ? (tokenContext.address ?? lastHistoryAddress) : null);
+  let fallbackAddress = inferredAddress
+    ?? resolvedMarketItem?.tokenAddress
+    ?? resolvedMarketItem?.poolAddress
+    ?? investigation.forceAddress
+    ?? (allowHistoryEntity ? (tokenContext.address ?? lastHistoryAddress) : null);
   if (!inferredAddress && tokenContext.address && (tokenFollowupPrompt || reportFollowupIntent || plannerIntent === "token_analysis")) {
     fallbackAddress = tokenContext.address;
   }
-  if (plannerIntent === "unknown" && tokenFollowupPrompt && fallbackAddress) {
+  if (!fallbackAddress && resolvedMarketItem && (resolvedMarketItem.symbol || resolvedMarketItem.name)) {
+    plannerIntent = "token_analysis";
+  }
+  if (plannerIntent === "unknown" && tokenFollowupPrompt && (fallbackAddress || resolvedMarketItem)) {
     plannerIntent = /dev wallet|deployer/.test(trimmed)
       ? "dev_wallet"
       : /liquidity|lp/.test(trimmed)
@@ -929,6 +971,10 @@ function buildClarkToolPlan(input: {
 
   const tools: ClarkPlanTool[] = [];
   const tokenLookup = extractTokenLookupQuery(message);
+  const fallbackQuery = !fallbackAddress && resolvedMarketItem
+    ? (resolvedMarketItem.symbol || resolvedMarketItem.name || "").toString()
+    : "";
+  const effectiveTokenLookup = tokenLookup || fallbackQuery || null;
   const looksWallet = /\b(wallet|balance|portfolio|copy[\s-]?trade|smart money)\b/i.test(message);
 
   switch (plannerIntent) {
@@ -961,8 +1007,8 @@ function buildClarkToolPlan(input: {
       tools.push({ name: "market_get_base_movers", args: { page: 1, perPage: 20 }, required: false });
       break;
     case "token_analysis":
-      if (!fallbackAddress && tokenLookup) {
-        tools.push({ name: "token_resolve", args: { query: tokenLookup }, required: true });
+      if (!fallbackAddress && effectiveTokenLookup) {
+        tools.push({ name: "token_resolve", args: { query: effectiveTokenLookup }, required: true });
       } else if (fallbackAddress && looksWallet) {
         tools.push({ name: "wallet_get_snapshot", args: { address: fallbackAddress }, required: false });
       } else if (fallbackAddress) {
@@ -4036,6 +4082,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
             tokenAddress: c.tokenAddress ?? null,
             poolAddress: c.poolAddress ?? null,
             reasonTag: c.reasonTags[0] ?? null,
+            price: c.priceUsd ?? null,
+            liquidity: c.liquidityUsd ?? null,
+            volume24h: c.volume24h ?? null,
+            change24h: c.change24h ?? null,
           })),
         },
       };
@@ -4050,6 +4100,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   const replyMode = detectReplyMode(body);
   const structuredMarketList = extractStructuredMarketItems(body);
+  const marketFollowupResolution = resolveMarketTokenFromFollowup(prompt.trim().toLowerCase(), structuredMarketList, body.clarkContext?.lastSelectedRank);
+  if (marketFollowupResolution.ambiguous.length > 1) {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      intent: "token_analysis",
+      toolsUsed: [],
+      analysis: [
+        "I found multiple matches in the recent Base movers list.",
+        "Reply with a number or exact symbol:",
+        ...marketFollowupResolution.ambiguous.map((m) => `- #${m.rank} ${m.symbol}${m.name ? ` (${m.name})` : ""}`),
+      ].join("\n"),
+    };
+  }
   const plan = buildClarkToolPlan({
     message: prompt,
     mode: body.mode,
@@ -4230,6 +4295,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
             tokenAddress: c.tokenAddress ?? null,
             poolAddress: c.poolAddress ?? null,
             reasonTag: c.reasonTags[0] ?? null,
+            price: c.priceUsd ?? null,
+            liquidity: c.liquidityUsd ?? null,
+            volume24h: c.volume24h ?? null,
+            change24h: c.change24h ?? null,
           })),
         },
         intent: plan.intent,
