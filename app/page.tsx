@@ -174,10 +174,19 @@ export default function HomePage() {
         .hero-horizon { animation: horizon-breathe 8s ease-in-out infinite; }
 
         @media (prefers-reduced-motion: reduce) {
-          .hero-premium-bg * {
+          .hero-premium-bg *, .home-ambient *, .home-particles *, .pricing-card, .feat-card, .home-ticker-track {
             animation: none !important;
             transition: none !important;
+            transform: none !important;
           }
+          .home-particles, .home-heavy-visual { display: none !important; }
+          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
+        }
+
+        @media (max-width: 1200px), (pointer: coarse) {
+          .home-heavy-visual, .home-particles { display: none !important; }
+          .home-ticker-track, .card-pro, .card-elite, .cortex-badge, .hero-horizon { animation: none !important; }
+          .pricing-card, .feat-card { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
         }
 
         @media (max-width: 767px) {
