@@ -16,6 +16,20 @@ type Holding = {
   verified: boolean
 }
 
+type WalletBehavior = {
+  status: 'ok' | 'partial' | 'unavailable'
+  source: 'alchemy' | 'unavailable'
+  txCount: number | null
+  activeDays: number | null
+  topTokens: string[]
+  topContracts: string[]
+  inboundCount: number | null
+  outboundCount: number | null
+  stablecoinActivity: boolean
+  recentActivitySummary: string
+  reason: string
+}
+
 type WalletResult = {
   address: string
   totalValue: number
@@ -28,6 +42,7 @@ type WalletResult = {
   holdingsCount?: number | null
   totalUsdAvailable?: boolean
   reason?: string | null
+  walletBehavior?: WalletBehavior | null
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────
@@ -213,6 +228,7 @@ export default function WalletScannerPage() {
           transactionCount: data.txCount,
           latestActivityAt: null,
           notableActivity: notableActivity.slice(0, 5),
+          walletBehavior: data.walletBehavior ?? null,
         },
       }
 
@@ -474,6 +490,48 @@ export default function WalletScannerPage() {
                   </div>
                 ))}
               </div>
+
+              {/* ── Behavior card ────────────────────────────────── */}
+              {result.walletBehavior?.status === 'ok' && (
+                <div style={{
+                  background: '#080c14',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: '14px', padding: '18px 22px',
+                }}>
+                  <div style={{
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
+                    color: '#2DD4BF', textTransform: 'uppercase',
+                    fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    marginBottom: '14px',
+                  }}>
+                    Behavior · Base (Alchemy)
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
+                    {[
+                      { label: 'Recent Txs', value: result.walletBehavior.txCount ?? '—' },
+                      { label: 'Active Days', value: result.walletBehavior.activeDays ?? '—' },
+                      { label: 'Inbound', value: result.walletBehavior.inboundCount ?? '—' },
+                      { label: 'Outbound', value: result.walletBehavior.outboundCount ?? '—' },
+                    ].map(s => (
+                      <div key={s.label}>
+                        <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.10em' }}>{s.label}</div>
+                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{String(s.value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {result.walletBehavior.topTokens.length > 0 && (
+                    <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>
+                      <span style={{ color: 'rgba(255,255,255,0.28)' }}>Top tokens: </span>
+                      {result.walletBehavior.topTokens.slice(0, 5).join(', ')}
+                    </div>
+                  )}
+                  {result.walletBehavior.stablecoinActivity && (
+                    <div style={{ fontSize: '11px', color: '#a78bfa', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                      Stablecoin movement detected
+                    </div>
+                  )}
+                </div>
+              )}
 
               {sorted.length > 0 ? (() => {
                 const PREVIEW = 10
