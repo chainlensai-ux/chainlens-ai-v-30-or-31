@@ -83,6 +83,25 @@ function withTimeout(ms = 5000): AbortSignal {
   return AbortSignal.timeout(ms)
 }
 
+async function rpcCall(chain: ChainKey, method: string, params: unknown[]): Promise<string | null> {
+  try {
+    const rpcUrl = CHAIN_RPC_MAP[chain];
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: withTimeout(),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return typeof json?.result === "string" ? json.result : null;
+  } catch { return null; }
+}
+
+function pad32HexAddress(address: string): string {
+  return `000000000000000000000000${address.toLowerCase().replace(/^0x/, "")}`;
+}
+
 // ------------------------------
 // Fetch helpers
 // ------------------------------
@@ -269,6 +288,25 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
   }
 }
 
+type LpControlResult = {
+  status: "burned" | "locked" | "team_controlled" | "unverified" | "unsupported" | "error";
+  confidence: "high" | "medium" | "low";
+  poolType: "v2" | "v3" | "aerodrome" | "unknown";
+  source: string;
+  reason: string;
+  evidence: string[];
+};
+
+function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["poolType"] {
+  const a = (pool?.attributes ?? {}) as Record<string, unknown>;
+  const dex = String(a.dex_id ?? a.dex ?? "").toLowerCase();
+  const name = String(a.name ?? "").toLowerCase();
+  if (dex.includes("aerodrome") || name.includes("aerodrome")) return "aerodrome";
+  if (dex.includes("uniswap_v3") || dex.includes("v3") || name.includes(" v3")) return "v3";
+  if (dex.includes("v2") || dex.includes("uniswap") || dex.includes("sushiswap")) return "v2";
+  return "unknown";
+}
+
 // ------------------------------
 // Contract analysis
 // ------------------------------
@@ -346,6 +384,83 @@ export async function POST(req: Request) {
 
     const mainPool = matchingPools[0] ?? null;
     const noActivePools = matchingPools.length === 0;
+    const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
+    const primaryPoolAddress = String(mainPoolAttr.address ?? mainPool?.id ?? "").trim().toLowerCase() || null;
+    const poolType = detectPoolType(mainPool as Record<string, unknown> | null);
+    let lpControl: LpControlResult = {
+      status: "unverified",
+      confidence: "low",
+      poolType,
+      source: "geckoterminal",
+      reason: "LP control requires holder-level LP token verification.",
+      evidence: [],
+    };
+    if (!primaryPoolAddress || !/^0x[a-f0-9]{40}$/.test(primaryPoolAddress)) {
+      lpControl = { ...lpControl, status: "unverified", reason: "Primary pool address is unavailable from provider." };
+    } else if (poolType === "v3" || poolType === "aerodrome" || poolType === "unknown") {
+      lpControl = {
+        status: poolType === "unknown" ? "unverified" : "unsupported",
+        confidence: "low",
+        poolType,
+        source: "geckoterminal",
+        reason: "Pool type uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
+        evidence: [`pool=${primaryPoolAddress}`, `poolType=${poolType}`],
+      };
+    } else {
+      const lpHoldersRaw = await fetchTokenHolders(chain, primaryPoolAddress);
+      const lpItems = Array.isArray(lpHoldersRaw?.data?.items) ? lpHoldersRaw.data.items as Array<Record<string, unknown>> : [];
+      const top = lpItems.slice(0, 5).map((h) => ({
+        address: String(h.address ?? h.holder_address ?? h.wallet_address ?? "").toLowerCase(),
+        pct: toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? 0,
+      })).filter((x) => /^0x[a-f0-9]{40}$/.test(x.address));
+      const DEAD = new Set([
+        "0x0000000000000000000000000000000000000000",
+        "0x000000000000000000000000000000000000dead",
+      ]);
+      const KNOWN_LOCKERS = new Set<string>([
+        "0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", // uncx locker
+        "0x71b5759d73262fbb223956913ecf4ecc51057641", // team finance locker
+      ]);
+      const topHolder = top[0] ?? null;
+      const burnPct = top.filter((x) => DEAD.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
+      const lockerPct = top.filter((x) => KNOWN_LOCKERS.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
+      const confidenceFor = (pct: number) => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
+      if (burnPct >= 50) {
+        lpControl = { status: "burned", confidence: confidenceFor(burnPct), poolType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${burnPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
+      } else if (lockerPct >= 50) {
+        lpControl = { status: "locked", confidence: confidenceFor(lockerPct), poolType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers.", evidence: [`locker_share=${lockerPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
+      } else if (topHolder && (topHolder.pct ?? 0) >= 80 && !DEAD.has(topHolder.address) && !KNOWN_LOCKERS.has(topHolder.address)) {
+        lpControl = { status: "team_controlled", confidence: "high", poolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
+      } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
+        // Alchemy RPC fallback only when holder percentages are unavailable/incomplete.
+        const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress, data: "0x18160ddd" }, "latest"]);
+        const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
+        if (!totalSupply || totalSupply <= 0) {
+          lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+alchemy_rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
+        } else {
+          const readPct = async (addr: string) => {
+            const data = `0x70a08231${pad32HexAddress(addr)}`;
+            const balHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress, data }, "latest"]);
+            if (!balHex) return 0;
+            return (Number(BigInt(balHex)) / totalSupply) * 100;
+          };
+          const burn0 = await readPct("0x0000000000000000000000000000000000000000");
+          const burnDead = await readPct("0x000000000000000000000000000000000000dEaD");
+          const lockerShares = await Promise.all([...KNOWN_LOCKERS].map(readPct));
+          const burnShare = burn0 + burnDead;
+          const lockerShare = lockerShares.reduce((a, b) => a + b, 0);
+          if (burnShare >= 50) {
+            lpControl = { status: "burned", confidence: confidenceFor(burnShare), poolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`] };
+          } else if (lockerShare >= 50) {
+            lpControl = { status: "locked", confidence: confidenceFor(lockerShare), poolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`] };
+          } else {
+            lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+alchemy_rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
+          }
+        }
+      } else {
+        lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+goldrush", reason: "LP holder distribution does not prove burned/locked/team control.", evidence: [`top_rows=${top.length}`] };
+      }
+    }
 
     // ------------------------------
     // REAL CLAUDE AI SUMMARY
@@ -498,6 +613,29 @@ ${JSON.stringify(analysis, null, 2)}
     } : null;
 
     // Final JSON response
+    const marketStatus: "ok" | "partial" | "unavailable" | "error" =
+      (priceUsd != null && liquidityUsd != null && volume24hUsd != null) ? "ok" :
+      (priceUsd != null || liquidityUsd != null || volume24hUsd != null || fdv != null) ? "partial" : "unavailable";
+    const marketReason = marketStatus === "ok" ? null
+      : marketCapFromGt == null ? "unavailable_circulating_supply_not_verified"
+      : "partial_market_fields_from_provider";
+    const securityStatus: "ok" | "partial" | "unavailable" | "error" =
+      hpResult.ok ? "ok" : gpHasData ? "partial" : "unavailable";
+    const securityReason = hpResult.ok ? null : (gpHasData ? "honeypot_provider_unavailable_using_limited_fallback" : "honeypot_simulation_unavailable_from_provider");
+    const holdersStatus: "ok" | "partial" | "unavailable" | "error" =
+      holderDistribution && hasPct ? "ok" :
+      holderDistribution ? "partial" :
+      (holdersRaw?.__status === "error" ? "error" : "unavailable");
+    const holdersReason = holdersStatus === "ok" ? null : (holderDistributionStatus?.reason ?? "holder_data_unavailable");
+    const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
+      mainPool ? "ok" : (matchingPools.length > 0 ? "partial" : "unavailable");
+    const liquidityReason = mainPool ? null : "no_active_liquidity_pool_found";
+    const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
+      bytecode && bytecode !== "0x" ? "partial" : "unavailable";
+    const contractChecksReason = contractChecksStatus === "unavailable"
+      ? "contract_bytecode_unavailable_from_rpc"
+      : "proxy_mint_owner_checks_unverified_from_available_sources";
+
     const responsePayload = {
       chain,
       contract,
@@ -540,7 +678,7 @@ ${JSON.stringify(analysis, null, 2)}
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
       market_cap: marketCapFromGt,
       marketCapUsd: marketCapFromGt,
-      marketCapStatus: marketCapFromGt != null ? 'ok' : 'unavailable',
+      marketCapStatus: marketCapFromGt != null ? 'ok' : 'unavailable_circulating_supply_not_verified',
       marketCapSource,
       circulating_supply: circulatingSupply,
       fdv,
@@ -592,6 +730,7 @@ ${JSON.stringify(analysis, null, 2)}
 
       // Contract analysis
       analysis,
+      lpControl,
 
       // AI summary from Cortex Engine
       aiSummary,
@@ -601,6 +740,52 @@ ${JSON.stringify(analysis, null, 2)}
         name: resolvedName,
         symbol: resolvedSymbol,
         decimals: resolvedDecimals,
+      },
+      sections: {
+        market: {
+          status: marketStatus,
+          reason: marketReason,
+          source: "geckoterminal",
+          price: priceUsd,
+          liquidity: liquidityUsd,
+          volume24h: volume24hUsd,
+          change24h: pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24),
+          marketCap: marketCapFromGt,
+          fdv,
+        },
+        security: {
+          status: securityStatus,
+          reason: securityReason,
+          source: hpResult.ok ? "honeypot.is" : (gpHasData ? "goplus_limited_fallback" : "unavailable"),
+          honeypot: hpResult.ok ? hpResult.honeypot : null,
+          buyTax: hpResult.ok ? hpResult.buyTax : null,
+          sellTax: hpResult.ok ? hpResult.sellTax : null,
+          simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : null,
+        },
+        holders: {
+          status: holdersStatus,
+          reason: holdersReason,
+          source: "goldrush",
+          holderCount: holderCount ?? null,
+          top1, top5, top10, top20,
+        },
+        liquidity: {
+          status: liquidityStatus,
+          reason: liquidityReason,
+          source: "geckoterminal",
+          poolCount: matchingPools.length,
+          primaryPair: mainPool?.attributes?.name ?? null,
+          liquidityDepth: liquidityUsd,
+          lpControl,
+        },
+        contractChecks: {
+          status: contractChecksStatus,
+          reason: contractChecksReason,
+          source: "base_rpc",
+          proxy: null,
+          mintable: null,
+          ownerRenounced: null,
+        },
       },
     }
     tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
