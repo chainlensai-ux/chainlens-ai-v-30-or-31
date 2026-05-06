@@ -267,8 +267,18 @@ export default function HomePage() {
         .pricing-card:hover { transform: translateY(-8px); }
         .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
         .pricing-card.card-free:hover { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 40px rgba(236,72,153,0.18); border-color: rgba(236,72,153,0.35) !important; }
-        .pricing-card.card-pro:hover  { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 80px rgba(139,92,246,0.40), inset 0 0 0 1px rgba(139,92,246,0.90); animation-play-state: paused; }
-        .pricing-card.card-elite:hover { box-shadow: 0 24px 70px rgba(0,0,0,0.60), 0 0 100px rgba(251,191,36,0.45), 0 0 160px rgba(251,191,36,0.18), inset 0 0 0 1px rgba(251,191,36,0.85); animation-play-state: paused; }
+        .pricing-card.card-pro:hover  { box-shadow: 0 14px 38px rgba(0,0,0,0.50), 0 0 36px rgba(139,92,246,0.28), inset 0 0 0 1px rgba(139,92,246,0.82); animation-play-state: paused; }
+        .pricing-card.card-elite:hover { box-shadow: 0 16px 44px rgba(0,0,0,0.56), 0 0 44px rgba(251,191,36,0.30), inset 0 0 0 1px rgba(251,191,36,0.82); animation-play-state: paused; }
+        .home-heavy-visual * {
+          animation-duration: 0s !important;
+          animation-iteration-count: 1 !important;
+          will-change: auto !important;
+        }
+        .home-heavy-visual [style*='filter: blur(24px)'],
+        .home-heavy-visual [style*='filter: blur(26px)'],
+        .home-heavy-visual [style*='filter: blur(30px)'] {
+          filter: blur(10px) !important;
+        }
         .cta-outline  { background:transparent; border:1px solid rgba(255,255,255,0.18); color:rgba(255,255,255,0.70); transition:border-color 0.15s,color 0.15s,background 0.15s; }
         .cta-outline:hover { border-color:rgba(255,255,255,0.40); color:#fff; background:rgba(255,255,255,0.05); }
         .cta-gradient { background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%); border:none; color:#fff; transition:opacity 0.15s,transform 0.15s; }
@@ -282,7 +292,7 @@ export default function HomePage() {
       <div className={`home-page relative min-h-dvh w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Unified page ambient system ── */}
-        <div className="home-heavy-visual home-ambient" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+        <div className="home-heavy-visual home-ambient" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '780px', pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
             position: 'absolute',
             inset: 0,
@@ -310,7 +320,7 @@ export default function HomePage() {
         </div>
 
         {/* ── Cinematic background layer ── */}
-        <div className="hero-premium-bg home-heavy-visual" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+        <div className="hero-premium-bg home-heavy-visual" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '780px', pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
             position: 'absolute', inset: 0,
             background: 'linear-gradient(180deg, #05050b 0%, #06070f 44%, #05050b 100%)',
@@ -1464,33 +1474,18 @@ export default function HomePage() {
         borderTop: '1px solid rgba(167,139,250,0.16)',
         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
       }}>
-        <div style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: 'radial-gradient(58% 44% at 50% 0%, rgba(139,92,246,0.18) 0%, rgba(139,92,246,0.06) 40%, transparent 78%), radial-gradient(34% 30% at 76% 18%, rgba(217,70,239,0.11) 0%, transparent 72%)',
-        }} />
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(180deg, #05060d 0%, #04050c 100%)' }} />
 
         {/* Premium top separator */}
         <div style={{
           position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
           background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.26) 28%, rgba(167,139,250,0.5) 50%, rgba(45,212,191,0.26) 72%, transparent 100%)',
         }} />
-        <div style={{
-          position: 'absolute', top: 0, left: '16%', right: '16%', height: '14px',
-          background: 'radial-gradient(closest-side, rgba(139,92,246,0.24), transparent)',
-          filter: 'blur(10px)', pointerEvents: 'none',
-        }} />
 
         <div className="mob-footer-grid" style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr', gap: '42px', alignItems: 'start', position: 'relative' }}>
 
           {/* Left — brand + socials */}
           <Reveal delayMs={20}><div style={{ position: 'relative' }}>
-            {/* Subtle brand glow behind left section */}
-            <div style={{
-              position: 'absolute', top: '-20px', left: '-40px',
-              width: '300px', height: '200px',
-              background: 'radial-gradient(ellipse, rgba(139,92,246,0.14) 0%, rgba(45,212,191,0.05) 44%, transparent 74%)',
-              filter: 'blur(30px)', pointerEvents: 'none',
-            }} />
             {/* Logo + name */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', position: 'relative' }}>
               <img src="/cl-logo.png" alt="ChainLens" style={{ width: '34px', height: '34px', objectFit: 'contain' }} />
