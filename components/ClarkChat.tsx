@@ -26,6 +26,10 @@ type ClarkContextState = {
     tokenAddress?: string | null
     poolAddress?: string | null
     reasonTag?: string | null
+    price?: number | null
+    liquidity?: number | null
+    volume24h?: number | null
+    change24h?: number | null
   }>
   lastToken?: string | null
   lastWallet?: string | null
@@ -160,6 +164,12 @@ export default function ClarkChat({
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[clark] request context', {
+          moversCount: clarkContextRef.current.lastMarketList?.length ?? 0,
+          lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
+        })
+      }
       console.log('POST → /api/clark')
       const res = await fetch(`/api/clark`, {
         method: 'POST',
@@ -172,6 +182,9 @@ export default function ClarkChat({
           context: null,
           history,
           clarkContext: clarkContextRef.current,
+          recentMovers: clarkContextRef.current.lastMarketList ?? [],
+          moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
+          marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
         }),
       })
       console.log('Response status:', res.status)

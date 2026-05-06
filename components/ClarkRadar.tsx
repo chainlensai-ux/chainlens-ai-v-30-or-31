@@ -23,6 +23,10 @@ type ClarkContextState = {
     tokenAddress?: string | null
     poolAddress?: string | null
     reasonTag?: string | null
+    price?: number | null
+    liquidity?: number | null
+    volume24h?: number | null
+    change24h?: number | null
   }>
   lastIntent?: string | null
   previousIntent?: string | null
@@ -180,6 +184,12 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       const history = [...messagesRef.current, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[clark] request context', {
+          moversCount: clarkContextRef.current.lastMarketList?.length ?? 0,
+          lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
+        })
+      }
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -191,6 +201,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           context: null,
           history,
           clarkContext: clarkContextRef.current,
+          recentMovers: clarkContextRef.current.lastMarketList ?? [],
+          moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
+          marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
         }),
       })
       const json = await res.json()
