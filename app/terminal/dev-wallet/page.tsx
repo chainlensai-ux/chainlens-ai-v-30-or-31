@@ -56,6 +56,13 @@ interface DevWalletResult {
   suspiciousTransferReasons: string[]
   clarkVerdict: ClarkVerdict | null
   warnings: string[]
+  tokenStatus?: string
+  rpcStatus?: string
+  deployerStatus?: string
+  linkedWalletsStatus?: string
+  holderStatus?: string
+  liquidityStatus?: string
+  diagnostics?: { rpcConfigured?: boolean; rpcStatus?: string; providerUsed?: string }
   fetchedAt: string
 }
 
@@ -413,7 +420,7 @@ export default function DevWalletPage() {
       })
       const json = await res.json() as DevWalletResult & { error?: string }
       if (!res.ok || json.error) {
-        setError(json.error ?? 'Scan failed — try again')
+        setError((json.error ?? 'Scan failed — try again').replace('Could not reach Base RPC — try again','RPC deployer trace unavailable, showing available token/holder/liquidity signals'))
       } else {
         setResult(json)
       }
@@ -632,6 +639,11 @@ export default function DevWalletPage() {
           <div className="devwallet-results" style={{ maxWidth: '860px' }}>
             {/* Warnings */}
             <WarningBanner warnings={result.warnings} />
+            {result.rpcStatus && result.rpcStatus !== 'ok' && (
+              <p style={{ color:'#94a3b8', fontSize:12, margin:'-6px 0 16px', fontFamily:'var(--font-plex-mono)' }}>
+                RPC deployer trace unavailable, showing available token/holder/liquidity signals.
+              </p>
+            )}
 
             {/* Clark Verdict */}
             {result.clarkVerdict && (

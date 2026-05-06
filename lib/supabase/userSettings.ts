@@ -15,6 +15,7 @@ export type UserSettings = {
   saved_layout: JsonMap;
   saved_filters: JsonMap;
   onboarding_progress: JsonMap;
+  plan: 'free' | 'pro' | 'elite';
   created_at?: string;
   updated_at?: string;
 };
@@ -35,6 +36,7 @@ export const USER_SETTINGS_DEFAULTS: Omit<UserSettings, 'user_id'> = {
   saved_layout: {},
   saved_filters: {},
   onboarding_progress: {},
+  plan: 'free',
 };
 
 const ALLOWED_KEYS = new Set([
