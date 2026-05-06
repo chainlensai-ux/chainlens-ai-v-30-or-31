@@ -61,6 +61,21 @@ type ScanResult = {
     itemCount?: number; normalizedCount?: number; reason?: string|null;
     responseKeys?: string[]|null; dataKeys?: string[]|null; firstItemKeys?: string[]|null;
   } | null
+  sections?: {
+    market?: { status?: string; reason?: string; source?: string } | null
+    security?: { status?: string; reason?: string; source?: string } | null
+    holders?: { status?: string; reason?: string; source?: string } | null
+    liquidity?: { status?: string; reason?: string; source?: string } | null
+    contractChecks?: { status?: string; reason?: string; source?: string } | null
+  } | null
+  lpControl?: {
+    status?: string
+    confidence?: string
+    poolType?: string
+    source?: string
+    reason?: string
+    evidence?: string[]
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -139,6 +154,31 @@ function fmtTokenAmt(raw: string | number | null, decimals: number): string {
 function pctColor(v: number | null | undefined): string {
   if (v == null) return '#94a3b8'
   return v >= 0 ? '#2DD4BF' : '#f87171'
+}
+
+function humanizeReasonCode(reason?: string): string {
+  if (!reason) return 'Additional verification is required.'
+  const map: Record<string, string> = {
+    contract_bytecode_unavailable_from_rpc: 'Unavailable from RPC.',
+    unavailable_circulating_supply_not_verified: 'Circulating supply is not verified by provider.',
+    honeypot_simulation_unavailable_from_provider: 'Security simulation is unavailable from provider.',
+    no_active_liquidity_pool_found: 'No active liquidity pool was found.',
+  }
+  if (map[reason]) return map[reason]
+  if (/^[a-z0-9_]+$/.test(reason)) return reason.replace(/_/g, ' ')
+  return reason
+}
+
+function humanizeSectionLine(source?: string, status?: string, reason?: string): string {
+  const sourceMap: Record<string, string> = {
+    base_rpc: 'Contract verification',
+    geckoterminal: 'Market data',
+    goldrush: 'Holder data',
+    honeypot: 'Security simulation',
+  }
+  const sourceLabel = sourceMap[source ?? ''] ?? 'Provider check'
+  const statusLabel = status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Unavailable'
+  return `${sourceLabel}: ${statusLabel}${reason ? ` — ${humanizeReasonCode(reason)}` : ''}`
 }
 
 function shorten(addr: string): string {
@@ -531,6 +571,8 @@ export default function TerminalTokenScanner() {
           holderDistribution: json.holderDistribution ?? null,
           holderDistributionStatus: json.holderDistributionStatus ?? null,
           debugHolderStatus: json.debugHolderStatus ?? null,
+          sections: json.sections ?? null,
+          lpControl: json.lpControl ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -730,6 +772,26 @@ export default function TerminalTokenScanner() {
                     helper='Fully Diluted Valuation'
                     accent="#a78bfa"
                   />
+                </div>
+              )}
+              {result.sections && (
+                <div style={{ marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
+                  {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]
+                    .filter((s): s is { status?: string; reason?: string; source?: string } => Boolean(s && s.status && s.status !== 'ok'))
+                    .map((s, i) => (
+                      <div key={i}>- {humanizeSectionLine(s.source, s.status, s.reason)}</div>
+                    ))}
+                </div>
+              )}
+              {result.lpControl && (
+                <div style={{ marginBottom: '18px', padding: '10px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', fontSize: '12px', color: '#cbd5e1' }}>
+                  <strong>LP Control:</strong> {result.lpControl.status ?? 'unverified'} ({result.lpControl.confidence ?? 'low'}) — {result.lpControl.reason ?? 'No provider-backed LP lock proof yet.'}
+                  {result.lpControl.source ? <div style={{ marginTop: '4px', color: '#94a3b8' }}>Source: {result.lpControl.source}</div> : null}
+                  {Array.isArray(result.lpControl.evidence) && result.lpControl.evidence.length > 0 ? (
+                    <ul style={{ margin: '6px 0 0 16px', color: '#94a3b8' }}>
+                      {result.lpControl.evidence.slice(0, 4).map((e, i) => <li key={i}>{e}</li>)}
+                    </ul>
+                  ) : null}
                 </div>
               )}
 

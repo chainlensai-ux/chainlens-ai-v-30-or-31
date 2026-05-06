@@ -35,20 +35,21 @@ const SECTIONS = [
     label: '04 — Payments & Subscriptions',
     heading: 'Payments & Subscriptions',
     body: [
-      'ChainLens AI offers subscription plans billed on a monthly basis. All plans include a 7-day free trial. You will not be charged until your trial period ends.',
-      'After the trial period, your subscription will automatically renew each month. You may cancel at any time from your account settings.',
-      'Refunds are not provided after the 7-day trial period has elapsed. If you cancel, you will retain access to your plan until the end of the current billing cycle.',
-      'We reserve the right to update pricing at any time. Existing subscribers will be notified at least 30 days in advance of any price changes.',
+      'ChainLens AI may offer free or paid subscription plans. Pricing, billing frequency, included features, limits, and renewal terms will be displayed at checkout before purchase.',
+      'Paid subscriptions renew automatically unless cancelled before the next billing date. You may cancel at any time through your account settings or by contacting ChainLens AI.',
+      'If you cancel, you will generally retain access until the end of the current billing period unless otherwise stated at checkout.',
+      'Except where required by law, payments are non-refundable once a billing period has started. This does not limit any rights you may have under applicable consumer laws, including Australian Consumer Law.',
+      'We may update pricing or plan features from time to time. Where required, existing subscribers will be given reasonable notice before changes apply.',
     ],
   },
   {
     label: '05 — Privacy',
     heading: 'Privacy',
     body: [
-      'ChainLens AI collects your email address solely for authentication and account management purposes. We do not collect, store, or process any additional personal information beyond what is necessary to provide the service.',
-      'We do not sell, rent, lease, or share your personal data with any third parties for marketing or commercial purposes.',
-      'Wallet addresses and token contracts you scan are used only to fulfil your query in real time. We do not store or associate these with your account beyond session activity logs.',
-      'By using ChainLens AI, you agree to the storage and processing of your email address as described above. You may request deletion of your account and associated data at any time by contacting us.',
+      'ChainLens AI may process account and authentication information (such as email and auth provider identifiers), subscription status, usage logs, and basic device/session information needed to secure and operate the service.',
+      'Wallet addresses and token contracts submitted for scans are processed to return analysis results. Support communications you send to us may also be stored to help resolve issues.',
+      'We may use third-party infrastructure and data providers to deliver features and results. We do not sell your personal information.',
+      'You may request account or data deletion, subject to legal and operational retention requirements, by contacting ChainLens AI via @chainlens__ai on X or Telegram.',
     ],
   },
   {
@@ -133,7 +134,7 @@ export default function TermsPage() {
 
             <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.42)', lineHeight: 1.7, margin: '0 0 20px', maxWidth: '560px' }}>
               By using ChainLens AI you agree to these terms. Please read them carefully.
-              Last updated: April 2026.
+              Last updated: May 2026.
             </p>
 
             {/* Divider */}
