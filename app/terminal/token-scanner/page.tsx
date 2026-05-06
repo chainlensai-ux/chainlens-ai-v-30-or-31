@@ -37,6 +37,11 @@ type ScanResult = {
   marketCapStatus?: string | null
   fdvSource?: 'geckoterminal' | 'coingecko_terminal' | 'unavailable'
   circulatingSupply?: number | null
+  displayMarketValue?: number | null
+  displayMarketValueLabel?: 'Market Cap' | 'Estimated MC' | 'FDV'
+  displayMarketValueConfidence?: 'verified' | 'medium' | 'low'
+  displayMarketValueReason?: string
+  estimatedMarketCap?: number | null
   pools?: Pool[]
   goplus?: Record<string, Record<string, unknown>> | null
   honeypot?: {
@@ -508,6 +513,11 @@ export default function TerminalTokenScanner() {
           fdvUsd: num(json.fdvUsd ?? json.fdv),
           marketCapSource: json.marketCapSource ?? 'unavailable',
           fdvSource: json.fdvSource ?? 'unavailable',
+          displayMarketValue: json.displayMarketValue ?? null,
+          displayMarketValueLabel: json.displayMarketValueLabel ?? 'Market Cap',
+          displayMarketValueConfidence: json.displayMarketValueConfidence ?? 'low',
+          displayMarketValueReason: json.displayMarketValueReason ?? '',
+          estimatedMarketCap: json.estimatedMarketCap ?? null,
           pools: pairs.map((p: Record<string, unknown>) => ({
             name:           (attr(p).name as string | undefined),
             address:        (attr(p).address as string | undefined),
@@ -704,9 +714,14 @@ export default function TerminalTokenScanner() {
                     accent={pctColor(result.priceChange24h)}
                   />
                   <StatCard
-                    label='Market Cap'
-                    value={result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Unverified'}
-                    helper={result.marketCapUsd != null ? 'Live GT data' : 'Circulating supply unavailable'}
+                    label={result.displayMarketValueLabel ?? 'Market Cap'}
+                    value={result.displayMarketValue != null ? fmtLarge(result.displayMarketValue) : 'Unavailable'}
+                    helper={
+                      result.displayMarketValueConfidence === 'verified' ? 'Provider-verified' :
+                      result.displayMarketValueLabel === 'Estimated MC' ? 'Estimated · supply not fully verified' :
+                      result.displayMarketValueLabel === 'FDV' ? 'FDV fallback · true MC unavailable' :
+                      'Market value unavailable'
+                    }
                     accent="#a78bfa"
                   />
                   <StatCard

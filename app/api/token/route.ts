@@ -86,6 +86,35 @@ function withTimeout(ms = 5000): AbortSignal {
 // ------------------------------
 // Fetch helpers
 // ------------------------------
+async function fetchOnchainSupply(chain: ChainKey, contract: string): Promise<{
+  totalSupply: bigint | null; burnedZero: bigint | null; burnedDead: bigint | null
+}> {
+  const rpcUrl = CHAIN_RPC_MAP[chain]
+  const ZERO = '0x0000000000000000000000000000000000000000'
+  const DEAD = '0x000000000000000000000000000000000000dEaD'
+  const paddedZero = ZERO.slice(2).padStart(64, '0')
+  const paddedDead = DEAD.slice(2).padStart(64, '0')
+  try {
+    const [tsRes, bzRes, bdRes] = await Promise.all([
+      fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: contract, data: '0x18160ddd' }, 'latest'] }),
+        signal: AbortSignal.timeout(5000) }).then(r => r.json()),
+      fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_call', params: [{ to: contract, data: '0x70a08231' + paddedZero }, 'latest'] }),
+        signal: AbortSignal.timeout(5000) }).then(r => r.json()),
+      fetch(rpcUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'eth_call', params: [{ to: contract, data: '0x70a08231' + paddedDead }, 'latest'] }),
+        signal: AbortSignal.timeout(5000) }).then(r => r.json()),
+    ])
+    const parseBig = (res: any): bigint | null => {
+      const hex = res?.result
+      if (!hex || hex === '0x' || hex === '0x0') return null
+      try { return BigInt(hex) } catch { return null }
+    }
+    return { totalSupply: parseBig(tsRes), burnedZero: parseBig(bzRes), burnedDead: parseBig(bdRes) }
+  } catch { return { totalSupply: null, burnedZero: null, burnedDead: null } }
+}
+
 async function fetchBytecode(chain: ChainKey, contract: string): Promise<string | null> {
   try {
     const rpcUrl = CHAIN_RPC_MAP[chain];
@@ -480,6 +509,53 @@ ${JSON.stringify(analysis, null, 2)}
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'unavailable'
     const priceUsd = tokenPrice
+    // Tier B: onchain estimated MC when true MC is missing and price is known
+    let estimatedMarketCap: number | null = null
+    let estimatedMarketCapConfidence: 'medium' | 'low' = 'low'
+    let estimatedMarketCapReason = ''
+    if (marketCapFromGt == null && priceUsd != null) {
+      const onchain = await fetchOnchainSupply(chain, contract)
+      if (onchain.totalSupply != null) {
+        const decimalsNum = typeof resolvedDecimals === 'number' ? resolvedDecimals : (Number(resolvedDecimals) || 18)
+        const divisor = BigInt(10) ** BigInt(decimalsNum)
+        const burned = (onchain.burnedZero ?? BigInt(0)) + (onchain.burnedDead ?? BigInt(0))
+        const circulatingRaw = onchain.totalSupply - burned
+        const circulatingHuman = Number(circulatingRaw) / Number(divisor)
+        if (circulatingHuman > 0) {
+          estimatedMarketCap = priceUsd * circulatingHuman
+          estimatedMarketCapConfidence = (onchain.burnedZero != null || onchain.burnedDead != null) ? 'medium' : 'low'
+          estimatedMarketCapReason = `Estimated from price × onchain totalSupply${burned > BigInt(0) ? ' minus burn balances' : ''}. Circulating supply not provider-verified.`
+        }
+      }
+    }
+
+    let displayMarketValue: number | null
+    let displayMarketValueLabel: 'Market Cap' | 'Estimated MC' | 'FDV'
+    let displayMarketValueConfidence: 'verified' | 'medium' | 'low'
+    let displayMarketValueReason: string
+
+    if (marketCapFromGt != null) {
+      displayMarketValue = marketCapFromGt
+      displayMarketValueLabel = 'Market Cap'
+      displayMarketValueConfidence = 'verified'
+      displayMarketValueReason = 'Provider-backed market_cap_usd from GeckoTerminal.'
+    } else if (estimatedMarketCap != null) {
+      displayMarketValue = estimatedMarketCap
+      displayMarketValueLabel = 'Estimated MC'
+      displayMarketValueConfidence = estimatedMarketCapConfidence
+      displayMarketValueReason = estimatedMarketCapReason
+    } else if (fdv != null) {
+      displayMarketValue = fdv
+      displayMarketValueLabel = 'FDV'
+      displayMarketValueConfidence = 'low'
+      displayMarketValueReason = 'True market cap unavailable; showing FDV because circulating supply is not verified.'
+    } else {
+      displayMarketValue = null
+      displayMarketValueLabel = 'Market Cap'
+      displayMarketValueConfidence = 'low'
+      displayMarketValueReason = 'Market value unavailable because price/supply data is unavailable.'
+    }
+
     const liquidityUsd = pickNum(mainPool?.attributes?.reserve_in_usd)
     const volume24hUsd = pickNum((mainPool?.attributes?.volume_usd as Record<string, unknown> | undefined)?.h24)
     const poolCount = matchingPools.length
@@ -546,6 +622,13 @@ ${JSON.stringify(analysis, null, 2)}
       fdv,
       fdvUsd: fdv,
       fdvSource,
+      displayMarketValue,
+      displayMarketValueLabel,
+      displayMarketValueConfidence,
+      displayMarketValueReason,
+      estimatedMarketCap,
+      estimatedMarketCapConfidence,
+      estimatedMarketCapReason,
 
       pairs: matchingPools,
       gtPools: matchingPools,

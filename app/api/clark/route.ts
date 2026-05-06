@@ -2427,7 +2427,7 @@ type ClarkToolEvidence = {
   tokenScan?: {
     ok: boolean;
     token: { name: string; symbol: string; address: string } | null;
-    market: { price: number | null; change24h: number | null; volume24h: number | null; liquidity: number | null; marketCap: number | null; fdv: number | null };
+    market: { price: number | null; change24h: number | null; volume24h: number | null; liquidity: number | null; marketCap: number | null; fdv: number | null; displayMarketValue: number | null; displayMarketValueLabel: string; displayMarketValueConfidence: string };
     holders?: { top1: number | null; top10: number | null; holderCount: number | null; status: string };
     security: {
       honeypot: boolean | null;
@@ -2559,6 +2559,9 @@ async function executeClarkToolPlan(input: {
             liquidity: typeof t.liquidityUsd === "number" ? t.liquidityUsd : (typeof t.liquidity === "number" ? t.liquidity : null),
             marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : null,
             fdv: typeof t.fdvUsd === "number" ? t.fdvUsd : (typeof t.fdv === "number" ? t.fdv : null),
+            displayMarketValue: typeof t.displayMarketValue === "number" ? t.displayMarketValue : null,
+            displayMarketValueLabel: typeof t.displayMarketValueLabel === "string" ? t.displayMarketValueLabel : "Market Cap",
+            displayMarketValueConfidence: typeof t.displayMarketValueConfidence === "string" ? t.displayMarketValueConfidence : "low",
           },
           holders: {
             top1: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top1 === "number" ? (t.holderDistribution as Record<string, unknown>).top1 as number : null,
@@ -2701,6 +2704,9 @@ type ClarkFullReportEvidence = {
     marketCap: number | null;
     poolAge: string | null;
     marketSourceAvailable: boolean;
+    displayMarketValue: number | null;
+    displayMarketValueLabel: string;
+    displayMarketValueConfidence: string;
   };
   holders: {
     holderCount: number | null;
@@ -2763,7 +2769,7 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   const tokenAddress = evidence.tokenScan?.token?.address ?? evidence.liquidity?.token?.address ?? resolvedAddress ?? null;
   const tokenName = evidence.tokenScan?.token?.name ?? evidence.liquidity?.token?.name ?? null;
   const tokenSymbol = evidence.tokenScan?.token?.symbol ?? evidence.liquidity?.token?.symbol ?? null;
-  const market = evidence.tokenScan?.market ?? { price: null, change24h: null, volume24h: null, liquidity: null, marketCap: null, fdv: null };
+  const market = evidence.tokenScan?.market ?? { price: null, change24h: null, volume24h: null, liquidity: null, marketCap: null, fdv: null, displayMarketValue: null, displayMarketValueLabel: 'Market Cap', displayMarketValueConfidence: 'low' };
   const contractWarnings = [...(evidence.tokenScan?.warnings ?? [])];
   const devWarnings = [...(evidence.devWallet?.warnings ?? [])];
   const liqWarnings = [...(evidence.liquidity?.warnings ?? [])];
@@ -2781,6 +2787,9 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
       marketCap: market.marketCap ?? null,
       poolAge: null,
       marketSourceAvailable: market.price != null || market.volume24h != null || market.liquidity != null,
+      displayMarketValue: market.displayMarketValue ?? null,
+      displayMarketValueLabel: market.displayMarketValueLabel ?? 'Market Cap',
+      displayMarketValueConfidence: market.displayMarketValueConfidence ?? 'low',
     },
     holders: {
       holderCount: evidence.tokenScan?.holders?.holderCount ?? null,
@@ -2980,7 +2989,7 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     ...verdict.risks,
     report.holders.topHolderPct != null ? `Top holder controls ${report.holders.topHolderPct.toFixed(1)}% of supply.` : "",
     report.holders.top10Pct != null && report.holders.top10Pct > 40 ? `Top 10 holders control ${report.holders.top10Pct.toFixed(1)}% of supply.` : "",
-    report.market.marketCap == null && report.market.fdv != null ? "Market cap unverified — FDV only." : "",
+    report.market.displayMarketValueLabel === 'FDV' ? "Market cap unverified — showing FDV as fallback." : (report.market.displayMarketValueLabel === 'Estimated MC' ? "Estimated market cap — circulating supply not provider-verified." : ""),
     report.liquidity.lpLocked === null ? "LP control not confirmed." : "",
   ]).filter(Boolean).slice(0, 5);
   return [
@@ -2997,7 +3006,7 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
     `- 24h volume: ${formatUsdShort(report.market.volume24h)}`,
-    `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : "Unavailable — circulating supply not verified"}`,
+    `- Market value: ${report.market.displayMarketValue != null ? formatUsdShort(report.market.displayMarketValue) + ` (${report.market.displayMarketValueLabel}${report.market.displayMarketValueLabel === 'Estimated MC' ? ', circulating supply not fully verified' : report.market.displayMarketValueLabel === 'FDV' ? ', true MC unavailable' : ''})` : "Unavailable — price/supply data missing"}`,
     `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
     "",
     "Security / simulation:",
@@ -3057,7 +3066,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     (report.liquidity.liquidityUsd ?? 0) > 0 && (report.liquidity.liquidityUsd ?? 0) < 20_000 ? "Liquidity depth is thin for clean exits." : "",
     report.holders.topHolderPct != null ? `Top holder controls ${report.holders.topHolderPct.toFixed(1)}% of supply.` : "",
     report.holders.top10Pct != null && report.holders.top10Pct > 40 ? `Top 10 holders control ${report.holders.top10Pct.toFixed(1)}% of supply.` : "",
-    report.market.marketCap == null && report.market.fdv != null ? "Market cap unverified — FDV only." : "",
+    report.market.displayMarketValueLabel === 'FDV' ? "Market cap unverified — showing FDV as fallback." : (report.market.displayMarketValueLabel === 'Estimated MC' ? "Estimated market cap — circulating supply not provider-verified." : ""),
     report.liquidity.lpLocked === null ? "LP control not confirmed." : "",
   ]).filter(Boolean).slice(0, 5);
 
@@ -3081,7 +3090,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
     `- Volume (24h): ${formatUsdShort(report.market.volume24h)}`,
-    `- Market cap: ${report.market.marketCap != null ? formatUsdShort(report.market.marketCap) : "Unavailable — circulating supply not verified"}`,
+    `- Market value: ${report.market.displayMarketValue != null ? formatUsdShort(report.market.displayMarketValue) + ` (${report.market.displayMarketValueLabel}${report.market.displayMarketValueLabel === 'Estimated MC' ? ', circulating supply not fully verified' : report.market.displayMarketValueLabel === 'FDV' ? ', true MC unavailable' : ''})` : "Unavailable — price/supply data missing"}`,
     `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
     `- Pool depth: ${formatUsdShort(report.liquidity.liquidityUsd)}`,
     `- LP control: ${lpControl}`,
@@ -4369,6 +4378,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
           liquidity: typeof (tokenData as Record<string, unknown>).liquidity === "number" ? (tokenData as Record<string, unknown>).liquidity as number : null,
           marketCap: typeof (tokenData as Record<string, unknown>).marketCapUsd === "number" ? (tokenData as Record<string, unknown>).marketCapUsd as number : null,
           fdv: typeof (tokenData as Record<string, unknown>).fdvUsd === "number" ? (tokenData as Record<string, unknown>).fdvUsd as number : null,
+          displayMarketValue: typeof (tokenData as Record<string, unknown>).displayMarketValue === "number" ? (tokenData as Record<string, unknown>).displayMarketValue as number : null,
+          displayMarketValueLabel: typeof (tokenData as Record<string, unknown>).displayMarketValueLabel === "string" ? String((tokenData as Record<string, unknown>).displayMarketValueLabel) : "Market Cap",
+          displayMarketValueConfidence: typeof (tokenData as Record<string, unknown>).displayMarketValueConfidence === "string" ? String((tokenData as Record<string, unknown>).displayMarketValueConfidence) : "low",
         },
         holders: {
           top1: typeof ((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown> | undefined)?.top1 === "number" ? (((tokenData as Record<string, unknown>).holderDistribution as Record<string, unknown>).top1 as number) : null,
