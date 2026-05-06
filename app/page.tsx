@@ -42,7 +42,7 @@ const FEATURES = [
     hoverBorder: 'rgba(45,212,191,0.42)',
     hoverShadow: '0 16px 56px rgba(45,212,191,0.18), 0 0 32px rgba(45,212,191,0.12), 0 4px 20px rgba(0,0,0,0.45)',
     title: 'Scan Wallets Instantly',
-    body: 'See everything inside any wallet — tokens, positions, PnL, behavior patterns, smart money tags, and chain activity.',
+    body: 'Check a Base wallet’s available holdings, portfolio signals, recent activity where available, and Clark’s wallet read.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="16" cy="15" r="1.5"/>
@@ -55,8 +55,8 @@ const FEATURES = [
     borderColor: 'rgba(236,72,153,0.16)',
     hoverBorder: 'rgba(236,72,153,0.42)',
     hoverShadow: '0 16px 56px rgba(236,72,153,0.12), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
-    title: 'Real-Time Onchain Intelligence',
-    body: 'Track whale movements, early pumps, deployer activity, and market shifts as they happen — not after.',
+    title: 'Track Base Alerts Live',
+    body: 'See tracked-wallet buys, high-momentum Base tokens, volume expansion, and alert context in one feed.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -69,8 +69,8 @@ const FEATURES = [
     borderColor: 'rgba(139,92,246,0.16)',
     hoverBorder: 'rgba(139,92,246,0.42)',
     hoverShadow: '0 16px 56px rgba(139,92,246,0.14), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
-    title: 'Advanced Token Scanner',
-    body: 'Paste any contract and get instant AI analysis: price, liquidity, holders, deployer history, risk score, bytecode flags, and social momentum.',
+    title: 'Analyze Base Tokens',
+    body: 'Scan contracts for price, liquidity, FDV, holder concentration, security/tax checks where available, pools, and Clark verdicts.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
@@ -83,8 +83,8 @@ const FEATURES = [
     borderColor: 'rgba(96,165,250,0.16)',
     hoverBorder: 'rgba(96,165,250,0.42)',
     hoverShadow: '0 16px 56px rgba(96,165,250,0.12), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
-    title: 'Liquidity Safety Engine',
-    body: 'Detect rugs before they happen. ChainLens checks LP locks, ownership, burns, mint functions, suspicious patterns, and contract risks.',
+    title: 'Read Liquidity & Pools',
+    body: 'Review pool depth, pair routes, liquidity strength, weak pools, and missing LP-control checks before trusting a token.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>
@@ -267,8 +267,18 @@ export default function HomePage() {
         .pricing-card:hover { transform: translateY(-8px); }
         .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
         .pricing-card.card-free:hover { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 40px rgba(236,72,153,0.18); border-color: rgba(236,72,153,0.35) !important; }
-        .pricing-card.card-pro:hover  { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 80px rgba(139,92,246,0.40), inset 0 0 0 1px rgba(139,92,246,0.90); animation-play-state: paused; }
-        .pricing-card.card-elite:hover { box-shadow: 0 24px 70px rgba(0,0,0,0.60), 0 0 100px rgba(251,191,36,0.45), 0 0 160px rgba(251,191,36,0.18), inset 0 0 0 1px rgba(251,191,36,0.85); animation-play-state: paused; }
+        .pricing-card.card-pro:hover  { box-shadow: 0 14px 38px rgba(0,0,0,0.50), 0 0 36px rgba(139,92,246,0.28), inset 0 0 0 1px rgba(139,92,246,0.82); animation-play-state: paused; }
+        .pricing-card.card-elite:hover { box-shadow: 0 16px 44px rgba(0,0,0,0.56), 0 0 44px rgba(251,191,36,0.30), inset 0 0 0 1px rgba(251,191,36,0.82); animation-play-state: paused; }
+        .home-heavy-visual * {
+          animation-duration: 0s !important;
+          animation-iteration-count: 1 !important;
+          will-change: auto !important;
+        }
+        .home-heavy-visual [style*='filter: blur(24px)'],
+        .home-heavy-visual [style*='filter: blur(26px)'],
+        .home-heavy-visual [style*='filter: blur(30px)'] {
+          filter: blur(10px) !important;
+        }
         .cta-outline  { background:transparent; border:1px solid rgba(255,255,255,0.18); color:rgba(255,255,255,0.70); transition:border-color 0.15s,color 0.15s,background 0.15s; }
         .cta-outline:hover { border-color:rgba(255,255,255,0.40); color:#fff; background:rgba(255,255,255,0.05); }
         .cta-gradient { background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%); border:none; color:#fff; transition:opacity 0.15s,transform 0.15s; }
@@ -282,7 +292,7 @@ export default function HomePage() {
       <div className={`home-page relative min-h-dvh w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
 
         {/* ── Unified page ambient system ── */}
-        <div className="home-heavy-visual home-ambient" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+        <div className="home-heavy-visual home-ambient" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '780px', pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
             position: 'absolute',
             inset: 0,
@@ -310,233 +320,20 @@ export default function HomePage() {
         </div>
 
         {/* ── Cinematic background layer ── */}
-        <div className="hero-premium-bg home-heavy-visual" style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+        <div className="hero-premium-bg home-heavy-visual" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '780px', pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
           <div style={{
             position: 'absolute', inset: 0,
-            background: 'linear-gradient(180deg, #05050b 0%, #06070f 44%, #05050b 100%)',
-            animation: 'aurora-drift 38s ease-in-out infinite',
-            willChange: 'transform',
+            background: 'linear-gradient(180deg, #04050d 0%, #050712 46%, #05060d 100%)',
           }} />
-
-          <div style={{
-            position: 'absolute',
-            left: '-28%',
-            bottom: '-30%',
-            width: '102%',
-            height: '92%',
-            background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
-            filter: 'blur(8px)',
-            maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
-            animation: 'streak-drift-left 42s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            right: '-32%',
-            top: '-10%',
-            width: '92%',
-            height: '88%',
-            background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
-            filter: 'blur(6px)',
-            maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
-            animation: 'streak-drift-right 44s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            left: '-12%',
-            top: '38%',
-            width: '42%',
-            height: '24%',
-            background: 'linear-gradient(100deg, rgba(168,85,247,0) 0%, rgba(168,85,247,0.20) 46%, rgba(236,72,153,0.12) 56%, rgba(236,72,153,0) 100%)',
-            filter: 'blur(7px)',
-            maskImage: 'radial-gradient(120% 90% at 56% 50%, black 8%, rgba(0,0,0,0.72) 48%, transparent 100%)',
-            animation: 'streak-drift-left 46s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            right: '-10%',
-            top: '34%',
-            width: '40%',
-            height: '22%',
-            background: 'linear-gradient(258deg, rgba(139,92,246,0) 0%, rgba(139,92,246,0.16) 46%, rgba(217,70,239,0.10) 58%, rgba(217,70,239,0) 100%)',
-            filter: 'blur(8px)',
-            maskImage: 'radial-gradient(110% 90% at 44% 46%, black 10%, rgba(0,0,0,0.74) 50%, transparent 100%)',
-            animation: 'streak-drift-right 48s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            inset: '-6%',
-            background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.20) 0%, rgba(139,92,246,0.08) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.13) 0%, rgba(217,70,239,0.04) 50%, transparent 100%)',
-            filter: 'blur(26px)',
-            animation: 'halo-drift 36s ease-in-out infinite',
-            willChange: 'transform',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            left: '-28%',
-            bottom: '-30%',
-            width: '102%',
-            height: '92%',
-            background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
-            filter: 'blur(8px)',
-            maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
-            animation: 'streak-drift-left 42s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            right: '-32%',
-            top: '-10%',
-            width: '92%',
-            height: '88%',
-            background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
-            filter: 'blur(6px)',
-            maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
-            animation: 'streak-drift-right 44s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            left: '-12%',
-            top: '38%',
-            width: '42%',
-            height: '24%',
-            background: 'linear-gradient(100deg, rgba(168,85,247,0) 0%, rgba(168,85,247,0.20) 46%, rgba(236,72,153,0.12) 56%, rgba(236,72,153,0) 100%)',
-            filter: 'blur(7px)',
-            maskImage: 'radial-gradient(120% 90% at 56% 50%, black 8%, rgba(0,0,0,0.72) 48%, transparent 100%)',
-            animation: 'streak-drift-left 46s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            right: '-10%',
-            top: '34%',
-            width: '40%',
-            height: '22%',
-            background: 'linear-gradient(258deg, rgba(139,92,246,0) 0%, rgba(139,92,246,0.16) 46%, rgba(217,70,239,0.10) 58%, rgba(217,70,239,0) 100%)',
-            filter: 'blur(8px)',
-            maskImage: 'radial-gradient(110% 90% at 44% 46%, black 10%, rgba(0,0,0,0.74) 50%, transparent 100%)',
-            animation: 'streak-drift-right 48s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            inset: '-6%',
-            background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.20) 0%, rgba(139,92,246,0.08) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.13) 0%, rgba(217,70,239,0.04) 50%, transparent 100%)',
-            filter: 'blur(26px)',
-            animation: 'halo-drift 36s ease-in-out infinite',
-            willChange: 'transform',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            left: '-28%',
-            bottom: '-30%',
-            width: '102%',
-            height: '92%',
-            background: 'conic-gradient(from 244deg at 72% 46%, rgba(167,139,250,0.00) 0deg, rgba(167,139,250,0.34) 70deg, rgba(129,92,249,0.00) 156deg)',
-            filter: 'blur(8px)',
-            maskImage: 'radial-gradient(84% 66% at 68% 42%, black 12%, rgba(0,0,0,0.85) 46%, transparent 86%)',
-            animation: 'streak-drift-left 42s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            right: '-32%',
-            top: '-10%',
-            width: '92%',
-            height: '88%',
-            background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
-            filter: 'blur(6px)',
-            maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
-            animation: 'streak-drift-right 44s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute', inset: '-8%',
-            background: 'radial-gradient(34% 34% at 50% 34%, rgba(167,139,250,0.16) 0%, rgba(167,139,250,0.05) 50%, transparent 100%), radial-gradient(22% 24% at 72% 54%, rgba(139,92,246,0.12) 0%, rgba(139,92,246,0.04) 46%, transparent 100%), radial-gradient(18% 20% at 76% 36%, rgba(56,189,248,0.03) 0%, rgba(56,189,248,0.01) 48%, transparent 100%), radial-gradient(24% 24% at 82% 68%, rgba(217,70,239,0.09) 0%, rgba(217,70,239,0.02) 52%, transparent 100%)',
-            filter: 'blur(30px)',
-            animation: 'glow-drift 32s ease-in-out infinite',
-            willChange: 'transform',
-          }} />
-
           <div style={{
             position: 'absolute',
             inset: 0,
-            background: 'radial-gradient(58% 48% at 50% 34%, rgba(160,120,255,0.16) 0%, rgba(110,76,220,0.06) 45%, transparent 100%)',
-            filter: 'blur(8px)',
+            background: 'radial-gradient(40% 24% at 50% 30%, rgba(129,92,249,0.14) 0%, rgba(129,92,249,0.05) 44%, transparent 100%)',
           }} />
-
-          <div style={{
-            position: 'absolute',
-            left: '-18%',
-            bottom: '-22%',
-            width: '62%',
-            height: '56%',
-            background: 'radial-gradient(closest-side, rgba(192,132,252,0.16) 0%, rgba(168,85,247,0.08) 34%, transparent 80%)',
-            filter: 'blur(8px)',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            right: '-16%',
-            bottom: '-18%',
-            width: '58%',
-            height: '54%',
-            background: 'radial-gradient(closest-side, rgba(217,70,239,0.12) 0%, rgba(167,139,250,0.08) 36%, transparent 82%)',
-            filter: 'blur(16px)',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            left: '-8%',
-            top: '-14%',
-            width: '76%',
-            height: '122%',
-            borderRadius: '50%',
-            border: '1px solid rgba(167,139,250,0.09)',
-            maskImage: 'radial-gradient(circle at 62% 42%, black 42%, transparent 74%)',
-            animation: 'arc-sway 34s ease-in-out infinite',
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            right: '-22%',
-            top: '-18%',
-            width: '96%',
-            height: '136%',
-            borderRadius: '50%',
-            border: '1px solid rgba(167,139,250,0.07)',
-            maskImage: 'radial-gradient(circle at 38% 46%, black 40%, transparent 74%)',
-            animation: 'arc-sway 42s ease-in-out infinite reverse',
-          }} />
-
           <div style={{
             position: 'absolute',
             inset: 0,
-            backgroundImage: 'radial-gradient(rgba(210,214,255,0.34) 0.75px, transparent 0.9px)',
-            backgroundSize: '160px 160px',
-            maskImage: 'radial-gradient(80% 68% at 50% 44%, black 22%, rgba(0,0,0,0.4) 58%, transparent 100%)',
-            opacity: 0.1,
-          }} />
-
-          <div style={{
-            position: 'absolute',
-            inset: 0,
-            backgroundImage: 'linear-gradient(rgba(120,88,214,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(120,88,214,0.08) 1px, transparent 1px)',
-            backgroundSize: '56px 56px',
-            maskImage: 'linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.22) 55%, rgba(0,0,0,0.9) 100%)',
-            animation: 'texture-shift 22s ease-in-out infinite',
-            opacity: 0.06,
-          }} />
-
-          <div style={{
-            position: 'absolute', inset: 0,
-            background: 'radial-gradient(48% 32% at 50% 35%, rgba(150,118,255,0.14) 0%, rgba(95,61,194,0.06) 40%, rgba(7,7,15,0) 72%), radial-gradient(112% 84% at 50% 42%, transparent 48%, rgba(3,6,15,0.56) 72%, rgba(2,4,12,0.92) 100%)',
+            background: 'radial-gradient(120% 96% at 50% 44%, rgba(4,8,20,0) 50%, rgba(3,6,16,0.78) 82%, rgba(2,4,12,0.96) 100%)',
           }} />
         </div>
 
@@ -1464,33 +1261,18 @@ export default function HomePage() {
         borderTop: '1px solid rgba(167,139,250,0.16)',
         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
       }}>
-        <div style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: 'radial-gradient(58% 44% at 50% 0%, rgba(139,92,246,0.18) 0%, rgba(139,92,246,0.06) 40%, transparent 78%), radial-gradient(34% 30% at 76% 18%, rgba(217,70,239,0.11) 0%, transparent 72%)',
-        }} />
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(180deg, #05060d 0%, #04050c 100%)' }} />
 
         {/* Premium top separator */}
         <div style={{
           position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
           background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.26) 28%, rgba(167,139,250,0.5) 50%, rgba(45,212,191,0.26) 72%, transparent 100%)',
         }} />
-        <div style={{
-          position: 'absolute', top: 0, left: '16%', right: '16%', height: '14px',
-          background: 'radial-gradient(closest-side, rgba(139,92,246,0.24), transparent)',
-          filter: 'blur(10px)', pointerEvents: 'none',
-        }} />
 
         <div className="mob-footer-grid" style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr', gap: '42px', alignItems: 'start', position: 'relative' }}>
 
           {/* Left — brand + socials */}
           <Reveal delayMs={20}><div style={{ position: 'relative' }}>
-            {/* Subtle brand glow behind left section */}
-            <div style={{
-              position: 'absolute', top: '-20px', left: '-40px',
-              width: '300px', height: '200px',
-              background: 'radial-gradient(ellipse, rgba(139,92,246,0.14) 0%, rgba(45,212,191,0.05) 44%, transparent 74%)',
-              filter: 'blur(30px)', pointerEvents: 'none',
-            }} />
             {/* Logo + name */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', position: 'relative' }}>
               <img src="/cl-logo.png" alt="ChainLens" style={{ width: '34px', height: '34px', objectFit: 'contain' }} />
