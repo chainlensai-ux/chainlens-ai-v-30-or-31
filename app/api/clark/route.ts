@@ -2601,6 +2601,10 @@ async function executeClarkToolPlan(input: {
         const tokenJson = tokenData?.ok ? tokenData.json : null;
         const securitySim = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await fetchHoneypotSecurity(addr, "base") : null;
         const t = (tokenJson ?? {}) as Record<string, unknown>;
+        const sections = (t.sections ?? {}) as Record<string, unknown>;
+        const marketSection = (sections.market ?? {}) as Record<string, unknown>;
+        const securitySection = (sections.security ?? {}) as Record<string, unknown>;
+        const holdersSection = (sections.holders ?? {}) as Record<string, unknown>;
         // GoPlus result is keyed by lowercase contract address — extract the token-specific entry
         const gpResultRaw = (t.goplus ?? {}) as Record<string, unknown>;
         const g = (gpResultRaw[addr.toLowerCase()] ?? gpResultRaw[addr] ?? {}) as Record<string, unknown>;
@@ -2612,25 +2616,25 @@ async function executeClarkToolPlan(input: {
           ok: Boolean(tokenJson),
           token: tokenJson ? { name: String(t.name ?? "Unknown"), symbol: String(t.symbol ?? "?"), address: String(t.contract ?? addr) } : null,
           market: {
-            price: typeof t.priceUsd === "number" ? t.priceUsd : (typeof t.price === "number" ? t.price : null),
-            change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : null,
-            volume24h: typeof t.volume24hUsd === "number" ? t.volume24hUsd : (typeof t.volume24h === "number" ? t.volume24h : null),
-            liquidity: typeof t.liquidityUsd === "number" ? t.liquidityUsd : (typeof t.liquidity === "number" ? t.liquidity : null),
-            marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : null,
-            fdv: typeof t.fdvUsd === "number" ? t.fdvUsd : (typeof t.fdv === "number" ? t.fdv : null),
+            price: typeof marketSection.price === "number" ? marketSection.price : (typeof t.priceUsd === "number" ? t.priceUsd : (typeof t.price === "number" ? t.price : null)),
+            change24h: typeof marketSection.change24h === "number" ? marketSection.change24h : (typeof t.priceChange24h === "number" ? t.priceChange24h : null),
+            volume24h: typeof marketSection.volume24h === "number" ? marketSection.volume24h : (typeof t.volume24hUsd === "number" ? t.volume24hUsd : (typeof t.volume24h === "number" ? t.volume24h : null)),
+            liquidity: typeof marketSection.liquidity === "number" ? marketSection.liquidity : (typeof t.liquidityUsd === "number" ? t.liquidityUsd : (typeof t.liquidity === "number" ? t.liquidity : null)),
+            marketCap: typeof marketSection.marketCap === "number" ? marketSection.marketCap : (typeof t.marketCapUsd === "number" ? t.marketCapUsd : null),
+            fdv: typeof marketSection.fdv === "number" ? marketSection.fdv : (typeof t.fdvUsd === "number" ? t.fdvUsd : (typeof t.fdv === "number" ? t.fdv : null)),
           },
           holders: {
-            top1: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top1 === "number" ? (t.holderDistribution as Record<string, unknown>).top1 as number : null,
-            top10: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top10 === "number" ? (t.holderDistribution as Record<string, unknown>).top10 as number : null,
-            holderCount: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.holderCount === "number" ? (t.holderDistribution as Record<string, unknown>).holderCount as number : null,
-            status: typeof (t.holderDistributionStatus as Record<string, unknown> | undefined)?.status === "string" ? String((t.holderDistributionStatus as Record<string, unknown>).status) : "unavailable",
+            top1: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top1 === "number" ? (t.holderDistribution as Record<string, unknown>).top1 as number : (typeof holdersSection.top1 === "number" ? holdersSection.top1 : null),
+            top10: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.top10 === "number" ? (t.holderDistribution as Record<string, unknown>).top10 as number : (typeof holdersSection.top10 === "number" ? holdersSection.top10 : null),
+            holderCount: typeof (t.holderDistribution as Record<string, unknown> | undefined)?.holderCount === "number" ? (t.holderDistribution as Record<string, unknown>).holderCount as number : (typeof holdersSection.holderCount === "number" ? holdersSection.holderCount : null),
+            status: typeof holdersSection.status === "string" ? String(holdersSection.status) : (typeof (t.holderDistributionStatus as Record<string, unknown> | undefined)?.status === "string" ? String((t.holderDistributionStatus as Record<string, unknown>).status) : "unavailable"),
           },
           security: {
-            honeypot: securitySim?.honeypot ?? (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : (g.is_honeypot != null ? String(g.is_honeypot) === "1" : null)),
-            buyTax: securitySim?.buyTax ?? (typeof hp.buyTax === "number" ? hp.buyTax : (g.buy_tax != null ? Number(g.buy_tax) : null)),
-            sellTax: securitySim?.sellTax ?? (typeof hp.sellTax === "number" ? hp.sellTax : (g.sell_tax != null ? Number(g.sell_tax) : null)),
-            transferTax: securitySim?.transferTax ?? null,
-            simulationSuccess: securitySim?.simulationSuccess
+            honeypot: typeof securitySection.honeypot === "boolean" ? securitySection.honeypot : (securitySim?.honeypot ?? (typeof hp.isHoneypot === "boolean" ? hp.isHoneypot : (g.is_honeypot != null ? String(g.is_honeypot) === "1" : null))),
+            buyTax: typeof securitySection.buyTax === "number" ? securitySection.buyTax : (securitySim?.buyTax ?? (typeof hp.buyTax === "number" ? hp.buyTax : (g.buy_tax != null ? Number(g.buy_tax) : null))),
+            sellTax: typeof securitySection.sellTax === "number" ? securitySection.sellTax : (securitySim?.sellTax ?? (typeof hp.sellTax === "number" ? hp.sellTax : (g.sell_tax != null ? Number(g.sell_tax) : null))),
+            transferTax: securitySim?.transferTax ?? (typeof t.honeypot === "object" && t.honeypot && typeof (t.honeypot as Record<string, unknown>).transferTax === "number" ? (t.honeypot as Record<string, unknown>).transferTax as number : null),
+            simulationSuccess: (typeof securitySection.simulationSuccess === "boolean" ? securitySection.simulationSuccess : null) ?? securitySim?.simulationSuccess
               ?? (typeof hp.simulationSuccess === "boolean" ? hp.simulationSuccess : null)
               ?? (securitySim?.ok && (securitySim.buyTax != null || securitySim.sellTax != null) ? true : null),
             securityStatus: securitySim?.securityStatus ?? "unverified",
