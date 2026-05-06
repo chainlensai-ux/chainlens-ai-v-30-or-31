@@ -4,9 +4,19 @@ import { WagmiProvider } from 'wagmi'
 import { createWeb3Modal } from '@web3modal/wagmi/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig, projectId, walletConnectEnabled } from '@/lib/wallet'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const queryClient = new QueryClient()
+
+let web3ModalInitialized = false
+if (walletConnectEnabled && !web3ModalInitialized) {
+  try {
+    createWeb3Modal({ wagmiConfig, projectId })
+    web3ModalInitialized = true
+  } catch (error) {
+    console.error('Web3 modal initialization failed:', error)
+  }
+}
 
 
 function shouldEnableAndroidSafeMode() {
@@ -31,7 +41,6 @@ function shouldEnableAndroidSafeMode() {
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {
-  const modalInitRef = useRef(false)
   const [androidDebugBadge, setAndroidDebugBadge] = useState(false)
   const [androidDebugText, setAndroidDebugText] = useState('')
 
@@ -58,18 +67,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  useEffect(() => {
-    if (!walletConnectEnabled || typeof window === 'undefined' || modalInitRef.current) return
-    modalInitRef.current = true
-    try {
-      createWeb3Modal({
-        wagmiConfig,
-        projectId,
-      })
-    } catch (error) {
-      console.error('Web3 modal initialization failed:', error)
-    }
-  }, [])
 
   return (
     <WagmiProvider config={wagmiConfig}>
