@@ -53,14 +53,22 @@ export default function Navbar() {
   const [open, setOpen] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
+  const [plan, setPlan] = useState<'free' | 'pro' | 'elite'>('free')
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setAccountEmail(data.session?.user?.email ?? null)
+    supabase.auth.getSession().then(async ({ data }) => {
+      const session = data.session
+      setAccountEmail(session?.user?.email ?? null)
+      const token = session?.access_token
+      if (!token) return setPlan('free')
+      const res = await fetch('/api/user-settings', { headers: { authorization: `Bearer ${token}` } })
+      const j = await res.json()
+      setPlan(j?.settings?.plan ?? 'free')
     })
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setAccountEmail(session?.user?.email ?? null)
+      setPlan('free')
     })
 
     return () => listener.subscription.unsubscribe()
@@ -72,6 +80,7 @@ export default function Navbar() {
       : accountEmail
     : null
   const initials = (shortEmail?.[0] ?? 'A').toUpperCase()
+  const planLabel = plan.toUpperCase()
 
   return (
     <>
