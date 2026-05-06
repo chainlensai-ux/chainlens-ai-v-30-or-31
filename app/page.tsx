@@ -267,8 +267,18 @@ export default function HomePage() {
         .pricing-card:hover { transform: translateY(-8px); }
         .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
         .pricing-card.card-free:hover { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 40px rgba(236,72,153,0.18); border-color: rgba(236,72,153,0.35) !important; }
-        .pricing-card.card-pro:hover  { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 80px rgba(139,92,246,0.40), inset 0 0 0 1px rgba(139,92,246,0.90); animation-play-state: paused; }
-        .pricing-card.card-elite:hover { box-shadow: 0 24px 70px rgba(0,0,0,0.60), 0 0 100px rgba(251,191,36,0.45), 0 0 160px rgba(251,191,36,0.18), inset 0 0 0 1px rgba(251,191,36,0.85); animation-play-state: paused; }
+        .pricing-card.card-pro:hover  { box-shadow: 0 14px 38px rgba(0,0,0,0.50), 0 0 36px rgba(139,92,246,0.28), inset 0 0 0 1px rgba(139,92,246,0.82); animation-play-state: paused; }
+        .pricing-card.card-elite:hover { box-shadow: 0 16px 44px rgba(0,0,0,0.56), 0 0 44px rgba(251,191,36,0.30), inset 0 0 0 1px rgba(251,191,36,0.82); animation-play-state: paused; }
+        .home-heavy-visual * {
+          animation-duration: 0s !important;
+          animation-iteration-count: 1 !important;
+          will-change: auto !important;
+        }
+        .home-heavy-visual [style*='filter: blur(24px)'],
+        .home-heavy-visual [style*='filter: blur(26px)'],
+        .home-heavy-visual [style*='filter: blur(30px)'] {
+          filter: blur(10px) !important;
+        }
         .cta-outline  { background:transparent; border:1px solid rgba(255,255,255,0.18); color:rgba(255,255,255,0.70); transition:border-color 0.15s,color 0.15s,background 0.15s; }
         .cta-outline:hover { border-color:rgba(255,255,255,0.40); color:#fff; background:rgba(255,255,255,0.05); }
         .cta-gradient { background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%); border:none; color:#fff; transition:opacity 0.15s,transform 0.15s; }
