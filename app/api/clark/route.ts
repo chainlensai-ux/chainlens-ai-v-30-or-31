@@ -60,6 +60,8 @@ interface ClarkRequestBody {
     previousIntent?: string | null;
   };
   marketContext?: unknown;
+  recentMovers?: unknown;
+  moversContext?: unknown;
 }
 
 interface ClarkContext {
@@ -594,9 +596,20 @@ function normalizeStructuredMarketItems(source: unknown): StructuredMarketItem[]
 }
 
 function extractStructuredMarketItems(body: ClarkRequestBody): StructuredMarketItem[] {
+  const fromRecentMovers = normalizeStructuredMarketItems(body.recentMovers);
+  if (fromRecentMovers.length) return fromRecentMovers;
+  if (body.moversContext && typeof body.moversContext === "object") {
+    const moversObj = body.moversContext as Record<string, unknown>;
+    const fromMoversItems = normalizeStructuredMarketItems(moversObj.items);
+    if (fromMoversItems.length) return fromMoversItems;
+    const fromMoversDirect = normalizeStructuredMarketItems(body.moversContext);
+    if (fromMoversDirect.length) return fromMoversDirect;
+  }
   const fromClarkContext = normalizeStructuredMarketItems(body.clarkContext?.lastMarketList);
   if (fromClarkContext.length) return fromClarkContext;
   const contextObj = (body.context && typeof body.context === "object") ? body.context as Record<string, unknown> : null;
+  const fromContextRecentMovers = normalizeStructuredMarketItems(contextObj?.recentMovers);
+  if (fromContextRecentMovers.length) return fromContextRecentMovers;
   const fromContextList = normalizeStructuredMarketItems(contextObj?.marketList);
   if (fromContextList.length) return fromContextList;
   const contextMarketObj = contextObj?.marketContext;
@@ -4100,6 +4113,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 
   const replyMode = detectReplyMode(body);
   const structuredMarketList = extractStructuredMarketItems(body);
+  if (process.env.NODE_ENV === "development") {
+    const followupDev = resolveMarketTokenFromFollowup(prompt.trim().toLowerCase(), structuredMarketList, body.clarkContext?.lastSelectedRank);
+    console.log("[clark] movers followup", {
+      incomingMessage: prompt,
+      normalizedMoversCount: structuredMarketList.length,
+      resolvedRank: followupDev.item?.rank ?? null,
+      resolvedSymbol: followupDev.item?.symbol ?? null,
+    });
+  }
   const marketFollowupResolution = resolveMarketTokenFromFollowup(prompt.trim().toLowerCase(), structuredMarketList, body.clarkContext?.lastSelectedRank);
   if (marketFollowupResolution.ambiguous.length > 1) {
     return {

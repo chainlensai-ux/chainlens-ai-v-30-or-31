@@ -179,6 +179,12 @@ function ClarkAiContent() {
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[clark] request context', {
+          moversCount: clarkContextRef.current.lastMarketList?.length ?? 0,
+          lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
+        })
+      }
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -191,6 +197,9 @@ function ClarkAiContent() {
           context: null,
           history,
           clarkContext: clarkContextRef.current,
+          recentMovers: clarkContextRef.current.lastMarketList ?? [],
+          moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
+          marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
         }),
       })
       const json = await res.json()
