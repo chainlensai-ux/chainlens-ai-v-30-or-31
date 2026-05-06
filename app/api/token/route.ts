@@ -585,10 +585,15 @@ ${JSON.stringify(analysis, null, 2)}
           : { source: 'unavailable', status: (holdersRaw?.__status ?? 'empty'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: 0, normalizedCount: 0 })
 
     const poolAttr = mainPool?.attributes ?? {}
-    // True market cap only from the GT token endpoint — pool market_cap_usd may be FDV-derived
-    const marketCapFromGt = pickNum(
-      gtToken?.market_cap_usd, gtToken?.market_cap, gtToken?.marketCap, gtToken?.market_cap_in_usd
-    )
+    // True market cap priority:
+    // 1) GeckoTerminal token endpoint attributes.market_cap_usd
+    // 2) explicit market cap fields from token metadata responses (never FDV fields)
+    const tokenEndpointMarketCap = toNum(gtToken?.market_cap_usd)
+    const metadataMarketCap = pickNum(gtToken?.market_cap, gtToken?.marketCap, gtToken?.market_cap_in_usd, goldItem?.market_cap, metaItem?.market_cap)
+    const marketCapFromGt = (tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0)
+      ? tokenEndpointMarketCap
+      : (metadataMarketCap != null && metadataMarketCap > 0 ? metadataMarketCap : null)
+    const poolEndpointMarketCapPresent = toNum(poolAttr.market_cap_usd) != null;
     const circulatingSupply = pickNum(gtToken?.circulating_supply, goldItem?.circulating_supply, gmgnItem?.circulating_supply)
     const tokenPrice = pickNum(poolAttr.base_token_price_usd, gtToken?.price_usd, gtToken?.price)
     const marketCapSource = marketCapFromGt != null ? 'geckoterminal' : 'unavailable'
@@ -598,7 +603,9 @@ ${JSON.stringify(analysis, null, 2)}
     const liquidityUsd = pickNum(mainPool?.attributes?.reserve_in_usd)
     const volume24hUsd = pickNum((mainPool?.attributes?.volume_usd as Record<string, unknown> | undefined)?.h24)
     const poolCount = matchingPools.length
-    console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] marketCap available', marketCapFromGt != null, '[gt-market] fdv available', fdv != null)
+    if (process.env.NODE_ENV === "development") {
+      console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] tokenEndpointMarketCapPresent', tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0, '[gt-market] poolEndpointMarketCapPresent', poolEndpointMarketCapPresent, '[gt-market] marketCap available', marketCapFromGt != null, '[gt-market] fdv available', fdv != null)
+    }
     // Optional GoPlus data — only used if already present and Honeypot.is is unavailable.
     // GoPlus is not a core ChainLens security provider; treat its data as low-confidence fallback only.
     const gpResultObj = (gpRaw as Record<string, unknown>)?.result as Record<string, unknown> ?? {};
@@ -701,6 +708,8 @@ ${JSON.stringify(analysis, null, 2)}
           liquidityUsd: liquidityUsd != null,
           volume24hUsd: volume24hUsd != null,
           marketCapUsd: marketCapFromGt != null,
+          tokenEndpointMarketCapPresent: tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0,
+          poolEndpointMarketCapPresent,
           fdvUsd: fdv != null,
           poolCount: poolCount > 0,
         },
