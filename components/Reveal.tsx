@@ -7,7 +7,6 @@ type RevealProps = {
   delayMs?: number
   durationMs?: number
   y?: number
-  blur?: number
   once?: boolean
   className?: string
   style?: CSSProperties
@@ -18,7 +17,6 @@ export default function Reveal({
   delayMs = 0,
   durationMs = 760,
   y = 22,
-  blur = 4,
   once = true,
   className,
   style,
@@ -68,11 +66,10 @@ export default function Reveal({
       style={{
         opacity: isVisible ? 1 : 0,
         transform: isVisible ? 'translate3d(0,0,0)' : `translate3d(0, ${y}px, 0)`,
-        filter: isVisible ? 'blur(0px)' : `blur(${blur}px)`,
         transition: reduceMotion
           ? 'none'
-          : `opacity ${durationMs}ms cubic-bezier(0.22, 1, 0.36, 1) ${delayMs}ms, transform ${durationMs}ms cubic-bezier(0.22, 1, 0.36, 1) ${delayMs}ms, filter ${durationMs}ms ease ${delayMs}ms`,
-        willChange: reduceMotion ? 'auto' : 'opacity, transform, filter',
+          : `opacity ${durationMs}ms cubic-bezier(0.22, 1, 0.36, 1) ${delayMs}ms, transform ${durationMs}ms cubic-bezier(0.22, 1, 0.36, 1) ${delayMs}ms`,
+        willChange: reduceMotion ? 'auto' : 'opacity, transform',
         ...style,
       }}
     >

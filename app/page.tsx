@@ -174,10 +174,19 @@ export default function HomePage() {
         .hero-horizon { animation: horizon-breathe 8s ease-in-out infinite; }
 
         @media (prefers-reduced-motion: reduce) {
-          .hero-premium-bg * {
+          .hero-premium-bg *, .home-ambient *, .home-particles *, .pricing-card, .feat-card, .home-ticker-track {
             animation: none !important;
             transition: none !important;
+            transform: none !important;
           }
+          .home-particles, .home-heavy-visual { display: none !important; }
+          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
+        }
+
+        @media (max-width: 1200px), (pointer: coarse) {
+          .home-heavy-visual, .home-particles { display: none !important; }
+          .home-ticker-track, .card-pro, .card-elite, .cortex-badge, .hero-horizon { animation: none !important; }
+          .pricing-card, .feat-card { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
         }
 
         @media (max-width: 767px) {
@@ -283,7 +292,7 @@ export default function HomePage() {
             position: 'absolute',
             inset: '-12% -4%',
             background: 'radial-gradient(48% 18% at 50% 16%, rgba(139,92,246,0.14) 0%, rgba(139,92,246,0.04) 48%, transparent 80%), radial-gradient(58% 26% at 50% 50%, rgba(168,85,247,0.12) 0%, rgba(168,85,247,0.04) 52%, transparent 84%), radial-gradient(62% 30% at 50% 79%, rgba(167,139,250,0.10) 0%, rgba(217,70,239,0.03) 56%, transparent 86%)',
-            filter: 'blur(54px)',
+            filter: 'blur(24px)',
             animation: 'ambient-shift 40s ease-in-out infinite',
           }} />
           <div style={{
@@ -328,7 +337,7 @@ export default function HomePage() {
             width: '92%',
             height: '88%',
             background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
-            filter: 'blur(12px)',
+            filter: 'blur(6px)',
             maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
             animation: 'streak-drift-right 44s ease-in-out infinite',
           }} />
@@ -361,7 +370,7 @@ export default function HomePage() {
             position: 'absolute',
             inset: '-6%',
             background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.20) 0%, rgba(139,92,246,0.08) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.13) 0%, rgba(217,70,239,0.04) 50%, transparent 100%)',
-            filter: 'blur(56px)',
+            filter: 'blur(26px)',
             animation: 'halo-drift 36s ease-in-out infinite',
             willChange: 'transform',
           }} />
@@ -385,7 +394,7 @@ export default function HomePage() {
             width: '92%',
             height: '88%',
             background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
-            filter: 'blur(12px)',
+            filter: 'blur(6px)',
             maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
             animation: 'streak-drift-right 44s ease-in-out infinite',
           }} />
@@ -418,7 +427,7 @@ export default function HomePage() {
             position: 'absolute',
             inset: '-6%',
             background: 'radial-gradient(42% 34% at 50% 34%, rgba(168,85,247,0.20) 0%, rgba(139,92,246,0.08) 42%, rgba(7,7,15,0) 76%), radial-gradient(26% 24% at 56% 48%, rgba(217,70,239,0.13) 0%, rgba(217,70,239,0.04) 50%, transparent 100%)',
-            filter: 'blur(56px)',
+            filter: 'blur(26px)',
             animation: 'halo-drift 36s ease-in-out infinite',
             willChange: 'transform',
           }} />
@@ -442,7 +451,7 @@ export default function HomePage() {
             width: '92%',
             height: '88%',
             background: 'conic-gradient(from 42deg at 28% 56%, rgba(45,212,191,0) 0deg, rgba(129,92,249,0.20) 62deg, rgba(236,72,153,0.08) 98deg, rgba(129,92,249,0) 160deg)',
-            filter: 'blur(12px)',
+            filter: 'blur(6px)',
             maskImage: 'radial-gradient(82% 72% at 34% 56%, black 12%, rgba(0,0,0,0.84) 48%, transparent 84%)',
             animation: 'streak-drift-right 44s ease-in-out infinite',
           }} />
@@ -450,7 +459,7 @@ export default function HomePage() {
           <div style={{
             position: 'absolute', inset: '-8%',
             background: 'radial-gradient(34% 34% at 50% 34%, rgba(167,139,250,0.16) 0%, rgba(167,139,250,0.05) 50%, transparent 100%), radial-gradient(22% 24% at 72% 54%, rgba(139,92,246,0.12) 0%, rgba(139,92,246,0.04) 46%, transparent 100%), radial-gradient(18% 20% at 76% 36%, rgba(56,189,248,0.03) 0%, rgba(56,189,248,0.01) 48%, transparent 100%), radial-gradient(24% 24% at 82% 68%, rgba(217,70,239,0.09) 0%, rgba(217,70,239,0.02) 52%, transparent 100%)',
-            filter: 'blur(62px)',
+            filter: 'blur(30px)',
             animation: 'glow-drift 32s ease-in-out infinite',
             willChange: 'transform',
           }} />
@@ -459,7 +468,7 @@ export default function HomePage() {
             position: 'absolute',
             inset: 0,
             background: 'radial-gradient(58% 48% at 50% 34%, rgba(160,120,255,0.16) 0%, rgba(110,76,220,0.06) 45%, transparent 100%)',
-            filter: 'blur(34px)',
+            filter: 'blur(8px)',
           }} />
 
           <div style={{
@@ -469,7 +478,7 @@ export default function HomePage() {
             width: '62%',
             height: '56%',
             background: 'radial-gradient(closest-side, rgba(192,132,252,0.16) 0%, rgba(168,85,247,0.08) 34%, transparent 80%)',
-            filter: 'blur(34px)',
+            filter: 'blur(8px)',
           }} />
 
           <div style={{
@@ -479,7 +488,7 @@ export default function HomePage() {
             width: '58%',
             height: '54%',
             background: 'radial-gradient(closest-side, rgba(217,70,239,0.12) 0%, rgba(167,139,250,0.08) 36%, transparent 82%)',
-            filter: 'blur(32px)',
+            filter: 'blur(16px)',
           }} />
 
           <div style={{
@@ -672,8 +681,8 @@ export default function HomePage() {
             background: 'linear-gradient(180deg, rgba(6,11,28,0.82) 0%, rgba(5,10,24,0.66) 100%)',
             border: '1px solid rgba(148,163,184,0.24)',
             borderRadius: '22px',
-            backdropFilter: 'blur(18px)',
-            WebkitBackdropFilter: 'blur(18px)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
             boxShadow: '0 22px 64px rgba(0,0,0,0.52), 0 0 42px rgba(45,212,191,0.08), inset 0 1px 0 rgba(255,255,255,0.10)',
             overflow: 'hidden',
           }}>
@@ -909,8 +918,8 @@ export default function HomePage() {
                   border: `1px solid ${f.borderColor}`,
                   borderRadius: '20px',
                   padding: '32px 28px',
-                  backdropFilter: 'blur(12px)',
-                  WebkitBackdropFilter: 'blur(12px)',
+                  backdropFilter: 'blur(6px)',
+                  WebkitBackdropFilter: 'blur(6px)',
                   boxShadow: '0 4px 24px rgba(0,0,0,0.30)',
                   animationDelay: `${i * 0.10}s`,
                   position: 'relative',
@@ -1016,8 +1025,8 @@ export default function HomePage() {
                   border: '1px solid rgba(255,255,255,0.08)',
                   borderRadius: '16px',
                   padding: '20px',
-                  backdropFilter: 'blur(12px)',
-                  WebkitBackdropFilter: 'blur(12px)',
+                  backdropFilter: 'blur(6px)',
+                  WebkitBackdropFilter: 'blur(6px)',
                   boxShadow: '0 4px 24px rgba(0,0,0,0.28)',
                   display: 'flex',
                   flexDirection: 'column',
@@ -1154,7 +1163,7 @@ export default function HomePage() {
                 background: 'linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%)',
                 border: '1px solid rgba(255,255,255,0.07)',
                 borderRadius: '20px', padding: '32px 28px',
-                backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+                backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)',
                 boxShadow: '0 4px 24px rgba(0,0,0,0.30)',
                 position: 'relative', overflow: 'hidden',
                 transition: 'border-color 300ms ease, box-shadow 300ms ease',
@@ -1224,7 +1233,7 @@ export default function HomePage() {
                   background: 'linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
                   border: '1px solid rgba(255,255,255,0.07)',
                   borderRadius: '20px', padding: '28px',
-                  backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+                  backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)',
                   boxShadow: '0 4px 24px rgba(0,0,0,0.28)',
                   animationDelay: `${i * 0.10}s`,
                   position: 'relative', overflow: 'hidden',
