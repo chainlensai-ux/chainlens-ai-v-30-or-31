@@ -106,7 +106,7 @@ export default function HomeTokenScreener() {
     }
 
     poll()
-    const interval = setInterval(poll, 30000)
+    const interval = setInterval(poll, 60000)
     return () => clearInterval(interval)
   }, [])
 
@@ -224,7 +224,7 @@ export default function HomeTokenScreener() {
                 </span>
               </div>
             ) : (
-              trending.map(token => (
+              trending.slice(0, 40).map(token => (
                 <TokenCard
                   key={token.contract}
                   data={{

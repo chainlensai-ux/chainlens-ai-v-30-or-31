@@ -946,7 +946,7 @@ export default function BaseRadarPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {filteredAndSortedTokens.map((token, i) => (
                 <TokenCard
-                  key={`${token.contract}-${refreshKey}`}
+                  key={token.contract}
                   token={token}
                   index={i}
                   onScan={() => openToken(token.contract)}
