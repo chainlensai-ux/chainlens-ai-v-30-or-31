@@ -23,6 +23,10 @@ type ClarkContextState = {
     tokenAddress?: string | null
     poolAddress?: string | null
     reasonTag?: string | null
+    price?: number | null
+    liquidity?: number | null
+    volume24h?: number | null
+    change24h?: number | null
   }>
   lastIntent?: string | null
   previousIntent?: string | null
