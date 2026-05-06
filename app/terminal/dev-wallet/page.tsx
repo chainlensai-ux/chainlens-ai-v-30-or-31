@@ -5,7 +5,7 @@ import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
-type VerdictLabel = 'TRUSTWORTHY' | 'WATCH' | 'AVOID' | 'UNKNOWN' | 'SCAN DEEPER'
+type VerdictLabel = 'TRUSTWORTHY' | 'WATCH' | 'AVOID' | 'UNKNOWN' | 'SCAN DEEPER' | 'CAUTION'
 
 interface LinkedWallet {
   address: string
@@ -63,6 +63,10 @@ interface DevWalletResult {
   holderStatus?: string
   liquidityStatus?: string
   diagnostics?: { rpcConfigured?: boolean; rpcStatus?: string; providerUsed?: string }
+  verdict?: VerdictLabel
+  confidence?: string
+  reasons?: string[]
+  tokenEvidence?: { name?: string | null; symbol?: string | null; price?: number | null; volume24h?: number | null; liquidity?: number | null; holderCount?: number | null; top1?: number | null; top10?: number | null; top20?: number | null } | null
   fetchedAt: string
 }
 
@@ -74,6 +78,7 @@ const VERDICT_STYLE: Record<VerdictLabel, { color: string; bg: string; border: s
   'SCAN DEEPER': { color: '#c4b5fd', bg: 'rgba(196,181,253,0.10)', border: 'rgba(196,181,253,0.30)' },
   AVOID:       { color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.28)' },
   UNKNOWN:     { color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.20)' },
+  CAUTION:     { color: '#fb923c', bg: 'rgba(251,146,60,0.10)', border: 'rgba(251,146,60,0.26)' },
 }
 
 const CONF_COLOR: Record<string, string> = {
@@ -638,6 +643,13 @@ export default function DevWalletPage() {
         {result && (
           <div className="devwallet-results" style={{ maxWidth: '860px' }}>
             {/* Warnings */}
+            {result.tokenEvidence && (
+              <Card style={{ marginBottom: '16px' }}>
+                <p style={{fontSize:12,color:'#e2e8f0',marginBottom:8}}>Token overview: {result.tokenEvidence.name ?? 'Unknown'} ({result.tokenEvidence.symbol ?? '?'})</p>
+                <p style={{fontSize:11,color:'#94a3b8'}}>Holder concentration: top1 {result.tokenEvidence.top1 ?? '—'}%, top10 {result.tokenEvidence.top10 ?? '—'}%, top20 {result.tokenEvidence.top20 ?? '—'}%.</p>
+                <p style={{fontSize:11,color:'#94a3b8'}}>Liquidity / LP control: liquidity {result.tokenEvidence.liquidity ?? '—'}, volume {result.tokenEvidence.volume24h ?? '—'}.</p>
+              </Card>
+            )}
             <WarningBanner warnings={result.warnings} />
             {result.rpcStatus && result.rpcStatus !== 'ok' && (
               <p style={{ color:'#94a3b8', fontSize:12, margin:'-6px 0 16px', fontFamily:'var(--font-plex-mono)' }}>

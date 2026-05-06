@@ -10,6 +10,9 @@ function resolveBaseRpcUrl(): string | null {
 }
 
 const ALCHEMY_BASE_URL = resolveBaseRpcUrl()
+const DEV_CACHE_TTL_MS = 3 * 60 * 1000
+const devCache = new Map<string, { exp: number; payload: unknown }>()
+const devRate = new Map<string, { count: number; resetAt: number }>()
 
 interface AlchemyTransfer {
   blockNum: string
@@ -711,10 +714,31 @@ async function getClarkVerdict(origin: string, data: {
   }
 }
 
+
+async function fetchTokenEvidence(origin: string, contractAddress: string): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(`${origin}/api/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-user-plan': 'pro' },
+      body: JSON.stringify({ contractAddress, chain: 'base' }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(12000),
+    })
+    if (!res.ok) return null
+    return await res.json() as Record<string, unknown>
+  } catch { return null }
+}
+
 export async function POST(req: Request) {
   const warnings: string[] = []
 
   try {
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+    const now = Date.now()
+    const rr = devRate.get(ip)
+    if (!rr || rr.resetAt <= now) devRate.set(ip, { count: 1, resetAt: now + 60_000 })
+    else if (rr.count >= 15) return NextResponse.json({ error: 'Rate limit reached. Try again shortly.' }, { status: 429 })
+    else rr.count += 1
     const body = await req.json() as { contractAddress?: string }
     const { contractAddress } = body
 
@@ -726,6 +750,8 @@ export async function POST(req: Request) {
     }
 
     const normalizedAddress = contractAddress.toLowerCase()
+    const cached = devCache.get(normalizedAddress)
+    if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
 
     let bytecode: string | null = null
     let rpcStatus: 'ok' | 'partial' | 'unavailable' = 'ok'
@@ -744,10 +770,8 @@ export async function POST(req: Request) {
       )
     }
 
-    const { metadataAvailable } = await checkTokenMetadata(normalizedAddress)
-    if (!metadataAvailable) {
-      warnings.push('Token metadata unavailable from current GoldRush data — continuing with Alchemy transfer history.')
-    }
+    const origin = new URL(req.url).origin
+    const tokenEvidence = await fetchTokenEvidence(origin, normalizedAddress)
 
     let deployerAddress: string | null = null
     let deployerConfidence: 'high'|'medium'|'low' = 'low'
@@ -784,15 +808,17 @@ export async function POST(req: Request) {
     if (activityWarning) warnings.push(activityWarning)
 
     const previousDeploymentsAvailable = false
-    const liquidityDataAvailable = false
-    const securityDataAvailable = false
-    warnings.push('Liquidity/LP lock data unavailable from current scan.')
-    warnings.push('Security scan unavailable from current data sources.')
+    const market = (tokenEvidence?.market as Record<string, unknown> | undefined) ?? {}
+    const holdersEv = (tokenEvidence?.holderDistribution as Record<string, unknown> | undefined) ?? {}
+    const liqEv = (tokenEvidence?.liquidity as Record<string, unknown> | undefined) ?? {}
+    const secEv = (tokenEvidence?.security as Record<string, unknown> | undefined) ?? {}
+    const liquidityDataAvailable = typeof liqEv.liquidityUsd === 'number'
+    const securityDataAvailable = secEv && Object.keys(secEv).length > 0
+    if (!tokenEvidence) warnings.push('Token scanner evidence unavailable; using limited deployer/holder checks.')
 
     const { suspiciousTransfers, suspiciousTransferReasons } =
       detectSuspiciousTransfers(linkedWallets, supplyControlled)
 
-    const origin = new URL(req.url).origin
     const { verdict: clarkVerdict, clarkError } = await getClarkVerdict(origin, {
       contractAddress: normalizedAddress,
       deployerAddress,
@@ -811,7 +837,7 @@ export async function POST(req: Request) {
     })
     if (clarkError) warnings.push(`Clark: ${clarkError}`)
 
-    return NextResponse.json({
+    const responsePayload = {
       contractAddress: normalizedAddress,
       chain: 'base',
       deployerAddress,
@@ -827,16 +853,34 @@ export async function POST(req: Request) {
       suspiciousTransfers,
       suspiciousTransferReasons,
       clarkVerdict,
-      tokenStatus: bytecode && bytecode !== '0x' ? 'ok' : 'partial',
+      tokenEvidence: tokenEvidence ? {
+        name: tokenEvidence.name ?? null, symbol: tokenEvidence.symbol ?? null,
+        price: market.price ?? null, volume24h: market.volume24h ?? null, liquidity: market.liquidity ?? liqEv.liquidityUsd ?? null,
+        fdv: market.fdv ?? null, marketValue: market.marketCap ?? market.fdv ?? null,
+        top1: holdersEv.top1 ?? null, top10: holdersEv.top10 ?? null, top20: holdersEv.top20 ?? null, holderCount: holdersEv.holderCount ?? null,
+        lpControl: liqEv.lpControl ?? null, security: secEv ?? null,
+      } : null,
+      tokenStatus: tokenEvidence ? 'ok' : (bytecode && bytecode !== '0x' ? 'partial' : 'unavailable'),
+      marketStatus: tokenEvidence && market && Object.keys(market).length ? 'ok' : 'partial',
       rpcStatus,
       deployerStatus: deployerAddress ? 'ok' : (rpcStatus === 'unavailable' ? 'unavailable' : 'partial'),
       linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'partial' : 'unavailable'),
       holderStatus: holderDataAvailable ? 'ok' : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
+      lpControlStatus: liqEv.lpControl ? 'ok' : 'partial',
+      verdict: (suspiciousTransfers || (typeof holdersEv.top10 === 'number' && (holdersEv.top10 as number) > 50) || liqEv.lpLocked === false || secEv.honeypot === true || secEv.mintable === true || secEv.proxy === true) ? 'CAUTION' : ((tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'WATCH' : 'UNKNOWN'),
+      confidence: (tokenEvidence || holderDataAvailable) ? 'medium' : 'low',
+      reasons: [
+        !deployerAddress && (tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'Deployer unavailable; token evidence still indicates watchlist-level signal.' : '',
+        typeof holdersEv.top10 === 'number' && (holdersEv.top10 as number) > 50 ? 'High holder concentration (top10 > 50%).' : '',
+        liqEv.lpLocked === false ? 'LP appears team-controlled/unlocked.' : '',
+      ].filter(Boolean),
       warnings,
       diagnostics: process.env.NODE_ENV === 'development' ? { rpcConfigured: Boolean(ALCHEMY_BASE_URL), rpcStatus, providerUsed } : undefined,
       fetchedAt: new Date().toISOString(),
-    })
+    }
+    devCache.set(normalizedAddress, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
+    return NextResponse.json(responsePayload)
   } catch (err) {
     console.error('[dev-wallet] fatal:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
