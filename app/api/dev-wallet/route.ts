@@ -1,7 +1,15 @@
 import { NextResponse } from 'next/server'
 
-const ALCHEMY_BASE_URL = `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_BASE_KEY}`
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
+function resolveBaseRpcUrl(): string | null {
+  const explicit = process.env.ALCHEMY_BASE_RPC_URL || process.env.BASE_RPC_URL
+  if (explicit && /^https?:\/\//.test(explicit)) return explicit
+  const key = process.env.ALCHEMY_BASE_KEY || process.env.ALCHEMY_API_KEY
+  if (key) return `https://base-mainnet.g.alchemy.com/v2/${key}`
+  return null
+}
+
+const ALCHEMY_BASE_URL = resolveBaseRpcUrl()
 
 interface AlchemyTransfer {
   blockNum: string
@@ -67,11 +75,13 @@ interface VerdictSignalInput {
 }
 
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
+  if (!ALCHEMY_BASE_URL) throw new Error('rpc_not_configured')
   const res = await fetch(ALCHEMY_BASE_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     cache: 'no-store',
+    signal: AbortSignal.timeout(8000),
   })
   if (!res.ok) throw new Error(`Alchemy RPC ${res.status}`)
   const json = await res.json() as { result?: unknown; error?: { message: string } }
@@ -717,14 +727,17 @@ export async function POST(req: Request) {
 
     const normalizedAddress = contractAddress.toLowerCase()
 
-    let bytecode: string
+    let bytecode: string | null = null
+    let rpcStatus: 'ok' | 'partial' | 'unavailable' = 'ok'
+    const providerUsed = ALCHEMY_BASE_URL ? 'alchemy' : 'none'
     try {
       bytecode = await alchemyRpc('eth_getCode', [normalizedAddress, 'latest']) as string
     } catch {
-      return NextResponse.json({ error: 'Could not reach Base RPC — try again' }, { status: 502 })
+      rpcStatus = 'unavailable'
+      warnings.push('RPC deployer trace unavailable, showing available token/holder/liquidity signals.')
     }
 
-    if (!bytecode || bytecode === '0x') {
+    if (bytecode === '0x') {
       return NextResponse.json(
         { error: 'No contract found at this address on Base mainnet' },
         { status: 400 }
@@ -736,8 +749,18 @@ export async function POST(req: Request) {
       warnings.push('Token metadata unavailable from current GoldRush data — continuing with Alchemy transfer history.')
     }
 
-    const { address: deployerAddress, confidence: deployerConfidence, methodUsed } =
-      await findLikelyDeployer(normalizedAddress)
+    let deployerAddress: string | null = null
+    let deployerConfidence: 'high'|'medium'|'low' = 'low'
+    let methodUsed = 'unknown'
+    try {
+      const dep = await findLikelyDeployer(normalizedAddress)
+      deployerAddress = dep.address
+      deployerConfidence = dep.confidence
+      methodUsed = dep.methodUsed
+    } catch {
+      rpcStatus = rpcStatus === 'ok' ? 'partial' : rpcStatus
+      warnings.push('Deployer trace unavailable from RPC history.')
+    }
 
     if (!deployerAddress) {
       warnings.push('Could not infer likely deployer from mint or transfer history.')
@@ -804,7 +827,14 @@ export async function POST(req: Request) {
       suspiciousTransfers,
       suspiciousTransferReasons,
       clarkVerdict,
+      tokenStatus: bytecode && bytecode !== '0x' ? 'ok' : 'partial',
+      rpcStatus,
+      deployerStatus: deployerAddress ? 'ok' : (rpcStatus === 'unavailable' ? 'unavailable' : 'partial'),
+      linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'partial' : 'unavailable'),
+      holderStatus: holderDataAvailable ? 'ok' : 'partial',
+      liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       warnings,
+      diagnostics: process.env.NODE_ENV === 'development' ? { rpcConfigured: Boolean(ALCHEMY_BASE_URL), rpcStatus, providerUsed } : undefined,
       fetchedAt: new Date().toISOString(),
     })
   } catch (err) {
