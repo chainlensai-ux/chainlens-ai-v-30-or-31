@@ -3176,7 +3176,7 @@ function formatSecuritySimulationLine(report: ClarkFullReportEvidence): string {
 
 function explainMissingCheck(item: string): string {
   const map: Record<string,string> = {
-    'Contract open-source verification': 'Contract open-source verification — Needs Basescan/source verification or bytecode-level check.',
+    'Contract open-source verification': 'Contract open-source verification — Needs verified source publication or bytecode-level check from current providers.',
     'LP lock/control': 'LP lock/control — Needs LP holder/locker proof or protocol-specific pool verification.',
     'Pool age / new pool status': 'Pool age / new pool status — Needs pool created/first-seen timestamp.',
     'Likely deployer identity': 'Likely deployer identity — Needs creator/deployer transaction trace or factory event.',
