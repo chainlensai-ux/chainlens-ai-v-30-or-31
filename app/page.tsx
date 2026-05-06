@@ -42,7 +42,7 @@ const FEATURES = [
     hoverBorder: 'rgba(45,212,191,0.42)',
     hoverShadow: '0 16px 56px rgba(45,212,191,0.18), 0 0 32px rgba(45,212,191,0.12), 0 4px 20px rgba(0,0,0,0.45)',
     title: 'Scan Wallets Instantly',
-    body: 'See everything inside any wallet — tokens, positions, PnL, behavior patterns, smart money tags, and chain activity.',
+    body: 'Check a Base wallet’s available holdings, portfolio signals, recent activity where available, and Clark’s wallet read.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="16" cy="15" r="1.5"/>
@@ -55,8 +55,8 @@ const FEATURES = [
     borderColor: 'rgba(236,72,153,0.16)',
     hoverBorder: 'rgba(236,72,153,0.42)',
     hoverShadow: '0 16px 56px rgba(236,72,153,0.12), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
-    title: 'Real-Time Onchain Intelligence',
-    body: 'Track whale movements, early pumps, deployer activity, and market shifts as they happen — not after.',
+    title: 'Track Base Alerts Live',
+    body: 'See tracked-wallet buys, high-momentum Base tokens, volume expansion, and alert context in one feed.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -69,8 +69,8 @@ const FEATURES = [
     borderColor: 'rgba(139,92,246,0.16)',
     hoverBorder: 'rgba(139,92,246,0.42)',
     hoverShadow: '0 16px 56px rgba(139,92,246,0.14), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
-    title: 'Advanced Token Scanner',
-    body: 'Paste any contract and get instant AI analysis: price, liquidity, holders, deployer history, risk score, bytecode flags, and social momentum.',
+    title: 'Analyze Base Tokens',
+    body: 'Scan contracts for price, liquidity, FDV, holder concentration, security/tax checks where available, pools, and Clark verdicts.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
@@ -83,8 +83,8 @@ const FEATURES = [
     borderColor: 'rgba(96,165,250,0.16)',
     hoverBorder: 'rgba(96,165,250,0.42)',
     hoverShadow: '0 16px 56px rgba(96,165,250,0.12), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
-    title: 'Liquidity Safety Engine',
-    body: 'Detect rugs before they happen. ChainLens checks LP locks, ownership, burns, mint functions, suspicious patterns, and contract risks.',
+    title: 'Read Liquidity & Pools',
+    body: 'Review pool depth, pair routes, liquidity strength, weak pools, and missing LP-control checks before trusting a token.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>
