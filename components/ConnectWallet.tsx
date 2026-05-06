@@ -2,12 +2,14 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useAccount, useConnect, useDisconnect } from 'wagmi'
+import { walletConnectEnabled } from '@/lib/wallet'
 
 export default function ConnectWallet({ className }: { className?: string }) {
   const { address, isConnected } = useAccount()
   const { connect, connectors } = useConnect()
   const { disconnect } = useDisconnect()
   const [open, setOpen] = useState(false)
+  const [unavailableMsg, setUnavailableMsg] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
 
@@ -22,9 +24,33 @@ export default function ConnectWallet({ className }: { className?: string }) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [open])
 
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development' && !walletConnectEnabled) {
+      console.warn('[wallet] WalletConnect unavailable: missing NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!unavailableMsg) return
+    const t = window.setTimeout(() => setUnavailableMsg(null), 3200)
+    return () => window.clearTimeout(t)
+  }, [unavailableMsg])
+
   const handleConnect = () => {
+    if (!walletConnectEnabled) {
+      setUnavailableMsg('Wallet connection unavailable right now.')
+      return
+    }
     const connector = connectors.find(c => c.ready) ?? connectors[0]
-    if (connector) connect({ connector })
+    if (connector) {
+      connect(
+        { connector },
+        {
+          onError: () => setUnavailableMsg('Wallet connection unavailable right now.'),
+        }
+      )
+    }
+    else setUnavailableMsg('Wallet connection unavailable right now.')
   }
 
   const baseStyle: React.CSSProperties = {
@@ -137,24 +163,39 @@ export default function ConnectWallet({ className }: { className?: string }) {
   }
 
   return (
-    <button
-      onClick={handleConnect}
-      className={className}
-      style={baseStyle}
-      onMouseEnter={e => {
-        const el = e.currentTarget as HTMLButtonElement
-        el.style.opacity   = '0.90'
-        el.style.transform = 'translateY(-1px)'
-        el.style.boxShadow = '0 0 44px rgba(34,211,238,0.65), 0 0 44px rgba(45,212,191,0.40)'
-      }}
-      onMouseLeave={e => {
-        const el = e.currentTarget as HTMLButtonElement
-        el.style.opacity   = '1'
-        el.style.transform = 'translateY(0)'
-        el.style.boxShadow = '0 0 28px rgba(34,211,238,0.45), 0 0 28px rgba(45,212,191,0.25)'
-      }}
-    >
-      Connect Wallet
-    </button>
+    <div className={className} style={{ position: 'relative' }}>
+      <button
+        onClick={handleConnect}
+        style={baseStyle}
+        onMouseEnter={e => {
+          const el = e.currentTarget as HTMLButtonElement
+          el.style.opacity   = '0.90'
+          el.style.transform = 'translateY(-1px)'
+          el.style.boxShadow = '0 0 44px rgba(34,211,238,0.65), 0 0 44px rgba(45,212,191,0.40)'
+        }}
+        onMouseLeave={e => {
+          const el = e.currentTarget as HTMLButtonElement
+          el.style.opacity   = '1'
+          el.style.transform = 'translateY(0)'
+          el.style.boxShadow = '0 0 28px rgba(34,211,238,0.45), 0 0 28px rgba(45,212,191,0.25)'
+        }}
+      >
+        Connect Wallet
+      </button>
+      {unavailableMsg && (
+        <div style={{
+          marginTop: '8px',
+          borderRadius: '8px',
+          border: '1px solid rgba(248,113,113,0.35)',
+          background: 'rgba(127,29,29,0.25)',
+          color: '#fecaca',
+          fontSize: '11px',
+          lineHeight: 1.4,
+          padding: '7px 10px',
+        }}>
+          {unavailableMsg}
+        </div>
+      )}
+    </div>
   )
 }
