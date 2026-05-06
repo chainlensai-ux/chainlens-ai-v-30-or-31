@@ -1132,6 +1132,30 @@ function isHolderQuestion(prompt: string): boolean {
 function isPumpFeedPrompt(prompt: string): boolean {
   return /\b(what are pump alerts right now|pump alerts|what'?s pumping|what is pumping early|early pump detection)\b/i.test(prompt.toLowerCase());
 }
+
+function isPumpSourceFollowupPrompt(prompt: string): boolean {
+  return /\b(no like from coingecko api|is this from coingecko|where is this data from|why is data n\/a)\b/i.test(prompt.toLowerCase());
+}
+
+function parseMaybeNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v.replace(/[$,\s]/g, ""));
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function formatPctOrUnverified(value: unknown): string {
+  const n = parseMaybeNumber(value);
+  if (n == null) return "unverified 24h";
+  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}% 24h`;
+}
+
+function formatUsdOrUnverified(value: unknown): string {
+  const n = parseMaybeNumber(value);
+  return n == null ? "unverified" : formatUsdShort(n);
+}
 function isBaseRadarPrompt(prompt: string): boolean {
   return /\b(what'?s happening on base radar|show base radar|open base radar|base radar|base movers|what'?s moving on base)\b/i.test(prompt.toLowerCase());
 }
@@ -1144,14 +1168,36 @@ function wasLastFeedEmpty(history: ClarkRequestBody["history"]): boolean {
 }
 
 async function handlePumpFeedSnapshot(origin: string) {
-  const res = await fetch(`${origin}/api/pump-alerts?window=24h&limit=10`, { signal: AbortSignal.timeout(5000) });
+  const res = await fetch(`${origin}/api/pump-alerts?window=24h&limit=12`, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is unavailable right now.";
   const json = await res.json();
-  const alerts = Array.isArray(json?.alerts) ? json.alerts : [];
+  const alerts = Array.isArray(json?.alerts) ? (json.alerts as Record<string, unknown>[]) : [];
   if (!alerts.length) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is empty right now.";
-  const rows = alerts.slice(0, 5).map((a: Record<string, unknown>, i: number) => `${i + 1}. ${String(a.symbol ?? a.token_symbol ?? "Unknown")} | 24h ${typeof a.price_change_24h === "number" ? `${a.price_change_24h.toFixed(2)}%` : "N/A"} | LQ ${formatUsdShort(typeof a.liquidity_usd === "number" ? a.liquidity_usd : null)} | Vol ${formatUsdShort(typeof a.volume_24h_usd === "number" ? a.volume_24h_usd : null)}${a.category ? ` | ${String(a.category)}` : ""}`);
-  return ["PUMP ALERTS SNAPSHOT", ...rows].join("\n");
+
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const raw of alerts as Record<string, unknown>[]) {
+    const contract = String(raw.contract ?? raw.address ?? "").trim().toLowerCase();
+    const symbol = String(raw.symbol ?? raw.token_symbol ?? raw.name ?? "Unknown").trim().toUpperCase();
+    const key = contract || `sym:${symbol}`;
+    if (!byKey.has(key)) byKey.set(key, raw);
+  }
+
+  const items = Array.from(byKey.values()).slice(0, 8);
+  const rows = items.map((a, i) => {
+    const symbol = String(a.symbol ?? a.token_symbol ?? "?").toUpperCase();
+    const name = String(a.name ?? "").trim();
+    const label = name && name.toUpperCase() !== symbol ? `${symbol}/${name}` : symbol;
+    const change = a.change24h ?? a.priceChange24h ?? a.change_24h ?? a.price_change_24h;
+    const liq = a.liquidityUsd ?? a.liquidity_usd ?? a.liquidity;
+    const vol = a.volume24h ?? a.volume24hUsd ?? a.volume_usd ?? a.volume_24h_usd ?? a.volume;
+    const cat = String(a.category ?? a.alertType ?? a.reason ?? "unverified");
+    const read = String(a.reason ?? "Momentum candidate from Pump Alerts feed; verify contract and risk before acting.");
+    return `${i + 1}. ${label} — ${formatPctOrUnverified(change)} | Liq ${formatUsdOrUnverified(liq)} | Vol ${formatUsdOrUnverified(vol)} | ${cat}\nRead: ${read}`;
+  });
+
+  return ["PUMP ALERTS SNAPSHOT", ...rows, "Next: Pick a token and I'll scan it."].join("\n");
 }
+
 
 async function handleBaseRadarSnapshot(origin: string) {
   const res = await fetch(`${origin}/api/radar?window=24h&limit=10`, { signal: AbortSignal.timeout(5000) });
@@ -3800,6 +3846,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   if (isPumpFeedPrompt(prompt)) {
     const analysis = await handlePumpFeedSnapshot(origin);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["pump_alerts_feed"], analysis };
+  }
+  if (isPumpSourceFollowupPrompt(prompt)) {
+    return {
+      feature: "clark-ai",
+      chain,
+      mode: "analysis",
+      intent: "market",
+      toolsUsed: ["pump_alerts_feed"],
+      analysis: "Pump Alerts uses the existing ChainLens Pump Alerts/Base market feed. Market fields are passed through from the configured provider where available (currently CoinGecko/GeckoTerminal-style Base pool data when wired). If price/liquidity/volume fields are missing in the source payload, I mark them as unverified instead of inventing values.",
+    };
   }
   if (isBaseRadarPrompt(prompt)) {
     const analysis = await handleBaseRadarSnapshot(origin);
