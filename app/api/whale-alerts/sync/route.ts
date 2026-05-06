@@ -27,8 +27,16 @@ const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
 const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=100'
 const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 25
+const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
+const SYNC_COOLDOWN_MS = 10 * 60 * 1000
+const FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
+const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
+const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
+function syncPlan(req: Request): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
+function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
+function syncAllowed(req: Request, mode: 'batch' | 'full', isFullContinuation = false): { ok: boolean; cooldown: boolean } { const plan=syncPlan(req); const key=`${mode}:${plan}:${syncIp(req)}`; const now=Date.now(); const cur=syncRate.get(key); const lim=mode === 'full' ? 1 : SYNC_RATE_BY_PLAN[plan]; const cooldownMs = mode === 'full' ? FULL_SYNC_COOLDOWN_MS : SYNC_COOLDOWN_MS; if(mode === 'full' && isFullContinuation){ if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } } if(cur && now-cur.lastRunAt < cooldownMs) return { ok:false, cooldown:true }; if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } }
 
 type SyncWindow = '24h' | '3d' | '7d'
 
@@ -256,6 +264,8 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
 }
 
 export async function POST(request: Request) {
+  const requestUrl = new URL(request.url)
+  const mode = requestUrl.searchParams.get('mode') === 'full' ? 'full' : 'batch'
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
   const providerKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
@@ -269,7 +279,6 @@ export async function POST(request: Request) {
     body = {}
   }
 
-  const requestUrl = new URL(request.url)
   const debug = requestUrl.searchParams.get('debug') === 'true'
   const queryWindow = requestUrl.searchParams.get('window')
   const bodyWindow = typeof body.window === 'string' ? body.window : null
@@ -279,7 +288,8 @@ export async function POST(request: Request) {
 
   const queryLimit = parseInteger(requestUrl.searchParams.get('limit'))
   const bodyLimit = parseInteger(body.limit)
-  const rawLimit = queryLimit ?? bodyLimit ?? DEFAULT_LIMIT
+  const defaultLimitForMode = mode === 'full' ? MAX_LIMIT : DEFAULT_LIMIT
+  const rawLimit = queryLimit ?? bodyLimit ?? defaultLimitForMode
   const limit = Math.max(1, Math.min(MAX_LIMIT, rawLimit))
 
   const queryMinUsdRaw = requestUrl.searchParams.get('minUsd')
@@ -292,6 +302,10 @@ export async function POST(request: Request) {
   const bodyOffset = parseInteger(body.offset)
   const rawOffset = queryOffset ?? bodyOffset ?? DEFAULT_OFFSET
   const offset = Math.max(0, rawOffset)
+  const isFullContinuation = mode === 'full' && offset > 0
+  const allow = syncAllowed(request, mode, isFullContinuation)
+  if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly." }, { status: 429 })
+  const usingAutomaticBatch = queryOffset === null && bodyOffset === null
 
   if (!supabaseUrl || !serviceRole) {
     return NextResponse.json({ ok: false, error: 'missing_supabase_env' }, { status: 503 })
@@ -306,13 +320,17 @@ export async function POST(request: Request) {
     .select('address,label,category,confidence,source,is_active', { count: 'exact' })
     .eq('is_active', true)
     .order('created_at', { ascending: true })
-    .range(offset, offset + limit - 1)
+    .range(
+      usingAutomaticBatch ? DEFAULT_OFFSET : offset,
+      (usingAutomaticBatch ? DEFAULT_OFFSET : offset) + (usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit) - 1,
+    )
 
   if (walletError) {
     return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
   }
 
   const trackedWalletsTotal = count ?? 0
+  const effectiveOffset = usingAutomaticBatch ? DEFAULT_OFFSET : offset
   if (!wallets || wallets.length === 0) {
     return NextResponse.json({ ok: false, error: 'no_active_wallets', trackedWallets: 0 }, { status: 404 })
   }
@@ -466,9 +484,21 @@ export async function POST(request: Request) {
     }
   }
 
-  const nextOffset = offset + processed < trackedWalletsTotal ? offset + processed : null
+  const nextOffset = effectiveOffset + processed < trackedWalletsTotal ? effectiveOffset + processed : null
+  const hasMore = nextOffset !== null
+  const refreshStatus =
+    processed === 0
+      ? 'empty'
+      : mode === 'full' && hasMore
+        ? 'full_in_progress'
+        : hasMore
+          ? 'partial_complete'
+          : mode === 'full'
+            ? 'full_complete'
+            : 'complete'
   const response: Record<string, unknown> = {
     ok: true,
+    mode,
     selectedWindow,
     providerSummary: {
       endpointPath: PROVIDER_ENDPOINT_PATH,
@@ -477,16 +507,26 @@ export async function POST(request: Request) {
     },
     trackedWalletsTotal,
     processed,
-    offset,
-    limit,
+    offset: effectiveOffset,
+    limit: mode === 'full' ? limit : (usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit),
     nextOffset,
+    hasMore,
+    refreshStatus,
     inserted,
     skipped,
+    skipReasons: skipSummary,
     providerErrors,
-    providerErrorSamples,
+    message: processed === 0
+      ? (mode === 'full' ? 'No active wallets were scanned for full refresh.' : 'No active wallets were scanned in this batch.')
+      : mode === 'full' && hasMore
+        ? 'Full refresh in progress.'
+        : inserted > 0
+          ? `Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'} in this ${mode === 'full' ? 'refresh' : 'batch'}.`
+          : `No qualifying recent whale activity found in this ${mode === 'full' ? 'refresh' : 'batch'}.`,
   }
 
   if (debug) {
+    response.providerErrorSamples = providerErrorSamples
     response.fetchedTxCount = fetchedTxCount
     response.parsedMovementCount = parsedMovementCount
     response.alertCandidateCount = alertCandidateCount

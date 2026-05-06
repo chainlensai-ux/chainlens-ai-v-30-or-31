@@ -8,6 +8,7 @@ type AlertItem = {
   wallet_label?: string | null
   token_address?: string | null
   token_symbol?: string | null
+  focus_token_symbol?: string | null
   token_name?: string | null
   alert_type?: string | null
   side?: string | null
@@ -26,13 +27,35 @@ type AlertItem = {
   token_logo?: string | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
-type SyncResponse = { processed?: number; inserted?: number; skipped?: number; nextOffset?: number | null; providerErrors?: number; trackedWalletsTotal?: number; offset?: number }
+type SyncResponse = {
+  savedAt?: number
+  mode?: 'batch' | 'full'
+  processed?: number
+  processedTotal?: number
+  inserted?: number
+  insertedTotal?: number
+  skipped?: number
+  nextOffset?: number | null
+  hasMore?: boolean
+  refreshStatus?: string
+  providerErrors?: number
+  trackedWalletsTotal?: number
+  offset?: number
+  skipReasons?: Record<string, number>
+  message?: string
+}
+type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number }
 
 const MIN_OPTIONS = [
   { label: 'All', value: 0 }, { label: '$100+', value: 100 }, { label: '$500+', value: 500 },
   { label: '$1k+', value: 1000 }, { label: '$5k+', value: 5000 }, { label: '$10k+', value: 10000 },
 ]
-const WINDOWS = ['15m', '1h', '6h', '24h'] as const
+const WINDOWS = ['15m', '1h', '6h', '24h', '7d'] as const
+const CLIENT_SYNC_COOLDOWN_MS = 10 * 60 * 1000
+const CLIENT_FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
+const CLIENT_SYNC_CACHE_KEY = 'whale_alerts_last_sync_at'
+const CLIENT_FULL_SYNC_CACHE_KEY = 'whale_alerts_last_full_sync_at'
+const CLIENT_SYNC_STATE_CACHE_KEY = 'whale_alerts_last_sync_state_v1'
 
 const short = (value?: string | null) => (!value ? 'Unknown' : `${value.slice(0, 6)}...${value.slice(-4)}`)
 const timeAgo = (iso?: string | null) => {
@@ -203,6 +226,26 @@ export default function WhaleAlertsPage() {
   const [syncing, setSyncing]         = useState(false)
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
+  const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
+  const [syncCooldownLeftMs, setSyncCooldownLeftMs] = useState(0)
+  const [fullSyncCooldownLeftMs, setFullSyncCooldownLeftMs] = useState(0)
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CLIENT_SYNC_STATE_CACHE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as SyncResponse
+      if (!parsed || typeof parsed !== 'object') return
+      const savedAt = Number(parsed.savedAt ?? 0)
+      const maxAgeMs = 24 * 60 * 60 * 1000
+      const looksInvalid = (parsed.trackedWalletsTotal ?? 0) < 0 || (parsed.processedTotal ?? 0) < 0
+      if (looksInvalid || !Number.isFinite(savedAt) || savedAt <= 0 || (Date.now() - savedAt) > maxAgeMs) {
+        window.localStorage.removeItem(CLIENT_SYNC_STATE_CACHE_KEY)
+        return
+      }
+      setSyncState(parsed)
+    } catch {}
+  }, [])
 
   const loadAlerts = useCallback(async () => {
     setLoading(true)
@@ -217,6 +260,7 @@ export default function WhaleAlertsPage() {
       const json = await res.json()
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
+      setFeedDiagnostics(json?.diagnostics ?? null)
     } catch {
       setFeedError(true)
     } finally {
@@ -226,17 +270,79 @@ export default function WhaleAlertsPage() {
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
 
-  const runSync = async (offset: number) => {
+  const runSync = async (offset?: number, mode: 'batch' | 'full' = 'batch') => {
+    const now = Date.now()
+    const cacheKey = mode === 'full' ? CLIENT_FULL_SYNC_CACHE_KEY : CLIENT_SYNC_CACHE_KEY
+    const cooldownMs = mode === 'full' ? CLIENT_FULL_SYNC_COOLDOWN_MS : CLIENT_SYNC_COOLDOWN_MS
+    const isFullContinuation = mode === 'full' && typeof offset === 'number' && offset > 0
+    const lastSyncAt = Number(window.localStorage.getItem(cacheKey) ?? '0')
+    const elapsed = now - lastSyncAt
+    if (!isFullContinuation && elapsed < cooldownMs) {
+      if (mode === 'full') setFullSyncCooldownLeftMs(cooldownMs - elapsed)
+      else setSyncCooldownLeftMs(cooldownMs - elapsed)
+      return
+    }
     setSyncing(true)
     try {
-      const res = await fetch(`/api/whale-alerts/sync?window=7d&limit=15&offset=${offset}&minUsd=${minUsd}`, { method: 'POST' })
+      const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd) })
+      if (typeof offset === 'number') params.set('offset', String(offset))
+      params.set('mode', mode)
+      const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, { method: 'POST' })
       const json = (await res.json()) as SyncResponse
-      setSyncState(json)
+      const merged: SyncResponse = mode === 'full'
+        ? (() => {
+            const prev = syncState?.mode === 'full' ? syncState : null
+            const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
+            const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
+            const trackedWalletsTotal = Number(json.trackedWalletsTotal ?? prev?.trackedWalletsTotal ?? 0)
+            const cappedProcessed = trackedWalletsTotal > 0 ? Math.min(processedTotal, trackedWalletsTotal) : processedTotal
+            return {
+              ...json,
+              mode: 'full',
+              processedTotal: cappedProcessed,
+              insertedTotal,
+              refreshStatus: json.hasMore ? 'full_in_progress' : 'full_complete',
+              savedAt: now,
+            }
+          })()
+        : {
+            ...json,
+            processedTotal: json.processed ?? 0,
+            insertedTotal: json.inserted ?? 0,
+            savedAt: now,
+          }
+      setSyncState(merged)
+      window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
+      if (mode === 'full') {
+        if (!merged.hasMore) {
+          window.localStorage.setItem(cacheKey, String(now))
+          setFullSyncCooldownLeftMs(cooldownMs)
+        } else {
+          setFullSyncCooldownLeftMs(0)
+        }
+      } else {
+        window.localStorage.setItem(cacheKey, String(now))
+        setSyncCooldownLeftMs(cooldownMs)
+      }
       await loadAlerts()
     } finally {
       setSyncing(false)
     }
   }
+
+  useEffect(() => {
+    const tick = () => {
+      const lastSyncAt = Number(window.localStorage.getItem(CLIENT_SYNC_CACHE_KEY) ?? '0')
+      const lastFullSyncAt = Number(window.localStorage.getItem(CLIENT_FULL_SYNC_CACHE_KEY) ?? '0')
+      const left = Math.max(0, CLIENT_SYNC_COOLDOWN_MS - (Date.now() - lastSyncAt))
+      const fullLeft = Math.max(0, CLIENT_FULL_SYNC_COOLDOWN_MS - (Date.now() - lastFullSyncAt))
+      setSyncCooldownLeftMs(left)
+      setFullSyncCooldownLeftMs(fullLeft)
+    }
+    tick()
+    const id = window.setInterval(tick, 30_000)
+    return () => window.clearInterval(id)
+  }, [])
 
   const resetFilters = () => {
     setTypeFilter('all')
@@ -245,13 +351,41 @@ export default function WhaleAlertsPage() {
     setMinUsd(100)
     setWindowValue('24h')
   }
+  const clearSyncState = () => {
+    window.localStorage.removeItem(CLIENT_SYNC_STATE_CACHE_KEY)
+    window.localStorage.removeItem(CLIENT_SYNC_CACHE_KEY)
+    window.localStorage.removeItem(CLIENT_FULL_SYNC_CACHE_KEY)
+    setSyncCooldownLeftMs(0)
+    setFullSyncCooldownLeftMs(0)
+    setSyncState(null)
+  }
 
   const types = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.alert_type).filter(Boolean) as string[]))], [alerts])
   const sevs  = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.severity).filter(Boolean) as string[]))], [alerts])
   const sides = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.side).filter(Boolean) as string[]))], [alerts])
 
+  const effectiveProcessed = syncState?.mode === 'full' ? (syncState?.processedTotal ?? 0) : (syncState?.processed ?? 0)
+  const effectiveInserted = syncState?.mode === 'full' ? (syncState?.insertedTotal ?? 0) : (syncState?.inserted ?? 0)
   const covPct = syncState && (syncState.trackedWalletsTotal ?? 0) > 0
-    ? Math.min(100, Math.round(((syncState.processed ?? 0) / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
+    ? Math.min(100, Math.round((effectiveProcessed / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
+  const scannedCount = effectiveProcessed
+  const trackedCount = syncState?.trackedWalletsTotal ?? 0
+  const isPartial = trackedCount > 0 && scannedCount < trackedCount
+  const fullNeedsContinue = syncState?.mode === 'full' && trackedCount > 0 && scannedCount < trackedCount
+  const isFullInProgress = Boolean(syncState?.mode === 'full' && (syncState?.hasMore || fullNeedsContinue))
+  const computedFullNextOffset = (() => {
+    if (syncState?.mode !== 'full') return 0
+    if (typeof syncState.nextOffset === 'number' && syncState.nextOffset >= 0) return syncState.nextOffset
+    if (fullNeedsContinue) return Math.max(0, scannedCount)
+    return 0
+  })()
+  const syncStatusText = syncing
+    ? 'Sync in progress'
+    : isFullInProgress
+      ? 'Full refresh in progress'
+      : syncState
+        ? (isPartial ? 'Partial refresh' : (syncState.mode === 'full' ? 'Full refresh complete' : 'Recently refreshed'))
+        : 'Ready to sync'
 
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
   const providerSummary = syncState ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors} errors)` : 'Healthy') : 'Unavailable'
@@ -323,7 +457,7 @@ export default function WhaleAlertsPage() {
                 </svg>
                 {stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Wallets loading'}
               </Pill>
-              <Pill color="teal" dot>{syncing ? 'Syncing…' : 'Batch Sync Online'}</Pill>
+              <Pill color="teal" dot>{syncing ? 'Syncing…' : 'On-demand sync mode'}</Pill>
               <Pill color="purple" dot>CORTEX Watching</Pill>
             </div>
           </div>
@@ -445,54 +579,62 @@ export default function WhaleAlertsPage() {
             </div>
 
             {/* right: wallet sync panel */}
-            <div className="flex flex-col rounded-[16px]"
-              style={{ gap: 12, border: '1px solid rgba(139,92,246,0.20)', background: 'linear-gradient(135deg,#141a34,#10192d,#0a1322)', padding: 16 }}>
+            <div className="flex flex-col rounded-[18px]"
+              style={{ gap: 14, border: '1px solid rgba(139,92,246,0.24)', background: 'linear-gradient(160deg,rgba(13,18,33,0.98),rgba(9,15,30,0.94) 60%,rgba(8,12,24,0.98))', padding: 18, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 14px 40px rgba(0,0,0,0.38)' }}>
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center" style={{ gap: 10 }}>
                   <div className="flex items-center justify-center rounded-[12px]"
-                    style={{ width: 32, height: 32, background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.28)' }}>
+                    style={{ width: 34, height: 34, background: 'rgba(139,92,246,0.16)', border: '1px solid rgba(139,92,246,0.30)' }}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2">
                       <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                     </svg>
                   </div>
                   <div>
-                    <p style={{ fontSize: 14, fontWeight: 700, color: '#f8fafc', margin: 0 }}>Wallet scan</p>
-                    <p style={{ fontSize: 11, color: '#475569', margin: 0 }}>{syncState ? 'Scan complete' : 'No scan yet'}</p>
+                    <p style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.01em', color: '#f8fafc', margin: 0 }}>Whale sync</p>
+                    <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>Refreshes latest tracked-wallet activity</p>
                   </div>
                 </div>
-                <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Syncing…' : 'Sync Healthy'}</Pill>
+                <Pill color={syncing || isFullInProgress ? 'amber' : 'teal'} dot>{syncStatusText}</Pill>
               </div>
 
-              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Wallets Scanned (Batch)</p>
-                  <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
-                    {syncState
-                      ? <>{syncState.processed ?? 0}<span style={{ fontSize: 16, fontWeight: 400, color: '#475569' }}> / {syncState.trackedWalletsTotal ?? stats.trackedWallets}</span></>
-                      : <span style={{ color: '#334155' }}>—</span>}
-                  </p>
+              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Tracked set</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>60+ wallets</p>
                 </div>
-                <div className="rounded-[12px]" style={{ padding: 12, background: 'rgba(4,10,22,0.60)', border: bdrInner }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', margin: 0 }}>Alerts Found</p>
-                  <p className="tabular-nums" style={{ marginTop: 6, fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '6px 0 0' }}>
-                    {syncState?.inserted != null ? syncState.inserted : <span style={{ color: '#334155' }}>—</span>}
+                <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Signals found</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
+                    {effectiveInserted != null ? effectiveInserted : <span style={{ color: '#334155' }}>—</span>}
                   </p>
                 </div>
               </div>
 
               {covPct !== null ? (
-                <div>
+                <div className="rounded-[12px]" style={{ padding: 10, background: 'rgba(5,10,20,0.55)', border: '1px solid rgba(148,163,184,0.12)' }}>
                   <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569' }}>Batch Scan Coverage</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>{covPct}%</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b' }}>Coverage</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#cbd5e1' }}>{covPct}%</span>
                   </div>
-                  <div className="w-full overflow-hidden rounded-full" style={{ height: 6, background: 'rgba(255,255,255,0.06)' }}>
+                  <div className="w-full overflow-hidden rounded-full" style={{ height: 5, background: 'rgba(255,255,255,0.08)' }}>
                     <div className="rounded-full" style={{ width: `${covPct}%`, height: '100%', background: 'linear-gradient(90deg,#2dd4bf,#8b5cf6)', transition: 'width 0.3s ease' }}/>
                   </div>
                 </div>
               ) : (
-                <p style={{ fontSize: 11, color: '#334155' }}>Run sync to see coverage</p>
+                <p style={{ fontSize: 11, color: '#475569' }}>Run a sync to see coverage progress.</p>
+              )}
+              {syncState && (
+                <p style={{ margin: 0, fontSize: 11, color: '#94a3b8' }}>
+                  {isFullInProgress
+                    ? `Full refresh progress: ${scannedCount} / ${trackedCount || stats.trackedWallets}`
+                    : `Last refresh checked ${scannedCount} / ${trackedCount || stats.trackedWallets} tracked wallets`}
+                </p>
+              )}
+              {syncState && trackedCount > 0 && (
+                <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
+                  {scannedCount} of {trackedCount} wallets checked
+                </p>
               )}
 
               {(syncState?.providerErrors ?? 0) > 0 && (
@@ -503,13 +645,20 @@ export default function WhaleAlertsPage() {
               )}
 
               <div className="flex" style={{ gap: 8 }}>
-                <button onClick={() => { void runSync(syncState?.nextOffset ?? 0) }} disabled={syncing}
+                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }} disabled={syncing || syncCooldownLeftMs > 0}
                   className="flex flex-1 items-center justify-center rounded-[12px]"
                   style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing ? 0.5 : 1, border: 'none' }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Scanning…' : syncState?.nextOffset != null ? 'Sync next batch' : 'Run sync'}
+                  {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
+                </button>
+                <button onClick={() => { void runSync(syncState?.mode === 'full' && isFullInProgress ? computedFullNextOffset : 0, 'full') }} disabled={syncing || (fullSyncCooldownLeftMs > 0 && !isFullInProgress)}
+                  className="flex items-center rounded-[12px]"
+                  style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
+                  {syncState?.mode === 'full' && isFullInProgress
+                    ? (fullSyncCooldownLeftMs > 0 ? 'Continue shortly' : 'Continue refresh')
+                    : (syncState?.mode === 'full' && !syncState?.hasMore && trackedCount > 0 && scannedCount >= trackedCount ? 'Full refresh complete' : 'Full refresh')}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
                   className="flex items-center rounded-[12px]"
@@ -519,12 +668,30 @@ export default function WhaleAlertsPage() {
                   </svg>
                   Reset
                 </button>
+                <button onClick={clearSyncState} disabled={syncing}
+                  className="flex items-center rounded-[12px]"
+                  style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.28)', color: '#cbd5e1', opacity: syncing ? 0.4 : 1 }}>
+                  Clear sync state
+                </button>
               </div>
 
               <button className="text-left hover:opacity-80"
-                style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#334155', background: 'none', border: 'none' }}>
+                style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', background: 'none', border: 'none' }}>
                 + Advanced Diagnostics
               </button>
+              <p style={{ margin: 0, fontSize: 11, color: '#fbbf24' }}>
+                Full sync refreshes the complete tracked-wallet set.
+              </p>
+              {syncState?.mode === 'full' && syncState?.hasMore && (
+                <p style={{ margin: 0, fontSize: 11, color: '#94a3b8' }}>
+                  Full refresh in progress.
+                </p>
+              )}
+              {syncState?.mode === 'full' && !syncState?.hasMore && trackedCount > 0 && scannedCount >= trackedCount && (
+                <p style={{ margin: 0, fontSize: 11, color: '#86efac' }}>
+                  Full refresh complete — {scannedCount} / {trackedCount} checked
+                </p>
+              )}
             </div>
 
           </div>
@@ -539,7 +706,11 @@ export default function WhaleAlertsPage() {
             <div className="flex items-center" style={{ gap: 12 }}>
               <h2 style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc', margin: 0 }}>Alert feed</h2>
               <Pill color="green" dot>Auto-update</Pill>
-              {alerts.length > 0 && <span style={{ fontSize: 12, color: '#475569' }}>{alerts.length} matching</span>}
+              {alerts.length > 0 && (
+                <span style={{ fontSize: 12, color: '#475569' }}>
+                  {alerts.length} shown{(feedDiagnostics?.afterDiversityCap ?? 0) > alerts.length ? ` of ${feedDiagnostics?.afterDiversityCap} matching` : ' matching'}
+                </span>
+              )}
             </div>
             <div className="flex items-center" style={{ gap: 8 }}>
               <button className="flex items-center justify-center rounded-[8px]"
@@ -624,9 +795,9 @@ export default function WhaleAlertsPage() {
               : valueFilterActive
                 ? `No alerts in the ${windowValue} window have a verified USD value of ${minUsdLabel}. Try "All" or a lower threshold.`
                 : partial
-                  ? `ChainLens scanned ${scanned} of ${total} tracked wallets in this batch. No qualifying whale movements were found yet.`
+                  ? `Scanned ${scanned} of ${total} wallets. No qualifying recent whale activity found in this batch.`
                   : allDone
-                    ? 'No qualifying whale alerts found across tracked wallets yet.'
+                    ? 'No qualifying recent whale activity found in this batch.'
                     : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
             return (
               <div style={{ padding: '64px 20px', textAlign: 'center' }}>
@@ -652,6 +823,8 @@ export default function WhaleAlertsPage() {
                   {syncState
                     ? <Pill color="teal">{scanned} of {total || stats.trackedWallets} scanned</Pill>
                     : <Pill color="teal">No sync yet</Pill>}
+                  {syncState && <Pill color="purple">Found {syncState.inserted ?? 0} qualifying alerts</Pill>}
+                  {syncState && <Pill color="amber">{syncState.skipped ?? 0} skipped (stable/routing/duplicate/no recent movement)</Pill>}
                   <Pill color={hasProviderErrors ? 'amber' : 'purple'}>
                     {hasProviderErrors ? 'Provider degraded' : 'Provider healthy'}
                   </Pill>
@@ -663,17 +836,19 @@ export default function WhaleAlertsPage() {
           {/* alert rows */}
           {!feedError && !loading && alerts.length > 0 && alerts.map((alert, i) => {
             const sideStyle  = getSide(alert.side)
-            const tok        = alert.token_symbol || alert.token_name || 'Unknown token'
-            const isMultiTok = tok.includes(' / ')
+            const rawTok     = alert.token_symbol || alert.token_name || 'Unknown token'
+            const focusTok    = alert.focus_token_symbol || null
+            const tok         = focusTok ?? rawTok
+            const isMultiTok  = rawTok.includes(' / ')
             const primarySym = tok.split(' / ')[0]
             const lbl        = primarySym.slice(0, 4).toUpperCase()
             const s          = alert.side?.toLowerCase() ?? ''
-            const verb       = isMultiTok ? 'swapped' : s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'moved'
+            const verb       = focusTok ? (s === 'buy' ? 'bought' : 'swapped into') : (isMultiTok ? 'swapped' : s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'moved')
             const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
 
             // Amount: prefer USD (valid for both single and summed grouped rows); token amount for singles
             const amtU    = fmtUsd(alert.amount_usd)
-            const amtT    = isMultiTok ? null : fmtToken(alert.amount_token, alert.token_symbol)
+            const amtT    = isMultiTok ? null : fmtToken(alert.amount_token, focusTok ?? alert.token_symbol)
             const amtShow = amtU !== '—' ? amtU : amtT
 
             const logoUrl = alert.token_image_url ?? alert.logo_url ?? alert.image ?? alert.token_logo ?? null
@@ -792,3 +967,6 @@ export default function WhaleAlertsPage() {
     </div>
   )
 }
+            <p style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: '#94a3b8' }}>
+              Whale Alerts refreshes on demand during beta to reduce infrastructure waste.
+            </p>

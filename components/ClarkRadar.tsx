@@ -157,11 +157,13 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   const [loading, setLoading] = useState(false)
   const [clarkMode, setClarkMode] = useState<ClarkMode>('chat')
   const scrollRef = useRef<HTMLDivElement>(null)
+  const messagesRef = useRef<Message[]>([])
   const lastSentRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
 
   useEffect(() => {
+    messagesRef.current = messages
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
@@ -175,7 +177,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
     try {
       const body = parseMessage(text, clarkMode)
       const requestMode = body.feature === 'clark-ai' ? clarkMode : 'analyst'
-      const history = [...messages, { role: 'user', text }]
+      const history = [...messagesRef.current, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       const res = await fetch(`/api/clark`, {
@@ -209,8 +211,8 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           if (pool) addrSet.add(pool)
           if (sym) symSet.add(sym)
         }
-        clarkContextRef.current.seenMarketAddresses = [...addrSet]
-        clarkContextRef.current.seenMarketSymbols = [...symSet]
+        clarkContextRef.current.seenMarketAddresses = [...addrSet].slice(-200)
+        clarkContextRef.current.seenMarketSymbols = [...symSet].slice(-200)
       }
       const cursor = (marketContext && typeof marketContext === 'object' && (marketContext as Record<string, unknown>).cursor && typeof (marketContext as Record<string, unknown>).cursor === 'object')
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor']
@@ -238,7 +240,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       setLoading(false)
       inputRef.current?.focus()
     }
-  }, [clarkMode, messages])
+  }, [clarkMode])
 
   useEffect(() => {
     if (pendingMessage && pendingMessage !== lastSentRef.current) {
