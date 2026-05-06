@@ -10,17 +10,21 @@ type TrackedWallet = {
   is_active: boolean
 }
 
+type CovalentLogEvent = {
+  sender_address?: string | null
+  sender_contract_ticker_symbol?: string | null
+  sender_contract_decimals?: number | null
+  decoded?: {
+    name?: string
+    params?: Array<{ name?: string; value?: string }>
+  } | null
+}
+
 type CovalentTx = {
   tx_hash?: string
   block_signed_at?: string
   successful?: boolean
-  log_events?: Array<{
-    sender_address?: string | null
-    decoded?: {
-      name?: string
-      params?: Array<{ name?: string; value?: string }>
-    } | null
-  }>
+  log_events?: CovalentLogEvent[]
 }
 
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
@@ -30,6 +34,7 @@ const MAX_LIMIT = 25
 const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
+const PER_WALLET_TIMEOUT_MS = 8_000
 const SYNC_COOLDOWN_MS = 10 * 60 * 1000
 const FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
@@ -199,6 +204,7 @@ async function fetchWalletTransactions(address: string, apiKey: string) {
         Accept: 'application/json',
       },
       cache: 'no-store',
+      signal: AbortSignal.timeout(PER_WALLET_TIMEOUT_MS),
     })
   } catch {
     throw new ProviderRequestError(null, 'network_error', [])
@@ -221,6 +227,10 @@ async function fetchWalletTransactions(address: string, apiKey: string) {
   return response.json()
 }
 
+// Parse ERC-20 Transfer events from Covalent log_events.
+// Aggregates multiple Transfer hops for the same (token, direction) within one tx —
+// a multi-hop DEX route produces one representative row per token per side.
+// Only creates alerts for transfers where the tracked wallet is the from or to address.
 function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: number, selectedWindow: SyncWindow) {
   const since = Date.now() - windowMs
   const alerts: Array<Record<string, unknown>> = []
@@ -240,24 +250,80 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
       continue
     }
 
-    parsedMovementCount += 1
+    const walletLower = wallet.address.toLowerCase()
+    const occurredAtIso = new Date(occurredAt).toISOString()
 
-    alerts.push({
-      wallet_address: wallet.address,
-      wallet_label: wallet.label,
-      token_address: null,
-      token_symbol: null,
-      token_name: null,
-      alert_type: 'token_transfer',
-      side: null,
-      amount_usd: null,
-      amount_token: null,
-      tx_hash: tx.tx_hash,
-      chain: 'base',
-      severity: null,
-      summary: `Recent token transfer activity (${tx.log_events?.length ?? 0} events)`,
-      occurred_at: new Date(occurredAt).toISOString(),
-    })
+    // Collect transfers by (token_address, side) so multi-hop routes don't
+    // produce duplicate rows for the same token in the same direction.
+    const movements = new Map<string, {
+      tokenAddress: string
+      tokenSymbol: string | null
+      amountToken: number
+      side: 'buy' | 'sell'
+    }>()
+
+    for (const event of tx.log_events ?? []) {
+      if (event.decoded?.name !== 'Transfer') continue
+      const params = event.decoded.params ?? []
+      const fromParam = params.find(p => p.name === 'from')?.value?.toLowerCase()
+      const toParam   = params.find(p => p.name === 'to')?.value?.toLowerCase()
+      const valueParam = params.find(p => p.name === 'value')?.value
+
+      if (!fromParam || !toParam || !valueParam) continue
+
+      const isReceive = toParam === walletLower
+      const isSend    = fromParam === walletLower
+      if (!isReceive && !isSend) continue
+
+      const tokenAddress = event.sender_address?.toLowerCase()
+      if (!tokenAddress) continue
+
+      const decimals   = event.sender_contract_decimals ?? 18
+      const rawAmount  = Number(valueParam)
+      if (!Number.isFinite(rawAmount) || rawAmount <= 0) continue
+      const amountToken = rawAmount / Math.pow(10, decimals)
+      if (!Number.isFinite(amountToken) || amountToken <= 0) continue
+
+      const side: 'buy' | 'sell' = isReceive ? 'buy' : 'sell'
+      const key = `${tokenAddress}::${side}`
+      const existing = movements.get(key)
+      if (existing) {
+        existing.amountToken += amountToken
+      } else {
+        movements.set(key, {
+          tokenAddress,
+          tokenSymbol: event.sender_contract_ticker_symbol ?? null,
+          amountToken,
+          side,
+        })
+      }
+    }
+
+    if (movements.size === 0) {
+      skipSummary.noTokenMovements += 1
+      continue
+    }
+
+    parsedMovementCount += 1
+    for (const mv of movements.values()) {
+      const dirVerb = mv.side === 'buy' ? 'received' : 'sent'
+      alerts.push({
+        wallet_address: wallet.address,
+        wallet_label: wallet.label,
+        token_address: mv.tokenAddress,
+        token_symbol: mv.tokenSymbol,
+        token_name: null,
+        alert_type: 'token_transfer',
+        side: mv.side,
+        amount_usd: null,
+        amount_token: mv.amountToken,
+        tx_hash: tx.tx_hash,
+        chain: 'base',
+        severity: null,
+        summary: `${wallet.label ?? 'Tracked wallet'} ${dirVerb} ${mv.amountToken.toFixed(4)} ${mv.tokenSymbol ?? 'tokens'}`,
+        occurred_at: occurredAtIso,
+      })
+    }
   }
 
   return { alerts, skipSummary, parsedMovementCount }
@@ -296,7 +362,7 @@ export async function POST(request: Request) {
   const bodyMinUsdRaw = body.minUsd
   const parsedQueryMinUsd = queryMinUsdRaw === null ? null : Number(queryMinUsdRaw)
   const parsedBodyMinUsd = typeof bodyMinUsdRaw === 'number' || typeof bodyMinUsdRaw === 'string' ? Number(bodyMinUsdRaw) : null
-  const selectedMinUsd = Math.max(0, Number.isFinite(parsedQueryMinUsd as number) ? (parsedQueryMinUsd as number) : (Number.isFinite(parsedBodyMinUsd as number) ? (parsedBodyMinUsd as number) : 1000))
+  const selectedMinUsd = Math.max(0, Number.isFinite(parsedQueryMinUsd as number) ? (parsedQueryMinUsd as number) : (Number.isFinite(parsedBodyMinUsd as number) ? (parsedBodyMinUsd as number) : 0))
 
   const queryOffset = parseInteger(requestUrl.searchParams.get('offset'))
   const bodyOffset = parseInteger(body.offset)
@@ -376,15 +442,16 @@ export async function POST(request: Request) {
         const alertType = (alert.alert_type as string | null) ?? null
         const occurredAt = (alert.occurred_at as string | null) ?? null
 
-        if (!walletAddress || !alertType || !occurredAt) {
+        const tokenAddress = (alert.token_address as string | null) ?? null
+        if (!walletAddress || !alertType || !occurredAt || !tokenAddress) {
           finalPipelineSummary.missingRequiredField += 1
-          skipSummary.other += 1
+          skipSummary.missingTokenAddress += 1
           pushSkipSample(skipSamples, {
             wallet: short,
             txHash: shortHash((alert.tx_hash as string | null) ?? null),
-            reason: 'other',
+            reason: 'missingTokenAddress',
             tokenSymbol: (alert.token_symbol as string | null) ?? null,
-            tokenAddressShort: shortHash((alert.token_address as string | null) ?? null),
+            tokenAddressShort: shortHash(tokenAddress),
             amountUsd: usd,
             alertType,
             side: (alert.side as string | null) ?? null,
@@ -516,6 +583,12 @@ export async function POST(request: Request) {
     skipped,
     skipReasons: skipSummary,
     providerErrors,
+    // Sanitised samples: only error code and class, no raw messages or wallet addresses
+    providerErrorSamples: providerErrorSamples.slice(0, 3).map(s => ({
+      provider: s.provider,
+      statusCode: s.statusCode ?? null,
+      reason: s.reason,
+    })),
     message: processed === 0
       ? (mode === 'full' ? 'No active wallets were scanned for full refresh.' : 'No active wallets were scanned in this batch.')
       : mode === 'full' && hasMore
