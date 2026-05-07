@@ -2685,7 +2685,7 @@ async function executeClarkToolPlan(input: {
         const _validAddr = Boolean(addr && /^0x[a-fA-F0-9]{40}$/.test(addr));
         // Run token scan and honeypot check in parallel instead of sequential
         const [tokenData, securitySim] = await Promise.all([
-          _validAddr ? callInternalApi(input.origin, "/api/token", { contract: addr }, input.authHeader) : Promise.resolve(null),
+          _validAddr ? callInternalApi(input.origin, "/api/token", { contract: addr }, input.authToken, input.verifiedPlan) : Promise.resolve(null),
           _validAddr ? fetchHoneypotSecurity(addr, "base") : Promise.resolve(null),
         ]);
         const tokenJson = tokenData?.ok ? tokenData.json : null;
