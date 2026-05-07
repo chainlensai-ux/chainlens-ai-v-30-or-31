@@ -2652,7 +2652,7 @@ type ClarkToolEvidence = {
       ownerRenounced: boolean | null;
     };
     liquidity: { pools: number; topPoolLiquidity: number | null };
-    lpControl?: { status: string; reason?: string | null; confidence?: string | null; source?: string | null } | null;
+    lpControl?: { status: string; reason?: string | null; confidence?: string | null; source?: string | null; poolType?: string | null; poolAddressPresent?: boolean | null } | null;
     poolDetails?: Array<{ dex: string; pair: string; liquidity: number | null; volume24h: number | null; change24h: number | null; poolAddress: string | null }>;
     warnings: string[];
     errorSafeMessage?: string;
@@ -2832,6 +2832,8 @@ async function executeClarkToolPlan(input: {
             reason: typeof (t.lpControl as Record<string, unknown>).reason === "string" ? String((t.lpControl as Record<string, unknown>).reason) : null,
             confidence: typeof (t.lpControl as Record<string, unknown>).confidence === "string" ? String((t.lpControl as Record<string, unknown>).confidence) : null,
             source: typeof (t.lpControl as Record<string, unknown>).source === "string" ? String((t.lpControl as Record<string, unknown>).source) : null,
+            poolType: typeof (t.lpControl as Record<string, unknown>).poolType === "string" ? String((t.lpControl as Record<string, unknown>).poolType) : null,
+            poolAddressPresent: typeof (t.lpControl as Record<string, unknown>).poolAddressPresent === "boolean" ? Boolean((t.lpControl as Record<string, unknown>).poolAddressPresent) : null,
           } : null,
           poolDetails: Array.isArray(t.pools)
             ? (t.pools as Array<Record<string, unknown>>).map((p) => {
@@ -3032,7 +3034,17 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   const liqWarnings = [...(evidence.liquidity?.warnings ?? [])];
   const lpControlStatus = evidence.tokenScan?.lpControl?.status ?? "unverified";
   const lpLocked = lpControlStatus === "burned" || lpControlStatus === "locked" ? true : lpControlStatus === "team_controlled" ? false : null;
-  if (evidence.tokenScan?.lpControl?.reason) liqWarnings.push(`LP control: ${humanizeProviderReason(evidence.tokenScan.lpControl.reason)}`);
+  {
+    const lpc = evidence.tokenScan?.lpControl;
+    const pType = lpc?.poolType ?? "unknown";
+    if (lpControlStatus === "burned") liqWarnings.push("LP control: LP tokens burned — liquidity removal risk significantly reduced.");
+    else if (lpControlStatus === "locked") liqWarnings.push("LP control: LP tokens locked in known locker — verify lock expiry.");
+    else if (lpControlStatus === "team_controlled") liqWarnings.push("LP control: Single wallet holds dominant LP share — liquidity removal risk exists.");
+    else if (lpControlStatus === "unsupported" && pType === "aerodrome") liqWarnings.push("LP control: Aerodrome protocol pool — requires protocol-specific LP verification.");
+    else if (lpControlStatus === "unsupported") liqWarnings.push("LP control: Concentrated/V3 pool — LP lock cannot be verified via V2 holder method.");
+    else if (lpc?.poolAddressPresent) liqWarnings.push("LP control unverified — liquidity exists, but lock/burn/control could not be proven from current checks.");
+    else liqWarnings.push("LP control unverified — no active pool found or pool address unavailable.");
+  }
   const liqUsd = evidence.liquidity?.liquidityUsd ?? market.liquidity ?? null;
   const volumeToLiquidity = (market.volume24h != null && liqUsd != null && liqUsd > 0) ? (market.volume24h / liqUsd) : null;
 
@@ -3102,7 +3114,7 @@ function buildFullReportEvidence(evidence: ClarkToolEvidence, resolvedAddress: s
   if (out.contract.transferTax === null) out.missing.push("Transfer tax check");
   if (out.contract.simulationSuccess === null) out.missing.push("Security simulation");
   if (out.holders.holderCount === null && out.holders.top10Pct === null) out.missing.push("Holder distribution");
-  if (out.liquidity.lpLocked === null) out.missing.push("LP lock/control");
+  if (out.liquidity.lpLocked === null) out.missing.push("LP lock/control — confirms whether liquidity can be removed or is locked/burned");
   if (out.market.poolAge === null) out.missing.push("Pool age / new pool status");
   if (out.devWallet.likelyDeployer === null) out.missing.push("Likely deployer identity");
 
@@ -3289,7 +3301,8 @@ function formatSecuritySimulationLine(report: ClarkFullReportEvidence): string {
 function explainMissingCheck(item: string): string {
   const map: Record<string,string> = {
     'Contract open-source verification': 'Contract open-source verification — Needs verified source publication or bytecode-level check from current providers.',
-    'LP lock/control': 'LP lock/control — Needs LP holder/locker proof or protocol-specific pool verification.',
+    'LP lock/control — confirms whether liquidity can be removed or is locked/burned': 'LP lock/control — Unconfirmed whether LP tokens are burned, locked, or wallet-controlled. Locker proof or protocol-specific verification needed.',
+    'LP lock/control': 'LP lock/control — Unconfirmed whether LP tokens are burned, locked, or wallet-controlled.',
     'Pool age / new pool status': 'Pool age / new pool status — Needs pool created/first-seen timestamp.',
     'Likely deployer identity': 'Likely deployer identity — Needs creator/deployer transaction trace or factory event.',
     'Transfer tax check': 'Transfer controls — Needs source/ABI or bytecode check for owner/mint/tax controls.',
