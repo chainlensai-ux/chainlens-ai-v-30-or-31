@@ -81,6 +81,12 @@ export type WalletSnapshot = {
         eventsReturned: number
         valuedEventsReturned: number
         pnlEventsUsable: number
+        endpointKind?: string
+        chainUsed?: string
+        httpStatus?: number | null
+        rawItemCount?: number
+        normalizedEventCount?: number
+        firstEventShapeKeys?: string[]
         reason: string
       }
       alchemy: { configured: boolean; behaviorAttempted: boolean; transfersReturned: number; reason: string }
@@ -194,32 +200,49 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
 }
 
 type PnlEvent = { contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'; amount: number; usdValue: number | null }
-async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<PnlEvent[]> {
+type GoldrushHistoryDiag = {
+  endpointKind: 'transfers_v2'
+  chainUsed: string
+  httpStatus: number | null
+  rawItemCount: number
+  normalizedEventCount: number
+  firstEventShapeKeys: string[]
+  reason: string
+}
+async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }> {
+  const emptyDiag = (chain: string, reason: string): GoldrushHistoryDiag => ({ endpointKind: 'transfers_v2', chainUsed: chain, httpStatus: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason })
   try {
-    const url = `https://api.covalenthq.com/v1/${chainName}/address/${address}/transfers_v2/?quote-currency=USD&page-size=125&no-spam=true`
-    const res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
-    if (!res.ok) return []
-    const json = await res.json()
-    const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items.slice(0, 125) : []
-    const lower = address.toLowerCase()
-    return items.flatMap((it) => {
-      const t = it as Record<string, unknown>
-      const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
-      return transfers.slice(0, 3).map((x) => {
-        const tr = x as Record<string, unknown>
-        const contract = String(tr.contract_address ?? '').toLowerCase()
-        const symbol = String(tr.contract_ticker_symbol ?? '?')
-        const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
-        const delta = String(tr.delta ?? '0')
-        const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
-        const from = String(tr.from_address ?? '').toLowerCase()
-        const to = String(tr.to_address ?? '').toLowerCase()
-        const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
-        const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
-        return { contract, symbol, direction, amount, usdValue: quote }
-      })
-    }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
-  } catch { return [] }
+    const chainCandidates = chainName === 'base-mainnet' ? ['8453', 'base-mainnet'] : [chainName]
+    for (const chainUsed of chainCandidates) {
+      const url = `https://api.covalenthq.com/v1/${chainUsed}/address/${address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true`
+      const res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
+      const status = res.status
+      if (!res.ok) continue
+      const json = await res.json()
+      const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items.slice(0, 125) : []
+      const lower = address.toLowerCase()
+      const events = items.flatMap((it) => {
+        const t = it as Record<string, unknown>
+        const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
+        return transfers.slice(0, 4).map((x) => {
+          const tr = x as Record<string, unknown>
+          const contract = String(tr.contract_address ?? '').toLowerCase()
+          const symbol = String(tr.contract_ticker_symbol ?? '?')
+          const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
+          const delta = String(tr.delta ?? '0')
+          const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
+          const from = String(tr.from_address ?? '').toLowerCase()
+          const to = String(tr.to_address ?? '').toLowerCase()
+          const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
+          const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
+          return { contract, symbol, direction, amount, usdValue: quote }
+        })
+      }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
+      const firstKeys = items[0] && typeof items[0] === 'object' ? Object.keys(items[0] as Record<string, unknown>).slice(0, 12) : []
+      return { events, diag: { endpointKind: 'transfers_v2', chainUsed, httpStatus: status, rawItemCount: items.length, normalizedEventCount: events.length, firstEventShapeKeys: firstKeys, reason: events.length ? '' : 'No indexed wallet transfer history returned from current checks.' } }
+    }
+    return { events: [], diag: emptyDiag(chainCandidates[0] ?? chainName, 'No indexed wallet transfer history returned from current checks.') }
+  } catch { return { events: [], diag: emptyDiag(chainName, 'History provider request failed from current checks.') } }
 }
 
 async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<PnlEvent[]> {
@@ -356,8 +379,8 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(ethUrl, 'eth_getTransactionCount', [addr, 'latest']),
     fetchWalletBehavior(addr, baseUrl),
-    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as PnlEvent[]),
-    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as PnlEvent[]),
+    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', httpStatus: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'History provider unavailable.' } }),
+    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', httpStatus: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'History provider unavailable.' } }),
     fetchAlchemyPnlEvents(addr, baseUrl),
   ])
 
@@ -440,7 +463,9 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     reason = 'No token balances found on supported chains.'
   }
 
-  const grEvents = [...(grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : []), ...(grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : [])]
+  const grEth = grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', httpStatus: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'History provider request failed from current checks.' } }
+  const grBase = grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', httpStatus: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'History provider request failed from current checks.' } }
+  const grEvents = [...grEth.events, ...grBase.events]
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
   const events = grEvents.length > 0 ? grEvents : alchemyEvents
@@ -534,6 +559,12 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
           valuedEventsReturned: valuedGrEvents.length,
           pnlEventsUsable: filteredPnlTokens.length,
           reason: goldrushReason,
+          endpointKind: grBase.diag.endpointKind,
+          chainUsed: grBase.diag.chainUsed,
+          httpStatus: grBase.diag.httpStatus,
+          rawItemCount: grBase.diag.rawItemCount,
+          normalizedEventCount: grBase.diag.normalizedEventCount,
+          firstEventShapeKeys: grBase.diag.firstEventShapeKeys,
         },
         alchemy: {
           configured: alchemyConfigured,
