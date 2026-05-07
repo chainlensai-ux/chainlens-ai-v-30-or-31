@@ -69,6 +69,20 @@ export function createAnonSupabaseClient() {
   );
 }
 
+export function createAuthedSupabaseClient(token: string) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  if (!url || !key || !token) return null
+  return createClient(
+    url,
+    key,
+    {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    }
+  )
+}
+
 export function sanitizeSettingsUpdate(input: unknown): { valid: UserSettingsUpdate; invalidKeys: string[] } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return { valid: {}, invalidKeys: [] };

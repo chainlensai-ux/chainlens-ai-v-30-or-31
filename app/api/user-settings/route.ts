@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  createAuthedSupabaseClient,
   createAnonSupabaseClient,
   getOrCreateUserSettings,
   sanitizeSettingsUpdate,
@@ -15,13 +16,18 @@ async function getAuthenticatedUser(request: NextRequest) {
   const token = authHeader.slice(7).trim();
   if (!token) return { error: 'Missing bearer token.', userId: null };
 
-  const supabase = createAnonSupabaseClient();
-  if (!supabase) {
+  const authSupabase = createAnonSupabaseClient();
+  if (!authSupabase) {
     return { error: 'Settings service unavailable.', userId: null };
   }
-  const { data, error } = await supabase.auth.getUser(token);
+  const { data, error } = await authSupabase.auth.getUser(token);
   if (error || !data.user) {
     return { error: 'Unauthorized.', userId: null };
+  }
+
+  const supabase = createAuthedSupabaseClient(token);
+  if (!supabase) {
+    return { error: 'Settings service unavailable.', userId: null };
   }
 
   return { error: null, userId: data.user.id, supabase };
@@ -38,6 +44,7 @@ export async function GET(request: NextRequest) {
   const diagnostics = process.env.NODE_ENV !== 'production'
     ? {
         authenticated: true,
+        userIdPresent: Boolean(auth.userId),
         hasSettingsRow: !result.error,
         plan,
         fallback: Boolean(result.error),
@@ -46,12 +53,28 @@ export async function GET(request: NextRequest) {
 
   if (result.error) {
     return NextResponse.json(
-      { settings: result.settings, plan, error: result.error, fallback: true, diagnostics },
+      {
+        settings: result.settings,
+        plan,
+        subscription_status: result.settings.subscription_status ?? null,
+        error: result.error,
+        fallback: true,
+        diagnostics,
+      },
       { status: 200 }
     );
   }
 
-  return NextResponse.json({ settings: result.settings, plan, fallback: false, diagnostics }, { status: 200 });
+  return NextResponse.json(
+    {
+      settings: result.settings,
+      plan,
+      subscription_status: result.settings.subscription_status ?? null,
+      fallback: false,
+      diagnostics,
+    },
+    { status: 200 }
+  );
 }
 
 export async function PATCH(request: NextRequest) {
