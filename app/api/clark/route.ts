@@ -2113,7 +2113,7 @@ function humanizeProviderReason(reason: string): string {
     no_active_liquidity_pool_found: "No active liquidity pool found",
     "No pool address found from provider for LP-holder verification.": "LP holder check unavailable: no pool address found.",
     "Pool uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.": "Unsupported protocol liquidity: LP lock needs protocol-specific verification.",
-    "Pool address found, but pool type could not be verified for LP-holder inference.": "Unknown pool type: LP holder inference unavailable until pool type is verified.",
+    "Pool address found, but no standard V2/V3 LP interface was confirmed.": "LP control unverified — verification pool/type could not be confirmed.",
   };
   if (map[reason]) return map[reason];
   return /^[a-z0-9_]+$/.test(reason) ? reason.replace(/_/g, " ") : reason;
@@ -2652,7 +2652,7 @@ type ClarkToolEvidence = {
       ownerRenounced: boolean | null;
     };
     liquidity: { pools: number; topPoolLiquidity: number | null };
-    lpControl?: { status: string; reason?: string | null; confidence?: string | null; source?: string | null } | null;
+    lpControl?: { status: string; reason?: string | null; confidence?: string | null; source?: string | null; lpVerificationPair?: string | null } | null;
     poolDetails?: Array<{ dex: string; pair: string; liquidity: number | null; volume24h: number | null; change24h: number | null; poolAddress: string | null }>;
     warnings: string[];
     errorSafeMessage?: string;
@@ -2832,6 +2832,9 @@ async function executeClarkToolPlan(input: {
             reason: typeof (t.lpControl as Record<string, unknown>).reason === "string" ? String((t.lpControl as Record<string, unknown>).reason) : null,
             confidence: typeof (t.lpControl as Record<string, unknown>).confidence === "string" ? String((t.lpControl as Record<string, unknown>).confidence) : null,
             source: typeof (t.lpControl as Record<string, unknown>).source === "string" ? String((t.lpControl as Record<string, unknown>).source) : null,
+            lpVerificationPair: typeof ((t._diagnostics as Record<string, unknown> | undefined)?.lpVerificationPair) === "string"
+              ? String((t._diagnostics as Record<string, unknown>).lpVerificationPair)
+              : null,
           } : null,
           poolDetails: Array.isArray(t.pools)
             ? (t.pools as Array<Record<string, unknown>>).map((p) => {
