@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
+import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 type WindowKey = '15m' | '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -102,6 +103,10 @@ const GT_REQ_HEADERS  = { accept: 'application/json', origin: 'https://chainlens
 // Tokens already priced by enrichRowUsd — skip for random GeckoTerminal lookups
 const ENRICHED_BY_COINGECKO = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'WBTC'])
 const MAX_RANDOM_TOKENS = 15
+const WHALE_CACHE_TTL_MS = 45_000
+const whaleCache = new Map<string, { exp: number; payload: unknown }>()
+const whaleRate = new Map<string, { count: number; resetAt: number }>()
+const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
 
 // Returns true only when every symbol in a (possibly grouped) token_symbol is a stablecoin.
 // "USDC / WETH" → false (mixed); "USDC" → true; "USDC / USDT" → true.
@@ -415,6 +420,17 @@ function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
 
 
 export async function GET(req: NextRequest) {
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  const plan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : 'free'
+  if (plan === 'free') return NextResponse.json({ alerts: [], error: 'Upgrade required for whale alerts.', rateLimited: false }, { status: 403 })
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const now = Date.now()
+  const rk = `${ip}:${plan}`
+  const rr = whaleRate.get(rk)
+  if (!rr || rr.resetAt <= now) whaleRate.set(rk, { count: 1, resetAt: now + 60_000 })
+  else if (rr.count >= WHALE_RATE_LIMIT[plan]) return NextResponse.json({ alerts: [], error: 'Rate limit reached. Try again shortly.', rateLimited: true }, { status: 429 })
+  else rr.count += 1
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
 
@@ -433,6 +449,9 @@ export async function GET(req: NextRequest) {
     const side = params.get('side')?.trim() || null
     const severity = params.get('severity')?.trim() || null
     const limit = parseLimit(params.get('limit'))
+    const cacheKey = `whale:${plan}:${selectedWindow}:${minUsdRaw ?? ''}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}`
+    const cached = whaleCache.get(cacheKey)
+    if (cached && cached.exp > now) return NextResponse.json(cached.payload)
 
     const windowStartIso = new Date(Date.now() - WINDOW_MS[selectedWindow]).toISOString()
 
@@ -529,7 +548,7 @@ export async function GET(req: NextRequest) {
     const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
     const grouped  = collapseRapidRepeats(diversityCapped).slice(0, limit)
 
-    return NextResponse.json({
+    const payload = {
       alerts: grouped,
       stats: {
         alerts15m:      countStatsFiltered(stats15m.data, majorPrices, effectiveMinUsd, tokenPrices),
@@ -553,8 +572,13 @@ export async function GET(req: NextRequest) {
         randomTokenPriceLookups:  randomAddresses.length,
         randomTokenPriceHits,
         randomTokenPriceMisses,
+        cacheHit: false,
+        providerStatus: 'ok',
+        rateLimited: false,
       },
-    })
+    }
+    whaleCache.set(cacheKey, { exp: Date.now() + WHALE_CACHE_TTL_MS, payload })
+    return NextResponse.json(payload)
   } catch (error) {
     console.error('[whale-alerts] unexpected error', error)
     return NextResponse.json({ error: 'Unexpected server error.' }, { status: 500 })

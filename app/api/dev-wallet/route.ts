@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 function resolveBaseRpcUrl(): string | null {
@@ -12,7 +13,21 @@ function resolveBaseRpcUrl(): string | null {
 const ALCHEMY_BASE_URL = resolveBaseRpcUrl()
 const DEV_CACHE_TTL_MS = 3 * 60 * 1000
 const devCache = new Map<string, { exp: number; payload: unknown }>()
-const devRate = new Map<string, { count: number; resetAt: number }>()
+const devRate = new Map<string, { count: number; resetAt: number; lastAt: number }>()
+const DEV_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 4, pro: 15, elite: 30 }
+const DEV_COOLDOWN_MS: Record<'free' | 'pro' | 'elite', number> = { free: 25_000, pro: 8_000, elite: 4_000 }
+
+async function resolveServerPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  if (!token) return 'free'
+  try {
+    const { plan } = await getCurrentUserPlanFromBearerToken(token)
+    return plan
+  } catch {
+    return 'free'
+  }
+}
 
 interface AlchemyTransfer {
   blockNum: string
@@ -108,7 +123,7 @@ async function checkTokenMetadata(contract: string): Promise<{ metadataAvailable
   try {
     const res = await fetch(
       `${COVALENT_BASE_URL}/base-mainnet/tokens/${contract}/?key=${apiKey}`,
-      { cache: 'no-store' }
+      { cache: 'no-store', signal: AbortSignal.timeout(8000) }
     )
     if (!res.ok) return { metadataAvailable: false, source: 'none' }
 
@@ -237,7 +252,7 @@ async function getSupplyData(
   try {
     const res = await fetch(
       `${COVALENT_BASE_URL}/base-mainnet/tokens/${contract}/token_holders_v2/?page-size=50&key=${apiKey}`,
-      { cache: 'no-store' }
+      { cache: 'no-store', signal: AbortSignal.timeout(9000) }
     )
     if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
 
@@ -733,12 +748,16 @@ export async function POST(req: Request) {
   const warnings: string[] = []
 
   try {
+    const plan = await resolveServerPlan(req)
+    if (plan === 'free') return NextResponse.json({ error: 'Upgrade required for dev wallet scan.', rateLimited: false }, { status: 403 })
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
     const now = Date.now()
-    const rr = devRate.get(ip)
-    if (!rr || rr.resetAt <= now) devRate.set(ip, { count: 1, resetAt: now + 60_000 })
-    else if (rr.count >= 15) return NextResponse.json({ error: 'Rate limit reached. Try again shortly.' }, { status: 429 })
-    else rr.count += 1
+    const rateKey = `${ip}:${plan}`
+    const rr = devRate.get(rateKey)
+    if (!rr || rr.resetAt <= now) devRate.set(rateKey, { count: 1, resetAt: now + 60_000, lastAt: now })
+    else if (now - rr.lastAt < DEV_COOLDOWN_MS[plan]) return NextResponse.json({ error: 'Cooldown active. Please retry shortly.', rateLimited: true }, { status: 429 })
+    else if (rr.count >= DEV_RATE_LIMIT[plan]) return NextResponse.json({ error: 'Rate limit reached. Try again shortly.', rateLimited: true }, { status: 429 })
+    else { rr.count += 1; rr.lastAt = now }
     const body = await req.json() as { contractAddress?: string }
     const { contractAddress } = body
 
