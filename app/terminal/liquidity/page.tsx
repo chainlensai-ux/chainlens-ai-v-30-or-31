@@ -5,8 +5,10 @@ import LiquiditySafetyVerdictCard, {
   type LiquiditySafetyResult,
 } from '@/components/LiquiditySafetyVerdictCard'
 import LPSafetyExtendedBox from '@/components/LPSafetyExtendedBox'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 export default function LiquiditySafetyPage() {
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const [input, setInput]     = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult]   = useState<LiquiditySafetyResult | null>(null)
@@ -41,6 +43,9 @@ export default function LiquiditySafetyPage() {
       setLoading(false)
     }
   }
+
+  if (planLoading) return null
+  if (!canAccessFeature(plan, 'liquidity-safety')) return <LockedPanel feature="liquidity-safety" />
 
   return (
     <>

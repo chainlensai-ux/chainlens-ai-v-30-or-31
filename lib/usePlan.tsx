@@ -27,6 +27,34 @@ export function usePlan(): UserPlan {
   return plan
 }
 
+/** Like usePlan but exposes loading state so pages can suppress the locked
+ *  panel flash while the session/plan are still resolving. */
+export function usePlanWithLoading(): { plan: UserPlan; loading: boolean } {
+  const [plan, setPlan] = useState<UserPlan>('free')
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    async function load(token: string | undefined) {
+      if (!token) { setPlan('free'); setLoading(false); return }
+      try {
+        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
+        if (res.ok) {
+          const json = await res.json()
+          const p = (json?.settings as Record<string, unknown>)?.plan
+          setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+        }
+      } catch { setPlan('free') }
+      setLoading(false)
+    }
+    supabase.auth.getSession().then(({ data }) => load(data.session?.access_token))
+    const { data: l } = supabase.auth.onAuthStateChange((_e, session) => {
+      setLoading(true)
+      void load(session?.access_token)
+    })
+    return () => l.subscription.unsubscribe()
+  }, [])
+  return { plan, loading }
+}
+
 const FEATURE_DISPLAY: Record<string, string> = {
   'wallet-scanner':   'Wallet Scanner',
   'dev-wallet':       'Dev Wallet Detector',
