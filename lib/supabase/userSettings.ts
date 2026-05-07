@@ -15,11 +15,10 @@ export type UserSettings = {
   saved_layout: JsonMap;
   saved_filters: JsonMap;
   onboarding_progress: JsonMap;
-  plan: 'free' | 'pro' | 'elite';
   created_at?: string;
   updated_at?: string;
   // Subscription plan fields (added by supabase-subscriptions.sql migration)
-  plan?: string;
+  plan?: 'free' | 'pro' | 'elite';
   lemon_customer_id?: string | null;
   lemon_subscription_id?: string | null;
   lemon_variant_id?: string | null;
