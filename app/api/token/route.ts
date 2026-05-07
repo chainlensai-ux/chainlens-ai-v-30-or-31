@@ -365,9 +365,13 @@ type NormalizedPool = {
   poolType: LpControlResult["poolType"];
   hasDexMeta: boolean;
   isValidAddress: boolean;
+  containsScannedToken?: boolean;
+  isPreferredQuote?: boolean;
+  lpScore?: number;
+  selectionReason?: string;
 };
 
-function normalizePool(pool: any): NormalizedPool {
+function normalizePool(pool: any, includedTokenById: Map<string, Record<string, unknown>>): NormalizedPool {
   const a = (pool?.attributes ?? {}) as Record<string, unknown>;
   const base = (pool?.relationships?.base_token?.data ?? {}) as Record<string, unknown>;
   const quote = (pool?.relationships?.quote_token?.data ?? {}) as Record<string, unknown>;
@@ -380,10 +384,14 @@ function normalizePool(pool: any): NormalizedPool {
     return s ? s.toUpperCase() : null;
   };
   const idToAddr = (id: string | null) => (id && id.includes("_") ? id.split("_").pop() ?? null : id);
+  const baseId = String(base.id ?? "");
+  const quoteId = String(quote.id ?? "");
+  const baseIncluded = includedTokenById.get(baseId) ?? {};
+  const quoteIncluded = includedTokenById.get(quoteId) ?? {};
   const baseTokenObj = (a.base_token ?? {}) as Record<string, unknown>;
   const quoteTokenObj = (a.quote_token ?? {}) as Record<string, unknown>;
-  const baseTokenAddress = cleanAddr(a.base_token_address ?? baseTokenObj.address ?? idToAddr(String(base.id ?? "")));
-  const quoteTokenAddress = cleanAddr(a.quote_token_address ?? quoteTokenObj.address ?? idToAddr(String(quote.id ?? "")));
+  const baseTokenAddress = cleanAddr(a.base_token_address ?? baseTokenObj.address ?? baseIncluded.address ?? idToAddr(baseId));
+  const quoteTokenAddress = cleanAddr(a.quote_token_address ?? quoteTokenObj.address ?? quoteIncluded.address ?? idToAddr(quoteId));
   return {
     raw: pool,
     address: cleanAddr(a.address ?? pool?.id),
@@ -393,15 +401,15 @@ function normalizePool(pool: any): NormalizedPool {
     liquidityUsd: toNum(a.reserve_in_usd) ?? 0,
     baseTokenAddress,
     quoteTokenAddress,
-    baseTokenSymbol: cleanSym(a.base_token_symbol ?? a.base_symbol ?? baseTokenObj.symbol),
-    quoteTokenSymbol: cleanSym(a.quote_token_symbol ?? a.quote_symbol ?? quoteTokenObj.symbol),
+    baseTokenSymbol: cleanSym(a.base_token_symbol ?? a.base_symbol ?? baseTokenObj.symbol ?? baseIncluded.symbol),
+    quoteTokenSymbol: cleanSym(a.quote_token_symbol ?? a.quote_symbol ?? quoteTokenObj.symbol ?? quoteIncluded.symbol),
     poolType: detectPoolType(pool as Record<string, unknown>),
     hasDexMeta: Boolean(String(a.dex_id ?? a.dex ?? a.dex_name ?? "").trim()),
     isValidAddress: Boolean(cleanAddr(a.address ?? pool?.id)),
   };
 }
 
-function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string): { pool: NormalizedPool | null; reason: string } {
+function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string): { pool: NormalizedPool | null; reason: string; candidates: NormalizedPool[] } {
   const tokenLc = tokenAddress.toLowerCase();
   const quoteRank: Record<string, number> = {
     WETH: 1,
@@ -415,7 +423,7 @@ function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string)
   for (const p of pools) {
     const includesToken = p.baseTokenAddress === tokenLc || p.quoteTokenAddress === tokenLc;
     const otherSymbol = p.baseTokenAddress === tokenLc ? p.quoteTokenSymbol : p.baseTokenSymbol;
-    const quotePriority = otherSymbol ? quoteRank[otherSymbol] ?? null : null;
+    const quotePriority = otherSymbol ? quoteRank[otherSymbol.toUpperCase()] ?? null : null;
     const hasPreferredQuote = quotePriority != null;
     const v2LikeMeta = p.poolType === "v2";
     let score = 0;
@@ -434,8 +442,12 @@ function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string)
           : "no preferred quote pair found; selected best token-including fallback pool")
       : "excluded: pool does not include scanned token";
     if (!best || score > best.score) best = { pool: p, score, reason };
+    p.containsScannedToken = includesToken;
+    p.isPreferredQuote = hasPreferredQuote;
+    p.lpScore = score;
+    p.selectionReason = reason;
   }
-  return best ? { pool: best.pool, reason: best.reason } : { pool: null, reason: "no_pool_candidates" };
+  return best ? { pool: best.pool, reason: best.reason, candidates: pools } : { pool: null, reason: "no_pool_candidates", candidates: pools };
 }
 
 function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["poolType"] {
@@ -559,7 +571,14 @@ export async function POST(req: Request) {
     );
 
     const mainPool = matchingPools[0] ?? null;
-    const normalizedPools = matchingPools.map(normalizePool);
+    const includedTokenById = new Map<string, Record<string, unknown>>();
+    for (const inc of gtIncluded as Array<Record<string, unknown>>) {
+      if (inc?.type !== "token") continue;
+      const id = String(inc.id ?? "");
+      const attrs = (inc.attributes ?? {}) as Record<string, unknown>;
+      if (id) includedTokenById.set(id, attrs);
+    }
+    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById));
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
@@ -621,6 +640,9 @@ export async function POST(req: Request) {
     const _lpAddrSnippet = lpPoolAddress ? `${lpPoolAddress.slice(0, 10)}…${lpPoolAddress.slice(-4)}` : "none";
     const lpPair = lpPool?.pairName ?? `${lpPool?.baseTokenSymbol ?? "?"}/${lpPool?.quoteTokenSymbol ?? "?"}`;
     const marketPair = pairName ?? "unknown";
+    const lpReason = selectedLpPool.reason.includes("no preferred quote pair")
+      ? "No major quote verification pool found; using best available pool."
+      : selectedLpPool.reason;
     const _lpBaseDiagnostics = [
       `Verification pool: ${lpPair}`,
       `Pool type: ${lpPoolType}`,
@@ -636,7 +658,7 @@ export async function POST(req: Request) {
       poolAddressPresent: Boolean(lpPoolAddress),
       dexId: dexId || undefined,
       dexName: dexName || undefined,
-      lpVerificationPoolReason: selectedPrimaryPoolSource,
+      lpVerificationPoolReason: lpReason,
     };
     if (!lpPoolAddressPresent) {
       lpControl = { ...lpControl, status: "unverified", reason: "No pool address found from provider for LP-holder verification." };
@@ -746,7 +768,7 @@ export async function POST(req: Request) {
       `Market primary pair: ${marketPair}`,
       `LP verification pair: ${lpPair}`,
       `LP verification pool address: ${lpPoolAddress ?? 'unavailable'}`,
-      `LP verification reason: ${selectedLpPool.reason}`,
+      `LP verification reason: ${lpReason}`,
       `lpHolderCheckAttempted=${needsLpHolderFetch}`,
     ];
 
@@ -1030,7 +1052,26 @@ export async function POST(req: Request) {
         marketPrimaryPair: marketPair,
         lpVerificationPair: lpPair,
         lpVerificationPoolAddress: lpPoolAddress,
-        lpVerificationPoolReason: selectedLpPool.reason,
+        lpVerificationPoolReason: lpReason,
+        ...((process.env.NODE_ENV !== 'production' || debugHolder === true) ? {
+          lpPoolCandidates: selectedLpPool.candidates.slice(0, 10).map((c) => ({
+            pair: c.pairName ?? `${c.baseTokenSymbol ?? "?"}/${c.quoteTokenSymbol ?? "?"}`,
+            poolAddress: c.address ? `${c.address.slice(0, 10)}…${c.address.slice(-4)}` : "unavailable",
+            liquidityUsd: c.liquidityUsd,
+            dexId: c.dexId,
+            dexName: c.dexName,
+            quoteSymbol: c.quoteTokenAddress === String(contract).toLowerCase() ? c.baseTokenSymbol : c.quoteTokenSymbol,
+            quoteAddress: (() => {
+              const qa = c.quoteTokenAddress === String(contract).toLowerCase() ? c.baseTokenAddress : c.quoteTokenAddress;
+              return qa ? `${qa.slice(0, 10)}…${qa.slice(-4)}` : "unavailable";
+            })(),
+            containsScannedToken: c.containsScannedToken ?? false,
+            isPreferredQuote: c.isPreferredQuote ?? false,
+            poolType: c.poolType,
+            lpScore: c.lpScore ?? null,
+            selectionReason: c.selectionReason ?? null,
+          })),
+        } : {}),
         providerUsed: { market: 'geckoterminal', holders: 'goldrush', security: hpResult.ok ? 'honeypot.is' : (gpHasData ? 'goplus_limited_fallback' : 'unavailable'), contractChecks: 'alchemy_rpc', liquidity: lpControl.source ?? 'geckoterminal' },
         tokenMarketFieldsPresent: {
           priceUsd: priceUsd != null,

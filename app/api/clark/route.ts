@@ -2652,7 +2652,7 @@ type ClarkToolEvidence = {
       ownerRenounced: boolean | null;
     };
     liquidity: { pools: number; topPoolLiquidity: number | null };
-    lpControl?: { status: string; reason?: string | null; confidence?: string | null; source?: string | null } | null;
+    lpControl?: { status: string; reason?: string | null; confidence?: string | null; source?: string | null; lpVerificationPair?: string | null } | null;
     poolDetails?: Array<{ dex: string; pair: string; liquidity: number | null; volume24h: number | null; change24h: number | null; poolAddress: string | null }>;
     warnings: string[];
     errorSafeMessage?: string;
@@ -2832,6 +2832,9 @@ async function executeClarkToolPlan(input: {
             reason: typeof (t.lpControl as Record<string, unknown>).reason === "string" ? String((t.lpControl as Record<string, unknown>).reason) : null,
             confidence: typeof (t.lpControl as Record<string, unknown>).confidence === "string" ? String((t.lpControl as Record<string, unknown>).confidence) : null,
             source: typeof (t.lpControl as Record<string, unknown>).source === "string" ? String((t.lpControl as Record<string, unknown>).source) : null,
+            lpVerificationPair: typeof ((t._diagnostics as Record<string, unknown> | undefined)?.lpVerificationPair) === "string"
+              ? String((t._diagnostics as Record<string, unknown>).lpVerificationPair)
+              : null,
           } : null,
           poolDetails: Array.isArray(t.pools)
             ? (t.pools as Array<Record<string, unknown>>).map((p) => {
