@@ -2633,8 +2633,8 @@ async function executeClarkToolPlan(input: {
   origin: string;
   prompt: string;
   chain: SupportedChain;
-  verifiedPlan: 'free' | 'pro' | 'elite';
-  authToken?: string;
+  authHeader?: string | null;
+  verifiedPlan?: string;
 }): Promise<{ evidence: ClarkToolEvidence; toolsUsed: ClarkToolName[]; resolvedAddress: string | null }> {
   const evidence: ClarkToolEvidence = {};
   const toolsUsed: ClarkToolName[] = [];
@@ -4093,7 +4093,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
   }
 }
 
-async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null) {
+async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -4417,7 +4417,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     structuredMarketList,
     clarkContext: body.clarkContext,
   });
-  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, verifiedPlan: clarkInternalCtx.verifiedPlan ?? 'free', authToken: clarkInternalCtx.authToken });
+  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, authHeader, verifiedPlan });
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {
@@ -4935,7 +4935,8 @@ export async function POST(req: NextRequest) {
   const verifiedPlan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : clarkPlan(req)
   if (!clarkAllowed(req, verifiedPlan)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
-    clarkInternalCtx = { authToken: token || undefined, verifiedPlan }
+    const authHeader = req.headers.get('authorization') ?? undefined
+    const verifiedPlan = await getVerifiedUserPlan(req)
     const body = (await req.json()) as ClarkRequestBody;
     const cacheKey = JSON.stringify({ actor: clarkActor(req), verifiedPlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
@@ -4943,7 +4944,6 @@ export async function POST(req: NextRequest) {
     if (body.message && !body.prompt) body.prompt = body.message;
     // Derive origin from the incoming request — always correct for any deployment
     const origin = req.nextUrl.origin;
-    const authHeader = req.headers.get('authorization') ?? undefined
 
     if (!body.feature) {
       return NextResponse.json(
@@ -4980,7 +4980,7 @@ export async function POST(req: NextRequest) {
         result = await handleBaseRadar(body, origin);
         break;
       case "clark-ai":
-        result = await handleClarkAI(body, origin, authHeader);
+        result = await handleClarkAI(body, origin, authHeader, verifiedPlan);
         break;
       default:
         return NextResponse.json(
@@ -5001,9 +5001,6 @@ export async function POST(req: NextRequest) {
       feature: "clark-ai",
       data: { reply: safeMsg, response: safeMsg, analysis: safeMsg, verdict: "SCAN DEEPER", source: "fallback" },
     }, { status: 200 });
-  }
-  finally {
-    clarkInternalCtx = {}
   }
 }
 
