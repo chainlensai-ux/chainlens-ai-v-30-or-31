@@ -410,7 +410,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
     case "unsupported":
       if (lp.poolType === "aerodrome") {
         return {
-          title: "Protocol liquidity — Aerodrome",
+          title: "Protocol liquidity — requires protocol-specific verification",
           meaning: "Liquidity is in an Aerodrome/Velodrome protocol pool. LP positions cannot be verified using the standard V2 LP-holder method.",
           riskLevel: "Not assessable via V2 method",
           whatWasFound: [...poolLine, "Pool type: Aerodrome/Velodrome"],
@@ -419,7 +419,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
         };
       }
       return {
-        title: "Protocol liquidity — concentrated (V3)",
+        title: "Protocol liquidity — requires protocol-specific verification",
         meaning: "Liquidity is in a concentrated-liquidity (V3) pool. LP positions are NFTs, not standard ERC-20 tokens — V2 holder checks do not apply.",
         riskLevel: "Not assessable via V2 method",
         whatWasFound: [...poolLine, "Pool type: concentrated / V3"],
@@ -429,7 +429,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
     default: // unverified, error
       if (!lp.poolAddressPresent) {
         return {
-          title: "No active liquidity pool",
+          title: "No active liquidity pool found",
           meaning: "No liquidity pool was found for this token. Liquidity risk and LP control cannot be assessed.",
           riskLevel: "Unknown",
           whatWasFound: [],
@@ -448,12 +448,12 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
         };
       }
       return {
-        title: "LP lock not confirmed",
-        meaning: "A liquidity pool was found, but current checks could not determine whether LP tokens are locked, burned, or wallet-controlled.",
+        title: "LP Control: Unverified",
+        meaning: "Liquidity exists, but LP lock/control could not be proven from current checks.",
         riskLevel: "Medium — needs verification",
-        whatWasFound: [...poolLine, "Liquidity exists on-chain"],
+        whatWasFound: [...poolLine, "Major quote pool selected", "Alchemy RPC checks attempted"],
         couldNotVerify: ["LP token holder distribution", "Lock or burn status", "Standard V2/V3 LP interface"],
-        nextAction: "Treat LP control as unverified. Check a locker explorer or verify on-chain before relying on LP safety.",
+        nextAction: "Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.",
       };
   }
 }
@@ -474,6 +474,56 @@ function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[
   }
   return { dexId: attrDexId || relDexId, dexName: attrDexName || incDexName || attrDexId || relDexId };
 }
+
+function normalizePool(pool: Record<string, unknown> | null, includedTokenById: Map<string, Record<string, unknown>>): NormalizedPool {
+  const attrs = (pool?.attributes ?? {}) as Record<string, unknown>;
+  const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
+  const baseId = String((((rel.base_token as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)?.id) ?? "").trim();
+  const quoteId = String((((rel.quote_token as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)?.id) ?? "").trim();
+  const baseInc = baseId ? (includedTokenById.get(baseId) ?? {}) : {};
+  const quoteInc = quoteId ? (includedTokenById.get(quoteId) ?? {}) : {};
+  const baseTokenAddress = String((baseInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
+  const quoteTokenAddress = String((quoteInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
+  const baseTokenSymbol = String((baseInc as Record<string, unknown>).symbol ?? "").trim() || null;
+  const quoteTokenSymbol = String((quoteInc as Record<string, unknown>).symbol ?? "").trim() || null;
+  const address = String(attrs.address ?? pool?.id ?? "").trim().toLowerCase() || null;
+  const { dexId, dexName } = extractPoolDex(pool, []);
+  return {
+    address,
+    pairName: String(attrs.name ?? attrs.pool_name ?? attrs.pair_name ?? "").trim() || null,
+    liquidityUsd: pickNum(attrs.reserve_in_usd, attrs.liquidity_usd, attrs.reserve_usd) ?? 0,
+    dexId: dexId || null,
+    dexName: dexName || null,
+    baseTokenSymbol,
+    quoteTokenSymbol,
+    baseTokenAddress,
+    quoteTokenAddress,
+    poolType: detectPoolType(pool),
+    hasDexMeta: Boolean(dexId || dexName),
+    isValidAddress: Boolean(address && /^0x[a-f0-9]{40}$/.test(address)),
+    raw: pool,
+  };
+}
+
+type NormalizedPool = {
+  address?: string | null;
+  pairName?: string | null;
+  liquidityUsd: number;
+  dexId?: string | null;
+  dexName?: string | null;
+  baseTokenSymbol?: string | null;
+  quoteTokenSymbol?: string | null;
+  baseTokenAddress?: string | null;
+  quoteTokenAddress?: string | null;
+  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
+  hasDexMeta: boolean;
+  isValidAddress: boolean;
+  containsScannedToken?: boolean;
+  isPreferredQuote?: boolean;
+  lpScore?: number;
+  selectionReason?: string;
+  raw?: unknown;
+};
 
 function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string): { pool: NormalizedPool | null; reason: string; candidates: NormalizedPool[] } {
   const tokenLc = tokenAddress.toLowerCase();
@@ -1203,7 +1253,7 @@ export async function POST(req: Request) {
       // Contract analysis
       analysis,
       lpControl,
-      lpControlRead: computeLpControlRead(lpControl, String(lpPoolAttr?.name ?? (lpPool?.attributes as Record<string, unknown> | undefined)?.name ?? "")),
+      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
 
       // AI summary from Cortex Engine
       aiSummary,
@@ -1250,7 +1300,7 @@ export async function POST(req: Request) {
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
           lpControl,
-          lpControlRead: computeLpControlRead(lpControl, String(lpPoolAttr?.name ?? (lpPool?.attributes as Record<string, unknown> | undefined)?.name ?? "")),
+          lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
         },
         contractChecks: {
           status: contractChecksStatus,
