@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
-import { getVerifiedUserPlan } from "@/lib/supabase/userSettings";
+import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -26,9 +26,15 @@ const tokenRateMap = new Map<string, { count: number; resetAt: number }>()
 function getClientIp(req: Request): string {
   return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
 }
+async function getPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  if (!token) return 'free'
+  try { return (await getCurrentUserPlanFromBearerToken(token)).plan } catch { return 'free' }
+}
 async function checkRate(req: Request): Promise<boolean> {
   const ip = getClientIp(req)
-  const plan = await getVerifiedUserPlan(req)
+  const plan = await getPlan(req)
   const key = `${plan}:${ip}`
   const now = Date.now()
   const cur = tokenRateMap.get(key)
@@ -379,7 +385,7 @@ function analyzeContract(bytecode: string | null): any {
 // POST handler
 // ------------------------------
 export async function POST(req: Request) {
-  if (!await checkRate(req)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
+  if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
 
   try {
     const _t0 = Date.now()
