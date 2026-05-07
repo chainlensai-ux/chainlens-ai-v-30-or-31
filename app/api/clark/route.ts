@@ -1457,12 +1457,12 @@ function buildWalletQualityVerdict(
   const risks = [
     snapshot.dustOrUnpricedHidden ? "Dust or unpriced holdings exist and are hidden in this summary" : "Major holdings are mostly priced",
     breadth < 5 ? "Low breadth increases single-asset dependency risk" : "Breadth is acceptable for watchlist monitoring",
-    behOk ? (behTxCount < 10 ? "Low recent Base activity — wallet may be dormant or cross-chain" : "Liquidity exposure not calculated") : "Behavioral confirmation unavailable — balance data only",
+    behOk ? (behTxCount < 10 ? "No recent Base activity found in checked window — wallet may be dormant on Base or active elsewhere." : "Liquidity exposure not calculated") : "Behavioral confirmation unavailable — balance data only",
   ];
   const behaviorNote = behOk && behavior?.recentActivitySummary ? `Activity: ${behavior.recentActivitySummary}` : "";
   const read = [
     `This looks like a ${profile}.`,
-    behOk ? `Behavior confirms on-chain presence.` : `Balance evidence only — behavioral confirmation adds confidence.`,
+    behOk && behTxCount > 0 ? `Behavior confirms on-chain presence.` : `Portfolio holdings are visible, but Base activity and PnL history are limited in current checks.`,
   ].join(" ");
   const copyTradePrompt = /\bcopy[\s-]?trade\b/i.test(prompt ?? "");
   const nextAction = copyTradePrompt
@@ -3160,14 +3160,36 @@ function buildLowCapRead(report: ClarkFullReportEvidence): { isLowCap: boolean; 
   if (!isLowCap) return { isLowCap: false, lines: [] };
   const lines = [
     `Depth: liquidity ${formatUsdShort(report.market.liquidity)}, volume ${formatUsdShort(report.market.volume24h)}.`,
-    `Flow quality: volume/liquidity ratio ${vtl != null ? vtl.toFixed(2) : "unavailable"} (${vtl != null && vtl > 1.5 ? "fast-turnover microcap flow" : "thin/uncertain turnover"}).`,
-    `Holder pressure: top holder ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(1)}%` : "unavailable"}, top10 ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(1)}%` : "unavailable"}.`,
+    `Flow quality: volume/liquidity ratio ${vtl != null ? vtl.toFixed(2) : "unavailable"} (${vtl != null && vtl > 1.5 ? "fast-turnover microcap flow" : "thin/uncertain turnover"}; turnover signal, not proof of safety).`,
+    `Holder pressure: top holder ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(1)}%` : "unavailable"}, top10 ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(1)}%` : "unavailable"}${(report.holders.topHolderPct != null && report.holders.topHolderPct > 20) || (report.holders.top10Pct != null && report.holders.top10Pct > 50) ? " (concentration risk elevated)" : ""}.`,
     `LP control: ${report.liquidity.lpLocked === true ? "burned/locked signal present" : report.liquidity.lpLocked === false ? "team-controlled / unlocked risk" : "unverified"}.`,
-    `Security sim: honeypot ${report.contract.honeypot === true ? "flagged" : report.contract.honeypot === false ? "not flagged" : "unverified"}, taxes ${report.contract.buyTax != null && report.contract.sellTax != null ? `${report.contract.buyTax}% / ${report.contract.sellTax}%` : "unverified"}.`,
+    `Security sim: ${formatSecuritySimulationLine(report).replace("Simulation: ", "")}, taxes ${report.contract.buyTax != null && report.contract.sellTax != null ? `${report.contract.buyTax}% / ${report.contract.sellTax}%` : "unverified"}.`,
   ];
   return { isLowCap: true, lines };
 }
 
+
+function formatSecuritySimulationLine(report: ClarkFullReportEvidence): string {
+  const simPassed = (report.contract.simulationSuccess as unknown) === true;
+  if (simPassed) return 'Simulation: Passed';
+  if (report.contract.honeypot === false && !simPassed) {
+    return 'Security sim: Partial — honeypot not flagged, but full simulation failed/unavailable.';
+  }
+  return `Simulation: ${report.contract.simulationSuccess === false ? 'Failed' : 'Unavailable'}`;
+}
+
+function explainMissingCheck(item: string): string {
+  const map: Record<string,string> = {
+    'Contract open-source verification': 'Contract open-source verification — Needs verified source publication or bytecode-level check from current providers.',
+    'LP lock/control': 'LP lock/control — Needs LP holder/locker proof or protocol-specific pool verification.',
+    'Pool age / new pool status': 'Pool age / new pool status — Needs pool created/first-seen timestamp.',
+    'Likely deployer identity': 'Likely deployer identity — Needs creator/deployer transaction trace or factory event.',
+    'Transfer tax check': 'Transfer controls — Needs source/ABI or bytecode check for owner/mint/tax controls.',
+    'Buy tax check': 'Transfer controls — Needs source/ABI or bytecode check for owner/mint/tax controls.',
+    'Sell tax check': 'Transfer controls — Needs source/ABI or bytecode check for owner/mint/tax controls.',
+  }
+  return map[item] ?? item
+}
 function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
   const verdict = evaluateFullReportVerdict(report);
   const name = report.token.name ?? "Unknown token";
@@ -3210,7 +3232,7 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     `- ${report.contract.honeypot === true ? "Honeypot: Flagged" : report.contract.honeypot === false ? `Honeypot: ${report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged"}` : (report.contract.buyTax != null || report.contract.sellTax != null) ? "Honeypot simulation: Unavailable" : "Honeypot: Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
-    `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unavailable"}`,
+    `- ${formatSecuritySimulationLine(report)}`,
     `- Proxy / mint / ownership: ${boolToWord(report.contract.proxy)} / ${boolToWord(report.contract.mintable)} / ${boolToWord(report.devWallet.likelyDeployer ? false : null)}`,
     "",
     "Holder / distribution:",
@@ -3226,7 +3248,7 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     ...(risks.length ? risks.map((r) => `- ${r}`) : ["- No major risk flag confirmed in available fields."]),
     "",
     "Missing checks:",
-    ...report.missing.slice(0, 4).map((m) => `- ${m}`),
+    ...report.missing.slice(0, 4).map((m) => `- ${explainMissingCheck(m)}`),
     "",
     "Next action:",
     verdict.nextAction,
@@ -3298,7 +3320,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     `- ${report.contract.honeypot === true ? "Honeypot: Flagged" : report.contract.honeypot === false ? `Honeypot: ${report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged"}` : (report.contract.buyTax != null || report.contract.sellTax != null) ? "Honeypot simulation: Unavailable" : "Honeypot: Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
-    `- Simulation: ${report.contract.simulationSuccess === true ? "Passed" : report.contract.simulationSuccess === false ? "Failed" : "Unavailable"}`,
+    `- ${formatSecuritySimulationLine(report)}`,
     `- Transfer controls: ${report.contract.proxy === true || report.contract.mintable === true ? "Potentially elevated control surface" : "Unverified"}`,
     `- Deployer: ${report.devWallet.likelyDeployer ? shortAddress(report.devWallet.likelyDeployer) : "Unverified"}`,
     "",
@@ -3314,7 +3336,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     ...(bearCase.length ? bearCase.map((r) => `- ${r}`) : ["- No major risk flag confirmed in available fields."]),
     "",
     "Missing checks:",
-    ...(report.missing.length ? report.missing.slice(0, 5).map((m) => `- ${m}`) : ["- No major gaps in currently available scan fields."]),
+    ...(report.missing.length ? report.missing.slice(0, 5).map((m) => `- ${explainMissingCheck(m)}`) : ["- No major gaps in currently available scan fields."]),
     "",
     "Next action:",
     verdict.nextAction,
@@ -3582,7 +3604,15 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string) {
   // Balance / holdings question — return plain summary, no verdict format
   if (isBalanceQuestion && !isQualityQuestion) {
     const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
-    return { feature: "wallet-scanner", chain, walletAddress, analysis: formatWalletBalanceSummary(normalized) };
+    const pnl = (walletData as Record<string, unknown>)?.estimatedPnl as Record<string, unknown> | undefined
+    const status = typeof pnl?.status === 'string' ? pnl.status : 'unavailable'
+    const coverage = typeof pnl?.coveragePercent === 'number' ? pnl.coveragePercent : 0
+    const confidence = typeof pnl?.confidence === 'string' ? pnl.confidence : null
+    const total = typeof pnl?.totalEstimatedPnlUsd === 'number' ? pnl.totalEstimatedPnlUsd : null
+    const pnlLine = (status === 'ok' || status === 'partial') && coverage >= 60 && total !== null
+      ? `Estimated PnL Beta: ${formatUsdShort(total)} (coverage ${coverage}%, confidence ${confidence ?? 'n/a'}; estimate only, not exact lifetime PnL).`
+      : 'Estimated PnL unavailable because historical cost-basis coverage is too low.'
+    return { feature: "wallet-scanner", chain, walletAddress, analysis: `${formatWalletBalanceSummary(normalized)}\n\n${pnlLine}` };
   }
 
   const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);

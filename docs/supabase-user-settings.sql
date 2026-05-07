@@ -16,6 +16,12 @@ create table if not exists public.user_settings (
   saved_layout jsonb not null default '{}'::jsonb,
   saved_filters jsonb not null default '{}'::jsonb,
   onboarding_progress jsonb not null default '{}'::jsonb,
+  plan text not null default 'free',
+  lemon_customer_id text,
+  lemon_subscription_id text,
+  lemon_variant_id text,
+  subscription_status text,
+  current_period_end timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

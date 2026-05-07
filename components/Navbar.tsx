@@ -91,6 +91,7 @@ export default function Navbar() {
       : accountEmail
     : null
   const initials = (shortEmail?.[0] ?? 'A').toUpperCase()
+  const planLabel = plan.toUpperCase()
 
   return (
     <>

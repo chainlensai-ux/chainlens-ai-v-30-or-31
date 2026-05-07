@@ -98,6 +98,21 @@ async function rpcCall(chain: ChainKey, method: string, params: unknown[]): Prom
   } catch { return null; }
 }
 
+
+
+async function rpcTokenString(chain: ChainKey, contract: string, selector: string): Promise<string | null> {
+  const hex = await rpcCall(chain, 'eth_call', [{ to: contract, data: selector }, 'latest'])
+  if (!hex || hex === '0x') return null
+  try {
+    const body = hex.startsWith('0x') ? hex.slice(2) : hex
+    if (body.length >= 128) {
+      const strHex = body.slice(128).replace(/00+$/, '')
+      const text = Buffer.from(strHex, 'hex').toString('utf8').replace(/\u0000/g, '').trim()
+      return text || null
+    }
+  } catch {}
+  return null
+}
 function pad32HexAddress(address: string): string {
   return `000000000000000000000000${address.toLowerCase().replace(/^0x/, "")}`;
 }
@@ -733,11 +748,23 @@ export async function POST(req: Request) {
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (matchingPools.length > 0 ? "partial" : "unavailable");
     const liquidityReason = mainPool ? null : "no_active_liquidity_pool_found";
+    const ownerCall = await rpcCall(chain, 'eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'])
+    const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
+    const rpcSupply = await rpcCall(chain, 'eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'])
+    const rpcDecimalsHex = await rpcCall(chain, 'eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'])
+    const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
+    const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
+
+    const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'unavailable'
+    const ownerStatus = ownerAddr ? 'ok' : 'unavailable'
+    const mintStatus = gpToken?.is_mintable != null ? 'ok' : 'unavailable'
+    const proxyStatus = gpToken?.is_proxy != null ? 'ok' : 'unavailable'
+    const transferControlStatus = (hpResult.ok || gpHasData) ? 'partial' : 'unavailable'
     const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
-      bytecode && bytecode !== "0x" ? "partial" : "unavailable";
-    const contractChecksReason = contractChecksStatus === "unavailable"
-      ? "contract_bytecode_unavailable_from_rpc"
-      : "proxy_mint_owner_checks_unverified_from_available_sources";
+      bytecodeStatus === 'ok' && (ownerStatus === 'ok' || mintStatus === 'ok' || proxyStatus === 'ok') ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
+    const contractChecksReason = contractChecksStatus === 'unavailable'
+      ? 'Unavailable from current checks.'
+      : 'Alchemy bytecode/supply/owner checks plus available security flags.'
 
     const responsePayload = {
       chain,
@@ -806,6 +833,7 @@ export async function POST(req: Request) {
 
       // Internal diagnostics
       _diagnostics: {
+        providerUsed: { market: 'geckoterminal', holders: 'goldrush', security: hpResult.ok ? 'honeypot.is' : (gpHasData ? 'goplus_limited_fallback' : 'unavailable'), contractChecks: 'alchemy_rpc', liquidity: lpControl.source ?? 'geckoterminal' },
         tokenMarketFieldsPresent: {
           priceUsd: priceUsd != null,
           liquidityUsd: liquidityUsd != null,
@@ -893,10 +921,17 @@ export async function POST(req: Request) {
         contractChecks: {
           status: contractChecksStatus,
           reason: contractChecksReason,
-          source: "base_rpc",
-          proxy: null,
-          mintable: null,
-          ownerRenounced: null,
+          source: "alchemy_rpc",
+          bytecodeStatus,
+          ownerStatus,
+          mintStatus,
+          proxyStatus,
+          transferControlStatus,
+          owner: ownerAddr ?? null,
+          totalSupply: rpcSupply ?? null,
+          decimalsRpc: rpcDecimalsHex ?? null,
+          nameFallback: rpcName ?? null,
+          symbolFallback: rpcSymbol ?? null,
         },
       },
     }

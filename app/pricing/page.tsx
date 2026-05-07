@@ -155,7 +155,7 @@ export default function PricingPage() {
           </div>
 
           <div className='plan-grid' style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 14 }}>
-            {plans.map((plan) => (
+            {plans.map((plan) => { const isCurrent = plan.id===currentPlan && plan.id!=='free'; const ctaText = isCurrent ? 'Current plan' : plan.cta; return (
               <div key={plan.id} className='glass' style={{ padding: '18px 18px 16px', minHeight: 468, borderColor: plan.id === 'pro' ? 'rgba(217,70,239,.72)' : plan.id === 'elite' ? 'rgba(251,191,36,.66)' : 'rgba(147,51,234,.36)', boxShadow: plan.id === 'pro' ? '0 0 56px rgba(217,70,239,.38),inset 0 0 0 1px rgba(217,70,239,.24)' : plan.id === 'elite' ? '0 0 56px rgba(251,191,36,.35),inset 0 0 0 1px rgba(250,204,21,.22)' : '0 0 26px rgba(168,85,247,.14)', position: 'relative', transform: plan.id === 'pro' ? 'translateY(-3px)' : 'none' }}>
                 {plan.badge && <div style={{ position: 'absolute', top: -11, left: '50%', transform: 'translateX(-50%)', borderRadius: 999, background: 'linear-gradient(90deg,#a855f7,#ec4899)', color: '#fff', fontSize: 10, letterSpacing: '.12em', fontWeight: 800, padding: '4px 12px', boxShadow: '0 0 24px rgba(217,70,239,.6)' }}>{plan.badge}</div>}
                 <div style={{ fontSize: 12, letterSpacing: '.18em', color: plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#a78bfa' : '#e879f9' }}>{plan.label}</div>
@@ -180,10 +180,10 @@ export default function PricingPage() {
                 ) : plan.ctaHref.startsWith('http') ? (
                   <a href={plan.ctaHref} target="_blank" rel="noopener noreferrer" className={`cta ${plan.ctaClass}`}>{plan.cta}</a>
                 ) : (
-                  <Link href={plan.ctaHref} className={`cta ${plan.ctaClass}`}>{plan.cta}</Link>
+                  <Link href={plan.ctaHref} className={`cta ${plan.ctaClass}`}>{ctaText}</Link>
                 )}
               </div>
-            ))}
+            )})}
           </div>
 
           <aside className='glass stats' style={{ padding: 14, minHeight: 468, borderColor: 'rgba(34,211,238,.46)', boxShadow: '0 0 30px rgba(34,211,238,.16)' }}>
