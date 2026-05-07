@@ -1563,11 +1563,11 @@ function missingAddressReply(intent: ClarkIntent): string {
   return "I can run that, but I need a token contract first. Paste a full 0x contract and I’ll analyze the available data.";
 }
 
-async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>, authToken?: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
+async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>, authHeader?: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
-  const tok = authToken ?? clarkInternalCtx.authToken
+  const tok = authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined)
   const plan = verifiedPlan ?? clarkInternalCtx.verifiedPlan
-  if (tok) headers.Authorization = `Bearer ${tok}`
+  if (tok) headers.Authorization = tok
   if (plan) headers["x-user-plan"] = plan
   const res = await fetch(`${origin}${path}`, {
     method: "POST",
@@ -2633,12 +2633,13 @@ async function executeClarkToolPlan(input: {
   origin: string;
   prompt: string;
   chain: SupportedChain;
-  authHeader?: string | null;
   verifiedPlan?: string;
+  authHeader?: string | null;
 }): Promise<{ evidence: ClarkToolEvidence; toolsUsed: ClarkToolName[]; resolvedAddress: string | null }> {
   const evidence: ClarkToolEvidence = {};
   const toolsUsed: ClarkToolName[] = [];
   let resolvedAddress: string | null = input.plan.followupContext.address;
+  const safeAuthHeader = input.authHeader ?? undefined
 
   for (const tool of input.plan.tools) {
     toolsUsed.push(tool.name);
@@ -2685,7 +2686,7 @@ async function executeClarkToolPlan(input: {
         const _validAddr = Boolean(addr && /^0x[a-fA-F0-9]{40}$/.test(addr));
         // Run token scan and honeypot check in parallel instead of sequential
         const [tokenData, securitySim] = await Promise.all([
-          _validAddr ? callInternalApi(input.origin, "/api/token", { contract: addr }, input.authToken, input.verifiedPlan) : Promise.resolve(null),
+          _validAddr ? callInternalApi(input.origin, "/api/token", { contract: addr }, safeAuthHeader, input.verifiedPlan === 'free' || input.verifiedPlan === 'pro' || input.verifiedPlan === 'elite' ? input.verifiedPlan : undefined) : Promise.resolve(null),
           _validAddr ? fetchHoneypotSecurity(addr, "base") : Promise.resolve(null),
         ]);
         const tokenJson = tokenData?.ok ? tokenData.json : null;
@@ -2773,7 +2774,7 @@ async function executeClarkToolPlan(input: {
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const walletRes = await callInternalApi(input.origin, "/api/wallet", { address }, input.authToken, input.verifiedPlan);
+        const walletRes = await callInternalApi(input.origin, "/api/wallet", { address }, safeAuthHeader, input.verifiedPlan === 'free' || input.verifiedPlan === 'pro' || input.verifiedPlan === 'elite' ? input.verifiedPlan : undefined);
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
         const normalized = normalizeWalletSnapshotEvidence(w, address);
         evidence.walletSnapshot = {
@@ -2806,7 +2807,7 @@ async function executeClarkToolPlan(input: {
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address }, input.authToken, input.verifiedPlan);
+        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address }, safeAuthHeader, input.verifiedPlan === 'free' || input.verifiedPlan === 'pro' || input.verifiedPlan === 'elite' ? input.verifiedPlan : undefined);
         const d = (devWalletRes.json ?? {}) as Record<string, unknown>;
         const verdictRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.label ?? "UNKNOWN") as string;
         const confRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.confidence ?? "low") as string;
@@ -2837,7 +2838,7 @@ async function executeClarkToolPlan(input: {
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, input.authToken, input.verifiedPlan);
+        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, safeAuthHeader, input.verifiedPlan === 'free' || input.verifiedPlan === 'pro' || input.verifiedPlan === 'elite' ? input.verifiedPlan : undefined);
         const l = (((liqRes.json as Record<string, unknown>)?.data ?? {}) as Record<string, unknown>);
         evidence.liquidity = {
           ok: liqRes.ok && Boolean((liqRes.json as Record<string, unknown>)?.ok),
@@ -4417,7 +4418,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     structuredMarketList,
     clarkContext: body.clarkContext,
   });
-  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, authHeader, verifiedPlan });
+  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, verifiedPlan: clarkInternalCtx.verifiedPlan ?? 'free', authHeader: clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined });
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {
@@ -4935,8 +4936,7 @@ export async function POST(req: NextRequest) {
   const verifiedPlan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : clarkPlan(req)
   if (!clarkAllowed(req, verifiedPlan)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
-    const authHeader = req.headers.get('authorization') ?? undefined
-    const verifiedPlan = await getVerifiedUserPlan(req)
+    clarkInternalCtx = { authToken: token || undefined, verifiedPlan }
     const body = (await req.json()) as ClarkRequestBody;
     const cacheKey = JSON.stringify({ actor: clarkActor(req), verifiedPlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
@@ -5001,6 +5001,9 @@ export async function POST(req: NextRequest) {
       feature: "clark-ai",
       data: { reply: safeMsg, response: safeMsg, analysis: safeMsg, verdict: "SCAN DEEPER", source: "fallback" },
     }, { status: 200 });
+  }
+  finally {
+    clarkInternalCtx = {}
   }
 }
 
