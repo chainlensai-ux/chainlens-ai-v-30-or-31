@@ -191,6 +191,15 @@ const KNOWN_BASE_TOKEN_ALIASES: Record<string, string> = {
   "virtual protocol": "virtual",
   "virtuals protocol": "virtual",
   "virtuals": "virtual",
+  "brett coin": "brett",
+  "bretty": "brett",
+  "toshi coin": "toshi",
+  "degen coin": "degen",
+  "higher coin": "higher",
+  "normie coin": "normie",
+  "based coin": "based",
+  "coinbase wrapped eth": "cbeth",
+  "wrapped eth": "weth",
 };
 
 function extractTokenLookupQuery(prompt: string): string | null {
@@ -1763,49 +1772,104 @@ type BaseTokenCandidate = {
   name: string;
   symbol: string;
   contract: string;
+  liquidity?: number;
 };
 
 const BASE_TOKEN_ALIAS_MAP: Record<string, BaseTokenCandidate> = {
-  brett: { name: "Brett", symbol: "BRETT", contract: "0x532f27101965dd16442e59d40670faf5ebb142e4" },
-  aero: { name: "Aerodrome Finance", symbol: "AERO", contract: "0x940181a94a35a4569e4529a3cdfb74e38fd98631" },
-  aerodrome: { name: "Aerodrome Finance", symbol: "AERO", contract: "0x940181a94a35a4569e4529a3cdfb74e38fd98631" },
+  brett:            { name: "Brett",             symbol: "BRETT",   contract: "0x532f27101965dd16442e59d40670faf5ebb142e4" },
+  aero:             { name: "Aerodrome Finance",  symbol: "AERO",    contract: "0x940181a94a35a4569e4529a3cdfb74e38fd98631" },
+  aerodrome:        { name: "Aerodrome Finance",  symbol: "AERO",    contract: "0x940181a94a35a4569e4529a3cdfb74e38fd98631" },
   "aerodrome finance": { name: "Aerodrome Finance", symbol: "AERO", contract: "0x940181a94a35a4569e4529a3cdfb74e38fd98631" },
+  virtual:          { name: "Virtual Protocol",   symbol: "VIRTUAL", contract: "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b" },
+  virtuals:         { name: "Virtual Protocol",   symbol: "VIRTUAL", contract: "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b" },
+  toshi:            { name: "Toshi",              symbol: "TOSHI",   contract: "0xac1bd2486aaf3b5c0fc3fd868558b082a531b2b4" },
+  degen:            { name: "Degen",              symbol: "DEGEN",   contract: "0x4ed4e862860bed51a9570b96d89af5e1b0ebebc4" },
+  higher:           { name: "Higher",             symbol: "HIGHER",  contract: "0x0578d8a44db98b23bf096a382e016e29a5ce0ffe" },
 };
 
 async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandidate[]> {
+  const qLower = query.trim().toLowerCase();
+  const aliasHit = BASE_TOKEN_ALIAS_MAP[qLower];
+
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
     const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=base`;
-    const res = await fetch(url, { headers: { accept: "application/json", origin: "https://chainlens.ai" }, cache: "no-store" });
-    if (!res.ok) return [];
-    const json = await res.json().catch(() => ({}));
-    const pools = Array.isArray((json as Record<string, unknown>)?.data) ? (json as { data: unknown[] }).data : [];
+    const res = await fetch(url, {
+      headers: { accept: "application/json" },
+      cache: "no-store",
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+
+    if (!res.ok) return aliasHit ? [aliasHit] : [];
+    const json = await res.json().catch(() => ({})) as Record<string, unknown>;
+
+    const pools = Array.isArray(json.data) ? json.data as unknown[] : [];
+    const includedArr = Array.isArray(json.included) ? json.included as unknown[] : [];
+
+    // Build accurate token lookup from the included tokens array
+    const tokenById = new Map<string, { symbol: string; name: string; address: string }>();
+    for (const inc of includedArr) {
+      const t = inc as Record<string, unknown>;
+      if (t.type !== "token") continue;
+      const id = typeof t.id === "string" ? t.id : "";
+      const a = (t.attributes ?? {}) as Record<string, unknown>;
+      const address = typeof a.address === "string" ? a.address.toLowerCase() : "";
+      const symbol = typeof a.symbol === "string" ? a.symbol : "";
+      const name = typeof a.name === "string" ? a.name : "";
+      if (id && address) tokenById.set(id, { symbol, name, address });
+    }
 
     const out: BaseTokenCandidate[] = [];
     const seen = new Set<string>();
+
     for (const raw of pools) {
       const pool = raw as Record<string, unknown>;
-      const relationships = (pool.relationships ?? {}) as Record<string, unknown>;
-      const baseTokenRel = (relationships.base_token ?? {}) as Record<string, unknown>;
-      const baseTokenData = (baseTokenRel.data ?? {}) as Record<string, unknown>;
-      const tokenId = typeof baseTokenData.id === "string" ? baseTokenData.id : "";
-      const contract = idToAddress(tokenId);
+      const rels = (pool.relationships ?? {}) as Record<string, unknown>;
+      const btRel = (rels.base_token ?? {}) as Record<string, unknown>;
+      const btData = (btRel.data ?? {}) as Record<string, unknown>;
+      const tokenId = typeof btData.id === "string" ? btData.id : "";
+
+      // Resolve contract: prefer included token address, fallback to id parsing
+      const tokenInfo = tokenId ? tokenById.get(tokenId) : undefined;
+      const rawContract = tokenInfo?.address || idToAddress(tokenId);
+      const contract = rawContract.startsWith("0x") ? rawContract : "";
       if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) continue;
       if (seen.has(contract.toLowerCase())) continue;
       seen.add(contract.toLowerCase());
 
+      // Use accurate symbol/name from included data; fallback to pool-name parsing
+      let symbol = tokenInfo?.symbol ?? "";
+      let name = tokenInfo?.name ?? "";
+      if (!symbol) {
+        const attrs = (pool.attributes ?? {}) as Record<string, unknown>;
+        const poolName = typeof attrs.name === "string" ? attrs.name : "";
+        const part = poolName.split(" / ")[0]?.trim() || contract;
+        name = name || part;
+        symbol = part.split(" ").slice(-1)[0]?.toUpperCase() ?? part.toUpperCase();
+      }
+
       const attrs = (pool.attributes ?? {}) as Record<string, unknown>;
-      const poolName = typeof attrs.name === "string" ? attrs.name : "";
-      const tokenNameGuess = poolName.split(" / ")[0]?.trim() || contract;
-      const symbolGuess = tokenNameGuess.split(" ").slice(-1)[0] ?? tokenNameGuess;
-      out.push({ name: tokenNameGuess, symbol: symbolGuess.toUpperCase(), contract });
-      if (out.length >= 5) break;
+      const liquidity = parseFloat(String(attrs.reserve_in_usd ?? "0")) || 0;
+
+      out.push({ name: name || symbol, symbol: symbol.toUpperCase(), contract, liquidity });
+      if (out.length >= 8) break;
     }
-    if (out.length) return out;
-    const alias = BASE_TOKEN_ALIAS_MAP[query.trim().toLowerCase()];
-    return alias ? [alias] : [];
+
+    if (!out.length) return aliasHit ? [aliasHit] : [];
+
+    // Sort: exact symbol match first, then by liquidity descending
+    const qUpper = query.trim().toUpperCase();
+    out.sort((a, b) => {
+      const aEx = a.symbol === qUpper ? 1 : 0;
+      const bEx = b.symbol === qUpper ? 1 : 0;
+      if (aEx !== bEx) return bEx - aEx;
+      return (b.liquidity ?? 0) - (a.liquidity ?? 0);
+    });
+
+    return out.slice(0, 5);
   } catch {
-    const alias = BASE_TOKEN_ALIAS_MAP[query.trim().toLowerCase()];
-    return alias ? [alias] : [];
+    return aliasHit ? [aliasHit] : [];
   }
 }
 
@@ -2561,7 +2625,7 @@ type ClarkToolEvidence = {
   tokenResolve?: {
     ok: boolean;
     query: string;
-    matches: Array<{ symbol: string; contract: string }>;
+    matches: Array<{ symbol: string; contract: string; liquidity?: number }>;
     selected?: { symbol: string; contract: string } | null;
     errorSafeMessage?: string;
   };
@@ -2668,14 +2732,32 @@ async function executeClarkToolPlan(input: {
       if (tool.name === "token_resolve") {
         const query = String(tool.args.query ?? "").trim();
         const matches = query ? await searchBaseTokenCandidates(query) : [];
+
+        let selected: { symbol: string; contract: string } | null = null;
+        if (matches.length === 1) {
+          selected = { symbol: matches[0].symbol, contract: matches[0].contract };
+        } else if (matches.length > 1) {
+          const qUpper = query.toUpperCase();
+          const exactMatch = matches.find((m) => m.symbol === qUpper);
+          const top = matches[0];
+          const second = matches[1];
+          if (exactMatch) {
+            selected = { symbol: exactMatch.symbol, contract: exactMatch.contract };
+          } else if (top && second && (top.liquidity ?? 0) > (second.liquidity ?? 0) * 5 && (top.liquidity ?? 0) > 10_000) {
+            selected = { symbol: top.symbol, contract: top.contract };
+          } else if (top && (top.liquidity ?? 0) > 200_000) {
+            selected = { symbol: top.symbol, contract: top.contract };
+          }
+        }
+
         evidence.tokenResolve = {
           ok: matches.length > 0,
           query,
-          matches: matches.map((m) => ({ symbol: m.symbol, contract: m.contract })),
-          selected: matches.length === 1 ? { symbol: matches[0].symbol, contract: matches[0].contract } : null,
-          errorSafeMessage: matches.length ? undefined : "I couldn’t find a clear Base token match yet.",
+          matches: matches.map((m) => ({ symbol: m.symbol, contract: m.contract, liquidity: m.liquidity })),
+          selected,
+          errorSafeMessage: matches.length ? undefined : "I couldn’t resolve this Base token from current providers.",
         };
-        if (matches.length === 1) resolvedAddress = matches[0].contract;
+        if (selected?.contract) resolvedAddress = selected.contract;
         continue;
       }
 
@@ -4476,7 +4558,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (plan.intent === "token_full_report_request") {
-    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1) {
+    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1 && !evidence.tokenResolve.selected) {
       const options = evidence.tokenResolve.matches.slice(0, 4).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
       return {
         feature: "clark-ai",
@@ -4705,7 +4787,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (plan.intent === "token_analysis") {
-    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1) {
+    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1 && !evidence.tokenResolve.selected) {
       const options = evidence.tokenResolve.matches.slice(0, 3).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
       return {
         feature: "clark-ai",
