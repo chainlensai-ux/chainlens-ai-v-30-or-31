@@ -351,6 +351,82 @@ type LpControlResult = {
   lpVerificationPoolReason?: string;
 };
 
+type NormalizedPool = {
+  raw: any;
+  address: string | null;
+  pairName: string | null;
+  dexId: string | null;
+  dexName: string | null;
+  liquidityUsd: number;
+  baseTokenAddress: string | null;
+  quoteTokenAddress: string | null;
+  baseTokenSymbol: string | null;
+  quoteTokenSymbol: string | null;
+  poolType: LpControlResult["poolType"];
+  hasDexMeta: boolean;
+  isValidAddress: boolean;
+};
+
+function normalizePool(pool: any): NormalizedPool {
+  const a = (pool?.attributes ?? {}) as Record<string, unknown>;
+  const base = (pool?.relationships?.base_token?.data ?? {}) as Record<string, unknown>;
+  const quote = (pool?.relationships?.quote_token?.data ?? {}) as Record<string, unknown>;
+  const cleanAddr = (v: unknown) => {
+    const s = String(v ?? "").trim().toLowerCase();
+    return /^0x[a-f0-9]{40}$/.test(s) ? s : null;
+  };
+  const cleanSym = (v: unknown) => {
+    const s = String(v ?? "").trim();
+    return s ? s.toUpperCase() : null;
+  };
+  const idToAddr = (id: string | null) => (id && id.includes("_") ? id.split("_").pop() ?? null : id);
+  const baseTokenObj = (a.base_token ?? {}) as Record<string, unknown>;
+  const quoteTokenObj = (a.quote_token ?? {}) as Record<string, unknown>;
+  const baseTokenAddress = cleanAddr(a.base_token_address ?? baseTokenObj.address ?? idToAddr(String(base.id ?? "")));
+  const quoteTokenAddress = cleanAddr(a.quote_token_address ?? quoteTokenObj.address ?? idToAddr(String(quote.id ?? "")));
+  return {
+    raw: pool,
+    address: cleanAddr(a.address ?? pool?.id),
+    pairName: String(a.name ?? a.pool_name ?? a.pair_name ?? "").trim() || null,
+    dexId: String(a.dex_id ?? a.dex ?? "").trim() || null,
+    dexName: String(a.dex_name ?? "").trim() || null,
+    liquidityUsd: toNum(a.reserve_in_usd) ?? 0,
+    baseTokenAddress,
+    quoteTokenAddress,
+    baseTokenSymbol: cleanSym(a.base_token_symbol ?? a.base_symbol ?? baseTokenObj.symbol),
+    quoteTokenSymbol: cleanSym(a.quote_token_symbol ?? a.quote_symbol ?? quoteTokenObj.symbol),
+    poolType: detectPoolType(pool as Record<string, unknown>),
+    hasDexMeta: Boolean(String(a.dex_id ?? a.dex ?? a.dex_name ?? "").trim()),
+    isValidAddress: Boolean(cleanAddr(a.address ?? pool?.id)),
+  };
+}
+
+function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string): { pool: NormalizedPool | null; reason: string } {
+  const tokenLc = tokenAddress.toLowerCase();
+  const MAJOR_QUOTES = new Set(["WETH", "USDC", "USDBC", "CBBTC"]);
+  let best: { pool: NormalizedPool; score: number; reason: string } | null = null;
+  for (const p of pools) {
+    const includesToken = p.baseTokenAddress === tokenLc || p.quoteTokenAddress === tokenLc;
+    const baseIsMajor = Boolean(p.baseTokenSymbol && MAJOR_QUOTES.has(p.baseTokenSymbol));
+    const quoteIsMajor = Boolean(p.quoteTokenSymbol && MAJOR_QUOTES.has(p.quoteTokenSymbol));
+    const quoteMatch = baseIsMajor || quoteIsMajor;
+    const v2LikeMeta = p.poolType === "v2";
+    let score = 0;
+    if (includesToken) score += 80;
+    else score -= 200;
+    if (quoteMatch) score += 120;
+    if (v2LikeMeta) score += 20;
+    if (p.poolType === "unknown") score -= 5;
+    if (p.hasDexMeta) score += 15;
+    if (!quoteMatch) score -= 40;
+    if (!p.isValidAddress) score -= 150;
+    score += Math.min(30, Math.log10(Math.max(1, p.liquidityUsd + 1)) * 6);
+    const reason = `includesToken=${includesToken};majorQuote=${quoteMatch};poolType=${p.poolType};dexMeta=${p.hasDexMeta};liquidityUsd=${p.liquidityUsd.toFixed(2)}`;
+    if (!best || score > best.score) best = { pool: p, score, reason };
+  }
+  return best ? { pool: best.pool, reason: best.reason } : { pool: null, reason: "no_pool_candidates" };
+}
+
 function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["poolType"] {
   const a = (pool?.attributes ?? {}) as Record<string, unknown>;
   const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
@@ -472,10 +548,13 @@ export async function POST(req: Request) {
     );
 
     const mainPool = matchingPools[0] ?? null;
+    const normalizedPools = matchingPools.map(normalizePool);
+    const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
     const primaryPoolAddress = String(mainPoolAttr.address ?? mainPool?.id ?? "").trim().toLowerCase() || null;
-    const lpPoolType = detectPoolType(mainPool as Record<string, unknown> | null);
+    const lpPool = selectedLpPool.pool;
+    const lpPoolType = lpPool?.poolType ?? "unknown";
     const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
     const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
     const pairName = String(mainPoolAttr.name ?? mainPoolAttr.pool_name ?? mainPoolAttr.pair_name ?? "").trim() || null;
@@ -489,7 +568,9 @@ export async function POST(req: Request) {
     const _decEarly: number = typeof _gtEarly?.decimals === 'number' ? _gtEarly.decimals : 18
     const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
     const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok)
-    const needsLpHolderFetch = Boolean(poolAddressPresent && lpPoolType === 'v2')
+    const lpPoolAddress = lpPool?.address ?? null
+    const lpPoolAddressPresent = Boolean(lpPoolAddress && /^0x[a-f0-9]{40}$/.test(lpPoolAddress))
+    const needsLpHolderFetch = Boolean(lpPoolAddressPresent && lpPoolType === 'v2')
     const needsAI = !noActivePools || hasSecurityData
     const needsOnchainMc = _mcEarly == null && _priceEarly != null
 
@@ -508,7 +589,7 @@ export async function POST(req: Request) {
     const [_lpHoldersSettled, _aiSettled, _onchainSettled] = await Promise.allSettled([
       needsLpHolderFetch
         ? Promise.race([
-            fetchTokenHolders(chain, primaryPoolAddress!),
+            fetchTokenHolders(chain, lpPoolAddress!),
             new Promise<Record<string, unknown>>(r =>
               setTimeout(() => r({ __status: 'error', __reason: 'lp_holder_timeout' }), 7000)
             ),
@@ -526,14 +607,13 @@ export async function POST(req: Request) {
 
     // LP control using pre-fetched LP holder data (no sequential blocking)
     const _lpHoldersForControl = (_lpHoldersSettled.status === 'fulfilled' ? _lpHoldersSettled.value : { __status: 'error', __reason: 'lp_fetch_failed' }) as any
-    const _lpAddrSnippet = primaryPoolAddress ? `${primaryPoolAddress.slice(0, 10)}…${primaryPoolAddress.slice(-4)}` : "none";
+    const _lpAddrSnippet = lpPoolAddress ? `${lpPoolAddress.slice(0, 10)}…${lpPoolAddress.slice(-4)}` : "none";
+    const lpPair = lpPool?.pairName ?? `${lpPool?.baseTokenSymbol ?? "?"}/${lpPool?.quoteTokenSymbol ?? "?"}`;
+    const marketPair = pairName ?? "unknown";
     const _lpBaseDiagnostics = [
-      `poolAddressPresent=${Boolean(primaryPoolAddress)}`,
-      ...(primaryPoolAddress ? [`pool=${_lpAddrSnippet}`] : []),
-      ...(dexId ? [`dexId=${dexId}`] : []),
-      ...(dexName && dexName !== dexId ? [`dexName=${dexName}`] : []),
-      `poolType=${lpPoolType}`,
-      `lpPoolReason=${selectedPrimaryPoolSource}`,
+      `Verification pool: ${lpPair}`,
+      `Pool type: ${lpPoolType}`,
+      `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`,
     ];
     let lpControl: LpControlResult = {
       status: "unverified",
@@ -542,12 +622,12 @@ export async function POST(req: Request) {
       source: "geckoterminal",
       reason: "LP control requires holder-level LP token verification.",
       evidence: _lpBaseDiagnostics,
-      poolAddressPresent: Boolean(primaryPoolAddress),
+      poolAddressPresent: Boolean(lpPoolAddress),
       dexId: dexId || undefined,
       dexName: dexName || undefined,
       lpVerificationPoolReason: selectedPrimaryPoolSource,
     };
-    if (!poolAddressPresent) {
+    if (!lpPoolAddressPresent) {
       lpControl = { ...lpControl, status: "unverified", reason: "No pool address found from provider for LP-holder verification." };
     } else if (lpPoolType === "v3" || lpPoolType === "aerodrome" || lpPoolType === "concentrated") {
       lpControl = {
@@ -560,20 +640,20 @@ export async function POST(req: Request) {
       };
     } else if (lpPoolType === "unknown") {
       // Probe pool via RPC to classify before giving up
-      const probe = await probePoolTypeViaRpc(chain, primaryPoolAddress!);
+      const probe = await probePoolTypeViaRpc(chain, lpPoolAddress!);
       if (probe.v2Like) {
         // Pool behaves like V2 — run Alchemy burn/locker check directly
         const confidenceFor = (pct: number): "high" | "medium" | "low" => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
         const DEAD = new Set(["0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"]);
         const KNOWN_LOCKERS = new Set(["0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", "0x71b5759d73262fbb223956913ecf4ecc51057641"]);
-        const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress!, data: "0x18160ddd" }, "latest"]);
+        const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
           lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`pool=${_lpAddrSnippet}`, `probe=${probe.probeSummary}`], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
-            const balHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress!, data }, "latest"]);
+            const balHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data }, "latest"]);
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
@@ -594,9 +674,9 @@ export async function POST(req: Request) {
           }
         }
       } else if (probe.v3Like) {
-        lpControl = { status: "unsupported", confidence: "low", poolType: "v3", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as concentrated-liquidity (V3-like); LP lock requires protocol-specific verification.", evidence: [`pool=${_lpAddrSnippet}`, `probe=${probe.probeSummary}`], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
+        lpControl = { status: "unsupported", confidence: "low", poolType: "v3", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as concentrated-liquidity (V3-like); LP lock requires protocol-specific verification.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: concentrated-liquidity interface detected"], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
       } else {
-        lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "geckoterminal+alchemy_rpc", reason: "Pool address found, but pool type could not be verified for LP-holder inference.", evidence: [`pool=${_lpAddrSnippet}`, ...(dexId ? [`dexId=${dexId}`] : []), `probe=${probe.probeSummary}`], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
+        lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "geckoterminal+alchemy_rpc", reason: "Pool address found, but no standard V2/V3 LP interface was confirmed.", evidence: [`Verification pool: ${lpPair}`, "Pool type: unknown", `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`, "RPC probe: no V2/V3 interface confirmed"], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
       }
     } else {
       // V2 — run GoldRush LP holder check
@@ -619,14 +699,14 @@ export async function POST(req: Request) {
         lpControl = { status: "team_controlled", confidence: "high", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
       } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
         // Alchemy RPC fallback when GoldRush holder percentages are unavailable
-        const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress!, data: "0x18160ddd" }, "latest"]);
+        const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
           lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
-            const balHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress!, data }, "latest"]);
+            const balHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data }, "latest"]);
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
@@ -652,11 +732,10 @@ export async function POST(req: Request) {
 
     lpControl.evidence = [
       ...(lpControl.evidence ?? []),
-      `poolAddressPresent=${poolAddressPresent}`,
-      `selectedPrimaryPoolSource=${selectedPrimaryPoolSource}`,
-      `dexId=${dexId ?? 'unknown'}`,
-      `dexName=${dexName ?? 'unknown'}`,
-      `detectedPoolType=${lpPoolType}`,
+      `Market primary pair: ${marketPair}`,
+      `LP verification pair: ${lpPair}`,
+      `LP verification pool address: ${lpPoolAddress ?? 'unavailable'}`,
+      `LP verification reason: ${selectedLpPool.reason}`,
       `lpHolderCheckAttempted=${needsLpHolderFetch}`,
     ];
 
@@ -937,6 +1016,10 @@ export async function POST(req: Request) {
 
       // Internal diagnostics
       _diagnostics: {
+        marketPrimaryPair: marketPair,
+        lpVerificationPair: lpPair,
+        lpVerificationPoolAddress: lpPoolAddress,
+        lpVerificationPoolReason: selectedLpPool.reason,
         providerUsed: { market: 'geckoterminal', holders: 'goldrush', security: hpResult.ok ? 'honeypot.is' : (gpHasData ? 'goplus_limited_fallback' : 'unavailable'), contractChecks: 'alchemy_rpc', liquidity: lpControl.source ?? 'geckoterminal' },
         tokenMarketFieldsPresent: {
           priceUsd: priceUsd != null,
