@@ -2673,9 +2673,13 @@ async function executeClarkToolPlan(input: {
       if (tool.name === "token_scan") {
         const addrArg = String(tool.args.address ?? "").trim();
         const addr = addrArg || String(resolvedAddress ?? "").trim();
-        const tokenData = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await callInternalApi(input.origin, "/api/token", { contract: addr }) : null;
+        const _validAddr = Boolean(addr && /^0x[a-fA-F0-9]{40}$/.test(addr));
+        // Run token scan and honeypot check in parallel instead of sequential
+        const [tokenData, securitySim] = await Promise.all([
+          _validAddr ? callInternalApi(input.origin, "/api/token", { contract: addr }) : Promise.resolve(null),
+          _validAddr ? fetchHoneypotSecurity(addr, "base") : Promise.resolve(null),
+        ]);
         const tokenJson = tokenData?.ok ? tokenData.json : null;
-        const securitySim = addr && /^0x[a-fA-F0-9]{40}$/.test(addr) ? await fetchHoneypotSecurity(addr, "base") : null;
         const t = (tokenJson ?? {}) as Record<string, unknown>;
         const sections = (t.sections ?? {}) as Record<string, unknown>;
         const marketSection = (sections.market ?? {}) as Record<string, unknown>;
