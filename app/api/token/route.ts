@@ -367,62 +367,112 @@ type LpControlResult = {
   lpVerificationPoolReason?: string;
 };
 
-type NormalizedPool = {
-  raw: any;
-  address: string | null;
-  pairName: string | null;
-  dexId: string | null;
-  dexName: string | null;
-  liquidityUsd: number;
-  baseTokenAddress: string | null;
-  quoteTokenAddress: string | null;
-  baseTokenSymbol: string | null;
-  quoteTokenSymbol: string | null;
-  poolType: LpControlResult["poolType"];
-  hasDexMeta: boolean;
-  isValidAddress: boolean;
-  containsScannedToken?: boolean;
-  isPreferredQuote?: boolean;
-  lpScore?: number;
-  selectionReason?: string;
+type LpControlRead = {
+  title: string;
+  meaning: string;
+  riskLevel: string;
+  whatWasFound: string[];
+  couldNotVerify: string[];
+  nextAction: string;
 };
 
-function normalizePool(pool: any, includedTokenById: Map<string, Record<string, unknown>>): NormalizedPool {
-  const a = (pool?.attributes ?? {}) as Record<string, unknown>;
-  const base = (pool?.relationships?.base_token?.data ?? {}) as Record<string, unknown>;
-  const quote = (pool?.relationships?.quote_token?.data ?? {}) as Record<string, unknown>;
-  const cleanAddr = (v: unknown) => {
-    const s = String(v ?? "").trim().toLowerCase();
-    return /^0x[a-f0-9]{40}$/.test(s) ? s : null;
-  };
-  const cleanSym = (v: unknown) => {
-    const s = String(v ?? "").trim();
-    return s ? s.toUpperCase() : null;
-  };
-  const idToAddr = (id: string | null) => (id && id.includes("_") ? id.split("_").pop() ?? null : id);
-  const baseId = String(base.id ?? "");
-  const quoteId = String(quote.id ?? "");
-  const baseIncluded = includedTokenById.get(baseId) ?? {};
-  const quoteIncluded = includedTokenById.get(quoteId) ?? {};
-  const baseTokenObj = (a.base_token ?? {}) as Record<string, unknown>;
-  const quoteTokenObj = (a.quote_token ?? {}) as Record<string, unknown>;
-  const baseTokenAddress = cleanAddr(a.base_token_address ?? baseTokenObj.address ?? baseIncluded.address ?? idToAddr(baseId));
-  const quoteTokenAddress = cleanAddr(a.quote_token_address ?? quoteTokenObj.address ?? quoteIncluded.address ?? idToAddr(quoteId));
-  return {
-    raw: pool,
-    address: cleanAddr(a.address ?? pool?.id),
-    pairName: String(a.name ?? a.pool_name ?? a.pair_name ?? "").trim() || null,
-    dexId: String(a.dex_id ?? a.dex ?? "").trim() || null,
-    dexName: String(a.dex_name ?? "").trim() || null,
-    liquidityUsd: toNum(a.reserve_in_usd) ?? 0,
-    baseTokenAddress,
-    quoteTokenAddress,
-    baseTokenSymbol: cleanSym(a.base_token_symbol ?? a.base_symbol ?? baseTokenObj.symbol ?? baseIncluded.symbol),
-    quoteTokenSymbol: cleanSym(a.quote_token_symbol ?? a.quote_symbol ?? quoteTokenObj.symbol ?? quoteIncluded.symbol),
-    poolType: detectPoolType(pool as Record<string, unknown>),
-    hasDexMeta: Boolean(String(a.dex_id ?? a.dex ?? a.dex_name ?? "").trim()),
-    isValidAddress: Boolean(cleanAddr(a.address ?? pool?.id)),
-  };
+function computeLpControlRead(lp: LpControlResult, pairName?: string | null): LpControlRead {
+  const pair = pairName ? `Pair: ${pairName}` : null;
+  const poolLine = pair ? ["Verification pool found", pair] : lp.poolAddressPresent ? ["Verification pool found"] : [];
+  switch (lp.status) {
+    case "burned":
+      return {
+        title: "LP tokens burned",
+        meaning: "The LP tokens for this pool have been sent to a burn/dead address. Liquidity cannot be removed by a team wallet.",
+        riskLevel: "Low",
+        whatWasFound: [...poolLine, "Dominant LP share in burn/dead address"],
+        couldNotVerify: [],
+        nextAction: "Burn status confirmed. Standard rug-via-LP-removal risk is significantly reduced.",
+      };
+    case "locked":
+      return {
+        title: "LP tokens locked",
+        meaning: "The majority of LP tokens are held by a known locker contract. Liquidity is constrained by the lock terms.",
+        riskLevel: "Low — verify lock expiry",
+        whatWasFound: [...poolLine, "Dominant LP share in known locker"],
+        couldNotVerify: ["Lock expiry date", "Specific lock terms"],
+        nextAction: "Check the locker contract for expiry date and unlock conditions.",
+      };
+    case "team_controlled":
+      return {
+        title: "LP controlled by wallet",
+        meaning: "A single wallet holds dominant LP share and can remove liquidity at any time.",
+        riskLevel: "High",
+        whatWasFound: [...poolLine, "Single wallet holds dominant LP share"],
+        couldNotVerify: [],
+        nextAction: "Liquidity removal risk exists. Treat with caution until LP is locked or burned.",
+      };
+    case "unsupported":
+      if (lp.poolType === "aerodrome") {
+        return {
+          title: "Protocol liquidity — Aerodrome",
+          meaning: "Liquidity is in an Aerodrome/Velodrome protocol pool. LP positions cannot be verified using the standard V2 LP-holder method.",
+          riskLevel: "Not assessable via V2 method",
+          whatWasFound: [...poolLine, "Pool type: Aerodrome/Velodrome"],
+          couldNotVerify: ["LP holder distribution (V2 method N/A)", "Lock or burn status via standard ERC-20 check"],
+          nextAction: "Verify LP lock via Aerodrome protocol — check veNFT positions or protocol lock features.",
+        };
+      }
+      return {
+        title: "Protocol liquidity — concentrated (V3)",
+        meaning: "Liquidity is in a concentrated-liquidity (V3) pool. LP positions are NFTs, not standard ERC-20 tokens — V2 holder checks do not apply.",
+        riskLevel: "Not assessable via V2 method",
+        whatWasFound: [...poolLine, "Pool type: concentrated / V3"],
+        couldNotVerify: ["LP token holder distribution (V2 method N/A)", "Lock or burn status via standard ERC-20 check"],
+        nextAction: "Check LP positions on-chain via the V3 position manager or a protocol-specific explorer.",
+      };
+    default: // unverified, error
+      if (!lp.poolAddressPresent) {
+        return {
+          title: "No active liquidity pool",
+          meaning: "No liquidity pool was found for this token. Liquidity risk and LP control cannot be assessed.",
+          riskLevel: "Unknown",
+          whatWasFound: [],
+          couldNotVerify: ["LP token distribution", "Lock or burn status", "Liquidity pool existence"],
+          nextAction: "Confirm the token is actively traded. No pool means no on-chain liquidity depth to exit through.",
+        };
+      }
+      if (lp.poolType === "v2") {
+        return {
+          title: "LP check inconclusive",
+          meaning: "A V2 pool was found and checked, but holder data did not show a dominant burn, locker, or single-wallet pattern.",
+          riskLevel: "Medium",
+          whatWasFound: [...poolLine, "V2 LP holder check attempted"],
+          couldNotVerify: ["Dominant lock or burn address", "Single-wallet LP concentration"],
+          nextAction: "LP control unconfirmed. Monitor for large LP removal transactions.",
+        };
+      }
+      return {
+        title: "LP lock not confirmed",
+        meaning: "A liquidity pool was found, but current checks could not determine whether LP tokens are locked, burned, or wallet-controlled.",
+        riskLevel: "Medium — needs verification",
+        whatWasFound: [...poolLine, "Liquidity exists on-chain"],
+        couldNotVerify: ["LP token holder distribution", "Lock or burn status", "Standard V2/V3 LP interface"],
+        nextAction: "Treat LP control as unverified. Check a locker explorer or verify on-chain before relying on LP safety.",
+      };
+  }
+}
+
+function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[]): { dexId: string; dexName: string } {
+  if (!pool) return { dexId: "", dexName: "" };
+  const a = (pool.attributes ?? {}) as Record<string, unknown>;
+  const rel = (pool.relationships ?? {}) as Record<string, unknown>;
+  const attrDexId = String(a.dex_id ?? a.dex ?? "").toLowerCase().trim();
+  const attrDexName = String(a.dex_name ?? "").toLowerCase().trim();
+  const relDexData = ((rel.dex as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined);
+  const relDexId = String(relDexData?.id ?? "").toLowerCase().trim();
+  const lookupId = relDexId || attrDexId;
+  let incDexName = "";
+  if (lookupId && included.length) {
+    const dexObj = included.find((x) => String((x as Record<string, unknown>).id ?? "").toLowerCase() === lookupId) as Record<string, unknown> | undefined;
+    if (dexObj) incDexName = String(((dexObj.attributes ?? {}) as Record<string, unknown>).name ?? "").toLowerCase().trim();
+  }
+  return { dexId: attrDexId || relDexId, dexName: attrDexName || incDexName || attrDexId || relDexId };
 }
 
 function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string): { pool: NormalizedPool | null; reason: string; candidates: NormalizedPool[] } {
@@ -1153,6 +1203,7 @@ export async function POST(req: Request) {
       // Contract analysis
       analysis,
       lpControl,
+      lpControlRead: computeLpControlRead(lpControl, String(lpPoolAttr?.name ?? (lpPool?.attributes as Record<string, unknown> | undefined)?.name ?? "")),
 
       // AI summary from Cortex Engine
       aiSummary,
@@ -1199,6 +1250,7 @@ export async function POST(req: Request) {
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
           lpControl,
+          lpControlRead: computeLpControlRead(lpControl, String(lpPoolAttr?.name ?? (lpPool?.attributes as Record<string, unknown> | undefined)?.name ?? "")),
         },
         contractChecks: {
           status: contractChecksStatus,
