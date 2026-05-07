@@ -15,9 +15,15 @@ export type UserSettings = {
   saved_layout: JsonMap;
   saved_filters: JsonMap;
   onboarding_progress: JsonMap;
-  plan: 'free' | 'pro' | 'elite';
   created_at?: string;
   updated_at?: string;
+  // Subscription plan fields (added by supabase-subscriptions.sql migration)
+  plan?: 'free' | 'pro' | 'elite';
+  lemon_customer_id?: string | null;
+  lemon_subscription_id?: string | null;
+  lemon_variant_id?: string | null;
+  subscription_status?: string | null;
+  current_period_end?: string | null;
 };
 
 export type UserSettingsUpdate = Partial<Pick<
@@ -163,6 +169,43 @@ export async function getOrCreateUserSettings(
   }
 
   return { settings: withDefaults(userId, data as Partial<UserSettings>), error: null };
+}
+
+// ── Server-side verified plan lookup ─────────────────────────────────────────
+// Never trusts the client-provided x-user-plan header.
+// Reads the bearer JWT, verifies it with Supabase, and fetches plan from DB.
+// Results are cached for 60 s per token to avoid double round-trips.
+
+const _planCache = new Map<string, { plan: 'free' | 'pro' | 'elite'; exp: number }>()
+const PLAN_CACHE_TTL_MS = 60_000
+const PLAN_CACHE_MAX = 500
+
+export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'pro' | 'elite'> {
+  const authHeader = request.headers.get('authorization') ?? ''
+  if (!authHeader.toLowerCase().startsWith('bearer ')) return 'free'
+  const token = authHeader.slice(7).trim()
+  if (!token) return 'free'
+  const now = Date.now()
+  const hit = _planCache.get(token)
+  if (hit && hit.exp > now) return hit.plan
+  try {
+    const sb = createAnonSupabaseClient()
+    if (!sb) return 'free'
+    const { data: userData, error: authErr } = await sb.auth.getUser(token)
+    if (authErr || !userData.user) return 'free'
+    const { data: row } = await sb
+      .from('user_settings')
+      .select('plan')
+      .eq('user_id', userData.user.id)
+      .maybeSingle()
+    const raw = (row as Record<string, unknown> | null)?.plan
+    const plan: 'free' | 'pro' | 'elite' = raw === 'elite' ? 'elite' : raw === 'pro' ? 'pro' : 'free'
+    if (_planCache.size >= PLAN_CACHE_MAX) _planCache.clear()
+    _planCache.set(token, { plan, exp: now + PLAN_CACHE_TTL_MS })
+    return plan
+  } catch {
+    return 'free'
+  }
 }
 
 export async function upsertUserSettings(

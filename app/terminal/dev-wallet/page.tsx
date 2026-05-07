@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
+import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -396,6 +397,7 @@ function SupplyBar({ supplyControlled, holderDataAvailable }: {
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function DevWalletPage() {
+  const plan = usePlan()
   const [input,   setInput]   = useState('')
   const [loading, setLoading] = useState(false)
   const [result,  setResult]  = useState<DevWalletResult | null>(null)
@@ -450,6 +452,8 @@ export default function DevWalletPage() {
     ].join('\n')
     return `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`
   }, [result])
+
+  if (!canAccessFeature(plan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
 
   return (
     <>

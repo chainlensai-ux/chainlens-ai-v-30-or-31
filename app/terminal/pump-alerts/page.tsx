@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
+import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 type PumpCategory = 'HIGH_MOMENTUM' | 'VOLUME_EXPANSION' | 'THIN_MOONSHOT' | 'WATCH'
 type PumpRisk = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -291,6 +292,7 @@ function SummaryStrip({ alerts }: { alerts: PumpAlert[] }) {
 }
 
 export default function PumpAlertsPage() {
+  const plan = usePlan()
   const router = useRouter()
   const [alerts, setAlerts] = useState<PumpAlert[]>([])
   const [fetchedAt, setFetchedAt] = useState<string | null>(null)
@@ -353,6 +355,8 @@ export default function PumpAlertsPage() {
     activeFilter === 'ALL' ? alerts : alerts.filter(a => a.category === activeFilter),
     [alerts, activeFilter],
   )
+
+  if (!canAccessFeature(plan, 'pump-alerts')) return <LockedPanel feature="pump-alerts" />
 
   return (
     <>

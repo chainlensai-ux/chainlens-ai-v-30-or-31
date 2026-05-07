@@ -3593,7 +3593,7 @@ async function handleTokenScanner(body: ClarkRequestBody, origin: string) {
   };
 }
 
-async function handleWalletScanner(body: ClarkRequestBody, origin: string) {
+async function handleWalletScanner(body: ClarkRequestBody, origin: string, authHeader?: string | null) {
   const chain = body.chain ?? "base";
   const walletAddress = body.walletAddress ?? body.addressOrToken;
   if (!walletAddress) throw new Error("walletAddress or addressOrToken is required");
@@ -3603,7 +3603,7 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string) {
   const isBalanceQuestion = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(t);
   const isQualityQuestion = /\b(good wallet|worth following|smart money|copy trad|is this|analyze|review|verdict)\b/i.test(t);
 
-  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress });
+  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress }, authHeader);
 
   if (!ok || (walletData as Record<string, unknown>)?.error) {
     return {
@@ -4094,7 +4094,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
   }
 }
 
-async function handleClarkAI(body: ClarkRequestBody, origin: string) {
+async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: string) {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -4248,7 +4248,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
   // Hard guard: bare 0x address after recent wallet-context turn → wallet analysis
   if (directIntent.address && isBareAddressPrompt(prompt) && hasRecentWalletContext(body.history)) {
     console.log("[clark-intent] detected=wallet_analysis reason=history_wallet_context");
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address });
+    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, authHeader);
     const w = (walletRes.json ?? {}) as Record<string, unknown>;
     if (walletRes.ok && Object.keys(w).length > 0) {
       const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
@@ -4719,7 +4719,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     }
 
     if (plan.tools.some((t) => t.name === "token_resolve") && evidence.tokenResolve?.selected?.contract) {
-      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract });
+      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract }, authHeader);
       const tokenData = tokenRes.ok ? tokenRes.json : null;
       const securitySim = await fetchHoneypotSecurity(evidence.tokenResolve.selected.contract, "base");
       if (tokenData) evidence.tokenScan = {
@@ -4810,7 +4810,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     if (!token) {
       // Bare address paste — token scan found nothing. Try wallet scan before giving up.
       if (isBareAddressPrompt(prompt) && resolvedAddress) {
-        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolvedAddress });
+        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolvedAddress }, authHeader);
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
         if (walletRes.ok && Array.isArray(w.holdings) && (w.holdings as unknown[]).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, resolvedAddress);
@@ -4959,7 +4959,7 @@ export async function POST(req: NextRequest) {
         result = await handleTokenScanner(body, origin);
         break;
       case "wallet-scanner":
-        result = await handleWalletScanner(body, origin);
+        result = await handleWalletScanner(body, origin, authHeader);
         break;
       case "dev-wallet-detector":
         result = await handleDevWalletDetector(body);
@@ -4980,7 +4980,7 @@ export async function POST(req: NextRequest) {
         result = await handleBaseRadar(body, origin);
         break;
       case "clark-ai":
-        result = await handleClarkAI(body, origin);
+        result = await handleClarkAI(body, origin, authHeader, verifiedPlan);
         break;
       default:
         return NextResponse.json(
