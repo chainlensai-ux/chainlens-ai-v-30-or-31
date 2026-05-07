@@ -515,6 +515,7 @@ export default function TerminalTokenScanner() {
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
+  const [lpExpanded, setLpExpanded] = useState(true)
 
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
@@ -542,6 +543,7 @@ export default function TerminalTokenScanner() {
     setClarkLoading(true)
     setError(null)
     setResult(null)
+    setLpExpanded(true)
     setClarkVerdict(null)
     setClarkError(null)
     try {
@@ -826,43 +828,41 @@ export default function TerminalTokenScanner() {
                   unverified: 'Unverified',
                   error: 'Unverified',
                 }
+                const evidence = Array.isArray(lp.evidence) ? lp.evidence : []
+                const verificationPool = evidenceValue(evidence, 'Verification pool') ?? read?.whatWasFound?.find((x) => /^Pair:/i.test(x))?.replace(/^Pair:\s*/i, '') ?? 'Unverified'
+                const checked = (read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x))
+                const unresolved = read?.couldNotVerify ?? []
+                const riskRead = read?.meaning ?? (
+                  lp.status === 'unsupported'
+                    ? 'Protocol liquidity detected — requires protocol-specific verification.'
+                    : lp.poolAddressPresent
+                      ? 'Liquidity exists, but LP lock/control could not be proven from current checks.'
+                      : 'No active liquidity pool found.'
+                )
                 return (
-                  <div style={{ marginBottom: '18px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', overflow: 'hidden', fontSize: '12px' }}>
-                    {/* Header row */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
+                    <button type="button" onClick={() => setLpExpanded((v) => !v)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '11px 14px', background: 'rgba(255,255,255,0.03)', border: 'none', borderBottom: lpExpanded ? '1px solid rgba(255,255,255,0.06)' : 'none', cursor: 'pointer', textAlign: 'left' }}>
                       <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0, boxShadow: `0 0 6px ${color}` }} />
                       <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: '12px' }}>LP Control: {statusLabelMap[lp.status ?? 'unverified'] ?? 'Unverified'}</span>
                       {read?.riskLevel && <span style={{ marginLeft: 'auto', fontSize: '10px', color: '#94a3b8', letterSpacing: '0.05em' }}>{read.riskLevel}</span>}
-                    </div>
-                    {read?.meaning && <div style={{ padding: '8px 14px', color: '#94a3b8', lineHeight: 1.5 }}><span style={{ color: '#cbd5e1' }}>Risk read:</span> {read.meaning}</div>}
-                    {/* What was found */}
-                    {read?.whatWasFound && read.whatWasFound.length > 0 && (
-                      <div style={{ padding: '4px 14px 6px', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                        <div style={{ fontSize: '10px', color: '#475569', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>What was checked</div>
-                        {read.whatWasFound.map((f, i) => (
-                          <div key={i} style={{ color: '#cbd5e1', display: 'flex', gap: '6px' }}>
-                            <span style={{ color: '#34d399' }}>✓</span>{f}
-                          </div>
-                        ))}
+                      <span style={{ fontSize: '10px', color: '#cbd5e1', letterSpacing: '0.06em' }}>Details {lpExpanded ? '▾' : '▸'}</span>
+                    </button>
+                    {lpExpanded && <div style={{ transition: 'all 160ms ease' }}>
+                      <div style={{ padding: '9px 14px', color: '#dbeafe', lineHeight: 1.55 }}><span style={{ color: '#f8fafc', fontWeight: 600 }}>Risk read:</span> {riskRead}</div>
+                      <div style={{ padding: '0 14px 8px' }}>
+                        <div style={{ fontSize: '10px', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Verification pool</div>
+                        <div style={{ marginTop: '3px', color: '#f8fafc', fontWeight: 600 }}>{verificationPool}</div>
                       </div>
-                    )}
-                    {/* Could not verify */}
-                    {read?.couldNotVerify && read.couldNotVerify.length > 0 && (
-                      <div style={{ padding: '4px 14px 6px', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                        <div style={{ fontSize: '10px', color: '#475569', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>Could not verify</div>
-                        {read.couldNotVerify.map((f, i) => (
-                          <div key={i} style={{ color: '#64748b', display: 'flex', gap: '6px' }}>
-                            <span style={{ color: '#475569' }}>–</span>{f}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {/* Next action */}
-                    {read?.nextAction && (
-                      <div style={{ padding: '6px 14px 10px', borderTop: '1px solid rgba(255,255,255,0.04)', color: '#64748b', fontStyle: 'italic' }}>
-                        <span style={{ color: '#94a3b8', fontStyle: 'normal' }}>Next action:</span> {read.nextAction}
-                      </div>
-                    )}
+                      {checked.length > 0 && <div style={{ padding: '4px 14px 6px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ fontSize: '10px', color: '#64748b', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>What was checked</div>
+                        {checked.map((f, i) => <div key={i} style={{ color: '#e2e8f0', display: 'flex', gap: '6px' }}><span style={{ color: '#34d399' }}>✓</span>{f}</div>)}
+                      </div>}
+                      {unresolved.length > 0 && <div style={{ padding: '4px 14px 6px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ fontSize: '10px', color: '#64748b', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>Could not verify</div>
+                        {unresolved.map((f, i) => <div key={i} style={{ color: '#f8fafc', display: 'flex', gap: '6px' }}><span style={{ color: '#f59e0b' }}>✕</span>{f}</div>)}
+                      </div>}
+                      {read?.nextAction && <div style={{ padding: '8px 14px 12px', borderTop: '1px solid rgba(255,255,255,0.05)', color: '#cbd5e1' }}><span style={{ color: '#94a3b8' }}>Next action:</span> {read.nextAction}</div>}
+                    </div>}
                   </div>
                 )
               })()}
