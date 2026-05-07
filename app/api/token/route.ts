@@ -475,6 +475,56 @@ function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[
   return { dexId: attrDexId || relDexId, dexName: attrDexName || incDexName || attrDexId || relDexId };
 }
 
+function normalizePool(pool: Record<string, unknown> | null, includedTokenById: Map<string, Record<string, unknown>>): NormalizedPool {
+  const attrs = (pool?.attributes ?? {}) as Record<string, unknown>;
+  const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
+  const baseId = String((((rel.base_token as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)?.id) ?? "").trim();
+  const quoteId = String((((rel.quote_token as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)?.id) ?? "").trim();
+  const baseInc = baseId ? (includedTokenById.get(baseId) ?? {}) : {};
+  const quoteInc = quoteId ? (includedTokenById.get(quoteId) ?? {}) : {};
+  const baseTokenAddress = String((baseInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
+  const quoteTokenAddress = String((quoteInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
+  const baseTokenSymbol = String((baseInc as Record<string, unknown>).symbol ?? "").trim() || null;
+  const quoteTokenSymbol = String((quoteInc as Record<string, unknown>).symbol ?? "").trim() || null;
+  const address = String(attrs.address ?? pool?.id ?? "").trim().toLowerCase() || null;
+  const { dexId, dexName } = extractPoolDex(pool, []);
+  return {
+    address,
+    pairName: String(attrs.name ?? attrs.pool_name ?? attrs.pair_name ?? "").trim() || null,
+    liquidityUsd: pickNum(attrs.reserve_in_usd, attrs.liquidity_usd, attrs.reserve_usd) ?? 0,
+    dexId: dexId || null,
+    dexName: dexName || null,
+    baseTokenSymbol,
+    quoteTokenSymbol,
+    baseTokenAddress,
+    quoteTokenAddress,
+    poolType: detectPoolType(pool),
+    hasDexMeta: Boolean(dexId || dexName),
+    isValidAddress: Boolean(address && /^0x[a-f0-9]{40}$/.test(address)),
+    raw: pool,
+  };
+}
+
+type NormalizedPool = {
+  address?: string | null;
+  pairName?: string | null;
+  liquidityUsd: number;
+  dexId?: string | null;
+  dexName?: string | null;
+  baseTokenSymbol?: string | null;
+  quoteTokenSymbol?: string | null;
+  baseTokenAddress?: string | null;
+  quoteTokenAddress?: string | null;
+  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
+  hasDexMeta: boolean;
+  isValidAddress: boolean;
+  containsScannedToken?: boolean;
+  isPreferredQuote?: boolean;
+  lpScore?: number;
+  selectionReason?: string;
+  raw?: unknown;
+};
+
 function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string): { pool: NormalizedPool | null; reason: string; candidates: NormalizedPool[] } {
   const tokenLc = tokenAddress.toLowerCase();
   const quoteRank: Record<string, number> = {
@@ -1203,7 +1253,7 @@ export async function POST(req: Request) {
       // Contract analysis
       analysis,
       lpControl,
-      lpControlRead: computeLpControlRead(lpControl, String(lpPoolAttr?.name ?? (lpPool?.attributes as Record<string, unknown> | undefined)?.name ?? "")),
+      lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
 
       // AI summary from Cortex Engine
       aiSummary,
@@ -1250,7 +1300,7 @@ export async function POST(req: Request) {
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
           lpControl,
-          lpControlRead: computeLpControlRead(lpControl, String(lpPoolAttr?.name ?? (lpPool?.attributes as Record<string, unknown> | undefined)?.name ?? "")),
+          lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
         },
         contractChecks: {
           status: contractChecksStatus,
