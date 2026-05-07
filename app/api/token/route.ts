@@ -641,7 +641,7 @@ export async function POST(req: Request) {
     const lpPair = lpPool?.pairName ?? `${lpPool?.baseTokenSymbol ?? "?"}/${lpPool?.quoteTokenSymbol ?? "?"}`;
     const marketPair = pairName ?? "unknown";
     const lpReason = selectedLpPool.reason.includes("no preferred quote pair")
-      ? "No major quote verification pool found; using best available pool."
+      ? "No WETH/USDC/USDbC/cbBTC verification pool found from provider; using best available pool."
       : selectedLpPool.reason;
     const _lpBaseDiagnostics = [
       `Verification pool: ${lpPair}`,
