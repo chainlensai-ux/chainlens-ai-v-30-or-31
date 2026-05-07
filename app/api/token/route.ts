@@ -403,25 +403,36 @@ function normalizePool(pool: any): NormalizedPool {
 
 function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string): { pool: NormalizedPool | null; reason: string } {
   const tokenLc = tokenAddress.toLowerCase();
-  const MAJOR_QUOTES = new Set(["WETH", "USDC", "USDBC", "CBBTC"]);
+  const quoteRank: Record<string, number> = {
+    WETH: 1,
+    USDC: 2,
+    USDBC: 3,
+    CBBTC: 4,
+    DAI: 5,
+    USDT: 6,
+  };
   let best: { pool: NormalizedPool; score: number; reason: string } | null = null;
   for (const p of pools) {
     const includesToken = p.baseTokenAddress === tokenLc || p.quoteTokenAddress === tokenLc;
-    const baseIsMajor = Boolean(p.baseTokenSymbol && MAJOR_QUOTES.has(p.baseTokenSymbol));
-    const quoteIsMajor = Boolean(p.quoteTokenSymbol && MAJOR_QUOTES.has(p.quoteTokenSymbol));
-    const quoteMatch = baseIsMajor || quoteIsMajor;
+    const otherSymbol = p.baseTokenAddress === tokenLc ? p.quoteTokenSymbol : p.baseTokenSymbol;
+    const quotePriority = otherSymbol ? quoteRank[otherSymbol] ?? null : null;
+    const hasPreferredQuote = quotePriority != null;
     const v2LikeMeta = p.poolType === "v2";
     let score = 0;
-    if (includesToken) score += 80;
-    else score -= 200;
-    if (quoteMatch) score += 120;
+    if (includesToken) score += 300;
+    else score -= 1000;
+    if (hasPreferredQuote) score += 500 - (quotePriority! * 50);
     if (v2LikeMeta) score += 20;
     if (p.poolType === "unknown") score -= 5;
     if (p.hasDexMeta) score += 15;
-    if (!quoteMatch) score -= 40;
+    if (!hasPreferredQuote) score -= 250;
     if (!p.isValidAddress) score -= 150;
     score += Math.min(30, Math.log10(Math.max(1, p.liquidityUsd + 1)) * 6);
-    const reason = `includesToken=${includesToken};majorQuote=${quoteMatch};poolType=${p.poolType};dexMeta=${p.hasDexMeta};liquidityUsd=${p.liquidityUsd.toFixed(2)}`;
+    const reason = includesToken
+      ? (hasPreferredQuote
+          ? `selected quote-priority pool (${otherSymbol}, rank ${quotePriority}) for LP verification`
+          : "no preferred quote pair found; selected best token-including fallback pool")
+      : "excluded: pool does not include scanned token";
     if (!best || score > best.score) best = { pool: p, score, reason };
   }
   return best ? { pool: best.pool, reason: best.reason } : { pool: null, reason: "no_pool_candidates" };
@@ -649,7 +660,7 @@ export async function POST(req: Request) {
         const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
-          lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`pool=${_lpAddrSnippet}`, `probe=${probe.probeSummary}`], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
+          lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
