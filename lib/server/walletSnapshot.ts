@@ -99,6 +99,7 @@ export type WalletSnapshot = {
       walletAgeDays: boolean
     }
     missingReasons: string[]
+    goldrushTransferDiags?: GrTransferDiag[]
   }
 }
 
@@ -587,6 +588,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
         txCount === null ? 'txCount: Alchemy nonce unavailable' : '',
         walletAgeDays === null ? 'walletAgeDays: no first-tx on ETH or Base' : '',
       ].filter(Boolean),
+      goldrushTransferDiags: [grPnlEthOut.diag, grPnlBaseOut.diag].filter((d): d is GrTransferDiag => d !== null),
     },
   }
 }

@@ -712,7 +712,7 @@ export async function POST(req: Request) {
       const attrs = (inc.attributes ?? {}) as Record<string, unknown>;
       if (id) includedTokenById.set(id, attrs);
     }
-    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById));
+    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById, gtIncluded));
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
@@ -733,6 +733,8 @@ export async function POST(req: Request) {
     const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
     const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok)
     const lpPoolAddress = lpPool?.address ?? null
+    const lpDexId = lpPool?.dexId ?? null
+    const lpDexName = lpPool?.dexName ?? null
     const lpPoolAddressPresent = Boolean(lpPoolAddress && /^0x[a-f0-9]{40}$/.test(lpPoolAddress))
     const needsLpHolderFetch = Boolean(lpPoolAddressPresent && lpPoolType === 'v2')
     const needsAI = !noActivePools || hasSecurityData
@@ -803,7 +805,7 @@ export async function POST(req: Request) {
         poolType: lpPoolType,
         source: "geckoterminal",
         reason: "Pool uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
-        evidence: [`pool=${primaryPoolAddress}`, `dex=${dexId ?? dexName ?? "unknown"}`, `poolType=${lpPoolType}`],
+        evidence: [`pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`],
       };
     } else if (lpPoolType === "unknown") {
       // Probe pool via RPC to classify before giving up
