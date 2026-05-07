@@ -818,20 +818,27 @@ export default function TerminalTokenScanner() {
                   unsupported: '#fbbf24', unverified: '#94a3b8', error: '#f87171',
                 }
                 const color = statusColor[lp.status ?? 'unverified'] ?? '#94a3b8'
+                const statusLabelMap: Record<string, string> = {
+                  burned: 'Burned',
+                  locked: 'Locked',
+                  team_controlled: 'Team controlled',
+                  unsupported: 'Protocol liquidity',
+                  unverified: 'Unverified',
+                  error: 'Unverified',
+                }
                 return (
                   <div style={{ marginBottom: '18px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', overflow: 'hidden', fontSize: '12px' }}>
                     {/* Header row */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                       <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0, boxShadow: `0 0 6px ${color}` }} />
-                      <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: '12px' }}>{read?.title ?? `LP Control: ${lp.status ?? 'unverified'}`}</span>
+                      <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: '12px' }}>LP Control: {statusLabelMap[lp.status ?? 'unverified'] ?? 'Unverified'}</span>
                       {read?.riskLevel && <span style={{ marginLeft: 'auto', fontSize: '10px', color: '#94a3b8', letterSpacing: '0.05em' }}>{read.riskLevel}</span>}
                     </div>
-                    {/* Meaning */}
-                    {read?.meaning && <div style={{ padding: '8px 14px', color: '#94a3b8', lineHeight: 1.5 }}>{read.meaning}</div>}
+                    {read?.meaning && <div style={{ padding: '8px 14px', color: '#94a3b8', lineHeight: 1.5 }}><span style={{ color: '#cbd5e1' }}>Risk read:</span> {read.meaning}</div>}
                     {/* What was found */}
                     {read?.whatWasFound && read.whatWasFound.length > 0 && (
                       <div style={{ padding: '4px 14px 6px', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                        <div style={{ fontSize: '10px', color: '#475569', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>Found</div>
+                        <div style={{ fontSize: '10px', color: '#475569', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>What was checked</div>
                         {read.whatWasFound.map((f, i) => (
                           <div key={i} style={{ color: '#cbd5e1', display: 'flex', gap: '6px' }}>
                             <span style={{ color: '#34d399' }}>✓</span>{f}
@@ -853,18 +860,8 @@ export default function TerminalTokenScanner() {
                     {/* Next action */}
                     {read?.nextAction && (
                       <div style={{ padding: '6px 14px 10px', borderTop: '1px solid rgba(255,255,255,0.04)', color: '#64748b', fontStyle: 'italic' }}>
-                        {read.nextAction}
+                        <span style={{ color: '#94a3b8', fontStyle: 'normal' }}>Next action:</span> {read.nextAction}
                       </div>
-                    )}
-                    {/* Dev diagnostics — collapsed */}
-                    {Array.isArray(lp.evidence) && lp.evidence.length > 0 && (
-                      <details style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                        <summary style={{ padding: '4px 14px', fontSize: '10px', color: '#334155', cursor: 'pointer', letterSpacing: '0.06em' }}>diagnostics</summary>
-                        <div style={{ padding: '4px 14px 8px' }}>
-                          {lp.evidence.map((e, i) => <div key={i} style={{ color: '#334155', fontFamily: 'var(--font-plex-mono)', fontSize: '10px' }}>{e}</div>)}
-                          {lp.source && <div style={{ color: '#334155', fontFamily: 'var(--font-plex-mono)', fontSize: '10px' }}>source={lp.source}</div>}
-                        </div>
-                      </details>
                     )}
                   </div>
                 )
