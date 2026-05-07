@@ -8,14 +8,27 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const CHAIN_RPC_MAP = {
-  eth: `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_ETHEREUM_KEY}`,
-  base: `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_BASE_KEY}`,
-  polygon: `https://polygon-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_POLYGON_KEY}`,
-  bnb: `https://bnb-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_BNB_KEY}`,
-} as const;
-
-type ChainKey = keyof typeof CHAIN_RPC_MAP;
+type ChainKey = "eth" | "base" | "polygon" | "bnb";
+function getAlchemyRpcUrl(chain: ChainKey): string | null {
+  if (chain === "base") {
+    const explicit = process.env.ALCHEMY_BASE_RPC_URL
+    if (explicit && /^https?:\/\//.test(explicit)) return explicit
+    const key = process.env.ALCHEMY_BASE_KEY
+    return key ? `https://base-mainnet.g.alchemy.com/v2/${key}` : null
+  }
+  const keyMap: Record<Exclude<ChainKey, "base">, string | undefined> = {
+    eth: process.env.ALCHEMY_ETHEREUM_KEY,
+    polygon: process.env.ALCHEMY_POLYGON_KEY,
+    bnb: process.env.ALCHEMY_BNB_KEY,
+  }
+  const domainMap: Record<Exclude<ChainKey, "base">, string> = {
+    eth: "eth-mainnet",
+    polygon: "polygon-mainnet",
+    bnb: "bnb-mainnet",
+  }
+  const key = keyMap[chain as Exclude<ChainKey, "base">]
+  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base">]}.g.alchemy.com/v2/${key}` : null
+}
 
 const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
 const TOKEN_RATE_WINDOW_MS = 60 * 1000
@@ -86,7 +99,8 @@ function withTimeout(ms = 5000): AbortSignal {
 
 async function rpcCall(chain: ChainKey, method: string, params: unknown[]): Promise<string | null> {
   try {
-    const rpcUrl = CHAIN_RPC_MAP[chain];
+    const rpcUrl = getAlchemyRpcUrl(chain);
+    if (!rpcUrl) return null;
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -124,7 +138,8 @@ function pad32HexAddress(address: string): string {
 async function fetchOnchainSupply(chain: ChainKey, contract: string): Promise<{
   totalSupply: bigint | null; burnedZero: bigint | null; burnedDead: bigint | null
 }> {
-  const rpcUrl = CHAIN_RPC_MAP[chain]
+  const rpcUrl = getAlchemyRpcUrl(chain)
+  if (!rpcUrl) return { totalSupply: null, burnedZero: null, burnedDead: null }
   const ZERO = '0x0000000000000000000000000000000000000000'
   const DEAD = '0x000000000000000000000000000000000000dEaD'
   const paddedZero = ZERO.slice(2).padStart(64, '0')
@@ -152,7 +167,8 @@ async function fetchOnchainSupply(chain: ChainKey, contract: string): Promise<{
 
 async function fetchBytecode(chain: ChainKey, contract: string): Promise<string | null> {
   try {
-    const rpcUrl = CHAIN_RPC_MAP[chain];
+    const rpcUrl = getAlchemyRpcUrl(chain);
+    if (!rpcUrl) return null;
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -533,7 +549,14 @@ export async function POST(req: Request) {
     const { contract, debugHolder } = body;
     const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base" })
     const cached = tokenResponseCache.get(cacheKey)
-    if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
+    if (cached && cached.exp > Date.now()) {
+      if (typeof cached.payload === 'object' && cached.payload) {
+        const cp: any = { ...(cached.payload as any) }
+        cp._diagnostics = { ...(cp._diagnostics ?? {}), cacheHit: true }
+        return NextResponse.json(cp)
+      }
+      return NextResponse.json(cached.payload)
+    }
 
     if (!contract || !/^0x[a-fA-F0-9]{40}$/.test(contract)) {
       return NextResponse.json({ error: "Invalid contract address" }, { status: 400 })
@@ -543,6 +566,17 @@ export async function POST(req: Request) {
 
     // Token Scanner is Base-only.
     const chain: ChainKey = "base";
+    const alchemyConfigured = Boolean(getAlchemyRpcUrl(chain))
+    let rpcCallsAttempted = 0
+    let rpcCallsSucceeded = 0
+    let rpcCallsFailed = 0
+    const countedRpcCall = async (method: string, params: unknown[]) => {
+      rpcCallsAttempted += 1
+      const out = await rpcCall(chain, method, params)
+      if (out) rpcCallsSucceeded += 1
+      else rpcCallsFailed += 1
+      return out
+    }
 
     const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpResult] = await Promise.all([
       fetchBytecode(chain, contract),
@@ -679,14 +713,14 @@ export async function POST(req: Request) {
         const confidenceFor = (pct: number): "high" | "medium" | "low" => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
         const DEAD = new Set(["0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"]);
         const KNOWN_LOCKERS = new Set(["0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", "0x71b5759d73262fbb223956913ecf4ecc51057641"]);
-        const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
+        const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
           lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
-            const balHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data }, "latest"]);
+            const balHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data }, "latest"]);
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
@@ -709,7 +743,7 @@ export async function POST(req: Request) {
       } else if (probe.v3Like) {
         lpControl = { status: "unsupported", confidence: "low", poolType: "v3", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as concentrated-liquidity (V3-like); LP lock requires protocol-specific verification.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: concentrated-liquidity interface detected"], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
       } else {
-        lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "geckoterminal+alchemy_rpc", reason: "Pool address found, but no standard V2/V3 LP interface was confirmed.", evidence: [`Verification pool: ${lpPair}`, "Pool type: unknown", `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`, "RPC probe: no V2/V3 interface confirmed"], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
+        lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "geckoterminal+alchemy_rpc", reason: alchemyConfigured ? "Verification pool found, but current RPC checks did not confirm a standard V2/V3 LP interface." : "Alchemy RPC fallback not configured.", evidence: [`Verification pool: ${lpPair}`, "Pool type: unknown", `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`, alchemyConfigured ? "RPC probe: no V2/V3 interface confirmed" : "RPC probe: unavailable (Alchemy not configured)"], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
       }
     } else {
       // V2 — run GoldRush LP holder check
@@ -732,14 +766,14 @@ export async function POST(req: Request) {
         lpControl = { status: "team_controlled", confidence: "high", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
       } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
         // Alchemy RPC fallback when GoldRush holder percentages are unavailable
-        const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
+        const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
           lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
-            const balHex = await rpcCall(chain, "eth_call", [{ to: lpPoolAddress!, data }, "latest"]);
+            const balHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data }, "latest"]);
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
@@ -964,10 +998,10 @@ export async function POST(req: Request) {
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (matchingPools.length > 0 ? "partial" : "unavailable");
     const liquidityReason = mainPool ? null : "no_active_liquidity_pool_found";
-    const ownerCall = await rpcCall(chain, 'eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'])
+    const ownerCall = await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'])
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
-    const rpcSupply = await rpcCall(chain, 'eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'])
-    const rpcDecimalsHex = await rpcCall(chain, 'eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'])
+    const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'])
+    const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'])
     const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
     const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
 
@@ -1072,6 +1106,15 @@ export async function POST(req: Request) {
             selectionReason: c.selectionReason ?? null,
           })),
         } : {}),
+        alchemy: {
+          configured: alchemyConfigured,
+          lpProbeAttempted: Boolean(lpPoolAddress && (lpPoolType === "unknown" || lpPoolType === "v2")),
+          lpProbeReason: !lpPoolAddress ? "no_pool_address" : (!alchemyConfigured ? "alchemy_not_configured" : (lpPoolType === "unknown" ? "unknown_pool_type_probe" : (lpPoolType === "v2" ? "v2_fallback_checks" : "not_needed"))),
+          rpcCallsAttempted,
+          rpcCallsSucceeded,
+          rpcCallsFailed,
+          contractChecksAttempted: true,
+        },
         providerUsed: { market: 'geckoterminal', holders: 'goldrush', security: hpResult.ok ? 'honeypot.is' : (gpHasData ? 'goplus_limited_fallback' : 'unavailable'), contractChecks: 'alchemy_rpc', liquidity: lpControl.source ?? 'geckoterminal' },
         tokenMarketFieldsPresent: {
           priceUsd: priceUsd != null,
@@ -1177,6 +1220,7 @@ export async function POST(req: Request) {
     if (process.env.NODE_ENV === 'development') {
       const _totalMs = Date.now() - _t0
       console.log('[token-timing] totalMs', _totalMs, 'contract', contract)
+      console.log('[alchemy-diag] route=/api/token configured=', alchemyConfigured, 'lpProbeAttempted=', Boolean(lpPoolAddress && (lpPoolType === "unknown" || lpPoolType === "v2")), 'rpcAttempted=', rpcCallsAttempted, 'rpcSucceeded=', rpcCallsSucceeded, 'rpcFailed=', rpcCallsFailed, 'totalMs=', _totalMs)
       ;(responsePayload as any)._timing = { totalMs: _totalMs }
     }
     tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
