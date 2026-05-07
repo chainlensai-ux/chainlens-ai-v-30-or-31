@@ -1573,11 +1573,11 @@ function missingAddressReply(intent: ClarkIntent): string {
   return "I can run that, but I need a token contract first. Paste a full 0x contract and I’ll analyze the available data.";
 }
 
-async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>, authToken?: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
+async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>, authHeader?: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
-  const tok = authToken ?? clarkInternalCtx.authToken
+  const tok = authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined)
   const plan = verifiedPlan ?? clarkInternalCtx.verifiedPlan
-  if (tok) headers.Authorization = `Bearer ${tok}`
+  if (tok) headers.Authorization = tok
   if (plan) headers["x-user-plan"] = plan
   const res = await fetch(`${origin}${path}`, {
     method: "POST",
@@ -2704,6 +2704,7 @@ async function executeClarkToolPlan(input: {
   const evidence: ClarkToolEvidence = {};
   const toolsUsed: ClarkToolName[] = [];
   let resolvedAddress: string | null = input.plan.followupContext.address;
+  const safeAuthHeader = input.authHeader ?? undefined
 
   for (const tool of input.plan.tools) {
     toolsUsed.push(tool.name);
@@ -4500,7 +4501,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     structuredMarketList,
     clarkContext: body.clarkContext,
   });
-  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, authHeader, verifiedPlan });
+  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, verifiedPlan: clarkInternalCtx.verifiedPlan ?? 'free', authHeader: clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined });
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {
@@ -5014,12 +5015,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
 export async function POST(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? ''
+  const authHeader = auth || undefined
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
   const verifiedPlan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : clarkPlan(req)
   if (!clarkAllowed(req, verifiedPlan)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
-    const authHeader = req.headers.get('authorization') ?? undefined
-    const verifiedPlan = await getVerifiedUserPlan(req)
+    clarkInternalCtx = { authToken: token || undefined, verifiedPlan }
     const body = (await req.json()) as ClarkRequestBody;
     const cacheKey = JSON.stringify({ actor: clarkActor(req), verifiedPlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
@@ -5084,6 +5085,9 @@ export async function POST(req: NextRequest) {
       feature: "clark-ai",
       data: { reply: safeMsg, response: safeMsg, analysis: safeMsg, verdict: "SCAN DEEPER", source: "fallback" },
     }, { status: 200 });
+  }
+  finally {
+    clarkInternalCtx = {}
   }
 }
 

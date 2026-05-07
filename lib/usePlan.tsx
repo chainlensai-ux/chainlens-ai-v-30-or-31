@@ -15,7 +15,7 @@ export function usePlan(): UserPlan {
         const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const json = await res.json()
-          const p = (json?.settings as Record<string, unknown>)?.plan
+          const p = (json?.plan ?? (json?.settings as Record<string, unknown>)?.plan)
           setPlan(p === 'pro' || p === 'elite' ? p : 'free')
         }
       } catch { setPlan('free') }
@@ -39,7 +39,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean } {
         const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const json = await res.json()
-          const p = (json?.settings as Record<string, unknown>)?.plan
+          const p = (json?.plan ?? (json?.settings as Record<string, unknown>)?.plan)
           setPlan(p === 'pro' || p === 'elite' ? p : 'free')
         }
       } catch { setPlan('free') }
