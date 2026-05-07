@@ -71,6 +71,21 @@ export type WalletSnapshot = {
     reason: string
   }
   _diagnostics?: {
+    providers?: {
+      zerion: { configured: boolean; attempted: boolean; succeeded: boolean }
+      goldrush: {
+        configured: boolean
+        balancesAttempted: boolean
+        transactionsAttempted: boolean
+        transfersAttempted: boolean
+        eventsReturned: number
+        valuedEventsReturned: number
+        pnlEventsUsable: number
+        reason: string
+      }
+      alchemy: { configured: boolean; behaviorAttempted: boolean; transfersReturned: number; reason: string }
+      cacheHit?: boolean
+    }
     walletProviderFieldsPresent: {
       holdings: boolean
       totalValue: boolean
@@ -296,6 +311,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
 }
 
 export async function fetchWalletSnapshot(address: string): Promise<WalletSnapshot> {
+  const startedAt = Date.now()
   const addr: string = (address ?? '').trim()
   if (!addr || !/^0x[0-9a-fA-F]{40}$/i.test(addr)) {
     throw new Error('Invalid wallet address')
@@ -426,6 +442,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
 
   const grEvents = [...(grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : []), ...(grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : [])]
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
+  const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
   const events = grEvents.length > 0 ? grEvents : alchemyEvents
   const pnlSource: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
   const byToken = new Map<string, PnlEvent[]>()
@@ -464,6 +481,25 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSource, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
   const unpricedHoldingsCount = holdings.filter((h) => !h.price || h.price <= 0).length
   const hiddenDustCount = holdings.filter((h) => h.value <= 1).length
+  const behaviorTxCount = behaviorRes.status === 'fulfilled' ? (behaviorRes.value.txCount ?? 0) : 0
+  const hasHistoricalBaseActivity = grEvents.length > 0
+  const walletBehavior = behaviorRes.status === 'fulfilled'
+    ? (behaviorTxCount === 0 && hasHistoricalBaseActivity
+      ? { ...behaviorRes.value, recentActivitySummary: 'Historical Base activity found, but no recent activity in checked window.' }
+      : behaviorRes.value)
+    : { ...BEHAVIOR_EMPTY, reason: 'Behavior fetch did not complete.' }
+  const goldrushConfigured = Boolean(GOLDRUSH_KEY)
+  const goldrushReason = !goldrushConfigured
+    ? 'History provider unavailable.'
+    : grEvents.length === 0
+      ? 'No indexed wallet transfer history returned from current checks.'
+      : valuedGrEvents.length === 0
+        ? 'Transfer history returned but no valued events for cost-basis estimation.'
+        : ''
+  const alchemyConfigured = Boolean(ALCHEMY_BASE_KEY)
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[wallet-diag] route=/api/wallet goldrushConfigured=', goldrushConfigured, 'goldrushEventsReturned=', grEvents.length, 'valuedEventsReturned=', valuedGrEvents.length, 'alchemyBehaviorAttempted=', alchemyConfigured, 'totalMs=', Date.now() - startedAt)
+  }
 
   return {
     address: addr,
@@ -484,9 +520,28 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     pnlCoverageReason,
     hiddenDustCount,
     unpricedHoldingsCount,
-    walletBehavior: behaviorRes.status === 'fulfilled' ? behaviorRes.value : { ...BEHAVIOR_EMPTY, reason: 'Behavior fetch did not complete.' },
+    walletBehavior,
     estimatedPnl,
     _diagnostics: {
+      providers: {
+        zerion: { configured: Boolean(ZERION_KEY), attempted: true, succeeded: rawPos.length > 0 },
+        goldrush: {
+          configured: goldrushConfigured,
+          balancesAttempted: goldrushConfigured,
+          transactionsAttempted: goldrushConfigured,
+          transfersAttempted: goldrushConfigured,
+          eventsReturned: grEvents.length,
+          valuedEventsReturned: valuedGrEvents.length,
+          pnlEventsUsable: filteredPnlTokens.length,
+          reason: goldrushReason,
+        },
+        alchemy: {
+          configured: alchemyConfigured,
+          behaviorAttempted: alchemyConfigured,
+          transfersReturned: behaviorTxCount,
+          reason: behaviorRes.status === 'fulfilled' ? '' : 'Behavior check unavailable from current checks.',
+        },
+      },
       walletProviderFieldsPresent: {
         holdings: holdings.length > 0,
         totalValue: totalValue > 0,

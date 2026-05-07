@@ -530,6 +530,7 @@ export default function WalletScannerPage() {
                     Behavior · Base ({result.behaviorSource ?? 'unavailable'})
                   </div>
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>Behavior scope: Base only</div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10 }}>Behavior via Alchemy Base</div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
                     {[
                       { label: 'Recent Txs', value: result.walletBehavior.txCount ?? '—' },
@@ -569,6 +570,9 @@ export default function WalletScannerPage() {
                   </div>
                   <div style={{ marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
                     Coverage {result.estimatedPnl.coveragePercent}% · Confidence {result.estimatedPnl.confidence ?? 'n/a'} · Source {result.pnlSource ?? result.estimatedPnl.source}
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8' }}>
+                    Portfolio via Zerion · History via GoldRush: {result.pnlSource === 'goldrush' ? 'available' : 'limited/unavailable'}
                   </div>
                   {result.estimatedPnl.status !== 'unavailable' && result.estimatedPnl.coveragePercent >= 60 && result.estimatedPnl.totalEstimatedPnlUsd !== null ? (
                     <div style={{ marginTop: 10, fontSize: 20, fontWeight: 700, color: result.estimatedPnl.totalEstimatedPnlUsd >= 0 ? '#34D399' : '#FB7185' }}>
