@@ -77,6 +77,11 @@ type ScanResult = {
     evidence?: string[]
     poolAddressPresent?: boolean
     selectedPrimaryPoolSource?: string
+    dexId?: string
+    dexName?: string
+    probeV2Like?: boolean
+    probeV3Like?: boolean
+    lpVerificationPoolReason?: string
   } | null
 }
 
