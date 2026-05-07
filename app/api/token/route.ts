@@ -338,7 +338,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 type LpControlResult = {
   status: "burned" | "locked" | "team_controlled" | "unverified" | "unsupported" | "error";
   confidence: "high" | "medium" | "low";
-  poolType: "v2" | "v3" | "aerodrome" | "unknown";
+  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
   source: string;
   reason: string;
   evidence: string[];
@@ -346,11 +346,24 @@ type LpControlResult = {
 
 function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["poolType"] {
   const a = (pool?.attributes ?? {}) as Record<string, unknown>;
-  const dex = String(a.dex_id ?? a.dex ?? "").toLowerCase();
-  const name = String(a.name ?? "").toLowerCase();
-  if (dex.includes("aerodrome") || name.includes("aerodrome")) return "aerodrome";
-  if (dex.includes("uniswap_v3") || dex.includes("v3") || name.includes(" v3")) return "v3";
-  if (dex.includes("v2") || dex.includes("uniswap") || dex.includes("sushiswap")) return "v2";
+  const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
+  const candidates = [
+    a.dex_id, a.dex, a.dex_name, a.name, a.pool_name, a.pair_name, a.pool_type, a.address,
+    rel?.dex, rel?.base_token, rel?.quote_token,
+    pool?.id,
+  ].map((v) => String(v ?? '').toLowerCase()).filter(Boolean);
+  const text = candidates.join(' | ');
+
+  const has = (re: RegExp) => re.test(text);
+
+  if (has(/\baerodrome\b|\bslipstream\b/)) return "aerodrome";
+  if (has(/\bconcentrated\b|\bcl pool\b|\balgebra\b/)) return "concentrated";
+  if (has(/\buniswap(?:[_-]?v)?3\b|\bpancakeswap(?:[_-]?v)?3\b|\bv3\b/)) return "v3";
+
+  if (has(/\buniswap(?:[_-]?v)?2\b|\bsushiswap(?:[_-]?v)?2\b|\bpancakeswap(?:[_-]?v)?2\b|\bbaseswap\b|\balienbase\b|\bswapbased\b|\bconstant[-_ ]?product\b|\bv2\b/)) {
+    return "v2";
+  }
+
   return "unknown";
 }
 
@@ -434,7 +447,12 @@ export async function POST(req: Request) {
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
     const primaryPoolAddress = String(mainPoolAttr.address ?? mainPool?.id ?? "").trim().toLowerCase() || null;
-    const poolType = detectPoolType(mainPool as Record<string, unknown> | null);
+    const lpPoolType = detectPoolType(mainPool as Record<string, unknown> | null);
+    const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
+    const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
+    const pairName = String(mainPoolAttr.name ?? mainPoolAttr.pool_name ?? mainPoolAttr.pair_name ?? "").trim() || null;
+    const selectedPrimaryPoolSource = String(mainPoolAttr.address ?? "").trim() ? "attributes.address" : (String(mainPool?.id ?? "").trim() ? "pool.id_normalized" : "none");
+    const poolAddressPresent = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress));
     // Early signals needed for phase 2 setup (computed before full field resolution)
     const _gtEarly = gtTokenInfo?.data?.attributes ?? null
     const _poolAttrEarly = (mainPool?.attributes ?? {}) as Record<string, unknown>
@@ -443,7 +461,7 @@ export async function POST(req: Request) {
     const _decEarly: number = typeof _gtEarly?.decimals === 'number' ? _gtEarly.decimals : 18
     const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
     const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok)
-    const needsLpHolderFetch = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress) && poolType === 'v2')
+    const needsLpHolderFetch = Boolean(poolAddressPresent && lpPoolType === 'v2')
     const needsAI = !noActivePools || hasSecurityData
     const needsOnchainMc = _mcEarly == null && _priceEarly != null
 
@@ -483,21 +501,30 @@ export async function POST(req: Request) {
     let lpControl: LpControlResult = {
       status: "unverified",
       confidence: "low",
-      poolType,
+      poolType: lpPoolType,
       source: "geckoterminal",
       reason: "LP control requires holder-level LP token verification.",
       evidence: [],
     };
-    if (!primaryPoolAddress || !/^0x[a-f0-9]{40}$/.test(primaryPoolAddress)) {
-      lpControl = { ...lpControl, status: "unverified", reason: "Primary pool address is unavailable from provider." };
-    } else if (poolType === "v3" || poolType === "aerodrome" || poolType === "unknown") {
+    if (!poolAddressPresent) {
+      lpControl = { ...lpControl, status: "unverified", reason: "No pool address found from provider for LP-holder verification." };
+    } else if (lpPoolType === "v3" || lpPoolType === "aerodrome" || lpPoolType === "concentrated") {
       lpControl = {
-        status: poolType === "unknown" ? "unverified" : "unsupported",
+        status: "unsupported",
         confidence: "low",
-        poolType,
+        poolType: lpPoolType,
         source: "geckoterminal",
-        reason: "Pool type uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
-        evidence: [`pool=${primaryPoolAddress}`, `poolType=${poolType}`],
+        reason: "Pool uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
+        evidence: [`pool=${primaryPoolAddress}`, `dex=${dexId ?? dexName ?? "unknown"}`, `poolType=${lpPoolType}`],
+      };
+    } else if (lpPoolType === "unknown") {
+      lpControl = {
+        status: "unverified",
+        confidence: "low",
+        poolType: lpPoolType,
+        source: "geckoterminal",
+        reason: "Pool address found, but pool type could not be verified for LP-holder inference.",
+        evidence: [`pool=${primaryPoolAddress}`, `dexId=${dexId ?? "unknown"}`, `dexName=${dexName ?? "unknown"}`, `pair=${pairName ?? "unknown"}`],
       };
     } else {
       const lpItems = Array.isArray(_lpHoldersForControl?.data?.items) ? _lpHoldersForControl.data.items as Array<Record<string, unknown>> : [];
@@ -518,17 +545,17 @@ export async function POST(req: Request) {
       const lockerPct = top.filter((x) => KNOWN_LOCKERS.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
       const confidenceFor = (pct: number) => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
       if (burnPct >= 50) {
-        lpControl = { status: "burned", confidence: confidenceFor(burnPct), poolType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${burnPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
+        lpControl = { status: "burned", confidence: confidenceFor(burnPct), poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${burnPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
       } else if (lockerPct >= 50) {
-        lpControl = { status: "locked", confidence: confidenceFor(lockerPct), poolType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers.", evidence: [`locker_share=${lockerPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
+        lpControl = { status: "locked", confidence: confidenceFor(lockerPct), poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers.", evidence: [`locker_share=${lockerPct.toFixed(2)}%`, `pool=${primaryPoolAddress}`] };
       } else if (topHolder && (topHolder.pct ?? 0) >= 80 && !DEAD.has(topHolder.address) && !KNOWN_LOCKERS.has(topHolder.address)) {
-        lpControl = { status: "team_controlled", confidence: "high", poolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
+        lpControl = { status: "team_controlled", confidence: "high", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
       } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
         // Alchemy RPC fallback only when holder percentages are unavailable/incomplete.
         const totalSupplyHex = await rpcCall(chain, "eth_call", [{ to: primaryPoolAddress, data: "0x18160ddd" }, "latest"]);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
-          lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+alchemy_rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
+          lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
@@ -545,17 +572,27 @@ export async function POST(req: Request) {
           const burnShare = burn0 + burnDead;
           const lockerShare = _lockerSharesList.reduce((a: number, b: number) => a + b, 0);
           if (burnShare >= 50) {
-            lpControl = { status: "burned", confidence: confidenceFor(burnShare), poolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`] };
+            lpControl = { status: "burned", confidence: confidenceFor(burnShare), poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`] };
           } else if (lockerShare >= 50) {
-            lpControl = { status: "locked", confidence: confidenceFor(lockerShare), poolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`] };
+            lpControl = { status: "locked", confidence: confidenceFor(lockerShare), poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`] };
           } else {
-            lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+alchemy_rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
+            lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
           }
         }
       } else {
-        lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+goldrush", reason: "LP holder distribution does not prove burned/locked/team control.", evidence: [`top_rows=${top.length}`] };
+        lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "LP holder distribution does not prove burned/locked/team control.", evidence: [`top_rows=${top.length}`] };
       }
     }
+
+    lpControl.evidence = [
+      ...(lpControl.evidence ?? []),
+      `poolAddressPresent=${poolAddressPresent}`,
+      `selectedPrimaryPoolSource=${selectedPrimaryPoolSource}`,
+      `dexId=${dexId ?? 'unknown'}`,
+      `dexName=${dexName ?? 'unknown'}`,
+      `detectedPoolType=${lpPoolType}`,
+      `lpHolderCheckAttempted=${needsLpHolderFetch}`,
+    ];
 
     // AI summary from parallel phase 2
     let aiSummary = "Unverified on Base — insufficient data for a risk verdict.";
