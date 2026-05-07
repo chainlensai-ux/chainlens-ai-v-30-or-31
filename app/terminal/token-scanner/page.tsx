@@ -830,8 +830,20 @@ export default function TerminalTokenScanner() {
                 }
                 const evidence = Array.isArray(lp.evidence) ? lp.evidence : []
                 const verificationPool = evidenceValue(evidence, 'Verification pool') ?? read?.whatWasFound?.find((x) => /^Pair:/i.test(x))?.replace(/^Pair:\s*/i, '') ?? 'Unverified'
-                const checked = (read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x))
-                const unresolved = read?.couldNotVerify ?? []
+                const evidenceText = evidence.join(' ').toLowerCase()
+                const fallbackChecked: string[] = []
+                if (lp.poolAddressPresent || evidenceText.includes('verification pool')) fallbackChecked.push('Pool address found')
+                if (verificationPool !== 'Unverified') fallbackChecked.push('Major quote verification pool selected')
+                if (evidenceText.includes('alchemy') || evidenceText.includes('rpc')) fallbackChecked.push('Alchemy RPC checks attempted')
+                if (lp.status !== 'error' && lp.status !== 'unverified' ? true : lp.poolAddressPresent) fallbackChecked.push('Liquidity pool found')
+                const checked = ((read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x)).length
+                  ? (read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x))
+                  : fallbackChecked).filter((v, i, arr) => arr.indexOf(v) === i)
+                const unresolved = (read?.couldNotVerify?.length ? read.couldNotVerify : [
+                  'LP lock or burn proof',
+                  'LP holder distribution',
+                  lp.status === 'unsupported' ? 'Protocol-specific LP proof' : 'Standard LP interface',
+                ])
                 const riskRead = read?.meaning ?? (
                   lp.status === 'unsupported'
                     ? 'Protocol liquidity detected — requires protocol-specific verification.'
@@ -839,6 +851,7 @@ export default function TerminalTokenScanner() {
                       ? 'Liquidity exists, but LP lock/control could not be proven from current checks.'
                       : 'No active liquidity pool found.'
                 )
+                const nextAction = read?.nextAction ?? 'Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.'
                 return (
                   <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
                     <button type="button" onClick={() => setLpExpanded((v) => !v)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '11px 14px', background: 'rgba(255,255,255,0.03)', border: 'none', borderBottom: lpExpanded ? '1px solid rgba(255,255,255,0.06)' : 'none', cursor: 'pointer', textAlign: 'left' }}>
@@ -853,15 +866,17 @@ export default function TerminalTokenScanner() {
                         <div style={{ fontSize: '10px', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Verification pool</div>
                         <div style={{ marginTop: '3px', color: '#f8fafc', fontWeight: 600 }}>{verificationPool}</div>
                       </div>
-                      {checked.length > 0 && <div style={{ padding: '4px 14px 6px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '8px', padding: '6px 12px 8px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ padding: '8px 10px', border: '1px solid rgba(52,211,153,0.16)', borderRadius: '10px', background: 'rgba(15,23,42,0.36)' }}>
                         <div style={{ fontSize: '10px', color: '#64748b', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>What was checked</div>
                         {checked.map((f, i) => <div key={i} style={{ color: '#e2e8f0', display: 'flex', gap: '6px' }}><span style={{ color: '#34d399' }}>✓</span>{f}</div>)}
-                      </div>}
-                      {unresolved.length > 0 && <div style={{ padding: '4px 14px 6px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                      </div>
+                      <div style={{ padding: '8px 10px', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '10px', background: 'rgba(15,23,42,0.36)' }}>
                         <div style={{ fontSize: '10px', color: '#64748b', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>Could not verify</div>
                         {unresolved.map((f, i) => <div key={i} style={{ color: '#f8fafc', display: 'flex', gap: '6px' }}><span style={{ color: '#f59e0b' }}>✕</span>{f}</div>)}
-                      </div>}
-                      {read?.nextAction && <div style={{ padding: '8px 14px 12px', borderTop: '1px solid rgba(255,255,255,0.05)', color: '#cbd5e1' }}><span style={{ color: '#94a3b8' }}>Next action:</span> {read.nextAction}</div>}
+                      </div>
+                      </div>
+                      <div style={{ padding: '8px 14px 12px', borderTop: '1px solid rgba(255,255,255,0.05)', color: '#cbd5e1' }}><span style={{ color: '#94a3b8' }}>Next action:</span> {nextAction}</div>
                     </div>}
                   </div>
                 )
