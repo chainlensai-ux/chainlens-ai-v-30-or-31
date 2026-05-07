@@ -206,6 +206,13 @@ function shorten(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
 }
 
+function evidenceValue(lines: string[] | undefined, label: string): string | null {
+  if (!Array.isArray(lines)) return null
+  const line = lines.find((l) => l.startsWith(`${label}:`))
+  if (!line) return null
+  return line.slice(label.length + 1).trim() || null
+}
+
 function normalizeHolderProviderStatus(
   status: ScanResult['holderDistributionStatus']
 ): HolderProviderStatus {

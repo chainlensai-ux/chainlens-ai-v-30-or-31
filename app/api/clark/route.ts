@@ -2113,7 +2113,7 @@ function humanizeProviderReason(reason: string): string {
     no_active_liquidity_pool_found: "No active liquidity pool found",
     "No pool address found from provider for LP-holder verification.": "LP holder check unavailable: no pool address found.",
     "Pool uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.": "Unsupported protocol liquidity: LP lock needs protocol-specific verification.",
-    "Pool address found, but pool type could not be verified for LP-holder inference.": "Unknown pool type: LP holder inference unavailable until pool type is verified.",
+    "Pool address found, but no standard V2/V3 LP interface was confirmed.": "LP control unverified — verification pool/type could not be confirmed.",
   };
   if (map[reason]) return map[reason];
   return /^[a-z0-9_]+$/.test(reason) ? reason.replace(/_/g, " ") : reason;

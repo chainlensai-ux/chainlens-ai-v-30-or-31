@@ -1,6 +1,6 @@
 export const RPC = {
-  eth: "https://eth-mainnet.g.alchemy.com/v2/DqZs00ga4VwRXWAwwFCVv",
-  base: "https://base-mainnet.g.alchemy.com/v2/BaUhHzOh7NGn_6ZFRFvbB",
-  polygon: "https://polygon-mainnet.g.alchemy.com/v2/bdeS8wTUWl1Zw2KipMziF",
-  bnb: "https://bnb-mainnet.g.alchemy.com/v2/oqkCM5XNjlqaa6Mfd4BRK",
+  eth: process.env.ALCHEMY_ETHEREUM_KEY ? `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_ETHEREUM_KEY}` : "",
+  base: process.env.ALCHEMY_BASE_RPC_URL || (process.env.ALCHEMY_BASE_KEY ? `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_BASE_KEY}` : ""),
+  polygon: process.env.ALCHEMY_POLYGON_KEY ? `https://polygon-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_POLYGON_KEY}` : "",
+  bnb: process.env.ALCHEMY_BNB_KEY ? `https://bnb-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_BNB_KEY}` : "",
 };
