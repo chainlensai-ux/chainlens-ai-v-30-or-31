@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 
 type TrackedWallet = {
   address: string
@@ -39,9 +40,8 @@ const SYNC_COOLDOWN_MS = 10 * 60 * 1000
 const FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
 const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
-function syncPlan(req: Request): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
 function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
-function syncAllowed(req: Request, mode: 'batch' | 'full', isFullContinuation = false): { ok: boolean; cooldown: boolean } { const plan=syncPlan(req); const key=`${mode}:${plan}:${syncIp(req)}`; const now=Date.now(); const cur=syncRate.get(key); const lim=mode === 'full' ? 1 : SYNC_RATE_BY_PLAN[plan]; const cooldownMs = mode === 'full' ? FULL_SYNC_COOLDOWN_MS : SYNC_COOLDOWN_MS; if(mode === 'full' && isFullContinuation){ if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } } if(cur && now-cur.lastRunAt < cooldownMs) return { ok:false, cooldown:true }; if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } }
+function syncAllowed(plan: 'free' | 'pro' | 'elite', req: Request, mode: 'batch' | 'full', isFullContinuation = false): { ok: boolean; cooldown: boolean } { const key=`${mode}:${plan}:${syncIp(req)}`; const now=Date.now(); const cur=syncRate.get(key); const lim=mode === 'full' ? 1 : SYNC_RATE_BY_PLAN[plan]; const cooldownMs = mode === 'full' ? FULL_SYNC_COOLDOWN_MS : SYNC_COOLDOWN_MS; if(mode === 'full' && isFullContinuation){ if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } } if(cur && now-cur.lastRunAt < cooldownMs) return { ok:false, cooldown:true }; if(!cur||cur.resetAt<=now){ syncRate.set(key,{count:1,resetAt:now+60000,lastRunAt:now}); return { ok:true, cooldown:false } } if(cur.count>=lim) return { ok:false, cooldown:false }; cur.count+=1; cur.lastRunAt=now; return { ok:true, cooldown:false } }
 
 type SyncWindow = '24h' | '3d' | '7d'
 
@@ -369,7 +369,11 @@ export async function POST(request: Request) {
   const rawOffset = queryOffset ?? bodyOffset ?? DEFAULT_OFFSET
   const offset = Math.max(0, rawOffset)
   const isFullContinuation = mode === 'full' && offset > 0
-  const allow = syncAllowed(request, mode, isFullContinuation)
+  const verifiedPlan = await getVerifiedUserPlan(request)
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[sync] route=/api/whale-alerts/sync verifiedPlan=${verifiedPlan}`)
+  }
+  const allow = syncAllowed(verifiedPlan, request, mode, isFullContinuation)
   if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly." }, { status: 429 })
   const usingAutomaticBatch = queryOffset === null && bodyOffset === null
 

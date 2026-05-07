@@ -8,6 +8,7 @@ import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 import ConnectWallet from '@/components/ConnectWallet'
 import { supabase } from '@/lib/supabaseClient'
+import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
 
 
 
@@ -144,6 +145,15 @@ const TOOLS: Item[] = [
   { key: 'clark-ai',            label: 'Clark AI',            icon: <IcClarkAI />,            accent: PURPLE, iconColor: PURPLE, href: '/terminal/clark-ai'       },
 ]
 
+const TOOL_PLAN_FEATURE: Record<string, string> = {
+  'wallet-scanner':      'wallet-scanner',
+  'dev-wallet-detector': 'dev-wallet',
+  'liquidity-safety':    'liquidity-safety',
+  'whale-alerts':        'whale-alerts',
+  'pump-alerts':         'pump-alerts',
+  'base-radar':          'base-radar',
+}
+
 // ─── Section label ─────────────────────────────────────────────────────────
 
 function SectionLabel({ children }: { children: ReactNode }) {
@@ -166,7 +176,7 @@ function SectionLabel({ children }: { children: ReactNode }) {
 
 // ─── NavItem ──────────────────────────────────────────────────────────────
 
-function NavItem({ item, active, onSelect }: { item: Item; active: string | null; onSelect: (k: string) => void }) {
+function NavItem({ item, active, onSelect, locked = false }: { item: Item; active: string | null; onSelect: (k: string) => void; locked?: boolean }) {
   const on        = active === item.key
   const accent    = item.accent
   const iconColor = item.iconColor
@@ -255,12 +265,22 @@ function NavItem({ item, active, onSelect }: { item: Item; active: string | null
 
   const itemContent = (
     <>
-      <span style={{ color: on ? iconColor : idleIconColor, display: 'flex', alignItems: 'center', flexShrink: 0, transition: 'color 0.12s' }}>
+      <span style={{ color: on ? iconColor : (locked ? '#3a4a5a' : idleIconColor), display: 'flex', alignItems: 'center', flexShrink: 0, transition: 'color 0.12s' }}>
         {item.icon}
       </span>
-      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: locked && !on ? '#3a4a5a' : undefined }}>
         {item.label}
       </span>
+      {locked && (
+        <span style={{
+          fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em',
+          color: '#7c5db0', background: 'rgba(139,92,246,0.12)',
+          border: '1px solid rgba(139,92,246,0.28)',
+          borderRadius: '4px', padding: '1px 4px', flexShrink: 0,
+        }}>
+          PRO
+        </span>
+      )}
     </>
   )
 
@@ -301,14 +321,29 @@ interface Props {
 export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }: Props) {
   const router = useRouter()
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
+  const [plan, setPlan] = useState<UserPlan>('free')
 
   useEffect(() => {
+    async function loadPlan(token: string | undefined) {
+      if (!token) { setPlan('free'); return }
+      try {
+        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
+        if (res.ok) {
+          const json = await res.json()
+          const p = (json?.settings as Record<string, unknown>)?.plan
+          setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+        }
+      } catch { setPlan('free') }
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       setAccountEmail(data.session?.user?.email ?? null)
+      void loadPlan(data.session?.access_token)
     })
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setAccountEmail(session?.user?.email ?? null)
+      void loadPlan(session?.access_token)
     })
 
     return () => listener.subscription.unsubscribe()
@@ -390,9 +425,11 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
         {/* Tools */}
         <SectionLabel>Tools</SectionLabel>
         <div className="flex flex-col" style={{ gap: '1px' }}>
-          {TOOLS.map(item => (
-            <NavItem key={item.key} item={item} active={active} onSelect={onSelect} />
-          ))}
+          {TOOLS.map(item => {
+            const featureKey = TOOL_PLAN_FEATURE[item.key]
+            const locked = featureKey ? !canAccessFeature(plan, featureKey) : false
+            return <NavItem key={item.key} item={item} active={active} onSelect={onSelect} locked={locked} />
+          })}
         </div>
       </nav>
 
@@ -454,9 +491,14 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
               }}>{initials}</span>
               <span>{shortEmail}</span>
             </span>
-            <span style={{ color: '#5eead4', fontSize: '9px', letterSpacing: '0.09em', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.9)' }} />
-              SIGNED IN
+            <span style={{
+              fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em',
+              color: plan === 'elite' ? '#fbbf24' : plan === 'pro' ? '#a78bfa' : '#64748b',
+              background: plan === 'elite' ? 'rgba(251,191,36,0.12)' : plan === 'pro' ? 'rgba(139,92,246,0.14)' : 'rgba(100,116,139,0.12)',
+              border: `1px solid ${plan === 'elite' ? 'rgba(251,191,36,0.28)' : plan === 'pro' ? 'rgba(139,92,246,0.30)' : 'rgba(100,116,139,0.22)'}`,
+              borderRadius: '5px', padding: '2px 5px',
+            }}>
+              {plan.toUpperCase()}
             </span>
           </button>
         ) : (

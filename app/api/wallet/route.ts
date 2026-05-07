@@ -19,10 +19,10 @@ export async function POST(req: Request) {
   if (!(await walletAllowed(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
     const { address } = await req.json()
-    const key = String(address ?? "").toLowerCase()
+    const key = String(address ?? '').toLowerCase()
     const cached = walletCache.get(key)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
-    const snapshot = await fetchWalletSnapshot(address ?? "")
+    const snapshot = await fetchWalletSnapshot(address ?? '')
     walletCache.set(key, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot })
     return NextResponse.json(snapshot)
   } catch (err: unknown) {
