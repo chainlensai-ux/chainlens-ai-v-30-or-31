@@ -338,7 +338,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 type LpControlResult = {
   status: "burned" | "locked" | "team_controlled" | "unverified" | "unsupported" | "error";
   confidence: "high" | "medium" | "low";
-  poolType: "v2" | "v3" | "aerodrome" | "unknown";
+  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
   source: string;
   reason: string;
   evidence: string[];
@@ -346,11 +346,24 @@ type LpControlResult = {
 
 function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["poolType"] {
   const a = (pool?.attributes ?? {}) as Record<string, unknown>;
-  const dex = String(a.dex_id ?? a.dex ?? "").toLowerCase();
-  const name = String(a.name ?? "").toLowerCase();
-  if (dex.includes("aerodrome") || name.includes("aerodrome")) return "aerodrome";
-  if (dex.includes("uniswap_v3") || dex.includes("v3") || name.includes(" v3")) return "v3";
-  if (dex.includes("v2") || dex.includes("uniswap") || dex.includes("sushiswap")) return "v2";
+  const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
+  const candidates = [
+    a.dex_id, a.dex, a.dex_name, a.name, a.pool_name, a.pair_name, a.pool_type, a.address,
+    rel?.dex, rel?.base_token, rel?.quote_token,
+    pool?.id,
+  ].map((v) => String(v ?? '').toLowerCase()).filter(Boolean);
+  const text = candidates.join(' | ');
+
+  const has = (re: RegExp) => re.test(text);
+
+  if (has(/\baerodrome\b|\bslipstream\b/)) return "aerodrome";
+  if (has(/\bconcentrated\b|\bcl pool\b|\balgebra\b/)) return "concentrated";
+  if (has(/\buniswap(?:[_-]?v)?3\b|\bpancakeswap(?:[_-]?v)?3\b|\bv3\b/)) return "v3";
+
+  if (has(/\buniswap(?:[_-]?v)?2\b|\bsushiswap(?:[_-]?v)?2\b|\bpancakeswap(?:[_-]?v)?2\b|\bbaseswap\b|\balienbase\b|\bswapbased\b|\bconstant[-_ ]?product\b|\bv2\b/)) {
+    return "v2";
+  }
+
   return "unknown";
 }
 
@@ -435,6 +448,11 @@ export async function POST(req: Request) {
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
     const primaryPoolAddress = String(mainPoolAttr.address ?? mainPool?.id ?? "").trim().toLowerCase() || null;
     const poolType = detectPoolType(mainPool as Record<string, unknown> | null);
+    const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
+    const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
+    const pairName = String(mainPoolAttr.name ?? mainPoolAttr.pool_name ?? mainPoolAttr.pair_name ?? "").trim() || null;
+    const selectedPrimaryPoolSource = String(mainPoolAttr.address ?? "").trim() ? "attributes.address" : (String(mainPool?.id ?? "").trim() ? "pool.id_normalized" : "none");
+    const poolAddressPresent = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress));
     // Early signals needed for phase 2 setup (computed before full field resolution)
     const _gtEarly = gtTokenInfo?.data?.attributes ?? null
     const _poolAttrEarly = (mainPool?.attributes ?? {}) as Record<string, unknown>
@@ -443,7 +461,7 @@ export async function POST(req: Request) {
     const _decEarly: number = typeof _gtEarly?.decimals === 'number' ? _gtEarly.decimals : 18
     const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
     const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok)
-    const needsLpHolderFetch = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress) && poolType === 'v2')
+    const needsLpHolderFetch = Boolean(poolAddressPresent && poolType === 'v2')
     const needsAI = !noActivePools || hasSecurityData
     const needsOnchainMc = _mcEarly == null && _priceEarly != null
 
@@ -488,16 +506,25 @@ export async function POST(req: Request) {
       reason: "LP control requires holder-level LP token verification.",
       evidence: [],
     };
-    if (!primaryPoolAddress || !/^0x[a-f0-9]{40}$/.test(primaryPoolAddress)) {
-      lpControl = { ...lpControl, status: "unverified", reason: "Primary pool address is unavailable from provider." };
-    } else if (poolType === "v3" || poolType === "aerodrome" || poolType === "unknown") {
+    if (!poolAddressPresent) {
+      lpControl = { ...lpControl, status: "unverified", reason: "No pool address found from provider for LP-holder verification." };
+    } else if (poolType === "v3" || poolType === "aerodrome" || poolType === "concentrated") {
       lpControl = {
-        status: poolType === "unknown" ? "unverified" : "unsupported",
+        status: "unsupported",
         confidence: "low",
         poolType,
         source: "geckoterminal",
-        reason: "Pool type uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
-        evidence: [`pool=${primaryPoolAddress}`, `poolType=${poolType}`],
+        reason: "Pool uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
+        evidence: [`pool=${primaryPoolAddress}`, `dex=${dexId ?? dexName ?? "unknown"}`, `poolType=${poolType}`],
+      };
+    } else if (poolType === "unknown") {
+      lpControl = {
+        status: "unverified",
+        confidence: "low",
+        poolType,
+        source: "geckoterminal",
+        reason: "Pool address found, but pool type could not be verified for LP-holder inference.",
+        evidence: [`pool=${primaryPoolAddress}`, `dexId=${dexId ?? "unknown"}`, `dexName=${dexName ?? "unknown"}`, `pair=${pairName ?? "unknown"}`],
       };
     } else {
       const lpItems = Array.isArray(_lpHoldersForControl?.data?.items) ? _lpHoldersForControl.data.items as Array<Record<string, unknown>> : [];
@@ -556,6 +583,16 @@ export async function POST(req: Request) {
         lpControl = { status: "unverified", confidence: "low", poolType, source: "geckoterminal+goldrush", reason: "LP holder distribution does not prove burned/locked/team control.", evidence: [`top_rows=${top.length}`] };
       }
     }
+
+    lpControl.evidence = [
+      ...(lpControl.evidence ?? []),
+      `poolAddressPresent=${poolAddressPresent}`,
+      `selectedPrimaryPoolSource=${selectedPrimaryPoolSource}`,
+      `dexId=${dexId ?? 'unknown'}`,
+      `dexName=${dexName ?? 'unknown'}`,
+      `detectedPoolType=${poolType}`,
+      `lpHolderCheckAttempted=${needsLpHolderFetch}`,
+    ];
 
     // AI summary from parallel phase 2
     let aiSummary = "Unverified on Base — insufficient data for a risk verdict.";
