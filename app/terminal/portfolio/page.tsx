@@ -97,7 +97,7 @@ export default function PortfolioPage() {
       if (!isConnected || !address) { setHoldings([]); setPortfolioError(null); return }
       setLoading(true); setPortfolioError(null)
       try {
-        const res = await fetch('/api/wallet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
+        const res = await fetch('/api/portfolio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
         const json = await res.json(); if (!res.ok) throw new Error()
         const baseHoldings = (json?.holdings ?? []).filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base')).map((h: Holding) => ({ symbol: h.symbol ?? '?', name: h.name ?? 'Unknown', chain: h.chain ?? 'base', price: Number(h.price ?? 0), balance: Number(h.balance ?? 0), value: Number(h.value ?? 0), change24h: typeof h.change24h === 'number' ? h.change24h : null }))
         setHoldings(baseHoldings)
@@ -149,6 +149,6 @@ export default function PortfolioPage() {
       </aside>
     </div>
 
-    {!isConnected && <div className='glass' style={{ marginTop: 12, padding: 18, textAlign: 'center' }}><div style={{ fontWeight: 700, fontSize: 18 }}>Connect your wallet to unlock your portfolio cockpit.</div><button onClick={() => { const c = connectors.find(x => x.ready) ?? connectors[0]; if (c) connect({ connector: c }) }} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(45,212,191,.44)', background: 'rgba(45,212,191,.18)', color: '#99f6e4', padding: '10px 16px' }}>Connect Wallet</button></div>}
+    {!isConnected && <div className='glass' style={{ marginTop: 12, padding: 18, textAlign: 'center' }}><div style={{ fontWeight: 700, fontSize: 18 }}>Connect your wallet to unlock your portfolio cockpit.</div><div style={{ color: '#94a3b8', marginTop: 6 }}>No wallet connected yet. Connect a wallet to load portfolio data.</div><button onClick={() => { const c = connectors.find(x => x.ready) ?? connectors[0]; if (c) connect({ connector: c }) }} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(45,212,191,.44)', background: 'rgba(45,212,191,.18)', color: '#99f6e4', padding: '10px 16px' }}>Connect Wallet</button></div>}
   </div>
 }
