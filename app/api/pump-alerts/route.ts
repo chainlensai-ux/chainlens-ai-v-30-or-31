@@ -1,7 +1,28 @@
 import { NextResponse } from 'next/server'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
+import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 export const dynamic = 'force-dynamic'
+const PUMP_ROUTE_CACHE_TTL_MS = 45_000
+const pumpCache = new Map<string, { exp: number; payload: unknown }>()
+const pumpRate = new Map<string, { count: number; resetAt: number }>()
+const PUMP_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 24 }
+
+function getIp(req: Request): string {
+  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+}
+
+async function getServerPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  if (!token) return 'free'
+  try {
+    const { plan } = await getCurrentUserPlanFromBearerToken(token)
+    return plan
+  } catch {
+    return 'free'
+  }
+}
 
 const EXCLUDED = new Set([
   'USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC',
@@ -179,9 +200,27 @@ async function fetchGTPage(page: number, signal: AbortSignal): Promise<{ data?: 
   return res.json()
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const plan = await getServerPlan(req)
+  if (plan === 'free') {
+    return NextResponse.json({ error: 'Upgrade required for pump alerts.', rateLimited: false }, { status: 403 })
+  }
+  const ip = getIp(req)
+  const now = Date.now()
+  const rrKey = `${ip}:${plan}`
+  const rr = pumpRate.get(rrKey)
+  if (!rr || rr.resetAt <= now) pumpRate.set(rrKey, { count: 1, resetAt: now + 60_000 })
+  else if (rr.count >= PUMP_RATE_LIMIT[plan]) {
+    return NextResponse.json({ error: 'Rate limit reached. Try again shortly.', rateLimited: true }, { status: 429 })
+  } else rr.count += 1
+
+  const cacheKey = `pump:${plan}`
+  const cached = pumpCache.get(cacheKey)
+  if (cached && cached.exp > now) return NextResponse.json(cached.payload)
+
   let pools: GTPool[] = []
   let included: GTIncluded[] = []
+  let providerStatus: 'ok' | 'partial' | 'unavailable' = 'ok'
 
   try {
     const ac = new AbortController()
@@ -203,6 +242,7 @@ export async function GET() {
       clearTimeout(tid)
     }
   } catch {
+    providerStatus = 'partial'
     // Fallback to shared cache (page 1 only)
     try {
       const result = await getOrFetchCached<{ data?: GTPool[]; included?: GTIncluded[] }>({
@@ -227,6 +267,7 @@ export async function GET() {
       pools = Array.isArray(result.data?.data) ? (result.data.data as GTPool[]) : []
       included = Array.isArray(result.data?.included) ? (result.data.included as GTIncluded[]) : []
     } catch {
+      providerStatus = 'unavailable'
       return NextResponse.json({ alerts: [], fetchedAt: new Date().toISOString() })
     }
   }
@@ -278,9 +319,10 @@ export async function GET() {
 
   const { alerts, freshCount, staleCount, fallbackUsed } = applyRotationAndDiversity(allScored)
 
-  return NextResponse.json({
+  const payload = {
     alerts,
     fetchedAt: new Date().toISOString(),
+    diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus, rateLimited: false } : undefined,
     _debug: {
       rawCount: pools.length,
       scoredCount: allScored.length,
@@ -289,5 +331,7 @@ export async function GET() {
       selectedCount: alerts.length,
       fallbackUsed,
     },
-  })
+  }
+  pumpCache.set(cacheKey, { exp: Date.now() + PUMP_ROUTE_CACHE_TTL_MS, payload })
+  return NextResponse.json(payload)
 }

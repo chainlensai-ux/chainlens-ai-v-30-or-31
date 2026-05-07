@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
+import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const {
   GOLDRUSH_API_KEY,
@@ -14,10 +15,11 @@ const CLARK_CACHE_TTL_MS = 90 * 1000
 const clarkCache = new Map<string, { exp: number; payload: unknown }>()
 const clarkRate = new Map<string, { count: number; resetAt: number }>()
 const CLARK_RATE_BY_PLAN: Record<string, number> = { free: 10, pro: 30, elite: 90 }
+let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite' } = {}
 function clarkPlan(req: NextRequest): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 function clarkActor(req: NextRequest): string { return req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}` }
-function clarkAllowed(req: NextRequest): boolean { const plan=clarkPlan(req); const key=`${plan}:${clarkActor(req)}`; const now=Date.now(); const cur=clarkRate.get(key); const lim=CLARK_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){ clarkRate.set(key,{count:1,resetAt:now+60000}); return true } if(cur.count>=lim) return false; cur.count+=1; return true }
+function clarkAllowed(req: NextRequest, plan: 'free' | 'pro' | 'elite'): boolean { const key=`${plan}:${clarkActor(req)}`; const now=Date.now(); const cur=clarkRate.get(key); const lim=CLARK_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){ clarkRate.set(key,{count:1,resetAt:now+60000}); return true } if(cur.count>=lim) return false; cur.count+=1; return true }
 
 // ---------- Types ----------
 
@@ -1561,10 +1563,15 @@ function missingAddressReply(intent: ClarkIntent): string {
   return "I can run that, but I need a token contract first. Paste a full 0x contract and I’ll analyze the available data.";
 }
 
-async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>) {
+async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>, authToken?: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  const tok = authToken ?? clarkInternalCtx.authToken
+  const plan = verifiedPlan ?? clarkInternalCtx.verifiedPlan
+  if (tok) headers.Authorization = `Bearer ${tok}`
+  if (plan) headers["x-user-plan"] = plan
   const res = await fetch(`${origin}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
   const json = await res.json().catch(() => ({}));
@@ -2626,6 +2633,8 @@ async function executeClarkToolPlan(input: {
   origin: string;
   prompt: string;
   chain: SupportedChain;
+  verifiedPlan: 'free' | 'pro' | 'elite';
+  authToken?: string;
 }): Promise<{ evidence: ClarkToolEvidence; toolsUsed: ClarkToolName[]; resolvedAddress: string | null }> {
   const evidence: ClarkToolEvidence = {};
   const toolsUsed: ClarkToolName[] = [];
@@ -2758,9 +2767,13 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "wallet_get_snapshot") {
+        if (input.verifiedPlan === "free") {
+          evidence.walletSnapshot = { ok: false, address: "", totalValue: 0, holdingsTop10: [], hiddenHoldingsCount: 0, dustOrUnpricedHidden: false, stablecoinExposureUsd: 0, tokenCount: 0, txCount: 0, walletAgeDays: 0, dataQuality: "Limited", errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
+          continue
+        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const walletRes = await callInternalApi(input.origin, "/api/wallet", { address });
+        const walletRes = await callInternalApi(input.origin, "/api/wallet", { address }, input.authToken, input.verifiedPlan);
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
         const normalized = normalizeWalletSnapshotEvidence(w, address);
         evidence.walletSnapshot = {
@@ -2787,9 +2800,13 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "dev_wallet_analyze") {
+        if (input.verifiedPlan === "free") {
+          evidence.devWallet = { ok: false, deployerAddress: null, linkedWallets: 0, confidence: "Low", verdict: "UNKNOWN", warnings: ["This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports."], errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
+          continue
+        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address });
+        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address }, input.authToken, input.verifiedPlan);
         const d = (devWalletRes.json ?? {}) as Record<string, unknown>;
         const verdictRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.label ?? "UNKNOWN") as string;
         const confRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.confidence ?? "low") as string;
@@ -2814,9 +2831,13 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "liquidity_analyze") {
+        if (input.verifiedPlan === "free") {
+          evidence.liquidity = { ok: false, token: null, liquidityUsd: null, riskTier: null, stabilityScore: null, warnings: ["This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports."], errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
+          continue
+        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address });
+        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, input.authToken, input.verifiedPlan);
         const l = (((liqRes.json as Record<string, unknown>)?.data ?? {}) as Record<string, unknown>);
         evidence.liquidity = {
           ok: liqRes.ok && Boolean((liqRes.json as Record<string, unknown>)?.ok),
@@ -4396,7 +4417,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
     structuredMarketList,
     clarkContext: body.clarkContext,
   });
-  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain });
+  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, verifiedPlan: clarkInternalCtx.verifiedPlan ?? 'free', authToken: clarkInternalCtx.authToken });
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {
@@ -4909,10 +4930,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string) {
 // ---------- Main handler ----------
 
 export async function POST(req: NextRequest) {
-  if (!clarkAllowed(req)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  const verifiedPlan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : clarkPlan(req)
+  if (!clarkAllowed(req, verifiedPlan)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
+    clarkInternalCtx = { authToken: token || undefined, verifiedPlan }
     const body = (await req.json()) as ClarkRequestBody;
-    const cacheKey = JSON.stringify({ actor: clarkActor(req), feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
+    const cacheKey = JSON.stringify({ actor: clarkActor(req), verifiedPlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     if (body.message && !body.prompt) body.prompt = body.message;
@@ -4975,6 +5000,9 @@ export async function POST(req: NextRequest) {
       feature: "clark-ai",
       data: { reply: safeMsg, response: safeMsg, analysis: safeMsg, verdict: "SCAN DEEPER", source: "fallback" },
     }, { status: 200 });
+  }
+  finally {
+    clarkInternalCtx = {}
   }
 }
 
