@@ -1457,12 +1457,12 @@ function buildWalletQualityVerdict(
   const risks = [
     snapshot.dustOrUnpricedHidden ? "Dust or unpriced holdings exist and are hidden in this summary" : "Major holdings are mostly priced",
     breadth < 5 ? "Low breadth increases single-asset dependency risk" : "Breadth is acceptable for watchlist monitoring",
-    behOk ? (behTxCount < 10 ? "Low recent Base activity — wallet may be dormant or cross-chain" : "Liquidity exposure not calculated") : "Behavioral confirmation unavailable — balance data only",
+    behOk ? (behTxCount < 10 ? "No recent Base activity found in checked window — wallet may be dormant on Base or active elsewhere." : "Liquidity exposure not calculated") : "Behavioral confirmation unavailable — balance data only",
   ];
   const behaviorNote = behOk && behavior?.recentActivitySummary ? `Activity: ${behavior.recentActivitySummary}` : "";
   const read = [
     `This looks like a ${profile}.`,
-    behOk ? `Behavior confirms on-chain presence.` : `Balance evidence only — behavioral confirmation adds confidence.`,
+    behOk && behTxCount > 0 ? `Behavior confirms on-chain presence.` : `Portfolio holdings are visible, but Base activity and PnL history are limited in current checks.`,
   ].join(" ");
   const copyTradePrompt = /\bcopy[\s-]?trade\b/i.test(prompt ?? "");
   const nextAction = copyTradePrompt
@@ -3607,7 +3607,7 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string) {
     const total = typeof pnl?.totalEstimatedPnlUsd === 'number' ? pnl.totalEstimatedPnlUsd : null
     const pnlLine = (status === 'ok' || status === 'partial') && coverage >= 60 && total !== null
       ? `Estimated PnL Beta: ${formatUsdShort(total)} (coverage ${coverage}%, confidence ${confidence ?? 'n/a'}; estimate only, not exact lifetime PnL).`
-      : 'Estimated PnL Beta unavailable: historical cost basis coverage too low.'
+      : 'Estimated PnL unavailable because historical cost-basis coverage is too low.'
     return { feature: "wallet-scanner", chain, walletAddress, analysis: `${formatWalletBalanceSummary(normalized)}\n\n${pnlLine}` };
   }
 

@@ -37,6 +37,13 @@ export type WalletSnapshot = {
   holdingsCount: number
   totalUsdAvailable: boolean
   reason: string
+  portfolioSource: 'zerion' | 'goldrush' | 'none'
+  behaviorSource: 'alchemy' | 'unavailable'
+  behaviorChain: 'base'
+  pnlSource: 'goldrush' | 'alchemy' | 'unavailable'
+  pnlCoverageReason: string
+  hiddenDustCount: number
+  unpricedHoldingsCount: number
   walletBehavior: WalletBehavior
   estimatedPnl: {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
@@ -251,7 +258,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
     const recv: Tx[] = recvRes.status === 'fulfilled' ? (recvRes.value?.transfers ?? []) : []
     const all = [...sent, ...recv]
     if (all.length === 0) {
-      return { ...BEHAVIOR_EMPTY, status: 'ok', source: 'alchemy', txCount: 0, activeDays: 0, recentActivitySummary: 'No recent Base activity found.' }
+      return { ...BEHAVIOR_EMPTY, status: 'ok', source: 'alchemy', txCount: 0, activeDays: 0, recentActivitySummary: 'No recent Base activity found in the checked window.' }
     }
     const STABLES = /^(USDC|USDT|DAI|USDBC|EURC|LUSD)$/i
     const days = new Set(all.map(t => t.metadata?.blockTimestamp?.slice(0, 10)).filter(Boolean) as string[])
@@ -450,7 +457,13 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
   }
   const coveragePercent = pnlTokens.length ? Math.round(coverageNum / pnlTokens.length) : 0
   const status: WalletSnapshot['estimatedPnl']['status'] = pnlTokens.length === 0 || pnlSource === 'none' ? 'unavailable' : coveragePercent >= 60 ? 'ok' : 'partial'
-  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSource, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: pnlTokens.sort((a, b) => (b.currentValueUsd - a.currentValueUsd)).slice(0, 10), reason: status === 'unavailable' ? 'Historical cost basis coverage too low or missing transaction data.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
+  const filteredPnlTokens = pnlTokens.filter((t) => t.coveragePercent > 0).sort((a, b) => (b.currentValueUsd - a.currentValueUsd)).slice(0, 10)
+  const pnlCoverageReason = status === 'unavailable'
+    ? (pnlSource === 'none' ? 'Need decoded buys/sells with USD values from GoldRush/Covalent or supported transfer history.' : 'Historical cost basis coverage is too low for a reliable estimate.')
+    : 'Estimated from indexed transfer history with average-cost method.'
+  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSource, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
+  const unpricedHoldingsCount = holdings.filter((h) => !h.price || h.price <= 0).length
+  const hiddenDustCount = holdings.filter((h) => h.value <= 1).length
 
   return {
     address: addr,
@@ -460,10 +473,17 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     firstTxDate: firstTxDate?.toISOString() ?? null,
     walletAgeDays,
     providerUsed,
+    portfolioSource: providerUsed,
     providerStatus,
     holdingsCount: holdings.length,
     totalUsdAvailable: totalValue > 0,
     reason,
+    behaviorSource: behaviorRes.status === 'fulfilled' ? behaviorRes.value.source : 'unavailable',
+    behaviorChain: 'base',
+    pnlSource: pnlSource === 'none' ? 'unavailable' : pnlSource,
+    pnlCoverageReason,
+    hiddenDustCount,
+    unpricedHoldingsCount,
     walletBehavior: behaviorRes.status === 'fulfilled' ? behaviorRes.value : { ...BEHAVIOR_EMPTY, reason: 'Behavior fetch did not complete.' },
     estimatedPnl,
     _diagnostics: {
