@@ -100,6 +100,7 @@ const PRODUCT_PROOF = [
 
 export default function PricingPage() {
   const [userPlan, setUserPlan] = useState<UserPlan>('free')
+  const currentPlan: Plan['id'] = userPlan === 'pro' || userPlan === 'elite' ? userPlan : 'free'
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
