@@ -3600,7 +3600,15 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string) {
   // Balance / holdings question — return plain summary, no verdict format
   if (isBalanceQuestion && !isQualityQuestion) {
     const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
-    return { feature: "wallet-scanner", chain, walletAddress, analysis: formatWalletBalanceSummary(normalized) };
+    const pnl = (walletData as Record<string, unknown>)?.estimatedPnl as Record<string, unknown> | undefined
+    const status = typeof pnl?.status === 'string' ? pnl.status : 'unavailable'
+    const coverage = typeof pnl?.coveragePercent === 'number' ? pnl.coveragePercent : 0
+    const confidence = typeof pnl?.confidence === 'string' ? pnl.confidence : null
+    const total = typeof pnl?.totalEstimatedPnlUsd === 'number' ? pnl.totalEstimatedPnlUsd : null
+    const pnlLine = (status === 'ok' || status === 'partial') && coverage >= 60 && total !== null
+      ? `Estimated PnL Beta: ${formatUsdShort(total)} (coverage ${coverage}%, confidence ${confidence ?? 'n/a'}; estimate only, not exact lifetime PnL).`
+      : 'Estimated PnL Beta unavailable: historical cost basis coverage too low.'
+    return { feature: "wallet-scanner", chain, walletAddress, analysis: `${formatWalletBalanceSummary(normalized)}\n\n${pnlLine}` };
   }
 
   const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
