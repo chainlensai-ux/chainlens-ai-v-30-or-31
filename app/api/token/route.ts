@@ -161,11 +161,11 @@ async function fetchBytecode(chain: ChainKey, contract: string): Promise<string 
         method: "eth_getCode",
         params: [contract, "latest"],
       }),
+      signal: AbortSignal.timeout(5000),
     });
     const json = await res.json();
     return json?.result || null;
-  } catch (err) {
-    console.error(`Error fetching bytecode on ${chain}:`, err);
+  } catch {
     return null;
   }
 }
@@ -173,11 +173,11 @@ async function fetchBytecode(chain: ChainKey, contract: string): Promise<string 
 async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
   try {
     const res = await fetch(
-      `https://api.covalenthq.com/v1/${chain}/tokens/${contract}/?key=${process.env.COVALENT_API_KEY}`
+      `https://api.covalenthq.com/v1/${chain}/tokens/${contract}/?key=${process.env.COVALENT_API_KEY}`,
+      { signal: AbortSignal.timeout(5000) }
     );
     return res.ok ? await res.json() : null;
-  } catch (err) {
-    console.error("Error fetching GoldRush:", err);
+  } catch {
     return null;
   }
 }
@@ -250,7 +250,7 @@ async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> 
     if (!chainId) return null;
     const res = await fetch(
       `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${contract}`,
-      { cache: 'no-store' }
+      { cache: 'no-store', signal: AbortSignal.timeout(5000) }
     );
     if (!res.ok) {
       console.error('GoPlus error:', res.status);
@@ -266,7 +266,7 @@ async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> 
 
 async function fetchGMGN(contract: string): Promise<any> {
   try {
-    const res = await fetch(`https://api.gmgn.ai/token/${contract}`);
+    const res = await fetch(`https://api.gmgn.ai/token/${contract}`, { signal: AbortSignal.timeout(3000) });
     return res.ok ? await res.json() : null;
   } catch {
     return null;
@@ -276,7 +276,8 @@ async function fetchGMGN(contract: string): Promise<any> {
 async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<any> {
   try {
     const res = await fetch(
-      `https://api.covalenthq.com/v1/${chain}/address/0x0000000000000000000000000000000000000000/balances_v2/?key=${process.env.COVALENT_API_KEY}&contract-address=${contract}`
+      `https://api.covalenthq.com/v1/${chain}/address/0x0000000000000000000000000000000000000000/balances_v2/?key=${process.env.COVALENT_API_KEY}&contract-address=${contract}`,
+      { signal: AbortSignal.timeout(5000) }
     );
     return res.ok ? await res.json() : null;
   } catch {
@@ -302,6 +303,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
     const res = await fetch(url, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8000),
     })
     statusCode = res.status
     if (!res.ok) {
@@ -385,7 +387,7 @@ export async function POST(req: Request) {
   if (!checkRate(req)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
 
   try {
-    console.log("🚀 SCAN ROUTE HIT");
+    const _t0 = Date.now()
 
     const body = await req.json();
     const { contract, debugHolder } = body;
@@ -413,6 +415,7 @@ export async function POST(req: Request) {
       fetchGoPlus(chain, contract),
       fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chain]),
     ]);
+    if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase1Ms', Date.now() - _t0)
 
     const analysis = analyzeContract(bytecode);
 
@@ -431,6 +434,51 @@ export async function POST(req: Request) {
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
     const primaryPoolAddress = String(mainPoolAttr.address ?? mainPool?.id ?? "").trim().toLowerCase() || null;
     const poolType = detectPoolType(mainPool as Record<string, unknown> | null);
+    // Early signals needed for phase 2 setup (computed before full field resolution)
+    const _gtEarly = gtTokenInfo?.data?.attributes ?? null
+    const _poolAttrEarly = (mainPool?.attributes ?? {}) as Record<string, unknown>
+    const _priceEarly = pickNum(_poolAttrEarly.base_token_price_usd, _gtEarly?.price_usd, _gtEarly?.price)
+    const _mcEarly = toNum(_gtEarly?.market_cap_usd)
+    const _decEarly: number = typeof _gtEarly?.decimals === 'number' ? _gtEarly.decimals : 18
+    const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
+    const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok)
+    const needsLpHolderFetch = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress) && poolType === 'v2')
+    const needsAI = !noActivePools || hasSecurityData
+    const needsOnchainMc = _mcEarly == null && _priceEarly != null
+
+    // Compact AI prompt (key fields only — reduces token count and latency)
+    const _aiPrompt = [
+      'Summarize this Base token risk in 3-4 sentences. Cover liquidity, security, and ownership. Plain text only, no markdown.',
+      `CONTRACT: ${contract} PRICE: ${_priceEarly ?? 'unknown'} LIQUIDITY: $${_liqEarly?.toFixed(0) ?? 'unknown'} POOLS: ${matchingPools.length}`,
+      `SECURITY: ${hpResult.ok ? `honeypot=${hpResult.honeypot} buyTax=${hpResult.buyTax ?? '?'}% sellTax=${hpResult.sellTax ?? '?'}%` : 'simulation unavailable'}`,
+      `SUSPICIOUS_BYTECODE: ${analysis.suspiciousFunctions.length ? analysis.suspiciousFunctions.join(', ') : 'none detected'}`,
+      noActivePools ? 'NO ACTIVE POOLS FOUND.' : '',
+      'If critical data missing, state token is unverified.',
+    ].filter(Boolean).join('\n')
+
+    // Phase 2: LP holder fetch + AI summary + onchain supply all in parallel
+    const _t2 = Date.now()
+    const [_lpHoldersSettled, _aiSettled, _onchainSettled] = await Promise.allSettled([
+      needsLpHolderFetch
+        ? Promise.race([
+            fetchTokenHolders(chain, primaryPoolAddress!),
+            new Promise<Record<string, unknown>>(r =>
+              setTimeout(() => r({ __status: 'error', __reason: 'lp_holder_timeout' }), 7000)
+            ),
+          ])
+        : Promise.resolve(null),
+      needsAI
+        ? Promise.race([
+            anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 600, messages: [{ role: 'user', content: _aiPrompt }] }),
+            new Promise<null>(r => setTimeout(() => r(null), 18000)),
+          ])
+        : Promise.resolve(null),
+      needsOnchainMc ? fetchOnchainSupply(chain, contract) : Promise.resolve(null),
+    ])
+    if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase2Ms', Date.now() - _t2, 'needsLP', needsLpHolderFetch, 'needsAI', needsAI, 'needsOnchain', needsOnchainMc)
+
+    // LP control using pre-fetched LP holder data (no sequential blocking)
+    const _lpHoldersForControl = (_lpHoldersSettled.status === 'fulfilled' ? _lpHoldersSettled.value : { __status: 'error', __reason: 'lp_fetch_failed' }) as any
     let lpControl: LpControlResult = {
       status: "unverified",
       confidence: "low",
@@ -451,8 +499,7 @@ export async function POST(req: Request) {
         evidence: [`pool=${primaryPoolAddress}`, `poolType=${poolType}`],
       };
     } else {
-      const lpHoldersRaw = await fetchTokenHolders(chain, primaryPoolAddress);
-      const lpItems = Array.isArray(lpHoldersRaw?.data?.items) ? lpHoldersRaw.data.items as Array<Record<string, unknown>> : [];
+      const lpItems = Array.isArray(_lpHoldersForControl?.data?.items) ? _lpHoldersForControl.data.items as Array<Record<string, unknown>> : [];
       const top = lpItems.slice(0, 5).map((h) => ({
         address: String(h.address ?? h.holder_address ?? h.wallet_address ?? "").toLowerCase(),
         pct: toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? 0,
@@ -462,8 +509,8 @@ export async function POST(req: Request) {
         "0x000000000000000000000000000000000000dead",
       ]);
       const KNOWN_LOCKERS = new Set<string>([
-        "0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", // uncx locker
-        "0x71b5759d73262fbb223956913ecf4ecc51057641", // team finance locker
+        "0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9",
+        "0x71b5759d73262fbb223956913ecf4ecc51057641",
       ]);
       const topHolder = top[0] ?? null;
       const burnPct = top.filter((x) => DEAD.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
@@ -488,11 +535,14 @@ export async function POST(req: Request) {
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
-          const burn0 = await readPct("0x0000000000000000000000000000000000000000");
-          const burnDead = await readPct("0x000000000000000000000000000000000000dEaD");
-          const lockerShares = await Promise.all([...KNOWN_LOCKERS].map(readPct));
+          // Run all burn/locker RPC checks in parallel
+          const [burn0, burnDead, _lockerSharesList] = await Promise.all([
+            readPct("0x0000000000000000000000000000000000000000"),
+            readPct("0x000000000000000000000000000000000000dEaD"),
+            Promise.all([...KNOWN_LOCKERS].map(readPct)),
+          ]);
           const burnShare = burn0 + burnDead;
-          const lockerShare = lockerShares.reduce((a, b) => a + b, 0);
+          const lockerShare = _lockerSharesList.reduce((a: number, b: number) => a + b, 0);
           if (burnShare >= 50) {
             lpControl = { status: "burned", confidence: confidenceFor(burnShare), poolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`] };
           } else if (lockerShare >= 50) {
@@ -506,43 +556,13 @@ export async function POST(req: Request) {
       }
     }
 
-    // ------------------------------
-    // REAL CLAUDE AI SUMMARY
-    // ------------------------------
-    const aiPrompt = `
-You are the Cortex Engine of ChainLens AI.
-Summarize this token in 3–4 sentences.
-Focus on risks, liquidity, ownership, and suspicious functions.
-Output plain text only, no markdown, no tables.
-If critical data is missing (no pools, missing security), do NOT speculate and state that the token is unverified.
-
-CHAIN: ${chain}
-CONTRACT: ${contract}
-GECKOTERMINAL POOLS:
-${JSON.stringify(matchingPools.slice(0, 3), null, 2)}
-GOLDRUSH:
-${JSON.stringify(goldrush, null, 2)}
-BYTECODE ANALYSIS:
-${JSON.stringify(analysis, null, 2)}
-`;
-
-    const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok);
+    // AI summary from parallel phase 2
     let aiSummary = "Unverified on Base — insufficient data for a risk verdict.";
-
-    if (!noActivePools || hasSecurityData) {
-      try {
-        const aiResponse = await anthropic.messages.create({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1100,
-          messages: [{ role: "user", content: aiPrompt }],
-        });
-        console.log("AI response:", aiResponse);
-        aiSummary =
-          (aiResponse?.content?.[0]?.type === "text" ? aiResponse.content[0].text : null) ||
-          aiSummary;
-      } catch (err) {
-        console.error("AI summary error:", err);
-      }
+    const _aiResult = _aiSettled.status === 'fulfilled' ? _aiSettled.value : null
+    if (_aiResult && typeof _aiResult === 'object' && 'content' in _aiResult) {
+      const _aiContent = (_aiResult as { content: Array<{type: string; text?: string}> }).content
+      const _aiText = _aiContent?.[0]
+      if (_aiText?.type === 'text' && _aiText.text) aiSummary = _aiText.text
     }
 
     // ------------------------------
@@ -644,14 +664,14 @@ ${JSON.stringify(analysis, null, 2)}
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'unavailable'
     const priceUsd = tokenPrice
-    // Tier B: onchain estimated MC when true MC is missing and price is known
+    // Tier B: onchain estimated MC — uses result from parallel phase 2 (no extra await)
     let estimatedMarketCap: number | null = null
     let estimatedMarketCapConfidence: 'medium' | 'low' = 'low'
     let estimatedMarketCapReason = ''
     if (marketCapFromGt == null && priceUsd != null) {
-      const onchain = await fetchOnchainSupply(chain, contract)
-      if (onchain.totalSupply != null) {
-        const decimalsNum = typeof resolvedDecimals === 'number' ? resolvedDecimals : (Number(resolvedDecimals) || 18)
+      const onchain = _onchainSettled.status === 'fulfilled' ? _onchainSettled.value as Awaited<ReturnType<typeof fetchOnchainSupply>> | null : null
+      if (onchain?.totalSupply != null) {
+        const decimalsNum = typeof resolvedDecimals === 'number' ? resolvedDecimals : (Number(resolvedDecimals) || _decEarly)
         const divisor = BigInt(10) ** BigInt(decimalsNum)
         const burned = (onchain.burnedZero ?? BigInt(0)) + (onchain.burnedDead ?? BigInt(0))
         const circulatingRaw = onchain.totalSupply - burned
@@ -914,6 +934,11 @@ ${JSON.stringify(analysis, null, 2)}
           symbolFallback: rpcSymbol ?? null,
         },
       },
+    }
+    if (process.env.NODE_ENV === 'development') {
+      const _totalMs = Date.now() - _t0
+      console.log('[token-timing] totalMs', _totalMs, 'contract', contract)
+      ;(responsePayload as any)._timing = { totalMs: _totalMs }
     }
     tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
     return NextResponse.json(responsePayload)

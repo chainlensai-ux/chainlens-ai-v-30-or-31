@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabaseClient'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import { supabase } from '@/lib/supabaseClient'
+import type { UserPlan } from '@/lib/planFeatures'
 
 type Plan = {
   id: 'free' | 'pro' | 'elite'
@@ -98,8 +99,25 @@ const PRODUCT_PROOF = [
 ]
 
 export default function PricingPage() {
-  const [currentPlan, setCurrentPlan] = useState<'free'|'pro'|'elite'>('free')
-  useEffect(() => { supabase.auth.getSession().then(async ({data}) => { const t=data.session?.access_token; if(!t) return; const r=await fetch('/api/user-settings',{headers:{authorization:`Bearer ${t}`}}); const j=await r.json(); setCurrentPlan(j?.settings?.plan ?? 'free') }) }, [])
+  const [userPlan, setUserPlan] = useState<UserPlan>('free')
+
+  useEffect(() => {
+    supabase.auth.getSession().then(async ({ data }) => {
+      const token = data.session?.access_token
+      if (!token) return
+      try {
+        const res = await fetch('/api/user-settings', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.ok) {
+          const json = await res.json()
+          const p = (json?.settings as Record<string, unknown>)?.plan
+          if (p === 'pro' || p === 'elite') setUserPlan(p)
+        }
+      } catch { /* stay on free */ }
+    })
+  }, [])
+
   return (
     <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflow: 'hidden' }}>
       <style>{`
@@ -157,8 +175,10 @@ export default function PricingPage() {
                   })}
                 </div>
                 {plan.id === 'elite' && <div style={{ border: '1px solid rgba(250,204,21,.4)', background: 'rgba(250,204,21,.1)', color: '#fde68a', borderRadius: 11, padding: 10, fontSize: 12, marginBottom: 10 }}>Everything in Pro — plus higher limits and CORTEX tools where available.</div>}
-                {plan.ctaHref.startsWith('http') ? (
-                  <a href={plan.ctaHref} target="_blank" rel="noopener noreferrer" className={`cta ${plan.ctaClass}`}>{ctaText}</a>
+                {userPlan === plan.id ? (
+                  <span className={`cta ${plan.ctaClass}`} style={{ opacity: 0.75, cursor: 'default', pointerEvents: 'none' }}>✓ Current plan</span>
+                ) : plan.ctaHref.startsWith('http') ? (
+                  <a href={plan.ctaHref} target="_blank" rel="noopener noreferrer" className={`cta ${plan.ctaClass}`}>{plan.cta}</a>
                 ) : (
                   <Link href={plan.ctaHref} className={`cta ${plan.ctaClass}`}>{ctaText}</Link>
                 )}

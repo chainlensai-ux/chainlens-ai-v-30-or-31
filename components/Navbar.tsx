@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
+import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
 
 const TIER_COLUMNS = [
   {
@@ -53,22 +54,32 @@ export default function Navbar() {
   const [open, setOpen] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
-  const [plan, setPlan] = useState<'free' | 'pro' | 'elite'>('free')
+  const [plan, setPlan] = useState<UserPlan>('free')
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data }) => {
+    async function loadSession(token?: string) {
+      if (!token) { setPlan('free'); return }
+      try {
+        const res = await fetch('/api/user-settings', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.ok) {
+          const json = await res.json()
+          const p = (json?.settings as Record<string, unknown>)?.plan
+          setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+        }
+      } catch { setPlan('free') }
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
       const session = data.session
       setAccountEmail(session?.user?.email ?? null)
-      const token = session?.access_token
-      if (!token) return setPlan('free')
-      const res = await fetch('/api/user-settings', { headers: { authorization: `Bearer ${token}` } })
-      const j = await res.json()
-      setPlan(j?.settings?.plan ?? 'free')
+      loadSession(session?.access_token)
     })
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setAccountEmail(session?.user?.email ?? null)
-      setPlan('free')
+      loadSession(session?.access_token)
     })
 
     return () => listener.subscription.unsubscribe()
@@ -462,10 +473,14 @@ export default function Navbar() {
                 }}>{initials}</span>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                   <span>{shortEmail}</span>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '10px', color: 'rgba(45,212,191,0.95)' }}>
-                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.9)' }} />
-                    SIGNED IN
-                  </span>
+                  <span style={{
+                    fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
+                    color: PLAN_COLOR[plan],
+                    border: `1px solid ${PLAN_COLOR[plan]}44`,
+                    borderRadius: '4px',
+                    padding: '1px 5px',
+                    background: `${PLAN_COLOR[plan]}18`,
+                  }}>{plan.toUpperCase()}</span>
                 </span>
               </Link>
             ) : (
