@@ -475,6 +475,49 @@ function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[
   return { dexId: attrDexId || relDexId, dexName: attrDexName || incDexName || attrDexId || relDexId };
 }
 
+type NormalizedPool = {
+  address: string | null
+  pairName: string
+  baseTokenAddress: string | null
+  quoteTokenAddress: string | null
+  baseTokenSymbol: string | null
+  quoteTokenSymbol: string | null
+  poolType: LpControlResult["poolType"]
+  hasDexMeta: boolean
+  dexId: string | null
+  dexName: string | null
+  liquidityUsd: number
+  isValidAddress: boolean
+  containsScannedToken?: boolean
+  isPreferredQuote?: boolean
+  lpScore?: number
+  selectionReason?: string
+}
+
+function normalizePool(pool: Record<string, unknown>, includedTokenById: Map<string, Record<string, unknown>>, included: unknown[] = []): NormalizedPool {
+  const attrs = (pool.attributes ?? {}) as Record<string, unknown>
+  const rel = (pool.relationships ?? {}) as Record<string, unknown>
+  const rawAddr = String(attrs.address ?? "").trim().toLowerCase()
+  const poolIdMatch = String(pool.id ?? "").match(/0x[a-f0-9]{40}/i)
+  const address = /^0x[a-f0-9]{40}$/.test(rawAddr) ? rawAddr : (poolIdMatch?.[0]?.toLowerCase() ?? null)
+  const pairName = String(attrs.name ?? attrs.pool_name ?? attrs.pair_name ?? "").trim()
+  const liquidityUsd = parseFloat(String(attrs.reserve_in_usd ?? "0")) || 0
+  const baseRel = ((rel.base_token as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)
+  const quoteRel = ((rel.quote_token as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)
+  const baseId = String(baseRel?.id ?? "")
+  const quoteId = String(quoteRel?.id ?? "")
+  const baseAttrs = baseId ? includedTokenById.get(baseId) : undefined
+  const quoteAttrs = quoteId ? includedTokenById.get(quoteId) : undefined
+  const baseTokenAddress = String(baseAttrs?.address ?? "").toLowerCase() || null
+  const quoteTokenAddress = String(quoteAttrs?.address ?? "").toLowerCase() || null
+  const baseTokenSymbol = String(baseAttrs?.symbol ?? "").trim() || null
+  const quoteTokenSymbol = String(quoteAttrs?.symbol ?? "").trim() || null
+  const { dexId, dexName } = extractPoolDex(pool, included)
+  const hasDexMeta = Boolean(dexId || dexName)
+  const poolType = detectPoolType(pool)
+  return { address, pairName, baseTokenAddress, quoteTokenAddress, baseTokenSymbol, quoteTokenSymbol, poolType, hasDexMeta, dexId: dexId || null, dexName: dexName || null, liquidityUsd, isValidAddress: Boolean(address && /^0x[a-f0-9]{40}$/.test(address)) }
+}
+
 function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string): { pool: NormalizedPool | null; reason: string; candidates: NormalizedPool[] } {
   const tokenLc = tokenAddress.toLowerCase();
   const quoteRank: Record<string, number> = {
@@ -662,7 +705,7 @@ export async function POST(req: Request) {
       const attrs = (inc.attributes ?? {}) as Record<string, unknown>;
       if (id) includedTokenById.set(id, attrs);
     }
-    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById));
+    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById, gtIncluded));
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
@@ -683,6 +726,8 @@ export async function POST(req: Request) {
     const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
     const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok)
     const lpPoolAddress = lpPool?.address ?? null
+    const lpDexId = lpPool?.dexId ?? null
+    const lpDexName = lpPool?.dexName ?? null
     const lpPoolAddressPresent = Boolean(lpPoolAddress && /^0x[a-f0-9]{40}$/.test(lpPoolAddress))
     const needsLpHolderFetch = Boolean(lpPoolAddressPresent && lpPoolType === 'v2')
     const needsAI = !noActivePools || hasSecurityData
@@ -1203,7 +1248,7 @@ export async function POST(req: Request) {
       // Contract analysis
       analysis,
       lpControl,
-      lpControlRead: computeLpControlRead(lpControl, String(lpPoolAttr?.name ?? (lpPool?.attributes as Record<string, unknown> | undefined)?.name ?? "")),
+      lpControlRead: computeLpControlRead(lpControl, lpPool?.pairName ?? null),
 
       // AI summary from Cortex Engine
       aiSummary,
@@ -1250,7 +1295,7 @@ export async function POST(req: Request) {
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
           lpControl,
-          lpControlRead: computeLpControlRead(lpControl, String(lpPoolAttr?.name ?? (lpPool?.attributes as Record<string, unknown> | undefined)?.name ?? "")),
+          lpControlRead: computeLpControlRead(lpControl, lpPool?.pairName ?? null),
         },
         contractChecks: {
           status: contractChecksStatus,
