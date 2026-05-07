@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { fetchGoPlus } from "@/lib/goplus";
+import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 export const dynamic = "force-dynamic";
 
 const GT = "https://api.geckoterminal.com/api/v2";
 const GT_HEADERS = { accept: "application/json", origin: "https://chainlens.ai" };
+const LIQ_CACHE_TTL_MS = 3 * 60 * 1000
+const liqCache = new Map<string, { exp: number; payload: unknown }>()
+const liqRate = new Map<string, { count: number; resetAt: number; lastAt: number }>()
+const LIQ_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 10, elite: 20 }
+const LIQ_COOLDOWN_MS: Record<'free' | 'pro' | 'elite', number> = { free: 25_000, pro: 10_000, elite: 5_000 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,7 +55,7 @@ function idToAddress(id: string): string {
 
 async function resolveNameToContract(query: string): Promise<string | null> {
   const url = `${GT}/search/pools?query=${encodeURIComponent(query)}&network=base`;
-  const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store" });
+  const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store", signal: AbortSignal.timeout(7000) });
   if (!res.ok) return null;
 
   const data = await res.json();
@@ -71,7 +77,7 @@ async function fetchPools(
   contract: string
 ): Promise<{ pools: GTPool[]; included: GTToken[] }> {
   const url = `${GT}/networks/base/tokens/${contract}/pools?include=base_token,quote_token,dex`;
-  const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store" });
+  const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store", signal: AbortSignal.timeout(8000) });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -123,6 +129,7 @@ async function getGoPlusToken(): Promise<string | null> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ app_key: appKey, time: now, sign }),
       cache: "no-store",
+      signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
     const json = await res.json();
@@ -141,7 +148,7 @@ async function fetchGoPlusLockData(contract: string): Promise<GoPlusLockData> {
     const url = `https://api.gopluslabs.io/api/v1/token_security/8453?contract_addresses=${contract.toLowerCase()}`;
     const headers: Record<string, string> = { accept: "application/json" };
     if (token) headers["Authorization"] = token;
-    const res = await fetch(url, { headers, cache: "no-store" });
+    const res = await fetch(url, { headers, cache: "no-store", signal: AbortSignal.timeout(8000) });
     if (!res.ok) return empty;
 
     const json = await res.json();
@@ -321,6 +328,18 @@ function scoreLiquidity(pools: GTPool[]): {
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  const plan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : 'free'
+  if (plan === 'free') return NextResponse.json({ ok: false, error: 'Upgrade required for liquidity safety scan.', rateLimited: false }, { status: 403 })
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const now = Date.now()
+  const rk = `${ip}:${plan}`
+  const rr = liqRate.get(rk)
+  if (!rr || rr.resetAt <= now) liqRate.set(rk, { count: 1, resetAt: now + 60_000, lastAt: now })
+  else if (now - rr.lastAt < LIQ_COOLDOWN_MS[plan]) return NextResponse.json({ ok: false, error: "Cooldown active. Please retry shortly.", rateLimited: true }, { status: 429 })
+  else if (rr.count >= LIQ_RATE_LIMIT[plan]) return NextResponse.json({ ok: false, error: "Rate limit reached. Try again shortly.", rateLimited: true }, { status: 429 })
+  else { rr.count += 1; rr.lastAt = now }
   let query: string | undefined;
   let contract: string | undefined;
 
@@ -364,6 +383,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Token not found." }, { status: 404 });
     }
 
+    const cacheKey = `liq:${resolvedContract.toLowerCase()}`
+    const cached = liqCache.get(cacheKey)
+    if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     const origin = req.nextUrl.origin;
     const [{ pools, included }, lockData, goPlusRes] = await Promise.all([
       fetchPools(resolvedContract),
@@ -391,7 +413,7 @@ export async function POST(req: NextRequest) {
 
     const analysis = scoreLiquidity(pools);
 
-    return NextResponse.json({
+    const payload = {
       ok: true,
       data: {
         name,
@@ -401,10 +423,12 @@ export async function POST(req: NextRequest) {
         ...lockData,
         goplus: goPlusRes.ok ? goPlusRes.data : null,
       },
-    });
+      diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus: 'ok', rateLimited: false } : undefined,
+    };
+    liqCache.set(cacheKey, { exp: Date.now() + LIQ_CACHE_TTL_MS, payload })
+    return NextResponse.json(payload);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Liquidity scan failed";
-    console.error("[liquidity-safety]", message);
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    console.error("[liquidity-safety]", err instanceof Error ? err.message : "Liquidity scan failed");
+    return NextResponse.json({ ok: false, error: "Liquidity scan unavailable right now." }, { status: 200 });
   }
 }
