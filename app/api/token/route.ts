@@ -342,6 +342,8 @@ type LpControlResult = {
   source: string;
   reason: string;
   evidence: string[];
+  poolAddressPresent?: boolean;
+  selectedPrimaryPoolSource?: string;
 };
 
 function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["poolType"] {
@@ -433,7 +435,26 @@ export async function POST(req: Request) {
     const mainPool = matchingPools[0] ?? null;
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
-    const primaryPoolAddress = String(mainPoolAttr.address ?? mainPool?.id ?? "").trim().toLowerCase() || null;
+    // Robust pool address extraction — handle all known GT pool shapes:
+    //   1. attributes.address (preferred)
+    //   2. attributes.pool_address (alternate field name)
+    //   3. relationships?.pool?.data?.id stripped of network prefix
+    //   4. pool.id stripped of network prefix (GT uses "base_0x{addr}" format)
+    const _rawAttrAddr = String(mainPoolAttr.address ?? mainPoolAttr.pool_address ?? "").trim().toLowerCase();
+    const _rawPoolId = String(mainPool?.id ?? "").trim().toLowerCase();
+    const _mainPoolRel = (mainPool as Record<string, unknown>)?.relationships as Record<string, unknown> | undefined;
+    const _relPoolData = ((_mainPoolRel?.pool as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined);
+    const _relPoolId = String(_relPoolData?.id ?? "").trim().toLowerCase();
+    const _idAddrMatch = (_rawPoolId || _relPoolId).match(/0x[a-f0-9]{40}/);
+    const _idExtracted = _idAddrMatch?.[0] ?? "";
+    const primaryPoolAddress: string | null =
+      /^0x[a-f0-9]{40}$/.test(_rawAttrAddr) ? _rawAttrAddr :
+      /^0x[a-f0-9]{40}$/.test(_idExtracted)  ? _idExtracted :
+      null;
+    const _primaryPoolSource: string =
+      primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(_rawAttrAddr) ? "attributes.address" :
+      primaryPoolAddress ? "gt_id_stripped" :
+      "none";
     const poolType = detectPoolType(mainPool as Record<string, unknown> | null);
     // Early signals needed for phase 2 setup (computed before full field resolution)
     const _gtEarly = gtTokenInfo?.data?.attributes ?? null
@@ -480,16 +501,30 @@ export async function POST(req: Request) {
 
     // LP control using pre-fetched LP holder data (no sequential blocking)
     const _lpHoldersForControl = (_lpHoldersSettled.status === 'fulfilled' ? _lpHoldersSettled.value : { __status: 'error', __reason: 'lp_fetch_failed' }) as any
+    const _lpDiagnostics = [
+      `poolAddressPresent=${Boolean(primaryPoolAddress)}`,
+      ...(primaryPoolAddress ? [`pool=${primaryPoolAddress.slice(0, 10)}…${primaryPoolAddress.slice(-4)}`] : []),
+      `addressSource=${_primaryPoolSource}`,
+      `poolType=${poolType}`,
+    ];
     let lpControl: LpControlResult = {
       status: "unverified",
       confidence: "low",
       poolType,
       source: "geckoterminal",
       reason: "LP control requires holder-level LP token verification.",
-      evidence: [],
+      evidence: _lpDiagnostics,
+      poolAddressPresent: Boolean(primaryPoolAddress),
+      selectedPrimaryPoolSource: _primaryPoolSource,
     };
-    if (!primaryPoolAddress || !/^0x[a-f0-9]{40}$/.test(primaryPoolAddress)) {
-      lpControl = { ...lpControl, status: "unverified", reason: "Primary pool address is unavailable from provider." };
+    if (!primaryPoolAddress) {
+      lpControl = {
+        ...lpControl,
+        status: "unverified",
+        reason: noActivePools
+          ? "No active liquidity pool found for this token."
+          : "Pool address could not be extracted from provider response.",
+      };
     } else if (poolType === "v3" || poolType === "aerodrome" || poolType === "unknown") {
       lpControl = {
         status: poolType === "unknown" ? "unverified" : "unsupported",
@@ -497,7 +532,9 @@ export async function POST(req: Request) {
         poolType,
         source: "geckoterminal",
         reason: "Pool type uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
-        evidence: [`pool=${primaryPoolAddress}`, `poolType=${poolType}`],
+        evidence: [`pool=${primaryPoolAddress.slice(0, 10)}…${primaryPoolAddress.slice(-4)}`, `poolType=${poolType}`, `addressSource=${_primaryPoolSource}`],
+        poolAddressPresent: true,
+        selectedPrimaryPoolSource: _primaryPoolSource,
       };
     } else {
       const lpItems = Array.isArray(_lpHoldersForControl?.data?.items) ? _lpHoldersForControl.data.items as Array<Record<string, unknown>> : [];

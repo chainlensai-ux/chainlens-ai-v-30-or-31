@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 
 const {
   GOLDRUSH_API_KEY,
@@ -2697,8 +2698,8 @@ async function executeClarkToolPlan(input: {
   origin: string;
   prompt: string;
   chain: SupportedChain;
-  verifiedPlan?: string;
   authHeader?: string | null;
+  verifiedPlan?: 'free' | 'pro' | 'elite';
 }): Promise<{ evidence: ClarkToolEvidence; toolsUsed: ClarkToolName[]; resolvedAddress: string | null }> {
   const evidence: ClarkToolEvidence = {};
   const toolsUsed: ClarkToolName[] = [];
@@ -2768,7 +2769,7 @@ async function executeClarkToolPlan(input: {
         const _validAddr = Boolean(addr && /^0x[a-fA-F0-9]{40}$/.test(addr));
         // Run token scan and honeypot check in parallel instead of sequential
         const [tokenData, securitySim] = await Promise.all([
-          _validAddr ? callInternalApi(input.origin, "/api/token", { contract: addr }, safeAuthHeader, input.verifiedPlan === 'free' || input.verifiedPlan === 'pro' || input.verifiedPlan === 'elite' ? input.verifiedPlan : undefined) : Promise.resolve(null),
+          _validAddr ? callInternalApi(input.origin, "/api/token", { contract: addr }, input.authHeader ?? undefined, input.verifiedPlan) : Promise.resolve(null),
           _validAddr ? fetchHoneypotSecurity(addr, "base") : Promise.resolve(null),
         ]);
         const tokenJson = tokenData?.ok ? tokenData.json : null;
@@ -2856,7 +2857,7 @@ async function executeClarkToolPlan(input: {
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const walletRes = await callInternalApi(input.origin, "/api/wallet", { address }, safeAuthHeader, input.verifiedPlan === 'free' || input.verifiedPlan === 'pro' || input.verifiedPlan === 'elite' ? input.verifiedPlan : undefined);
+        const walletRes = await callInternalApi(input.origin, "/api/wallet", { address }, input.authHeader ?? undefined, input.verifiedPlan);
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
         const normalized = normalizeWalletSnapshotEvidence(w, address);
         evidence.walletSnapshot = {
@@ -2889,7 +2890,7 @@ async function executeClarkToolPlan(input: {
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address }, safeAuthHeader, input.verifiedPlan === 'free' || input.verifiedPlan === 'pro' || input.verifiedPlan === 'elite' ? input.verifiedPlan : undefined);
+        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address }, input.authHeader ?? undefined, input.verifiedPlan);
         const d = (devWalletRes.json ?? {}) as Record<string, unknown>;
         const verdictRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.label ?? "UNKNOWN") as string;
         const confRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.confidence ?? "low") as string;
@@ -2920,7 +2921,7 @@ async function executeClarkToolPlan(input: {
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, safeAuthHeader, input.verifiedPlan === 'free' || input.verifiedPlan === 'pro' || input.verifiedPlan === 'elite' ? input.verifiedPlan : undefined);
+        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, input.authHeader ?? undefined, input.verifiedPlan);
         const l = (((liqRes.json as Record<string, unknown>)?.data ?? {}) as Record<string, unknown>);
         evidence.liquidity = {
           ok: liqRes.ok && Boolean((liqRes.json as Record<string, unknown>)?.ok),
@@ -3685,8 +3686,7 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   const isBalanceQuestion = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(t);
   const isQualityQuestion = /\b(good wallet|worth following|smart money|copy trad|is this|analyze|review|verdict)\b/i.test(t);
 
-  const safeAuthHeader = authHeader ?? undefined;
-  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress }, safeAuthHeader);
+  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress }, authHeader ?? undefined);
 
   if (!ok || (walletData as Record<string, unknown>)?.error) {
     return {
@@ -4177,8 +4177,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
   }
 }
 
-async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: string) {
-  const safeAuthHeader = authHeader ?? undefined;
+async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -4332,7 +4331,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // Hard guard: bare 0x address after recent wallet-context turn → wallet analysis
   if (directIntent.address && isBareAddressPrompt(prompt) && hasRecentWalletContext(body.history)) {
     console.log("[clark-intent] detected=wallet_analysis reason=history_wallet_context");
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, safeAuthHeader);
+    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, authHeader ?? undefined);
     const w = (walletRes.json ?? {}) as Record<string, unknown>;
     if (walletRes.ok && Object.keys(w).length > 0) {
       const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
@@ -4803,7 +4802,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
 
     if (plan.tools.some((t) => t.name === "token_resolve") && evidence.tokenResolve?.selected?.contract) {
-      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract }, safeAuthHeader);
+      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract }, authHeader ?? undefined);
       const tokenData = tokenRes.ok ? tokenRes.json : null;
       const securitySim = await fetchHoneypotSecurity(evidence.tokenResolve.selected.contract, "base");
       if (tokenData) evidence.tokenScan = {
@@ -4894,7 +4893,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!token) {
       // Bare address paste — token scan found nothing. Try wallet scan before giving up.
       if (isBareAddressPrompt(prompt) && resolvedAddress) {
-        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolvedAddress }, safeAuthHeader);
+        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolvedAddress }, authHeader ?? undefined);
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
         if (walletRes.ok && Array.isArray(w.holdings) && (w.holdings as unknown[]).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, resolvedAddress);
