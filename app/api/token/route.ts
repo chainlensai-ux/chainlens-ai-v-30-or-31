@@ -338,7 +338,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 type LpControlResult = {
   status: "burned" | "locked" | "team_controlled" | "unverified" | "unsupported" | "error";
   confidence: "high" | "medium" | "low";
-  poolType: "v2" | "v3" | "aerodrome" | "unknown";
+  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
   source: string;
   reason: string;
   evidence: string[];
@@ -622,11 +622,12 @@ export async function POST(req: Request) {
     };
     if (!lpPoolAddress) {
       lpControl = {
-        ...lpControl,
-        status: "unverified",
-        reason: noActivePools
-          ? "No active liquidity pool found for this token."
-          : "Pool address could not be extracted from provider response.",
+        status: "unsupported",
+        confidence: "low",
+        poolType,
+        source: "geckoterminal",
+        reason: "Pool uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
+        evidence: [`pool=${primaryPoolAddress}`, `dex=${dexId ?? dexName ?? "unknown"}`, `poolType=${poolType}`],
       };
     } else if (lpPoolType === "v3") {
       lpControl = {
@@ -745,6 +746,16 @@ export async function POST(req: Request) {
         lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+goldrush", reason: "LP holder distribution does not prove burned/locked/team control.", evidence: [`top_rows=${top.length}`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: lpDexId || undefined };
       }
     }
+
+    lpControl.evidence = [
+      ...(lpControl.evidence ?? []),
+      `poolAddressPresent=${poolAddressPresent}`,
+      `selectedPrimaryPoolSource=${selectedPrimaryPoolSource}`,
+      `dexId=${dexId ?? 'unknown'}`,
+      `dexName=${dexName ?? 'unknown'}`,
+      `detectedPoolType=${poolType}`,
+      `lpHolderCheckAttempted=${needsLpHolderFetch}`,
+    ];
 
     // AI summary from parallel phase 2
     let aiSummary = "Unverified on Base — insufficient data for a risk verdict.";
