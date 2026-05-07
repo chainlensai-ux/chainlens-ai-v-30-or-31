@@ -3603,7 +3603,8 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   const isBalanceQuestion = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(t);
   const isQualityQuestion = /\b(good wallet|worth following|smart money|copy trad|is this|analyze|review|verdict)\b/i.test(t);
 
-  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress }, authHeader);
+  const safeAuthHeader = authHeader ?? undefined;
+  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress }, safeAuthHeader);
 
   if (!ok || (walletData as Record<string, unknown>)?.error) {
     return {
@@ -4095,6 +4096,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 }
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: string) {
+  const safeAuthHeader = authHeader ?? undefined;
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -4248,7 +4250,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // Hard guard: bare 0x address after recent wallet-context turn → wallet analysis
   if (directIntent.address && isBareAddressPrompt(prompt) && hasRecentWalletContext(body.history)) {
     console.log("[clark-intent] detected=wallet_analysis reason=history_wallet_context");
-    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, authHeader);
+    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, safeAuthHeader);
     const w = (walletRes.json ?? {}) as Record<string, unknown>;
     if (walletRes.ok && Object.keys(w).length > 0) {
       const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
@@ -4719,7 +4721,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
 
     if (plan.tools.some((t) => t.name === "token_resolve") && evidence.tokenResolve?.selected?.contract) {
-      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract }, authHeader);
+      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract }, safeAuthHeader);
       const tokenData = tokenRes.ok ? tokenRes.json : null;
       const securitySim = await fetchHoneypotSecurity(evidence.tokenResolve.selected.contract, "base");
       if (tokenData) evidence.tokenScan = {
@@ -4810,7 +4812,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!token) {
       // Bare address paste — token scan found nothing. Try wallet scan before giving up.
       if (isBareAddressPrompt(prompt) && resolvedAddress) {
-        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolvedAddress }, authHeader);
+        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolvedAddress }, safeAuthHeader);
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
         if (walletRes.ok && Array.isArray(w.holdings) && (w.holdings as unknown[]).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, resolvedAddress);
@@ -4932,6 +4934,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
 export async function POST(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? ''
+  const authHeader = auth || undefined
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
   const verifiedPlan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : clarkPlan(req)
   if (!clarkAllowed(req, verifiedPlan)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
