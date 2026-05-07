@@ -11,6 +11,21 @@ type Holding = {
   verified: boolean
 }
 
+
+
+type GrTransferDiag = {
+  endpointKind?: string | null
+  chainUsed?: string | null
+  urlTemplate?: string | null
+  httpStatus?: number | null
+  fetchFailed?: boolean
+  failureStage?: "build_url" | "fetch" | "timeout" | "parse" | "empty_response" | "no_items" | null
+  rawItemCount?: number
+  normalizedEventCount?: number
+  firstEventShapeKeys?: string[]
+  reason?: string
+}
+
 export type WalletBehavior = {
   status: 'ok' | 'partial' | 'unavailable'
   source: 'alchemy' | 'unavailable'
@@ -588,7 +603,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
         txCount === null ? 'txCount: Alchemy nonce unavailable' : '',
         walletAgeDays === null ? 'walletAgeDays: no first-tx on ETH or Base' : '',
       ].filter(Boolean),
-      goldrushTransferDiags: [grPnlEthOut.diag, grPnlBaseOut.diag].filter((d): d is GrTransferDiag => d !== null),
+      goldrushTransferDiags: [grEth.diag, grBase.diag],
     },
   }
 }
