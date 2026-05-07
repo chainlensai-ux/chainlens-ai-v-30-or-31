@@ -712,7 +712,7 @@ export async function POST(req: Request) {
       const attrs = (inc.attributes ?? {}) as Record<string, unknown>;
       if (id) includedTokenById.set(id, attrs);
     }
-    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById, gtIncluded));
+    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById));
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
