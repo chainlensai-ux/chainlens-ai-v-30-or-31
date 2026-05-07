@@ -198,6 +198,13 @@ function shorten(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
 }
 
+function evidenceValue(lines: string[] | undefined, label: string): string | null {
+  if (!Array.isArray(lines)) return null
+  const line = lines.find((l) => l.startsWith(`${label}:`))
+  if (!line) return null
+  return line.slice(label.length + 1).trim() || null
+}
+
 function normalizeHolderProviderStatus(
   status: ScanResult['holderDistributionStatus']
 ): HolderProviderStatus {
@@ -799,9 +806,27 @@ export default function TerminalTokenScanner() {
                 <div style={{ marginBottom: '18px', padding: '10px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', fontSize: '12px', color: '#cbd5e1' }}>
                   <strong>LP Control:</strong> {result.lpControl.status ?? 'unverified'} ({result.lpControl.confidence ?? 'low'}) — {result.lpControl.reason ?? 'No provider-backed LP lock proof yet.'}
                   {result.lpControl.source ? <div style={{ marginTop: '4px', color: '#94a3b8' }}>Source: {result.lpControl.source}</div> : null}
+                  {result.lpControl.lpVerificationPoolReason ? (
+                    <div style={{ marginTop: '4px', color: '#94a3b8' }}>
+                      Verification pool selection: {result.lpControl.lpVerificationPoolReason}
+                    </div>
+                  ) : null}
+                  {(() => {
+                    const marketPrimaryPair = evidenceValue(result.lpControl?.evidence, 'Market primary pair')
+                    const lpVerificationPair = evidenceValue(result.lpControl?.evidence, 'LP verification pair')
+                    if (!marketPrimaryPair || !lpVerificationPair || marketPrimaryPair === lpVerificationPair) return null
+                    return (
+                      <div style={{ marginTop: '4px', color: '#94a3b8' }}>
+                        Market primary: {marketPrimaryPair} · LP verification: {lpVerificationPair}
+                      </div>
+                    )
+                  })()}
                   {Array.isArray(result.lpControl.evidence) && result.lpControl.evidence.length > 0 ? (
                     <ul style={{ margin: '6px 0 0 16px', color: '#94a3b8' }}>
-                      {result.lpControl.evidence.slice(0, 4).map((e, i) => <li key={i}>{e}</li>)}
+                      {result.lpControl.evidence
+                        .filter((e) => !e.startsWith('Market primary pair:') && !e.startsWith('LP verification pair:'))
+                        .slice(0, 4)
+                        .map((e, i) => <li key={i}>{e}</li>)}
                     </ul>
                   ) : null}
                 </div>
