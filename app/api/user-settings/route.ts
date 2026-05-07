@@ -34,14 +34,24 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
+  const plan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
+  const diagnostics = process.env.NODE_ENV !== 'production'
+    ? {
+        authenticated: true,
+        hasSettingsRow: !result.error,
+        plan,
+        fallback: Boolean(result.error),
+      }
+    : undefined;
+
   if (result.error) {
     return NextResponse.json(
-      { settings: result.settings, error: result.error, fallback: true },
+      { settings: result.settings, plan, error: result.error, fallback: true, diagnostics },
       { status: 200 }
     );
   }
 
-  return NextResponse.json({ settings: result.settings }, { status: 200 });
+  return NextResponse.json({ settings: result.settings, plan, fallback: false, diagnostics }, { status: 200 });
 }
 
 export async function PATCH(request: NextRequest) {

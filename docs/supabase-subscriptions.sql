@@ -14,11 +14,34 @@
 
 alter table public.user_settings
   add column if not exists plan text not null default 'free',
+  add column if not exists theme text not null default 'dark',
+  add column if not exists accent_color text not null default 'mint',
+  add column if not exists compact_mode boolean not null default false,
+  add column if not exists email_notifications boolean not null default true,
+  add column if not exists push_notifications boolean not null default false,
+  add column if not exists whale_alert_threshold numeric not null default 10000,
+  add column if not exists default_chain text not null default 'base',
   add column if not exists lemon_customer_id text,
   add column if not exists lemon_subscription_id text,
   add column if not exists lemon_variant_id text,
   add column if not exists subscription_status text,
-  add column if not exists current_period_end timestamptz;
+  add column if not exists current_period_end timestamptz,
+  add column if not exists settings jsonb not null default '{}'::jsonb,
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+do $$
+begin
+  if not exists (
+    select 1
+    from information_schema.table_constraints
+    where table_schema = 'public'
+      and table_name = 'user_settings'
+      and constraint_type = 'PRIMARY KEY'
+  ) then
+    alter table public.user_settings add primary key (user_id);
+  end if;
+end $$;
 
 -- Index for quick email-based webhook lookups via service role.
 -- (lookups go through auth.users → user_id join, so this index helps secondary look)
