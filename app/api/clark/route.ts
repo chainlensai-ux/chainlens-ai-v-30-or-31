@@ -2761,6 +2761,10 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "wallet_get_snapshot") {
+        if (input.verifiedPlan === "free") {
+          evidence.walletSnapshot = { ok: false, address: "", totalValue: 0, holdingsTop10: [], hiddenHoldingsCount: 0, dustOrUnpricedHidden: false, stablecoinExposureUsd: 0, tokenCount: 0, txCount: 0, walletAgeDays: 0, dataQuality: "Limited", errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
+          continue
+        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
         const walletRes = await callInternalApi(input.origin, "/api/wallet", { address }, input.authHeader);
@@ -2790,6 +2794,10 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "dev_wallet_analyze") {
+        if (input.verifiedPlan === "free") {
+          evidence.devWallet = { ok: false, deployerAddress: null, linkedWallets: 0, confidence: "Low", verdict: "UNKNOWN", warnings: ["This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports."], errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
+          continue
+        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
         const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address }, input.authHeader);
@@ -2817,6 +2825,10 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "liquidity_analyze") {
+        if (input.verifiedPlan === "free") {
+          evidence.liquidity = { ok: false, token: null, liquidityUsd: null, riskTier: null, stabilityScore: null, warnings: ["This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports."], errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
+          continue
+        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
         const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, input.authHeader);
@@ -4914,8 +4926,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 export async function POST(req: NextRequest) {
   if (!await clarkAllowed(req)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
+    clarkInternalCtx = { authToken: token || undefined, verifiedPlan }
     const body = (await req.json()) as ClarkRequestBody;
-    const cacheKey = JSON.stringify({ actor: clarkActor(req), feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
+    const cacheKey = JSON.stringify({ actor: clarkActor(req), verifiedPlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     if (body.message && !body.prompt) body.prompt = body.message;
@@ -4979,6 +4992,9 @@ export async function POST(req: NextRequest) {
       feature: "clark-ai",
       data: { reply: safeMsg, response: safeMsg, analysis: safeMsg, verdict: "SCAN DEEPER", source: "fallback" },
     }, { status: 200 });
+  }
+  finally {
+    clarkInternalCtx = {}
   }
 }
 
