@@ -78,6 +78,7 @@ export type WalletSnapshot = {
       walletAgeDays: boolean
     }
     missingReasons: string[]
+    goldrushTransferDiags?: GrTransferDiag[]
   }
 }
 
@@ -179,15 +180,78 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
 }
 
 type PnlEvent = { contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'; amount: number; usdValue: number | null }
-async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<PnlEvent[]> {
+
+type GrTransferDiag = {
+  endpointKind: 'transfers_v2'
+  chainUsed: string
+  urlTemplate: string
+  httpStatus: number | null
+  fetchFailed: boolean
+  failureStage: 'build_url' | 'fetch' | 'timeout' | 'parse' | 'empty_response' | 'no_items' | null
+  rawItemCount: number
+  normalizedEventCount: number
+  firstEventShapeKeys: string[]
+  reason: string
+}
+
+async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<{ events: PnlEvent[]; diag: GrTransferDiag }> {
+  const chainId = chainName === 'base-mainnet' ? '8453' : chainName === 'eth-mainnet' ? '1' : chainName
+  const urlTemplate = `https://api.covalenthq.com/v1/${chainName}/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&no-spam=true`
+  const diag: GrTransferDiag = {
+    endpointKind: 'transfers_v2',
+    chainUsed: chainId,
+    urlTemplate,
+    httpStatus: null,
+    fetchFailed: false,
+    failureStage: null,
+    rawItemCount: 0,
+    normalizedEventCount: 0,
+    firstEventShapeKeys: [],
+    reason: '',
+  }
   try {
     const url = `https://api.covalenthq.com/v1/${chainName}/address/${address}/transfers_v2/?quote-currency=USD&page-size=125&no-spam=true`
-    const res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
-    if (!res.ok) return []
-    const json = await res.json()
-    const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items.slice(0, 125) : []
+    let res: Response
+    try {
+      res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
+    } catch (fetchErr) {
+      diag.fetchFailed = true
+      diag.failureStage = fetchErr instanceof Error && fetchErr.name === 'TimeoutError' ? 'timeout' : 'fetch'
+      diag.reason = 'GoldRush wallet history request failed before response.'
+      return { events: [], diag }
+    }
+    diag.httpStatus = res.status
+    if (!res.ok) {
+      diag.failureStage = 'empty_response'
+      diag.reason = `GoldRush wallet history returned HTTP ${res.status}.`
+      return { events: [], diag }
+    }
+    let json: unknown
+    try {
+      json = await res.json()
+    } catch {
+      diag.failureStage = 'parse'
+      diag.reason = 'GoldRush wallet history response could not be parsed as JSON.'
+      return { events: [], diag }
+    }
+    const raw = json as Record<string, unknown>
+    const items: unknown[] =
+      Array.isArray((raw?.data as Record<string, unknown> | undefined)?.items) ? ((raw.data as Record<string, unknown>).items as unknown[]) :
+      Array.isArray(raw?.items) ? (raw.items as unknown[]) :
+      Array.isArray(raw?.data) ? (raw.data as unknown[]) :
+      Array.isArray(raw?.transfers) ? (raw.transfers as unknown[]) :
+      Array.isArray(raw?.transactions) ? (raw.transactions as unknown[]) :
+      []
+    diag.rawItemCount = items.length
+    if (items.length === 0) {
+      diag.failureStage = 'no_items'
+      diag.reason = 'GoldRush returned no wallet history items for this address/window.'
+      return { events: [], diag }
+    }
+    const first = items[0]
+    if (first && typeof first === 'object') diag.firstEventShapeKeys = Object.keys(first as object).slice(0, 8)
     const lower = address.toLowerCase()
-    return items.flatMap((it) => {
+    const events = items.slice(0, 125).flatMap((it) => {
       const t = it as Record<string, unknown>
       const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
       return transfers.slice(0, 3).map((x) => {
@@ -204,7 +268,20 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         return { contract, symbol, direction, amount, usdValue: quote }
       })
     }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
-  } catch { return [] }
+    diag.normalizedEventCount = events.length
+    if (events.length === 0) {
+      diag.failureStage = 'no_items'
+      diag.reason = 'GoldRush returned items but no valid transfer events after normalization.'
+    } else {
+      diag.reason = `GoldRush returned ${events.length} normalized transfer events.`
+    }
+    return { events, diag }
+  } catch {
+    diag.fetchFailed = true
+    diag.failureStage = 'fetch'
+    diag.reason = 'GoldRush wallet history request failed before response.'
+    return { events: [], diag }
+  }
 }
 
 async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<PnlEvent[]> {
@@ -340,8 +417,8 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(ethUrl, 'eth_getTransactionCount', [addr, 'latest']),
     fetchWalletBehavior(addr, baseUrl),
-    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as PnlEvent[]),
-    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as PnlEvent[]),
+    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: '1', urlTemplate: '', httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush not configured.' } }),
+    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: '8453', urlTemplate: '', httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush not configured.' } }),
     fetchAlchemyPnlEvents(addr, baseUrl),
   ])
 
@@ -424,7 +501,9 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     reason = 'No token balances found on supported chains.'
   }
 
-  const grEvents = [...(grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : []), ...(grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : [])]
+  const grPnlEthOut = grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : { events: [] as PnlEvent[], diag: null as GrTransferDiag | null }
+  const grPnlBaseOut = grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : { events: [] as PnlEvent[], diag: null as GrTransferDiag | null }
+  const grEvents = [...grPnlEthOut.events, ...grPnlBaseOut.events]
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
   const events = grEvents.length > 0 ? grEvents : alchemyEvents
   const pnlSource: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
@@ -499,6 +578,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
         txCount === null ? 'txCount: Alchemy nonce unavailable' : '',
         walletAgeDays === null ? 'walletAgeDays: no first-tx on ETH or Base' : '',
       ].filter(Boolean),
+      goldrushTransferDiags: [grPnlEthOut.diag, grPnlBaseOut.diag].filter((d): d is GrTransferDiag => d !== null),
     },
   }
 }

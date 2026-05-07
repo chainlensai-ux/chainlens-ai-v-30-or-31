@@ -753,7 +753,7 @@ export async function POST(req: Request) {
         poolType: lpPoolType,
         source: "geckoterminal",
         reason: "Pool uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
-        evidence: [`pool=${primaryPoolAddress}`, `dex=${dexId ?? dexName ?? "unknown"}`, `poolType=${lpPoolType}`],
+        evidence: [`pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`],
       };
     } else if (lpPoolType === "unknown") {
       // Probe pool via RPC to classify before giving up
