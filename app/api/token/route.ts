@@ -410,7 +410,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
     case "unsupported":
       if (lp.poolType === "aerodrome") {
         return {
-          title: "Protocol liquidity — Aerodrome",
+          title: "Protocol liquidity — requires protocol-specific verification",
           meaning: "Liquidity is in an Aerodrome/Velodrome protocol pool. LP positions cannot be verified using the standard V2 LP-holder method.",
           riskLevel: "Not assessable via V2 method",
           whatWasFound: [...poolLine, "Pool type: Aerodrome/Velodrome"],
@@ -419,7 +419,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
         };
       }
       return {
-        title: "Protocol liquidity — concentrated (V3)",
+        title: "Protocol liquidity — requires protocol-specific verification",
         meaning: "Liquidity is in a concentrated-liquidity (V3) pool. LP positions are NFTs, not standard ERC-20 tokens — V2 holder checks do not apply.",
         riskLevel: "Not assessable via V2 method",
         whatWasFound: [...poolLine, "Pool type: concentrated / V3"],
@@ -429,7 +429,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
     default: // unverified, error
       if (!lp.poolAddressPresent) {
         return {
-          title: "No active liquidity pool",
+          title: "No active liquidity pool found",
           meaning: "No liquidity pool was found for this token. Liquidity risk and LP control cannot be assessed.",
           riskLevel: "Unknown",
           whatWasFound: [],
@@ -448,12 +448,12 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
         };
       }
       return {
-        title: "LP lock not confirmed",
-        meaning: "A liquidity pool was found, but current checks could not determine whether LP tokens are locked, burned, or wallet-controlled.",
+        title: "LP Control: Unverified",
+        meaning: "Liquidity exists, but LP lock/control could not be proven from current checks.",
         riskLevel: "Medium — needs verification",
-        whatWasFound: [...poolLine, "Liquidity exists on-chain"],
+        whatWasFound: [...poolLine, "Major quote pool selected", "Alchemy RPC checks attempted"],
         couldNotVerify: ["LP token holder distribution", "Lock or burn status", "Standard V2/V3 LP interface"],
-        nextAction: "Treat LP control as unverified. Check a locker explorer or verify on-chain before relying on LP safety.",
+        nextAction: "Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.",
       };
   }
 }
