@@ -42,7 +42,26 @@ type WalletResult = {
   holdingsCount?: number | null
   totalUsdAvailable?: boolean
   reason?: string | null
+  portfolioSource?: 'zerion' | 'goldrush' | 'none'
+  behaviorSource?: 'alchemy' | 'unavailable'
+  behaviorChain?: 'base'
+  pnlSource?: 'goldrush' | 'alchemy' | 'unavailable'
+  pnlCoverageReason?: string
+  hiddenDustCount?: number
+  unpricedHoldingsCount?: number
   walletBehavior?: WalletBehavior | null
+  estimatedPnl?: {
+    status: 'ok' | 'partial' | 'unavailable' | 'error'
+    confidence: 'high' | 'medium' | 'low' | null
+    coveragePercent: number
+    source: 'goldrush' | 'alchemy' | 'none'
+    totalEstimatedPnlUsd: number | null
+    unrealizedPnlUsd: number | null
+    realizedPnlUsd: number | null
+    method: 'average_cost_estimate'
+    tokens: Array<{ symbol: string; contract: string; estimatedUnrealizedPnlUsd: number | null; estimatedRealizedPnlUsd: number | null; coveragePercent: number; confidence: 'high' | 'medium' | 'low' }>
+    reason: string
+  }
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────
@@ -504,8 +523,9 @@ export default function WalletScannerPage() {
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     marginBottom: '14px',
                   }}>
-                    Behavior · Base (Alchemy)
+                    Behavior · Base ({result.behaviorSource ?? 'unavailable'})
                   </div>
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>Behavior scope: Base only</div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
                     {[
                       { label: 'Recent Txs', value: result.walletBehavior.txCount ?? '—' },
@@ -530,6 +550,46 @@ export default function WalletScannerPage() {
                       Stablecoin movement detected
                     </div>
                   )}
+                  {result.walletBehavior.txCount === 0 && (
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 8 }}>
+                      No recent Base activity found in the checked window.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {result.estimatedPnl && (
+                <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '18px 22px' }}>
+                  <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    Estimated PnL Beta
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
+                    Coverage {result.estimatedPnl.coveragePercent}% · Confidence {result.estimatedPnl.confidence ?? 'n/a'} · Source {result.pnlSource ?? result.estimatedPnl.source}
+                  </div>
+                  {result.estimatedPnl.status !== 'unavailable' && result.estimatedPnl.coveragePercent >= 60 && result.estimatedPnl.totalEstimatedPnlUsd !== null ? (
+                    <div style={{ marginTop: 10, fontSize: 20, fontWeight: 700, color: result.estimatedPnl.totalEstimatedPnlUsd >= 0 ? '#34D399' : '#FB7185' }}>
+                      {fmtUSD(result.estimatedPnl.totalEstimatedPnlUsd)} estimated (not exact lifetime PnL)
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 10, color: '#f59e0b', fontSize: 13 }}>
+                      {result.estimatedPnl.reason}<br />
+                      <span style={{ color: '#94a3b8' }}>{result.pnlCoverageReason ?? 'Need decoded buys/sells with USD values from GoldRush/Covalent or supported transfer history.'}</span>
+                    </div>
+                  )}
+                  <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
+                    {result.estimatedPnl.tokens.slice(0, 5).map((t) => {
+                      const tokenPnl = (t.estimatedUnrealizedPnlUsd ?? 0) + (t.estimatedRealizedPnlUsd ?? 0)
+                      const usable = t.coveragePercent >= 60 && (t.estimatedUnrealizedPnlUsd !== null || t.estimatedRealizedPnlUsd !== null)
+                      return (
+                        <div key={`${t.contract}-${t.symbol}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                          <span style={{ color: '#cbd5e1' }}>{t.symbol} · {t.coveragePercent}% · {t.confidence}</span>
+                          <span style={{ color: usable ? (tokenPnl >= 0 ? '#34D399' : '#FB7185') : '#f59e0b' }}>
+                            {usable ? fmtUSD(tokenPnl) : 'PnL partial/unavailable'}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               )}
 
