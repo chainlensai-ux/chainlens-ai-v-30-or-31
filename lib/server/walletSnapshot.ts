@@ -1,4 +1,5 @@
 type Holding = {
+  contract?: string
   name: string
   symbol: string
   icon: string | null
@@ -37,6 +38,31 @@ export type WalletSnapshot = {
   totalUsdAvailable: boolean
   reason: string
   walletBehavior: WalletBehavior
+  estimatedPnl: {
+    status: 'ok' | 'partial' | 'unavailable' | 'error'
+    confidence: 'high' | 'medium' | 'low' | null
+    coveragePercent: number
+    source: 'goldrush' | 'alchemy' | 'none'
+    totalEstimatedPnlUsd: number | null
+    unrealizedPnlUsd: number | null
+    realizedPnlUsd: number | null
+    method: 'average_cost_estimate'
+    tokens: Array<{
+      symbol: string
+      contract: string
+      currentValueUsd: number
+      estimatedCostBasisUsd: number | null
+      estimatedUnrealizedPnlUsd: number | null
+      estimatedRealizedPnlUsd: number | null
+      buysDetected: number
+      sellsDetected: number
+      unexplainedTransfers: number
+      coveragePercent: number
+      confidence: 'high' | 'medium' | 'low'
+      reason: string
+    }>
+    reason: string
+  }
   _diagnostics?: {
     walletProviderFieldsPresent: {
       holdings: boolean
@@ -127,6 +153,7 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
         const price = typeof it.quote_rate === 'number' && it.quote_rate > 0 ? it.quote_rate : null
         const logo = typeof it.logo_url === 'string' && it.logo_url.startsWith('http') ? it.logo_url : null
         return {
+          contract: typeof it.contract_address === 'string' ? it.contract_address.toLowerCase() : undefined,
           name: typeof it.contract_name === 'string' ? it.contract_name : 'Unknown',
           symbol: typeof it.contract_ticker_symbol === 'string' ? it.contract_ticker_symbol : '?',
           icon: logo,
@@ -143,6 +170,63 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
     return []
   }
 }
+
+type PnlEvent = { contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'; amount: number; usdValue: number | null }
+async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<PnlEvent[]> {
+  try {
+    const url = `https://api.covalenthq.com/v1/${chainName}/address/${address}/transfers_v2/?quote-currency=USD&page-size=125&no-spam=true`
+    const res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
+    if (!res.ok) return []
+    const json = await res.json()
+    const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items.slice(0, 125) : []
+    const lower = address.toLowerCase()
+    return items.flatMap((it) => {
+      const t = it as Record<string, unknown>
+      const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
+      return transfers.slice(0, 3).map((x) => {
+        const tr = x as Record<string, unknown>
+        const contract = String(tr.contract_address ?? '').toLowerCase()
+        const symbol = String(tr.contract_ticker_symbol ?? '?')
+        const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
+        const delta = String(tr.delta ?? '0')
+        const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
+        const from = String(tr.from_address ?? '').toLowerCase()
+        const to = String(tr.to_address ?? '').toLowerCase()
+        const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
+        const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
+        return { contract, symbol, direction, amount, usdValue: quote }
+      })
+    }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
+  } catch { return [] }
+}
+
+async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<PnlEvent[]> {
+  try {
+    const resp = await alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{
+      fromBlock: '0x0', category: ['erc20'], withMetadata: false, maxCount: '0x7d', order: 'desc', fromAddress: address,
+    }])
+    const recv = await alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{
+      fromBlock: '0x0', category: ['erc20'], withMetadata: false, maxCount: '0x7d', order: 'desc', toAddress: address,
+    }])
+    const outgoing = (resp?.transfers ?? []).slice(0, 125).map((t: Record<string, unknown>) => ({
+      contract: String(((t.rawContract as Record<string, unknown> | undefined)?.address) ?? '').toLowerCase(),
+      symbol: String(t.asset ?? '?'),
+      direction: 'sell' as const,
+      amount: Number(t.value ?? 0),
+      usdValue: null,
+    }))
+    const incoming = (recv?.transfers ?? []).slice(0, 125).map((t: Record<string, unknown>) => ({
+      contract: String(((t.rawContract as Record<string, unknown> | undefined)?.address) ?? '').toLowerCase(),
+      symbol: String(t.asset ?? '?'),
+      direction: 'buy' as const,
+      amount: Number(t.value ?? 0),
+      usdValue: null,
+    }))
+    return [...outgoing, ...incoming].filter(e => e.contract.startsWith('0x') && Number.isFinite(e.amount) && e.amount > 0)
+  } catch { return [] }
+}
+
+function confidenceFromCoverage(c: number): 'high' | 'medium' | 'low' { return c >= 85 ? 'high' : c >= 60 ? 'medium' : 'low' }
 
 const BEHAVIOR_EMPTY: WalletBehavior = {
   status: 'unavailable', source: 'unavailable',
@@ -223,6 +307,9 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     baseFirst,
     nonceRes,
     behaviorRes,
+    grPnlEthRes,
+    grPnlBaseRes,
+    alchemyPnlRes,
   ] = await Promise.allSettled([
     ZERION_KEY
       ? zerionGet(`wallets/${addr}/positions/`, {
@@ -246,6 +333,9 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(ethUrl, 'eth_getTransactionCount', [addr, 'latest']),
     fetchWalletBehavior(addr, baseUrl),
+    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as PnlEvent[]),
+    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as PnlEvent[]),
+    fetchAlchemyPnlEvents(addr, baseUrl),
   ])
 
   // ── Tx / age / nonce (from Alchemy — unchanged path) ──
@@ -278,6 +368,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
         const a  = pos.attributes ?? {}
         const fi = a.fungible_info ?? {}
         return {
+          contract: typeof fi.implementations?.[0]?.address === 'string' ? fi.implementations[0].address.toLowerCase() : undefined,
           name:      fi.name      ?? 'Unknown',
           symbol:    fi.symbol    ?? '?',
           icon:      fi.icon?.url ?? null,
@@ -326,6 +417,41 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     reason = 'No token balances found on supported chains.'
   }
 
+  const grEvents = [...(grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : []), ...(grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : [])]
+  const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
+  const events = grEvents.length > 0 ? grEvents : alchemyEvents
+  const pnlSource: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
+  const byToken = new Map<string, PnlEvent[]>()
+  for (const e of events.slice(0, 250)) byToken.set(e.contract, [...(byToken.get(e.contract) ?? []), e])
+  const pnlTokens: WalletSnapshot['estimatedPnl']['tokens'] = []
+  let realized = 0, unrealized = 0, coverageNum = 0
+  for (const h of holdings.slice(0, 25)) {
+    const tokenEvents = byToken.get((h.contract ?? '').toLowerCase()) ?? []
+    const buys = tokenEvents.filter(e => e.direction === 'buy')
+    const sells = tokenEvents.filter(e => e.direction === 'sell')
+    const unexplained = tokenEvents.filter(e => e.direction === 'unknown').length
+    const pricedBuys = buys.filter(b => (b.usdValue ?? 0) > 0)
+    const buyQty = buys.reduce((s, e) => s + e.amount, 0)
+    const sellQty = sells.reduce((s, e) => s + e.amount, 0)
+    const buyCost = pricedBuys.reduce((s, e) => s + (e.usdValue ?? 0), 0)
+    const avgCost = buyQty > 0 && buyCost > 0 ? buyCost / buyQty : null
+    const estimatedCostBasisUsd = avgCost && h.balance > 0 ? avgCost * h.balance : null
+    const estimatedUnrealized = estimatedCostBasisUsd !== null ? h.value - estimatedCostBasisUsd : null
+    const realizedProceeds = sells.reduce((s, e) => s + (e.usdValue ?? 0), 0)
+    const realizedCost = avgCost ? avgCost * Math.min(sellQty, buyQty) : 0
+    const estimatedRealized = realizedProceeds > 0 && avgCost ? realizedProceeds - realizedCost : null
+    const withUsd = tokenEvents.filter(e => (e.usdValue ?? 0) > 0).length
+    const coverage = tokenEvents.length > 0 ? Math.max(0, Math.min(100, Math.round((withUsd / tokenEvents.length) * 100 - unexplained * 5))) : 0
+    const conf = confidenceFromCoverage(coverage)
+    if (estimatedUnrealized !== null && coverage >= 60) unrealized += estimatedUnrealized
+    if (estimatedRealized !== null && coverage >= 60) realized += estimatedRealized
+    coverageNum += coverage
+    pnlTokens.push({ symbol: h.symbol, contract: (h.contract ?? '').toLowerCase(), currentValueUsd: h.value, estimatedCostBasisUsd, estimatedUnrealizedPnlUsd: coverage >= 60 ? estimatedUnrealized : null, estimatedRealizedPnlUsd: coverage >= 60 ? estimatedRealized : null, buysDetected: buys.length, sellsDetected: sells.length, unexplainedTransfers: unexplained, coveragePercent: coverage, confidence: conf, reason: coverage < 60 ? 'PnL partial/unavailable: historical cost basis coverage too low.' : 'Estimated from average-cost using indexed transfers.' })
+  }
+  const coveragePercent = pnlTokens.length ? Math.round(coverageNum / pnlTokens.length) : 0
+  const status: WalletSnapshot['estimatedPnl']['status'] = pnlTokens.length === 0 || pnlSource === 'none' ? 'unavailable' : coveragePercent >= 60 ? 'ok' : 'partial'
+  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSource, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: pnlTokens.sort((a, b) => (b.currentValueUsd - a.currentValueUsd)).slice(0, 10), reason: status === 'unavailable' ? 'Historical cost basis coverage too low or missing transaction data.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
+
   return {
     address: addr,
     totalValue,
@@ -339,6 +465,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     totalUsdAvailable: totalValue > 0,
     reason,
     walletBehavior: behaviorRes.status === 'fulfilled' ? behaviorRes.value : { ...BEHAVIOR_EMPTY, reason: 'Behavior fetch did not complete.' },
+    estimatedPnl,
     _diagnostics: {
       walletProviderFieldsPresent: {
         holdings: holdings.length > 0,
