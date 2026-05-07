@@ -75,6 +75,8 @@ type ScanResult = {
     source?: string
     reason?: string
     evidence?: string[]
+    poolAddressPresent?: boolean
+    selectedPrimaryPoolSource?: string
   } | null
 }
 
