@@ -231,6 +231,14 @@ type GoldrushHistoryDiag = {
 async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }> {
   const makeUrlTemplate = (chain: string): string => `https://api.covalenthq.com/v1/${chain}/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true`
   const baseDiag = (chain: string): GoldrushHistoryDiag => ({ endpointKind: 'transfers_v2', chainUsed: chain, urlTemplate: makeUrlTemplate(chain), httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: '' })
+  const finalizeDiag = (diag: GoldrushHistoryDiag): GoldrushHistoryDiag => {
+    if (diag.fetchFailed === false && diag.httpStatus == null) {
+      diag.fetchFailed = true
+      diag.failureStage = diag.failureStage ?? 'fetch'
+      diag.reason = diag.reason || 'GoldRush wallet history request did not expose an HTTP response.'
+    }
+    return diag
+  }
   try {
     const chainCandidates = chainName === 'base-mainnet' ? ['8453', 'base-mainnet'] : [chainName]
     for (const chainUsed of chainCandidates) {
@@ -245,7 +253,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
       } catch (err) {
         const isTimeout = err instanceof Error && /timeout/i.test(err.name + ' ' + err.message)
-        return { events: [], diag: { ...diag, fetchFailed: true, failureStage: isTimeout ? 'timeout' : 'fetch', reason: 'GoldRush wallet history request failed before response.' } }
+        return { events: [], diag: finalizeDiag({ ...diag, fetchFailed: true, failureStage: isTimeout ? 'timeout' : 'fetch', reason: 'GoldRush wallet history request failed before response.' }) }
       }
       diag.httpStatus = res.status
       if (!res.ok) {
@@ -260,7 +268,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
       if (items.length === 0) {
         diag.failureStage = 'no_items'
         diag.reason = 'GoldRush returned no wallet history items for this address/window.'
-        return { events: [], diag }
+        return { events: [], diag: finalizeDiag(diag) }
       }
       const lower = address.toLowerCase()
       const events = items.flatMap((it) => {
@@ -282,13 +290,13 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
       }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
       diag.normalizedEventCount = events.length
       diag.reason = events.length > 0 ? '' : 'No indexed wallet transfer history returned from current checks.'
-      return { events, diag }
+      return { events, diag: finalizeDiag(diag) }
     }
     const fallbackChain = (chainName === 'base-mainnet' ? '8453' : chainName) || chainName
-    return { events: [], diag: { ...baseDiag(fallbackChain), failureStage: 'empty_response', reason: 'GoldRush wallet history returned HTTP 0.' } }
+    return { events: [], diag: finalizeDiag({ ...baseDiag(fallbackChain), fetchFailed: true, failureStage: 'fetch', reason: 'GoldRush wallet history request failed before response.' }) }
   } catch {
     const diag = baseDiag(chainName)
-    return { events: [], diag: { ...diag, fetchFailed: true, failureStage: 'fetch', reason: 'GoldRush wallet history request failed before response.' } }
+    return { events: [], diag: finalizeDiag({ ...diag, fetchFailed: true, failureStage: 'fetch', reason: 'GoldRush wallet history request failed before response.' }) }
   }
 }
 
