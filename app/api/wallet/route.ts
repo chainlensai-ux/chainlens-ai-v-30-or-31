@@ -18,9 +18,14 @@ async function walletAllowed(req: Request): Promise<boolean> { const plan=await 
 export async function POST(req: Request) {
   if (!(await walletAllowed(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
-    const { address } = await req.json()
+    const requestUrl = new URL(req.url)
+    const body = await req.json()
+    const address = body?.address
+    const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
+    const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
+    const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
     const key = String(address ?? '').toLowerCase()
-    const cached = walletCache.get(key)
+    const cached = allowDebugFresh ? null : walletCache.get(key)
     if (cached && cached.exp > Date.now()) {
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload
       if (cp && typeof cp === 'object') {
@@ -30,7 +35,7 @@ export async function POST(req: Request) {
     }
     const snapshot = await fetchWalletSnapshot(address ?? '')
     ;(snapshot as any)._diagnostics = { ...((snapshot as any)._diagnostics ?? {}), providers: { ...(((snapshot as any)._diagnostics ?? {}).providers ?? {}), cacheHit: false } }
-    walletCache.set(key, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot })
+    if (!allowDebugFresh) walletCache.set(key, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot })
     return NextResponse.json(snapshot)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'
