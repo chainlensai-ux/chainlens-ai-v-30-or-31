@@ -281,12 +281,13 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         devLog(out)
         return { events: [], diag: out }
       }
-      const builtUrl = `https://api.covalenthq.com/v1/${chainUsed}/address/${address}/transfers_v2/?page-size=125&page-number=0`
       let url: string
       try {
-        const parsed = new URL(builtUrl)
+        const parsed = new URL(`https://api.covalenthq.com/v1/${encodeURIComponent(chainUsed)}/address/${encodeURIComponent(address)}/transfers_v2/`)
+        parsed.searchParams.set('page-size', '125')
+        parsed.searchParams.set('page-number', '0')
         url = parsed.toString()
-        diag.requestHost = parsed.host
+        diag.requestHost = parsed.hostname
         diag.requestUrlValid = true
       } catch {
         const out = finalizeDiag({ ...diag, fetchFailed: true, failureStage: 'build_url', fetchErrorKind: 'invalid_url', fetchErrorMessage: 'Failed to construct a valid GoldRush request URL.', reason: 'GoldRush wallet history URL could not be built.' })
