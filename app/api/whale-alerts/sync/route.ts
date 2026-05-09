@@ -558,6 +558,8 @@ export async function POST(request: Request) {
 
   const nextOffset = effectiveOffset + processed < trackedWalletsTotal ? effectiveOffset + processed : null
   const hasMore = nextOffset !== null
+  const done = !hasMore
+  const noFreshSignal = inserted === 0
   const refreshStatus =
     processed === 0
       ? 'empty'
@@ -568,51 +570,53 @@ export async function POST(request: Request) {
           : mode === 'full'
             ? 'full_complete'
             : 'complete'
+  const walletsList = (wallets ?? []) as TrackedWallet[]
   const response: Record<string, unknown> = {
     ok: true,
     mode,
-    selectedWindow,
-    providerSummary: {
-      endpointPath: PROVIDER_ENDPOINT_PATH,
-      authMode: 'authorization_bearer',
-      chain: 'base-mainnet',
-    },
     trackedWalletsTotal,
     processed,
-    offset: effectiveOffset,
-    limit: mode === 'full' ? limit : (usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit),
-    nextOffset,
-    hasMore,
-    refreshStatus,
     inserted,
     skipped,
-    skipReasons: skipSummary,
+    nextOffset,
+    hasMore,
+    done,
+    noFreshSignal,
+    offset: effectiveOffset,
+    refreshStatus,
     providerErrors,
-    // Sanitised samples: only error code and class, no raw messages or wallet addresses
-    providerErrorSamples: providerErrorSamples.slice(0, 3).map(s => ({
-      provider: s.provider,
-      statusCode: s.statusCode ?? null,
-      reason: s.reason,
-    })),
+    skipReasons: skipSummary,
     message: processed === 0
-      ? (mode === 'full' ? 'No active wallets were scanned for full refresh.' : 'No active wallets were scanned in this batch.')
-      : mode === 'full' && hasMore
-        ? 'Full refresh in progress.'
-        : inserted > 0
-          ? `Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'} in this ${mode === 'full' ? 'refresh' : 'batch'}.`
-          : `No qualifying recent whale activity found in this ${mode === 'full' ? 'refresh' : 'batch'}.`,
+      ? 'No active wallets were scanned in this batch.'
+      : inserted > 0
+        ? `Checked ${processed} wallet${processed === 1 ? '' : 's'}. Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'}.`
+        : done
+          ? 'No fresh signal in the checked window.'
+          : `Checked ${processed} of ${trackedWalletsTotal} wallets. No fresh signal yet — continue to scan more.`,
   }
 
   if (debug) {
-    response.providerErrorSamples = providerErrorSamples
-    response.fetchedTxCount = fetchedTxCount
-    response.parsedMovementCount = parsedMovementCount
-    response.alertCandidateCount = alertCandidateCount
-    response.selectedMinUsd = selectedMinUsd
-    response.skipSummary = skipSummary
-    response.skipSamples = skipSamples
-    response.finalPipelineSummary = finalPipelineSummary
-    response.dbInsertErrorSamples = dbInsertErrorSamples
+    response._diagnostics = {
+      providerErrorCount: providerErrors,
+      providerErrorSamples: providerErrorSamples.slice(0, 5).map(s => ({
+        statusCode: s.statusCode ?? null,
+        reason: s.reason,
+      })),
+      skipReasons: skipSummary,
+      qualifyingTransferCount: alertCandidateCount,
+      duplicateCount: finalPipelineSummary.duplicateSkipped,
+      firstWalletChecked: walletsList[0] ? shortAddress(walletsList[0].address) : null,
+      lastWalletChecked: walletsList.length > 0 ? shortAddress(walletsList[walletsList.length - 1].address) : null,
+      thresholdSummary: {
+        selectedMinUsd,
+        fetchedTxCount,
+        parsedMovementCount,
+        alertCandidateCount,
+      },
+      skipSamples,
+      finalPipelineSummary,
+      dbInsertErrorSamples,
+    }
   }
 
   return NextResponse.json(response)

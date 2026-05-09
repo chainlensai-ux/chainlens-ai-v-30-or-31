@@ -39,6 +39,8 @@ type SyncResponse = {
   skipped?: number
   nextOffset?: number | null
   hasMore?: boolean
+  done?: boolean
+  noFreshSignal?: boolean
   refreshStatus?: string
   providerErrors?: number
   trackedWalletsTotal?: number
@@ -283,9 +285,11 @@ export default function WhaleAlertsPage() {
     const cacheKey = mode === 'full' ? CLIENT_FULL_SYNC_CACHE_KEY : CLIENT_SYNC_CACHE_KEY
     const cooldownMs = mode === 'full' ? CLIENT_FULL_SYNC_COOLDOWN_MS : CLIENT_SYNC_COOLDOWN_MS
     const isFullContinuation = mode === 'full' && typeof offset === 'number' && offset > 0
+    const isBatchContinuation = mode === 'batch' && typeof offset === 'number' && offset > 0
+    const isContinuation = isFullContinuation || isBatchContinuation
     const lastSyncAt = Number(window.localStorage.getItem(cacheKey) ?? '0')
     const elapsed = now - lastSyncAt
-    if (!isFullContinuation && elapsed < cooldownMs) {
+    if (!isContinuation && elapsed < cooldownMs) {
       if (mode === 'full') setFullSyncCooldownLeftMs(cooldownMs - elapsed)
       else setSyncCooldownLeftMs(cooldownMs - elapsed)
       return
@@ -318,12 +322,19 @@ export default function WhaleAlertsPage() {
               savedAt: now,
             }
           })()
-        : {
-            ...json,
-            processedTotal: json.processed ?? 0,
-            insertedTotal: json.inserted ?? 0,
-            savedAt: now,
-          }
+        : (() => {
+            // For batch: accumulate totals on continuation, reset on fresh start
+            const prev = isBatchContinuation && syncState?.mode === 'batch' ? syncState : null
+            const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
+            const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
+            return {
+              ...json,
+              mode: 'batch',
+              processedTotal,
+              insertedTotal,
+              savedAt: now,
+            }
+          })()
       setSyncState(merged)
       window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
       if (mode === 'full') {
@@ -333,7 +344,8 @@ export default function WhaleAlertsPage() {
         } else {
           setFullSyncCooldownLeftMs(0)
         }
-      } else {
+      } else if (!isBatchContinuation) {
+        // Only set cooldown for fresh batch starts, not continuations
         window.localStorage.setItem(cacheKey, String(now))
         setSyncCooldownLeftMs(cooldownMs)
       }
@@ -377,8 +389,8 @@ export default function WhaleAlertsPage() {
   const sevs  = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.severity).filter(Boolean) as string[]))], [alerts])
   const sides = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.side).filter(Boolean) as string[]))], [alerts])
 
-  const effectiveProcessed = syncState?.mode === 'full' ? (syncState?.processedTotal ?? 0) : (syncState?.processed ?? 0)
-  const effectiveInserted = syncState?.mode === 'full' ? (syncState?.insertedTotal ?? 0) : (syncState?.inserted ?? 0)
+  const effectiveProcessed = syncState?.processedTotal ?? syncState?.processed ?? 0
+  const effectiveInserted = syncState?.insertedTotal ?? syncState?.inserted ?? 0
   const covPct = syncState && (syncState.trackedWalletsTotal ?? 0) > 0
     ? Math.min(100, Math.round((effectiveProcessed / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
   const scannedCount = effectiveProcessed
@@ -393,11 +405,11 @@ export default function WhaleAlertsPage() {
     return 0
   })()
   const syncStatusText = syncing
-    ? 'Sync in progress'
+    ? 'Checking wallets…'
     : isFullInProgress
       ? 'Full refresh in progress'
       : syncState
-        ? (isPartial ? 'Partial refresh' : (syncState.mode === 'full' ? 'Full refresh complete' : 'Recently refreshed'))
+        ? (syncState.hasMore ? 'Partial refresh' : (syncState.mode === 'full' ? 'Full refresh complete' : 'Recently refreshed'))
         : 'Ready to sync'
 
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'No signal in checked window'
@@ -617,7 +629,7 @@ export default function WhaleAlertsPage() {
               <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
                   <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Tracked set</p>
-                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>60+ wallets</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>{trackedCount > 0 ? trackedCount : stats.trackedWallets > 0 ? stats.trackedWallets : '60+'} wallets</p>
                 </div>
                 <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
                   <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Signals found</p>
@@ -661,13 +673,13 @@ export default function WhaleAlertsPage() {
               )}
 
               <div className="flex" style={{ gap: 8 }}>
-                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }} disabled={syncing || syncCooldownLeftMs > 0}
+                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }} disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}
                   className="flex flex-1 items-center justify-center rounded-[12px]"
-                  style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing ? 0.5 : 1, border: 'none' }}>
+                  style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore) ? 0.5 : 1, border: 'none' }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Refreshing…' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : (syncState?.hasMore ? 'Continue refresh' : 'Refresh now')}
+                  {syncing ? 'Checking wallets…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : 'Refresh now'}
                 </button>
                 <button onClick={() => { void runSync(syncState?.mode === 'full' && isFullInProgress ? computedFullNextOffset : 0, 'full') }} disabled={syncing || (fullSyncCooldownLeftMs > 0 && !isFullInProgress)}
                   className="flex items-center rounded-[12px]"
@@ -788,9 +800,9 @@ export default function WhaleAlertsPage() {
           {/* empty state */}
           {!feedError && !loading && alerts.length === 0 && (() => {
             const total   = syncState?.trackedWalletsTotal ?? 0
-            const scanned = syncState?.processed ?? 0
-            const partial = syncState && total > 0 && scanned < total
-            const allDone = syncState && (total === 0 || scanned >= total)
+            const scanned = effectiveProcessed
+            const partial = Boolean(syncState && (syncState.hasMore ?? false))
+            const allDone = Boolean(syncState && !(syncState.hasMore ?? false))
             const hasProviderErrors = (syncState?.providerErrors ?? 0) > 0
             const insertedSoFar = syncState?.inserted ?? 0
             const filtersActive   = minUsd > 0 || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
@@ -811,7 +823,7 @@ export default function WhaleAlertsPage() {
               : valueFilterActive
                 ? `No alerts in the ${windowValue} window have a verified USD value of ${minUsdLabel}. Try "All" or a lower threshold.`
                 : partial
-                  ? `Scanned ${scanned} of ${total} wallets. No qualifying recent whale activity found in this batch.`
+                  ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
                   : allDone
                     ? 'No qualifying recent whale activity found in this batch.'
                     : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
