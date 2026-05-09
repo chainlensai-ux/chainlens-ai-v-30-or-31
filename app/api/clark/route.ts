@@ -1034,10 +1034,20 @@ function buildClarkToolPlan(input: {
       }
       break;
     case "dev_wallet":
-      if (fallbackAddress) tools.push({ name: "dev_wallet_analyze", args: { address: fallbackAddress }, required: true });
+      if (fallbackAddress) {
+        tools.push({ name: "dev_wallet_analyze", args: { address: fallbackAddress }, required: true });
+      } else if (effectiveTokenLookup) {
+        tools.push({ name: "token_resolve", args: { query: effectiveTokenLookup }, required: true });
+        tools.push({ name: "dev_wallet_analyze", args: { address: "" }, required: true });
+      }
       break;
     case "liquidity_safety":
-      if (fallbackAddress) tools.push({ name: "liquidity_analyze", args: { address: fallbackAddress }, required: true });
+      if (fallbackAddress) {
+        tools.push({ name: "liquidity_analyze", args: { address: fallbackAddress }, required: true });
+      } else if (effectiveTokenLookup) {
+        tools.push({ name: "token_resolve", args: { query: effectiveTokenLookup }, required: true });
+        tools.push({ name: "liquidity_analyze", args: { address: "" }, required: true });
+      }
       break;
     case "token_full_report_request":
       if (!fallbackAddress && tokenLookup) {
@@ -1116,7 +1126,7 @@ function detectLiveIntent(prompt: string): LiveIntent {
   if (/what'?s pumping on base|what'?s trending on base|show base movers|what'?s moving on base|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
   if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
-  if (/\bexplain this whale alert\b|\bsummarize whale alert|\bwhat are whales? (?:doing|buying)\b|\bwhales? buying\b|\bwhale buys?\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
+  if (/\bexplain this whale alert\b|\bsummarize whale alert|\bsummarize whale|\bwhale alerts?\b|\bwhale moves?\b|\bwhales? selling\b|\bwhat are whales? (?:doing|buying)\b|\bwhales? buying\b|\bwhale buys?\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
   // Row/page-level Ask Clark redirects carry structured alert data in the prompt text
   if (/\bsignal:\s*(high|watch|low)\b|\btop alerts:/i.test(t)) return "WHALE_FEED";
   return "GENERAL_CHAT";
@@ -1125,7 +1135,7 @@ function detectLiveIntent(prompt: string): LiveIntent {
 function isWhaleFlowPrompt(message: string, history?: ClarkRequestBody["history"]): boolean {
   const t = message.toLowerCase().trim();
   if (extractAddress(message)) return false;
-  const directWhalePrompt = /\b(show base whales|base whales|show whales|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
+  const directWhalePrompt = /\b(show base whales|base whales|show whales|whale alerts|whale alert|whale moves|whale activity|smart money moves|whales selling|summarize whale|whale feed|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
   if (directWhalePrompt) return true;
   const followupWhalePrompt = /\b(what are they rotating into|what are they buying|last 7 days|last week|7d)\b/i.test(t);
   if (!followupWhalePrompt) return false;
@@ -4335,6 +4345,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   if (directIntent.intent === "wallet_analysis" && !directIntent.address) {
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data." };
+  }
+  if (directIntent.intent === "whale_alert" && !directIntent.address) {
+    return await handleWhaleAlertFeed(prompt, body, origin, authHeader);
   }
 
   if (isWhaleFlowPrompt(prompt)) {
