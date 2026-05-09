@@ -29,20 +29,22 @@ export function usePlan(): UserPlan {
 
 /** Like usePlan but exposes loading state so pages can suppress the locked
  *  panel flash while the session/plan are still resolving. */
-export function usePlanWithLoading(): { plan: UserPlan; loading: boolean } {
+export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null } {
   const [plan, setPlan] = useState<UserPlan>('free')
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     async function load(token: string | undefined) {
-      if (!token) { setPlan('free'); setLoading(false); return }
+      if (!token) { setPlan('free'); setError(null); setLoading(false); return }
       try {
         const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const json = await res.json()
           const p = (json?.plan ?? (json?.settings as Record<string, unknown>)?.plan)
           setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+          setError(null)
         }
-      } catch { setPlan('free') }
+      } catch { setPlan('free'); setError('plan_fetch_failed') }
       setLoading(false)
     }
     supabase.auth.getSession().then(({ data }) => load(data.session?.access_token))
@@ -52,7 +54,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean } {
     })
     return () => l.subscription.unsubscribe()
   }, [])
-  return { plan, loading }
+  return { plan, loading, error }
 }
 
 const FEATURE_DISPLAY: Record<string, string> = {

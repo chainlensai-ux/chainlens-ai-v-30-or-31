@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -669,7 +669,7 @@ function LowActivityPanel() {
 }
 
 export default function BaseRadarPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const router = useRouter()
   const [data, setData] = useState<RadarData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -801,6 +801,7 @@ export default function BaseRadarPage() {
     return sorted
   }, [activeFilter, intelTokens, sortMode])
 
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'base-radar')) return <LockedPanel feature="base-radar" />
 
   return (

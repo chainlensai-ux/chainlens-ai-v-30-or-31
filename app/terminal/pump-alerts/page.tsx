@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 type PumpCategory = 'HIGH_MOMENTUM' | 'VOLUME_EXPANSION' | 'THIN_MOONSHOT' | 'WATCH'
 type PumpRisk = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -292,7 +292,7 @@ function SummaryStrip({ alerts }: { alerts: PumpAlert[] }) {
 }
 
 export default function PumpAlertsPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const router = useRouter()
   const [alerts, setAlerts] = useState<PumpAlert[]>([])
   const [fetchedAt, setFetchedAt] = useState<string | null>(null)
@@ -356,6 +356,7 @@ export default function PumpAlertsPage() {
     [alerts, activeFilter],
   )
 
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'pump-alerts')) return <LockedPanel feature="pump-alerts" />
 
   return (

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -166,7 +166,7 @@ function ClarkDots() {
 // ── Main page ────────────────────────────────────────────────────────────────
 
 export default function WalletScannerPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const [input, setInput]               = useState('')
   const [loading, setLoading]           = useState(false)
   const [error, setError]               = useState<string | null>(null)
@@ -265,6 +265,7 @@ export default function WalletScannerPage() {
     }
   }
 
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'wallet-scanner')) return <LockedPanel feature="wallet-scanner" />
 
   return (

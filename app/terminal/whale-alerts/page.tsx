@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 type AlertItem = {
   id?: string
@@ -216,7 +216,7 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 }
 
 export default function WhaleAlertsPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
   const [minUsd, setMinUsd]           = useState(0)
   const [typeFilter, setTypeFilter]   = useState('all')
@@ -428,6 +428,7 @@ export default function WhaleAlertsPage() {
   const bdr      = '1px solid rgba(255,255,255,0.09)'
   const bdrInner = '1px solid rgba(255,255,255,0.06)'
 
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'whale-alerts')) return <LockedPanel feature="whale-alerts" />
 
   return (
