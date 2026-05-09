@@ -377,6 +377,7 @@ export async function POST(request: Request) {
   const allow = syncAllowed(verifiedPlan, request, mode, isFullContinuation)
   if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly." }, { status: 429 })
   const usingAutomaticBatch = queryOffset === null && bodyOffset === null
+  void usingAutomaticBatch  // retained for compatibility — wallet fetch now uses explicit slicing
 
   if (!supabaseUrl || !serviceRole) {
     return NextResponse.json({ ok: false, error: 'missing_supabase_env' }, { status: 503 })
@@ -386,25 +387,36 @@ export async function POST(request: Request) {
   }
 
   const supabase = createClient(supabaseUrl, serviceRole)
-  const { data: wallets, error: walletError, count } = await supabase
+  // Fetch all active wallets up-front so trackedWalletsTotal is exact and
+  // progress math never depends on Supabase's count field (which can be null).
+  const { data: allWalletData, error: walletError } = await supabase
     .from('tracked_wallets')
-    .select('address,label,category,confidence,source,is_active', { count: 'exact' })
+    .select('address,label,category,confidence,source,is_active')
     .eq('is_active', true)
     .order('created_at', { ascending: true })
-    .range(
-      usingAutomaticBatch ? DEFAULT_OFFSET : offset,
-      (usingAutomaticBatch ? DEFAULT_OFFSET : offset) + (usingAutomaticBatch ? Math.min(limit, AUTO_BATCH_MAX_TOTAL) : limit) - 1,
-    )
 
   if (walletError) {
     return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
   }
 
-  const trackedWalletsTotal = count ?? 0
-  const effectiveOffset = usingAutomaticBatch ? DEFAULT_OFFSET : offset
-  if (!wallets || wallets.length === 0) {
-    return NextResponse.json({ ok: false, error: 'no_active_wallets', trackedWallets: 0 }, { status: 404 })
+  const allWallets = (allWalletData ?? []) as TrackedWallet[]
+  const trackedWalletsTotal = allWallets.length
+
+  if (trackedWalletsTotal === 0) {
+    return NextResponse.json({ ok: false, error: 'no_active_wallets', trackedWalletsTotal: 0, done: true }, { status: 404 })
   }
+
+  if (offset >= trackedWalletsTotal) {
+    return NextResponse.json({
+      ok: true, mode, trackedWalletsTotal, offset, requestedLimit: limit,
+      walletsChecked: 0, processed: 0, processedTotal: offset,
+      inserted: 0, skipped: 0, nextOffset: null, hasMore: false, done: true,
+      noFreshSignal: true, refreshStatus: 'complete',
+      message: 'All wallets have already been checked.',
+    })
+  }
+
+  const walletBatch = allWallets.slice(offset, offset + limit)
 
   const startedAt = Date.now()
   let processed = 0
@@ -420,7 +432,7 @@ export async function POST(request: Request) {
   const finalPipelineSummary = makeFinalPipelineSummary()
   const dbInsertErrorSamples: Array<Record<string, string | null>> = []
 
-  for (const wallet of wallets as TrackedWallet[]) {
+  for (const wallet of walletBatch) {
     if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) break
 
     processed += 1
@@ -556,9 +568,10 @@ export async function POST(request: Request) {
     }
   }
 
-  const nextOffset = effectiveOffset + processed < trackedWalletsTotal ? effectiveOffset + processed : null
-  const hasMore = nextOffset !== null
-  const done = !hasMore
+  const processedTotal = offset + processed
+  const done = processedTotal >= trackedWalletsTotal
+  const nextOffset = done ? null : processedTotal
+  const hasMore = !done
   const noFreshSignal = inserted === 0
   const refreshStatus =
     processed === 0
@@ -570,19 +583,22 @@ export async function POST(request: Request) {
           : mode === 'full'
             ? 'full_complete'
             : 'complete'
-  const walletsList = (wallets ?? []) as TrackedWallet[]
+  const walletsList = walletBatch
   const response: Record<string, unknown> = {
     ok: true,
     mode,
     trackedWalletsTotal,
+    offset,
+    requestedLimit: limit,
+    walletsChecked: processed,
     processed,
+    processedTotal,
     inserted,
     skipped,
     nextOffset,
     hasMore,
     done,
     noFreshSignal,
-    offset: effectiveOffset,
     refreshStatus,
     providerErrors,
     skipReasons: skipSummary,

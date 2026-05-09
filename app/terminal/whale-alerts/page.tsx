@@ -309,14 +309,11 @@ export default function WhaleAlertsPage() {
       const merged: SyncResponse = mode === 'full'
         ? (() => {
             const prev = syncState?.mode === 'full' ? syncState : null
-            const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
             const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
-            const trackedWalletsTotal = Number(json.trackedWalletsTotal ?? prev?.trackedWalletsTotal ?? 0)
-            const cappedProcessed = trackedWalletsTotal > 0 ? Math.min(processedTotal, trackedWalletsTotal) : processedTotal
             return {
               ...json,
               mode: 'full',
-              processedTotal: cappedProcessed,
+              processedTotal: json.processedTotal ?? (Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)),
               insertedTotal,
               refreshStatus: json.hasMore ? 'full_in_progress' : 'full_complete',
               savedAt: now,
@@ -686,7 +683,7 @@ export default function WhaleAlertsPage() {
                   style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
                   {syncState?.mode === 'full' && isFullInProgress
                     ? (fullSyncCooldownLeftMs > 0 ? 'Continue shortly' : 'Continue refresh')
-                    : (syncState?.mode === 'full' && !syncState?.hasMore && trackedCount > 0 && scannedCount >= trackedCount ? 'Full refresh complete' : 'Full refresh')}
+                    : (syncState?.mode === 'full' && syncState?.done === true && !syncState?.hasMore ? 'Full refresh complete' : 'Full refresh')}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
                   className="flex items-center rounded-[12px]"
@@ -715,7 +712,7 @@ export default function WhaleAlertsPage() {
                   Full refresh in progress.
                 </p>
               )}
-              {syncState?.mode === 'full' && !syncState?.hasMore && trackedCount > 0 && scannedCount >= trackedCount && (
+              {syncState?.mode === 'full' && syncState?.done === true && !syncState?.hasMore && (
                 <p style={{ margin: 0, fontSize: 11, color: '#86efac' }}>
                   Full refresh complete — {scannedCount} / {trackedCount} checked
                 </p>
