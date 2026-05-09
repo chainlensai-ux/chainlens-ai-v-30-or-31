@@ -108,6 +108,37 @@ const whaleCache = new Map<string, { exp: number; payload: unknown }>()
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
 
+// Rank alerts so non-stablecoin buys/swaps surface first, stablecoin moves last.
+// Score is purely for display ordering — never used to filter.
+function computeInterestScore(row: RawRow): number {
+  const sym  = ((row.token_symbol as string | null) ?? '').trim()
+  const side = ((row.side as string | null) ?? '').toLowerCase()
+  const legs = (row.legs as number | null) ?? 1
+  const usd  = row.amount_usd as number | null
+
+  const syms = sym.split(' / ').map(s => s.trim().toUpperCase()).filter(Boolean)
+  if (syms.length === 0) return 0
+
+  // "Interesting" = not in the low-signal routing/stable set
+  const hasInteresting = syms.some(s => !LOW_SIGNAL_ROUTING.has(s))
+  const allStable = syms.every(s => STABLECOINS.has(s) || s === 'USDBC' || s === 'AXLUSDC')
+
+  let score = 0
+  // Multi-leg swap containing a non-routing token (e.g. USDC→AERO)
+  if (legs >= 2 && hasInteresting) score += 100
+  else if (legs >= 2)              score += 40
+  // Non-stable, non-base-asset buy/accumulation
+  if (hasInteresting) score += (side === 'buy' ? 80 : 50)
+  // Pure base-asset moves (WETH, ETH) — moderate interest
+  if (!hasInteresting && !allStable) score += 20
+  // Pure stablecoin transfers — lowest priority
+  if (allStable) score -= 30
+  // USD value contribution (log-scaled, capped so a 1 USDC txn never beats a real buy)
+  if (usd !== null && usd > 0) score += Math.min(25, Math.log10(usd) * 5)
+
+  return score
+}
+
 // Returns true only when every symbol in a (possibly grouped) token_symbol is a stablecoin.
 // "USDC / WETH" → false (mixed); "USDC" → true; "USDC / USDT" → true.
 function isStablecoinOnly(sym: string | null): boolean {
@@ -547,11 +578,19 @@ export async function GET(req: NextRequest) {
       ? step1.map(row => enrichRowWithTokenPrice(row, tokenPrices))
       : step1
 
-    const scored   = groupAlertsByTx(enriched).map(row => ({ ...row, signal_score: computeSignalScore(row) }))
+    const scored   = groupAlertsByTx(enriched).map(row => ({
+      ...row,
+      signal_score: computeSignalScore(row),
+      interesting_score: computeInterestScore(row),
+    }))
     const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueFloor(scored, effectiveMinUsd)
     const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(valueFiltered)).map(applyHeadlineTokenFocus)
     const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
-    const grouped  = collapseRapidRepeats(diversityCapped).slice(0, limit)
+    // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
+    const interestSorted = [...diversityCapped].sort(
+      (a, b) => ((b.interesting_score as number) ?? 0) - ((a.interesting_score as number) ?? 0),
+    )
+    const grouped  = collapseRapidRepeats(interestSorted).slice(0, limit)
 
     const payload = {
       alerts: grouped,
