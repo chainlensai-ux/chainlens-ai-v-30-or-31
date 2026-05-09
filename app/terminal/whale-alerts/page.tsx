@@ -435,28 +435,62 @@ export default function WhaleAlertsPage() {
 
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'No signal in checked window'
   const providerSummary = syncState ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors} errors)` : 'Healthy') : 'No signal in checked window'
+  const ageStr = (iso?: string | null) => {
+    if (!iso) return 'unknown'
+    const ms = Date.now() - new Date(iso).getTime()
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`
+    if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`
+    return `${Math.floor(ms / 3_600_000)}h ago`
+  }
+
   const buildClarkPrompt = () => {
+    const publicWalletLabel = '60+'
+    const syncProgress = syncState
+      ? `${syncState.processedTotal ?? 0}/${syncState.trackedWalletsTotal ?? 0} wallets scanned${syncState.done ? ' (complete)' : ' (partial)'}`
+      : 'No sync run yet'
+    const totalFound = syncState?.insertedTotal ?? syncState?.inserted ?? null
+
     if (alerts.length > 0) {
-      const topAlerts = alerts.slice(0, 10).map(a => {
+      const top5 = alerts.slice(0, 5).map((a, idx) => {
         const label  = a.wallet_label || 'Tracked Wallet'
-        const tok    = a.token_symbol || a.token_name || 'Unknown token'
+        const tok    = a.focus_token_symbol ?? a.token_symbol ?? a.token_name ?? 'Unknown token'
         const side   = a.side ?? 'move'
-        const amtUsd = a.amount_usd != null ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
-        const amtTok = a.amount_token != null ? `${a.amount_token} ${tok}`.trim() : null
-        const amtStr = amtTok ? `${amtTok} (${amtUsd})` : amtUsd
+        const usd    = a.amount_usd != null ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
         const sig    = a.signal_score ?? 'LOW'
-        const legs   = (a.legs ?? 1) > 1 ? ` | ${a.legs} legs` : ''
-        const rep    = (a.repeats ?? 1) > 1 ? ` | ×${a.repeats}` : ''
-        return `[${sig}] ${label}: ${side} ${amtStr}${legs}${rep}`
+        const sev    = a.severity ?? 'unknown'
+        const age    = ageStr(a.occurred_at)
+        const legs   = (a.legs ?? 1) > 1 ? ` ${a.legs}-leg swap` : ''
+        const rep    = (a.repeats ?? 1) > 1 ? ` ×${a.repeats} repeats` : ''
+        return `${idx + 1}. [${sig}/${sev}] ${label}: ${side} ${usd}${legs}${rep} — ${tok} — ${age}`
       }).join('\n')
       return [
-        `Summarize my Whale Alerts feed. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Window: ${windowValue}. Alerts visible: ${alerts.length}.`,
-        `Top alerts:\n${topAlerts}`,
-        `Note: wallet_label is an internal ChainLens label, not a verified public identity. USD value unverified for tokens outside USDC/USDT/WETH/cbBTC.`,
-        `What are whales doing, which signals are strongest, and what should I watch next? Do not invent data.`,
-      ].join('\n\n')
+        `[ChainLens Whale Alerts — Feature Context]`,
+        `Chain: Base Mainnet`,
+        `Tracked wallets: ${publicWalletLabel} (on-demand sync, no webhook required)`,
+        `Time window: ${windowValue} | Value range: ${valueRange} | Feed mode: ${feedMode}`,
+        `Visible alerts: ${alerts.length}${totalFound != null ? ` | Total signals found this sync: ${totalFound}` : ''}`,
+        `Sync progress: ${syncProgress}`,
+        ``,
+        `Top ${Math.min(5, alerts.length)} visible alerts:`,
+        top5,
+        ``,
+        `Note: wallet_label is an internal ChainLens label, not a verified public identity. USD values are on-chain estimates; always verify before acting. Do not invent data. Do not suggest copy-trading. Say "worth monitoring" rather than "buy".`,
+        ``,
+        `Answer: What are whales doing on Base right now? Which alerts matter most and why? What tokens or patterns are worth monitoring next?`,
+      ].join('\n')
     }
-    return `Review my Whale Alerts setup. No alerts visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider: ${providerSummary}. Filters: window ${windowValue}, valueRange ${valueRange}. Explain what this means. Do not invent alerts.`
+    return [
+      `[ChainLens Whale Alerts — Feature Context]`,
+      `Chain: Base Mainnet`,
+      `Tracked wallets: ${publicWalletLabel} (on-demand sync, no webhook required)`,
+      `Time window: ${windowValue} | Value range: ${valueRange} | Feed mode: ${feedMode}`,
+      `Sync progress: ${syncProgress}`,
+      `No alerts visible.`,
+      ``,
+      `Note: Do not invent alerts or fake data.`,
+      ``,
+      `Explain what it means to have no visible alerts in this context and what the user should try next.`,
+    ].join('\n')
   }
   const goClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1` }
 
@@ -504,7 +538,7 @@ export default function WhaleAlertsPage() {
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 2, opacity: 0.6 }}>
                   <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
                 </svg>
-                {stats.trackedWallets > 0 ? `${stats.trackedWallets} tracked wallets` : 'Wallets loading'}
+                60+ tracked wallets
               </Pill>
               <Pill color="teal" dot>{syncing ? 'Syncing…' : 'On-demand sync mode'}</Pill>
               <Pill color="purple" dot>CORTEX Watching</Pill>
@@ -931,24 +965,39 @@ export default function WhaleAlertsPage() {
             const walletName = alert.wallet_label || 'Tracked Wallet'
             const signal     = alert.signal_score ?? 'LOW'
 
-            // Per-row Clark prompt — structured fields, no raw wallet address
+            // Per-row Clark prompt — full structured context
+            const alertAge = ageStr(alert.occurred_at)
+            const alertType = isSwap ? 'swap' : s === 'buy' ? 'buy' : s === 'sell' ? 'sell' : 'transfer'
             const rowPrompt = [
-              `Explain this whale alert. Signal: ${signal}.`,
-              `Label: ${walletName}`,
+              `[ChainLens Whale Alert — Row Context]`,
+              `Feature: whale_alerts | Chain: Base Mainnet`,
+              `Alert type: ${alertType}`,
+              `Wallet label: ${walletName}`,
+              alert.wallet_address ? `Wallet address: ${alert.wallet_address}` : null,
               `Token: ${tok}`,
+              alert.token_symbol && tok !== alert.token_symbol ? `Raw token symbol: ${alert.token_symbol}` : null,
               `Side: ${alert.side ?? 'unknown'}`,
+              alert.amount_usd != null
+                ? `Value (USD): $${alert.amount_usd.toFixed(2)}`
+                : 'Value (USD): unverified',
               alert.amount_token != null
                 ? `Amount (token): ${alert.amount_token} ${alert.token_symbol ?? ''}`.trim()
                 : null,
-              alert.amount_usd != null
-                ? `Amount (USD): $${alert.amount_usd.toFixed(2)}`
-                : 'Amount (USD): unverified',
-              `Legs: ${alert.legs ?? 1}`,
-              (alert.repeats ?? 1) > 1 ? `Repeats: ${alert.repeats} times in 5 min` : null,
+              `Legs: ${alert.legs ?? 1}${(alert.legs ?? 1) > 1 ? ' (multi-leg swap)' : ''}`,
+              (alert.repeats ?? 1) > 1 ? `Repeated: ${alert.repeats} times within 5 minutes` : null,
+              `Signal score: ${signal}`,
+              alert.severity ? `Severity: ${alert.severity}` : null,
               alert.summary ? `Summary: ${alert.summary}` : null,
-              alert.tx_hash ? `TX: ${alert.tx_hash}` : null,
-              `Time: ${alert.occurred_at ?? 'unknown'}`,
-              'What does this whale alert mean, how strong is it, and what should I watch next? Do not invent data.',
+              alert.tx_hash ? `TX hash: ${alert.tx_hash}` : null,
+              `Timestamp: ${alert.occurred_at ?? 'unknown'} (${alertAge})`,
+              ``,
+              `Answer these questions about this alert:`,
+              `1. What happened on-chain?`,
+              `2. Why might this matter — what does this wallet's action suggest?`,
+              `3. Is this worth monitoring and why?`,
+              `4. What should I check next (token, wallet pattern, or related activity)?`,
+              ``,
+              `Do not invent data. Do not suggest copy-trading. Say "worth monitoring" not "buy". Do not give financial advice.`,
             ].filter(Boolean).join('\n')
             const goRowClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(rowPrompt)}&autosend=1` }
 
