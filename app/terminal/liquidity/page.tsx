@@ -6,6 +6,7 @@ import LiquiditySafetyVerdictCard, {
 } from '@/components/LiquiditySafetyVerdictCard'
 import LPSafetyExtendedBox from '@/components/LPSafetyExtendedBox'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { supabase } from '@/lib/supabaseClient'
 
 export default function LiquiditySafetyPage() {
   const { plan, loading: planLoading } = usePlanWithLoading()
@@ -25,9 +26,14 @@ export default function LiquiditySafetyPage() {
       const isContract = /^0x[a-fA-F0-9]{40}$/.test(q)
       const body = isContract ? { contract: q } : { query: q }
 
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
       const res  = await fetch('/api/liquidity-safety', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify(body),
       } as RequestInit)
       const json = await res.json()

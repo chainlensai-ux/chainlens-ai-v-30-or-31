@@ -422,8 +422,13 @@ function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  const plan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : 'free'
-  if (plan === 'free') return NextResponse.json({ alerts: [], error: 'Upgrade required for whale alerts.', rateLimited: false }, { status: 403 })
+  let plan: 'free' | 'pro' | 'elite' = 'free'
+  let settingsRowFound = false
+  if (token) {
+    const planData = await getCurrentUserPlanFromBearerToken(token).catch(() => null)
+    if (planData) { plan = planData.plan; settingsRowFound = planData.settingsRowFound }
+  }
+  if (plan === 'free') return NextResponse.json({ alerts: [], error: 'Included in Pro and Elite.', rateLimited: false, planGate: { verifiedPlan: plan, requiredPlan: 'pro', settingsRowFound, planSource: token ? 'bearer_token' : 'no_token' } }, { status: 403 })
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
   const now = Date.now()
   const rk = `${ip}:${plan}`

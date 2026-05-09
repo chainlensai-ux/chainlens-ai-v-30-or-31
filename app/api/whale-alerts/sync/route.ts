@@ -373,6 +373,7 @@ export async function POST(request: Request) {
   if (process.env.NODE_ENV !== 'production') {
     console.log(`[sync] route=/api/whale-alerts/sync verifiedPlan=${verifiedPlan}`)
   }
+  if (verifiedPlan === 'free') return NextResponse.json({ ok: false, mode, error: 'Included in Pro and Elite.', planGate: { verifiedPlan, requiredPlan: 'pro' } }, { status: 403 })
   const allow = syncAllowed(verifiedPlan, request, mode, isFullContinuation)
   if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly." }, { status: 429 })
   const usingAutomaticBatch = queryOffset === null && bodyOffset === null
