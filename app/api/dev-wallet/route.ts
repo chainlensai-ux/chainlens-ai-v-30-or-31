@@ -62,6 +62,8 @@ interface LinkedWallet {
   asset: string | null
   txHash: string | null
   firstSeen: string | null
+  confidence?: 'medium' | 'low'
+  reason?: string
 }
 
 interface MatchedHolder {
@@ -107,6 +109,50 @@ interface VerdictSignalInput {
   lpHolderDataAvailable: boolean
 }
 
+// ─── Origin Discovery ──────────────────────────────────────────────────────
+
+interface OriginDiagModule {
+  attempted: boolean
+  ok: boolean
+  reason: string
+  httpStatus?: number
+  candidateAddress?: string | null
+  txHashPresent?: boolean
+  itemCount?: number
+  confidence?: string
+}
+
+interface OriginDiscoveryDiag {
+  optional_creation_lookup: OriginDiagModule
+  contract_transaction_history: OriginDiagModule
+  initial_token_flow_signal: OriginDiagModule
+  rpc_fallback: OriginDiagModule
+  selected_origin_candidate: {
+    methodUsed: string
+    address: string | null
+    confidence: string
+    deployerStatus: string
+  }
+}
+
+interface OriginCandidate {
+  address: string | null
+  confidence: 'high' | 'medium' | 'low'
+  deployerStatus: 'confirmed' | 'possible_match' | 'not_confirmed'
+  methodUsed: string
+  creationTxHash: string | null
+  reason: string
+}
+
+type CovalentTxItem = {
+  tx_hash: string
+  block_height: number
+  block_signed_at: string
+  successful: boolean
+  from_address: string
+  to_address: string | null
+}
+
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
   if (!ALCHEMY_BASE_URL) throw new Error('rpc_not_configured')
   const res = await fetch(ALCHEMY_BASE_URL, {
@@ -131,77 +177,155 @@ async function getAssetTransfers(params: Record<string, unknown>): Promise<Alche
   }
 }
 
-async function findLikelyDeployer(contract: string): Promise<{
-  address: string | null
-  confidence: 'high' | 'medium' | 'low'
-  methodUsed: 'alchemy_first_mint_recipient' | 'alchemy_earliest_token_transfer_fallback' | 'alchemy_first_incoming_external' | 'unknown'
+async function discoverOrigin(contract: string): Promise<{
+  candidate: OriginCandidate
+  diag: OriginDiscoveryDiag
 }> {
+  const diag: OriginDiscoveryDiag = {
+    optional_creation_lookup: { attempted: false, ok: false, reason: 'skipped' },
+    contract_transaction_history: { attempted: false, ok: false, reason: 'skipped' },
+    initial_token_flow_signal: { attempted: false, ok: false, reason: 'skipped' },
+    rpc_fallback: { attempted: false, ok: false, reason: 'skipped' },
+    selected_origin_candidate: { methodUsed: 'unknown', address: null, confidence: 'low', deployerStatus: 'not_confirmed' },
+  }
+  const ZERO = '0x0000000000000000000000000000000000000000'
+
+  function finalize(c: OriginCandidate): { candidate: OriginCandidate; diag: OriginDiscoveryDiag } {
+    diag.selected_origin_candidate = { methodUsed: c.methodUsed, address: c.address, confidence: c.confidence, deployerStatus: c.deployerStatus }
+    return { candidate: c, diag }
+  }
+
+  // 1. Optional paid creation lookup (Basescan/Etherscan key optional)
+  const scanKey = process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY
+  if (scanKey) {
+    diag.optional_creation_lookup.attempted = true
+    try {
+      const scanRes = await fetch(
+        `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`,
+        { cache: 'no-store', signal: AbortSignal.timeout(6000) }
+      )
+      diag.optional_creation_lookup.httpStatus = scanRes.status
+      if (scanRes.ok) {
+        const scanJson = await scanRes.json() as { status?: string; result?: Array<{ contractCreator?: string; txHash?: string }> }
+        const r = scanJson?.result?.[0]
+        if (scanJson.status === '1' && r?.contractCreator) {
+          const creator = r.contractCreator.toLowerCase()
+          diag.optional_creation_lookup.ok = true
+          diag.optional_creation_lookup.reason = 'contract_creation_record'
+          diag.optional_creation_lookup.candidateAddress = creator
+          diag.optional_creation_lookup.txHashPresent = Boolean(r.txHash)
+          diag.optional_creation_lookup.confidence = 'high'
+          return finalize({ address: creator, confidence: 'high', deployerStatus: 'confirmed', methodUsed: 'transaction_creation_record', creationTxHash: r.txHash ?? null, reason: 'Creation record from indexed transactions' })
+        }
+        diag.optional_creation_lookup.reason = scanJson.status === '0' ? 'api_no_result' : 'unexpected_shape'
+      } else {
+        diag.optional_creation_lookup.reason = `http_${scanRes.status}`
+      }
+    } catch (e) {
+      diag.optional_creation_lookup.reason = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError') ? 'timeout' : 'fetch_error'
+    }
+  }
+
+  // 2. GoldRush/Covalent contract transaction history (ascending sort = earliest first)
+  const covalentKey = process.env.COVALENT_API_KEY
+  if (covalentKey) {
+    diag.contract_transaction_history.attempted = true
+    try {
+      const txRes = await fetch(
+        `${COVALENT_BASE_URL}/base-mainnet/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
+        { cache: 'no-store', signal: AbortSignal.timeout(10000) }
+      )
+      diag.contract_transaction_history.httpStatus = txRes.status
+      if (txRes.ok) {
+        const txJson = await txRes.json() as { data?: { items?: CovalentTxItem[] } }
+        const txItems = txJson?.data?.items ?? []
+        diag.contract_transaction_history.itemCount = txItems.length
+
+        // Contract creation tx: to_address is null or empty string
+        const creationTx = txItems.find(t => t.successful && (t.to_address === null || t.to_address === ''))
+        if (creationTx?.from_address) {
+          const creator = creationTx.from_address.toLowerCase()
+          diag.contract_transaction_history.ok = true
+          diag.contract_transaction_history.reason = 'creation_tx_found'
+          diag.contract_transaction_history.candidateAddress = creator
+          diag.contract_transaction_history.txHashPresent = true
+          diag.contract_transaction_history.confidence = 'high'
+          return finalize({ address: creator, confidence: 'high', deployerStatus: 'confirmed', methodUsed: 'transaction_creation_record', creationTxHash: creationTx.tx_hash, reason: 'Contract deployment transaction identified in indexed history' })
+        }
+
+        // Earliest successful tx from a valid external sender
+        const earliestTx = txItems.find(
+          t => t.successful && t.from_address && t.from_address.toLowerCase() !== contract.toLowerCase() && t.from_address.toLowerCase() !== ZERO
+        )
+        if (earliestTx?.from_address) {
+          const origin = earliestTx.from_address.toLowerCase()
+          diag.contract_transaction_history.ok = true
+          diag.contract_transaction_history.reason = 'earliest_contract_activity'
+          diag.contract_transaction_history.candidateAddress = origin
+          diag.contract_transaction_history.txHashPresent = true
+          diag.contract_transaction_history.confidence = 'medium'
+          return finalize({ address: origin, confidence: 'medium', deployerStatus: 'possible_match', methodUsed: 'earliest_contract_activity', creationTxHash: earliestTx.tx_hash, reason: 'Earliest indexed contract activity; not confirmed creator' })
+        }
+        diag.contract_transaction_history.reason = txItems.length === 0 ? 'no_items' : 'no_valid_candidate'
+      } else {
+        diag.contract_transaction_history.reason = `http_${txRes.status}`
+      }
+    } catch (e) {
+      diag.contract_transaction_history.reason = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError') ? 'timeout' : 'fetch_error'
+    }
+  }
+
+  // 3. Initial token flow: first mint from zero address (ERC-20 Transfer from 0x0)
+  diag.initial_token_flow_signal.attempted = true
   const mintTransfers = await getAssetTransfers({
-    fromBlock: '0x0',
-    toBlock: 'latest',
-    category: ['erc20'],
-    contractAddresses: [contract],
-    fromAddress: '0x0000000000000000000000000000000000000000',
-    order: 'asc',
-    maxCount: '0x64',
-    withMetadata: true,
+    fromBlock: '0x0', toBlock: 'latest',
+    category: ['erc20'], contractAddresses: [contract],
+    fromAddress: ZERO, order: 'asc', maxCount: '0x64', withMetadata: true,
   })
-
-  const firstMint = mintTransfers.find(t => t.to && t.to !== '0x0000000000000000000000000000000000000000')
+  const firstMint = mintTransfers.find(t => t.to && t.to !== ZERO)
   if (firstMint?.to) {
-    return {
-      address: firstMint.to.toLowerCase(),
-      confidence: 'medium',
-      methodUsed: 'alchemy_first_mint_recipient',
-    }
+    diag.initial_token_flow_signal.ok = true
+    diag.initial_token_flow_signal.reason = 'first_mint_recipient'
+    diag.initial_token_flow_signal.candidateAddress = firstMint.to.toLowerCase()
+    diag.initial_token_flow_signal.confidence = 'medium'
+    return finalize({ address: firstMint.to.toLowerCase(), confidence: 'medium', deployerStatus: 'possible_match', methodUsed: 'initial_token_flow_signal', creationTxHash: firstMint.hash ?? null, reason: 'First mint recipient from token transfer events; not confirmed creator' })
   }
+  diag.initial_token_flow_signal.reason = 'no_mint_transfers'
 
-  const earliestTransfers = await getAssetTransfers({
-    fromBlock: '0x0',
-    toBlock: 'latest',
-    category: ['erc20'],
-    contractAddresses: [contract],
-    order: 'asc',
-    maxCount: '0x32',
-    withMetadata: true,
+  // 4. RPC fallback: earliest ERC-20 transfer participant, then first incoming ETH
+  diag.rpc_fallback.attempted = true
+  const earliestErc20 = await getAssetTransfers({
+    fromBlock: '0x0', toBlock: 'latest',
+    category: ['erc20'], contractAddresses: [contract],
+    order: 'asc', maxCount: '0x32', withMetadata: true,
   })
-
-  const earliest = earliestTransfers.find(t => t.from || t.to)
-  if (earliest) {
-    const fallbackAddress =
-      (earliest.from && earliest.from !== '0x0000000000000000000000000000000000000000'
-        ? earliest.from
-        : earliest.to) ?? null
-
-    return {
-      address: fallbackAddress?.toLowerCase() ?? null,
-      confidence: 'low',
-      methodUsed: 'alchemy_earliest_token_transfer_fallback',
+  const firstErc20 = earliestErc20.find(t => t.from || t.to)
+  if (firstErc20) {
+    const addr = (firstErc20.from && firstErc20.from !== ZERO ? firstErc20.from : firstErc20.to) ?? null
+    if (addr) {
+      diag.rpc_fallback.ok = true
+      diag.rpc_fallback.reason = 'earliest_erc20_transfer'
+      diag.rpc_fallback.candidateAddress = addr.toLowerCase()
+      diag.rpc_fallback.confidence = 'low'
+      return finalize({ address: addr.toLowerCase(), confidence: 'low', deployerStatus: 'possible_match', methodUsed: 'earliest_transfer', creationTxHash: null, reason: 'Earliest ERC-20 transfer participant; not confirmed creator' })
     }
   }
 
-  const incomingExternal = await getAssetTransfers({
-    fromBlock: '0x0',
-    toBlock: 'latest',
-    toAddress: contract,
-    category: ['external'],
-    order: 'asc',
-    maxCount: '0x5',
-    withMetadata: true,
+  const incomingExt = await getAssetTransfers({
+    fromBlock: '0x0', toBlock: 'latest', toAddress: contract,
+    category: ['external'], order: 'asc', maxCount: '0x5', withMetadata: true,
   })
-
-  const firstExternal = incomingExternal.find(
-    t => t.from && t.from !== '0x0000000000000000000000000000000000000000',
-  )
-  if (firstExternal?.from) {
-    return {
-      address: firstExternal.from.toLowerCase(),
-      confidence: 'low',
-      methodUsed: 'alchemy_first_incoming_external',
-    }
+  const firstExt = incomingExt.find(t => t.from && t.from !== ZERO)
+  if (firstExt?.from) {
+    diag.rpc_fallback.ok = true
+    diag.rpc_fallback.reason = 'first_incoming_external'
+    diag.rpc_fallback.candidateAddress = firstExt.from.toLowerCase()
+    diag.rpc_fallback.confidence = 'low'
+    return finalize({ address: firstExt.from.toLowerCase(), confidence: 'low', deployerStatus: 'possible_match', methodUsed: 'earliest_external_activity', creationTxHash: null, reason: 'First external ETH transfer to contract; not confirmed creator' })
   }
 
-  return { address: null, confidence: 'low', methodUsed: 'unknown' }
+  diag.rpc_fallback.reason = 'no_transfers_found'
+  return finalize({ address: null, confidence: 'low', deployerStatus: 'not_confirmed', methodUsed: 'unknown', creationTxHash: null, reason: 'No origin candidate found from any available source' })
 }
 
 async function findLinkedWallets(deployer: string, excludeContract: string): Promise<LinkedWallet[]> {
@@ -234,6 +358,8 @@ async function findLinkedWallets(deployer: string, excludeContract: string): Pro
         asset: t.asset,
         txHash: t.hash,
         firstSeen: t.metadata?.blockTimestamp ?? null,
+        confidence: 'medium',
+        reason: 'outgoing_transfer_from_origin_wallet',
       })
       continue
     }
@@ -265,6 +391,9 @@ async function getSupplyData(
   const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
 
   if (preloadedTopHolders && preloadedTopHolders.length > 0) {
+    if (!deployer && linkedSet.size === 0) {
+      return { holderDataAvailable: true, supplyControlled: null, matchedHolderWallets: [] }
+    }
     const matched: MatchedHolder[] = []
     let controlled = 0
     for (const h of preloadedTopHolders) {
@@ -553,6 +682,7 @@ function isBadClarkResponse(text: string): boolean {
 interface ClarkFallbackData {
   contractAddress: string
   deployerAddress: string | null
+  deployerStatus?: string
   deployerConfidence: 'high' | 'medium' | 'low'
   linkedWallets: LinkedWallet[]
   supplyControlled: number | null
@@ -571,6 +701,7 @@ interface ClarkFallbackData {
   holderTop10?: number | null
   holderCount?: number | null
   lpControlStatus?: string | null
+  liquidityUsd?: number | null
   previousProjects: PreviousProject[]
 }
 
@@ -599,11 +730,13 @@ function buildDeterministicFallbackVerdict(data: ClarkFallbackData): { verdict: 
 
   const keySignals: string[] = [
     data.deployerAddress
-      ? 'Likely creator/deployer wallet identified'
+      ? (data.deployerStatus === 'confirmed'
+          ? 'Creator wallet confirmed from transaction records'
+          : 'Likely origin wallet identified — not confirmed creator')
       : 'No creator link confirmed from current checks',
     data.linkedWallets.length > 0
       ? `${data.linkedWallets.length} linked wallet(s) found`
-      : 'No linked wallets in checked window',
+      : 'No linked-wallet cluster confirmed',
     data.holderDataAvailable
       ? 'Holder distribution available for review'
       : 'Holder distribution needs deeper confirmation',
@@ -647,6 +780,7 @@ function buildDeterministicFallbackVerdict(data: ClarkFallbackData): { verdict: 
 async function getClarkVerdict(origin: string, data: {
   contractAddress: string
   deployerAddress: string | null
+  deployerStatus?: string
   deployerConfidence: 'high' | 'medium' | 'low'
   methodUsed: string
   linkedWallets: LinkedWallet[]
@@ -669,6 +803,7 @@ async function getClarkVerdict(origin: string, data: {
   holderTop10?: number | null
   holderCount?: number | null
   lpControlStatus?: string | null
+  liquidityUsd?: number | null
 }): Promise<{ verdict: ClarkVerdict | null; clarkError: string | null }> {
   const normalizeLabel = (value: unknown): ClarkVerdict['label'] | null => {
     const v = String(value ?? '').trim().toUpperCase().replace(/_/g, ' ')
@@ -706,7 +841,8 @@ async function getClarkVerdict(origin: string, data: {
     `Output label must be exactly one of: TRUSTWORTHY, WATCH, AVOID, UNKNOWN.\n` +
     `Address: ${data.contractAddress}\n` +
     `Token: ${data.tokenName ?? 'unknown'} (${data.tokenSymbol ?? 'unknown'})\n` +
-    `Likely deployer: ${data.deployerAddress ?? 'unknown'}\n` +
+    `Creator status: ${data.deployerStatus ?? 'not_confirmed'}\n` +
+    `Creator/origin address: ${data.deployerAddress ?? 'none'}\n` +
     `Confidence: ${data.deployerConfidence}\n` +
     `Method: ${data.methodUsed}\n` +
     `Linked wallets: ${data.linkedWallets.length}\n` +
@@ -715,6 +851,7 @@ async function getClarkVerdict(origin: string, data: {
     `Top 10 holder concentration: ${data.holderTop10 != null ? `${data.holderTop10}%` : 'unknown'}\n` +
     `Supply controlled by deployer cluster: ${data.supplyControlled ?? 'unknown'}\n` +
     `Liquidity data available: ${data.liquidityDataAvailable}\n` +
+    `Liquidity USD: ${data.liquidityUsd != null ? data.liquidityUsd : 'unknown'}\n` +
     `LP control status: ${data.lpControlStatus ?? 'unknown'}\n` +
     `Security data available: ${data.securityDataAvailable}\n` +
     `Previous activity available: ${data.previousActivityAvailable}\n` +
@@ -1018,19 +1155,27 @@ export async function POST(req: Request) {
 
     let deployerAddress: string | null = null
     let deployerConfidence: 'high'|'medium'|'low' = 'low'
+    let deployerStatus: 'confirmed' | 'possible_match' | 'not_confirmed' = 'not_confirmed'
     let methodUsed = 'unknown'
+    let creationTxHash: string | null = null
+    let originReason: string = 'No origin candidate found'
+    let originDiag: OriginDiscoveryDiag | null = null
     try {
-      const dep = await findLikelyDeployer(normalizedAddress)
-      deployerAddress = dep.address
-      deployerConfidence = dep.confidence
-      methodUsed = dep.methodUsed
+      const { candidate, diag: od } = await discoverOrigin(normalizedAddress)
+      deployerAddress = candidate.address
+      deployerConfidence = candidate.confidence
+      deployerStatus = candidate.deployerStatus
+      methodUsed = candidate.methodUsed
+      creationTxHash = candidate.creationTxHash
+      originReason = candidate.reason
+      originDiag = od
     } catch {
       rpcStatus = rpcStatus === 'ok' ? 'partial' : rpcStatus
       warnings.push('Creator trace not returned from current check.')
     }
 
     if (!deployerAddress) {
-      warnings.push('No creator link confirmed from current checks.')
+      warnings.push('Creator link not confirmed from current checks.')
     }
 
     let linkedWallets: LinkedWallet[] = []
@@ -1062,6 +1207,12 @@ export async function POST(req: Request) {
     const lpControlStatus = typeof lpControlObj?.status === 'string' ? lpControlObj.status : null
     const liqLpLocked: boolean | null = lpControlStatus === 'burned' || lpControlStatus === 'locked' ? true : lpControlStatus === 'team_controlled' ? false : null
     const liqHolderConcentration: number | null = typeof liqEv.lpHolderConcentration === 'number' ? liqEv.lpHolderConcentration : null
+    const liquidityUsd: number | null = typeof liqEv.liquidityDepth === 'number' ? (liqEv.liquidityDepth as number) : (typeof tokenEvidence?.liquidityUsd === 'number' ? (tokenEvidence.liquidityUsd as number) : null)
+
+    const supplyControlStatus: 'ok' | 'partial' | 'needs_confirmed_creator' =
+      !deployerAddress && linkedWallets.length === 0
+        ? 'needs_confirmed_creator'
+        : (supplyControlled !== null && supplyControlled > 0 ? 'ok' : 'partial')
 
     const { suspiciousTransfers, suspiciousTransferReasons } =
       detectSuspiciousTransfers(linkedWallets, supplyControlled)
@@ -1069,6 +1220,7 @@ export async function POST(req: Request) {
     const { verdict: clarkVerdict, clarkError } = await getClarkVerdict(origin, {
       contractAddress: normalizedAddress,
       deployerAddress,
+      deployerStatus,
       deployerConfidence,
       methodUsed,
       linkedWallets,
@@ -1091,6 +1243,7 @@ export async function POST(req: Request) {
       holderTop10,
       holderCount,
       lpControlStatus,
+      liquidityUsd,
     })
 
     const moduleDiags = [
@@ -1137,7 +1290,10 @@ export async function POST(req: Request) {
       } : null,
       tokenStatus: tokenEvidence ? 'ok' : (bytecode && bytecode !== '0x' ? 'partial' : 'limited_check'),
       marketStatus: tokenEvidence && market && Object.keys(market).length ? 'ok' : 'partial',
-      deployerStatus: deployerAddress ? 'ok' : 'not_confirmed',
+      deployerStatus,
+      creationTxHash,
+      originReason,
+      supplyControlStatus,
       linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'partial' : 'skipped'),
       holderStatus: holderDataAvailable ? 'ok' : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
@@ -1161,6 +1317,7 @@ export async function POST(req: Request) {
           rpcStatus,
           providerUsed,
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
+          origin_discovery: originDiag ?? { skipped: true },
         },
       } : {}),
       fetchedAt: new Date().toISOString(),
