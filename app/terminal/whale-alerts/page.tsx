@@ -426,11 +426,11 @@ export default function WhaleAlertsPage() {
   const syncStatusText = syncing
     ? (syncState?.mode === 'full' && (syncState?.trackedWalletsTotal ?? 0) > 0
         ? `Scanning ${scannedCount}/${syncState.trackedWalletsTotal}`
-        : 'Checking wallets…')
+        : 'Scanning…')
     : isFullInProgress
       ? 'Full refresh in progress'
       : syncState
-        ? (syncState.hasMore ? 'Partial refresh' : (syncState.mode === 'full' ? 'Full refresh complete' : 'Recently refreshed'))
+        ? (syncState.hasMore ? 'Partial refresh' : (syncState.mode === 'full' ? `Full refresh complete — ${scannedCount}/${trackedCount} wallets` : 'Recently refreshed'))
         : 'Ready to sync'
 
   const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'No signal in checked window'
@@ -464,7 +464,7 @@ export default function WhaleAlertsPage() {
     { label: 'ALERTS · 15M',    val: stats.alerts15m,      sub: 'Last quarter hour',   color: '#2dd4bf' },
     { label: 'ALERTS · 1H',     val: stats.alerts1h,       sub: 'Past 60 minutes',      color: '#2dd4bf' },
     { label: 'ALERTS · 24H',    val: stats.alerts24h,      sub: 'Rolling day window',   color: '#8b5cf6' },
-    { label: 'TRACKED WALLETS', val: stats.trackedWallets, sub: 'Smart money + manual', color: '#ec4899' },
+    { label: 'TRACKED WALLETS', val: '60+', sub: 'Smart money + manual', color: '#ec4899' },
   ]
 
   const cardBg   = 'rgba(7,16,27,0.92)'
@@ -671,7 +671,7 @@ export default function WhaleAlertsPage() {
               <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
                   <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Tracked set</p>
-                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>{trackedCount > 0 ? trackedCount : stats.trackedWallets > 0 ? stats.trackedWallets : '60+'} wallets</p>
+                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>60+ wallets</p>
                 </div>
                 <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
                   <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Signals found</p>
@@ -718,7 +718,7 @@ export default function WhaleAlertsPage() {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Checking wallets…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : 'Refresh now'}
+                  {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : 'Refresh now'}
                 </button>
                 <button onClick={() => { void runSync(syncState?.mode === 'full' && isFullInProgress ? computedFullNextOffset : 0, 'full') }} disabled={syncing || (fullSyncCooldownLeftMs > 0 && !isFullInProgress)}
                   className="flex items-center rounded-[12px]"
@@ -891,7 +891,7 @@ export default function WhaleAlertsPage() {
                   </p>
                 )}
                 <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
-                  <Pill color="slate">{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Wallet count pending in current checks'}</Pill>
+                  <Pill color="slate">60+ tracked wallets</Pill>
                   {syncState
                     ? <Pill color="teal">{scanned} of {total || stats.trackedWallets} scanned</Pill>
                     : <Pill color="teal">No sync yet</Pill>}

@@ -446,6 +446,7 @@ export async function POST(request: Request) {
 
   const startedAt = Date.now()
   let processed = 0
+  let earlyStopped = false
   let inserted = 0
   let skipped = 0
   let providerErrors = 0
@@ -459,7 +460,7 @@ export async function POST(request: Request) {
   const dbInsertErrorSamples: Array<Record<string, string | null>> = []
 
   for (const wallet of walletBatch) {
-    if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) break
+    if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) { earlyStopped = true; break }
 
     processed += 1
     const short = shortAddress(wallet.address)
@@ -594,13 +595,15 @@ export async function POST(request: Request) {
     }
   }
 
-  const processedTotal = offset + processed
+  // walletsChecked = actual wallets attempted; equals walletBatch.length unless safety timeout fired
+  const walletsChecked = processed
+  const processedTotal = offset + walletsChecked
   const done = processedTotal >= trackedWalletsTotal
   const nextOffset = done ? null : processedTotal
   const hasMore = !done
   const noFreshSignal = inserted === 0
   const refreshStatus =
-    processed === 0
+    walletsChecked === 0
       ? 'empty'
       : mode === 'full' && hasMore
         ? 'full_in_progress'
@@ -616,25 +619,27 @@ export async function POST(request: Request) {
     trackedWalletsTotal,
     offset,
     requestedLimit: limit,
-    walletsChecked: processed,
-    processed,
+    walletsChecked,
+    processed: walletsChecked,
     processedTotal,
     inserted,
     skipped,
     nextOffset,
     hasMore,
     done,
+    earlyStopped,
+    earlyStopReason: earlyStopped ? 'safety_timeout' : null,
     noFreshSignal,
     refreshStatus,
     providerErrors,
     skipReasons: skipSummary,
-    message: processed === 0
+    message: walletsChecked === 0
       ? 'No active wallets were scanned in this batch.'
       : inserted > 0
-        ? `Checked ${processed} wallet${processed === 1 ? '' : 's'}. Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'}.`
+        ? `Checked ${walletsChecked} wallet${walletsChecked === 1 ? '' : 's'}. Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'}.`
         : done
           ? 'No fresh signal in the checked window.'
-          : `Checked ${processed} of ${trackedWalletsTotal} wallets. No fresh signal yet — continue to scan more.`,
+          : `Checked ${walletsChecked} of ${trackedWalletsTotal} wallets. No fresh signal yet — continue to scan more.`,
   }
 
   if (debug) {
