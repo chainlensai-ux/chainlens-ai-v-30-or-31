@@ -355,7 +355,7 @@ function SupplyBar({ supplyControlled, holderDataAvailable }: {
     return (
       <Card>
         <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-          Holder distribution data unavailable for this token.
+          No deployer link confirmed from current checks.
         </p>
       </Card>
     )
@@ -668,7 +668,7 @@ export default function DevWalletPage() {
             {!result.clarkVerdict && (
               <Card style={{ marginBottom: '24px', borderColor: 'rgba(148,163,184,0.15)' }}>
                 <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                  Clark analysis unavailable for this scan.
+                  Clark analysis not enough verified evidence for this scan.
                 </p>
               </Card>
             )}
@@ -807,7 +807,7 @@ export default function DevWalletPage() {
                   <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
                     {result.deployerAddress
                       ? 'No outgoing ETH transfers found from the deployer wallet.'
-                      : 'Unavailable — deployer address not identified.'}
+                      : 'No signal in checked window — deployer address not identified.'}
                   </p>
                 </Card>
               ) : (
@@ -921,7 +921,7 @@ export default function DevWalletPage() {
                           </p>
                           {!p.name && !p.symbol && (
                             <p style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', margin: '6px 0 0' }}>
-                              Metadata unavailable
+                              Metadata pending in current checks
                             </p>
                           )}
                           {p.rugReason && (
@@ -936,7 +936,7 @@ export default function DevWalletPage() {
                           background: p.rugFlag === true ? 'rgba(248,113,113,0.10)' : p.rugFlag === false ? 'rgba(45,212,191,0.08)' : 'rgba(148,163,184,0.08)',
                           border: `1px solid ${p.rugFlag === true ? 'rgba(248,113,113,0.25)' : p.rugFlag === false ? 'rgba(45,212,191,0.20)' : 'rgba(148,163,184,0.20)'}`,
                         }}>
-                          {p.rugFlag === true ? 'Flagged' : p.rugFlag === false ? 'Checked' : 'Unavailable'}
+                          {p.rugFlag === true ? 'Flagged' : p.rugFlag === false ? 'Checked' : 'No signal in checked window'}
                         </span>
                       </div>
                     </Card>

@@ -530,7 +530,7 @@ export default function PumpAlertsPage() {
           {/* Disclaimer */}
           {filtered.length > 0 && (
             <p style={{ marginTop: '20px', fontSize: '10px', color: '#2d3f52', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
-              Pump Alerts surface tokens meeting momentum thresholds based on live GeckoTerminal data. This is not financial advice. Always verify independently before acting.
+              Pump Alerts surface tokens meeting momentum thresholds based on live CORTEX market data. This is not financial advice. Always verify independently before acting.
             </p>
           )}
         </div>
