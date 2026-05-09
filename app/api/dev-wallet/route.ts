@@ -208,6 +208,16 @@ async function getAssetTransfers(params: Record<string, unknown>): Promise<Alche
   }
 }
 
+async function getContractAddressFromTx(txHash: string): Promise<string | null> {
+  try {
+    const result = await alchemyRpc('eth_getTransactionReceipt', [txHash]) as { contractAddress?: string | null } | null
+    const addr = result?.contractAddress ?? ''
+    return addr && addr !== '0x0000000000000000000000000000000000000000' ? addr.toLowerCase() : null
+  } catch {
+    return null
+  }
+}
+
 async function discoverOrigin(contract: string): Promise<{
   candidate: OriginCandidate
   diag: OriginDiscoveryDiag
@@ -500,12 +510,57 @@ async function getSupplyData(
 async function getPreviousActivity(deployer: string | null): Promise<{
   previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
+  previousActivityStatus: 'ok' | 'none_found' | 'limited_check' | 'skipped'
   warning: string | null
 }> {
   if (!deployer) {
-    return { previousActivityAvailable: false, previousProjects: [], warning: null }
+    return { previousActivityAvailable: false, previousProjects: [], previousActivityStatus: 'skipped', warning: null }
   }
 
+  // Covalent-first: look for actual contract deployment transactions
+  const covalentKey = process.env.COVALENT_API_KEY
+  if (covalentKey) {
+    try {
+      const res = await fetch(
+        `${COVALENT_BASE_URL}/base-mainnet/address/${deployer}/transactions_v2/?key=${covalentKey}&page-size=50&block-signed-at-asc=false&no-logs=true`,
+        { cache: 'no-store', signal: AbortSignal.timeout(10000) }
+      )
+      if (res.ok) {
+        const json = await res.json() as { data?: { items?: CovalentTxItem[] } }
+        const txItems = json?.data?.items ?? []
+        // Deployment txs have no to_address
+        const deploymentTxs = txItems.filter(t => t.successful && (t.to_address === null || t.to_address === ''))
+        if (deploymentTxs.length === 0) {
+          return { previousActivityAvailable: true, previousProjects: [], previousActivityStatus: 'none_found', warning: null }
+        }
+        const contractAddresses = await Promise.all(
+          deploymentTxs.slice(0, 5).map(t => getContractAddressFromTx(t.tx_hash))
+        )
+        const projects: PreviousProject[] = contractAddresses
+          .map((addr, i): PreviousProject | null =>
+            addr ? {
+              contractAddress: addr,
+              name: null,
+              symbol: null,
+              createdAt: deploymentTxs[i]?.block_signed_at ?? null,
+              rugFlag: null,
+              rugReason: null,
+            } : null
+          )
+          .filter((p): p is PreviousProject => p !== null)
+        return {
+          previousActivityAvailable: true,
+          previousProjects: projects,
+          previousActivityStatus: projects.length > 0 ? 'ok' : 'none_found',
+          warning: null,
+        }
+      }
+    } catch {
+      // Fall through to Alchemy fallback
+    }
+  }
+
+  // Alchemy fallback: ERC-20 interactions (token trades, not deployments — limited signal)
   const transfers = await getAssetTransfers({
     fromBlock: '0x0',
     toBlock: 'latest',
@@ -517,11 +572,7 @@ async function getPreviousActivity(deployer: string | null): Promise<{
   })
 
   if (transfers.length === 0) {
-    return {
-      previousActivityAvailable: false,
-      previousProjects: [],
-      warning: 'Previous activity not available in current check.',
-    }
+    return { previousActivityAvailable: false, previousProjects: [], previousActivityStatus: 'limited_check', warning: null }
   }
 
   const byContract = new Map<string, PreviousProject>()
@@ -529,7 +580,6 @@ async function getPreviousActivity(deployer: string | null): Promise<{
     const contractAddress = t.rawContract?.address?.toLowerCase()
     if (!contractAddress || contractAddress === '0x0000000000000000000000000000000000000000') continue
     if (byContract.has(contractAddress)) continue
-
     byContract.set(contractAddress, {
       contractAddress,
       name: null,
@@ -541,8 +591,9 @@ async function getPreviousActivity(deployer: string | null): Promise<{
   }
 
   return {
-    previousActivityAvailable: true,
+    previousActivityAvailable: byContract.size > 0,
     previousProjects: [...byContract.values()].slice(0, 10),
+    previousActivityStatus: 'limited_check',
     warning: null,
   }
 }
@@ -550,11 +601,19 @@ async function getPreviousActivity(deployer: string | null): Promise<{
 function detectSuspiciousTransfers(
   linkedWallets: LinkedWallet[],
   supplyControlled: number | null,
+  matchedHolderWallets: MatchedHolder[],
 ): { suspiciousTransfers: boolean; suspiciousTransferReasons: string[] } {
   const reasons: string[] = []
 
-  if (linkedWallets.length >= 5) {
-    reasons.push(`Likely deployer funded ${linkedWallets.length} wallets`)
+  if (linkedWallets.length >= 3) {
+    reasons.push(`Deployer wallet funded ${linkedWallets.length} linked wallets`)
+  }
+
+  // Overlap: creator-linked wallets appearing in top-holder set
+  const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
+  const holderOverlap = matchedHolderWallets.filter(h => h.isLinked && linkedSet.has(h.address))
+  if (holderOverlap.length >= 2) {
+    reasons.push(`${holderOverlap.length} creator-linked wallets appear in top-holder set`)
   }
 
   const numericAmounts = linkedWallets.map(w => w.amountReceived).filter((v): v is number => typeof v === 'number')
@@ -855,6 +914,10 @@ async function getClarkVerdict(origin: string, data: {
   holderCount?: number | null
   lpControlStatus?: string | null
   liquidityUsd?: number | null
+  supplyControlStatus?: string | null
+  linkedWalletsStatus?: string | null
+  previousActivityStatus?: string | null
+  matchedHolderCount?: number
 }): Promise<{ verdict: ClarkVerdict | null; clarkError: string | null }> {
   const normalizeLabel = (value: unknown): ClarkVerdict['label'] | null => {
     const v = String(value ?? '').trim().toUpperCase().replace(/_/g, ' ')
@@ -903,10 +966,14 @@ async function getClarkVerdict(origin: string, data: {
     `Confidence: ${data.deployerConfidence}\n` +
     `Method: ${data.methodUsed}\n` +
     `Linked wallets: ${data.linkedWallets.length}\n` +
+    `Linked wallets status: ${data.linkedWalletsStatus ?? 'unknown'}\n` +
     `Holder data available: ${data.holderDataAvailable}\n` +
     `Holder count: ${data.holderCount != null ? data.holderCount : 'unknown'}\n` +
     `Top 10 holder concentration: ${data.holderTop10 != null ? `${parseFloat(data.holderTop10.toFixed(2))}%` : 'unknown'}\n` +
     `Supply controlled by deployer cluster: ${data.supplyControlled ?? 'unknown'}\n` +
+    `Supply control status: ${data.supplyControlStatus ?? 'unknown'}\n` +
+    `Matched holder wallets (deployer cluster in top holders): ${data.matchedHolderCount ?? 0}\n` +
+    `Previous activity status: ${data.previousActivityStatus ?? 'unknown'}\n` +
     `Liquidity data available: ${data.liquidityDataAvailable}\n` +
     `Liquidity USD: ${data.liquidityUsd != null ? data.liquidityUsd : 'unknown'}\n` +
     `LP control status: ${data.lpControlStatus ?? 'unknown'}\n` +
@@ -1252,11 +1319,9 @@ export async function POST(req: Request) {
       warnings.push('Holder distribution needs deeper confirmation.')
     }
 
-    const { previousActivityAvailable, previousProjects, warning: activityWarning } =
+    const { previousActivityAvailable, previousProjects, previousActivityStatus, warning: activityWarning } =
       await getPreviousActivity(deployerAddress)
     if (activityWarning) warnings.push(activityWarning)
-
-    const previousDeploymentsAvailable = false
 
     const tokenName = typeof tokenEvidence?.name === 'string' ? tokenEvidence.name : null
     const tokenSymbol = typeof tokenEvidence?.symbol === 'string' ? tokenEvidence.symbol : null
@@ -1272,13 +1337,15 @@ export async function POST(req: Request) {
     const liqHolderConcentration: number | null = typeof liqEv.lpHolderConcentration === 'number' ? liqEv.lpHolderConcentration : null
     const liquidityUsd: number | null = typeof liqEv.liquidityDepth === 'number' ? (liqEv.liquidityDepth as number) : (typeof tokenEvidence?.liquidityUsd === 'number' ? (tokenEvidence.liquidityUsd as number) : null)
 
-    const supplyControlStatus: 'ok' | 'partial' | 'needs_confirmed_creator' =
+    const supplyControlStatus: 'ok' | 'partial' | 'needs_confirmed_creator' | 'not_in_top_holders' =
       !deployerAddress && linkedWallets.length === 0
         ? 'needs_confirmed_creator'
-        : (supplyControlled !== null && supplyControlled > 0 ? 'ok' : 'partial')
+        : deployerAddress && holderDataAvailable && supplyControlled === 0 && matchedHolderWallets.length === 0
+          ? 'not_in_top_holders'
+          : (supplyControlled !== null && supplyControlled > 0 ? 'ok' : 'partial')
 
     const { suspiciousTransfers, suspiciousTransferReasons } =
-      detectSuspiciousTransfers(linkedWallets, supplyControlled)
+      detectSuspiciousTransfers(linkedWallets, supplyControlled, matchedHolderWallets)
 
     const { verdict: clarkVerdict, clarkError } = await getClarkVerdict(origin, {
       contractAddress: normalizedAddress,
@@ -1308,6 +1375,10 @@ export async function POST(req: Request) {
       holderCount,
       lpControlStatus,
       liquidityUsd,
+      supplyControlStatus,
+      linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'none_found' : 'skipped'),
+      previousActivityStatus,
+      matchedHolderCount: matchedHolderWallets.length,
     })
 
     const moduleDiags = [
@@ -1333,7 +1404,7 @@ export async function POST(req: Request) {
       supplyControlled,
       matchedHolderWallets,
       previousActivityAvailable,
-      previousDeploymentsAvailable,
+      previousActivityStatus,
       previousProjects,
       suspiciousTransfers,
       suspiciousTransferReasons,
@@ -1359,7 +1430,7 @@ export async function POST(req: Request) {
       creationTxHash,
       originReason,
       supplyControlStatus,
-      linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'partial' : 'skipped'),
+      linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'none_found' : 'skipped'),
       holderStatus: holderDataAvailable ? 'ok' : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
@@ -1383,6 +1454,14 @@ export async function POST(req: Request) {
           providerUsed,
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
           origin_discovery: originDiag ?? { skipped: true },
+          post_deployer_intelligence: {
+            supplyControlStatus,
+            linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'none_found' : 'skipped'),
+            previousActivityStatus,
+            matchedHolderCount: matchedHolderWallets.length,
+            deployerInTopHolders: matchedHolderWallets.some(h => h.isDeployer),
+            linkedWalletsInTopHolders: matchedHolderWallets.filter(h => h.isLinked).length,
+          },
         },
       } : {}),
       fetchedAt: new Date().toISOString(),
