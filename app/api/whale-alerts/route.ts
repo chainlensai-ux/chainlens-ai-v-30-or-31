@@ -603,6 +603,8 @@ export async function GET(req: NextRequest) {
       diagnostics: {
         returnedCount:            grouped.length,
         rawCount:                 (alertsRes.data ?? []).length,
+        afterTimeFilter:          (alertsRes.data ?? []).length,
+        afterMinValueFilter:      valueFiltered.length,
         rawRows:                  (alertsRes.data ?? []).length,
         afterStableRoutingFilter: deNoised.length,
         afterDiversityCap:        diversityCapped.length,
