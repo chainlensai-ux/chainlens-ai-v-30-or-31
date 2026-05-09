@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
-const BASESCAN_API_KEY = process.env.BASESCAN_API_KEY ?? ''
 function resolveBaseRpcUrl(): string | null {
   const explicit = process.env.ALCHEMY_BASE_RPC_URL || process.env.BASE_RPC_URL
   if (explicit && /^https?:\/\//.test(explicit)) return explicit
@@ -132,50 +131,11 @@ async function getAssetTransfers(params: Record<string, unknown>): Promise<Alche
   }
 }
 
-async function checkTokenMetadata(contract: string): Promise<{ metadataAvailable: boolean; source: 'goldrush' | 'none' }> {
-  const apiKey = process.env.COVALENT_API_KEY
-  if (!apiKey) return { metadataAvailable: false, source: 'none' }
-
-  try {
-    const res = await fetch(
-      `${COVALENT_BASE_URL}/base-mainnet/tokens/${contract}/?key=${apiKey}`,
-      { cache: 'no-store', signal: AbortSignal.timeout(8000) }
-    )
-    if (!res.ok) return { metadataAvailable: false, source: 'none' }
-
-    const json = await res.json() as { data?: { contract_ticker_symbol?: string | null; contract_name?: string | null } }
-    const exists = Boolean(json?.data?.contract_ticker_symbol || json?.data?.contract_name)
-    return { metadataAvailable: exists, source: exists ? 'goldrush' : 'none' }
-  } catch {
-    return { metadataAvailable: false, source: 'none' }
-  }
-}
-
-async function findContractCreatorViaBasescan(contract: string): Promise<string | null> {
-  if (!BASESCAN_API_KEY) return null
-  try {
-    const res = await fetch(
-      `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${BASESCAN_API_KEY}`,
-      { cache: 'no-store', signal: AbortSignal.timeout(7000) }
-    )
-    if (!res.ok) return null
-    const json = await res.json() as { status?: string; result?: Array<{ contractCreator?: string }> }
-    return json?.status === '1' && json?.result?.[0]?.contractCreator
-      ? json.result[0].contractCreator.toLowerCase()
-      : null
-  } catch { return null }
-}
-
 async function findLikelyDeployer(contract: string): Promise<{
   address: string | null
   confidence: 'high' | 'medium' | 'low'
-  methodUsed: 'contract_creation_trace' | 'alchemy_first_mint_recipient' | 'alchemy_earliest_token_transfer_fallback' | 'unknown'
+  methodUsed: 'alchemy_first_mint_recipient' | 'alchemy_earliest_token_transfer_fallback' | 'alchemy_first_incoming_external' | 'unknown'
 }> {
-  const basescanCreator = await findContractCreatorViaBasescan(contract)
-  if (basescanCreator) {
-    return { address: basescanCreator, confidence: 'high', methodUsed: 'contract_creation_trace' }
-  }
-
   const mintTransfers = await getAssetTransfers({
     fromBlock: '0x0',
     toBlock: 'latest',
@@ -217,6 +177,27 @@ async function findLikelyDeployer(contract: string): Promise<{
       address: fallbackAddress?.toLowerCase() ?? null,
       confidence: 'low',
       methodUsed: 'alchemy_earliest_token_transfer_fallback',
+    }
+  }
+
+  const incomingExternal = await getAssetTransfers({
+    fromBlock: '0x0',
+    toBlock: 'latest',
+    toAddress: contract,
+    category: ['external'],
+    order: 'asc',
+    maxCount: '0x5',
+    withMetadata: true,
+  })
+
+  const firstExternal = incomingExternal.find(
+    t => t.from && t.from !== '0x0000000000000000000000000000000000000000',
+  )
+  if (firstExternal?.from) {
+    return {
+      address: firstExternal.from.toLowerCase(),
+      confidence: 'low',
+      methodUsed: 'alchemy_first_incoming_external',
     }
   }
 
@@ -275,11 +256,34 @@ async function getSupplyData(
   contract: string,
   deployer: string | null,
   linkedWallets: LinkedWallet[],
+  preloadedTopHolders?: Array<{ address?: string; percent?: number | null }>,
 ): Promise<{
   holderDataAvailable: boolean
   supplyControlled: number | null
   matchedHolderWallets: MatchedHolder[]
 }> {
+  const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
+
+  if (preloadedTopHolders && preloadedTopHolders.length > 0) {
+    const matched: MatchedHolder[] = []
+    let controlled = 0
+    for (const h of preloadedTopHolders) {
+      const addr = (h.address ?? '').toLowerCase()
+      if (!addr) continue
+      const isDeployer = deployer ? addr === deployer.toLowerCase() : false
+      const isLinked = linkedSet.has(addr)
+      if (!isDeployer && !isLinked) continue
+      const pct = typeof h.percent === 'number' ? h.percent : 0
+      controlled += pct
+      matched.push({ address: addr, supplyPct: pct, isDeployer, isLinked })
+    }
+    return {
+      holderDataAvailable: true,
+      supplyControlled: Math.round(controlled * 100) / 100,
+      matchedHolderWallets: matched.sort((a, b) => b.supplyPct - a.supplyPct),
+    }
+  }
+
   const apiKey = process.env.COVALENT_API_KEY
   if (!apiKey) {
     return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
@@ -304,7 +308,6 @@ async function getSupplyData(
     const totalSupplyRaw = items[0]?.total_supply ?? '0'
     const totalSupply = BigInt(totalSupplyRaw === '' ? '0' : totalSupplyRaw)
 
-    const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
     const matched: MatchedHolder[] = []
     let controlled = 0
 
@@ -436,12 +439,9 @@ function computeRiskLabel(input: VerdictSignalInput): ClarkVerdict['label'] {
   const hasUsefulSignal =
     Boolean(input.deployerAddress) ||
     input.linkedWallets.length > 0 ||
-    input.deployerConfidence === 'medium' ||
-    input.deployerConfidence === 'low' ||
-    input.holderDataAvailable === false ||
-    input.liquidityDataAvailable === false ||
-    input.securityDataAvailable === false ||
-    (!input.suspiciousTransfers && input.linkedWallets.length > 0)
+    input.holderDataAvailable ||
+    input.liquidityDataAvailable ||
+    input.securityDataAvailable
 
   if (!hasUsefulSignal) {
     return 'UNKNOWN'
@@ -555,6 +555,11 @@ async function getClarkVerdict(origin: string, data: {
   sellTax?: number | null
   lpLocked?: boolean | null
   lpHolderConcentration?: number | null
+  tokenName?: string | null
+  tokenSymbol?: string | null
+  holderTop10?: number | null
+  holderCount?: number | null
+  lpControlStatus?: string | null
 }): Promise<{ verdict: ClarkVerdict | null; clarkError: string | null }> {
   const normalizeLabel = (value: unknown): ClarkVerdict['label'] | null => {
     const v = String(value ?? '').trim().toUpperCase().replace(/_/g, ' ')
@@ -591,13 +596,17 @@ async function getClarkVerdict(origin: string, data: {
     `If security scan data is unavailable, do not infer honeypot status or tax values.\n` +
     `Output label must be exactly one of: TRUSTWORTHY, WATCH, AVOID, UNKNOWN.\n` +
     `Address: ${data.contractAddress}\n` +
+    `Token: ${data.tokenName ?? 'unknown'} (${data.tokenSymbol ?? 'unknown'})\n` +
     `Likely deployer: ${data.deployerAddress ?? 'unknown'}\n` +
     `Confidence: ${data.deployerConfidence}\n` +
     `Method: ${data.methodUsed}\n` +
     `Linked wallets: ${data.linkedWallets.length}\n` +
     `Holder data available: ${data.holderDataAvailable}\n` +
-    `Supply controlled: ${data.supplyControlled ?? 'unknown'}\n` +
+    `Holder count: ${data.holderCount != null ? data.holderCount : 'unknown'}\n` +
+    `Top 10 holder concentration: ${data.holderTop10 != null ? `${data.holderTop10}%` : 'unknown'}\n` +
+    `Supply controlled by deployer cluster: ${data.supplyControlled ?? 'unknown'}\n` +
     `Liquidity data available: ${data.liquidityDataAvailable}\n` +
+    `LP control status: ${data.lpControlStatus ?? 'unknown'}\n` +
     `Security data available: ${data.securityDataAvailable}\n` +
     `Previous activity available: ${data.previousActivityAvailable}\n` +
     `Previous activity contracts: ${data.previousProjects.map(p => p.contractAddress).slice(0, 8).join(', ') || 'none'}\n` +
@@ -792,7 +801,7 @@ async function fetchTokenEvidence(origin: string, contractAddress: string, authH
     const res = await fetch(`${origin}/api/token`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ contractAddress, chain: 'base' }),
+      body: JSON.stringify({ contract: contractAddress }),
       cache: 'no-store',
       signal: AbortSignal.timeout(14000),
     })
@@ -877,6 +886,23 @@ export async function POST(req: Request) {
     const tokenEvidenceResult = await fetchTokenEvidence(origin, normalizedAddress, reqAuthHeader)
     const tokenEvidence = tokenEvidenceResult.data
 
+    const sections = (tokenEvidence?.sections as Record<string, unknown> | undefined) ?? {}
+    const market = (sections.market as Record<string, unknown> | undefined) ?? {}
+    const holderDistributionRaw = tokenEvidence?.holderDistribution as {
+      top1?: number | null
+      top5?: number | null
+      top10?: number | null
+      top20?: number | null
+      holderCount?: number | null
+      topHolders?: Array<{ address?: string; percent?: number | null }>
+    } | null | undefined
+    const liqEv = (sections.liquidity as Record<string, unknown> | undefined) ?? {}
+    const secEv = (sections.security as Record<string, unknown> | undefined) ?? {}
+    const liquidityDataAvailable = typeof liqEv.liquidityDepth === 'number' || typeof tokenEvidence?.liquidityUsd === 'number'
+    const holderDataFromToken = holderDistributionRaw != null
+    const securityDataAvailable = typeof secEv.honeypot === 'boolean' || secEv.status === 'ok' || secEv.status === 'partial' || Object.keys(secEv).length > 0
+    if (!tokenEvidence) warnings.push('Market and security context limited in this release view.')
+
     let deployerAddress: string | null = null
     let deployerConfidence: 'high'|'medium'|'low' = 'low'
     let methodUsed = 'unknown'
@@ -901,8 +927,9 @@ export async function POST(req: Request) {
       warnings.push('Linked wallet check skipped — creator address not confirmed.')
     }
 
-    const { holderDataAvailable, supplyControlled, matchedHolderWallets } =
-      await getSupplyData(normalizedAddress, deployerAddress, linkedWallets)
+    const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets } =
+      await getSupplyData(normalizedAddress, deployerAddress, linkedWallets, holderDistributionRaw?.topHolders)
+    const holderDataAvailable = holderDataFromToken || holderDataFromCovalent
     if (!holderDataAvailable) {
       warnings.push('Holder distribution needs deeper confirmation.')
     }
@@ -912,18 +939,17 @@ export async function POST(req: Request) {
     if (activityWarning) warnings.push(activityWarning)
 
     const previousDeploymentsAvailable = false
-    const market = (tokenEvidence?.market as Record<string, unknown> | undefined) ?? {}
-    const holdersEv = (tokenEvidence?.holderDistribution as Record<string, unknown> | undefined) ?? {}
-    const liqEv = (tokenEvidence?.liquidity as Record<string, unknown> | undefined) ?? {}
-    const secEv = (tokenEvidence?.security as Record<string, unknown> | undefined) ?? {}
-    const liquidityDataAvailable = typeof liqEv.liquidityUsd === 'number'
-    const securityDataAvailable = secEv && Object.keys(secEv).length > 0
-    if (!tokenEvidence) warnings.push('Market and security context limited in this release view.')
 
+    const tokenName = typeof tokenEvidence?.name === 'string' ? tokenEvidence.name : null
+    const tokenSymbol = typeof tokenEvidence?.symbol === 'string' ? tokenEvidence.symbol : null
+    const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : null
+    const holderCount = typeof holderDistributionRaw?.holderCount === 'number' ? holderDistributionRaw.holderCount : null
     const secHoneypot: boolean | null = typeof secEv.honeypot === 'boolean' ? secEv.honeypot : null
     const secBuyTax: number | null = typeof secEv.buyTax === 'number' ? secEv.buyTax : null
     const secSellTax: number | null = typeof secEv.sellTax === 'number' ? secEv.sellTax : null
-    const liqLpLocked: boolean | null = typeof liqEv.lpLocked === 'boolean' ? liqEv.lpLocked : null
+    const lpControlObj = liqEv.lpControl as Record<string, unknown> | null | undefined
+    const lpControlStatus = typeof lpControlObj?.status === 'string' ? lpControlObj.status : null
+    const liqLpLocked: boolean | null = lpControlStatus === 'burned' || lpControlStatus === 'locked' ? true : lpControlStatus === 'team_controlled' ? false : null
     const liqHolderConcentration: number | null = typeof liqEv.lpHolderConcentration === 'number' ? liqEv.lpHolderConcentration : null
 
     const { suspiciousTransfers, suspiciousTransferReasons } =
@@ -949,19 +975,22 @@ export async function POST(req: Request) {
       sellTax: secSellTax,
       lpLocked: liqLpLocked,
       lpHolderConcentration: liqHolderConcentration,
+      tokenName,
+      tokenSymbol,
+      holderTop10,
+      holderCount,
+      lpControlStatus,
     })
 
     const moduleDiags = [
-      { name: 'rpc_bytecode', ok: rpcStatus !== 'unavailable', detail: rpcStatus },
-      { name: 'creator_lookup', ok: deployerConfidence === 'high' && methodUsed === 'contract_creation_trace', detail: methodUsed },
-      { name: 'deployer_heuristic', ok: deployerAddress !== null, detail: deployerAddress ? 'found' : 'not_found' },
-      { name: 'linked_wallets', ok: linkedWallets.length > 0, detail: `count=${linkedWallets.length}` },
-      { name: 'holder_distribution', ok: holderDataAvailable, detail: holderDataAvailable ? `controlled=${supplyControlled}%` : 'not_returned' },
+      { name: 'contract_bytecode_check', ok: rpcStatus !== 'unavailable', detail: rpcStatus },
+      { name: 'creator_heuristics', ok: deployerAddress !== null, detail: methodUsed },
+      { name: 'linked_wallet_heuristics', ok: linkedWallets.length > 0, detail: `count=${linkedWallets.length}` },
+      { name: 'token_evidence_call', ok: tokenEvidenceResult.ok, detail: tokenEvidenceResult.reason, httpStatus: tokenEvidenceResult.httpStatus },
+      { name: 'holder_evidence', ok: holderDataAvailable, detail: holderDataFromToken ? `top10=${holderTop10}% count=${holderCount}` : (holderDataAvailable ? `controlled=${supplyControlled}%` : 'not_returned') },
+      { name: 'liquidity_evidence', ok: liquidityDataAvailable, detail: lpControlStatus ? `lpControl=${lpControlStatus}` : (liquidityDataAvailable ? 'present' : 'not_returned') },
       { name: 'previous_activity', ok: previousActivityAvailable, detail: previousActivityAvailable ? `projects=${previousProjects.length}` : 'not_returned' },
-      { name: 'token_evidence', ok: tokenEvidenceResult.ok, detail: tokenEvidenceResult.reason, httpStatus: tokenEvidenceResult.httpStatus },
-      { name: 'security_signals', ok: securityDataAvailable, detail: secHoneypot !== null ? `honeypot=${secHoneypot}` : (securityDataAvailable ? 'present' : 'not_returned') },
-      { name: 'liquidity_signals', ok: liquidityDataAvailable, detail: liqLpLocked !== null ? `lpLocked=${liqLpLocked}` : (liquidityDataAvailable ? 'present' : 'not_returned') },
-      { name: 'clark_verdict', ok: clarkVerdict !== null, detail: clarkVerdict ? clarkVerdict.label : (clarkError ?? 'failed') },
+      { name: 'clark_input_summary', ok: clarkVerdict !== null, detail: clarkVerdict ? `${clarkVerdict.label} (${clarkVerdict.confidence})` : (clarkError ?? 'failed') },
     ]
 
     const responsePayload = {
@@ -981,11 +1010,19 @@ export async function POST(req: Request) {
       suspiciousTransferReasons,
       clarkVerdict,
       tokenEvidence: tokenEvidence ? {
-        name: tokenEvidence.name ?? null, symbol: tokenEvidence.symbol ?? null,
-        price: market.price ?? null, volume24h: market.volume24h ?? null, liquidity: market.liquidity ?? liqEv.liquidityUsd ?? null,
-        fdv: market.fdv ?? null, marketValue: market.marketCap ?? market.fdv ?? null,
-        top1: holdersEv.top1 ?? null, top10: holdersEv.top10 ?? null, top20: holdersEv.top20 ?? null, holderCount: holdersEv.holderCount ?? null,
-        lpControl: liqEv.lpControl ?? null, security: secEv ?? null,
+        name: tokenName, symbol: tokenSymbol,
+        price: market.price ?? null,
+        volume24h: market.volume24h ?? null,
+        liquidity: liqEv.liquidityDepth ?? tokenEvidence.liquidityUsd ?? market.liquidity ?? null,
+        fdv: market.fdv ?? null,
+        marketValue: market.marketCap ?? market.fdv ?? null,
+        top1: holderDistributionRaw?.top1 ?? null,
+        top10: holderTop10,
+        top20: holderDistributionRaw?.top20 ?? null,
+        holderCount,
+        lpControl: liqEv.lpControl ?? null,
+        lpControlStatus,
+        security: secEv ?? null,
       } : null,
       tokenStatus: tokenEvidence ? 'ok' : (bytecode && bytecode !== '0x' ? 'partial' : 'unavailable'),
       marketStatus: tokenEvidence && market && Object.keys(market).length ? 'ok' : 'partial',
@@ -994,8 +1031,8 @@ export async function POST(req: Request) {
       linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'partial' : 'unavailable'),
       holderStatus: holderDataAvailable ? 'ok' : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
-      lpControlStatus: liqEv.lpControl ? 'ok' : 'partial',
-      verdict: (suspiciousTransfers || (typeof holdersEv.top10 === 'number' && (holdersEv.top10 as number) > 50) || liqEv.lpLocked === false || secEv.honeypot === true || secEv.mintable === true || secEv.proxy === true)
+      lpControlStatus: lpControlStatus ? 'ok' : 'partial',
+      verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)
         ? 'CAUTION'
         : (tokenEvidence || holderDataAvailable || liquidityDataAvailable || Boolean(bytecode && bytecode !== '0x'))
           ? 'WATCH'
@@ -1003,8 +1040,8 @@ export async function POST(req: Request) {
       confidence: (tokenEvidence || holderDataAvailable) ? 'medium' : 'low',
       reasons: [
         !deployerAddress && (tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'Creator link not confirmed; token evidence still indicates watchlist-level signal.' : '',
-        typeof holdersEv.top10 === 'number' && (holdersEv.top10 as number) > 50 ? 'High holder concentration (top10 > 50%).' : '',
-        liqEv.lpLocked === false ? 'LP appears team-controlled.' : '',
+        holderTop10 != null && holderTop10 > 50 ? `High holder concentration (top10 = ${holderTop10}%).` : '',
+        liqLpLocked === false ? 'LP appears team-controlled.' : '',
       ].filter(Boolean),
       warnings,
       ...(debugMode ? {
