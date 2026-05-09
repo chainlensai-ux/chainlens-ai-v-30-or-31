@@ -115,6 +115,7 @@ function shortHash(hash: string, pre = 10, suf = 8): string {
 
 function formatMethod(method: string): string {
   if (method === 'unknown' || !method) return 'Current checks did not confirm creator link'
+  if (method === 'contract_creation_lookup') return 'Creation record confirmed'
   if (method === 'alchemy_first_mint_recipient') return 'First mint transfer'
   if (method === 'alchemy_earliest_token_transfer_fallback') return 'Earliest transfer'
   if (method === 'alchemy_first_incoming_external') return 'First incoming transfer'

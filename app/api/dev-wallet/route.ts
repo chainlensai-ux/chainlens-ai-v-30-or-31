@@ -11,9 +11,40 @@ function resolveBaseRpcUrl(): string | null {
 }
 
 const ALCHEMY_BASE_URL = resolveBaseRpcUrl()
+const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
+const CREATOR_LOOKUP_CHAIN_ID = '8453'
+const CREATOR_LOOKUP_TIMEOUT_MS = 3000
+const CREATOR_LOOKUP_RPS_LIMIT = 2
+const CREATOR_LOOKUP_WINDOW_MS = 1000
+const CREATOR_CACHE_SUCCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const CREATOR_CACHE_NOT_FOUND_TTL_MS = 12 * 60 * 60 * 1000
+const CREATOR_CACHE_ERROR_TTL_MS = 10 * 60 * 1000
 const DEV_CACHE_TTL_MS = 3 * 60 * 1000
 const devCache = new Map<string, { exp: number; payload: unknown }>()
 const devRate = new Map<string, { count: number; resetAt: number; lastAt: number }>()
+const creatorLookupCache = new Map<string, {
+  exp: number
+  data: {
+    address: string | null
+    confidence: 'high' | 'medium' | 'low'
+    methodUsed: 'contract_creation_lookup' | 'unknown'
+    creationTxHash: string | null
+    reason?: string
+  }
+}>()
+const creatorLookupInFlight = new Map<string, Promise<{
+  address: string | null
+  confidence: 'high' | 'medium' | 'low'
+  methodUsed: 'contract_creation_lookup' | 'unknown'
+  creationTxHash: string | null
+  reason?: string
+  httpStatus?: number | null
+  localRateLimited?: boolean
+  cacheHit?: boolean
+  attempted: boolean
+  ok: boolean
+}>>()
+const creatorLookupRateWindow: number[] = []
 const DEV_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 4, pro: 15, elite: 30 }
 const DEV_COOLDOWN_MS: Record<'free' | 'pro' | 'elite', number> = { free: 25_000, pro: 8_000, elite: 4_000 }
 
@@ -134,8 +165,130 @@ async function getAssetTransfers(params: Record<string, unknown>): Promise<Alche
 async function findLikelyDeployer(contract: string): Promise<{
   address: string | null
   confidence: 'high' | 'medium' | 'low'
-  methodUsed: 'alchemy_first_mint_recipient' | 'alchemy_earliest_token_transfer_fallback' | 'alchemy_first_incoming_external' | 'unknown'
+  methodUsed: 'alchemy_first_mint_recipient' | 'alchemy_earliest_token_transfer_fallback' | 'alchemy_first_incoming_external' | 'contract_creation_lookup' | 'unknown'
+  creationTxHash?: string | null
+  creatorLookupDiag?: {
+    attempted: boolean
+    ok: boolean
+    cacheHit: boolean
+    localRateLimited: boolean
+    httpStatus: number | null
+    reason: string | null
+    candidateAddress: string | null
+    confidence: 'high' | 'medium' | 'low'
+  }
 }> {
+  const apiKey = process.env.ETHERSCAN_API_KEY?.trim()
+  const creatorDiag = {
+    attempted: false,
+    ok: false,
+    cacheHit: false,
+    localRateLimited: false,
+    httpStatus: null as number | null,
+    reason: null as string | null,
+    candidateAddress: null as string | null,
+    confidence: 'low' as 'high' | 'medium' | 'low',
+  }
+  if (!apiKey) {
+    creatorDiag.reason = 'creator lookup key not configured'
+  } else {
+    const key = contract.toLowerCase()
+    const now = Date.now()
+    const cached = creatorLookupCache.get(key)
+    if (cached && cached.exp > now) {
+      creatorDiag.attempted = true
+      creatorDiag.cacheHit = true
+      creatorDiag.ok = Boolean(cached.data.address)
+      creatorDiag.reason = cached.data.reason ?? null
+      creatorDiag.candidateAddress = cached.data.address
+      creatorDiag.confidence = cached.data.confidence
+      if (cached.data.address) {
+        return {
+          address: cached.data.address,
+          confidence: cached.data.confidence,
+          methodUsed: 'contract_creation_lookup',
+          creationTxHash: cached.data.creationTxHash,
+          creatorLookupDiag: creatorDiag,
+        }
+      }
+    } else {
+      const inFlight = creatorLookupInFlight.get(key)
+      const runner = inFlight ?? (async () => {
+        const diagBase = { attempted: true, ok: false }
+        const current = Date.now()
+        while (creatorLookupRateWindow.length && (current - creatorLookupRateWindow[0] >= CREATOR_LOOKUP_WINDOW_MS)) creatorLookupRateWindow.shift()
+        if (creatorLookupRateWindow.length >= CREATOR_LOOKUP_RPS_LIMIT) {
+          creatorLookupCache.set(key, {
+            exp: Date.now() + CREATOR_CACHE_ERROR_TTL_MS,
+            data: { address: null, confidence: 'low', methodUsed: 'unknown', creationTxHash: null, reason: 'creator lookup rate limited' },
+          })
+          return { ...diagBase, address: null, confidence: 'low' as const, methodUsed: 'unknown' as const, creationTxHash: null, reason: 'creator lookup rate limited', localRateLimited: true, cacheHit: false, httpStatus: null }
+        }
+        creatorLookupRateWindow.push(current)
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), CREATOR_LOOKUP_TIMEOUT_MS)
+        try {
+          const params = new URLSearchParams({
+            chainid: CREATOR_LOOKUP_CHAIN_ID,
+            module: 'contract',
+            action: 'getcontractcreation',
+            contractaddresses: key,
+            apikey: apiKey,
+          })
+          const res = await fetch(`${CREATOR_LOOKUP_BASE_URL}?${params.toString()}`, {
+            method: 'GET',
+            cache: 'no-store',
+            signal: controller.signal,
+          })
+          const json = await res.json() as {
+            status?: string
+            message?: string
+            result?: Array<{ contractCreator?: string; txHash?: string }> | string
+          }
+          const message = (json.message ?? '').toLowerCase()
+          if (res.status === 429 || message.includes('rate limit')) {
+            creatorLookupCache.set(key, { exp: Date.now() + CREATOR_CACHE_ERROR_TTL_MS, data: { address: null, confidence: 'low', methodUsed: 'unknown', creationTxHash: null, reason: 'creator lookup rate limited' } })
+            return { ...diagBase, address: null, confidence: 'low' as const, methodUsed: 'unknown' as const, creationTxHash: null, reason: 'creator lookup rate limited', httpStatus: res.status, cacheHit: false, localRateLimited: false }
+          }
+          const row = Array.isArray(json.result) ? json.result[0] : null
+          const creator = row?.contractCreator?.toLowerCase()
+          const txHash = row?.txHash ?? null
+          if (creator && /^0x[a-f0-9]{40}$/.test(creator)) {
+            creatorLookupCache.set(key, { exp: Date.now() + CREATOR_CACHE_SUCCESS_TTL_MS, data: { address: creator, confidence: 'high', methodUsed: 'contract_creation_lookup', creationTxHash: txHash, reason: 'confirmed' } })
+            return { ...diagBase, ok: true, address: creator, confidence: 'high' as const, methodUsed: 'contract_creation_lookup' as const, creationTxHash: txHash, httpStatus: res.status, cacheHit: false, localRateLimited: false, reason: 'confirmed' }
+          }
+          creatorLookupCache.set(key, { exp: Date.now() + CREATOR_CACHE_NOT_FOUND_TTL_MS, data: { address: null, confidence: 'low', methodUsed: 'unknown', creationTxHash: null, reason: 'creator not returned' } })
+          return { ...diagBase, address: null, confidence: 'low' as const, methodUsed: 'unknown' as const, creationTxHash: null, reason: 'creator not returned', httpStatus: res.status, cacheHit: false, localRateLimited: false }
+        } catch {
+          creatorLookupCache.set(key, { exp: Date.now() + CREATOR_CACHE_ERROR_TTL_MS, data: { address: null, confidence: 'low', methodUsed: 'unknown', creationTxHash: null, reason: 'creator lookup failed' } })
+          return { ...diagBase, address: null, confidence: 'low' as const, methodUsed: 'unknown' as const, creationTxHash: null, reason: 'creator lookup failed', cacheHit: false, localRateLimited: false, httpStatus: null }
+        } finally {
+          clearTimeout(timeout)
+        }
+      })()
+      if (!inFlight) creatorLookupInFlight.set(key, runner)
+      const out = await runner
+      creatorLookupInFlight.delete(key)
+      creatorDiag.attempted = out.attempted
+      creatorDiag.ok = out.ok
+      creatorDiag.cacheHit = Boolean(out.cacheHit)
+      creatorDiag.localRateLimited = Boolean(out.localRateLimited)
+      creatorDiag.httpStatus = out.httpStatus ?? null
+      creatorDiag.reason = out.reason ?? null
+      creatorDiag.candidateAddress = out.address
+      creatorDiag.confidence = out.confidence
+      if (out.address) {
+        return {
+          address: out.address,
+          confidence: 'high',
+          methodUsed: 'contract_creation_lookup',
+          creationTxHash: out.creationTxHash,
+          creatorLookupDiag: creatorDiag,
+        }
+      }
+    }
+  }
+
   const mintTransfers = await getAssetTransfers({
     fromBlock: '0x0',
     toBlock: 'latest',
@@ -153,6 +306,7 @@ async function findLikelyDeployer(contract: string): Promise<{
       address: firstMint.to.toLowerCase(),
       confidence: 'medium',
       methodUsed: 'alchemy_first_mint_recipient',
+      creatorLookupDiag: creatorDiag,
     }
   }
 
@@ -177,6 +331,7 @@ async function findLikelyDeployer(contract: string): Promise<{
       address: fallbackAddress?.toLowerCase() ?? null,
       confidence: 'low',
       methodUsed: 'alchemy_earliest_token_transfer_fallback',
+      creatorLookupDiag: creatorDiag,
     }
   }
 
@@ -198,10 +353,11 @@ async function findLikelyDeployer(contract: string): Promise<{
       address: firstExternal.from.toLowerCase(),
       confidence: 'low',
       methodUsed: 'alchemy_first_incoming_external',
+      creatorLookupDiag: creatorDiag,
     }
   }
 
-  return { address: null, confidence: 'low', methodUsed: 'unknown' }
+  return { address: null, confidence: 'low', methodUsed: 'unknown', creatorLookupDiag: creatorDiag }
 }
 
 async function findLinkedWallets(deployer: string, excludeContract: string): Promise<LinkedWallet[]> {
@@ -1019,11 +1175,24 @@ export async function POST(req: Request) {
     let deployerAddress: string | null = null
     let deployerConfidence: 'high'|'medium'|'low' = 'low'
     let methodUsed = 'unknown'
+    let creationTxHash: string | null = null
+    let creatorLookupDiag: {
+      attempted: boolean
+      ok: boolean
+      cacheHit: boolean
+      localRateLimited: boolean
+      httpStatus: number | null
+      reason: string | null
+      candidateAddress: string | null
+      confidence: 'high' | 'medium' | 'low'
+    } | null = null
     try {
       const dep = await findLikelyDeployer(normalizedAddress)
       deployerAddress = dep.address
       deployerConfidence = dep.confidence
       methodUsed = dep.methodUsed
+      creationTxHash = dep.creationTxHash ?? null
+      creatorLookupDiag = dep.creatorLookupDiag ?? null
     } catch {
       rpcStatus = rpcStatus === 'ok' ? 'partial' : rpcStatus
       warnings.push('Creator trace not returned from current check.')
@@ -1096,6 +1265,7 @@ export async function POST(req: Request) {
     const moduleDiags = [
       { name: 'contract_bytecode_check', ok: rpcStatus !== 'unavailable', detail: rpcStatus },
       { name: 'creator_heuristics', ok: deployerAddress !== null, detail: methodUsed },
+      { name: 'creator_lookup', ok: creatorLookupDiag?.ok ?? false, detail: creatorLookupDiag?.reason ?? 'not_attempted', httpStatus: creatorLookupDiag?.httpStatus ?? null },
       { name: 'linked_wallet_heuristics', ok: linkedWallets.length > 0, detail: `count=${linkedWallets.length}` },
       { name: 'token_evidence_call', ok: tokenEvidenceResult.ok, detail: tokenEvidenceResult.reason, httpStatus: tokenEvidenceResult.httpStatus },
       { name: 'holder_evidence', ok: holderDataAvailable, detail: holderDataFromToken ? `top10=${holderTop10}% count=${holderCount}` : (holderDataAvailable ? `controlled=${supplyControlled}%` : 'not_returned') },
@@ -1137,7 +1307,7 @@ export async function POST(req: Request) {
       } : null,
       tokenStatus: tokenEvidence ? 'ok' : (bytecode && bytecode !== '0x' ? 'partial' : 'limited_check'),
       marketStatus: tokenEvidence && market && Object.keys(market).length ? 'ok' : 'partial',
-      deployerStatus: deployerAddress ? 'ok' : 'not_confirmed',
+      deployerStatus: deployerAddress ? (methodUsed === 'contract_creation_lookup' ? 'confirmed' : 'ok') : 'not_confirmed',
       linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'partial' : 'skipped'),
       holderStatus: holderDataAvailable ? 'ok' : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
@@ -1154,6 +1324,7 @@ export async function POST(req: Request) {
         liqLpLocked === false ? 'LP appears team-controlled.' : '',
       ].filter(Boolean),
       warnings,
+      creationTxHash,
       ...(debugMode ? {
         _diagnostics: {
           modules: moduleDiags,
@@ -1161,6 +1332,7 @@ export async function POST(req: Request) {
           rpcStatus,
           providerUsed,
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
+          creator_lookup: creatorLookupDiag,
         },
       } : {}),
       fetchedAt: new Date().toISOString(),
