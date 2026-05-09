@@ -389,8 +389,8 @@ export default function WhaleAlertsPage() {
         ? (isPartial ? 'Partial refresh' : (syncState.mode === 'full' ? 'Full refresh complete' : 'Recently refreshed'))
         : 'Ready to sync'
 
-  const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'Unavailable'
-  const providerSummary = syncState ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors} errors)` : 'Healthy') : 'Unavailable'
+  const lastSyncSummary = syncState ? `${syncState.processed ?? 0} scanned this batch / ${syncState.inserted ?? 0} inserted` : 'No signal in checked window'
+  const providerSummary = syncState ? ((syncState.providerErrors ?? 0) > 0 ? `Degraded (${syncState.providerErrors} errors)` : 'Healthy') : 'No signal in checked window'
   const buildClarkPrompt = () => {
     if (alerts.length > 0) {
       const topAlerts = alerts.slice(0, 10).map(a => {
@@ -644,7 +644,7 @@ export default function WhaleAlertsPage() {
               {(syncState?.providerErrors ?? 0) > 0 && (
                 <p className="rounded-[12px]"
                   style={{ padding: '8px 12px', fontSize: 11, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', color: '#fcd34d' }}>
-                  {syncState?.providerErrors} provider error{(syncState?.providerErrors ?? 0) > 1 ? 's' : ''} — some alerts may be delayed.
+                  {syncState?.providerErrors} source delay{(syncState?.providerErrors ?? 0) > 1 ? 's' : ''} — some alerts may be delayed.
                 </p>
               )}
 
@@ -763,7 +763,7 @@ export default function WhaleAlertsPage() {
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
               </div>
-              <p style={{ fontSize: 14, fontWeight: 700, color: '#fda4af' }}>Feed unavailable</p>
+              <p style={{ fontSize: 14, fontWeight: 700, color: '#fda4af' }}>No fresh signal in the checked window</p>
               <p style={{ marginTop: 4, fontSize: 12, color: '#475569' }}>The request failed. Sync may still be active.</p>
               <button onClick={() => void loadAlerts()}
                 className="rounded-[12px] hover:opacity-80"
@@ -819,11 +819,11 @@ export default function WhaleAlertsPage() {
                 {hasProviderErrors && (
                   <p className="mx-auto rounded-[10px]"
                     style={{ marginTop: 12, maxWidth: 400, padding: '8px 14px', fontSize: 12, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', color: '#fcd34d' }}>
-                    {syncState!.providerErrors} provider error{(syncState!.providerErrors ?? 0) > 1 ? 's' : ''} — some wallets may be delayed.
+                    {syncState!.providerErrors} source delay{(syncState!.providerErrors ?? 0) > 1 ? 's' : ''} — some wallets may be delayed.
                   </p>
                 )}
                 <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
-                  <Pill color="slate">{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Wallets unavailable'}</Pill>
+                  <Pill color="slate">{stats.trackedWallets ? `${stats.trackedWallets} tracked wallets` : 'Wallet count pending in current checks'}</Pill>
                   {syncState
                     ? <Pill color="teal">{scanned} of {total || stats.trackedWallets} scanned</Pill>
                     : <Pill color="teal">No sync yet</Pill>}
