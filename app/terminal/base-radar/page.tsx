@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -589,8 +589,8 @@ function StatsPanel({ summary, fetchedAt, loading }: { summary: RadarSummary; fe
           Data Sources
         </p>
         {[
-          'GeckoTerminal / CoinGecko Terminal',
-          summary.hasSecurityData ? 'Honeypot.is (security)' : 'ChainLens Radar Engine',
+          'CORTEX market feed',
+          summary.hasSecurityData ? 'Security simulation' : 'ChainLens Radar Engine',
         ].map(src => (
           <div key={src} style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11px', color: '#64748b', marginBottom: '6px', fontFamily: 'var(--font-plex-mono)' }}>
             <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', flexShrink: 0 }} />
@@ -669,7 +669,7 @@ function LowActivityPanel() {
 }
 
 export default function BaseRadarPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const router = useRouter()
   const [data, setData] = useState<RadarData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -687,12 +687,12 @@ export default function BaseRadarPage() {
       const res = await fetch('/api/radar', { cache: 'no-store' })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setError('Base Radar data source unavailable. Try refresh.')
+        setError('Base Radar current checks did not return a fresh signal. Try refresh.')
       } else {
         setData(json as RadarData)
       }
     } catch {
-      setError('Base Radar data source unavailable. Try refresh.')
+      setError('Base Radar current checks did not return a fresh signal. Try refresh.')
     } finally {
       setLoading(false)
     }
@@ -801,6 +801,7 @@ export default function BaseRadarPage() {
     return sorted
   }, [activeFilter, intelTokens, sortMode])
 
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'base-radar')) return <LockedPanel feature="base-radar" />
 
   return (

@@ -1,8 +1,9 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
 import Link from 'next/link'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -355,7 +356,7 @@ function SupplyBar({ supplyControlled, holderDataAvailable }: {
     return (
       <Card>
         <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-          Holder distribution data unavailable for this token.
+          No deployer link confirmed from current checks.
         </p>
       </Card>
     )
@@ -397,7 +398,7 @@ function SupplyBar({ supplyControlled, holderDataAvailable }: {
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function DevWalletPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const [input,   setInput]   = useState('')
   const [loading, setLoading] = useState(false)
   const [result,  setResult]  = useState<DevWalletResult | null>(null)
@@ -420,14 +421,19 @@ export default function DevWalletPage() {
     setIsTracking(false)
     setCopied(false)
     try {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
       const res  = await fetch('/api/dev-wallet', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ contractAddress: q }),
       })
       const json = await res.json() as DevWalletResult & { error?: string }
       if (!res.ok || json.error) {
-        setError((json.error ?? 'Scan failed — try again').replace('Could not reach Base RPC — try again','RPC deployer trace unavailable, showing available token/holder/liquidity signals'))
+        setError((json.error ?? 'Scan failed — try again').replace('Upgrade required for dev wallet scan.', 'Dev Wallet Detector is a Pro feature.').replace('Could not reach Base RPC — try again','RPC deployer trace unavailable, showing available token/holder/liquidity signals'))
       } else {
         setResult(json)
       }
@@ -453,6 +459,13 @@ export default function DevWalletPage() {
     return `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`
   }, [result])
 
+  if (planLoading) {
+    return (
+      <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '80vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
+        Loading plan access…
+      </div>
+    )
+  }
   if (!canAccessFeature(plan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
 
   return (
@@ -668,7 +681,7 @@ export default function DevWalletPage() {
             {!result.clarkVerdict && (
               <Card style={{ marginBottom: '24px', borderColor: 'rgba(148,163,184,0.15)' }}>
                 <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                  Clark analysis unavailable for this scan.
+                  Clark analysis not enough verified evidence for this scan.
                 </p>
               </Card>
             )}
@@ -807,7 +820,7 @@ export default function DevWalletPage() {
                   <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
                     {result.deployerAddress
                       ? 'No outgoing ETH transfers found from the deployer wallet.'
-                      : 'Unavailable — deployer address not identified.'}
+                      : 'No signal in checked window — deployer address not identified.'}
                   </p>
                 </Card>
               ) : (
@@ -921,7 +934,7 @@ export default function DevWalletPage() {
                           </p>
                           {!p.name && !p.symbol && (
                             <p style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', margin: '6px 0 0' }}>
-                              Metadata unavailable
+                              Metadata pending in current checks
                             </p>
                           )}
                           {p.rugReason && (
@@ -936,7 +949,7 @@ export default function DevWalletPage() {
                           background: p.rugFlag === true ? 'rgba(248,113,113,0.10)' : p.rugFlag === false ? 'rgba(45,212,191,0.08)' : 'rgba(148,163,184,0.08)',
                           border: `1px solid ${p.rugFlag === true ? 'rgba(248,113,113,0.25)' : p.rugFlag === false ? 'rgba(45,212,191,0.20)' : 'rgba(148,163,184,0.20)'}`,
                         }}>
-                          {p.rugFlag === true ? 'Flagged' : p.rugFlag === false ? 'Checked' : 'Unavailable'}
+                          {p.rugFlag === true ? 'Flagged' : p.rugFlag === false ? 'Checked' : 'No signal in checked window'}
                         </span>
                       </div>
                     </Card>

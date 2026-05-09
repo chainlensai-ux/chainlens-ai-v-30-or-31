@@ -11,6 +11,30 @@ type Holding = {
   verified: boolean
 }
 
+
+
+type GrTransferDiag = {
+  endpointKind?: string | null
+  chainUsed?: string | null
+  urlTemplate?: string | null
+  httpStatus?: number | null
+  fetchFailed?: boolean
+  failureStage?: "build_url" | "fetch" | "timeout" | "parse" | "empty_response" | "no_items" | null
+  rawItemCount?: number
+  normalizedEventCount?: number
+  firstEventShapeKeys?: string[]
+  reason?: string
+  attemptedHosts?: Array<{
+    requestHost: string
+    requestUrlValid: boolean
+    httpStatus: number | null
+    fetchFailed: boolean
+    failureStage: 'build_url' | 'fetch' | 'timeout' | 'empty_response' | 'no_items' | null
+    fetchErrorKind?: 'invalid_url' | 'network' | 'timeout' | 'unknown' | null
+    fetchErrorMessage?: string | null
+  }>
+}
+
 export type WalletBehavior = {
   status: 'ok' | 'partial' | 'unavailable'
   source: 'alchemy' | 'unavailable'
@@ -201,107 +225,198 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
 }
 
 type PnlEvent = { contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'; amount: number; usdValue: number | null }
-
-type GrTransferDiag = {
+type GoldrushHistoryDiag = {
   endpointKind: 'transfers_v2'
   chainUsed: string
   urlTemplate: string
   httpStatus: number | null
   fetchFailed: boolean
-  failureStage: 'build_url' | 'fetch' | 'timeout' | 'parse' | 'empty_response' | 'no_items' | null
+  failureStage: 'build_url' | 'fetch' | 'timeout' | 'empty_response' | 'no_items' | null
   rawItemCount: number
   normalizedEventCount: number
   firstEventShapeKeys: string[]
   reason: string
+  fetchErrorKind?: 'invalid_url' | 'network' | 'timeout' | 'unknown' | null
+  fetchErrorMessage?: string | null
+  hasApiKey?: boolean
+  requestHost?: string | null
+  requestUrlValid?: boolean
+  requestPathTemplate?: string
+  authMode?: 'bearer' | 'basic' | 'query' | 'none'
+  attemptedHosts?: Array<{
+    requestHost: string
+    requestUrlValid: boolean
+    httpStatus: number | null
+    fetchFailed: boolean
+    failureStage: 'build_url' | 'fetch' | 'timeout' | 'empty_response' | 'no_items' | null
+    fetchErrorKind?: 'invalid_url' | 'network' | 'timeout' | 'unknown' | null
+    fetchErrorMessage?: string | null
+  }>
 }
 
-async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<{ events: PnlEvent[]; diag: GrTransferDiag }> {
-  const chainId = chainName === 'base-mainnet' ? '8453' : chainName === 'eth-mainnet' ? '1' : chainName
-  const urlTemplate = `https://api.covalenthq.com/v1/${chainName}/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&no-spam=true`
-  const diag: GrTransferDiag = {
-    endpointKind: 'transfers_v2',
-    chainUsed: chainId,
-    urlTemplate,
-    httpStatus: null,
-    fetchFailed: false,
-    failureStage: null,
-    rawItemCount: 0,
-    normalizedEventCount: 0,
-    firstEventShapeKeys: [],
-    reason: '',
+function buildGoldrushTransfersRequest(chain: string, wallet: string, host: string) {
+  const normalizedWallet = wallet.toLowerCase()
+  const finalUrl = new URL(`https://${host}/v1/${chain}/address/${normalizedWallet}/transfers_v2/`)
+  finalUrl.searchParams.set('page-size', '125')
+  finalUrl.searchParams.set('page-number', '0')
+
+  const requestUrl = finalUrl.toString()
+
+  return {
+    requestUrl,
+    requestHost: finalUrl.hostname,
+    requestUrlValid: true,
+    requestPathTemplate: '/v1/{chain}/address/{wallet}/transfers_v2/',
+    urlTemplate: `https://${host}/v1/${chain}/address/{wallet}/transfers_v2/?page-size=125&page-number=0`,
+  }
+}
+
+async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }> {
+  const baseDiag = (chain: string): GoldrushHistoryDiag => ({ endpointKind: 'transfers_v2', chainUsed: chain, urlTemplate: `https://api.covalenthq.com/v1/${chain}/address/{wallet}/transfers_v2/?page-size=125&page-number=0`, httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: '', fetchErrorKind: null, fetchErrorMessage: null, hasApiKey: Boolean(apiKey), requestHost: 'api.covalenthq.com', requestUrlValid: true, requestPathTemplate: '/v1/{chain}/address/{wallet}/transfers_v2/', authMode: apiKey ? 'bearer' : 'none', attemptedHosts: [] })
+  const hostCandidates = ['api.covalenthq.com', 'api.goldrush.dev'] as const
+  const sanitizeMessage = (msg: string): string => {
+    const shortAddr = address ? `${address.slice(0, 6)}...${address.slice(-4)}` : ''
+    return msg
+      .replaceAll(apiKey, '[redacted-key]')
+      .replace(new RegExp(address, 'ig'), shortAddr)
+      .replace(/0x[a-fA-F0-9]{40}/g, (m) => `${m.slice(0, 6)}...${m.slice(-4)}`)
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 160)
+  }
+  const classifyFetchError = (err: unknown): { kind: 'invalid_url' | 'network' | 'timeout' | 'unknown'; message: string; isTimeout: boolean } => {
+    const msg = err instanceof Error ? `${err.name} ${err.message}`.trim() : String(err ?? 'Unknown fetch error')
+    const compact = sanitizeMessage(msg)
+    const isTimeout = /timeout|aborted|aborterror/i.test(compact)
+    if (/invalid url|failed to parse url|url is malformed|typeerror: fetch failed.*invalid/i.test(compact.toLowerCase())) return { kind: 'invalid_url', message: compact, isTimeout }
+    if (isTimeout) return { kind: 'timeout', message: compact, isTimeout: true }
+    if (/fetch failed|econn|enotfound|network|socket|connect|tls|certificate|dns/i.test(compact.toLowerCase())) return { kind: 'network', message: compact, isTimeout: false }
+    return { kind: 'unknown', message: compact, isTimeout }
+  }
+  const devLog = (diag: GoldrushHistoryDiag) => {
+    if (process.env.NODE_ENV !== 'production') {
+      console.info('[goldrush-fetch]', { chainUsed: diag.chainUsed, requestHost: diag.requestHost ?? null, hasApiKey: diag.hasApiKey ?? false, urlTemplate: diag.urlTemplate, httpStatus: diag.httpStatus, fetchFailed: diag.fetchFailed, failureStage: diag.failureStage, fetchErrorKind: diag.fetchErrorKind ?? null })
+    }
+  }
+  const finalizeDiag = (diag: GoldrushHistoryDiag): GoldrushHistoryDiag => {
+    if (diag.requestUrlValid === true && diag.failureStage === 'build_url') {
+      diag.failureStage = 'fetch'
+    }
+    if (diag.requestUrlValid === false) {
+      diag.failureStage = 'build_url'
+      if (!diag.reason) diag.reason = 'GoldRush wallet history URL could not be built.'
+    }
+    if (diag.fetchFailed === false && diag.httpStatus == null) {
+      diag.fetchFailed = true
+      diag.failureStage = diag.failureStage ?? 'fetch'
+      diag.reason = diag.reason || 'GoldRush wallet history request did not expose an HTTP response.'
+    }
+    if (diag.fetchFailed === false && diag.httpStatus == null) {
+      diag.fetchFailed = true
+      diag.failureStage = diag.failureStage ?? 'fetch'
+    }
+    return diag
   }
   try {
-    const url = `https://api.covalenthq.com/v1/${chainName}/address/${address}/transfers_v2/?quote-currency=USD&page-size=125&no-spam=true`
-    let res: Response
-    try {
-      res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
-    } catch (fetchErr) {
-      diag.fetchFailed = true
-      diag.failureStage = fetchErr instanceof Error && fetchErr.name === 'TimeoutError' ? 'timeout' : 'fetch'
-      diag.reason = 'GoldRush wallet history request failed before response.'
-      return { events: [], diag }
+    const chainCandidates = chainName === 'base-mainnet' ? ['8453', 'base-mainnet'] : [chainName]
+    let lastAttemptDiag: GoldrushHistoryDiag | null = null
+    for (const chainUsed of chainCandidates) {
+      const diag = baseDiag(chainUsed)
+      const hasBuildInputs = Boolean(chainUsed && address && apiKey)
+      if (!hasBuildInputs) {
+        const out = finalizeDiag({ ...diag, fetchFailed: true, failureStage: 'build_url', fetchErrorKind: 'invalid_url', fetchErrorMessage: 'Missing required request inputs.', reason: 'GoldRush wallet history URL could not be built.' })
+        devLog(out)
+        return { events: [], diag: out }
+      }
+      let res: Response | null = null
+      for (const host of hostCandidates) {
+        let requestUrl = ''
+        try {
+          const built = buildGoldrushTransfersRequest(chainUsed, address, host)
+          requestUrl = built.requestUrl
+          diag.requestHost = built.requestHost
+          diag.requestUrlValid = built.requestUrlValid
+          diag.requestPathTemplate = built.requestPathTemplate
+          diag.urlTemplate = built.urlTemplate
+        } catch {
+          diag.attemptedHosts?.push({ requestHost: host, requestUrlValid: false, httpStatus: null, fetchFailed: true, failureStage: 'build_url', fetchErrorKind: 'invalid_url', fetchErrorMessage: 'Failed to construct a valid GoldRush request URL.' })
+          continue
+        }
+        try {
+          res = await fetch(requestUrl, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
+          diag.httpStatus = res.status
+          diag.fetchFailed = false
+          diag.attemptedHosts?.push({ requestHost: host, requestUrlValid: true, httpStatus: res.status, fetchFailed: false, failureStage: null, fetchErrorKind: null, fetchErrorMessage: null })
+          break
+        } catch (err) {
+          const errInfo = classifyFetchError(err)
+          diag.fetchFailed = true
+          diag.failureStage = errInfo.isTimeout ? 'timeout' : 'fetch'
+          diag.fetchErrorKind = errInfo.kind
+          diag.fetchErrorMessage = errInfo.message
+          diag.httpStatus = null
+          diag.reason = 'GoldRush wallet history request failed before response.'
+          diag.attemptedHosts?.push({ requestHost: host, requestUrlValid: true, httpStatus: null, fetchFailed: true, failureStage: diag.failureStage, fetchErrorKind: errInfo.kind, fetchErrorMessage: errInfo.message })
+        }
+      }
+      if (!res) {
+        const out = finalizeDiag(diag)
+        lastAttemptDiag = out
+        devLog(out)
+        return { events: [], diag: out }
+      }
+      if (!res.ok) {
+        diag.failureStage = 'empty_response'
+        diag.reason = `GoldRush wallet history returned HTTP ${res.status}.`
+        lastAttemptDiag = finalizeDiag(diag)
+        devLog(lastAttemptDiag)
+        continue
+      }
+      const json = await res.json()
+      const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items.slice(0, 125) : []
+      diag.rawItemCount = items.length
+      diag.firstEventShapeKeys = items[0] && typeof items[0] === 'object' ? Object.keys(items[0] as Record<string, unknown>).slice(0, 12) : []
+      if (items.length === 0) {
+        diag.failureStage = 'no_items'
+        diag.reason = 'GoldRush returned no wallet history items for this address/window.'
+        const out = finalizeDiag(diag)
+        devLog(out)
+        return { events: [], diag: out }
+      }
+      const lower = address.toLowerCase()
+      const events = items.flatMap((it) => {
+        const t = it as Record<string, unknown>
+        const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
+        return transfers.slice(0, 4).map((x) => {
+          const tr = x as Record<string, unknown>
+          const contract = String(tr.contract_address ?? '').toLowerCase()
+          const symbol = String(tr.contract_ticker_symbol ?? '?')
+          const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
+          const delta = String(tr.delta ?? '0')
+          const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
+          const from = String(tr.from_address ?? '').toLowerCase()
+          const to = String(tr.to_address ?? '').toLowerCase()
+          const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
+          const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
+          return { contract, symbol, direction, amount, usdValue: quote }
+        })
+      }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
+      diag.normalizedEventCount = events.length
+      diag.reason = events.length > 0 ? '' : 'No indexed wallet transfer history returned from current checks.'
+      const out = finalizeDiag(diag)
+      devLog(out)
+      return { events, diag: out }
     }
-    diag.httpStatus = res.status
-    if (!res.ok) {
-      diag.failureStage = 'empty_response'
-      diag.reason = `GoldRush wallet history returned HTTP ${res.status}.`
-      return { events: [], diag }
-    }
-    let json: unknown
-    try {
-      json = await res.json()
-    } catch {
-      diag.failureStage = 'parse'
-      diag.reason = 'GoldRush wallet history response could not be parsed as JSON.'
-      return { events: [], diag }
-    }
-    const raw = json as Record<string, unknown>
-    const items: unknown[] =
-      Array.isArray((raw?.data as Record<string, unknown> | undefined)?.items) ? ((raw.data as Record<string, unknown>).items as unknown[]) :
-      Array.isArray(raw?.items) ? (raw.items as unknown[]) :
-      Array.isArray(raw?.data) ? (raw.data as unknown[]) :
-      Array.isArray(raw?.transfers) ? (raw.transfers as unknown[]) :
-      Array.isArray(raw?.transactions) ? (raw.transactions as unknown[]) :
-      []
-    diag.rawItemCount = items.length
-    if (items.length === 0) {
-      diag.failureStage = 'no_items'
-      diag.reason = 'GoldRush returned no wallet history items for this address/window.'
-      return { events: [], diag }
-    }
-    const first = items[0]
-    if (first && typeof first === 'object') diag.firstEventShapeKeys = Object.keys(first as object).slice(0, 8)
-    const lower = address.toLowerCase()
-    const events = items.slice(0, 125).flatMap((it) => {
-      const t = it as Record<string, unknown>
-      const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
-      return transfers.slice(0, 3).map((x) => {
-        const tr = x as Record<string, unknown>
-        const contract = String(tr.contract_address ?? '').toLowerCase()
-        const symbol = String(tr.contract_ticker_symbol ?? '?')
-        const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
-        const delta = String(tr.delta ?? '0')
-        const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
-        const from = String(tr.from_address ?? '').toLowerCase()
-        const to = String(tr.to_address ?? '').toLowerCase()
-        const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
-        const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
-        return { contract, symbol, direction, amount, usdValue: quote }
-      })
-    }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
-    diag.normalizedEventCount = events.length
-    if (events.length === 0) {
-      diag.failureStage = 'no_items'
-      diag.reason = 'GoldRush returned items but no valid transfer events after normalization.'
-    } else {
-      diag.reason = `GoldRush returned ${events.length} normalized transfer events.`
-    }
-    return { events, diag }
+    if (lastAttemptDiag) return { events: [], diag: lastAttemptDiag }
+    const fallbackChain = (chainName === 'base-mainnet' ? '8453' : chainName) || chainName
+    const out = finalizeDiag({ ...baseDiag(fallbackChain), fetchFailed: true, failureStage: 'fetch', fetchErrorKind: 'unknown', fetchErrorMessage: 'No successful GoldRush response across chain candidates; check prior chain diagnostics for concrete HTTP/fetch failure details.', reason: 'GoldRush wallet history request failed before response.' })
+    devLog(out)
+    return { events: [], diag: out }
   } catch {
-    diag.fetchFailed = true
-    diag.failureStage = 'fetch'
-    diag.reason = 'GoldRush wallet history request failed before response.'
-    return { events: [], diag }
+    const diag = baseDiag(chainName)
+    const out = finalizeDiag({ ...diag, fetchFailed: true, failureStage: 'fetch', fetchErrorKind: 'unknown', fetchErrorMessage: 'Unexpected GoldRush wallet history handler failure.', reason: 'GoldRush wallet history request failed before response.' })
+    devLog(out)
+    return { events: [], diag: out }
   }
 }
 
@@ -439,8 +554,8 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(ethUrl, 'eth_getTransactionCount', [addr, 'latest']),
     fetchWalletBehavior(addr, baseUrl),
-    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: '1', urlTemplate: '', httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush not configured.' } }),
-    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: '8453', urlTemplate: '', httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush not configured.' } }),
+    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush wallet history URL could not be built.' } }),
+    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush wallet history URL could not be built.' } }),
     fetchAlchemyPnlEvents(addr, baseUrl),
   ])
 
@@ -523,9 +638,11 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     reason = 'No token balances found on supported chains.'
   }
 
-  const grPnlEthOut = grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : { events: [] as PnlEvent[], diag: null as GrTransferDiag | null }
-  const grPnlBaseOut = grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : { events: [] as PnlEvent[], diag: null as GrTransferDiag | null }
-  const grEvents = [...grPnlEthOut.events, ...grPnlBaseOut.events]
+  const grEth = grPnlEthRes.status === 'fulfilled' ? grPnlEthRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'fetch' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush wallet history request failed before response.' } }
+  const grBase = grPnlBaseRes.status === 'fulfilled' ? grPnlBaseRes.value : { events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'fetch' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush wallet history request failed before response.' } }
+  const goldrushTransferDiags = [grEth.diag, grBase.diag]
+  const baseTransferDiag = goldrushTransferDiags.find((d) => d.chainUsed === '8453' || d.chainUsed === 'base-mainnet') ?? goldrushTransferDiags[0]
+  const grEvents = [...grEth.events, ...grBase.events]
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
   const events = grEvents.length > 0 ? grEvents : alchemyEvents
@@ -646,7 +763,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
         txCount === null ? 'txCount: Alchemy nonce unavailable' : '',
         walletAgeDays === null ? 'walletAgeDays: no first-tx on ETH or Base' : '',
       ].filter(Boolean),
-      goldrushTransferDiags: [grPnlEthOut.diag, grPnlBaseOut.diag].filter((d): d is GrTransferDiag => d !== null),
+      goldrushTransferDiags: [grEth.diag, grBase.diag],
     },
   }
 }
