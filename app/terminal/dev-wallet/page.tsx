@@ -64,7 +64,7 @@ interface DevWalletResult {
   linkedWalletsStatus?: string
   holderStatus?: string
   liquidityStatus?: string
-  diagnostics?: { rpcConfigured?: boolean; rpcStatus?: string; providerUsed?: string }
+  _diagnostics?: { modules?: unknown[]; rpcConfigured?: boolean; providerUsed?: string; tokenEvidenceDiag?: unknown }
   verdict?: VerdictLabel
   confidence?: string
   reasons?: string[]
@@ -195,8 +195,11 @@ function DataRow({ label, value, valueStyle }: {
   )
 }
 
+const PROVIDER_LEAK_PATTERN = /\b(goldru(sh|sh)?|alchemy|basescan|covalent|geckoterminal|honeypot|rpc|alchemy|api\s+key|unavailable|failed|disabled|provider)\b/i
+
 function WarningBanner({ warnings }: { warnings: string[] }) {
-  if (warnings.length === 0) return null
+  const safe = warnings.filter(w => !PROVIDER_LEAK_PATTERN.test(w))
+  if (safe.length === 0) return null
   return (
     <div style={{
       background: 'linear-gradient(180deg, rgba(251,191,36,0.08), rgba(120,53,15,0.08))',
@@ -211,9 +214,9 @@ function WarningBanner({ warnings }: { warnings: string[] }) {
         textTransform: 'uppercase', letterSpacing: '0.12em',
         fontFamily: 'var(--font-plex-mono)', margin: '0 0 6px',
       }}>
-        Data Availability
+        CORTEX Evidence Read
       </p>
-      {warnings.map((w, i) => (
+      {safe.map((w, i) => (
         <p key={i} style={{ fontSize: '11px', color: '#94a3b8', margin: '3px 0', fontFamily: 'var(--font-plex-mono)' }}>
           · {w}
         </p>
@@ -433,7 +436,7 @@ export default function DevWalletPage() {
       })
       const json = await res.json() as DevWalletResult & { error?: string }
       if (!res.ok || json.error) {
-        setError((json.error ?? 'Scan failed — try again').replace('Upgrade required for dev wallet scan.', 'Dev Wallet Detector is a Pro feature.').replace('Could not reach Base RPC — try again','RPC deployer trace unavailable, showing available token/holder/liquidity signals'))
+        setError((json.error ?? 'Scan failed — try again').replace('Upgrade required for dev wallet scan.', 'Dev Wallet Detector is a Pro feature.'))
       } else {
         setResult(json)
       }
@@ -607,7 +610,7 @@ export default function DevWalletPage() {
             marginBottom: '18px',
           }}>
             {[
-              { k: 'Likely Deployer', v: result.deployerAddress ? 'Found' : 'Unknown', c: result.deployerAddress ? '#2DD4BF' : '#94a3b8' },
+              { k: 'Likely Deployer', v: result.deployerAddress ? 'Found' : 'Not confirmed', c: result.deployerAddress ? '#2DD4BF' : '#94a3b8' },
               { k: 'Linked Wallets', v: String(result.linkedWallets.length), c: result.linkedWallets.length >= 5 ? '#f87171' : '#a78bfa' },
               { k: 'Suspicious Patterns', v: String(result.suspiciousTransferReasons.length), c: result.suspiciousTransfers ? '#f87171' : '#2DD4BF' },
               { k: 'Confidence', v: result.deployerConfidence, c: result.deployerConfidence === 'high' ? '#2DD4BF' : result.deployerConfidence === 'medium' ? '#fbbf24' : '#f87171' },
@@ -668,11 +671,6 @@ export default function DevWalletPage() {
               </Card>
             )}
             <WarningBanner warnings={result.warnings} />
-            {result.rpcStatus && result.rpcStatus !== 'ok' && (
-              <p style={{ color:'#94a3b8', fontSize:12, margin:'-6px 0 16px', fontFamily:'var(--font-plex-mono)' }}>
-                RPC deployer trace unavailable, showing available token/holder/liquidity signals.
-              </p>
-            )}
 
             {/* Clark Verdict */}
             {result.clarkVerdict && (
@@ -681,7 +679,7 @@ export default function DevWalletPage() {
             {!result.clarkVerdict && (
               <Card style={{ marginBottom: '24px', borderColor: 'rgba(148,163,184,0.15)' }}>
                 <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                  Clark analysis not enough verified evidence for this scan.
+                  AI analysis requires deeper evidence. Review signals below and use Ask Clark for follow-up.
                 </p>
               </Card>
             )}
@@ -701,7 +699,7 @@ export default function DevWalletPage() {
                             {result.deployerAddress}
                           </span>
                         </div>
-                      : <span style={{ color: '#3a5268' }}>Unknown</span>
+                      : <span style={{ color: '#3a5268' }}>No creator link confirmed</span>
                   }
                 />
                 <DataRow
@@ -903,7 +901,7 @@ export default function DevWalletPage() {
               {!result.previousActivityAvailable ? (
                 <Card>
                   <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    Previous deployment history unavailable from current Alchemy/GoldRush data.
+                    Previous activity requires a confirmed creator address.
                   </p>
                 </Card>
               ) : result.previousProjects.length === 0 ? (
