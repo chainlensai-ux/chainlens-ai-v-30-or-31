@@ -535,6 +535,122 @@ function defaultNextAction(label: ClarkVerdict['label']): string {
   return 'Monitor regularly and keep validating new wallet activity.'
 }
 
+const BAD_CLARK_PATTERNS = [
+  /need\s+a?\s*(token\s+)?(symbol|contract|address)/i,
+  /provide\s+a?\s*(token|contract|address)/i,
+  /paste\s+(the\s+)?(token|contract|address)/i,
+  /which\s+(token|contract|address)/i,
+  /what\s+(token|contract|address)/i,
+  /share\s+(the\s+)?(token|contract|address)/i,
+  /could\s+you\s+(share|provide|paste|send)/i,
+  /please\s+(share|provide|paste|send)\s+(me\s+)?(the\s+)?(token|contract)/i,
+  /can\s+you\s+(share|provide|paste|send)/i,
+  /contract\s+first/i,
+  /let\s+me\s+know\s+(the|which)\s+(token|contract)/i,
+  /tell\s+me\s+(the|which)\s+(token|contract)/i,
+]
+
+function isBadClarkResponse(text: string): boolean {
+  return BAD_CLARK_PATTERNS.some(p => p.test(text))
+}
+
+interface ClarkFallbackData {
+  contractAddress: string
+  deployerAddress: string | null
+  deployerConfidence: 'high' | 'medium' | 'low'
+  linkedWallets: LinkedWallet[]
+  supplyControlled: number | null
+  holderDataAvailable: boolean
+  liquidityDataAvailable: boolean
+  securityDataAvailable: boolean
+  suspiciousTransfers: boolean
+  suspiciousTransferReasons: string[]
+  honeypot?: boolean | null
+  buyTax?: number | null
+  sellTax?: number | null
+  lpLocked?: boolean | null
+  lpHolderConcentration?: number | null
+  tokenName?: string | null
+  tokenSymbol?: string | null
+  holderTop10?: number | null
+  holderCount?: number | null
+  lpControlStatus?: string | null
+  previousProjects: PreviousProject[]
+}
+
+function buildDeterministicFallbackVerdict(data: ClarkFallbackData): { verdict: ClarkVerdict; clarkError: null } {
+  const label = computeRiskLabel({
+    deployerAddress: data.deployerAddress,
+    deployerConfidence: data.deployerConfidence,
+    linkedWallets: data.linkedWallets,
+    suspiciousTransfers: data.suspiciousTransfers,
+    holderDataAvailable: data.holderDataAvailable,
+    supplyControlled: data.supplyControlled,
+    securityDataAvailable: data.securityDataAvailable,
+    liquidityDataAvailable: data.liquidityDataAvailable,
+    honeypot: data.honeypot ?? null,
+    buyTax: data.buyTax ?? null,
+    sellTax: data.sellTax ?? null,
+    lpLocked: data.lpLocked ?? null,
+    lpLockDataAvailable: data.lpLocked !== null && data.lpLocked !== undefined,
+    lpHolderConcentration: data.lpHolderConcentration ?? null,
+    lpHolderDataAvailable: data.lpHolderConcentration !== null && data.lpHolderConcentration !== undefined,
+  })
+
+  const tokenLabel = data.tokenName && data.tokenSymbol
+    ? `${data.tokenName} (${data.tokenSymbol})`
+    : data.tokenName ?? data.tokenSymbol ?? data.contractAddress
+
+  const keySignals: string[] = [
+    data.deployerAddress
+      ? 'Likely creator/deployer wallet identified'
+      : 'No creator link confirmed from current checks',
+    data.linkedWallets.length > 0
+      ? `${data.linkedWallets.length} linked wallet(s) found`
+      : 'No linked wallets in checked window',
+    data.holderDataAvailable
+      ? 'Holder distribution available for review'
+      : 'Holder distribution needs deeper confirmation',
+    data.liquidityDataAvailable
+      ? 'Liquidity data available for review'
+      : 'Liquidity control needs deeper review',
+  ]
+
+  const risks: string[] = [
+    !data.deployerAddress ? 'Creator link not confirmed — origin of token is unverified' : '',
+    data.suspiciousTransfers ? 'Suspicious transfer pattern observed' : '',
+    ...data.suspiciousTransferReasons.slice(0, 2),
+    data.holderTop10 != null && data.holderTop10 > 50
+      ? `High holder concentration — top 10 hold ${data.holderTop10}%`
+      : '',
+    data.lpLocked === false ? 'LP appears team-controlled' : '',
+  ].filter(Boolean)
+
+  const creatorLine = data.deployerAddress
+    ? 'Likely deployer/owner wallet identified from transfer analysis.'
+    : 'Creator link not confirmed from current checks.'
+  const holderLine = data.holderDataAvailable
+    ? 'Holder distribution is available for review.'
+    : 'Holder distribution needs deeper confirmation.'
+  const liqLine = data.liquidityDataAvailable
+    ? 'Liquidity data is available for review.'
+    : 'Liquidity control needs deeper review.'
+
+  const summary = `${tokenLabel} scanned on Base. ${creatorLine} ${holderLine} ${liqLine}`
+
+  return {
+    verdict: {
+      label,
+      confidence: 'medium',
+      summary,
+      keySignals,
+      risks: risks.length > 0 ? risks : ['No confirmed risk signals from current checks'],
+      nextAction: defaultNextAction(label),
+    },
+    clarkError: null,
+  }
+}
+
 async function getClarkVerdict(origin: string, data: {
   contractAddress: string
   deployerAddress: string | null
@@ -663,7 +779,7 @@ async function getClarkVerdict(origin: string, data: {
       cache: 'no-store',
     })
 
-    if (!res.ok) return { verdict: null, clarkError: 'Clark analysis failed — verify manually.' }
+    if (!res.ok) return buildDeterministicFallbackVerdict(data)
     const payload = await res.json() as { data?: Record<string, unknown> } | string
     const bodyData = typeof payload === 'string' ? null : (payload?.data ?? null)
     const text =
@@ -672,6 +788,10 @@ async function getClarkVerdict(origin: string, data: {
       (typeof bodyData?.message === 'string' ? bodyData.message : null) ??
       (typeof bodyData?.text === 'string' ? bodyData.text : null) ??
       (typeof payload === 'string' ? payload : '')
+
+    if (text && isBadClarkResponse(text)) {
+      return buildDeterministicFallbackVerdict(data)
+    }
 
     const computedLabel = computeRiskLabel({
       deployerAddress: data.deployerAddress,
@@ -780,7 +900,7 @@ async function getClarkVerdict(origin: string, data: {
       clarkError: null,
     }
   } catch {
-    return { verdict: null, clarkError: 'Clark analysis failed — verify manually.' }
+    return buildDeterministicFallbackVerdict(data)
   }
 }
 
