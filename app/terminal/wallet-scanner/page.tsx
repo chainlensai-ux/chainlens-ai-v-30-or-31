@@ -203,10 +203,7 @@ export default function WalletScannerPage() {
 
   function dataQualityForWallet(data: WalletResult): string {
     const hasPortfolio = data.holdings.length > 0 || data.totalValue > 0
-    const hasBaseActivity = (data.walletBehavior?.txCount ?? 0) > 0
-    if (hasPortfolio && hasBaseActivity) return 'Portfolio available'
-    if (hasPortfolio) return 'Recent Base activity limited'
-    return 'History not included in release view'
+    return hasPortfolio ? 'Release view' : 'No signal in checked window'
   }
 
   async function triggerClark(address: string, data: WalletResult) {
@@ -434,6 +431,11 @@ export default function WalletScannerPage() {
             const sorted = [...result.holdings].sort((a, b) => b.value - a.value)
             const largest = sorted[0] ?? null
             const quality = dataQualityForWallet(result)
+            const b = result.walletBehavior
+            const hasUsefulActivity = Boolean(
+              b?.status === 'ok' &&
+              ((b.txCount ?? 0) > 0 || (b.activeDays ?? 0) > 0 || (b.inboundCount ?? 0) > 0 || (b.outboundCount ?? 0) > 0 || (b.topTokens?.length ?? 0) > 0 || (b.topContracts?.length ?? 0) > 0)
+            )
             return (
             <div style={{ maxWidth: '720px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
@@ -478,10 +480,10 @@ export default function WalletScannerPage() {
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                 {[
-                  { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending in current checks' : 'No signal in checked window', sub: result.providerUsed && result.providerUsed !== 'none' ? `Via ${result.providerUsed}` : 'From wallet balances', color: '#2DD4BF' },
+                  { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending in current checks' : 'No signal in checked window', sub: 'Portfolio read active', color: '#2DD4BF' },
                   { label: 'Token Count', value: sorted.length.toLocaleString(), sub: 'Visible token balances', color: '#a78bfa' },
                   { label: 'Largest Holding', value: largest ? largest.symbol : 'No signal in checked window', sub: largest ? fmtUSD(largest.value) : 'No holdings found', color: '#fbbf24' },
-                  { label: 'Data Quality', value: quality, sub: quality === 'Portfolio available' ? 'Portfolio available' : quality === 'Recent Base activity limited' ? 'Recent Base activity limited' : 'History not included in release view', color: quality === 'Portfolio available' ? '#2DD4BF' : quality === 'Recent Base activity limited' ? '#fbbf24' : '#94a3b8' },
+                  { label: 'Data Quality', value: quality, sub: quality === 'Release view' ? 'Portfolio read active' : 'No fresh Base activity signal', color: quality === 'Release view' ? '#94a3b8' : '#fbbf24' },
                 ].map(card => (
                   <div key={card.label} style={{
                     background: '#080c14',
@@ -517,7 +519,7 @@ export default function WalletScannerPage() {
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {[
                   'Portfolio read: CORTEX',
-                  'Base activity: CORTEX',
+                  ...(hasUsefulActivity ? ['Base activity: CORTEX'] : []),
                   'Release view',
                 ].map((chip) => (
                   <span key={chip} style={{ fontSize: 11, color: '#94a3b8', border: '1px solid rgba(148,163,184,0.25)', borderRadius: 999, padding: '5px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
@@ -526,7 +528,7 @@ export default function WalletScannerPage() {
                 ))}
               </div>
               {/* ── Behavior card ────────────────────────────────── */}
-              {result.walletBehavior?.status === 'ok' && (
+              {hasUsefulActivity && result.walletBehavior?.status === 'ok' && (
                 <div style={{
                   background: '#080c14',
                   border: '1px solid rgba(255,255,255,0.08)',
@@ -538,11 +540,10 @@ export default function WalletScannerPage() {
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     marginBottom: '14px',
                   }}>
-                    Behavior · Base ({result.behaviorSource ?? 'unavailable'})
+                    Base Activity
                   </div>
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>Behavior scope: Base only</div>
-                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10 }}>Behavior via CORTEX Base Check</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
                     {[
                       { label: 'Recent Txs', value: result.walletBehavior.txCount ?? '—' },
                       { label: 'Active Days', value: result.walletBehavior.activeDays ?? '—' },
@@ -762,7 +763,7 @@ export default function WalletScannerPage() {
                     ? result.reason
                     : 'No token balances found for this wallet.'}
                   <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.18)', marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                    {result.providerUsed && result.providerUsed !== 'none' ? `Checked with ${result.providerUsed}` : 'ChainLens intelligence checks complete'} · Try a different wallet or check back later
+                    ChainLens intelligence checks complete · Try a different wallet or check back later
                   </div>
                 </div>
               )}

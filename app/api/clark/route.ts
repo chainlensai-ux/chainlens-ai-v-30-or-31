@@ -1469,12 +1469,12 @@ function buildWalletQualityVerdict(
   const risks = [
     snapshot.dustOrUnpricedHidden ? "Dust or unpriced holdings exist and are hidden in this summary" : "Major holdings are mostly priced",
     breadth < 5 ? "Low breadth increases single-asset dependency risk" : "Breadth is acceptable for watchlist monitoring",
-    behOk ? (behTxCount < 10 ? "No recent Base activity found in checked window — wallet may be dormant on Base or active elsewhere." : "Liquidity exposure not calculated") : "Behavioral confirmation unavailable — balance data only",
+    behOk ? (behTxCount < 10 ? "No fresh Base activity signal in the checked window." : "Liquidity exposure not calculated") : "Not enough verified evidence for Base activity confirmation",
   ];
   const behaviorNote = behOk && behavior?.recentActivitySummary ? `Activity: ${behavior.recentActivitySummary}` : "";
   const read = [
     `This looks like a ${profile}.`,
-    behOk && behTxCount > 0 ? `Behavior confirms on-chain presence.` : `Portfolio holdings are visible, but Base activity and PnL history are limited in current checks.`,
+    behOk && behTxCount > 0 ? `Base activity confirms on-chain presence.` : `Portfolio holdings are visible. No fresh Base activity signal in the checked window.`,
   ].join(" ");
   const copyTradePrompt = /\bcopy[\s-]?trade\b/i.test(prompt ?? "");
   const nextAction = copyTradePrompt
