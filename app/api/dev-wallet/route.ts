@@ -11,9 +11,40 @@ function resolveBaseRpcUrl(): string | null {
 }
 
 const ALCHEMY_BASE_URL = resolveBaseRpcUrl()
+const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
+const CREATOR_LOOKUP_CHAIN_ID = '8453'
+const CREATOR_LOOKUP_TIMEOUT_MS = 3000
+const CREATOR_LOOKUP_RPS_LIMIT = 2
+const CREATOR_LOOKUP_WINDOW_MS = 1000
+const CREATOR_CACHE_SUCCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const CREATOR_CACHE_NOT_FOUND_TTL_MS = 12 * 60 * 60 * 1000
+const CREATOR_CACHE_ERROR_TTL_MS = 10 * 60 * 1000
 const DEV_CACHE_TTL_MS = 3 * 60 * 1000
 const devCache = new Map<string, { exp: number; payload: unknown }>()
 const devRate = new Map<string, { count: number; resetAt: number; lastAt: number }>()
+const creatorLookupCache = new Map<string, {
+  exp: number
+  data: {
+    address: string | null
+    confidence: 'high' | 'medium' | 'low'
+    methodUsed: 'contract_creation_lookup' | 'unknown'
+    creationTxHash: string | null
+    reason?: string
+  }
+}>()
+const creatorLookupInFlight = new Map<string, Promise<{
+  address: string | null
+  confidence: 'high' | 'medium' | 'low'
+  methodUsed: 'contract_creation_lookup' | 'unknown'
+  creationTxHash: string | null
+  reason?: string
+  httpStatus?: number | null
+  localRateLimited?: boolean
+  cacheHit?: boolean
+  attempted: boolean
+  ok: boolean
+}>>()
+const creatorLookupRateWindow: number[] = []
 const DEV_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 4, pro: 15, elite: 30 }
 const DEV_COOLDOWN_MS: Record<'free' | 'pro' | 'elite', number> = { free: 25_000, pro: 8_000, elite: 4_000 }
 
@@ -1249,6 +1280,7 @@ export async function POST(req: Request) {
     const moduleDiags = [
       { name: 'contract_bytecode_check', ok: rpcStatus !== 'unavailable', detail: rpcStatus },
       { name: 'creator_heuristics', ok: deployerAddress !== null, detail: methodUsed },
+      { name: 'creator_lookup', ok: creatorLookupDiag?.ok ?? false, detail: creatorLookupDiag?.reason ?? 'not_attempted', httpStatus: creatorLookupDiag?.httpStatus ?? null },
       { name: 'linked_wallet_heuristics', ok: linkedWallets.length > 0, detail: `count=${linkedWallets.length}` },
       { name: 'token_evidence_call', ok: tokenEvidenceResult.ok, detail: tokenEvidenceResult.reason, httpStatus: tokenEvidenceResult.httpStatus },
       { name: 'holder_evidence', ok: holderDataAvailable, detail: holderDataFromToken ? `top10=${holderTop10}% count=${holderCount}` : (holderDataAvailable ? `controlled=${supplyControlled}%` : 'not_returned') },
@@ -1310,6 +1342,7 @@ export async function POST(req: Request) {
         liqLpLocked === false ? 'LP appears team-controlled.' : '',
       ].filter(Boolean),
       warnings,
+      creationTxHash,
       ...(debugMode ? {
         _diagnostics: {
           modules: moduleDiags,
