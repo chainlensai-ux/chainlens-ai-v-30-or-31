@@ -342,13 +342,13 @@ function detectReplyMode(body: ClarkRequestBody): ClarkReplyMode {
 }
 
 function buildTradingBoundaryReply(): string {
-  return "I can’t trade, execute swaps, or move funds for you. I can help you analyze token risk, wallet behavior, liquidity, holder concentration, and whale activity so you can make your own decision. If you want, send a CA or wallet and I’ll build a checklist.";
+  return "I can't trade, execute swaps, or move funds for you. I can help you analyze token risk, wallet behavior, liquidity, holder concentration, and whale activity so you can make your own decision. If you want, send a CA or wallet and I'll build a checklist.";
 }
 
 function buildFinancialAdviceReply(prompt: string): string {
   const subject = extractAddress(prompt) ?? extractTokenLookupQuery(prompt) ?? "this setup";
   return [
-    `I can’t give direct buy/sell orders on ${subject}.`,
+    `I can't give direct buy/sell orders on ${subject}.`,
     "Risk read: treat momentum entries as high-risk until liquidity depth, holder concentration, and deployer behavior are verified.",
     "Bull case: sustained volume with healthy liquidity and no major contract/deployer red flags.",
     "Bear case: thin liquidity, concentrated holders, or suspicious privilege/flow signals.",
@@ -887,7 +887,7 @@ function formatBaseMarketReply(candidates: BaseMarketCandidate[], total: number,
     "Use market momentum as discovery only, then run single-token analysis before conviction.",
     "",
     "Next:",
-    "Reply with a rank or symbol and I’ll scan it.",
+    "Reply with a rank or symbol and I'll scan it.",
   ].filter(Boolean).join("\n");
 }
 
@@ -1085,12 +1085,12 @@ function buildClarkToolPlan(input: {
 
 function buildEducationalReply(prompt: string): string {
   const t = prompt.toLowerCase();
-  if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can’t exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
+  if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can't exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
   if (/slippage/.test(t)) return "Slippage is the price impact between quoted and executed price. Thin liquidity and large orders increase slippage and worsen entries/exits.";
   if (/dev wallet/.test(t)) return "A dev wallet is a deployer-linked wallet that can reveal insider coordination, funding links, or early sell pressure.";
   if (/holder concentration/.test(t)) return "Holder concentration means too much supply sits in a few wallets, increasing dump and manipulation risk.";
   if (/lp lock/.test(t)) return "LP lock matters because unlocked liquidity can be pulled, which can collapse tradability and price.";
-  return "Great question. Share the exact risk concept and I’ll break it down quickly.";
+  return "Great question. Share the exact risk concept and I'll break it down quickly.";
 }
 
 function buildClarkStrategyReply(prompt: string): string {
@@ -1107,7 +1107,7 @@ function buildClarkStrategyReply(prompt: string): string {
   if (/red flags in a token/.test(t)) {
     return "Main red flags: unclear contract controls, thin liquidity, concentrated ownership, and suspicious deployer-linked flows. If two or more are unresolved, treat it as SCAN DEEPER or avoid.";
   }
-  return "Share a token symbol/contract, a wallet address, or ask for Base movers and I’ll run a live read.";
+  return "Share a token symbol/contract, a wallet address, or ask for Base movers and I'll run a live read.";
 }
 
 function detectLiveIntent(prompt: string): LiveIntent {
@@ -1133,19 +1133,25 @@ function isWhaleFlowPrompt(message: string, history?: ClarkRequestBody["history"
   return /\b(whale|whales|whale flow|whale alerts|smart money on base|whale rotation|whale activity|whale_feed_stored)\b/i.test(historyText);
 }
 
-async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, origin: string) {
+async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, origin: string, authHeader?: string | null) {
   const chain = body.chain ?? "base";
   const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH']);
   const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\blast 7 days\b/i.test(prompt.toLowerCase());
   const window = is7dQuery ? "7d" : "24h";
-  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, { signal: AbortSignal.timeout(5000) });
+  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=25`, {
+    signal: AbortSignal.timeout(5000),
+    headers: authHeader ? { Authorization: authHeader } : {},
+  });
+  if (res.status === 403) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Whale Alerts are included in Pro and Elite." };
+  }
   if (!res.ok) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I can’t read stored Whale Alerts right now. Open Whale Alerts and refresh the feed, then ask again." };
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I couldn't load Whale Alerts right now. Try refreshing the feed." };
   }
   const json = await res.json();
   const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
   if (raw.length === 0) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I don’t have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again." };
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I don't have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again." };
   }
   const tokenCounts = new Map<string, number>();
   let pricedFlow = 0;
@@ -1170,7 +1176,7 @@ async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, ori
   }
   const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (ranked.length === 0) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don’t have a clean non-stable token signal yet. Open Whale Alerts and run a sync to refresh." };
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don't have a clean non-stable token signal yet. Open Whale Alerts and run a sync to refresh." };
   }
   const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000);
   const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000;
@@ -1360,7 +1366,7 @@ function buildGTMarketBriefing(pools: unknown[]): string {
     "Top movers on Base right now.\n\n" +
     "Moving now:\n" +
     picks.join("\n") +
-    "\n\nClark’s read:\n" +
+    "\n\nClark's read:\n" +
     "Momentum is active, but thin-liquidity names can reverse fast.\n" +
     "\n\nBest next step:\n" +
     "Scan the strongest token before touching it. Market data alone does not confirm safety."
@@ -1480,8 +1486,8 @@ function buildWalletQualityVerdict(
   const nextAction = copyTradePrompt
     ? "Do not copy from balance alone. Track entries/exits, sizing, and repeat behavior first."
     : behOk && behTxCount >= 20
-      ? "Monitor this wallet’s next moves — behavior pattern suggests active on-chain presence."
-      : "Track this wallet’s future entries/exits before treating it as a lead wallet.";
+      ? "Monitor this wallet's next moves — behavior pattern suggests active on-chain presence."
+      : "Track this wallet's future entries/exits before treating it as a lead wallet.";
 
   return enforceWalletAssetLabel(
     buildStructuredVerdict(
@@ -1568,9 +1574,9 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
 
 function missingAddressReply(intent: ClarkIntent): string {
   if (intent === "wallet_analysis" || intent === "whale_alert") {
-    return "I can run that, but I need a wallet address first. Paste a full 0x wallet and I’ll analyze the available data.";
+    return "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data.";
   }
-  return "I can run that, but I need a token contract first. Paste a full 0x contract and I’ll analyze the available data.";
+  return "I can run that, but I need a token contract first. Paste a full 0x contract and I'll analyze the available data.";
 }
 
 async function callInternalApi(origin: string, path: string, payload: Record<string, unknown>, authHeader?: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
@@ -1992,7 +1998,7 @@ function enforceClarkResponseFormat(raw: string, prompt: string, userContent: st
       return buildMarketHelperReply(prompt);
     }
     if (isScanRequestWithoutContext(prompt, userContent)) {
-      return "I need a scan result or valid ChainLens context to make a proper call. Open Token Scanner or paste a full contract or wallet address and I’ll analyze the available data.";
+      return "I need a scan result or valid ChainLens context to make a proper call. Open Token Scanner or paste a full contract or wallet address and I'll analyze the available data.";
     }
   }
 
@@ -2229,25 +2235,25 @@ function isScanRequestWithoutContext(prompt: string, userContent: string): boole
 function buildCasualClarkReply(prompt: string): string {
   const t = prompt.toLowerCase();
   if (/\bwhat can you do|help|who are you\b/.test(t)) {
-    return "I’m Clark — ChainLens on-chain analyst for Base. I can scan token risk, break down wallet behavior, check liquidity safety, flag dev-wallet links, and summarize what’s moving. Drop a contract, wallet, or feature context and I’ll give you a clean read.";
+    return "I'm Clark — ChainLens on-chain analyst for Base. I can scan token risk, break down wallet behavior, check liquidity safety, flag dev-wallet links, and summarize what's moving. Drop a contract, wallet, or feature context and I'll give you a clean read.";
   }
   if (/\bwhat is chainlens\b/.test(t)) {
     return "ChainLens is your Base intelligence terminal. Use Base Radar for fresh movers, Token Scanner for contract checks, Wallet Scanner for behavior reads, and Dev Wallet Detector for deployer risk mapping.";
   }
   if (/\bhow do i scan|how to scan\b/.test(t)) {
-    return "Paste a Base contract into Token Scanner for risk + liquidity checks, or a wallet into Wallet Scanner for flow analysis. If you share the result here, I’ll turn it into a sharp action read.";
+    return "Paste a Base contract into Token Scanner for risk + liquidity checks, or a wallet into Wallet Scanner for flow analysis. If you share the result here, I'll turn it into a sharp action read.";
   }
-  return "Yo — Clark here. Paste a Base token, wallet, or alert and I’ll break it down. I can scan risk, liquidity, deployer behavior, wallet flows, and Base Radar signals.";
+  return "Yo — Clark here. Paste a Base token, wallet, or alert and I'll break it down. I can scan risk, liquidity, deployer behavior, wallet flows, and Base Radar signals.";
 }
 
 function buildMarketHelperReply(prompt: string): string {
   if (/\bliquidity risk\b/i.test(prompt)) {
-    return "Liquidity risk is mainly lock status, concentration, and exit depth. Use Liquidity Safety first, then Token Scanner for contract flags. Share the output and I’ll translate it into entry risk.";
+    return "Liquidity risk is mainly lock status, concentration, and exit depth. Use Liquidity Safety first, then Token Scanner for contract flags. Share the output and I'll translate it into entry risk.";
   }
   if (/\bwhales buying\b/i.test(prompt)) {
-    return "Use Whale Alerts plus Wallet Scanner to see real position changes and transfer patterns. If you paste a wallet or alert context, I’ll break down whether the flow looks accumulation or distribution.";
+    return "Use Whale Alerts plus Wallet Scanner to see real position changes and transfer patterns. If you paste a wallet or alert context, I'll break down whether the flow looks accumulation or distribution.";
   }
-  return "Use Base Radar for fresh launches, Token Scanner for contract checks, and Dev Wallet Detector for deployer and linked-wallet risk. Paste a contract or wallet and I’ll break it down.";
+  return "Use Base Radar for fresh launches, Token Scanner for contract checks, and Dev Wallet Detector for deployer and linked-wallet risk. Paste a contract or wallet and I'll break it down.";
 }
 
 function sanitizeFreeform(raw: string, opts: { allowProviderNames: boolean }): string {
@@ -2849,7 +2855,7 @@ async function executeClarkToolPlan(input: {
             })
             : [],
           warnings,
-          errorSafeMessage: tokenJson ? undefined : "I couldn’t complete a token scan right now.",
+          errorSafeMessage: tokenJson ? undefined : "I couldn't complete a token scan right now.",
         };
         resolvedAddress = evidence.tokenScan.token?.address ?? resolvedAddress;
         continue;
@@ -3246,7 +3252,7 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
         ? "There is not enough verified scanner coverage to make a reliable call yet."
         : report.contract.securityStatus === "unverified"
           ? "Security simulation is unverified right now. Market and liquidity data alone cannot confirm safety."
-          : "I can’t call it safe from market data alone; risk coverage is still incomplete.";
+          : "I can't call it safe from market data alone; risk coverage is still incomplete.";
 
   const nextAction = verdict === "AVOID"
     ? "Avoid until the flagged risks are resolved and re-verified."
@@ -3869,7 +3875,7 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
     }).sort((a, b) => (b.liqRaw ?? 0) - (a.liqRaw ?? 0));
 
     if (!rows.length) {
-      return { feature: "scan-token", data: scanData, analysis: "I can’t pull all pools right now, but I can still run a full report on the token." };
+      return { feature: "scan-token", data: scanData, analysis: "I can't pull all pools right now, but I can still run a full report on the token." };
     }
     const tokenName = String((token.name as string | undefined) ?? "Token");
     const tokenSymbol = String((token.symbol as string | undefined) ?? "?");
@@ -3887,7 +3893,7 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
         "Pools:",
         ...rows.slice(0, 8).map((r, i) => `${i + 1}. ${r.dex}/${r.pair} — liquidity ${r.liquidity} — 24h vol ${r.volume} — 24h move ${r.move} — pool ${r.pool}`),
         "",
-        "Clark’s read:",
+        "Clark's read:",
         concentrated ? "Liquidity is concentrated in one dominant pool, so execution risk can spike if that pool thins out." : "Liquidity is spread across multiple pools, which usually improves execution resilience.",
         "",
         "Next:",
@@ -4035,7 +4041,7 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
   return sanitizeFreeform((textBlock?.text ?? "Not enough verified data."), { allowProviderNames: false });
 }
 
-async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, origin: string) {
+async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, origin: string, authHeader?: string | null) {
   const chain = body.chain ?? "base";
   const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
 
@@ -4076,9 +4082,13 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
-      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&minUsd=0&limit=25`, {
+      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=25`, {
         signal: AbortSignal.timeout(5000),
+        headers: authHeader ? { Authorization: authHeader } : {},
       });
+      if (res.status === 403) {
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Whale Alerts are included in Pro and Elite." };
+      }
       if (res.ok) {
         const json = await res.json();
         const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
@@ -4108,7 +4118,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
                 mode: "analysis",
                 intent: "whale_alert",
                 toolsUsed: ["whale_feed_stored"],
-                analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don’t have a clean non-stable token signal yet.",
+                analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don't have a clean non-stable token signal yet.",
               }
             }
             const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ") || "No dominant token"
@@ -4167,7 +4177,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
               mode: "analysis",
               intent: "whale_alert",
               toolsUsed: ["whale_feed_stored"],
-              analysis: "I don’t have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again.",
+              analysis: `No fresh whale ${isBuyQuery ? "buy " : ""}alerts match the current ${window} Interesting feed. Try All activity or run a full refresh from the Whale Alerts page.`,
             }
           }
           contextXml = `<whale_alerts count="0" window="${window}">No whale ${isBuyQuery ? "buy " : ""}alerts in the past ${window}.</whale_alerts>`;
@@ -4267,7 +4277,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (isWhaleFlowPrompt(prompt, body.history)) {
-    return await handleStoredWhaleFlow(prompt, body, origin);
+    return await handleStoredWhaleFlow(prompt, body, origin, authHeader);
   }
   if (isPumpFeedPrompt(prompt)) {
     const analysis = await handlePumpFeedSnapshot(origin);
@@ -4328,7 +4338,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (isWhaleFlowPrompt(prompt)) {
-    return await handleWhaleAlertFeed(prompt, body, origin);
+    return await handleWhaleAlertFeed(prompt, body, origin, authHeader);
   }
 
   // Hard guard: hide/private transaction requests — specific public-ledger explanation
@@ -4475,7 +4485,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (liveIntent === "WHALE_FEED") {
-    return await handleWhaleAlertFeed(prompt, body, origin);
+    return await handleWhaleAlertFeed(prompt, body, origin, authHeader);
   }
 
   const replyMode = detectReplyMode(body);
@@ -4544,7 +4554,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       mode: "casual_help",
       intent: plan.intent,
       toolsUsed,
-      analysis: "I can scan Base tokens, analyze wallets, explain whale alerts, summarize what’s moving on Base, read liquidity/holder/deployer risk, and explain crypto concepts. I can also help you build watchlists and checklists. I can’t trade, custody funds, or execute transactions.",
+      analysis: "I can scan Base tokens, analyze wallets, explain whale alerts, summarize what's moving on Base, read liquidity/holder/deployer risk, and explain crypto concepts. I can also help you build watchlists and checklists. I can't trade, custody funds, or execute transactions.",
     };
   }
 
@@ -4565,7 +4575,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       feature: "clark-ai",
       chain,
       mode: "analysis",
-      analysis: "Wallet compare is planned for the next phase. For now, share one wallet and I’ll score it with available evidence.",
+      analysis: "Wallet compare is planned for the next phase. For now, share one wallet and I'll score it with available evidence.",
       intent: plan.intent,
       toolsUsed,
     };
@@ -4705,13 +4715,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }));
       return { feature: "clark-ai", chain, mode: "general_market", analysis: buildGTMarketBriefing(list), intent: plan.intent, toolsUsed };
     }
-    return { feature: "clark-ai", chain, mode: "general_market", analysis: "I can’t pull the full Base market feed right now, but I can still scan any token you paste and build a watchlist from partial data.", intent: plan.intent, toolsUsed };
+    return { feature: "clark-ai", chain, mode: "general_market", analysis: "I can't pull the full Base market feed right now, but I can still scan any token you paste and build a watchlist from partial data.", intent: plan.intent, toolsUsed };
   }
 
   if (plan.intent === "wallet_balance") {
     const w = evidence.walletSnapshot;
     if (!w?.ok) {
-      return { feature: "clark-ai", chain, mode: "analysis", analysis: "I couldn’t pull this wallet snapshot right now. Paste the wallet again and I’ll retry.", intent: plan.intent, toolsUsed };
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: "I couldn't pull this wallet snapshot right now. Paste the wallet again and I'll retry.", intent: plan.intent, toolsUsed };
     }
     const summary = formatWalletBalanceSummary(w);
     return { feature: "clark-ai", chain, mode: "analysis", analysis: summary, intent: plan.intent, toolsUsed };
@@ -4719,7 +4729,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (plan.intent === "wallet_quality") {
     if (!resolvedAddress) {
-      return { feature: "clark-ai", chain, mode: "analysis", analysis: "Share the wallet address and I’ll evaluate quality with available evidence.", intent: plan.intent, toolsUsed };
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: "Share the wallet address and I'll evaluate quality with available evidence.", intent: plan.intent, toolsUsed };
     }
     if (evidence.walletSnapshot?.ok) {
       const quality = buildWalletQualityVerdict(evidence.walletSnapshot, resolvedAddress, prompt);
@@ -4871,12 +4881,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const token = evidence.tokenScan?.token;
     const wantsPoolBreakdown = /\b(show all .*pools|show all pools|all pools for|pools for|token \d+ pools|pool breakdown|[A-Z0-9$._-]{2,12}\s+pools)\b/i.test(prompt);
     if (wantsPoolBreakdown && !token) {
-      return { feature: "clark-ai", chain, mode: "analysis", analysis: "I can’t pull all pools right now, but I can still run a full report on the token.", intent: plan.intent, toolsUsed };
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: "I can't pull all pools right now, but I can still run a full report on the token.", intent: plan.intent, toolsUsed };
     }
     if (wantsPoolBreakdown && token) {
       const pools = [...(evidence.tokenScan?.poolDetails ?? [])].sort((a, b) => (b.liquidity ?? 0) - (a.liquidity ?? 0));
       if (!pools.length) {
-        return { feature: "clark-ai", chain, mode: "analysis", analysis: "I can’t pull all pools right now, but I can still run a full report on the token.", intent: plan.intent, toolsUsed };
+        return { feature: "clark-ai", chain, mode: "analysis", analysis: "I can't pull all pools right now, but I can still run a full report on the token.", intent: plan.intent, toolsUsed };
       }
       const topLiq = pools[0]?.liquidity ?? 0;
       const totalLiq = pools.reduce((s, p) => s + (p.liquidity ?? 0), 0);
@@ -4892,7 +4902,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           "Pools:",
           ...pools.slice(0, 8).map((p, i) => `${i + 1}. ${p.dex}/${p.pair} — liquidity ${formatUsdShort(p.liquidity)} — 24h vol ${formatUsdShort(p.volume24h)} — 24h move ${p.change24h != null ? `${p.change24h.toFixed(2)}%` : "Unverified"} — pool ${p.poolAddress ?? "Unverified"}`),
           "",
-          "Clark’s read:",
+          "Clark's read:",
           concentrated ? "Liquidity is concentrated in one dominant pool, so execution risk is more sensitive to that venue." : "Liquidity is spread across multiple pools, which usually supports smoother execution.",
           "",
           "Next:",
@@ -4913,7 +4923,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         }
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: plan.intent, toolsUsed,
-          analysis: "I could not confirm a Base match from current checks. To be explicit: ‘scan token 0x...’ for tokens or ‘scan wallet 0x...’ for wallets.",
+          analysis: "I could not confirm a Base match from current checks. To be explicit: 'scan token 0x...' for tokens or 'scan wallet 0x...' for wallets.",
         };
       }
       if (resolvedAddress) {
@@ -4949,7 +4959,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       if (directIntent.address && !/wallet|balance|portfolio|copy[\s-]?trade/i.test(prompt)) {
         return { feature: "clark-ai", chain, mode: "analysis", analysis: "Is this address a token contract or a wallet? Tell me which scan you want.", intent: plan.intent, toolsUsed };
       }
-      return { feature: "clark-ai", chain, mode: "analysis", analysis: "Paste a Base token contract (or token name) and I’ll scan it.", intent: plan.intent, toolsUsed };
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: "Paste a Base token contract (or token name) and I'll scan it.", intent: plan.intent, toolsUsed };
     }
     const report = buildFullReportEvidence(evidence, token.address);
     const pack = buildClarkEvidencePack(report);
@@ -4980,7 +4990,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       feature: "clark-ai",
       chain,
       mode: "analysis",
-      analysis: "Paste a Base contract, wallet, or scan result and I’ll analyze it.",
+      analysis: "Paste a Base contract, wallet, or scan result and I'll analyze it.",
       intent: plan.intent,
       toolsUsed,
     };
