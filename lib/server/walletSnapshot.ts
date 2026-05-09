@@ -302,6 +302,10 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
       diag.failureStage = diag.failureStage ?? 'fetch'
       diag.reason = diag.reason || 'GoldRush wallet history request did not expose an HTTP response.'
     }
+    if (diag.fetchFailed === false && diag.httpStatus == null) {
+      diag.fetchFailed = true
+      diag.failureStage = diag.failureStage ?? 'fetch'
+    }
     return diag
   }
   try {
