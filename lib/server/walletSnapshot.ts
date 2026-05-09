@@ -690,7 +690,6 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
       ? { ...behaviorRes.value, recentActivitySummary: 'Historical Base activity found, but no recent activity in checked window.' }
       : behaviorRes.value)
     : { ...BEHAVIOR_EMPTY, reason: 'Behavior fetch did not complete.' }
-  const grBase = grPnlBaseOut
   const goldrushConfigured = Boolean(GOLDRUSH_KEY)
   const goldrushReason = !goldrushConfigured
     ? 'History provider unavailable.'
