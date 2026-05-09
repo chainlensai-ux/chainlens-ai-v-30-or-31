@@ -234,6 +234,7 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 export default function WhaleAlertsPage() {
   const { plan, loading: planLoading } = usePlanWithLoading()
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
+  const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('interesting')
   const [valueRange, setValueRange]   = useState<ValueRange>('all')
   const [typeFilter, setTypeFilter]   = useState('all')
   const [sevFilter, setSevFilter]     = useState('all')
@@ -270,6 +271,7 @@ export default function WhaleAlertsPage() {
     setFeedError(false)
     try {
       const p = new URLSearchParams({ window: windowValue, limit: '100' })
+      if (feedMode === 'all') p.set('interesting', 'false')
       if (valueRange !== 'all') p.set('valueRange', valueRange)
       if (typeFilter !== 'all') p.set('type', typeFilter)
       if (sevFilter !== 'all')  p.set('severity', sevFilter)
@@ -290,7 +292,7 @@ export default function WhaleAlertsPage() {
     } finally {
       setLoading(false)
     }
-  }, [windowValue, valueRange, typeFilter, sevFilter, sideFilter])
+  }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter])
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
 
@@ -391,6 +393,7 @@ export default function WhaleAlertsPage() {
     setSideFilter('all')
     setValueRange('all')
     setWindowValue('24h')
+    setFeedMode('interesting')
   }
   const clearSyncState = () => {
     window.localStorage.removeItem(CLIENT_SYNC_STATE_CACHE_KEY)
@@ -601,6 +604,24 @@ export default function WhaleAlertsPage() {
                 </div>
                 {valueRange !== 'all' && (
                   <p style={{ marginTop: 6, fontSize: 11, color: '#475569' }}>Showing alerts inside selected value range.</p>
+                )}
+              </div>
+
+              <div>
+                <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Feed Mode</p>
+                <div className="flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
+                  {(['interesting', 'all'] as const).map(mode => (
+                    <button key={mode} onClick={() => setFeedMode(mode)}
+                      className="rounded-[9px]"
+                      style={feedMode === mode
+                        ? { padding: '6px 16px', fontSize: 12, fontWeight: 600, background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf', boxShadow: '0 0 14px rgba(45,212,191,0.12)' }
+                        : { padding: '6px 16px', fontSize: 12, fontWeight: 600, background: 'transparent', border: '1px solid transparent', color: '#475569' }}>
+                      {mode === 'interesting' ? 'Interesting' : 'All activity'}
+                    </button>
+                  ))}
+                </div>
+                {feedMode === 'interesting' && (
+                  <p style={{ marginTop: 6, fontSize: 11, color: '#475569' }}>Hiding small WETH/USDC/cbBTC moves under $1k. Switch to All activity to see everything.</p>
                 )}
               </div>
 
@@ -824,7 +845,8 @@ export default function WhaleAlertsPage() {
             const hasProviderErrors = (syncState?.providerErrors ?? 0) > 0
             const insertedSoFar = syncState?.inserted ?? 0
             const rangeActive = valueRange !== 'all'
-            const filtersActive = rangeActive || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
+            const isInterestingMode = feedMode === 'interesting'
+            const filtersActive = rangeActive || isInterestingMode || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
             const hiddenByFilters = insertedSoFar > 0 && filtersActive
             const rangeLabel = RANGE_OPTIONS.find(o => o.value === valueRange)?.label ?? valueRange
             const title = hiddenByFilters
@@ -838,13 +860,17 @@ export default function WhaleAlertsPage() {
                     : 'No whale alerts yet'
             const body = hiddenByFilters
               ? `${insertedSoFar} alert${insertedSoFar !== 1 ? 's' : ''} found in this batch, but hidden by the current filter settings. Try "All" value range or reset filters.`
-              : rangeActive
-                ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
-                : partial
-                  ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
-                  : allDone
-                    ? 'No qualifying recent whale activity found in this batch.'
-                    : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
+              : rangeActive && isInterestingMode
+                ? `No interesting alerts in the ${rangeLabel} range. Switch to All activity to see base/stable moves.`
+                : rangeActive
+                  ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
+                  : partial
+                    ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
+                    : allDone && isInterestingMode
+                      ? 'No interesting alerts match this filter. Switch to All activity to see base/stable moves.'
+                      : allDone
+                        ? 'No qualifying recent whale activity found in this batch.'
+                        : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
             return (
               <div style={{ padding: '64px 20px', textAlign: 'center' }}>
                 <div className="mx-auto flex items-center justify-center rounded-[16px]"
