@@ -1,8 +1,9 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { supabase } from '@/lib/supabaseClient'
 import Link from 'next/link'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -397,7 +398,7 @@ function SupplyBar({ supplyControlled, holderDataAvailable }: {
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function DevWalletPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const [input,   setInput]   = useState('')
   const [loading, setLoading] = useState(false)
   const [result,  setResult]  = useState<DevWalletResult | null>(null)
@@ -420,14 +421,19 @@ export default function DevWalletPage() {
     setIsTracking(false)
     setCopied(false)
     try {
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
       const res  = await fetch('/api/dev-wallet', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ contractAddress: q }),
       })
       const json = await res.json() as DevWalletResult & { error?: string }
       if (!res.ok || json.error) {
-        setError((json.error ?? 'Scan failed — try again').replace('Could not reach Base RPC — try again','RPC deployer trace unavailable, showing available token/holder/liquidity signals'))
+        setError((json.error ?? 'Scan failed — try again').replace('Upgrade required for dev wallet scan.', 'Dev Wallet Detector is a Pro feature.').replace('Could not reach Base RPC — try again','RPC deployer trace unavailable, showing available token/holder/liquidity signals'))
       } else {
         setResult(json)
       }
@@ -453,6 +459,13 @@ export default function DevWalletPage() {
     return `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`
   }, [result])
 
+  if (planLoading) {
+    return (
+      <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '80vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
+        Loading plan access…
+      </div>
+    )
+  }
   if (!canAccessFeature(plan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
 
   return (
