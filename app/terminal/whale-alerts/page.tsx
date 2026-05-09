@@ -92,6 +92,13 @@ const fmtToken = (n?: number | null, sym?: string | null) => {
   return `${n.toFixed(2)} ${sym}`
 }
 
+const fmtAmtNum = (n?: number | null) => {
+  if (n == null) return null
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`
+  return n.toFixed(2)
+}
+
 const getSide = (s: string | null | undefined) => {
   const k = (s ?? '').toLowerCase()
   if (k === 'buy')  return { line: '#2dd4bf', avatarBg: '#0d3b35', chipBg: 'rgba(45,212,191,0.12)',  chipBd: 'rgba(45,212,191,0.32)',  chipTx: '#5eead4', label: 'BUY'      }
@@ -308,7 +315,7 @@ export default function WhaleAlertsPage() {
         let currentOffset = typeof offset === 'number' ? offset : 0
         let cumulativeInserted = isFullResume ? (syncState?.insertedTotal ?? 0) : 0
         while (true) {
-          const params = new URLSearchParams({ window: '7d', limit: '12', minUsd: '0', mode: 'full', offset: String(currentOffset) })
+          const params = new URLSearchParams({ window: '7d', limit: '15', minUsd: '0', mode: 'full', offset: String(currentOffset) })
           const { data: { session: syncSession } } = await supabase.auth.getSession()
           const syncToken = syncSession?.access_token
           const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
@@ -338,7 +345,7 @@ export default function WhaleAlertsPage() {
         }
       } else {
         // Batch: single call
-        const params = new URLSearchParams({ window: '7d', limit: '12', minUsd: '0', mode: 'batch' })
+        const params = new URLSearchParams({ window: '7d', limit: '15', minUsd: '0', mode: 'batch' })
         if (typeof offset === 'number') params.set('offset', String(offset))
         const { data: { session: syncSession } } = await supabase.auth.getSession()
         const syncToken = syncSession?.access_token
@@ -882,13 +889,16 @@ export default function WhaleAlertsPage() {
             const primarySym = tok.split(' / ')[0]
             const lbl        = primarySym.slice(0, 4).toUpperCase()
             const s          = alert.side?.toLowerCase() ?? ''
-            const verb       = focusTok ? (s === 'buy' ? 'bought' : 'swapped into') : (isMultiTok ? 'swapped' : s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'moved')
             const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
 
-            // Amount: prefer USD (valid for both single and summed grouped rows); token amount for singles
+            // Amount: prefer USD; fall back to token number (no symbol — tok appended in render)
             const amtU    = fmtUsd(alert.amount_usd)
-            const amtT    = isMultiTok ? null : fmtToken(alert.amount_token, focusTok ?? alert.token_symbol)
-            const amtShow = amtU !== '—' ? amtU : amtT
+            const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
+            const amtShow = amtU !== '—' ? amtU : amtTNum
+
+            // Verb and preposition split so amount fits between them for swaps
+            const isSwap   = isMultiTok || (focusTok != null && s !== 'buy')
+            const baseVerb = isSwap ? 'swapped' : s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'moved'
 
             const logoUrl = alert.token_image_url ?? alert.logo_url ?? alert.image ?? alert.token_logo ?? null
 
@@ -937,8 +947,10 @@ export default function WhaleAlertsPage() {
                       </span>
                       <span style={{ fontSize: 14, fontWeight: 600, color: '#f8fafc' }}>
                         {walletName}{' '}
-                        <span style={{ color: '#64748b' }}>{verb}</span>
-                        {amtShow ? <>{' '}<span style={{ fontWeight: 700, color: '#5eead4' }}>{amtShow}</span></> : null}
+                        <span style={{ color: '#64748b' }}>{baseVerb}</span>
+                        {amtShow
+                          ? <>{' '}<span style={{ fontWeight: 700, color: '#5eead4' }}>{amtShow}</span>{isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}</>
+                          : isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}
                         {' '}<span style={{ fontWeight: 700, color: '#f8fafc' }}>{tok}</span>
                       </span>
                     </div>

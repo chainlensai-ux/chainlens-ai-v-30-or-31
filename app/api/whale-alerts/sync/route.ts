@@ -31,7 +31,7 @@ type CovalentTx = {
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
 const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=100'
 const DEFAULT_LIMIT = 5
-const MAX_LIMIT = 12
+const MAX_LIMIT = 15
 const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
