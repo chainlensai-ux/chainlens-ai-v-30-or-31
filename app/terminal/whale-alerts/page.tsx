@@ -30,6 +30,7 @@ type AlertItem = {
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type SyncResponse = {
+  ok?: boolean
   savedAt?: number
   mode?: 'batch' | 'full'
   processed?: number
@@ -284,9 +285,9 @@ export default function WhaleAlertsPage() {
     const now = Date.now()
     const cacheKey = mode === 'full' ? CLIENT_FULL_SYNC_CACHE_KEY : CLIENT_SYNC_CACHE_KEY
     const cooldownMs = mode === 'full' ? CLIENT_FULL_SYNC_COOLDOWN_MS : CLIENT_SYNC_COOLDOWN_MS
-    const isFullContinuation = mode === 'full' && typeof offset === 'number' && offset > 0
     const isBatchContinuation = mode === 'batch' && typeof offset === 'number' && offset > 0
-    const isContinuation = isFullContinuation || isBatchContinuation
+    const isFullResume = mode === 'full' && typeof offset === 'number' && offset > 0
+    const isContinuation = isBatchContinuation || isFullResume
     const lastSyncAt = Number(window.localStorage.getItem(cacheKey) ?? '0')
     const elapsed = now - lastSyncAt
     if (!isContinuation && elapsed < cooldownMs) {
@@ -296,55 +297,60 @@ export default function WhaleAlertsPage() {
     }
     setSyncing(true)
     try {
-      const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd) })
-      if (typeof offset === 'number') params.set('offset', String(offset))
-      params.set('mode', mode)
-      const { data: { session: syncSession } } = await supabase.auth.getSession()
-      const syncToken = syncSession?.access_token
-      const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
-        method: 'POST',
-        headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {},
-      })
-      const json = (await res.json()) as SyncResponse
-      const merged: SyncResponse = mode === 'full'
-        ? (() => {
-            const prev = syncState?.mode === 'full' ? syncState : null
-            const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
-            return {
-              ...json,
-              mode: 'full',
-              processedTotal: json.processedTotal ?? (Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)),
-              insertedTotal,
-              refreshStatus: json.hasMore ? 'full_in_progress' : 'full_complete',
-              savedAt: now,
-            }
-          })()
-        : (() => {
-            // For batch: accumulate totals on continuation, reset on fresh start
-            const prev = isBatchContinuation && syncState?.mode === 'batch' ? syncState : null
-            const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
-            const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
-            return {
-              ...json,
-              mode: 'batch',
-              processedTotal,
-              insertedTotal,
-              savedAt: now,
-            }
-          })()
-      setSyncState(merged)
-      window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
       if (mode === 'full') {
-        if (!merged.hasMore) {
-          window.localStorage.setItem(cacheKey, String(now))
-          setFullSyncCooldownLeftMs(cooldownMs)
-        } else {
-          setFullSyncCooldownLeftMs(0)
+        // Auto-loop: run batches until done=true or error — no manual Continue needed
+        let currentOffset = typeof offset === 'number' ? offset : 0
+        let cumulativeInserted = isFullResume ? (syncState?.insertedTotal ?? 0) : 0
+        while (true) {
+          const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd), mode: 'full', offset: String(currentOffset) })
+          const { data: { session: syncSession } } = await supabase.auth.getSession()
+          const syncToken = syncSession?.access_token
+          const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
+            method: 'POST',
+            headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {},
+          })
+          const json = (await res.json()) as SyncResponse
+          if (!res.ok || json.ok === false) break
+          cumulativeInserted += Number(json.inserted ?? 0)
+          const merged: SyncResponse = {
+            ...json,
+            mode: 'full',
+            processedTotal: json.processedTotal,
+            insertedTotal: cumulativeInserted,
+            refreshStatus: json.hasMore ? 'full_in_progress' : 'full_complete',
+            savedAt: Date.now(),
+          }
+          setSyncState(merged)
+          window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
+          if (json.done === true || !json.hasMore || json.nextOffset == null) {
+            window.localStorage.setItem(cacheKey, String(Date.now()))
+            setFullSyncCooldownLeftMs(cooldownMs)
+            break
+          }
+          currentOffset = json.nextOffset
+          await new Promise<void>(r => setTimeout(r, 750))
         }
-      } else if (!isBatchContinuation) {
-        // Only set cooldown for fresh batch starts, not continuations
-        window.localStorage.setItem(cacheKey, String(now))
-        setSyncCooldownLeftMs(cooldownMs)
+      } else {
+        // Batch: single call
+        const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd), mode: 'batch' })
+        if (typeof offset === 'number') params.set('offset', String(offset))
+        const { data: { session: syncSession } } = await supabase.auth.getSession()
+        const syncToken = syncSession?.access_token
+        const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
+          method: 'POST',
+          headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {},
+        })
+        const json = (await res.json()) as SyncResponse
+        const prev = isBatchContinuation && syncState?.mode === 'batch' ? syncState : null
+        const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
+        const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
+        const merged: SyncResponse = { ...json, mode: 'batch', processedTotal, insertedTotal, savedAt: Date.now() }
+        setSyncState(merged)
+        window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
+        if (!isBatchContinuation) {
+          window.localStorage.setItem(cacheKey, String(Date.now()))
+          setSyncCooldownLeftMs(cooldownMs)
+        }
       }
       await loadAlerts()
     } finally {
@@ -402,7 +408,9 @@ export default function WhaleAlertsPage() {
     return 0
   })()
   const syncStatusText = syncing
-    ? 'Checking wallets…'
+    ? (syncState?.mode === 'full' && (syncState?.trackedWalletsTotal ?? 0) > 0
+        ? `Scanning ${scannedCount}/${syncState.trackedWalletsTotal}`
+        : 'Checking wallets…')
     : isFullInProgress
       ? 'Full refresh in progress'
       : syncState
@@ -651,14 +659,11 @@ export default function WhaleAlertsPage() {
               )}
               {syncState && (
                 <p style={{ margin: 0, fontSize: 11, color: '#94a3b8' }}>
-                  {isFullInProgress
-                    ? `Full refresh progress: ${scannedCount} / ${trackedCount || stats.trackedWallets}`
-                    : `Last refresh checked ${scannedCount} / ${trackedCount || stats.trackedWallets} tracked wallets`}
-                </p>
-              )}
-              {syncState && trackedCount > 0 && (
-                <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
-                  {scannedCount} of {trackedCount} wallets checked
+                  {syncing && syncState.mode === 'full'
+                    ? `Scanning ${scannedCount} / ${trackedCount || stats.trackedWallets} wallets…`
+                    : isFullInProgress
+                      ? `Full refresh progress: ${scannedCount} / ${trackedCount || stats.trackedWallets}`
+                      : `Last refresh checked ${scannedCount} / ${trackedCount || stats.trackedWallets} tracked wallets`}
                 </p>
               )}
 
