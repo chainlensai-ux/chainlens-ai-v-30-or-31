@@ -690,6 +690,7 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
       ? { ...behaviorRes.value, recentActivitySummary: 'Historical Base activity found, but no recent activity in checked window.' }
       : behaviorRes.value)
     : { ...BEHAVIOR_EMPTY, reason: 'Behavior fetch did not complete.' }
+  const grBase = grPnlBaseOut
   const goldrushConfigured = Boolean(GOLDRUSH_KEY)
   const goldrushReason = !goldrushConfigured
     ? 'History provider unavailable.'
@@ -736,12 +737,12 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
           valuedEventsReturned: valuedGrEvents.length,
           pnlEventsUsable: filteredPnlTokens.length,
           reason: goldrushReason,
-          endpointKind: baseTransferDiag?.endpointKind ?? null,
-          chainUsed: baseTransferDiag?.chainUsed ?? null,
-          httpStatus: baseTransferDiag?.httpStatus ?? null,
-          rawItemCount: baseTransferDiag?.rawItemCount ?? 0,
-          normalizedEventCount: baseTransferDiag?.normalizedEventCount ?? 0,
-          firstEventShapeKeys: baseTransferDiag?.firstEventShapeKeys ?? [],
+          endpointKind: grBase.diag?.endpointKind,
+          chainUsed: grBase.diag?.chainUsed,
+          httpStatus: grBase.diag?.httpStatus ?? null,
+          rawItemCount: grBase.diag?.rawItemCount,
+          normalizedEventCount: grBase.diag?.normalizedEventCount,
+          firstEventShapeKeys: grBase.diag?.firstEventShapeKeys,
         },
         alchemy: {
           configured: alchemyConfigured,

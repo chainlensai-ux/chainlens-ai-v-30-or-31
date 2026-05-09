@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { createAnonSupabaseClient } from '@/lib/supabase/userSettings'
+import { createAnonSupabaseClient, createAuthedSupabaseClient } from '@/lib/supabase/userSettings'
 
 export type ChainlensPlan = 'free' | 'pro' | 'elite'
 export type ChainlensFeature =
@@ -28,12 +28,16 @@ function getServiceRoleClient() {
 
 export async function getCurrentUserPlanFromBearerToken(token: string) {
   const anon = createAnonSupabaseClient()
-  if (!anon) return { plan: 'free' as ChainlensPlan, userId: null, email: null }
+  if (!anon) return { plan: 'free' as ChainlensPlan, userId: null, email: null, settingsRowFound: false }
   const { data } = await anon.auth.getUser(token)
   const user = data.user
-  if (!user) return { plan: 'free' as ChainlensPlan, userId: null, email: null }
-  const { data: row } = await anon.from('user_settings').select('plan').eq('user_id', user.id).maybeSingle()
-  return { plan: normalizePlan(row?.plan), userId: user.id, email: user.email ?? null }
+  if (!user) return { plan: 'free' as ChainlensPlan, userId: null, email: null, settingsRowFound: false }
+  // Use authed client so Bearer token is forwarded in global headers — required when RLS checks auth.uid().
+  const authed = createAuthedSupabaseClient(token)
+  const { data: row } = await (authed ?? anon)
+    .from('user_settings').select('plan').eq('user_id', user.id).maybeSingle()
+  const settingsRowFound = row !== null
+  return { plan: normalizePlan(row?.plan), userId: user.id, email: user.email ?? null, settingsRowFound }
 }
 
 export async function updatePlanServerSideByEmail(input: {

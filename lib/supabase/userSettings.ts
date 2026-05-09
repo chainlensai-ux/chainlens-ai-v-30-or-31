@@ -207,7 +207,9 @@ export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'p
     if (!sb) return 'free'
     const { data: userData, error: authErr } = await sb.auth.getUser(token)
     if (authErr || !userData.user) return 'free'
-    const { data: row } = await sb
+    // Use authed client with Bearer in global headers for RLS-compatible DB query.
+    const authedSb = createAuthedSupabaseClient(token) ?? sb
+    const { data: row } = await authedSb
       .from('user_settings')
       .select('plan')
       .eq('user_id', userData.user.id)
