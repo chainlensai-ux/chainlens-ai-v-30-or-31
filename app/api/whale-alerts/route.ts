@@ -83,6 +83,9 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
 
 const STABLECOINS = new Set(['USDC', 'USDT', 'DAI', 'USDbC', 'EURC'])
 const LOW_SIGNAL_ROUTING = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
+// Boring = base/stable assets that dominate the feed at small sizes. In "interesting" mode
+// these are suppressed unless the USD value is >= $1 000.
+const BORING_ASSETS = new Set(['USDC', 'USDBC', 'USDT', 'DAI', 'WETH', 'ETH', 'CBBTC'])
 
 function splitSymbols(sym: string | null): string[] {
   if (!sym) return []
@@ -154,6 +157,27 @@ function filterStablecoinNoise(rows: RawRow[]): RawRow[] {
     const amt = row.amount_token as number | null
     return amt === null || amt >= 100
   })
+}
+
+// In "interesting" mode: hide rows where every symbol is a boring base/stable asset
+// and the verified USD value is below $1 000. Rows with null USD are kept.
+function filterBoringAssets(
+  rows: RawRow[],
+  interestingMode: boolean,
+): { rows: RawRow[]; hiddenAsBoring: number } {
+  if (!interestingMode) return { rows, hiddenAsBoring: 0 }
+  let hiddenAsBoring = 0
+  const result = rows.filter(row => {
+    const syms = splitSymbols((row.token_symbol as string | null) ?? null)
+    if (syms.length === 0) return true
+    if (!syms.every(s => BORING_ASSETS.has(s))) return true  // has a non-boring token
+    const usd = row.amount_usd as number | null
+    if (usd === null) return true   // unverified size — keep
+    if (usd >= 1000) return true    // large enough to show
+    hiddenAsBoring++
+    return false
+  })
+  return { rows: result, hiddenAsBoring }
 }
 
 // Suppress swaps that are only routing/stable/major assets (e.g., USDC/WETH, EURC/USDC).
@@ -496,11 +520,13 @@ export async function GET(req: NextRequest) {
     const selectedWindow = parseWindow(params.get('window'))
     const valueRangeRaw = params.get('valueRange') ?? 'all'
     const valueRange = parseValueRange(valueRangeRaw)
+    const interestingRaw = params.get('interesting') ?? 'true'
+    const interestingMode = interestingRaw !== 'false'
     const type = params.get('type')?.trim() || null
     const side = params.get('side')?.trim() || null
     const severity = params.get('severity')?.trim() || null
     const limit = parseLimit(params.get('limit'))
-    const cacheKey = `whale:${plan}:${selectedWindow}:${valueRangeRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}`
+    const cacheKey = `whale:${plan}:${selectedWindow}:${valueRangeRaw}:${interestingRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}`
     const cached = whaleCache.get(cacheKey)
     if (cached && cached.exp > now) return NextResponse.json(cached.payload)
 
@@ -598,7 +624,8 @@ export async function GET(req: NextRequest) {
       interesting_score: computeInterestScore(row),
     }))
     const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueRange(scored, valueRange)
-    const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(valueFiltered)).map(applyHeadlineTokenFocus)
+    const { rows: boringFiltered, hiddenAsBoring } = filterBoringAssets(valueFiltered, interestingMode)
+    const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(boringFiltered)).map(applyHeadlineTokenFocus)
     const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
     // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
     const interestSorted = [...diversityCapped].sort(
@@ -619,14 +646,17 @@ export async function GET(req: NextRequest) {
         rawCount:                 (alertsRes.data ?? []).length,
         afterTimeFilter:          (alertsRes.data ?? []).length,
         afterMinValueFilter:      valueFiltered.length,
+        afterBoringFilter:        boringFiltered.length,
         rawRows:                  (alertsRes.data ?? []).length,
         afterStableRoutingFilter: deNoised.length,
         afterDiversityCap:        diversityCapped.length,
         cappedTokenCounts,
         appliedWindow:            selectedWindow,
         appliedValueRange:        valueRangeRaw,
+        interestingMode,
         hiddenByFilter,
         hiddenAsDust,
+        hiddenAsBoring,
         filtersActive:            { type: type ?? null, side: side ?? null, severity: severity ?? null },
         priceEnrichment:          { ethPrice: majorPrices.eth, btcPrice: majorPrices.btc },
         randomTokenPriceLookups:  randomAddresses.length,
