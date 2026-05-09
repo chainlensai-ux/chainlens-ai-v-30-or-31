@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import ClarkOrb from '@/components/ClarkOrb'
+import { supabase } from '@/lib/supabaseClient'
 
 const HINT_CHIPS = [
   "What's pumping on Base?",
@@ -97,8 +98,8 @@ function parseMessage(raw: string, clarkMode: ClarkMode): Record<string, string>
   if (address && WALLET_INTENT.test(t))
     return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
 
-  // Market / radar
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || t.includes('whales') || MARKET_INTENT.test(t))
+  // Market / radar — whale queries must NOT be routed here; they need clark-ai for auth-gated feed
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || MARKET_INTENT.test(t))
     return { feature: 'base-radar' }
 
   // Bare address → scan-token
@@ -190,9 +191,14 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
         })
       }
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData.session?.access_token
       const res = await fetch(`/api/clark`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           ...body,
           message: text,

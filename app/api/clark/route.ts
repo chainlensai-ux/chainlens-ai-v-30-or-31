@@ -217,6 +217,10 @@ function extractTokenLookupQuery(prompt: string): string | null {
     /what about\s+([a-z0-9._-]{2,32}(?:\s+[a-z0-9._-]{2,32})?)(?:\s+on\s+base)?\b/i,
     /is\s+([a-z0-9._-]{2,32})\s+safe\b/i,
     /what'?s happening with\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /(?:who\s+(?:deployed|built|created|made)|deployer\s+of|dev\s+of|dev\s+wallet\s+for)\s+([a-z0-9._-]{2,32})\b/i,
+    /(?:liquidity|lp)\s+safe(?:ty)?\s+(?:for|of|on)\s+([a-z0-9._-]{2,32})\b/i,
+    /is\s+(?:liquidity|lp)\s+safe(?:ty)?\s+(?:for|of)?\s*([a-z0-9._-]{2,32})\b/i,
+    /([a-z0-9._-]{2,32})\s+(?:liquidity|lp)\s+safe(?:ty)?\b/i,
   ];
   for (const p of patterns) {
     const m = t.match(p);

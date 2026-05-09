@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import HeroSection from '@/components/HeroSection'
 import HomeTokenScreener from '@/components/HomeTokenScreener'
+import { supabase } from '@/lib/supabaseClient'
 
 interface ClarkChatProps {
   active: string | null
@@ -176,9 +177,14 @@ export default function ClarkChat({
         })
       }
       console.log('POST → /api/clark')
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData.session?.access_token
       const res = await fetch(`/api/clark`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           ...body,
           message: text,
