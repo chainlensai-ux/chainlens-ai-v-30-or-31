@@ -1280,7 +1280,7 @@ export async function POST(req: Request) {
     const moduleDiags = [
       { name: 'contract_bytecode_check', ok: rpcStatus !== 'unavailable', detail: rpcStatus },
       { name: 'creator_heuristics', ok: deployerAddress !== null, detail: methodUsed },
-      { name: 'creator_lookup', ok: creatorLookupDiag?.ok ?? false, detail: creatorLookupDiag?.reason ?? 'not_attempted', httpStatus: creatorLookupDiag?.httpStatus ?? null },
+      { name: 'origin_discovery', ok: deployerAddress !== null, detail: methodUsed || 'unknown' },
       { name: 'linked_wallet_heuristics', ok: linkedWallets.length > 0, detail: `count=${linkedWallets.length}` },
       { name: 'token_evidence_call', ok: tokenEvidenceResult.ok, detail: tokenEvidenceResult.reason, httpStatus: tokenEvidenceResult.httpStatus },
       { name: 'holder_evidence', ok: holderDataAvailable, detail: holderDataFromToken ? `top10=${holderTop10}% count=${holderCount}` : (holderDataAvailable ? `controlled=${supplyControlled}%` : 'not_returned') },
@@ -1342,7 +1342,6 @@ export async function POST(req: Request) {
         liqLpLocked === false ? 'LP appears team-controlled.' : '',
       ].filter(Boolean),
       warnings,
-      creationTxHash,
       ...(debugMode ? {
         _diagnostics: {
           modules: moduleDiags,
