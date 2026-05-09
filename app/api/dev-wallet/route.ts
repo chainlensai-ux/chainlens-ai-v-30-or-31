@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
+const BASESCAN_API_KEY = process.env.BASESCAN_API_KEY ?? ''
 function resolveBaseRpcUrl(): string | null {
   const explicit = process.env.ALCHEMY_BASE_RPC_URL || process.env.BASE_RPC_URL
   if (explicit && /^https?:\/\//.test(explicit)) return explicit
@@ -150,11 +151,31 @@ async function checkTokenMetadata(contract: string): Promise<{ metadataAvailable
   }
 }
 
+async function findContractCreatorViaBasescan(contract: string): Promise<string | null> {
+  if (!BASESCAN_API_KEY) return null
+  try {
+    const res = await fetch(
+      `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${BASESCAN_API_KEY}`,
+      { cache: 'no-store', signal: AbortSignal.timeout(7000) }
+    )
+    if (!res.ok) return null
+    const json = await res.json() as { status?: string; result?: Array<{ contractCreator?: string }> }
+    return json?.status === '1' && json?.result?.[0]?.contractCreator
+      ? json.result[0].contractCreator.toLowerCase()
+      : null
+  } catch { return null }
+}
+
 async function findLikelyDeployer(contract: string): Promise<{
   address: string | null
   confidence: 'high' | 'medium' | 'low'
-  methodUsed: 'alchemy_first_mint_recipient' | 'alchemy_earliest_token_transfer_fallback' | 'unknown'
+  methodUsed: 'contract_creation_trace' | 'alchemy_first_mint_recipient' | 'alchemy_earliest_token_transfer_fallback' | 'unknown'
 }> {
+  const basescanCreator = await findContractCreatorViaBasescan(contract)
+  if (basescanCreator) {
+    return { address: basescanCreator, confidence: 'high', methodUsed: 'contract_creation_trace' }
+  }
+
   const mintTransfers = await getAssetTransfers({
     fromBlock: '0x0',
     toBlock: 'latest',
@@ -529,6 +550,11 @@ async function getClarkVerdict(origin: string, data: {
   suspiciousTransfers: boolean
   suspiciousTransferReasons: string[]
   warnings: string[]
+  honeypot?: boolean | null
+  buyTax?: number | null
+  sellTax?: number | null
+  lpLocked?: boolean | null
+  lpHolderConcentration?: number | null
 }): Promise<{ verdict: ClarkVerdict | null; clarkError: string | null }> {
   const normalizeLabel = (value: unknown): ClarkVerdict['label'] | null => {
     const v = String(value ?? '').trim().toUpperCase().replace(/_/g, ' ')
@@ -577,6 +603,11 @@ async function getClarkVerdict(origin: string, data: {
     `Previous activity contracts: ${data.previousProjects.map(p => p.contractAddress).slice(0, 8).join(', ') || 'none'}\n` +
     `Suspicious transfers: ${data.suspiciousTransfers}\n` +
     `Suspicious reasons: ${data.suspiciousTransferReasons.join('; ') || 'none'}\n` +
+    `Honeypot: ${data.honeypot ?? 'unknown'}\n` +
+    `Buy tax: ${data.buyTax != null ? `${data.buyTax}%` : 'unknown'}\n` +
+    `Sell tax: ${data.sellTax != null ? `${data.sellTax}%` : 'unknown'}\n` +
+    `LP locked: ${data.lpLocked ?? 'unknown'}\n` +
+    `LP holder concentration: ${data.lpHolderConcentration != null ? `${data.lpHolderConcentration}%` : 'unknown'}\n` +
     `Unavailable data: ${data.warnings.join('; ') || 'none'}\n` +
     `Return ONLY JSON with keys label, confidence, summary, keySignals, risks, nextAction.`
 
@@ -610,13 +641,13 @@ async function getClarkVerdict(origin: string, data: {
             supplyControlled: data.supplyControlled,
             securityDataAvailable: data.securityDataAvailable,
             liquidityDataAvailable: data.liquidityDataAvailable,
-            honeypot: null,
-            buyTax: null,
-            sellTax: null,
-            lpLocked: null,
-            lpLockDataAvailable: false,
-            lpHolderConcentration: null,
-            lpHolderDataAvailable: false,
+            honeypot: data.honeypot ?? null,
+            buyTax: data.buyTax ?? null,
+            sellTax: data.sellTax ?? null,
+            lpLocked: data.lpLocked ?? null,
+            lpLockDataAvailable: data.lpLocked !== null && data.lpLocked !== undefined,
+            lpHolderConcentration: data.lpHolderConcentration ?? null,
+            lpHolderDataAvailable: data.lpHolderConcentration !== null && data.lpHolderConcentration !== undefined,
           }),
         },
       }),
@@ -642,13 +673,13 @@ async function getClarkVerdict(origin: string, data: {
       supplyControlled: data.supplyControlled,
       securityDataAvailable: data.securityDataAvailable,
       liquidityDataAvailable: data.liquidityDataAvailable,
-      honeypot: null,
-      buyTax: null,
-      sellTax: null,
-      lpLocked: null,
-      lpLockDataAvailable: false,
-      lpHolderConcentration: null,
-      lpHolderDataAvailable: false,
+      honeypot: data.honeypot ?? null,
+      buyTax: data.buyTax ?? null,
+      sellTax: data.sellTax ?? null,
+      lpLocked: data.lpLocked ?? null,
+      lpLockDataAvailable: data.lpLocked !== null && data.lpLocked !== undefined,
+      lpHolderConcentration: data.lpHolderConcentration ?? null,
+      lpHolderDataAvailable: data.lpHolderConcentration !== null && data.lpHolderConcentration !== undefined,
     })
     const labelFromField = normalizeLabel(bodyData?.verdict)
     const confidenceFromField = normalizeConfidence(bodyData?.confidence)
@@ -745,11 +776,13 @@ async function getClarkVerdict(origin: string, data: {
 }
 
 
-async function fetchTokenEvidence(origin: string, contractAddress: string): Promise<Record<string, unknown> | null> {
+async function fetchTokenEvidence(origin: string, contractAddress: string, authHeader?: string): Promise<Record<string, unknown> | null> {
   try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', 'x-user-plan': 'pro' }
+    if (authHeader) headers['Authorization'] = authHeader
     const res = await fetch(`${origin}/api/token`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-user-plan': 'pro' },
+      headers,
       body: JSON.stringify({ contractAddress, chain: 'base' }),
       cache: 'no-store',
       signal: AbortSignal.timeout(12000),
@@ -820,7 +853,8 @@ export async function POST(req: Request) {
     }
 
     const origin = new URL(req.url).origin
-    const tokenEvidence = await fetchTokenEvidence(origin, normalizedAddress)
+    const reqAuthHeader = req.headers.get('authorization') ?? undefined
+    const tokenEvidence = await fetchTokenEvidence(origin, normalizedAddress, reqAuthHeader)
 
     let deployerAddress: string | null = null
     let deployerConfidence: 'high'|'medium'|'low' = 'low'
@@ -865,8 +899,26 @@ export async function POST(req: Request) {
     const securityDataAvailable = secEv && Object.keys(secEv).length > 0
     if (!tokenEvidence) warnings.push('Token scanner evidence unavailable; using limited deployer/holder checks.')
 
+    const secHoneypot: boolean | null = typeof secEv.honeypot === 'boolean' ? secEv.honeypot : null
+    const secBuyTax: number | null = typeof secEv.buyTax === 'number' ? secEv.buyTax : null
+    const secSellTax: number | null = typeof secEv.sellTax === 'number' ? secEv.sellTax : null
+    const liqLpLocked: boolean | null = typeof liqEv.lpLocked === 'boolean' ? liqEv.lpLocked : null
+    const liqHolderConcentration: number | null = typeof liqEv.lpHolderConcentration === 'number' ? liqEv.lpHolderConcentration : null
+
     const { suspiciousTransfers, suspiciousTransferReasons } =
       detectSuspiciousTransfers(linkedWallets, supplyControlled)
+
+    const moduleDiags = [
+      { name: 'rpc_bytecode', ok: rpcStatus !== 'unavailable', detail: rpcStatus },
+      { name: 'basescan_creator', ok: deployerConfidence === 'high' && methodUsed === 'contract_creation_trace', detail: methodUsed },
+      { name: 'alchemy_deployer', ok: deployerAddress !== null, detail: deployerAddress ? 'found' : 'not_found' },
+      { name: 'linked_wallets', ok: linkedWallets.length > 0, detail: `count=${linkedWallets.length}` },
+      { name: 'goldrush_holders', ok: holderDataAvailable, detail: holderDataAvailable ? `controlled=${supplyControlled}%` : 'unavailable' },
+      { name: 'previous_activity', ok: previousActivityAvailable, detail: previousActivityAvailable ? `projects=${previousProjects.length}` : 'unavailable' },
+      { name: 'token_evidence', ok: tokenEvidence !== null, detail: tokenEvidence ? 'ok' : 'unavailable' },
+      { name: 'security_signals', ok: securityDataAvailable, detail: secHoneypot !== null ? `honeypot=${secHoneypot}` : (securityDataAvailable ? 'present' : 'unavailable') },
+      { name: 'liquidity_signals', ok: liquidityDataAvailable, detail: liqLpLocked !== null ? `lpLocked=${liqLpLocked}` : (liquidityDataAvailable ? 'present' : 'unavailable') },
+    ]
 
     const { verdict: clarkVerdict, clarkError } = await getClarkVerdict(origin, {
       contractAddress: normalizedAddress,
@@ -883,7 +935,13 @@ export async function POST(req: Request) {
       suspiciousTransfers,
       suspiciousTransferReasons,
       warnings,
+      honeypot: secHoneypot,
+      buyTax: secBuyTax,
+      sellTax: secSellTax,
+      lpLocked: liqLpLocked,
+      lpHolderConcentration: liqHolderConcentration,
     })
+    moduleDiags.push({ name: 'clark_verdict', ok: clarkVerdict !== null, detail: clarkVerdict ? clarkVerdict.label : (clarkError ?? 'failed') })
     if (clarkError) warnings.push(`Clark: ${clarkError}`)
 
     const responsePayload = {
@@ -925,7 +983,10 @@ export async function POST(req: Request) {
         liqEv.lpLocked === false ? 'LP appears team-controlled/unlocked.' : '',
       ].filter(Boolean),
       warnings,
-      diagnostics: process.env.NODE_ENV === 'development' ? { rpcConfigured: Boolean(ALCHEMY_BASE_URL), rpcStatus, providerUsed } : undefined,
+      _diagnostics: {
+        modules: moduleDiags,
+        ...(process.env.NODE_ENV === 'development' ? { rpcConfigured: Boolean(ALCHEMY_BASE_URL), rpcStatus, providerUsed } : {}),
+      },
       fetchedAt: new Date().toISOString(),
     }
     devCache.set(normalizedAddress, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
