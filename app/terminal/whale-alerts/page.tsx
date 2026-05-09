@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { supabase } from '@/lib/supabaseClient'
 
 type AlertItem = {
   id?: string
@@ -257,7 +258,12 @@ export default function WhaleAlertsPage() {
       if (typeFilter !== 'all') p.set('type', typeFilter)
       if (sevFilter !== 'all')  p.set('severity', sevFilter)
       if (sideFilter !== 'all') p.set('side', sideFilter)
-      const res = await fetch(`/api/whale-alerts?${p.toString()}`, { cache: 'no-store' })
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch(`/api/whale-alerts?${p.toString()}`, {
+        cache: 'no-store',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       if (!res.ok) { setFeedError(true); return }
       const json = await res.json()
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
@@ -289,7 +295,12 @@ export default function WhaleAlertsPage() {
       const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd) })
       if (typeof offset === 'number') params.set('offset', String(offset))
       params.set('mode', mode)
-      const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, { method: 'POST' })
+      const { data: { session: syncSession } } = await supabase.auth.getSession()
+      const syncToken = syncSession?.access_token
+      const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
+        method: 'POST',
+        headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {},
+      })
       const json = (await res.json()) as SyncResponse
       const merged: SyncResponse = mode === 'full'
         ? (() => {

@@ -201,9 +201,16 @@ async function fetchGTPage(page: number, signal: AbortSignal): Promise<{ data?: 
 }
 
 export async function GET(req: Request) {
-  const plan = await getServerPlan(req)
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  let plan: 'free' | 'pro' | 'elite' = 'free'
+  let settingsRowFound = false
+  if (token) {
+    const planData = await getCurrentUserPlanFromBearerToken(token).catch(() => null)
+    if (planData) { plan = planData.plan; settingsRowFound = planData.settingsRowFound }
+  }
   if (plan === 'free') {
-    return NextResponse.json({ error: 'Upgrade required for pump alerts.', rateLimited: false }, { status: 403 })
+    return NextResponse.json({ error: 'Included in Pro and Elite.', rateLimited: false, planGate: { verifiedPlan: plan, requiredPlan: 'pro', settingsRowFound, planSource: token ? 'bearer_token' : 'no_token' } }, { status: 403 })
   }
   const ip = getIp(req)
   const now = Date.now()

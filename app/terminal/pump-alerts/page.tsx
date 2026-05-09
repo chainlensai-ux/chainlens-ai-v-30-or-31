@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { supabase } from '@/lib/supabaseClient'
 
 type PumpCategory = 'HIGH_MOMENTUM' | 'VOLUME_EXPANSION' | 'THIN_MOONSHOT' | 'WATCH'
 type PumpRisk = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -304,7 +305,12 @@ export default function PumpAlertsPage() {
   const fetchAlerts = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/pump-alerts', { cache: 'no-store' })
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch('/api/pump-alerts', {
+        cache: 'no-store',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       const json = await res.json()
       setAlerts(Array.isArray(json.alerts) ? json.alerts : [])
       setFetchedAt(json.fetchedAt ?? null)
