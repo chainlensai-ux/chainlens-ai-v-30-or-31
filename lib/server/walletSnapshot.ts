@@ -235,10 +235,26 @@ type GoldrushHistoryDiag = {
   requestPathTemplate?: string
   authMode?: 'bearer' | 'basic' | 'query' | 'none'
 }
+
+function buildGoldrushTransfersRequest(chain: string, wallet: string) {
+  const normalizedWallet = wallet.toLowerCase()
+  const finalUrl = new URL(`https://api.covalenthq.com/v1/${chain}/address/${normalizedWallet}/transfers_v2/`)
+  finalUrl.searchParams.set('page-size', '125')
+  finalUrl.searchParams.set('page-number', '0')
+
+  const requestUrl = finalUrl.toString()
+
+  return {
+    requestUrl,
+    requestHost: finalUrl.hostname,
+    requestUrlValid: true,
+    requestPathTemplate: '/v1/{chain}/address/{wallet}/transfers_v2/',
+    urlTemplate: `https://api.covalenthq.com/v1/${chain}/address/{wallet}/transfers_v2/?page-size=125&page-number=0`,
+  }
+}
+
 async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey: string): Promise<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }> {
-  const pathTemplate = '/v1/{chain}/address/{wallet}/transfers_v2/'
-  const makeUrlTemplate = (chain: string): string => `https://api.covalenthq.com/v1/${chain}/address/{address}/transfers_v2/?page-size=125&page-number=0`
-  const baseDiag = (chain: string): GoldrushHistoryDiag => ({ endpointKind: 'transfers_v2', chainUsed: chain, urlTemplate: makeUrlTemplate(chain), httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: '', fetchErrorKind: null, fetchErrorMessage: null, hasApiKey: Boolean(apiKey), requestHost: 'api.covalenthq.com', requestUrlValid: false, requestPathTemplate: pathTemplate, authMode: apiKey ? 'bearer' : 'none' })
+  const baseDiag = (chain: string): GoldrushHistoryDiag => ({ endpointKind: 'transfers_v2', chainUsed: chain, urlTemplate: `https://api.covalenthq.com/v1/${chain}/address/{wallet}/transfers_v2/?page-size=125&page-number=0`, httpStatus: null, fetchFailed: false, failureStage: null, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: '', fetchErrorKind: null, fetchErrorMessage: null, hasApiKey: Boolean(apiKey), requestHost: 'api.covalenthq.com', requestUrlValid: true, requestPathTemplate: '/v1/{chain}/address/{wallet}/transfers_v2/', authMode: apiKey ? 'bearer' : 'none' })
   const sanitizeMessage = (msg: string): string => {
     const shortAddr = address ? `${address.slice(0, 6)}...${address.slice(-4)}` : ''
     return msg
@@ -264,6 +280,13 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
     }
   }
   const finalizeDiag = (diag: GoldrushHistoryDiag): GoldrushHistoryDiag => {
+    if (diag.requestUrlValid === true && diag.failureStage === 'build_url') {
+      diag.failureStage = 'fetch'
+    }
+    if (diag.requestUrlValid === false) {
+      diag.failureStage = 'build_url'
+      if (!diag.reason) diag.reason = 'GoldRush wallet history URL could not be built.'
+    }
     if (diag.fetchFailed === false && diag.httpStatus == null) {
       diag.fetchFailed = true
       diag.failureStage = diag.failureStage ?? 'fetch'
@@ -281,22 +304,22 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         devLog(out)
         return { events: [], diag: out }
       }
-      let url: string
+      let requestUrl: string
       try {
-        const parsed = new URL(`https://api.covalenthq.com/v1/${encodeURIComponent(chainUsed)}/address/${encodeURIComponent(address)}/transfers_v2/`)
-        parsed.searchParams.set('page-size', '125')
-        parsed.searchParams.set('page-number', '0')
-        url = parsed.toString()
-        diag.requestHost = parsed.hostname
-        diag.requestUrlValid = true
+        const built = buildGoldrushTransfersRequest(chainUsed, address)
+        requestUrl = built.requestUrl
+        diag.requestHost = built.requestHost
+        diag.requestUrlValid = built.requestUrlValid
+        diag.requestPathTemplate = built.requestPathTemplate
+        diag.urlTemplate = built.urlTemplate
       } catch {
-        const out = finalizeDiag({ ...diag, fetchFailed: true, failureStage: 'build_url', fetchErrorKind: 'invalid_url', fetchErrorMessage: 'Failed to construct a valid GoldRush request URL.', reason: 'GoldRush wallet history URL could not be built.' })
+        const out = finalizeDiag({ ...diag, requestUrlValid: false, fetchFailed: true, failureStage: 'build_url', fetchErrorKind: 'invalid_url', fetchErrorMessage: 'Failed to construct a valid GoldRush request URL.', httpStatus: null, reason: 'GoldRush wallet history URL could not be built.' })
         devLog(out)
         return { events: [], diag: out }
       }
       let res: Response
       try {
-        res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
+        res = await fetch(requestUrl, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
       } catch (err) {
         const errInfo = classifyFetchError(err)
         const out = finalizeDiag({ ...diag, fetchFailed: true, failureStage: errInfo.isTimeout ? 'timeout' : 'fetch', fetchErrorKind: errInfo.kind, fetchErrorMessage: errInfo.message, reason: 'GoldRush wallet history request failed before response.' })
