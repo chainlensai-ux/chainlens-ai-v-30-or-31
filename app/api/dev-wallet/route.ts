@@ -730,6 +730,7 @@ interface ClarkFallbackData {
   tokenName?: string | null
   tokenSymbol?: string | null
   holderTop10?: number | null
+  holderTop1?: number | null
   holderCount?: number | null
   lpControlStatus?: string | null
   liquidityUsd?: number | null
@@ -776,16 +777,32 @@ function buildDeterministicFallbackVerdict(data: ClarkFallbackData): { verdict: 
       : 'Liquidity control needs deeper review',
   ]
 
+  const r2 = (v: number) => parseFloat(v.toFixed(2))
+
+  const top10r = data.holderTop10 != null ? r2(data.holderTop10) : null
+  const top1r  = data.holderTop1  != null ? r2(data.holderTop1)  : null
+
   const risks: string[] = [
     !data.deployerAddress ? 'Creator link not confirmed — origin of token is unverified' : '',
     data.suspiciousTransfers ? 'Suspicious transfer pattern observed' : '',
     ...data.suspiciousTransferReasons.slice(0, 2),
-    data.holderTop10 != null && data.holderTop10 > 50
-      ? `High holder concentration — top 10 hold ${data.holderTop10}%`
+    top10r != null && top10r >= 70
+      ? `Very high holder concentration — top 10 hold ${top10r}% — significant concentration risk`
+      : top10r != null && top10r >= 50
+        ? `High holder concentration — top 10 hold ${top10r}%`
+        : '',
+    top1r != null && top1r >= 20
+      ? `Top wallet holds ${top1r}% of supply`
       : '',
     data.lpLocked === false ? 'LP appears team-controlled' : '',
   ].filter(Boolean)
 
+  const limitedContext = !data.holderDataAvailable && !data.liquidityDataAvailable && !data.securityDataAvailable
+  const creatorLine = data.deployerStatus === 'confirmed'
+    ? 'Creator wallet confirmed.'
+    : data.deployerAddress
+      ? 'Likely origin wallet identified.'
+      : 'Creator wallet not confirmed.'
   const holderLine = data.holderDataAvailable
     ? 'Holder distribution is available for review.'
     : 'Holder distribution needs deeper confirmation.'
@@ -793,7 +810,9 @@ function buildDeterministicFallbackVerdict(data: ClarkFallbackData): { verdict: 
     ? 'Liquidity data is available for review.'
     : 'Liquidity control needs deeper review.'
 
-  const summary = `${tokenLabel} scanned on Base. ${holderLine} ${liqLine}`
+  const summary = limitedContext
+    ? `${tokenLabel} scanned on Base. ${creatorLine} Market and security context is limited in this release view.`
+    : `${tokenLabel} scanned on Base. ${creatorLine} ${holderLine} ${liqLine}`
 
   return {
     verdict: {
@@ -801,7 +820,7 @@ function buildDeterministicFallbackVerdict(data: ClarkFallbackData): { verdict: 
       confidence: 'medium',
       summary,
       keySignals,
-      risks: risks.length > 0 ? risks : ['No confirmed risk signals from current checks'],
+      risks: risks.length > 0 ? risks : ['No elevated risk signals from available data'],
       nextAction: defaultNextAction(label),
     },
     clarkError: null,
@@ -832,6 +851,7 @@ async function getClarkVerdict(origin: string, data: {
   tokenName?: string | null
   tokenSymbol?: string | null
   holderTop10?: number | null
+  holderTop1?: number | null
   holderCount?: number | null
   lpControlStatus?: string | null
   liquidityUsd?: number | null
@@ -872,6 +892,10 @@ async function getClarkVerdict(origin: string, data: {
     `Do not infer LP lock status or DEX liquidity from missing liquidity data.\n` +
     `If security scan data is unavailable, do not infer honeypot status or tax values.\n` +
     `Output label must be exactly one of: TRUSTWORTHY, WATCH, AVOID, UNKNOWN.\n` +
+    `Do not return TRUSTWORTHY if top-10 holder concentration is >= 50% or creator is unconfirmed.\n` +
+    `If top-10 concentration >= 70%, risks must include a concentration warning and label must be CAUTION or AVOID.\n` +
+    `If top-10 concentration >= 50%, risks must include a concentration warning.\n` +
+    `If top-1 holder >= 20%, risks must include a top wallet concentration warning.\n` +
     `Address: ${data.contractAddress}\n` +
     `Token: ${data.tokenName ?? 'unknown'} (${data.tokenSymbol ?? 'unknown'})\n` +
     `Creator status: ${data.deployerStatus ?? 'not_confirmed'}\n` +
@@ -881,7 +905,7 @@ async function getClarkVerdict(origin: string, data: {
     `Linked wallets: ${data.linkedWallets.length}\n` +
     `Holder data available: ${data.holderDataAvailable}\n` +
     `Holder count: ${data.holderCount != null ? data.holderCount : 'unknown'}\n` +
-    `Top 10 holder concentration: ${data.holderTop10 != null ? `${data.holderTop10}%` : 'unknown'}\n` +
+    `Top 10 holder concentration: ${data.holderTop10 != null ? `${parseFloat(data.holderTop10.toFixed(2))}%` : 'unknown'}\n` +
     `Supply controlled by deployer cluster: ${data.supplyControlled ?? 'unknown'}\n` +
     `Liquidity data available: ${data.liquidityDataAvailable}\n` +
     `Liquidity USD: ${data.liquidityUsd != null ? data.liquidityUsd : 'unknown'}\n` +
@@ -892,10 +916,10 @@ async function getClarkVerdict(origin: string, data: {
     `Suspicious transfers: ${data.suspiciousTransfers}\n` +
     `Suspicious reasons: ${data.suspiciousTransferReasons.join('; ') || 'none'}\n` +
     `Honeypot: ${data.honeypot ?? 'unknown'}\n` +
-    `Buy tax: ${data.buyTax != null ? `${data.buyTax}%` : 'unknown'}\n` +
-    `Sell tax: ${data.sellTax != null ? `${data.sellTax}%` : 'unknown'}\n` +
+    `Buy tax: ${data.buyTax != null ? `${parseFloat(data.buyTax.toFixed(2))}%` : 'unknown'}\n` +
+    `Sell tax: ${data.sellTax != null ? `${parseFloat(data.sellTax.toFixed(2))}%` : 'unknown'}\n` +
     `LP locked: ${data.lpLocked ?? 'unknown'}\n` +
-    `LP holder concentration: ${data.lpHolderConcentration != null ? `${data.lpHolderConcentration}%` : 'unknown'}\n` +
+    `LP holder concentration: ${data.lpHolderConcentration != null ? `${parseFloat(data.lpHolderConcentration.toFixed(2))}%` : 'unknown'}\n` +
     `Unavailable data: ${data.warnings.join('; ') || 'none'}\n` +
     `Return ONLY JSON with keys label, confidence, summary, keySignals, risks, nextAction.`
 
@@ -1237,6 +1261,7 @@ export async function POST(req: Request) {
     const tokenName = typeof tokenEvidence?.name === 'string' ? tokenEvidence.name : null
     const tokenSymbol = typeof tokenEvidence?.symbol === 'string' ? tokenEvidence.symbol : null
     const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : null
+    const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1  : null
     const holderCount = typeof holderDistributionRaw?.holderCount === 'number' ? holderDistributionRaw.holderCount : null
     const secHoneypot: boolean | null = typeof secEv.honeypot === 'boolean' ? secEv.honeypot : null
     const secBuyTax: number | null = typeof secEv.buyTax === 'number' ? secEv.buyTax : null
@@ -1279,6 +1304,7 @@ export async function POST(req: Request) {
       tokenName,
       tokenSymbol,
       holderTop10,
+      holderTop1,
       holderCount,
       lpControlStatus,
       liquidityUsd,
@@ -1290,7 +1316,7 @@ export async function POST(req: Request) {
       { name: 'origin_discovery', ok: deployerAddress !== null, detail: methodUsed || 'unknown' },
       { name: 'linked_wallet_heuristics', ok: linkedWallets.length > 0, detail: `count=${linkedWallets.length}` },
       { name: 'token_evidence_call', ok: tokenEvidenceResult.ok, detail: tokenEvidenceResult.reason, httpStatus: tokenEvidenceResult.httpStatus },
-      { name: 'holder_evidence', ok: holderDataAvailable, detail: holderDataFromToken ? `top10=${holderTop10}% count=${holderCount}` : (holderDataAvailable ? `controlled=${supplyControlled}%` : 'not_returned') },
+      { name: 'holder_evidence', ok: holderDataAvailable, detail: holderDataFromToken ? `top10=${holderTop10 != null ? parseFloat(holderTop10.toFixed(2)) : '?'}% count=${holderCount}` : (holderDataAvailable ? `controlled=${supplyControlled}%` : 'not_returned') },
       { name: 'liquidity_evidence', ok: liquidityDataAvailable, detail: lpControlStatus ? `lpControl=${lpControlStatus}` : (liquidityDataAvailable ? 'present' : 'not_returned') },
       { name: 'previous_activity', ok: previousActivityAvailable, detail: previousActivityAvailable ? `projects=${previousProjects.length}` : 'not_returned' },
       { name: 'clark_input_summary', ok: clarkVerdict !== null, detail: clarkVerdict ? `${clarkVerdict.label} (${clarkVerdict.confidence})` : (clarkError ?? 'failed') },
@@ -1345,7 +1371,7 @@ export async function POST(req: Request) {
       confidence: (tokenEvidence || holderDataAvailable) ? 'medium' : 'low',
       reasons: [
         !deployerAddress && (tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'Creator link not confirmed; token evidence still indicates watchlist-level signal.' : '',
-        holderTop10 != null && holderTop10 > 50 ? `High holder concentration (top10 = ${holderTop10}%).` : '',
+        holderTop10 != null && holderTop10 >= 70 ? `Very high holder concentration — top 10 hold ${parseFloat(holderTop10.toFixed(2))}%.` : holderTop10 != null && holderTop10 >= 50 ? `High holder concentration — top 10 hold ${parseFloat(holderTop10.toFixed(2))}%.` : '',
         liqLpLocked === false ? 'LP appears team-controlled.' : '',
       ].filter(Boolean),
       warnings,
