@@ -749,7 +749,7 @@ export async function POST(req: Request) {
 
   try {
     const plan = await resolveServerPlan(req)
-    if (plan === 'free') return NextResponse.json({ error: 'Upgrade required for dev wallet scan.', rateLimited: false }, { status: 403 })
+    if (plan === 'free') return NextResponse.json({ error: 'Dev Wallet Detector is a Pro feature.', rateLimited: false }, { status: 403 })
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
     const now = Date.now()
     const rateKey = `${ip}:${plan}`

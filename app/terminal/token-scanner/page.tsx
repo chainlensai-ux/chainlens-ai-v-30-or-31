@@ -174,7 +174,7 @@ function pctColor(v: number | null | undefined): string {
 function humanizeReasonCode(reason?: string): string {
   if (!reason) return 'Additional verification is required.'
   const map: Record<string, string> = {
-    contract_bytecode_unavailable_from_rpc: 'Unavailable from current checks.',
+    contract_bytecode_unavailable_from_rpc: 'No signal in checked window from current checks.',
     unavailable_circulating_supply_not_verified: 'Circulating supply is not verified by provider.',
     honeypot_simulation_unavailable_from_provider: 'Security simulation is unavailable from provider.',
     no_active_liquidity_pool_found: 'No active liquidity pool was found.',
@@ -192,9 +192,9 @@ function humanizeSectionLine(source?: string, status?: string, reason?: string):
     honeypot: 'Security simulation',
   }
   const sourceLabel = sourceMap[source ?? ''] ?? 'Provider check'
-  const statusLabel = status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Unavailable'
+  const statusLabel = status ? status.charAt(0).toUpperCase() + status.slice(1) : 'No signal in checked window'
   const reasonText = reason ? humanizeReasonCode(reason) : ''
-  // Avoid "Unavailable — Unavailable from ..." double-unavailable: use reason as the suffix directly
+  // Avoid "No signal in checked window — No signal in checked window from ..." double-unavailable: use reason as the suffix directly
   if (reasonText && reasonText.toLowerCase().startsWith(statusLabel.toLowerCase())) {
     return `${sourceLabel}: ${reasonText}`
   }
@@ -556,7 +556,7 @@ export default function TerminalTokenScanner() {
       })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setError(json.error ?? 'Token not found on Base.')
+        setError(json.error ?? 'No Base token match from current checks. Paste a contract address for a deeper scan.')
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
@@ -786,7 +786,7 @@ export default function TerminalTokenScanner() {
                   />
                   <StatCard
                     label={result.displayMarketValueLabel ?? 'Market Cap'}
-                    value={result.displayMarketValue != null ? fmtLarge(result.displayMarketValue) : 'Unavailable'}
+                    value={result.displayMarketValue != null ? fmtLarge(result.displayMarketValue) : 'No signal in checked window'}
                     helper={
                       result.displayMarketValueConfidence === 'verified' ? 'Provider-verified' :
                       result.displayMarketValueLabel === 'Estimated MC' ? 'Estimated · supply not fully verified' :
