@@ -114,7 +114,20 @@ function shortHash(hash: string, pre = 10, suf = 8): string {
 }
 
 function formatMethod(method: string): string {
+  if (method === 'unknown' || !method) return 'Current checks did not confirm creator link'
+  if (method === 'alchemy_first_mint_recipient') return 'First mint transfer'
+  if (method === 'alchemy_earliest_token_transfer_fallback') return 'Earliest transfer'
+  if (method === 'alchemy_first_incoming_external') return 'First incoming transfer'
   return method.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())
+}
+
+function fmtUsd(v: number | null | undefined): string {
+  if (v == null) return '—'
+  const abs = Math.abs(v)
+  if (abs >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`
+  if (abs >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000) return `$${(v / 1_000).toFixed(2)}K`
+  return `$${v.toFixed(2)}`
 }
 
 function clampSentences(text: string, maxSentences = 3): string {
@@ -665,9 +678,18 @@ export default function DevWalletPage() {
             {/* Warnings */}
             {result.tokenEvidence && (
               <Card style={{ marginBottom: '16px' }}>
-                <p style={{fontSize:12,color:'#e2e8f0',marginBottom:8}}>Token overview: {result.tokenEvidence.name ?? 'Unknown'} ({result.tokenEvidence.symbol ?? '?'})</p>
-                <p style={{fontSize:11,color:'#94a3b8'}}>Holder concentration: top1 {result.tokenEvidence.top1 ?? '—'}%, top10 {result.tokenEvidence.top10 ?? '—'}%, top20 {result.tokenEvidence.top20 ?? '—'}%.</p>
-                <p style={{fontSize:11,color:'#94a3b8'}}>Liquidity / LP control: liquidity {result.tokenEvidence.liquidity ?? '—'}, volume {result.tokenEvidence.volume24h ?? '—'}.</p>
+                <p style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', margin: '0 0 8px', fontFamily: 'var(--font-plex-mono)' }}>
+                  {result.tokenEvidence.name ?? 'Unknown'}{result.tokenEvidence.symbol ? ` (${result.tokenEvidence.symbol})` : ''}
+                </p>
+                <p style={{ fontSize: 11, color: '#94a3b8', margin: '0 0 4px', fontFamily: 'var(--font-plex-mono)' }}>
+                  Holder concentration:
+                  {' '}Top 1 {result.tokenEvidence.top1 != null ? `${result.tokenEvidence.top1.toFixed(2)}%` : '—'}
+                  {' '}· Top 10 {result.tokenEvidence.top10 != null ? `${result.tokenEvidence.top10.toFixed(2)}%` : '—'}
+                  {' '}· Top 20 {result.tokenEvidence.top20 != null ? `${result.tokenEvidence.top20.toFixed(2)}%` : '—'}
+                </p>
+                <p style={{ fontSize: 11, color: '#94a3b8', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>
+                  Liquidity / volume: {fmtUsd(result.tokenEvidence.liquidity)} liquidity · {fmtUsd(result.tokenEvidence.volume24h)} 24h volume
+                </p>
               </Card>
             )}
             <WarningBanner warnings={result.warnings} />

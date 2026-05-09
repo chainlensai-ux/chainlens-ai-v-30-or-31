@@ -343,11 +343,7 @@ async function getPreviousActivity(deployer: string | null): Promise<{
   warning: string | null
 }> {
   if (!deployer) {
-    return {
-      previousActivityAvailable: false,
-      previousProjects: [],
-      warning: 'Previous activity check requires a confirmed creator address.',
-    }
+    return { previousActivityAvailable: false, previousProjects: [], warning: null }
   }
 
   const transfers = await getAssetTransfers({
@@ -626,9 +622,6 @@ function buildDeterministicFallbackVerdict(data: ClarkFallbackData): { verdict: 
     data.lpLocked === false ? 'LP appears team-controlled' : '',
   ].filter(Boolean)
 
-  const creatorLine = data.deployerAddress
-    ? 'Likely deployer/owner wallet identified from transfer analysis.'
-    : 'Creator link not confirmed from current checks.'
   const holderLine = data.holderDataAvailable
     ? 'Holder distribution is available for review.'
     : 'Holder distribution needs deeper confirmation.'
@@ -636,7 +629,7 @@ function buildDeterministicFallbackVerdict(data: ClarkFallbackData): { verdict: 
     ? 'Liquidity data is available for review.'
     : 'Liquidity control needs deeper review.'
 
-  const summary = `${tokenLabel} scanned on Base. ${creatorLine} ${holderLine} ${liqLine}`
+  const summary = `${tokenLabel} scanned on Base. ${holderLine} ${liqLine}`
 
   return {
     verdict: {
@@ -1043,8 +1036,6 @@ export async function POST(req: Request) {
     let linkedWallets: LinkedWallet[] = []
     if (deployerAddress) {
       linkedWallets = await findLinkedWallets(deployerAddress, normalizedAddress)
-    } else {
-      warnings.push('Linked wallet check skipped — creator address not confirmed.')
     }
 
     const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets } =
@@ -1144,11 +1135,10 @@ export async function POST(req: Request) {
         lpControlStatus,
         security: secEv ?? null,
       } : null,
-      tokenStatus: tokenEvidence ? 'ok' : (bytecode && bytecode !== '0x' ? 'partial' : 'unavailable'),
+      tokenStatus: tokenEvidence ? 'ok' : (bytecode && bytecode !== '0x' ? 'partial' : 'limited_check'),
       marketStatus: tokenEvidence && market && Object.keys(market).length ? 'ok' : 'partial',
-      rpcStatus,
-      deployerStatus: deployerAddress ? 'ok' : (rpcStatus === 'unavailable' ? 'unavailable' : 'partial'),
-      linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'partial' : 'unavailable'),
+      deployerStatus: deployerAddress ? 'ok' : 'not_confirmed',
+      linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'partial' : 'skipped'),
       holderStatus: holderDataAvailable ? 'ok' : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
@@ -1168,6 +1158,7 @@ export async function POST(req: Request) {
         _diagnostics: {
           modules: moduleDiags,
           rpcConfigured: Boolean(ALCHEMY_BASE_URL),
+          rpcStatus,
           providerUsed,
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
         },
