@@ -54,7 +54,8 @@ interface DevWalletResult {
   linkedWallets: LinkedWallet[]
   holderDataAvailable: boolean
   supplyControlled: number | null
-  supplyControlStatus?: 'ok' | 'partial' | 'needs_confirmed_creator'
+  supplyControlStatus?: 'ok' | 'partial' | 'needs_confirmed_creator' | 'not_in_top_holders'
+  previousActivityStatus?: string
   matchedHolderWallets: MatchedHolder[]
   previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
@@ -810,7 +811,13 @@ export default function DevWalletPage() {
               {result.supplyControlStatus === 'needs_confirmed_creator' ? (
                 <Card>
                   <p style={{ fontSize: '12px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    Creator-linked supply control: needs confirmed creator
+                    Creator-linked supply control cannot be checked — no confirmed creator address.
+                  </p>
+                </Card>
+              ) : result.supplyControlStatus === 'not_in_top_holders' ? (
+                <Card>
+                  <p style={{ fontSize: '12px', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
+                    ✓ Creator wallet is not in the top-holder set — no concentrated supply control detected.
                   </p>
                 </Card>
               ) : (
@@ -861,9 +868,11 @@ export default function DevWalletPage() {
               {result.linkedWallets.length === 0 ? (
                 <Card>
                   <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    {result.deployerAddress
-                      ? 'No outgoing ETH transfers found from the deployer wallet.'
-                      : 'No signal in checked window — deployer address not identified.'}
+                    {result.linkedWalletsStatus === 'none_found'
+                      ? 'No outgoing transfers found from the creator wallet in the checked window.'
+                      : result.linkedWalletsStatus === 'skipped'
+                        ? 'Linked wallet check skipped — no creator address identified.'
+                        : 'No signal in checked window.'}
                   </p>
                 </Card>
               ) : (
@@ -943,16 +952,22 @@ export default function DevWalletPage() {
 
             {/* Previous Projects */}
             <Section title="Previous Activity / Projects">
-              {!result.previousActivityAvailable ? (
+              {!result.previousActivityAvailable && result.previousActivityStatus !== 'limited_check' ? (
                 <Card>
                   <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    Previous activity requires a confirmed creator address.
+                    {result.previousActivityStatus === 'skipped'
+                      ? 'Previous activity requires a confirmed creator address.'
+                      : 'Previous activity data not available from current checks.'}
                   </p>
                 </Card>
               ) : result.previousProjects.length === 0 ? (
                 <Card>
                   <p style={{ fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    No previous activity detected from available transfer history.
+                    {result.previousActivityStatus === 'none_found'
+                      ? 'No previous contract deployments found for this wallet.'
+                      : result.previousActivityStatus === 'limited_check'
+                        ? 'No previous activity detected — history check used token transfer data only.'
+                        : 'No previous activity detected from available transfer history.'}
                   </p>
                 </Card>
               ) : (
@@ -969,7 +984,7 @@ export default function DevWalletPage() {
                               marginLeft: '8px', fontSize: '9px', color: '#64748b',
                               border: '1px solid rgba(255,255,255,0.10)', borderRadius: '99px', padding: '1px 6px',
                             }}>
-                              {p.symbol ? 'Token interaction' : 'Previous activity'}
+                              {result.previousActivityStatus === 'ok' ? 'Deployed contract' : p.symbol ? 'Token interaction' : 'Previous activity'}
                             </span>
                           </p>
                           <p style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
