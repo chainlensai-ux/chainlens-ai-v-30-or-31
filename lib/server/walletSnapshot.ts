@@ -24,6 +24,15 @@ type GrTransferDiag = {
   normalizedEventCount?: number
   firstEventShapeKeys?: string[]
   reason?: string
+  attemptedHosts?: Array<{
+    requestHost: string
+    requestUrlValid: boolean
+    httpStatus: number | null
+    fetchFailed: boolean
+    failureStage: 'build_url' | 'fetch' | 'timeout' | 'empty_response' | 'no_items' | null
+    fetchErrorKind?: 'invalid_url' | 'network' | 'timeout' | 'unknown' | null
+    fetchErrorMessage?: string | null
+  }>
 }
 
 export type WalletBehavior = {
@@ -310,6 +319,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
   }
   try {
     const chainCandidates = chainName === 'base-mainnet' ? ['8453', 'base-mainnet'] : [chainName]
+    let lastAttemptDiag: GoldrushHistoryDiag | null = null
     for (const chainUsed of chainCandidates) {
       const diag = baseDiag(chainUsed)
       const hasBuildInputs = Boolean(chainUsed && address && apiKey)
@@ -351,13 +361,15 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
       }
       if (!res) {
         const out = finalizeDiag(diag)
+        lastAttemptDiag = out
         devLog(out)
         return { events: [], diag: out }
       }
       if (!res.ok) {
         diag.failureStage = 'empty_response'
         diag.reason = `GoldRush wallet history returned HTTP ${res.status}.`
-        devLog(diag)
+        lastAttemptDiag = finalizeDiag(diag)
+        devLog(lastAttemptDiag)
         continue
       }
       const json = await res.json()
@@ -395,6 +407,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
       devLog(out)
       return { events, diag: out }
     }
+    if (lastAttemptDiag) return { events: [], diag: lastAttemptDiag }
     const fallbackChain = (chainName === 'base-mainnet' ? '8453' : chainName) || chainName
     const out = finalizeDiag({ ...baseDiag(fallbackChain), fetchFailed: true, failureStage: 'fetch', fetchErrorKind: 'unknown', fetchErrorMessage: 'No successful GoldRush response across chain candidates; check prior chain diagnostics for concrete HTTP/fetch failure details.', reason: 'GoldRush wallet history request failed before response.' })
     devLog(out)
