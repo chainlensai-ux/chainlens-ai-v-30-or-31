@@ -1271,7 +1271,7 @@ function wasLastFeedEmpty(history: ClarkRequestBody["history"]): boolean {
 
 async function handlePumpFeedSnapshot(origin: string) {
   const res = await fetch(`${origin}/api/pump-alerts?window=24h&limit=12`, { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is unavailable right now.";
+  if (!res.ok) return "PUMP ALERTS SNAPSHOT\nPump Alerts: no fresh signal in the checked window.";
   const json = await res.json();
   const alerts = Array.isArray(json?.alerts) ? (json.alerts as Record<string, unknown>[]) : [];
   if (!alerts.length) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is empty right now.";
@@ -1303,7 +1303,7 @@ async function handlePumpFeedSnapshot(origin: string) {
 
 async function handleBaseRadarSnapshot(origin: string) {
   const res = await fetch(`${origin}/api/radar?window=24h&limit=10`, { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) return "BASE RADAR SNAPSHOT\nBase Radar feed is unavailable right now.";
+  if (!res.ok) return "BASE RADAR SNAPSHOT\nBase Radar: no fresh signal in the checked window.";
   const json = await res.json();
   const items = Array.isArray(json?.items) ? json.items : [];
   if (!items.length) return "BASE RADAR SNAPSHOT\nBase Radar feed is empty right now.";
@@ -2107,7 +2107,7 @@ function cleanLine(line: string): string {
 
 function humanizeProviderReason(reason: string): string {
   const map: Record<string, string> = {
-    contract_bytecode_unavailable_from_rpc: "Unavailable from RPC",
+    contract_bytecode_unavailable_from_rpc: "No signal in checked window from RPC",
     unavailable_circulating_supply_not_verified: "Circulating supply not verified",
     honeypot_simulation_unavailable_from_provider: "Simulation unavailable from provider",
     no_active_liquidity_pool_found: "No active liquidity pool found",
@@ -2760,7 +2760,7 @@ async function executeClarkToolPlan(input: {
           query,
           matches: matches.map((m) => ({ symbol: m.symbol, contract: m.contract, liquidity: m.liquidity })),
           selected,
-          errorSafeMessage: matches.length ? undefined : "I couldn’t resolve this Base token from current providers.",
+          errorSafeMessage: matches.length ? undefined : "I could not confirm a Base match from current checks. Paste the contract address for a deeper scan.",
         };
         if (selected?.contract) resolvedAddress = selected.contract;
         continue;
@@ -2868,7 +2868,7 @@ async function executeClarkToolPlan(input: {
         evidence.walletSnapshot = {
           ...normalized,
           ok: walletRes.ok && !w.error,
-          errorSafeMessage: walletRes.ok ? undefined : "Wallet data is temporarily unavailable.",
+          errorSafeMessage: walletRes.ok ? undefined : "Wallet scan has no signal in the checked window.",
         };
         resolvedAddress = address;
         continue;
@@ -2935,7 +2935,7 @@ async function executeClarkToolPlan(input: {
           riskTier: typeof l.lp_risk_tier === "string" ? l.lp_risk_tier : null,
           stabilityScore: typeof l.lp_stability_score === "number" ? l.lp_stability_score : null,
           warnings: liqRes.ok ? [] : ["Liquidity data is currently limited."],
-          errorSafeMessage: liqRes.ok ? undefined : "Liquidity scan is temporarily unavailable.",
+          errorSafeMessage: liqRes.ok ? undefined : "Liquidity check has no signal in the checked window.",
         };
         continue;
       }
@@ -3295,7 +3295,7 @@ function formatSecuritySimulationLine(report: ClarkFullReportEvidence): string {
   if (report.contract.honeypot === false && !simPassed) {
     return 'Security sim: Partial — honeypot not flagged, but full simulation failed/unavailable.';
   }
-  return `Simulation: ${report.contract.simulationSuccess === false ? 'Failed' : 'Unavailable'}`;
+  return `Simulation: ${report.contract.simulationSuccess === false ? 'Failed' : 'No signal in checked window'}`;
 }
 
 function explainMissingCheck(item: string): string {
@@ -3343,23 +3343,23 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     ...(lowCap.isLowCap ? ["Low-cap read:", ...lowCap.lines, ""] : []),
     ...(lowCap.isLowCap ? [""] : []),
     "Market / liquidity:",
-    `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
+    `- Price: ${report.market.price != null ? `$${report.market.price}` : "No signal in checked window"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
     `- 24h volume: ${formatUsdShort(report.market.volume24h)}`,
-    `- Market value: ${report.market.displayMarketValue != null ? formatUsdShort(report.market.displayMarketValue) + ` (${report.market.displayMarketValueLabel}${report.market.displayMarketValueLabel === 'Estimated MC' ? ', circulating supply not fully verified' : report.market.displayMarketValueLabel === 'FDV' ? ', true MC unavailable' : ''})` : "Unavailable — price/supply data missing"}`,
-    `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
+    `- Market value: ${report.market.displayMarketValue != null ? formatUsdShort(report.market.displayMarketValue) + ` (${report.market.displayMarketValueLabel}${report.market.displayMarketValueLabel === 'Estimated MC' ? ', circulating supply not fully verified' : report.market.displayMarketValueLabel === 'FDV' ? ', true MC unavailable' : ''})` : "No signal in checked window — price/supply data missing"}`,
+    `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "No signal in checked window"}`,
     "",
     "Security / simulation:",
-    `- ${report.contract.honeypot === true ? "Honeypot: Flagged" : report.contract.honeypot === false ? `Honeypot: ${report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged"}` : (report.contract.buyTax != null || report.contract.sellTax != null) ? "Honeypot simulation: Unavailable" : "Honeypot: Unverified"}`,
+    `- ${report.contract.honeypot === true ? "Honeypot: Flagged" : report.contract.honeypot === false ? `Honeypot: ${report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged"}` : (report.contract.buyTax != null || report.contract.sellTax != null) ? "Honeypot simulation: No signal in checked window" : "Honeypot: Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
     `- ${formatSecuritySimulationLine(report)}`,
     `- Proxy / mint / ownership: ${boolToWord(report.contract.proxy)} / ${boolToWord(report.contract.mintable)} / ${boolToWord(report.devWallet.likelyDeployer ? false : null)}`,
     "",
     "Holder / distribution:",
-    `- Holder count: ${report.holders.holderCount != null ? formatInt(report.holders.holderCount) : (report.holders.top10Pct != null ? "Holder rows available; total holder count unavailable" : "Unavailable")}`,
-    `- Top holder: ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(2)}%` : "Unavailable"}`,
-    `- Top 10: ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(2)}%` : "Unavailable"}`,
+    `- Holder count: ${report.holders.holderCount != null ? formatInt(report.holders.holderCount) : (report.holders.top10Pct != null ? "Holder rows available; total holder count unavailable" : "No signal in checked window")}`,
+    `- Top holder: ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(2)}%` : "No signal in checked window"}`,
+    `- Top 10: ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(2)}%` : "No signal in checked window"}`,
     `- Status: ${report.holders.status ?? "unavailable"}`,
     "",
     "Bull case:",
@@ -3429,16 +3429,16 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     "",
     ...(lowCap.isLowCap ? ["Low-cap read:", ...lowCap.lines, ""] : []),
     "Market / liquidity:",
-    `- Price: ${report.market.price != null ? `$${report.market.price}` : "Unavailable"}`,
+    `- Price: ${report.market.price != null ? `$${report.market.price}` : "No signal in checked window"}`,
     `- Liquidity: ${formatUsdShort(report.market.liquidity)}`,
     `- Volume (24h): ${formatUsdShort(report.market.volume24h)}`,
-    `- Market value: ${report.market.displayMarketValue != null ? formatUsdShort(report.market.displayMarketValue) + ` (${report.market.displayMarketValueLabel}${report.market.displayMarketValueLabel === 'Estimated MC' ? ', circulating supply not fully verified' : report.market.displayMarketValueLabel === 'FDV' ? ', true MC unavailable' : ''})` : "Unavailable — price/supply data missing"}`,
-    `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "Unavailable"}`,
+    `- Market value: ${report.market.displayMarketValue != null ? formatUsdShort(report.market.displayMarketValue) + ` (${report.market.displayMarketValueLabel}${report.market.displayMarketValueLabel === 'Estimated MC' ? ', circulating supply not fully verified' : report.market.displayMarketValueLabel === 'FDV' ? ', true MC unavailable' : ''})` : "No signal in checked window — price/supply data missing"}`,
+    `- FDV: ${report.market.fdv != null ? formatUsdShort(report.market.fdv) : "No signal in checked window"}`,
     `- Pool depth: ${formatUsdShort(report.liquidity.liquidityUsd)}`,
     `- LP control: ${lpControl}`,
     "",
     "Security / simulation:",
-    `- ${report.contract.honeypot === true ? "Honeypot: Flagged" : report.contract.honeypot === false ? `Honeypot: ${report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged"}` : (report.contract.buyTax != null || report.contract.sellTax != null) ? "Honeypot simulation: Unavailable" : "Honeypot: Unverified"}`,
+    `- ${report.contract.honeypot === true ? "Honeypot: Flagged" : report.contract.honeypot === false ? `Honeypot: ${report.contract.simulationSuccess == null ? "Not flagged by available checks" : "Not flagged"}` : (report.contract.buyTax != null || report.contract.sellTax != null) ? "Honeypot simulation: No signal in checked window" : "Honeypot: Unverified"}`,
     `- Buy tax: ${report.contract.buyTax != null ? `${report.contract.buyTax}%` : "Unverified"}`,
     `- Sell tax: ${report.contract.sellTax != null ? `${report.contract.sellTax}%` : "Unverified"}`,
     `- ${formatSecuritySimulationLine(report)}`,
@@ -3446,9 +3446,9 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     `- Deployer: ${report.devWallet.likelyDeployer ? shortAddress(report.devWallet.likelyDeployer) : "Unverified"}`,
     "",
     "Holder / distribution:",
-    `- Holder count: ${report.holders.holderCount != null ? formatInt(report.holders.holderCount) : "Unavailable"}`,
-    `- Top holder: ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(2)}%` : "Unavailable"}`,
-    `- Top 10: ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(2)}%` : "Unavailable"}`,
+    `- Holder count: ${report.holders.holderCount != null ? formatInt(report.holders.holderCount) : "No signal in checked window"}`,
+    `- Top holder: ${report.holders.topHolderPct != null ? `${report.holders.topHolderPct.toFixed(2)}%` : "No signal in checked window"}`,
+    `- Top 10: ${report.holders.top10Pct != null ? `${report.holders.top10Pct.toFixed(2)}%` : "No signal in checked window"}`,
     "",
     "Bull case:",
     ...(bullCase.length ? bullCase.map((s) => `- ${s}`) : ["- No strong positive signal confirmed yet."]),
@@ -3546,7 +3546,7 @@ function buildTokenFollowupReply(type: TokenFollowupType, contractAddress: strin
   const short = `${contractAddress.slice(0, 6)}...${contractAddress.slice(-4)}`;
 
   if (type === "lp") {
-    const liq = ex("Liquidity") ?? ex("Pool depth") ?? "Unavailable";
+    const liq = ex("Liquidity") ?? ex("Pool depth") ?? "No signal in checked window";
     const lpControl = ex("LP control");
     return [
       `Liquidity / LP — ${tokenName} (${symbol})`,
@@ -3574,9 +3574,9 @@ function buildTokenFollowupReply(type: TokenFollowupType, contractAddress: strin
   }
 
   if (type === "holders") {
-    const holderCount = ex("Holder count") ?? "Unavailable";
-    const topHolder = ex("Top holder") ?? "Unavailable";
-    const top10 = ex("Top 10") ?? "Unavailable";
+    const holderCount = ex("Holder count") ?? "No signal in checked window";
+    const topHolder = ex("Top holder") ?? "No signal in checked window";
+    const top10 = ex("Top 10") ?? "No signal in checked window";
     const status = ex("Status") ?? "unavailable";
     const top10Num = parseFloat(top10.replace("%", ""));
     const conc = Number.isFinite(top10Num) ? (top10Num >= 60 ? "High" : top10Num >= 30 ? "Medium" : "Low") : "Unknown";
@@ -3709,7 +3709,7 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
       feature: "wallet-scanner",
       chain,
       walletAddress,
-      analysis: `I couldn't pull wallet data for ${shortAddress(walletAddress)} right now. The wallet may be new or the data source is temporarily unavailable.`,
+      analysis: `I couldn't pull wallet data for ${shortAddress(walletAddress)} right now. The wallet may be new or the current checks did not return enough verified evidence.`,
     };
   }
 
@@ -3725,14 +3725,10 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   // Balance / holdings question — return plain summary, no verdict format
   if (isBalanceQuestion && !isQualityQuestion) {
     const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
-    const pnl = (walletData as Record<string, unknown>)?.estimatedPnl as Record<string, unknown> | undefined
-    const status = typeof pnl?.status === 'string' ? pnl.status : 'unavailable'
-    const coverage = typeof pnl?.coveragePercent === 'number' ? pnl.coveragePercent : 0
-    const confidence = typeof pnl?.confidence === 'string' ? pnl.confidence : null
-    const total = typeof pnl?.totalEstimatedPnlUsd === 'number' ? pnl.totalEstimatedPnlUsd : null
-    const pnlLine = (status === 'ok' || status === 'partial') && coverage >= 60 && total !== null
-      ? `Estimated PnL Beta: ${formatUsdShort(total)} (coverage ${coverage}%, confidence ${confidence ?? 'n/a'}; estimate only, not exact lifetime PnL).`
-      : 'Estimated PnL unavailable because historical cost-basis coverage is too low.'
+    const asksPnl = /\b(pnl|profit|loss|cost[-\s]?basis|realized|unrealized)\b/i.test(userPrompt)
+    const pnlLine = asksPnl
+      ? 'PnL/cost-basis history is not enabled in this release view. Current holdings and concentration are available.'
+      : 'History not included in this release view. Current holdings, concentration, and Base activity summary are available.'
     return { feature: "wallet-scanner", chain, walletAddress, analysis: `${formatWalletBalanceSummary(normalized)}\n\n${pnlLine}` };
   }
 
@@ -3904,7 +3900,7 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
     const label = body.tokenAddress ?? body.addressOrToken ?? body.query ?? body.prompt ?? "unknown";
     return {
       feature: "scan-token",
-      analysis: `Token "${label}" was not found on GeckoTerminal Base data. Check the name or contract and try again.`,
+      analysis: `No Base token match from current checks. Paste a contract address for a deeper scan.`,
     };
   }
 
@@ -4414,7 +4410,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         ].join("\n"),
       };
     } catch {
-      return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["coingecko_simple_price"], analysis: "Live market data unavailable right now. Try again." };
+      return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["coingecko_simple_price"], analysis: "No fresh signal in the checked window. Try another token or check again shortly." };
     }
   }
 
@@ -4423,7 +4419,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     try {
       const tokenData = await callScanToken(query, "query", origin);
       if (!tokenData) {
-        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: "Token not found on Base or data unavailable." };
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: "I could not confirm a Base match from current checks. Paste the contract address for a deeper scan." };
       }
       const rec = tokenData as Record<string, unknown>;
       return {
@@ -4442,7 +4438,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         ].join("\n"),
       };
     } catch {
-      return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: "Live market data unavailable right now. Try again." };
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: "No fresh signal in the checked window. Try another token or check again shortly." };
     }
   }
 
@@ -4450,7 +4446,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     try {
       const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false });
       const top = universe.candidates.slice(0, 10);
-      if (!top.length) return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };
+      if (!top.length) return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "No fresh signal in the checked window. Try another token or check again shortly." };
       return {
         feature: "clark-ai",
         chain,
@@ -4474,7 +4470,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         },
       };
     } catch {
-      return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "Live market data unavailable right now. Try again." };
+      return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "No fresh signal in the checked window. Try another token or check again shortly." };
     }
   }
 
@@ -4917,7 +4913,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         }
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: plan.intent, toolsUsed,
-          analysis: "I couldn’t resolve this as a Base token or wallet with current providers. To be explicit: ‘scan token 0x...’ for tokens or ‘scan wallet 0x...’ for wallets.",
+          analysis: "I could not confirm a Base match from current checks. To be explicit: ‘scan token 0x...’ for tokens or ‘scan wallet 0x...’ for wallets.",
         };
       }
       if (resolvedAddress) {
