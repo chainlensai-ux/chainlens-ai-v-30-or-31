@@ -17,15 +17,30 @@ const devRate = new Map<string, { count: number; resetAt: number; lastAt: number
 const DEV_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 4, pro: 15, elite: 30 }
 const DEV_COOLDOWN_MS: Record<'free' | 'pro' | 'elite', number> = { free: 25_000, pro: 8_000, elite: 4_000 }
 
-async function resolveServerPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
+interface PlanResolution {
+  plan: 'free' | 'pro' | 'elite'
+  hasBearer: boolean
+  userPresent: boolean
+  settingsRowFound: boolean
+  planSource: 'user_settings' | 'fallback'
+}
+
+async function resolveServerPlan(req: Request): Promise<PlanResolution> {
   const auth = req.headers.get('authorization') ?? ''
-  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  if (!token) return 'free'
+  const hasBearer = auth.toLowerCase().startsWith('bearer ') && auth.slice(7).trim().length > 0
+  if (!hasBearer) return { plan: 'free', hasBearer: false, userPresent: false, settingsRowFound: false, planSource: 'fallback' }
+  const token = auth.slice(7).trim()
   try {
-    const { plan } = await getCurrentUserPlanFromBearerToken(token)
-    return plan
+    const result = await getCurrentUserPlanFromBearerToken(token)
+    return {
+      plan: result.plan,
+      hasBearer: true,
+      userPresent: result.userId !== null,
+      settingsRowFound: result.settingsRowFound,
+      planSource: result.settingsRowFound ? 'user_settings' : 'fallback',
+    }
   } catch {
-    return 'free'
+    return { plan: 'free', hasBearer: true, userPresent: false, settingsRowFound: false, planSource: 'fallback' }
   }
 }
 
@@ -748,8 +763,23 @@ export async function POST(req: Request) {
   const warnings: string[] = []
 
   try {
-    const plan = await resolveServerPlan(req)
-    if (plan === 'free') return NextResponse.json({ error: 'Upgrade required for dev wallet scan.', rateLimited: false }, { status: 403 })
+    const planRes = await resolveServerPlan(req)
+    const { plan } = planRes
+    if (plan === 'free') return NextResponse.json({
+      error: 'Dev Wallet Detector is included in Pro and Elite.',
+      rateLimited: false,
+      _diagnostics: {
+        planGate: {
+          route: '/api/dev-wallet',
+          verifiedPlan: plan,
+          hasBearer: planRes.hasBearer,
+          userPresent: planRes.userPresent,
+          settingsRowFound: planRes.settingsRowFound,
+          planSource: planRes.planSource,
+          requiredPlan: 'pro',
+        },
+      },
+    }, { status: 403 })
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
     const now = Date.now()
     const rateKey = `${ip}:${plan}`
