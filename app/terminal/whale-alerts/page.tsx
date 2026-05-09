@@ -29,6 +29,7 @@ type AlertItem = {
   token_logo?: string | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
+type ValueRange = 'all' | '100-500' | '500-1000' | '1000-5000' | '5000-10000' | '10000+'
 type SyncResponse = {
   ok?: boolean
   savedAt?: number
@@ -51,11 +52,15 @@ type SyncResponse = {
 }
 type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number }
 
-const MIN_OPTIONS = [
-  { label: 'All', value: 0 }, { label: '$100+', value: 100 }, { label: '$500+', value: 500 },
-  { label: '$1k+', value: 1000 }, { label: '$5k+', value: 5000 }, { label: '$10k+', value: 10000 },
+const RANGE_OPTIONS: { label: string; value: ValueRange }[] = [
+  { label: 'All',       value: 'all' },
+  { label: '$100–$500', value: '100-500' },
+  { label: '$500–$1k',  value: '500-1000' },
+  { label: '$1k–$5k',   value: '1000-5000' },
+  { label: '$5k–$10k',  value: '5000-10000' },
+  { label: '$10k+',     value: '10000+' },
 ]
-const WINDOWS = ['15m', '1h', '6h', '24h', '7d'] as const
+const WINDOWS = ['1h', '6h', '24h', '7d'] as const
 const CLIENT_SYNC_COOLDOWN_MS = 10 * 60 * 1000
 const CLIENT_FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
 const CLIENT_SYNC_CACHE_KEY = 'whale_alerts_last_sync_at'
@@ -222,7 +227,7 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 export default function WhaleAlertsPage() {
   const { plan, loading: planLoading } = usePlanWithLoading()
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
-  const [minUsd, setMinUsd]           = useState(0)
+  const [valueRange, setValueRange]   = useState<ValueRange>('all')
   const [typeFilter, setTypeFilter]   = useState('all')
   const [sevFilter, setSevFilter]     = useState('all')
   const [sideFilter, setSideFilter]   = useState('all')
@@ -257,7 +262,8 @@ export default function WhaleAlertsPage() {
     setLoading(true)
     setFeedError(false)
     try {
-      const p = new URLSearchParams({ window: windowValue, minUsd: String(minUsd), limit: '100' })
+      const p = new URLSearchParams({ window: windowValue, limit: '100' })
+      if (valueRange !== 'all') p.set('valueRange', valueRange)
       if (typeFilter !== 'all') p.set('type', typeFilter)
       if (sevFilter !== 'all')  p.set('severity', sevFilter)
       if (sideFilter !== 'all') p.set('side', sideFilter)
@@ -277,7 +283,7 @@ export default function WhaleAlertsPage() {
     } finally {
       setLoading(false)
     }
-  }, [windowValue, minUsd, typeFilter, sevFilter, sideFilter])
+  }, [windowValue, valueRange, typeFilter, sevFilter, sideFilter])
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
 
@@ -302,7 +308,7 @@ export default function WhaleAlertsPage() {
         let currentOffset = typeof offset === 'number' ? offset : 0
         let cumulativeInserted = isFullResume ? (syncState?.insertedTotal ?? 0) : 0
         while (true) {
-          const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd), mode: 'full', offset: String(currentOffset) })
+          const params = new URLSearchParams({ window: '7d', limit: '12', minUsd: '0', mode: 'full', offset: String(currentOffset) })
           const { data: { session: syncSession } } = await supabase.auth.getSession()
           const syncToken = syncSession?.access_token
           const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
@@ -328,11 +334,11 @@ export default function WhaleAlertsPage() {
             break
           }
           currentOffset = json.nextOffset
-          await new Promise<void>(r => setTimeout(r, 750))
+          await new Promise<void>(r => setTimeout(r, 300))
         }
       } else {
         // Batch: single call
-        const params = new URLSearchParams({ window: '7d', limit: '25', minUsd: String(minUsd), mode: 'batch' })
+        const params = new URLSearchParams({ window: '7d', limit: '12', minUsd: '0', mode: 'batch' })
         if (typeof offset === 'number') params.set('offset', String(offset))
         const { data: { session: syncSession } } = await supabase.auth.getSession()
         const syncToken = syncSession?.access_token
@@ -376,7 +382,7 @@ export default function WhaleAlertsPage() {
     setTypeFilter('all')
     setSevFilter('all')
     setSideFilter('all')
-    setMinUsd(100)
+    setValueRange('all')
     setWindowValue('24h')
   }
   const clearSyncState = () => {
@@ -440,7 +446,7 @@ export default function WhaleAlertsPage() {
         `What are whales doing, which signals are strongest, and what should I watch next? Do not invent data.`,
       ].join('\n\n')
     }
-    return `Review my Whale Alerts setup. No alerts visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider: ${providerSummary}. Filters: window ${windowValue}, minUsd ${minUsd}. Explain what this means. Do not invent alerts.`
+    return `Review my Whale Alerts setup. No alerts visible. Tracked wallets: ${stats.trackedWallets || 'unavailable'}. Last sync: ${lastSyncSummary}. Provider: ${providerSummary}. Filters: window ${windowValue}, valueRange ${valueRange}. Explain what this means. Do not invent alerts.`
   }
   const goClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1` }
 
@@ -574,18 +580,21 @@ export default function WhaleAlertsPage() {
               </div>
 
               <div>
-                <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Minimum Value</p>
+                <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Value Range</p>
                 <div className="flex flex-wrap" style={{ gap: 8 }}>
-                  {MIN_OPTIONS.map(opt => (
-                    <button key={opt.value} onClick={() => setMinUsd(opt.value)}
+                  {RANGE_OPTIONS.map(opt => (
+                    <button key={opt.value} onClick={() => setValueRange(opt.value)}
                       className="rounded-full"
-                      style={minUsd === opt.value
+                      style={valueRange === opt.value
                         ? { padding: '6px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf' }
                         : { padding: '6px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(255,255,255,0.03)', border: bdrInner, color: '#475569' }}>
                       {opt.label}
                     </button>
                   ))}
                 </div>
+                {valueRange !== 'all' && (
+                  <p style={{ marginTop: 6, fontSize: 11, color: '#475569' }}>Showing alerts inside selected value range.</p>
+                )}
               </div>
 
               <div className="grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
@@ -807,23 +816,23 @@ export default function WhaleAlertsPage() {
             const allDone = Boolean(syncState && !(syncState.hasMore ?? false))
             const hasProviderErrors = (syncState?.providerErrors ?? 0) > 0
             const insertedSoFar = syncState?.inserted ?? 0
-            const filtersActive   = minUsd > 0 || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
+            const rangeActive = valueRange !== 'all'
+            const filtersActive = rangeActive || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
             const hiddenByFilters = insertedSoFar > 0 && filtersActive
-            const valueFilterActive = minUsd > 0
-            const minUsdLabel = MIN_OPTIONS.find(o => o.value === minUsd)?.label ?? `$${minUsd.toLocaleString()}+`
+            const rangeLabel = RANGE_OPTIONS.find(o => o.value === valueRange)?.label ?? valueRange
             const title = hiddenByFilters
               ? 'Alerts found — hidden by filters'
-              : valueFilterActive
-                ? 'No alerts match this value filter.'
+              : rangeActive
+                ? 'No alerts match this range in the selected window.'
                 : partial
                   ? 'Batch scan in progress'
                   : allDone
                     ? 'No qualifying whale alerts found'
                     : 'No whale alerts yet'
             const body = hiddenByFilters
-              ? `${insertedSoFar} alert${insertedSoFar !== 1 ? 's' : ''} found in this batch, but hidden by the current filter settings. Try selecting "All" for Minimum Value or resetting filters.`
-              : valueFilterActive
-                ? `No alerts in the ${windowValue} window have a verified USD value of ${minUsdLabel}. Try "All" or a lower threshold.`
+              ? `${insertedSoFar} alert${insertedSoFar !== 1 ? 's' : ''} found in this batch, but hidden by the current filter settings. Try "All" value range or reset filters.`
+              : rangeActive
+                ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
                 : partial
                   ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
                   : allDone

@@ -3,11 +3,10 @@ import { createClient } from '@supabase/supabase-js'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
-type WindowKey = '15m' | '1h' | '6h' | '24h' | '7d'
+type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
 
 const WINDOW_MS: Record<WindowKey, number> = {
-  '15m': 15 * 60 * 1000,
   '1h': 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
@@ -15,7 +14,7 @@ const WINDOW_MS: Record<WindowKey, number> = {
 }
 
 function parseWindow(value: string | null): WindowKey {
-  if (value === '15m' || value === '1h' || value === '6h' || value === '24h' || value === '7d') return value
+  if (value === '1h' || value === '6h' || value === '24h' || value === '7d') return value
   return '24h'
 }
 
@@ -288,25 +287,41 @@ function passesQualityFloor(row: RawRow): boolean {
   return true
 }
 
+// Parsed value range spec: null = "All" (quality floor), otherwise numeric bounds.
+type ValueRangeSpec = { min: number; max: number | null } | null
+
+function parseValueRange(value: string | null): ValueRangeSpec {
+  if (!value || value === 'all') return null
+  if (value === '10000+') return { min: 10000, max: null }
+  const m = value.match(/^(\d+)-(\d+)$/)
+  if (m) return { min: Number(m[1]), max: Number(m[2]) }
+  return null
+}
+
 // Post-enrichment, post-grouping value filter.
-// minUsd > 0: require known amount_usd >= minUsd.
-// minUsd = 0 ("All"): apply quality floor — hide known-tiny moves, keep unpriced rows.
-function filterByValueFloor(
+// null ("All"): quality floor — hide known-tiny moves, keep unpriced rows.
+// range: require known amount_usd within [min, max).
+function filterByValueRange(
   rows: RawRow[],
-  minUsd: number,
+  range: ValueRangeSpec,
 ): { rows: RawRow[]; hiddenByFilter: number; hiddenAsDust: number } {
+  if (range === null) {
+    let hiddenAsDust = 0
+    const result = rows.filter(row => {
+      if (!passesQualityFloor(row)) { hiddenAsDust++; return false }
+      return true
+    })
+    return { rows: result, hiddenByFilter: 0, hiddenAsDust }
+  }
   let hiddenByFilter = 0
-  let hiddenAsDust   = 0
   const result = rows.filter(row => {
     const usd = row.amount_usd as number | null
-    if (minUsd > 0) {
-      if (usd === null || usd < minUsd) { hiddenByFilter++; return false }
-      return true
-    }
-    if (!passesQualityFloor(row)) { hiddenAsDust++; return false }
+    if (usd === null) { hiddenByFilter++; return false }
+    if (usd < range.min) { hiddenByFilter++; return false }
+    if (range.max !== null && usd >= range.max) { hiddenByFilter++; return false }
     return true
   })
-  return { rows: result, hiddenByFilter, hiddenAsDust }
+  return { rows: result, hiddenByFilter, hiddenAsDust: 0 }
 }
 
 // Count distinct tx_hash values from a stats query result, applying per-row enrichment
@@ -479,13 +494,13 @@ export async function GET(req: NextRequest) {
     const params = req.nextUrl.searchParams
 
     const selectedWindow = parseWindow(params.get('window'))
-    const minUsdRaw = params.get('minUsd')
-    const minUsd = minUsdRaw && Number.isFinite(Number(minUsdRaw)) ? Number(minUsdRaw) : null
+    const valueRangeRaw = params.get('valueRange') ?? 'all'
+    const valueRange = parseValueRange(valueRangeRaw)
     const type = params.get('type')?.trim() || null
     const side = params.get('side')?.trim() || null
     const severity = params.get('severity')?.trim() || null
     const limit = parseLimit(params.get('limit'))
-    const cacheKey = `whale:${plan}:${selectedWindow}:${minUsdRaw ?? ''}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}`
+    const cacheKey = `whale:${plan}:${selectedWindow}:${valueRangeRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}`
     const cached = whaleCache.get(cacheKey)
     if (cached && cached.exp > now) return NextResponse.json(cached.payload)
 
@@ -526,11 +541,10 @@ export async function GET(req: NextRequest) {
     // Stats queries: include token_symbol, amount_token, amount_usd so each row
     // can be enriched and value-filtered JS-side — keeping stats in sync with the feed.
     const STATS_SELECT = 'tx_hash, token_symbol, amount_token, amount_usd, token_address'
-    const effectiveMinUsd = minUsd ?? 0
 
     const [alertsRes, stats15m, stats1h, stats24h, trackedCount, majorPrices] = await Promise.all([
       query,
-      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['15m']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
       supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
       supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
       supabase.from('tracked_wallets').select('id', { count: 'exact', head: true }).eq('is_active', true),
@@ -583,7 +597,7 @@ export async function GET(req: NextRequest) {
       signal_score: computeSignalScore(row),
       interesting_score: computeInterestScore(row),
     }))
-    const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueFloor(scored, effectiveMinUsd)
+    const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueRange(scored, valueRange)
     const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(valueFiltered)).map(applyHeadlineTokenFocus)
     const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
     // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
@@ -595,9 +609,9 @@ export async function GET(req: NextRequest) {
     const payload = {
       alerts: grouped,
       stats: {
-        alerts15m:      countStatsFiltered(stats15m.data, majorPrices, effectiveMinUsd, tokenPrices),
-        alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, effectiveMinUsd, tokenPrices),
-        alerts24h:      countStatsFiltered(stats24h.data, majorPrices, effectiveMinUsd, tokenPrices),
+        alerts15m:      countStatsFiltered(stats15m.data, majorPrices, 0, tokenPrices),
+        alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, 0, tokenPrices),
+        alerts24h:      countStatsFiltered(stats24h.data, majorPrices, 0, tokenPrices),
         trackedWallets: trackedCount.count ?? 0,
       },
       diagnostics: {
@@ -610,7 +624,7 @@ export async function GET(req: NextRequest) {
         afterDiversityCap:        diversityCapped.length,
         cappedTokenCounts,
         appliedWindow:            selectedWindow,
-        appliedMinUsd:            effectiveMinUsd,
+        appliedValueRange:        valueRangeRaw,
         hiddenByFilter,
         hiddenAsDust,
         filtersActive:            { type: type ?? null, side: side ?? null, severity: severity ?? null },
