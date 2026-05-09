@@ -48,6 +48,18 @@ const creatorLookupRateWindow: number[] = []
 const DEV_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 4, pro: 15, elite: 30 }
 const DEV_COOLDOWN_MS: Record<'free' | 'pro' | 'elite', number> = { free: 25_000, pro: 8_000, elite: 4_000 }
 
+// Known DEX routers, WETH, and pool factories on Base — excluded from linked-wallet detection
+const INFRA_EXCLUSIONS = new Set([
+  '0x0000000000000000000000000000000000000000',
+  '0x000000000000000000000000000000000000dead',
+  '0x4200000000000000000000000000000000000006', // WETH Base
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad', // Uniswap Universal Router
+  '0x2626664c2603336e57b271c5c0b26f421741e481', // Uniswap SwapRouter02
+  '0x03a520b32c04bf3beef7beb72e919cf822ed34f1', // Uniswap V3 Position Manager Base
+  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43', // Aerodrome Router
+  '0x420dd381b31aef6683db6b902084cb0ffece40da', // Aerodrome Factory
+])
+
 interface PlanResolution {
   plan: 'free' | 'pro' | 'elite'
   hasBearer: boolean
@@ -93,8 +105,19 @@ interface LinkedWallet {
   asset: string | null
   txHash: string | null
   firstSeen: string | null
-  confidence?: 'medium' | 'low'
+  confidence?: 'high' | 'medium' | 'low'
   reason?: string
+  overlapTopHolderRank?: number | null
+  overlapTopHolderPercent?: number | null
+}
+
+interface LinkedWalletDiag {
+  attempted: boolean
+  ok: boolean
+  tokenTransfersFound: number
+  ethTransfersFound: number
+  totalCandidates: number
+  reason: string
 }
 
 interface MatchedHolder {
@@ -369,29 +392,56 @@ async function discoverOrigin(contract: string): Promise<{
   return finalize({ address: null, confidence: 'low', deployerStatus: 'not_confirmed', methodUsed: 'unknown', creationTxHash: null, reason: 'No origin candidate found from any available source' })
 }
 
-async function findLinkedWallets(deployer: string, excludeContract: string): Promise<LinkedWallet[]> {
-  const EXCLUDED = new Set([
-    '0x0000000000000000000000000000000000000000',
-    '0x000000000000000000000000000000000000dead',
-    deployer.toLowerCase(),
-    excludeContract.toLowerCase(),
+async function findLinkedWallets(
+  deployer: string,
+  tokenContract: string,
+): Promise<{
+  wallets: LinkedWallet[]
+  status: 'ok' | 'none_found' | 'limited_check' | 'skipped'
+  diag: LinkedWalletDiag
+}> {
+  const deployerLow = deployer.toLowerCase()
+  const tokenLow = tokenContract.toLowerCase()
+  const excluded = new Set([...INFRA_EXCLUSIONS, deployerLow, tokenLow])
+
+  const diag: LinkedWalletDiag = {
+    attempted: true, ok: false,
+    tokenTransfersFound: 0, ethTransfersFound: 0,
+    totalCandidates: 0, reason: '',
+  }
+
+  // Run both queries concurrently: token-specific supply transfers + ETH funding transfers
+  const [tokenTransfers, ethTransfers] = await Promise.all([
+    // Query 1: specific-token ERC-20 transfers from deployer (supply distribution)
+    getAssetTransfers({
+      fromBlock: '0x0', toBlock: 'latest',
+      fromAddress: deployer,
+      category: ['erc20'],
+      contractAddresses: [tokenContract],
+      order: 'asc',
+      maxCount: '0x64',
+      withMetadata: true,
+    }),
+    // Query 2: external ETH transfers from deployer (wallet funding)
+    getAssetTransfers({
+      fromBlock: '0x0', toBlock: 'latest',
+      fromAddress: deployer,
+      category: ['external'],
+      order: 'asc',
+      maxCount: '0x64',
+      withMetadata: true,
+    }),
   ])
 
-  const transfers = await getAssetTransfers({
-    fromBlock: '0x0',
-    toBlock: 'latest',
-    fromAddress: deployer,
-    category: ['external', 'erc20'],
-    order: 'desc',
-    maxCount: '0x64',
-    withMetadata: true,
-  })
+  diag.tokenTransfersFound = tokenTransfers.length
+  diag.ethTransfersFound = ethTransfers.length
 
   const walletMap = new Map<string, LinkedWallet>()
-  for (const t of transfers) {
-    const to = t.to?.toLowerCase()
-    if (!to || EXCLUDED.has(to)) continue
 
+  // Token supply transfers → medium confidence (upgraded to high after top-holder overlap check)
+  for (const t of tokenTransfers) {
+    const to = t.to?.toLowerCase()
+    if (!to || excluded.has(to)) continue
     if (!walletMap.has(to)) {
       walletMap.set(to, {
         address: to,
@@ -400,23 +450,53 @@ async function findLinkedWallets(deployer: string, excludeContract: string): Pro
         txHash: t.hash,
         firstSeen: t.metadata?.blockTimestamp ?? null,
         confidence: 'medium',
-        reason: 'outgoing_transfer_from_origin_wallet',
+        reason: 'token_supply_transfer',
       })
-      continue
-    }
-
-    const existing = walletMap.get(to)!
-    existing.amountReceived = (existing.amountReceived ?? 0) + (t.value ?? 0)
-    const existingTime = existing.firstSeen ? new Date(existing.firstSeen).getTime() : Number.POSITIVE_INFINITY
-    const nextTime = t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).getTime() : Number.POSITIVE_INFINITY
-    if (nextTime < existingTime) {
-      existing.firstSeen = t.metadata?.blockTimestamp ?? existing.firstSeen
-      existing.txHash = t.hash ?? existing.txHash
-      existing.asset = existing.asset ?? t.asset
+    } else {
+      const w = walletMap.get(to)!
+      w.amountReceived = (w.amountReceived ?? 0) + (t.value ?? 0)
+      const existingTs = w.firstSeen ? new Date(w.firstSeen).getTime() : Infinity
+      const nextTs = t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).getTime() : Infinity
+      if (nextTs < existingTs) {
+        w.firstSeen = t.metadata?.blockTimestamp ?? w.firstSeen
+        w.txHash = t.hash ?? w.txHash
+      }
     }
   }
 
-  return [...walletMap.values()].slice(0, 20)
+  // ETH funding transfers → low confidence (only added if not already found via token)
+  for (const t of ethTransfers) {
+    const to = t.to?.toLowerCase()
+    if (!to || excluded.has(to)) continue
+    if (!walletMap.has(to)) {
+      walletMap.set(to, {
+        address: to,
+        amountReceived: t.value,
+        asset: 'ETH',
+        txHash: t.hash,
+        firstSeen: t.metadata?.blockTimestamp ?? null,
+        confidence: 'low',
+        reason: 'eth_funding_transfer',
+      })
+    }
+    // Already in map from token transfer → keep higher-confidence entry
+  }
+
+  diag.totalCandidates = walletMap.size
+  const wallets = [...walletMap.values()].slice(0, 20)
+
+  if (tokenTransfers.length === 0 && ethTransfers.length === 0) {
+    diag.reason = 'no_transfers_found'
+    return { wallets: [], status: 'limited_check', diag }
+  }
+
+  diag.ok = true
+  diag.reason = wallets.length > 0 ? 'wallets_found' : 'transfers_checked_none_qualify'
+  return {
+    wallets,
+    status: wallets.length > 0 ? 'ok' : 'none_found',
+    diag,
+  }
 }
 
 async function getSupplyData(
@@ -507,7 +587,7 @@ async function getSupplyData(
   }
 }
 
-async function getPreviousActivity(deployer: string | null): Promise<{
+async function getPreviousActivity(deployer: string | null, excludeContract?: string): Promise<{
   previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
   previousActivityStatus: 'ok' | 'none_found' | 'limited_check' | 'skipped'
@@ -516,29 +596,30 @@ async function getPreviousActivity(deployer: string | null): Promise<{
   if (!deployer) {
     return { previousActivityAvailable: false, previousProjects: [], previousActivityStatus: 'skipped', warning: null }
   }
+  const excludeLow = excludeContract?.toLowerCase() ?? ''
 
-  // Covalent-first: look for actual contract deployment transactions
+  // Covalent-first: scan wallet tx history for contract deployment transactions
   const covalentKey = process.env.COVALENT_API_KEY
   if (covalentKey) {
     try {
       const res = await fetch(
-        `${COVALENT_BASE_URL}/base-mainnet/address/${deployer}/transactions_v2/?key=${covalentKey}&page-size=50&block-signed-at-asc=false&no-logs=true`,
+        `${COVALENT_BASE_URL}/base-mainnet/address/${deployer}/transactions_v2/?key=${covalentKey}&page-size=100&block-signed-at-asc=false&no-logs=true`,
         { cache: 'no-store', signal: AbortSignal.timeout(10000) }
       )
       if (res.ok) {
         const json = await res.json() as { data?: { items?: CovalentTxItem[] } }
         const txItems = json?.data?.items ?? []
-        // Deployment txs have no to_address
+        // Deployment txs: to_address is null/empty and tx was successful
         const deploymentTxs = txItems.filter(t => t.successful && (t.to_address === null || t.to_address === ''))
         if (deploymentTxs.length === 0) {
           return { previousActivityAvailable: true, previousProjects: [], previousActivityStatus: 'none_found', warning: null }
         }
         const contractAddresses = await Promise.all(
-          deploymentTxs.slice(0, 5).map(t => getContractAddressFromTx(t.tx_hash))
+          deploymentTxs.slice(0, 8).map(t => getContractAddressFromTx(t.tx_hash))
         )
         const projects: PreviousProject[] = contractAddresses
           .map((addr, i): PreviousProject | null =>
-            addr ? {
+            addr && addr !== excludeLow ? {
               contractAddress: addr,
               name: null,
               symbol: null,
@@ -560,7 +641,7 @@ async function getPreviousActivity(deployer: string | null): Promise<{
     }
   }
 
-  // Alchemy fallback: ERC-20 interactions (token trades, not deployments — limited signal)
+  // Alchemy fallback: ERC-20 interactions as a limited signal (not true deployments)
   const transfers = await getAssetTransfers({
     fromBlock: '0x0',
     toBlock: 'latest',
@@ -579,6 +660,7 @@ async function getPreviousActivity(deployer: string | null): Promise<{
   for (const t of transfers) {
     const contractAddress = t.rawContract?.address?.toLowerCase()
     if (!contractAddress || contractAddress === '0x0000000000000000000000000000000000000000') continue
+    if (contractAddress === excludeLow) continue
     if (byContract.has(contractAddress)) continue
     byContract.set(contractAddress, {
       contractAddress,
@@ -605,32 +687,38 @@ function detectSuspiciousTransfers(
 ): { suspiciousTransfers: boolean; suspiciousTransferReasons: string[] } {
   const reasons: string[] = []
 
-  if (linkedWallets.length >= 3) {
-    reasons.push(`Deployer wallet funded ${linkedWallets.length} linked wallets`)
+  const tokenWallets = linkedWallets.filter(w => w.reason === 'token_supply_transfer')
+  const ethWallets = linkedWallets.filter(w => w.reason === 'eth_funding_transfer')
+
+  if (tokenWallets.length >= 3) {
+    reasons.push(`Creator sent tokens to ${tokenWallets.length} wallets in checked window`)
+  } else if (ethWallets.length >= 3) {
+    reasons.push(`Creator sent ETH to ${ethWallets.length} wallets around launch`)
   }
 
-  // Overlap: creator-linked wallets appearing in top-holder set
-  const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
-  const holderOverlap = matchedHolderWallets.filter(h => h.isLinked && linkedSet.has(h.address))
+  // Overlap: linked wallets also appearing in top-holder set
+  const holderOverlap = matchedHolderWallets.filter(h => h.isLinked)
   if (holderOverlap.length >= 2) {
     reasons.push(`${holderOverlap.length} creator-linked wallets appear in top-holder set`)
   }
 
+  // Same-size transfers — clear coordination signal
   const numericAmounts = linkedWallets.map(w => w.amountReceived).filter((v): v is number => typeof v === 'number')
   if (numericAmounts.length >= 3) {
     const rounded = numericAmounts.map(v => Number(v.toFixed(6)))
     const counts = new Map<number, number>()
     for (const n of rounded) counts.set(n, (counts.get(n) ?? 0) + 1)
     const maxGroup = Math.max(...counts.values())
-    if (maxGroup >= 3) reasons.push('Multiple linked wallets received very similar transfer amounts')
+    if (maxGroup >= 3) reasons.push('Repeated same-size transfers detected')
   }
 
+  // Close timing (within 2 hours)
   const times = linkedWallets
     .map(w => (w.firstSeen ? new Date(w.firstSeen).getTime() : null))
     .filter((t): t is number => t !== null)
     .sort((a, b) => a - b)
   if (times.length >= 3 && (times[times.length - 1] - times[0]) <= 2 * 60 * 60 * 1000) {
-    reasons.push('Linked wallets were funded close together in time')
+    reasons.push('Funded wallets close together in time')
   }
 
   if (supplyControlled !== null && supplyControlled >= 20) {
@@ -1308,8 +1396,13 @@ export async function POST(req: Request) {
     }
 
     let linkedWallets: LinkedWallet[] = []
+    let linkedWalletsCheckStatus: 'ok' | 'none_found' | 'limited_check' | 'skipped' = 'skipped'
+    let linkedWalletsDiag: LinkedWalletDiag = { attempted: false, ok: false, tokenTransfersFound: 0, ethTransfersFound: 0, totalCandidates: 0, reason: 'no_deployer' }
     if (deployerAddress) {
-      linkedWallets = await findLinkedWallets(deployerAddress, normalizedAddress)
+      const lwResult = await findLinkedWallets(deployerAddress, normalizedAddress)
+      linkedWallets = lwResult.wallets
+      linkedWalletsCheckStatus = lwResult.status
+      linkedWalletsDiag = lwResult.diag
     }
 
     const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets } =
@@ -1319,8 +1412,26 @@ export async function POST(req: Request) {
       warnings.push('Holder distribution needs deeper confirmation.')
     }
 
+    // Upgrade confidence for linked wallets that appear in top holders
+    if (holderDistributionRaw?.topHolders && holderDistributionRaw.topHolders.length > 0) {
+      const holderRankMap = new Map(
+        holderDistributionRaw.topHolders.map((h, idx) => [
+          (h.address ?? '').toLowerCase(),
+          { rank: idx + 1, percent: typeof h.percent === 'number' ? h.percent : 0 },
+        ])
+      )
+      for (const w of linkedWallets) {
+        const hi = holderRankMap.get(w.address)
+        if (hi) {
+          w.confidence = 'high'
+          w.overlapTopHolderRank = hi.rank
+          w.overlapTopHolderPercent = hi.percent
+        }
+      }
+    }
+
     const { previousActivityAvailable, previousProjects, previousActivityStatus, warning: activityWarning } =
-      await getPreviousActivity(deployerAddress)
+      await getPreviousActivity(deployerAddress, normalizedAddress)
     if (activityWarning) warnings.push(activityWarning)
 
     const tokenName = typeof tokenEvidence?.name === 'string' ? tokenEvidence.name : null
@@ -1376,7 +1487,7 @@ export async function POST(req: Request) {
       lpControlStatus,
       liquidityUsd,
       supplyControlStatus,
-      linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'none_found' : 'skipped'),
+      linkedWalletsStatus: linkedWalletsCheckStatus,
       previousActivityStatus,
       matchedHolderCount: matchedHolderWallets.length,
     })
@@ -1430,7 +1541,7 @@ export async function POST(req: Request) {
       creationTxHash,
       originReason,
       supplyControlStatus,
-      linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'none_found' : 'skipped'),
+      linkedWalletsStatus: linkedWalletsCheckStatus,
       holderStatus: holderDataAvailable ? 'ok' : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
@@ -1455,12 +1566,47 @@ export async function POST(req: Request) {
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
           origin_discovery: originDiag ?? { skipped: true },
           post_deployer_intelligence: {
-            supplyControlStatus,
-            linkedWalletsStatus: linkedWallets.length ? 'ok' : (deployerAddress ? 'none_found' : 'skipped'),
-            previousActivityStatus,
-            matchedHolderCount: matchedHolderWallets.length,
-            deployerInTopHolders: matchedHolderWallets.some(h => h.isDeployer),
-            linkedWalletsInTopHolders: matchedHolderWallets.filter(h => h.isLinked).length,
+            linked_wallets: {
+              attempted: linkedWalletsDiag.attempted,
+              ok: linkedWalletsDiag.ok,
+              status: linkedWalletsCheckStatus,
+              itemCount: linkedWallets.length,
+              tokenTransfersFound: linkedWalletsDiag.tokenTransfersFound,
+              ethTransfersFound: linkedWalletsDiag.ethTransfersFound,
+              totalCandidates: linkedWalletsDiag.totalCandidates,
+              firstItemKeys: linkedWallets.slice(0, 2).map(w => ({
+                address: w.address, confidence: w.confidence, reason: w.reason,
+                overlapRank: w.overlapTopHolderRank ?? null,
+              })),
+              reason: linkedWalletsDiag.reason,
+            },
+            transfer_analysis: {
+              attempted: deployerAddress !== null,
+              ok: true,
+              suspicious: suspiciousTransfers,
+              reasonCount: suspiciousTransferReasons.length,
+              reasons: suspiciousTransferReasons,
+            },
+            previous_activity: {
+              attempted: deployerAddress !== null,
+              ok: previousActivityAvailable,
+              status: previousActivityStatus,
+              itemCount: previousProjects.length,
+              firstItemKeys: previousProjects.slice(0, 2).map(p => ({
+                contractAddress: p.contractAddress, createdAt: p.createdAt,
+              })),
+              reason: previousActivityStatus,
+            },
+            supply_control: {
+              attempted: holderDataAvailable,
+              ok: supplyControlled !== null,
+              status: supplyControlStatus,
+              matchedCount: matchedHolderWallets.length,
+              percent: supplyControlled,
+              deployerInTopHolders: matchedHolderWallets.some(h => h.isDeployer),
+              linkedWalletsInTopHolders: matchedHolderWallets.filter(h => h.isLinked).length,
+              reason: supplyControlStatus,
+            },
           },
         },
       } : {}),
