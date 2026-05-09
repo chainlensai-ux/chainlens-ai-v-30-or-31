@@ -47,10 +47,14 @@ interface DevWalletResult {
   chain: string
   deployerAddress: string | null
   deployerConfidence: 'high' | 'medium' | 'low'
+  deployerStatus?: 'confirmed' | 'possible_match' | 'not_confirmed'
   methodUsed: string
+  creationTxHash?: string | null
+  originReason?: string | null
   linkedWallets: LinkedWallet[]
   holderDataAvailable: boolean
   supplyControlled: number | null
+  supplyControlStatus?: 'ok' | 'partial' | 'needs_confirmed_creator'
   matchedHolderWallets: MatchedHolder[]
   previousActivityAvailable: boolean
   previousProjects: PreviousProject[]
@@ -59,12 +63,11 @@ interface DevWalletResult {
   clarkVerdict: ClarkVerdict | null
   warnings: string[]
   tokenStatus?: string
-  rpcStatus?: string
-  deployerStatus?: string
   linkedWalletsStatus?: string
   holderStatus?: string
   liquidityStatus?: string
-  _diagnostics?: { modules?: unknown[]; rpcConfigured?: boolean; providerUsed?: string; tokenEvidenceDiag?: unknown }
+  lpControlStatus?: string
+  _diagnostics?: { modules?: unknown[]; rpcConfigured?: boolean; providerUsed?: string; tokenEvidenceDiag?: unknown; origin_discovery?: unknown }
   verdict?: VerdictLabel
   confidence?: string
   reasons?: string[]
@@ -708,7 +711,11 @@ export default function DevWalletPage() {
             )}
 
             {/* Deployer */}
-            <Section title={result.deployerConfidence === 'high' ? 'Deployer Wallet' : 'Likely Deployer Wallet'}>
+            <Section title={
+              result.deployerStatus === 'confirmed' ? 'Creator Wallet'
+              : result.deployerStatus === 'possible_match' ? 'Likely Origin Wallet'
+              : 'Creator / Origin Wallet'
+            }>
               <Card>
                 <DataRow
                   label="Address"
@@ -728,9 +735,11 @@ export default function DevWalletPage() {
                 <DataRow
                   label="Confidence"
                   value={
-                    <span style={{ color: CONF_COLOR[result.deployerConfidence] ?? '#94a3b8' }}>
-                      {result.deployerConfidence}
-                    </span>
+                    result.deployerStatus === 'confirmed'
+                      ? <span style={{ color: '#2DD4BF' }}>Creator confirmed</span>
+                      : result.deployerStatus === 'possible_match'
+                        ? <span style={{ color: '#fbbf24' }}>Likely origin wallet</span>
+                        : <span style={{ color: '#64748b' }}>Creator link not confirmed from current checks</span>
                   }
                 />
                 <DataRow
@@ -793,10 +802,18 @@ export default function DevWalletPage() {
 
             {/* Supply Concentration */}
             <Section title="Supply Concentration">
-              <SupplyBar
-                supplyControlled={result.supplyControlled}
-                holderDataAvailable={result.holderDataAvailable}
-              />
+              {result.supplyControlStatus === 'needs_confirmed_creator' ? (
+                <Card>
+                  <p style={{ fontSize: '12px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
+                    Creator-linked supply control: needs confirmed creator
+                  </p>
+                </Card>
+              ) : (
+                <SupplyBar
+                  supplyControlled={result.supplyControlled}
+                  holderDataAvailable={result.holderDataAvailable}
+                />
+              )}
               {result.matchedHolderWallets.length > 0 && (
                 <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {result.matchedHolderWallets.map((h, i) => (
