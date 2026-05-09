@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 type PumpCategory = 'HIGH_MOMENTUM' | 'VOLUME_EXPANSION' | 'THIN_MOONSHOT' | 'WATCH'
 type PumpRisk = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -292,7 +292,7 @@ function SummaryStrip({ alerts }: { alerts: PumpAlert[] }) {
 }
 
 export default function PumpAlertsPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const router = useRouter()
   const [alerts, setAlerts] = useState<PumpAlert[]>([])
   const [fetchedAt, setFetchedAt] = useState<string | null>(null)
@@ -356,6 +356,7 @@ export default function PumpAlertsPage() {
     [alerts, activeFilter],
   )
 
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'pump-alerts')) return <LockedPanel feature="pump-alerts" />
 
   return (
@@ -530,7 +531,7 @@ export default function PumpAlertsPage() {
           {/* Disclaimer */}
           {filtered.length > 0 && (
             <p style={{ marginTop: '20px', fontSize: '10px', color: '#2d3f52', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
-              Pump Alerts surface tokens meeting momentum thresholds based on live GeckoTerminal data. This is not financial advice. Always verify independently before acting.
+              Pump Alerts surface tokens meeting momentum thresholds based on live CORTEX market data. This is not financial advice. Always verify independently before acting.
             </p>
           )}
         </div>

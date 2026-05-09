@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { usePlan, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,7 +111,7 @@ const FALLBACK_VERDICT: ClarkVerdictCard = {
     'Portfolio value is available if real',
   ],
   risks: [
-    'AI verdict temporarily unavailable',
+    'AI verdict not ready in current checks',
     'Transaction behavior not fully summarized',
     'Manual review recommended',
   ],
@@ -166,7 +166,7 @@ function ClarkDots() {
 // ── Main page ────────────────────────────────────────────────────────────────
 
 export default function WalletScannerPage() {
-  const plan = usePlan()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const [input, setInput]               = useState('')
   const [loading, setLoading]           = useState(false)
   const [error, setError]               = useState<string | null>(null)
@@ -201,13 +201,9 @@ export default function WalletScannerPage() {
     }
   }
 
-  function dataQualityForWallet(data: WalletResult): 'Complete' | 'Partial' | 'Limited' {
-    const hasHoldings = data.holdings.length > 0
-    const hasValue = data.totalValue > 0
-    const hasTxMeta = data.txCount !== null || data.firstTxDate !== null
-    if (hasHoldings && hasValue && hasTxMeta) return 'Complete'
-    if (hasHoldings || hasValue) return 'Partial'
-    return 'Limited'
+  function dataQualityForWallet(data: WalletResult): string {
+    const hasPortfolio = data.holdings.length > 0 || data.totalValue > 0
+    return hasPortfolio ? 'Release view' : 'No signal in checked window'
   }
 
   async function triggerClark(address: string, data: WalletResult) {
@@ -269,6 +265,7 @@ export default function WalletScannerPage() {
     }
   }
 
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'wallet-scanner')) return <LockedPanel feature="wallet-scanner" />
 
   return (
@@ -435,6 +432,11 @@ export default function WalletScannerPage() {
             const sorted = [...result.holdings].sort((a, b) => b.value - a.value)
             const largest = sorted[0] ?? null
             const quality = dataQualityForWallet(result)
+            const b = result.walletBehavior
+            const hasUsefulActivity = Boolean(
+              b?.status === 'ok' &&
+              ((b.txCount ?? 0) > 0 || (b.activeDays ?? 0) > 0 || (b.inboundCount ?? 0) > 0 || (b.outboundCount ?? 0) > 0 || (b.topTokens?.length ?? 0) > 0 || (b.topContracts?.length ?? 0) > 0)
+            )
             return (
             <div style={{ maxWidth: '720px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
@@ -464,7 +466,7 @@ export default function WalletScannerPage() {
                     letterSpacing: '-0.03em', lineHeight: 1,
                     marginBottom: '14px',
                   }}>
-                    {result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value unavailable' : 'Unavailable'}
+                    {result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending in current checks' : 'No signal in checked window'}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <span style={{
@@ -479,10 +481,10 @@ export default function WalletScannerPage() {
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                 {[
-                  { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value unavailable' : 'Unavailable', sub: result.providerUsed && result.providerUsed !== 'none' ? `Via ${result.providerUsed}` : 'From wallet balances', color: '#2DD4BF' },
+                  { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending in current checks' : 'No signal in checked window', sub: 'Portfolio read active', color: '#2DD4BF' },
                   { label: 'Token Count', value: sorted.length.toLocaleString(), sub: 'Visible token balances', color: '#a78bfa' },
-                  { label: 'Largest Holding', value: largest ? largest.symbol : 'Unavailable', sub: largest ? fmtUSD(largest.value) : 'No holdings found', color: '#fbbf24' },
-                  { label: 'Data Quality', value: quality, sub: 'Complete / Partial / Limited', color: quality === 'Complete' ? '#2DD4BF' : quality === 'Partial' ? '#fbbf24' : '#f87171' },
+                  { label: 'Largest Holding', value: largest ? largest.symbol : 'No signal in checked window', sub: largest ? fmtUSD(largest.value) : 'No holdings found', color: '#fbbf24' },
+                  { label: 'Data Quality', value: quality, sub: quality === 'Release view' ? 'Portfolio read active' : 'No fresh Base activity signal', color: quality === 'Release view' ? '#94a3b8' : '#fbbf24' },
                 ].map(card => (
                   <div key={card.label} style={{
                     background: '#080c14',
@@ -514,8 +516,20 @@ export default function WalletScannerPage() {
                 ))}
               </div>
 
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {[
+                  'Portfolio read: CORTEX',
+                  ...(hasUsefulActivity ? ['Base activity: CORTEX'] : []),
+                  'Release view',
+                ].map((chip) => (
+                  <span key={chip} style={{ fontSize: 11, color: '#94a3b8', border: '1px solid rgba(148,163,184,0.25)', borderRadius: 999, padding: '5px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    {chip}
+                  </span>
+                ))}
+              </div>
               {/* ── Behavior card ────────────────────────────────── */}
-              {result.walletBehavior?.status === 'ok' && (
+              {hasUsefulActivity && result.walletBehavior?.status === 'ok' && (
                 <div style={{
                   background: '#080c14',
                   border: '1px solid rgba(255,255,255,0.08)',
@@ -527,11 +541,10 @@ export default function WalletScannerPage() {
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     marginBottom: '14px',
                   }}>
-                    Behavior · Base ({result.behaviorSource ?? 'unavailable'})
+                    Base Activity
                   </div>
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>Behavior scope: Base only</div>
-                  <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10 }}>Behavior via Alchemy Base</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
                     {[
                       { label: 'Recent Txs', value: result.walletBehavior.txCount ?? '—' },
                       { label: 'Active Days', value: result.walletBehavior.activeDays ?? '—' },
@@ -560,44 +573,6 @@ export default function WalletScannerPage() {
                       No recent Base activity found in checked window.
                     </div>
                   )}
-                </div>
-              )}
-
-              {result.estimatedPnl && (
-                <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '18px 22px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                    Estimated PnL Beta
-                  </div>
-                  <div style={{ marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
-                    Coverage {result.estimatedPnl.coveragePercent}% · Confidence {result.estimatedPnl.confidence ?? 'n/a'} · Source {result.pnlSource ?? result.estimatedPnl.source}
-                  </div>
-                  <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8' }}>
-                    Portfolio via Zerion · History via GoldRush: {result.pnlSource === 'goldrush' ? 'available' : 'limited/unavailable'}
-                  </div>
-                  {result.estimatedPnl.status !== 'unavailable' && result.estimatedPnl.coveragePercent >= 60 && result.estimatedPnl.totalEstimatedPnlUsd !== null ? (
-                    <div style={{ marginTop: 10, fontSize: 20, fontWeight: 700, color: result.estimatedPnl.totalEstimatedPnlUsd >= 0 ? '#34D399' : '#FB7185' }}>
-                      {fmtUSD(result.estimatedPnl.totalEstimatedPnlUsd)} estimated (not exact lifetime PnL)
-                    </div>
-                  ) : (
-                    <div style={{ marginTop: 10, color: '#f59e0b', fontSize: 13 }}>
-                      PnL unavailable — historical cost-basis coverage is too low.<br />
-                      <span style={{ color: '#94a3b8' }}>{result.pnlCoverageReason ?? 'Need decoded buys/sells with USD values from GoldRush/Covalent or supported transfer history.'}</span>
-                    </div>
-                  )}
-                  <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
-                    {result.estimatedPnl.tokens.filter((t) => t.coveragePercent > 0 || t.estimatedUnrealizedPnlUsd !== null || t.estimatedRealizedPnlUsd !== null).slice(0, 5).map((t) => {
-                      const tokenPnl = (t.estimatedUnrealizedPnlUsd ?? 0) + (t.estimatedRealizedPnlUsd ?? 0)
-                      const usable = t.coveragePercent >= 60 && (t.estimatedUnrealizedPnlUsd !== null || t.estimatedRealizedPnlUsd !== null)
-                      return (
-                        <div key={`${t.contract}-${t.symbol}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-                          <span style={{ color: '#cbd5e1' }}>{t.symbol} · {t.coveragePercent}% · {t.confidence}</span>
-                          <span style={{ color: usable ? (tokenPnl >= 0 ? '#34D399' : '#FB7185') : '#f59e0b' }}>
-                            {usable ? fmtUSD(tokenPnl) : 'PnL partial/unavailable'}
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </div>
                 </div>
               )}
 
@@ -789,7 +764,7 @@ export default function WalletScannerPage() {
                     ? result.reason
                     : 'No token balances found for this wallet.'}
                   <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.18)', marginTop: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                    {result.providerUsed && result.providerUsed !== 'none' ? `Checked via ${result.providerUsed}` : 'All data providers checked'} · Try a different wallet or check back later
+                    ChainLens intelligence checks complete · Try a different wallet or check back later
                   </div>
                 </div>
               )}
