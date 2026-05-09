@@ -15,6 +15,10 @@ interface LinkedWallet {
   asset: string | null
   txHash: string | null
   firstSeen: string | null
+  confidence?: 'high' | 'medium' | 'low'
+  reason?: string
+  overlapTopHolderRank?: number | null
+  overlapTopHolderPercent?: number | null
 }
 
 interface MatchedHolder {
@@ -144,11 +148,19 @@ function clampSentences(text: string, maxSentences = 3): string {
 }
 
 function linkedWalletTag(wallet: LinkedWallet): string {
+  if (wallet.reason === 'token_supply_transfer') return 'Token supply'
+  if (wallet.reason === 'eth_funding_transfer') return 'ETH funded'
   const asset = (wallet.asset ?? '').toLowerCase()
   if (asset.includes('eth')) return 'ETH recipient'
   if (asset) return 'Token recipient'
   if (wallet.amountReceived !== null) return 'Funded wallet'
-  return 'Unknown transfer'
+  return 'Transfer'
+}
+
+const CONF_BADGE: Record<string, { color: string; bg: string; border: string; label: string }> = {
+  high:   { color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.25)',  label: 'HIGH' },
+  medium: { color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.25)',  label: 'MED' },
+  low:    { color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.20)', label: 'LOW' },
 }
 
 function extractReadSummary(text: string): string {
@@ -877,27 +889,49 @@ export default function DevWalletPage() {
                 </Card>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {result.linkedWallets.map((w, i) => (
+                  {result.linkedWallets.map((w, i) => {
+                    const confBadge = w.confidence ? CONF_BADGE[w.confidence] : null
+                    return (
                     <div key={i} style={{
                       display: 'grid',
                       gridTemplateColumns: '1fr auto auto auto',
                       gap: '16px', alignItems: 'center',
                       padding: '12px 16px',
-                      background: 'rgba(255,255,255,0.02)',
-                      border: '1px solid rgba(255,255,255,0.07)',
+                      background: w.confidence === 'high'
+                        ? 'rgba(45,212,191,0.03)'
+                        : 'rgba(255,255,255,0.02)',
+                      border: `1px solid ${w.confidence === 'high' ? 'rgba(45,212,191,0.14)' : 'rgba(255,255,255,0.07)'}`,
                       borderRadius: '10px',
                       fontSize: '11px', fontFamily: 'var(--font-plex-mono)',
                     }}>
-                      <div>
-                        <span style={{ color: '#c4b5fd' }}>{shortAddr(w.address)}</span>{' '}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ color: '#c4b5fd' }}>{shortAddr(w.address)}</span>
                         <span style={{
                           color: '#64748b', fontSize: '10px',
                           border: '1px solid rgba(255,255,255,0.10)', borderRadius: '99px', padding: '1px 6px',
                         }}>
                           {linkedWalletTag(w)}
                         </span>
+                        {confBadge && (
+                          <span style={{
+                            fontSize: '9px', fontWeight: 700,
+                            color: confBadge.color, background: confBadge.bg,
+                            border: `1px solid ${confBadge.border}`, borderRadius: '99px', padding: '1px 6px',
+                          }}>
+                            {confBadge.label}
+                          </span>
+                        )}
+                        {w.overlapTopHolderRank != null && (
+                          <span style={{
+                            fontSize: '9px', color: '#a78bfa', background: 'rgba(139,92,246,0.10)',
+                            border: '1px solid rgba(139,92,246,0.25)', borderRadius: '99px', padding: '1px 6px',
+                          }}>
+                            Top holder #{w.overlapTopHolderRank}
+                            {w.overlapTopHolderPercent != null ? ` · ${parseFloat(w.overlapTopHolderPercent.toFixed(2))}%` : ''}
+                          </span>
+                        )}
                         {w.firstSeen && (
-                          <span style={{ color: '#3a5268', marginLeft: '10px' }}>
+                          <span style={{ color: '#3a5268' }}>
                             {fmtDate(w.firstSeen)}
                           </span>
                         )}
@@ -919,7 +953,8 @@ export default function DevWalletPage() {
                         </a>
                       )}
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </Section>
