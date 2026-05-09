@@ -213,9 +213,14 @@ function DataRow({ label, value, valueStyle }: {
 }
 
 const PROVIDER_LEAK_PATTERN = /\b(goldru(sh|sh)?|alchemy|basescan|covalent|geckoterminal|honeypot|rpc|alchemy|api\s+key|unavailable|failed|disabled|provider)\b/i
+const CREATOR_NOT_CONFIRMED_PATTERN = /creator.*not confirmed|no creator.*link|creator link not/i
 
-function WarningBanner({ warnings }: { warnings: string[] }) {
-  const safe = warnings.filter(w => !PROVIDER_LEAK_PATTERN.test(w))
+function WarningBanner({ warnings, deployerStatus }: { warnings: string[]; deployerStatus?: string }) {
+  const confirmed = deployerStatus === 'confirmed'
+  const safe = warnings.filter(w =>
+    !PROVIDER_LEAK_PATTERN.test(w) &&
+    !(confirmed && CREATOR_NOT_CONFIRMED_PATTERN.test(w))
+  )
   if (safe.length === 0) return null
   return (
     <div style={{
@@ -696,7 +701,7 @@ export default function DevWalletPage() {
                 </p>
               </Card>
             )}
-            <WarningBanner warnings={result.warnings} />
+            <WarningBanner warnings={result.warnings} deployerStatus={result.deployerStatus} />
 
             {/* Clark Verdict */}
             {result.clarkVerdict && (

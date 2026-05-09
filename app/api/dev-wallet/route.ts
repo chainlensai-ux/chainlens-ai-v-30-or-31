@@ -864,7 +864,9 @@ async function getClarkVerdict(origin: string, data: {
     `MODE: dev-wallet\n` +
     `Analyze this Base token scan and return JSON only.\n` +
     `Use only the fields below. Keep response short and professional.\n` +
-    `Use wording: "likely deployer/owner wallet". Do not claim confirmed deployer unless confidence is high.\n` +
+    (data.deployerStatus === 'confirmed'
+      ? `Creator wallet is confirmed from on-chain records. State this clearly.\n`
+      : `Use wording: "likely deployer/owner wallet". Do not claim confirmed deployer unless confidence is high.\n`) +
     `Do not infer supply concentration from missing holder data.\n` +
     `If holder data is unavailable, explicitly state supply control cannot be confirmed and do not mention holder percentages.\n` +
     `Do not infer LP lock status or DEX liquidity from missing liquidity data.\n` +
@@ -1151,7 +1153,6 @@ export async function POST(req: Request) {
       bytecode = await alchemyRpc('eth_getCode', [normalizedAddress, 'latest']) as string
     } catch {
       rpcStatus = 'unavailable'
-      warnings.push('Creator link not confirmed from current checks.')
     }
 
     if (bytecode === '0x') {
@@ -1207,6 +1208,12 @@ export async function POST(req: Request) {
 
     if (!deployerAddress) {
       warnings.push('Creator link not confirmed from current checks.')
+    } else {
+      // Purge any stale creator-not-confirmed strings that accumulated before discoverOrigin resolved
+      const CREATOR_NOT_CONFIRMED_RE = /creator.*not confirmed|no creator.*link|creator link not/i
+      for (let i = warnings.length - 1; i >= 0; i--) {
+        if (CREATOR_NOT_CONFIRMED_RE.test(warnings[i])) warnings.splice(i, 1)
+      }
     }
 
     let linkedWallets: LinkedWallet[] = []
