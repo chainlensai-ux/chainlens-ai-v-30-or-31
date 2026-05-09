@@ -3725,14 +3725,10 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   // Balance / holdings question — return plain summary, no verdict format
   if (isBalanceQuestion && !isQualityQuestion) {
     const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
-    const pnl = (walletData as Record<string, unknown>)?.estimatedPnl as Record<string, unknown> | undefined
-    const status = typeof pnl?.status === 'string' ? pnl.status : 'unavailable'
-    const coverage = typeof pnl?.coveragePercent === 'number' ? pnl.coveragePercent : 0
-    const confidence = typeof pnl?.confidence === 'string' ? pnl.confidence : null
-    const total = typeof pnl?.totalEstimatedPnlUsd === 'number' ? pnl.totalEstimatedPnlUsd : null
-    const pnlLine = (status === 'ok' || status === 'partial') && coverage >= 60 && total !== null
-      ? `Estimated PnL Beta: ${formatUsdShort(total)} (coverage ${coverage}%, confidence ${confidence ?? 'n/a'}; estimate only, not exact lifetime PnL).`
-      : 'Estimated PnL unavailable because historical cost-basis coverage is too low.'
+    const asksPnl = /\b(pnl|profit|loss|cost[-\s]?basis|realized|unrealized)\b/i.test(userPrompt)
+    const pnlLine = asksPnl
+      ? 'PnL/cost-basis history is not enabled in this release view. Current holdings and concentration are available.'
+      : 'History not included in this release view. Current holdings, concentration, and Base activity summary are available.'
     return { feature: "wallet-scanner", chain, walletAddress, analysis: `${formatWalletBalanceSummary(normalized)}\n\n${pnlLine}` };
   }
 
