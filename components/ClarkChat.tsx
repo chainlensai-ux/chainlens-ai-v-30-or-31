@@ -89,8 +89,8 @@ function parseMessage(raw: string): Record<string, string> {
     return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
 
   // Market / radar — checked after wallet intent to avoid collision
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes("what's hot") || MARKET_INTENT.test(t))
-    return { feature: 'base-radar' }
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes("what's hot") || t.includes("what's happening on base") || MARKET_INTENT.test(t))
+    return { feature: 'clark-ai', prompt: raw.trim() }
 
   // Explicit token/contract intent with address → scan-token
   if (address && /\b(scan\s+token|token\s+scan|contract\b)/i.test(t))

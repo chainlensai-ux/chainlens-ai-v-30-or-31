@@ -1220,81 +1220,8 @@ function isWhaleFlowPrompt(message: string, history?: ClarkRequestBody["history"
 }
 
 async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, origin: string, authHeader?: string | null) {
-  const chain = body.chain ?? "base";
-  const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH']);
-  const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\blast 7 days\b/i.test(prompt.toLowerCase());
-  const window = is7dQuery ? "7d" : "24h";
-  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=75&t=${Date.now()}`, {
-    signal: AbortSignal.timeout(5000),
-    cache: "no-store",
-    headers: authHeader ? { Authorization: authHeader } : {},
-  });
-  if (res.status === 403) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Whale Alerts are included in Pro and Elite." };
-  }
-  if (!res.ok) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I couldn't load Whale Alerts right now. Try refreshing the feed." };
-  }
-  const json = await res.json();
-  const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
-  if (raw.length === 0) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I don't have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again." };
-  }
-  const tokenCounts = new Map<string, number>();
-  let pricedFlow = 0;
-  let pricedCount = 0;
-  let latestTs = 0;
-  let oldestTs = 0;
-  for (const row of raw) {
-    const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase();
-    const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null;
-    if (firstNonRouting) {
-      tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1);
-      if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
-        pricedFlow += row.amount_usd;
-        pricedCount += 1;
-      }
-    }
-    const ts = row.occurred_at ? new Date(row.occurred_at).getTime() : 0;
-    if (Number.isFinite(ts) && ts > 0) {
-      latestTs = Math.max(latestTs, ts);
-      oldestTs = oldestTs === 0 ? ts : Math.min(oldestTs, ts);
-    }
-  }
-  const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1]);
-  if (ranked.length === 0) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don't have a clean non-stable token signal yet. Open Whale Alerts and run a sync to refresh." };
-  }
-  const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000);
-  const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000;
-  const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs);
-  const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ");
-  const strongest = ranked[0]?.[0] ?? "No repeated token yet";
-  const estimatedPricedFlow = pricedCount > 0 ? `~$${Math.round(pricedFlow).toLocaleString()} across ${pricedCount} priced alert${pricedCount === 1 ? "" : "s"}` : "USD mostly unverified";
-  const flowQuality = stale ? "Mixed quality (data may be stale)." : "Healthy quality (recent non-stable flow present).";
-  const marketRead = `Whale focus is clustering into ${strongest} with rotation across ${ranked.length} non-stable token${ranked.length === 1 ? "" : "s"}.`;
-  const nextChecks = incomplete7d
-    ? "Run Whale Alerts sync to fill the full 7d window, then re-check concentration and repeat strength."
-    : "Watch if top token repeats persist and whether non-stable flow broadens or fades.";
-  return {
-    feature: "clark-ai",
-    chain,
-    mode: "analysis",
-    intent: "whale_alert",
-    toolsUsed: ["whale_feed_stored"],
-    analysis: [
-      "WHALE FLOW SNAPSHOT",
-      "Source: Stored Whale Alerts only",
-      `Window: ${window}`,
-      `Top whale tokens: ${topTokens}`,
-      `Estimated priced flow: ${estimatedPricedFlow}`,
-      `Strongest repeat: ${strongest}`,
-      `Flow quality: ${flowQuality}`,
-      `Market read: ${marketRead}`,
-      `Next checks: ${nextChecks}`,
-      incomplete7d ? "I only have stored Whale Alerts from the available saved window, so this may not cover the full 7 days yet." : "",
-    ].filter(Boolean).join("\n"),
-  };
+  if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "whale_flow", rendererUsed: "row_level_whale", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
+  return handleWhaleAlertFeed(prompt, body, origin, authHeader);
 }
 
 async function fetchCoinGeckoMajors() {
@@ -4594,6 +4521,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return await handleStoredWhaleFlow(prompt, body, origin, authHeader);
   }
   if (isPumpFeedPrompt(prompt)) {
+    if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "pump_alerts", rendererUsed: "pump_alerts", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
     const analysis = await handlePumpFeedSnapshot(origin);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["pump_alerts_feed"], analysis };
   }
@@ -4608,6 +4536,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
   if (isBaseRadarPrompt(prompt)) {
+    if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_market", rendererUsed: pickBaseRadarTitle(prompt).toLowerCase().replace(/\s+/g, "_"), featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
     const analysis = await handleBaseRadarSnapshot(origin, prompt);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_radar_feed"], analysis };
   }
