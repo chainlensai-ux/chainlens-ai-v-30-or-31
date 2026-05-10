@@ -1369,6 +1369,32 @@ function buildReasonLine(label: string): string {
   if (label === "base asset") return "deep routing asset flow, not pure alpha rotation.";
   return "signal exists, but structure still needs verification.";
 }
+type WhaleGroup = { key: string; count: number; totalUsd: number; maxUsd: number; latestTs: number; sides: Set<string> };
+function aggregateWhaleRows(rows: WhaleAlertRow[]) {
+  const ROUTING = new Set(["USDC", "USDBC", "EURC", "DAI", "USDT", "WETH", "ETH", "CBBTC", "WSTETH"]);
+  const groups = new Map<string, WhaleGroup>();
+  const newestAlerts = [...rows]
+    .sort((a, b) => (new Date(b.occurred_at ?? 0).getTime()) - (new Date(a.occurred_at ?? 0).getTime()))
+    .slice(0, 15);
+  for (const r of rows) {
+    const sym = ((((r as Record<string, unknown>).focus_token_symbol as string | undefined) ?? r.token_symbol ?? "").toUpperCase()).split(" / ").find(Boolean) ?? "UNKNOWN";
+    const key = sym.trim();
+    const usd = typeof r.amount_usd === "number" && Number.isFinite(r.amount_usd) ? r.amount_usd : 0;
+    const ts = r.occurred_at ? new Date(r.occurred_at).getTime() : 0;
+    const side = String((r as Record<string, unknown>).side ?? "unknown").toLowerCase();
+    const g = groups.get(key) ?? { key, count: 0, totalUsd: 0, maxUsd: 0, latestTs: 0, sides: new Set<string>() };
+    g.count += 1; g.totalUsd += usd; g.maxUsd = Math.max(g.maxUsd, usd); g.latestTs = Math.max(g.latestTs, ts); g.sides.add(side); groups.set(key, g);
+  }
+  const arr = [...groups.values()];
+  const nonStable = arr.filter(g => g.key !== "UNKNOWN" && !ROUTING.has(g.key));
+  const repeatLeaders = [...nonStable].sort((a, b) => b.count - a.count);
+  const valueLeaders = [...nonStable].sort((a, b) => b.totalUsd - a.totalUsd);
+  const newestUniqueTokens = [...nonStable].sort((a, b) => b.latestTs - a.latestTs).slice(0, 5);
+  const newestTs = newestAlerts[0]?.occurred_at ? new Date(newestAlerts[0].occurred_at).getTime() : 0;
+  const usdCoverage = rows.length ? Math.round((rows.filter(r => typeof r.amount_usd === "number").length / rows.length) * 100) : 0;
+  const clustered = repeatLeaders.length > 0 && (repeatLeaders[0].count / Math.max(1, nonStable.length ? nonStable.reduce((s, g) => s + g.count, 0) : 1)) > 0.4;
+  return { newestAlerts, repeatLeaders, valueLeaders, newestUniqueTokens, nonStableCount: nonStable.length, newestTs, usdCoverage, clustered };
+}
 function pickBaseRadarTitle(prompt: string): string {
   const t = normalizePromptForIntent(prompt);
   if (/what'?s hot on base|whats hot on base/.test(t)) return "HOT ON BASE";
@@ -4385,89 +4411,58 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
         }
         if (filtered.length > 0) {
           if (isStoredWhaleQuestion) {
-            const tokenCounts = new Map<string, number>()
-            let totalUsd = 0
-            let usdSeen = 0
-            let latestTs = 0
-            for (const row of filtered) {
-              const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase()
-              const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null
-              if (firstNonRouting) tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1)
-              if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
-                totalUsd += row.amount_usd
-                usdSeen += 1
-              }
-              const ts = row.occurred_at ? new Date(row.occurred_at).getTime() : 0
-              if (Number.isFinite(ts) && ts > latestTs) latestTs = ts
-            }
-            const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1])
-            if (ranked.length === 0) {
+            const agg = aggregateWhaleRows(filtered)
+            if (!agg.repeatLeaders.length) {
               return {
-                feature: "clark-ai",
-                chain,
-                mode: "analysis",
-                intent: "whale_alert",
-                toolsUsed: ["whale_feed_stored"],
-                analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don't have a clean non-stable token signal yet.",
+                feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"],
+                analysis: "WHALE FLOW READ\nStored flow is mostly routing/stable activity right now, so there is no clean non-stable token signal yet.",
               }
             }
-            const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ") || "No dominant token"
-            const strongest = ranked[0]?.[0] ?? "No repeated token yet"
-            const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000)
-            const staleText = stale ? "Data may be stale." : "Data appears recent."
-            const oldestTs = filtered.reduce((min, r) => {
-              const ts = r.occurred_at ? new Date(r.occurred_at).getTime() : 0
-              if (!Number.isFinite(ts) || ts <= 0) return min
-              return min === 0 ? ts : Math.min(min, ts)
-            }, 0)
-            const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000
-            const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs)
-            const usdText = usdSeen > 0 ? `~$${Math.round(totalUsd).toLocaleString()} across priced alerts` : "USD mostly unverified"
-            const whaleTitle = pickWhaleTitle(prompt)
-            if (whaleTitle === "TOP WHALE ALERTS TO WATCH") {
-              const strongestValue = (() => {
-                const usdBy = new Map<string, number>()
-                for (const row of filtered) {
-                  const sym = ((((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase()).split(' / ').find(x => x && !ROUTING_ONLY_SYMBOLS.has(x)) ?? null
-                  if (!sym) continue
-                  const usd = typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd) ? row.amount_usd : 0
-                  usdBy.set(sym, (usdBy.get(sym) ?? 0) + usd)
-                }
-                return [...usdBy.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "No priced leader yet"
-              })()
-              const noisiest = [...tokenCounts.entries()].sort((a, b) => a[1] - b[1])[0]?.[0] ?? "No noisy outlier yet"
-              return {
-                feature: "clark-ai",
-                chain,
-                mode: "analysis",
-                intent: "whale_alert",
-                toolsUsed: ["whale_feed_stored"],
-                analysis: [
-                  "TOP WHALE ALERTS TO WATCH",
-                  `1. strongest repeat: ${strongest}`,
-                  `2. strongest value/volume: ${strongestValue}`,
-                  `3. riskiest/noisiest: ${noisiest} (single-hit flow; needs confirmation)`,
-                  "4. what to ignore: routing/stable-heavy one-offs without repeat behavior",
-                  "Next action: monitor repeat names first, then verify if priced flow keeps clustering.",
-                ].join("\n"),
+            const strongest = agg.repeatLeaders[0]
+            const highestValue = agg.valueLeaders.find(g => g.totalUsd > 0) ?? null
+            const freshestAlt = agg.newestUniqueTokens.find(g => g.key !== strongest.key) ?? null
+            const secondary = agg.repeatLeaders.find(g => g.key !== strongest.key) ?? null
+            const stale = agg.newestTs === 0 || (Date.now() - agg.newestTs) > (6 * 60 * 60 * 1000)
+            const concentrationLine = agg.nonStableCount < 5
+              ? "Flow is concentrated — not much variety in the latest stored alerts."
+              : (agg.clustered ? "Flow is clustered around a few repeated names." : "Flow is broader across multiple non-stable names.")
+            const confidenceLine = agg.usdCoverage < 30 ? "USD confidence is low (most rows are unverified)." : "USD confidence is usable for sizing comparisons."
+            const title = pickWhaleTitle(prompt)
+            if (title === "TOP WHALE ALERTS TO WATCH") {
+              return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
+                "TOP WHALE ALERTS TO WATCH",
+                `1. Strongest repeat: ${strongest.key} (${strongest.count} repeats) — repeat activity is the strongest signal right now.`,
+                `2. Highest verified value: ${highestValue ? `${highestValue.key} (~$${Math.round(highestValue.totalUsd).toLocaleString()})` : "USD mostly unverified across current rows."}`,
+                `3. Freshest unique alert: ${freshestAlt ? freshestAlt.key : "No fresh secondary token yet."}`,
+                `4. Noisy alerts to ignore: base/stable routing and tiny-liquidity one-offs.`,
+                `5. Next: ${stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Monitor if the same repeat token still leads after the next refresh."}`,
+              ].join("\n") }
+            }
+            if (title === "WHALE SELL-SIDE READ") {
+              const sellLeaders = agg.repeatLeaders.filter(g => g.sides.has("sell")).slice(0, 4)
+              if (!sellLeaders.length) {
+                return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
+                  "WHALE SELL-SIDE READ",
+                  "Sell-side read: no strong repeated sell clusters in current stored flow.",
+                  `Buy/swap flow is stronger around ${strongest.key}${secondary ? ` and ${secondary.key}` : ""}.`,
+                  `Next: ${stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Watch if sell-side clusters appear after next sync."}`,
+                ].join("\n") }
               }
+              return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
+                "WHALE SELL-SIDE READ",
+                "Sell-side read: repeated exits are visible in stored alerts.",
+                ...sellLeaders.map((g, i) => `${i + 1}. ${g.key} — ${g.count} repeats${g.totalUsd > 0 ? `, ~$${Math.round(g.totalUsd).toLocaleString()} verified` : ""}.`),
+                `Next: ${stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Monitor whether sell clusters expand beyond current leaders."}`,
+              ].join("\n") }
             }
-            return {
-              feature: "clark-ai",
-              chain,
-              mode: "analysis",
-              intent: "whale_alert",
-              toolsUsed: ["whale_feed_stored"],
-              analysis: [
-                whaleTitle,
-                `Window: ${window} | ${filtered.length} tracked alert${filtered.length === 1 ? "" : "s"}.`,
-                `Leading repeats: ${topTokens}.`,
-                `Flow read: strongest clustering is ${strongest}; ${usdText}.`,
-                `Quality: ${staleText}`,
-                incomplete7d ? "I only have stored Whale Alerts from the available saved window, so this may not cover the full 7 days yet." : "",
-                "Next action: I'd monitor repeat names, then verify holders/liquidity before trusting continuation.",
-              ].join(" "),
-            }
+            return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
+              "WHALE FLOW READ",
+              `Main read: ${concentrationLine} ${confidenceLine}`,
+              `Buy/swap leaders: ${([strongest, secondary, freshestAlt].filter((g): g is WhaleGroup => Boolean(g)).slice(0,3).map(g => `${g.key} (${g.count})`).join(', '))}.`,
+              `What changed recently: ${freshestAlt ? `${freshestAlt.key} is the newest non-repeat token in current rows.` : "No meaningful new unique token has displaced the repeat leader yet."}`,
+              stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Freshness: latest stored alerts are recent.",
+              "Next: Monitor repeats; one alert is not enough.",
+            ].join("\n") }
           }
           const sigOrder: Record<string, number> = { HIGH: 0, WATCH: 1, LOW: 2 };
           filtered.sort((a, b) => {
