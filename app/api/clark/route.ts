@@ -207,6 +207,7 @@ function extractTokenLookupQuery(prompt: string): string | null {
   const t = prompt.trim().toLowerCase();
   const blockedQueries = new Set([
     "holder", "holders", "holder count", "holder distribution", "holder concentration",
+    "concentration", "distribution", "count",
     "liquidity", "lp", "lp lock", "lp control", "deployer", "dev wallet", "transfer controls",
     "security", "tax", "taxes",
   ]);
@@ -225,6 +226,11 @@ function extractTokenLookupQuery(prompt: string): string | null {
     /check\s+(?:liquidity|lp)(?:\s+for)?\s+([a-z0-9._-]{2,32})\b/i,
     /is\s+([a-z0-9._-]{2,32})\s+(?:lp\s+locked|lp\s+safe(?:ty)?|liquidity\s+(?:safe|locked))\b/i,
     /([a-z0-9._-]{2,32})\s+(?:liquidity|lp)\s+(?:check|status|locked)\b/i,
+    /holder(?:\s+concentration|\s+distribution|\s+count)\s+([a-z0-9._-]{2,32})\b/i,
+    /top\s+holders?\s+(?:of\s+|for\s+)?([a-z0-9._-]{2,32})\b/i,
+    /supply\s+concentration\s+(?:for\s+)?([a-z0-9._-]{2,32})\b/i,
+    /([a-z0-9._-]{2,32})\s+(?:holder\s+concentration|holder\s+distribution|top\s+holders?|supply\s+concentration)\b/i,
+    /holders?\s+([a-z0-9._-]{2,32})\b/i,
   ];
   for (const p of patterns) {
     const m = t.match(p);
@@ -527,7 +533,8 @@ function classifyClarkQuestionType(
 ): ClarkQuestionType {
   if (/^(hi|hey|hello|yo|gm|sup)\b/.test(normalized)) return "casual";
   if (/what can you do|help|who are you|how do i find whale wallets|what are red flags in a token|how do i find early wallets/.test(normalized)) return "unknown_general";
-  if (/what is liquidity risk|what is a dev wallet|holder concentration|lp lock|slippage/.test(normalized)) return "education";
+  if (/what is liquidity risk|what is a dev wallet|lp lock|slippage/.test(normalized)) return "education";
+  if (/holder concentration/.test(normalized) && !ctx.explicitSymbol && !ctx.explicitAddress) return "education";
   if (/what should i watch|why are base memes moving|strategy|framework/.test(normalized)) return "market_overview";
   if (/what'?s pumping on base|moving on base|trending|movers|gainers/.test(normalized)) return "market_overview";
   if (/full report|deep scan|full analysis|run all checks|report on/.test(normalized)) return "token_full_report";
@@ -953,6 +960,11 @@ function buildClarkToolPlan(input: {
     if (_LIQ_RE.test(message)) {
       const _tq = extractTokenLookupQuery(message);
       if (_tq) return { intent: "liquidity_safety", tools: [{ name: "token_resolve", args: { query: _tq }, required: true }, { name: "liquidity_analyze", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
+    }
+    const _HOLDER_RE = /\b(?:holder(?:s|\s+concentration|\s+distribution|\s+count)?|top\s+holders?|supply\s+concentration)\b/i;
+    if (_HOLDER_RE.test(message)) {
+      const _tq = extractTokenLookupQuery(message);
+      if (_tq) return { intent: "token_analysis", tools: [{ name: "token_resolve", args: { query: _tq }, required: true }, { name: "token_scan", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
     }
   }
   // Follow-up: bare token symbol after liquidity_safety context (via lastIntent or recent history output)
@@ -3690,6 +3702,36 @@ function buildTokenFollowupReply(type: TokenFollowupType, contractAddress: strin
   ].join("\n");
 }
 
+function buildHolderFocusedReply(report: ClarkFullReportEvidence): string {
+  const { token, holders } = report;
+  const name = token.name ?? "Unknown";
+  const sym = token.symbol ?? "?";
+  const addr = token.address ?? null;
+  const short = addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "Unverified";
+  const holderCount = holders.holderCount != null ? holders.holderCount.toLocaleString() : "Unverified";
+  const top1 = holders.topHolderPct != null ? `${holders.topHolderPct.toFixed(1)}%` : "Unverified";
+  const top10 = holders.top10Pct != null ? `${holders.top10Pct.toFixed(1)}%` : "Unverified";
+  const top10Num = holders.top10Pct ?? null;
+  const conc = top10Num != null
+    ? (top10Num >= 60 ? "High — concentrated ownership, dump risk elevated" : top10Num >= 30 ? "Medium — watch for coordinated exits" : "Low — distributed holding pattern")
+    : "Unknown";
+  const dataUnavailable = holders.holderCount == null && holders.top10Pct == null && holders.topHolderPct == null;
+  return [
+    `Holder distribution — ${name} (${sym})`,
+    `Contract: ${short}`,
+    "",
+    `Holder count: ${holderCount}`,
+    `Top holder: ${top1}`,
+    `Top 10 holders: ${top10}`,
+    `Concentration: ${conc}`,
+    "",
+    dataUnavailable
+      ? "Holder data unavailable in this pass. Holder identities are not verified — on-chain distribution counts only."
+      : "Holder identity is not verified — on-chain distribution counts only.",
+    "Next: run full report or liquidity check for a complete risk read.",
+  ].join("\n");
+}
+
 function buildCasualContextualReply(prompt: string, lastScanText: string | null, recentContext: string): string {
   const t = prompt.trim().toLowerCase();
   if (/what do you think|is that bad|risky\??$/i.test(t)) {
@@ -4461,7 +4503,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis: buildTokenFollowupReply(tokenFollowup.type, tokenFollowup.contractAddress, tokenFollowup.scanText),
     };
   }
-  if (isHolderQuestion(prompt)) {
+  if (isHolderQuestion(prompt) && !extractTokenLookupQuery(prompt) && !extractAddress(prompt)) {
     const lastScan = extractLastTokenScanFromHistory(body.history);
     if (!lastScan) {
       return {
@@ -5058,8 +5100,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const report = buildFullReportEvidence(evidence, token.address);
     const pack = buildClarkEvidencePack(report);
     const lower = prompt.toLowerCase();
+    const isHolderFocusedQuery = /\b(?:holder(?:s|\s+concentration|\s+distribution|\s+count)?|top\s+holders?|supply\s+concentration)\b/i.test(lower);
     const analysis =
-      /is it safe|safe\??$/.test(lower)
+      isHolderFocusedQuery
+        ? buildHolderFocusedReply(report)
+        : /is it safe|safe\??$/.test(lower)
         ? [
             `Safety read for ${pack.asset}:`,
             `- Verified now: ${pack.confidenceDrivers.length ? pack.confidenceDrivers.join(" ") : "Only partial market/security checks."}`,
