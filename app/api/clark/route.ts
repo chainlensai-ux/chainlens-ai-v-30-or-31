@@ -536,7 +536,7 @@ function classifyClarkQuestionType(
   if (/what is liquidity risk|what is a dev wallet|lp lock|slippage/.test(normalized)) return "education";
   if (/holder concentration/.test(normalized) && !ctx.explicitSymbol && !ctx.explicitAddress) return "education";
   if (/what should i watch|why are base memes moving|strategy|framework/.test(normalized)) return "market_overview";
-  if (/what'?s pumping on base|moving on base|trending|movers|gainers/.test(normalized)) return "market_overview";
+  if (/what'?s pumping on base|moving on base|trending|movers|gainers|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|base radar/.test(normalized)) return "market_overview";
   if (/full report|deep scan|full analysis|run all checks|report on/.test(normalized)) return "token_full_report";
   if (ctx.explicitAddress && ctx.lastIntent === "token_full_report_request") return "token_full_report";
   if (ctx.explicitAddress && ctx.lastIntent === "liquidity_safety") return "token_liquidity_followup";
@@ -1171,7 +1171,7 @@ function buildClarkStrategyReply(prompt: string): string {
 function detectLiveIntent(prompt: string): LiveIntent {
   const t = prompt.toLowerCase().trim();
   if (/scan\s+0x[a-f0-9]{40}|check wallet|wallet\b/.test(t)) return "WALLET_QUERY";
-  if (/what'?s pumping on base|what'?s trending on base|show base movers|what'?s moving on base|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base/.test(t)) return "BASE_MARKET";
+  if (/what'?s pumping on base|what'?s trending on base|show base movers|what'?s moving on base|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|summarize base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
   if (/scan\s+[a-z0-9._-]{2,32}|price of [a-z0-9._-]{2,32}|how is [a-z0-9._-]{2,32} going/.test(t)) return "TOKEN_QUERY";
   if (/\bexplain this whale alert\b|\bsummarize whale alert|\bsummarize whale|\bwhale alerts?\b|\bwhale moves?\b|\bwhales? selling\b|\bwhat are whales? (?:doing|buying)\b|\bwhales? buying\b|\bwhale buys?\b|\bstrongest whale\b|\bany accumulation\b|\bany distribution\b|\bwhat should i watch\b.*whale/i.test(t)) return "WHALE_FEED";
@@ -1323,7 +1323,7 @@ function formatUsdOrUnverified(value: unknown): string {
   return n == null ? "unverified" : formatUsdShort(n);
 }
 function isBaseRadarPrompt(prompt: string): boolean {
-  return /\b(what'?s happening on base radar|show base radar|open base radar|base radar|base movers|what'?s moving on base)\b/i.test(prompt.toLowerCase());
+  return /\b(what'?s happening on base radar|show base radar|open base radar|base radar|base movers|what'?s moving on base|summarize base|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|what'?s going on base)\b/i.test(prompt.toLowerCase());
 }
 function isFeedSafestFollowup(prompt: string): boolean {
   return /\b(which one is safest|which is safest|what'?s the safest|which is cleanest|which one should i watch)\b/i.test(prompt.toLowerCase());
@@ -1376,13 +1376,66 @@ async function handlePumpFeedSnapshot(origin: string) {
 
 
 async function handleBaseRadarSnapshot(origin: string) {
-  const res = await fetch(`${origin}/api/radar?window=24h&limit=10`, { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) return "BASE RADAR SNAPSHOT\nBase Radar: no fresh signal in the checked window.";
-  const json = await res.json();
-  const items = Array.isArray(json?.items) ? json.items : [];
-  if (!items.length) return "BASE RADAR SNAPSHOT\nBase Radar feed is empty right now.";
-  const rows = items.slice(0, 6).map((a: Record<string, unknown>, i: number) => `${i + 1}. ${String(a.symbol ?? a.token_symbol ?? "Unknown")} | 24h ${typeof a.price_change_24h === "number" ? `${a.price_change_24h.toFixed(2)}%` : "N/A"} | LQ ${formatUsdShort(typeof a.liquidity_usd === "number" ? a.liquidity_usd : null)} | Vol ${formatUsdShort(typeof a.volume_24h_usd === "number" ? a.volume_24h_usd : null)}`);
-  return ["BASE RADAR SNAPSHOT", ...rows].join("\n");
+  const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
+  const BASE_RADAR_EXCLUDED = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC', 'BUSD', 'FRAX', 'CBETH', 'STETH', 'RETH', 'WSTETH', 'EURC', 'BSDETH', 'USD+', 'AXLUSDC']);
+
+  let tokens: Record<string, unknown>[] = [];
+  try {
+    const res = await fetch(`${origin}/api/trending`, {
+      signal: AbortSignal.timeout(5000),
+      headers: authHeader ? { authorization: authHeader } : {},
+    });
+    if (res.ok) {
+      const json = await res.json();
+      tokens = Array.isArray(json?.data) ? (json.data as Record<string, unknown>[]) : [];
+    }
+  } catch { /* timeout — tokens stays empty */ }
+
+  // Fallback: if no Base-chain tokens came through (trending may include coingecko cross-chain),
+  // relax the chain filter since the `chain` field may be absent.
+  const baseFeed = tokens.filter(t => {
+    const sym = String(t.symbol ?? '').toUpperCase();
+    const ch = String(t.chain ?? '');
+    return sym && !BASE_RADAR_EXCLUDED.has(sym) && (ch === 'base' || ch === 'geckoterminal' || !ch);
+  });
+
+  if (!baseFeed.length) {
+    return "BASE RADAR SNAPSHOT\nNo fresh Base Radar data loaded right now. Refresh Base Radar or try again in a moment.";
+  }
+
+  const sorted = [...baseFeed].sort((a, b) => Number(b.change24h ?? 0) - Number(a.change24h ?? 0));
+  const top = sorted.slice(0, 5);
+
+  const positiveCount = top.filter(t => Number(t.change24h ?? 0) > 0).length;
+  const marketRead = positiveCount >= 4
+    ? "Moves look broad — most tracked tokens are positive over 24h."
+    : positiveCount >= 2
+    ? "Mixed market — some momentum tokens up, others cooling or flat."
+    : "Moves concentrated — few tokens showing strength, most flat or down.";
+
+  const rows = top.map((t, i) => {
+    const sym = String(t.symbol ?? '?').toUpperCase();
+    const name = String(t.name ?? '').trim();
+    const label = name && name.toUpperCase() !== sym ? `${sym} (${name})` : sym;
+    const ch = t.change24h != null ? Number(t.change24h) : null;
+    const chStr = ch != null ? `${ch >= 0 ? '+' : ''}${ch.toFixed(1)}% 24h` : 'n/a 24h';
+    const price = t.price != null ? fmtPrice(Number(t.price)) : 'n/a';
+    const vol = formatUsdShort(t.volume != null ? Number(t.volume) : null);
+    const liq = formatUsdShort(t.liquidity != null ? Number(t.liquidity) : null);
+    const verdict = ch != null && ch >= 15 ? 'worth scanning' : ch != null && ch >= 5 ? 'worth monitoring' : 'watching';
+    return `${i + 1}. ${label} — ${chStr} | Price ${price} | Vol ${vol} | Liq ${liq} — ${verdict}`;
+  });
+
+  return [
+    "BASE RADAR SNAPSHOT",
+    "Source: live Base market feed",
+    "",
+    "Top movers:",
+    ...rows,
+    "",
+    `Market read: ${marketRead}`,
+    "Next: pick a token and I'll run a full scan.",
+  ].join("\n");
 }
 
 function formatUsdShort(value: number | null | undefined): string {
