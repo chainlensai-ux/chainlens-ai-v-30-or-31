@@ -539,6 +539,10 @@ function classifyClarkQuestionType(
   if (/copy trade|wallet worth tracking|why is this wallet worth tracking/.test(normalized)) return "wallet_strategy";
   if (/compare .*wallet/.test(normalized)) return "compare_request";
   if (/^(go|next|continue|deeper|full report|why|is it risky|what should i watch)$/.test(normalized) && (ctx.lastToken.address || ctx.followupWords)) return "token_scan";
+  // "who deployed X?" / "dev wallet for X?" with a named token — must route before generic token_scan
+  if (/who\s+(?:deployed|built|created|made)|deployer\s+of|creator\s+wallet(?:\s+(?:for|of))?|dev\s+wallet\s+(?:for|of)\b/.test(normalized) && ctx.explicitSymbol) return "token_dev_followup";
+  // "liquidity safe for X?" / "lp safe X?" with a named token — route before generic token_scan
+  if (/(?:liquidity|lp)\s+safe(?:ty)?(?:\s+(?:for|of|on|check))?|is\s+(?:liquidity|lp)\s+safe(?:ty)?/.test(normalized) && ctx.explicitSymbol) return "token_liquidity_followup";
   if (/scan|check|token scan|contract/.test(normalized) || ctx.explicitAddress || ctx.explicitSymbol) return "token_scan";
   return "unknown_general";
 }
@@ -1888,6 +1892,14 @@ async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandid
       return (b.liquidity ?? 0) - (a.liquidity ?? 0);
     });
 
+    // Always pin known alias to position 0 — prevents LP/derivative tokens from beating canonical token
+    if (aliasHit) {
+      const aliasLower = aliasHit.contract.toLowerCase();
+      const existingIdx = out.findIndex(c => c.contract.toLowerCase() === aliasLower);
+      if (existingIdx > 0) out.splice(existingIdx, 1);
+      if (existingIdx !== 0) out.unshift({ ...aliasHit, liquidity: Number.MAX_SAFE_INTEGER });
+    }
+
     return out.slice(0, 5);
   } catch {
     return aliasHit ? [aliasHit] : [];
@@ -2775,8 +2787,17 @@ async function executeClarkToolPlan(input: {
           }
         }
 
+        // Mismatch guard: if selected symbol doesn't match query and we have a known alias, prefer alias
+        const qUpperR = query.trim().toUpperCase();
+        if (selected && selected.symbol.toUpperCase() !== qUpperR) {
+          const aliasEntry = BASE_TOKEN_ALIAS_MAP[query.trim().toLowerCase()];
+          if (aliasEntry && aliasEntry.symbol.toUpperCase() === qUpperR) {
+            selected = { symbol: aliasEntry.symbol, contract: aliasEntry.contract };
+          }
+        }
+
         evidence.tokenResolve = {
-          ok: matches.length > 0,
+          ok: matches.length > 0 || selected != null,
           query,
           matches: matches.map((m) => ({ symbol: m.symbol, contract: m.contract, liquidity: m.liquidity })),
           selected,
@@ -4763,8 +4784,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (plan.intent === "dev_wallet") {
     if (!resolvedAddress) return { feature: "clark-ai", chain, mode: "analysis", analysis: missingAddressReply("dev_wallet"), intent: plan.intent, toolsUsed };
-    const tokenName = evidence.tokenScan?.token?.name ?? evidence.liquidity?.token?.name ?? "Unknown token";
-    const tokenSymbol = evidence.tokenScan?.token?.symbol ?? evidence.liquidity?.token?.symbol ?? "?";
+    const resolvedSymbol = evidence.tokenResolve?.selected?.symbol ?? null;
+    const aliasForSymbol = resolvedSymbol ? BASE_TOKEN_ALIAS_MAP[resolvedSymbol.toLowerCase()] : null;
+    const tokenName = evidence.tokenScan?.token?.name ?? evidence.liquidity?.token?.name ?? aliasForSymbol?.name ?? resolvedSymbol ?? "Unknown token";
+    const tokenSymbol = evidence.tokenScan?.token?.symbol ?? evidence.liquidity?.token?.symbol ?? resolvedSymbol ?? "?";
     if (evidence.devWallet?.ok) {
       return {
         feature: "clark-ai",
@@ -4796,8 +4819,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (plan.intent === "liquidity_safety") {
     if (!resolvedAddress) return { feature: "clark-ai", chain, mode: "analysis", analysis: missingAddressReply("liquidity_safety"), intent: plan.intent, toolsUsed };
-    const tokenName = evidence.tokenScan?.token?.name ?? evidence.liquidity?.token?.name ?? "Unknown token";
-    const tokenSymbol = evidence.tokenScan?.token?.symbol ?? evidence.liquidity?.token?.symbol ?? "?";
+    const resolvedSymbolLiq = evidence.tokenResolve?.selected?.symbol ?? null;
+    const aliasForSymbolLiq = resolvedSymbolLiq ? BASE_TOKEN_ALIAS_MAP[resolvedSymbolLiq.toLowerCase()] : null;
+    const tokenName = evidence.tokenScan?.token?.name ?? evidence.liquidity?.token?.name ?? aliasForSymbolLiq?.name ?? resolvedSymbolLiq ?? "Unknown token";
+    const tokenSymbol = evidence.tokenScan?.token?.symbol ?? evidence.liquidity?.token?.symbol ?? resolvedSymbolLiq ?? "?";
     if (evidence.liquidity?.ok && evidence.liquidity.token) {
       return {
         feature: "clark-ai",
