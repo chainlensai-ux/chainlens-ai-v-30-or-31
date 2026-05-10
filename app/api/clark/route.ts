@@ -1224,8 +1224,9 @@ async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, ori
   const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH']);
   const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\blast 7 days\b/i.test(prompt.toLowerCase());
   const window = is7dQuery ? "7d" : "24h";
-  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=25`, {
+  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=50&t=${Date.now()}`, {
     signal: AbortSignal.timeout(5000),
+    cache: "no-store",
     headers: authHeader ? { Authorization: authHeader } : {},
   });
   if (res.status === 403) {
@@ -1367,8 +1368,9 @@ function pickBaseRadarTitle(prompt: string): string {
 }
 function pickWhaleTitle(prompt: string): string {
   const t = normalizePromptForIntent(prompt);
-  if (/which whale alerts matter most|which alerts matter most/.test(t)) return "TOP ALERTS TO WATCH";
+  if (/which whale alerts matter most|which alerts matter most/.test(t)) return "TOP WHALE ALERTS TO WATCH";
   if (/smart money/.test(t)) return "SMART MONEY SNAPSHOT";
+  if (/whales? selling|sell-side/.test(t)) return "WHALE SELL-SIDE READ";
   if (/summary|summarize/.test(t)) return "WHALE ACTIVITY SUMMARY";
   return "WHALE FLOW READ";
 }
@@ -4323,8 +4325,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
-      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=25`, {
+      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=50&t=${Date.now()}`, {
         signal: AbortSignal.timeout(5000),
+        cache: "no-store",
         headers: authHeader ? { Authorization: authHeader } : {},
       });
       if (res.status === 403) {
@@ -4390,7 +4393,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs)
             const usdText = usdSeen > 0 ? `~$${Math.round(totalUsd).toLocaleString()} across priced alerts` : "USD mostly unverified"
             const whaleTitle = pickWhaleTitle(prompt)
-            if (whaleTitle === "TOP ALERTS TO WATCH") {
+            if (whaleTitle === "TOP WHALE ALERTS TO WATCH") {
               const strongestValue = (() => {
                 const usdBy = new Map<string, number>()
                 for (const row of filtered) {
@@ -4409,7 +4412,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
                 intent: "whale_alert",
                 toolsUsed: ["whale_feed_stored"],
                 analysis: [
-                  "TOP ALERTS TO WATCH",
+                  "TOP WHALE ALERTS TO WATCH",
                   `1. strongest repeat: ${strongest}`,
                   `2. strongest value/volume: ${strongestValue}`,
                   `3. riskiest/noisiest: ${noisiest} (single-hit flow; needs confirmation)`,
