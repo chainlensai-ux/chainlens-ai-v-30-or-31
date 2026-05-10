@@ -16,6 +16,8 @@ function walletIp(req: Request): string { return req.headers.get('x-forwarded-fo
 async function walletAllowed(req: Request): Promise<boolean> { const plan=await walletPlan(req); const key=`${plan}:${walletIp(req)}`; const now=Date.now(); const cur=walletRate.get(key); const lim=WALLET_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){walletRate.set(key,{count:1,resetAt:now+60000}); return true} if(cur.count>=lim)return false; cur.count+=1; return true }
 
 export async function POST(req: Request) {
+  const plan = await walletPlan(req)
+  if (plan === 'free') return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
   if (!(await walletAllowed(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
     const requestUrl = new URL(req.url)
@@ -40,6 +42,6 @@ export async function POST(req: Request) {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'
     const status = msg === 'Invalid wallet address' ? 400 : 500
-    return NextResponse.json({ error: msg }, { status })
+    return NextResponse.json({ error: status === 400 ? 'Invalid wallet address' : 'Wallet scan unavailable right now.' }, { status })
   }
 }
