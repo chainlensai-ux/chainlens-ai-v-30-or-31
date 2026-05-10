@@ -527,8 +527,9 @@ export async function GET(req: NextRequest) {
     const severity = params.get('severity')?.trim() || null
     const limit = parseLimit(params.get('limit'))
     const cacheKey = `whale:${plan}:${selectedWindow}:${valueRangeRaw}:${interestingRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}`
+    const bypassCache = params.has('t')
     const cached = whaleCache.get(cacheKey)
-    if (cached && cached.exp > now) return NextResponse.json(cached.payload)
+    if (!bypassCache && cached && cached.exp > now) return NextResponse.json(cached.payload, { headers: { 'Cache-Control': 'no-store' } })
 
     const windowStartIso = new Date(Date.now() - WINDOW_MS[selectedWindow]).toISOString()
 
@@ -579,7 +580,7 @@ export async function GET(req: NextRequest) {
 
     if (alertsRes.error) {
       console.error('[whale-alerts] query failed', alertsRes.error.message)
-      return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500 })
+      return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
     }
 
     // Pipeline:
@@ -668,9 +669,9 @@ export async function GET(req: NextRequest) {
       },
     }
     whaleCache.set(cacheKey, { exp: Date.now() + WHALE_CACHE_TTL_MS, payload })
-    return NextResponse.json(payload)
+    return NextResponse.json(payload, { headers: { 'Cache-Control': 'no-store' } })
   } catch (error) {
     console.error('[whale-alerts] unexpected error', error)
-    return NextResponse.json({ error: 'Unexpected server error.' }, { status: 500 })
+    return NextResponse.json({ error: 'Unexpected server error.' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
   }
 }
