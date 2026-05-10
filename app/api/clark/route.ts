@@ -221,6 +221,10 @@ function extractTokenLookupQuery(prompt: string): string | null {
     /(?:liquidity|lp)\s+safe(?:ty)?\s+(?:for|of|on)\s+([a-z0-9._-]{2,32})\b/i,
     /is\s+(?:liquidity|lp)\s+safe(?:ty)?\s+(?:for|of)?\s*([a-z0-9._-]{2,32})\b/i,
     /([a-z0-9._-]{2,32})\s+(?:liquidity|lp)\s+safe(?:ty)?\b/i,
+    /(?:liquidity|lp)\s+(?:check|status|for)\s+([a-z0-9._-]{2,32})\b/i,
+    /check\s+(?:liquidity|lp)(?:\s+for)?\s+([a-z0-9._-]{2,32})\b/i,
+    /is\s+([a-z0-9._-]{2,32})\s+(?:lp\s+locked|lp\s+safe(?:ty)?|liquidity\s+(?:safe|locked))\b/i,
+    /([a-z0-9._-]{2,32})\s+(?:liquidity|lp)\s+(?:check|status|locked)\b/i,
   ];
   for (const p of patterns) {
     const m = t.match(p);
@@ -941,7 +945,7 @@ function buildClarkToolPlan(input: {
   // HARD PRIORITY OVERRIDE — dev_wallet and liquidity_safety by token name, before any classification
   if (!directAddress) {
     const _DEV_RE = /who\s+(?:deployed|built|created|made)|deployer\s+of|creator\s+wallet|dev\s+wallet\s+(?:for|of)/i;
-    const _LIQ_RE = /(?:liquidity|lp)\s+safe(?:ty)?(?:\s+(?:for|of|on))?|is\s+(?:liquidity|lp)\s+safe/i;
+    const _LIQ_RE = /(?:(?:liquidity|lp)\s+(?:safe(?:ty)?|check|status|for\b|locked)|is\s+(?:liquidity|lp)\s+safe|check\s+(?:liquidity|lp)|is\s+[a-z0-9._-]+\s+(?:lp\s+locked|lp\s+safe(?:ty)?|liquidity\s+safe))/i;
     if (_DEV_RE.test(message)) {
       const _tq = extractTokenLookupQuery(message);
       if (_tq) return { intent: "dev_wallet", tools: [{ name: "token_resolve", args: { query: _tq }, required: true }, { name: "dev_wallet_analyze", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
@@ -949,6 +953,13 @@ function buildClarkToolPlan(input: {
     if (_LIQ_RE.test(message)) {
       const _tq = extractTokenLookupQuery(message);
       if (_tq) return { intent: "liquidity_safety", tools: [{ name: "token_resolve", args: { query: _tq }, required: true }, { name: "liquidity_analyze", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
+    }
+  }
+  // Follow-up: if last intent was liquidity_safety and user just sent a bare token symbol
+  if (!directAddress && input.clarkContext?.lastIntent === "liquidity_safety") {
+    if (/^[a-z0-9._-]{2,32}$/i.test(trimmed)) {
+      const _fq = KNOWN_BASE_TOKEN_ALIASES[trimmed] ?? trimmed;
+      return { intent: "liquidity_safety", tools: [{ name: "token_resolve", args: { query: _fq }, required: true }, { name: "liquidity_analyze", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
     }
   }
   const selectedAddress = selectedOptionIndex
@@ -4125,6 +4136,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
     // Organic query (e.g. "what are whales doing right now?") — use stored feed only.
     const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b|\bsmart wallets? buying\b/i.test(prompt);
+    const isSellQuery = /\bwhales?\s+sell(?:ing)?\b|\bwhat are whales?\s+sell(?:ing)\b|\bsell[\s-]?side\s+whale\b/i.test(prompt);
     const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b|\blast week whale activity\b|\b7d whale flows\b|\bwhat were whales buying last 7 days\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
     const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b|\blast 7 days\b/i.test(prompt.toLowerCase());
     const window = is7dQuery ? "7d" : "24h";
@@ -4140,7 +4152,22 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
       if (res.ok) {
         const json = await res.json();
         const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
-        const filtered = isBuyQuery ? raw.filter(a => (a as Record<string, unknown>).side === "buy" || !(a as Record<string, unknown>).side) : raw;
+        const filtered = isBuyQuery
+          ? raw.filter(a => (a as Record<string, unknown>).side === "buy" || !(a as Record<string, unknown>).side)
+          : isSellQuery
+            ? raw.filter(a => (a as Record<string, unknown>).side === "sell")
+            : raw;
+        if (isSellQuery && filtered.length === 0 && raw.length > 0) {
+          const _topBuy = (() => {
+            const _cnt = new Map<string, number>();
+            for (const r of raw) {
+              const s = (((r as Record<string, unknown>).focus_token_symbol as string | undefined) ?? r.token_symbol ?? '').toUpperCase().split(' / ').find(x => x && !ROUTING_ONLY_SYMBOLS.has(x)) ?? null;
+              if (s) _cnt.set(s, (_cnt.get(s) ?? 0) + 1);
+            }
+            return [..._cnt.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+          })();
+          return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: `No strong sell-side alerts in the current ${window} Interesting feed.${_topBuy ? ` Buying/swap flow is stronger around ${_topBuy}.` : " No dominant sell pressure found."} Worth monitoring if the picture changes.` };
+        }
         if (filtered.length > 0) {
           if (isStoredWhaleQuestion) {
             const tokenCounts = new Map<string, number>()
@@ -4211,9 +4238,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
           });
           const lines = filtered.slice(0, 20).map(formatWhaleAlertForClark);
           contextXml =
-            `<whale_alerts count="${filtered.length}" window="${window}"${isBuyQuery ? ' side="buy"' : ""}>\n` +
+            `<whale_alerts count="${filtered.length}" window="${window}"${isBuyQuery ? ' side="buy"' : isSellQuery ? ' side="sell"' : ""}>\n` +
             lines.join("\n") + "\n\n" +
-            (isBuyQuery ? "Focus: summarize which tokens whales are buying, using wallet_label where available (not raw addresses). Group by token.\n" : "") +
+            (isBuyQuery ? "Focus: summarize which tokens whales are buying, using wallet_label where available (not raw addresses). Group by token.\n" : isSellQuery ? "Focus: summarize which tokens whales are selling, using wallet_label where available (not raw addresses). Group by token. Highlight any HIGH SIGNAL sell pressure.\n" : "") +
             "Note: wallet_label is an internal ChainLens label, not a verified public identity.\n" +
             "USD value shown as 'USD unverified' for tokens outside USDC/USDT/WETH/cbBTC.\n" +
             "</whale_alerts>";
