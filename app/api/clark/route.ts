@@ -1141,6 +1141,34 @@ function buildClarkToolPlan(input: {
   };
 }
 
+
+function normalizePromptForIntent(prompt: string): string {
+  return prompt
+    .toLowerCase()
+    .replace(/[’`´]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const BASE_RADAR_HARD_ROUTE_PHRASES = [
+  "what's happening on base",
+  "whats happening on base",
+  "what is happening on base",
+  "what's hot on base",
+  "whats hot on base",
+  "summarize base radar",
+  "base radar",
+  "base market",
+  "trending on base",
+  "what's trending on base",
+  "top base tokens",
+  "base movers",
+];
+
+function isBaseRadarHardRoutePrompt(prompt: string): boolean {
+  const t = normalizePromptForIntent(prompt);
+  return BASE_RADAR_HARD_ROUTE_PHRASES.some((phrase) => t.includes(phrase));
+}
 function buildEducationalReply(prompt: string): string {
   const t = prompt.toLowerCase();
   if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can't exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
@@ -1169,7 +1197,7 @@ function buildClarkStrategyReply(prompt: string): string {
 }
 
 function detectLiveIntent(prompt: string): LiveIntent {
-  const t = prompt.toLowerCase().trim();
+  const t = normalizePromptForIntent(prompt);
   if (/scan\s+0x[a-f0-9]{40}|check wallet|wallet\b/.test(t)) return "WALLET_QUERY";
   if (/what'?s pumping on base|what'?s trending on base|show base movers|what'?s moving on base|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|summarize base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
@@ -1323,7 +1351,8 @@ function formatUsdOrUnverified(value: unknown): string {
   return n == null ? "unverified" : formatUsdShort(n);
 }
 function isBaseRadarPrompt(prompt: string): boolean {
-  return /\b(what'?s happening on base radar|show base radar|open base radar|base radar|base movers|what'?s moving on base|summarize base|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|what'?s going on base)\b/i.test(prompt.toLowerCase());
+  if (isBaseRadarHardRoutePrompt(prompt)) return true;
+  return /\b(what'?s happening on base radar|show base radar|open base radar|base radar|base movers|what'?s moving on base|summarize base|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|what'?s going on base|whats happening on base|whats hot on base|what is happening on base)\b/i.test(normalizePromptForIntent(prompt));
 }
 function isFeedSafestFollowup(prompt: string): boolean {
   return /\b(which one is safest|which is safest|what'?s the safest|which is cleanest|which one should i watch)\b/i.test(prompt.toLowerCase());
@@ -1918,11 +1947,12 @@ const BASE_TOKEN_ALIAS_MAP: Record<string, BaseTokenCandidate> = {
 async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandidate[]> {
   const qLower = query.trim().toLowerCase();
   const aliasHit = BASE_TOKEN_ALIAS_MAP[qLower];
+  const normalizedQuery = aliasHit?.symbol ?? query.trim();
 
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
-    const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=base`;
+    const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(normalizedQuery)}&network=base`;
     const res = await fetch(url, {
       headers: { accept: "application/json" },
       cache: "no-store",
@@ -1987,7 +2017,7 @@ async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandid
     if (!out.length) return aliasHit ? [aliasHit] : [];
 
     // Sort: exact symbol match first, then by liquidity descending
-    const qUpper = query.trim().toUpperCase();
+    const qUpper = normalizedQuery.trim().toUpperCase();
     out.sort((a, b) => {
       const aEx = a.symbol === qUpper ? 1 : 0;
       const bEx = b.symbol === qUpper ? 1 : 0;
