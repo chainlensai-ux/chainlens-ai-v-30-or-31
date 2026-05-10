@@ -1224,7 +1224,7 @@ async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, ori
   const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH']);
   const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\blast 7 days\b/i.test(prompt.toLowerCase());
   const window = is7dQuery ? "7d" : "24h";
-  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=50&t=${Date.now()}`, {
+  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=75&t=${Date.now()}`, {
     signal: AbortSignal.timeout(5000),
     cache: "no-store",
     headers: authHeader ? { Authorization: authHeader } : {},
@@ -1353,11 +1353,21 @@ function formatUsdOrUnverified(value: unknown): string {
 }
 function classifyMarketTokenLabel(liq: number | null, vol: number | null, fdv?: number | null, symbol?: string): string {
   const s = String(symbol ?? "").toUpperCase();
-  if (new Set(["ETH", "WETH", "CBBTC", "BTC", "WBTC", "CBETH", "STETH", "WSTETH"]).has(s)) return "blue-chip/base asset";
-  if (liq != null && liq >= 500_000 && vol != null && vol >= 1_000_000) return "liquid mover";
-  if ((liq != null && liq < 120_000) || (fdv != null && fdv > 0 && liq != null && liq / fdv < 0.08)) return "thin pump";
-  if (vol != null && vol >= 300_000) return "watchlist";
+  if (new Set(["ETH", "WETH", "CBBTC", "BTC", "WBTC", "CBETH", "STETH", "WSTETH", "USDC", "USDT", "DAI", "USDBC", "EURC"]).has(s)) return "base asset";
+  if (fdv != null && fdv > 0 && fdv < 100_000) return "microcap noise";
+  if (liq != null && liq < 25_000) return "microcap noise";
+  if (liq != null && liq >= 100_000 && vol != null && vol >= 500_000) return "liquid mover";
+  if (liq != null && liq > 0 && vol != null && (vol / liq) >= 5) return "volume-led";
+  if (liq != null && liq < 100_000) return "thin pump";
   return "needs scan";
+}
+function buildReasonLine(label: string): string {
+  if (label === "liquid mover") return "volume is supported by tradable liquidity.";
+  if (label === "volume-led") return "volume is strong vs liquidity, so follow-through matters.";
+  if (label === "thin pump") return "the % move is strong, but slippage risk is elevated.";
+  if (label === "microcap noise") return "size/depth is small, so this can be noisy.";
+  if (label === "base asset") return "deep routing asset flow, not pure alpha rotation.";
+  return "signal exists, but structure still needs verification.";
 }
 function pickBaseRadarTitle(prompt: string): string {
   const t = normalizePromptForIntent(prompt);
@@ -1424,15 +1434,15 @@ async function handlePumpFeedSnapshot(origin: string) {
     const volNum = parseMaybeNumber(vol);
     const fdvNum = parseMaybeNumber(fdv);
     const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, symbol);
-    return `${i + 1}. ${label} — ${formatPctOrUnverified(change)} | Vol ${formatUsdOrUnverified(vol)} | Liq ${formatUsdOrUnverified(liq)} | FDV ${formatUsdOrUnverified(fdv)} | ${cls} | ${cat}${tags} [${risk}]\n   Signal: ${signal}`;
+    return `${i + 1}. ${label} — ${formatPctOrUnverified(change)} | Vol ${formatUsdOrUnverified(vol)} | Liq ${formatUsdOrUnverified(liq)} | ${cls}\n   Why: ${buildReasonLine(cls)} ${signal}`;
   });
 
   return [
     "PUMP ALERTS READ",
     "Momentum is active, but quality is mixed across the current leaders.",
-    "Top momentum tokens:",
+    "Strongest candidates:",
     ...rows,
-    "Read: good movement is showing, but liquidity depth and holder structure still decide quality.",
+    "Risk notes: thin-liquidity and microcap names can print large % moves without stable follow-through.",
     "Next action: scan the cleanest non-stable mover first, then verify dev wallet + holders. No trade call — this is a watchlist read.",
   ].join("\n");
 }
@@ -1495,14 +1505,35 @@ async function handleBaseRadarSnapshot(origin: string, prompt = "") {
     const liq = t.liquidity != null ? Number(t.liquidity) : null;
     return liq != null && liq < 120_000;
   }) ? "Watchouts: several leaders are still thin, so treat this as a watchlist until token scans confirm structure." : "Watchouts: leaders show better depth, but still verify holders and LP before trusting momentum.";
+  if (title === "HOT ON BASE") {
+    return [
+      "HOT ON BASE",
+      `Main read: ${marketRead}`,
+      "Worth checking:",
+      ...rows.slice(0, 3),
+      `Noise / caution: ${watchout.replace("Watchouts: ", "")}`,
+      "Next: Best next step: scan the cleanest non-stable mover.",
+    ].join("\n");
+  }
+  if (title === "BASE MARKET PULSE") {
+    const thinCount = top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) < 100_000).length;
+    return [
+      "BASE MARKET PULSE",
+      `Broad read: ${marketRead}`,
+      `Leading theme: ${thinCount >= 3 ? "thin pumps are leading" : "liquidity-backed movers are leading"}.`,
+      "What’s leading:",
+      ...rows.slice(0, 4),
+      `Watchouts: ${watchout.replace("Watchouts: ", "")}`,
+      "Next: Treat this as watchlist flow, not a trade call. Scan one clean mover deeply.",
+    ].join("\n");
+  }
   return [
-    title,
-    "Source: live Base market feed",
-    "Top movers:",
+    "BASE RADAR SUMMARY",
+    "Top 5 movers:",
     ...rows,
-    `Market read: ${marketRead}`,
-    watchout,
-    "Next action: pick the cleanest mover and run Token Scanner + Dev Wallet. No trade call — this is a watchlist read.",
+    `Liquidity quality: ${top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) >= 100_000).length} liquid vs ${top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) < 100_000).length} thin.`,
+    `Rotation read: ${marketRead}`,
+    "Next: Run Token Scanner + Dev Wallet before trusting the move.",
   ].join("\n");
 }
 
@@ -4325,7 +4356,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
-      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=50&t=${Date.now()}`, {
+      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=75&t=${Date.now()}`, {
         signal: AbortSignal.timeout(5000),
         cache: "no-store",
         headers: authHeader ? { Authorization: authHeader } : {},
