@@ -955,9 +955,13 @@ function buildClarkToolPlan(input: {
       if (_tq) return { intent: "liquidity_safety", tools: [{ name: "token_resolve", args: { query: _tq }, required: true }, { name: "liquidity_analyze", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
     }
   }
-  // Follow-up: if last intent was liquidity_safety and user just sent a bare token symbol
-  if (!directAddress && input.clarkContext?.lastIntent === "liquidity_safety") {
-    if (/^[a-z0-9._-]{2,32}$/i.test(trimmed)) {
+  // Follow-up: bare token symbol after liquidity_safety context (via lastIntent or recent history output)
+  if (!directAddress && /^[a-z0-9._-]{2,32}$/i.test(trimmed)) {
+    const _liqLastIntent = input.clarkContext?.lastIntent === "liquidity_safety";
+    const _liqHistText = historyLines.join("\n").toLowerCase();
+    const _liqHistContext = /\bliquidity(?:\s+safety\s+read|\/control\s+could\s+not|\s+read\b)|\bpool\s+depth:\s*unverified|\blp\s+control:/i.test(_liqHistText);
+    const _liqGenericWords = new Set(["scan","check","go","next","ok","yes","no","hi","hey","why","what","how","show","run","full","report","safe","lp","liquidity","holder","holders","dev","wallet","more","it","this","that","do","is","and","the"]);
+    if ((_liqLastIntent || _liqHistContext) && !_liqGenericWords.has(trimmed)) {
       const _fq = KNOWN_BASE_TOKEN_ALIASES[trimmed] ?? trimmed;
       return { intent: "liquidity_safety", tools: [{ name: "token_resolve", args: { query: _fq }, required: true }, { name: "liquidity_analyze", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
     }
@@ -3590,6 +3594,9 @@ function detectTokenFollowup(
   const DEPLOYER_RE = /\b(check deployer|what about deployer|check dev wallet|deployer check|deployer behavior|check dev)\b/i;
   const HOLDERS_RE = /\b(check holders?|what about holders?|holder check|holder distribution|who holds|holder concentration)\b/i;
 
+  // If prompt names a specific token alongside the LP/deployer keyword, it's a new query — not a followup
+  if ((LP_RE.test(t) || DEPLOYER_RE.test(t)) && extractTokenLookupQuery(prompt)) return null;
+
   const isFollowup = GENERIC_RE.test(t) || LP_RE.test(t) || DEPLOYER_RE.test(t) || HOLDERS_RE.test(t);
   if (!isFollowup) return null;
 
@@ -3904,12 +3911,14 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
 
   if (!scanData) {
     const contract = body.tokenAddress ?? body.addressOrToken;
-    const nameQuery = body.query ?? body.prompt;
+    const rawNameQuery = body.query ?? body.prompt;
+    // Parse token name from phrases like "liquidity check BRETT" before passing to scan
+    const nameQuery = rawNameQuery ? (extractTokenLookupQuery(rawNameQuery) ?? rawNameQuery.trim()) : null;
 
     if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
       scanData = await callScanToken(contract, "contract", origin);
     } else if (nameQuery) {
-      scanData = await callScanToken(nameQuery.trim(), "query", origin);
+      scanData = await callScanToken(nameQuery, "query", origin);
     }
   }
 
@@ -4882,14 +4891,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       chain,
       mode: "analysis",
       analysis: [
-        "Liquidity read:",
+        "Liquidity/control could not be confirmed from current checks.",
         `- Asset: ${tokenName} (${tokenSymbol})`,
         `- Contract: ${resolvedAddress}`,
         "- Pool depth: Unverified",
         "- LP control: Unverified",
         "- Concentration: Unverified",
-        "- Volume/liquidity: Data unavailable in this pass.",
-        "- Exit risk: Cannot classify yet because liquidity signals are missing.",
+        "Worth monitoring once liquidity data is available.",
       ].join("\n"),
       intent: plan.intent,
       toolsUsed,
