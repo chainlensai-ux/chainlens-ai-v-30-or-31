@@ -15,12 +15,24 @@ const {
 const CLARK_CACHE_TTL_MS = 90 * 1000
 const clarkCache = new Map<string, { exp: number; payload: unknown }>()
 const clarkRate = new Map<string, { count: number; resetAt: number }>()
-const CLARK_RATE_BY_PLAN: Record<string, number> = { free: 10, pro: 30, elite: 90 }
+const CLARK_RATE_BY_PLAN: Record<string, number> = { free: 5, pro: 50, elite: 200, unauth: 3 }
 let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite' } = {}
 function clarkPlan(req: NextRequest): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 function clarkActor(req: NextRequest): string { return req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}` }
-function clarkAllowed(req: NextRequest, plan: 'free' | 'pro' | 'elite'): boolean { const key=`${plan}:${clarkActor(req)}`; const now=Date.now(); const cur=clarkRate.get(key); const lim=CLARK_RATE_BY_PLAN[plan]; if(!cur||cur.resetAt<=now){ clarkRate.set(key,{count:1,resetAt:now+60000}); return true } if(cur.count>=lim) return false; cur.count+=1; return true }
+function clarkAllowed(req: NextRequest, plan: 'free' | 'pro' | 'elite'): boolean {
+  const hasAuth = Boolean(clarkInternalCtx.authToken)
+  const planKey = hasAuth ? plan : 'unauth'
+  const key = `${planKey}:${clarkActor(req)}`
+  const now = Date.now()
+  const cur = clarkRate.get(key)
+  const lim = CLARK_RATE_BY_PLAN[planKey]
+  const dayMs = 24 * 60 * 60 * 1000
+  if (!cur || cur.resetAt <= now) { clarkRate.set(key, { count: 1, resetAt: now + dayMs }); return true }
+  if (cur.count >= lim) return false
+  cur.count += 1
+  return true
+}
 
 // ---------- Types ----------
 
@@ -1141,6 +1153,34 @@ function buildClarkToolPlan(input: {
   };
 }
 
+
+function normalizePromptForIntent(prompt: string): string {
+  return prompt
+    .toLowerCase()
+    .replace(/[’`´]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const BASE_RADAR_HARD_ROUTE_PHRASES = [
+  "what's happening on base",
+  "whats happening on base",
+  "what is happening on base",
+  "what's hot on base",
+  "whats hot on base",
+  "summarize base radar",
+  "base radar",
+  "base market",
+  "trending on base",
+  "what's trending on base",
+  "top base tokens",
+  "base movers",
+];
+
+function isBaseRadarHardRoutePrompt(prompt: string): boolean {
+  const t = normalizePromptForIntent(prompt);
+  return BASE_RADAR_HARD_ROUTE_PHRASES.some((phrase) => t.includes(phrase));
+}
 function buildEducationalReply(prompt: string): string {
   const t = prompt.toLowerCase();
   if (/liquidity risk/.test(t)) return "Liquidity risk is the chance you can't exit cleanly—usually from low depth, unlocked LP, or concentrated LP ownership.";
@@ -1169,7 +1209,7 @@ function buildClarkStrategyReply(prompt: string): string {
 }
 
 function detectLiveIntent(prompt: string): LiveIntent {
-  const t = prompt.toLowerCase().trim();
+  const t = normalizePromptForIntent(prompt);
   if (/scan\s+0x[a-f0-9]{40}|check wallet|wallet\b/.test(t)) return "WALLET_QUERY";
   if (/what'?s pumping on base|what'?s trending on base|show base movers|what'?s moving on base|base trending|moving on base|what'?s happening on base radar|base radar|top movers on base|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|summarize base/.test(t)) return "BASE_MARKET";
   if (/how is (ethereum|eth|bitcoin|btc)|market right now|crypto sentiment/.test(t)) return "MARKET_OVERVIEW";
@@ -1192,80 +1232,8 @@ function isWhaleFlowPrompt(message: string, history?: ClarkRequestBody["history"
 }
 
 async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, origin: string, authHeader?: string | null) {
-  const chain = body.chain ?? "base";
-  const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH']);
-  const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\blast 7 days\b/i.test(prompt.toLowerCase());
-  const window = is7dQuery ? "7d" : "24h";
-  const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=25`, {
-    signal: AbortSignal.timeout(5000),
-    headers: authHeader ? { Authorization: authHeader } : {},
-  });
-  if (res.status === 403) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Whale Alerts are included in Pro and Elite." };
-  }
-  if (!res.ok) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I couldn't load Whale Alerts right now. Try refreshing the feed." };
-  }
-  const json = await res.json();
-  const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
-  if (raw.length === 0) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "I don't have fresh whale activity yet. Open Whale Alerts and run a sync, then ask again." };
-  }
-  const tokenCounts = new Map<string, number>();
-  let pricedFlow = 0;
-  let pricedCount = 0;
-  let latestTs = 0;
-  let oldestTs = 0;
-  for (const row of raw) {
-    const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase();
-    const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null;
-    if (firstNonRouting) {
-      tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1);
-      if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
-        pricedFlow += row.amount_usd;
-        pricedCount += 1;
-      }
-    }
-    const ts = row.occurred_at ? new Date(row.occurred_at).getTime() : 0;
-    if (Number.isFinite(ts) && ts > 0) {
-      latestTs = Math.max(latestTs, ts);
-      oldestTs = oldestTs === 0 ? ts : Math.min(oldestTs, ts);
-    }
-  }
-  const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1]);
-  if (ranked.length === 0) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don't have a clean non-stable token signal yet. Open Whale Alerts and run a sync to refresh." };
-  }
-  const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000);
-  const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000;
-  const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs);
-  const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ");
-  const strongest = ranked[0]?.[0] ?? "No repeated token yet";
-  const estimatedPricedFlow = pricedCount > 0 ? `~$${Math.round(pricedFlow).toLocaleString()} across ${pricedCount} priced alert${pricedCount === 1 ? "" : "s"}` : "USD mostly unverified";
-  const flowQuality = stale ? "Mixed quality (data may be stale)." : "Healthy quality (recent non-stable flow present).";
-  const marketRead = `Whale focus is clustering into ${strongest} with rotation across ${ranked.length} non-stable token${ranked.length === 1 ? "" : "s"}.`;
-  const nextChecks = incomplete7d
-    ? "Run Whale Alerts sync to fill the full 7d window, then re-check concentration and repeat strength."
-    : "Watch if top token repeats persist and whether non-stable flow broadens or fades.";
-  return {
-    feature: "clark-ai",
-    chain,
-    mode: "analysis",
-    intent: "whale_alert",
-    toolsUsed: ["whale_feed_stored"],
-    analysis: [
-      "WHALE FLOW SNAPSHOT",
-      "Source: Stored Whale Alerts only",
-      `Window: ${window}`,
-      `Top whale tokens: ${topTokens}`,
-      `Estimated priced flow: ${estimatedPricedFlow}`,
-      `Strongest repeat: ${strongest}`,
-      `Flow quality: ${flowQuality}`,
-      `Market read: ${marketRead}`,
-      `Next checks: ${nextChecks}`,
-      incomplete7d ? "I only have stored Whale Alerts from the available saved window, so this may not cover the full 7 days yet." : "",
-    ].filter(Boolean).join("\n"),
-  };
+  if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "whale_flow", rendererUsed: "row_level_whale", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
+  return handleWhaleAlertFeed(prompt, body, origin, authHeader);
 }
 
 async function fetchCoinGeckoMajors() {
@@ -1322,8 +1290,68 @@ function formatUsdOrUnverified(value: unknown): string {
   const n = parseMaybeNumber(value);
   return n == null ? "unverified" : formatUsdShort(n);
 }
+function classifyMarketTokenLabel(liq: number | null, vol: number | null, fdv?: number | null, symbol?: string): string {
+  const s = String(symbol ?? "").toUpperCase();
+  if (new Set(["ETH", "WETH", "CBBTC", "BTC", "WBTC", "CBETH", "STETH", "WSTETH", "USDC", "USDT", "DAI", "USDBC", "EURC"]).has(s)) return "base asset";
+  if (fdv != null && fdv > 0 && fdv < 100_000) return "microcap noise";
+  if (liq != null && liq < 25_000) return "microcap noise";
+  if (liq != null && liq >= 100_000 && vol != null && vol >= 500_000) return "liquid mover";
+  if (liq != null && liq > 0 && vol != null && (vol / liq) >= 5) return "volume-led";
+  if (liq != null && liq < 100_000) return "thin pump";
+  return "needs scan";
+}
+function buildReasonLine(label: string): string {
+  if (label === "liquid mover") return "volume is supported by tradable liquidity.";
+  if (label === "volume-led") return "volume is strong vs liquidity, so follow-through matters.";
+  if (label === "thin pump") return "the % move is strong, but slippage risk is elevated.";
+  if (label === "microcap noise") return "size/depth is small, so this can be noisy.";
+  if (label === "base asset") return "deep routing asset flow, not pure alpha rotation.";
+  return "signal exists, but structure still needs verification.";
+}
+type WhaleGroup = { key: string; count: number; totalUsd: number; maxUsd: number; latestTs: number; sides: Set<string> };
+function aggregateWhaleRows(rows: WhaleAlertRow[]) {
+  const ROUTING = new Set(["USDC", "USDBC", "EURC", "DAI", "USDT", "WETH", "ETH", "CBBTC", "WSTETH"]);
+  const groups = new Map<string, WhaleGroup>();
+  const newestAlerts = [...rows]
+    .sort((a, b) => (new Date(b.occurred_at ?? 0).getTime()) - (new Date(a.occurred_at ?? 0).getTime()))
+    .slice(0, 15);
+  for (const r of rows) {
+    const sym = ((((r as Record<string, unknown>).focus_token_symbol as string | undefined) ?? r.token_symbol ?? "").toUpperCase()).split(" / ").find(Boolean) ?? "UNKNOWN";
+    const key = sym.trim();
+    const usd = typeof r.amount_usd === "number" && Number.isFinite(r.amount_usd) ? r.amount_usd : 0;
+    const ts = r.occurred_at ? new Date(r.occurred_at).getTime() : 0;
+    const side = String((r as Record<string, unknown>).side ?? "unknown").toLowerCase();
+    const g = groups.get(key) ?? { key, count: 0, totalUsd: 0, maxUsd: 0, latestTs: 0, sides: new Set<string>() };
+    g.count += 1; g.totalUsd += usd; g.maxUsd = Math.max(g.maxUsd, usd); g.latestTs = Math.max(g.latestTs, ts); g.sides.add(side); groups.set(key, g);
+  }
+  const arr = [...groups.values()];
+  const nonStable = arr.filter(g => g.key !== "UNKNOWN" && !ROUTING.has(g.key));
+  const repeatLeaders = [...nonStable].sort((a, b) => b.count - a.count);
+  const valueLeaders = [...nonStable].sort((a, b) => b.totalUsd - a.totalUsd);
+  const newestUniqueTokens = [...nonStable].sort((a, b) => b.latestTs - a.latestTs).slice(0, 5);
+  const newestTs = newestAlerts[0]?.occurred_at ? new Date(newestAlerts[0].occurred_at).getTime() : 0;
+  const usdCoverage = rows.length ? Math.round((rows.filter(r => typeof r.amount_usd === "number").length / rows.length) * 100) : 0;
+  const clustered = repeatLeaders.length > 0 && (repeatLeaders[0].count / Math.max(1, nonStable.length ? nonStable.reduce((s, g) => s + g.count, 0) : 1)) > 0.4;
+  return { newestAlerts, repeatLeaders, valueLeaders, newestUniqueTokens, nonStableCount: nonStable.length, newestTs, usdCoverage, clustered };
+}
+function pickBaseRadarTitle(prompt: string): string {
+  const t = normalizePromptForIntent(prompt);
+  if (/what'?s hot on base|whats hot on base/.test(t)) return "HOT ON BASE";
+  if (/what'?s happening on base|whats happening on base|what is happening on base/.test(t)) return "BASE MARKET PULSE";
+  if (/summarize base radar|base radar/.test(t)) return "BASE RADAR SUMMARY";
+  return "BASE RADAR SNAPSHOT";
+}
+function pickWhaleTitle(prompt: string): string {
+  const t = normalizePromptForIntent(prompt);
+  if (/which whale alerts matter most|which alerts matter most/.test(t)) return "TOP WHALE ALERTS TO WATCH";
+  if (/smart money/.test(t)) return "SMART MONEY SNAPSHOT";
+  if (/whales? selling|sell-side/.test(t)) return "WHALE SELL-SIDE READ";
+  if (/summary|summarize/.test(t)) return "WHALE ACTIVITY SUMMARY";
+  return "WHALE FLOW READ";
+}
 function isBaseRadarPrompt(prompt: string): boolean {
-  return /\b(what'?s happening on base radar|show base radar|open base radar|base radar|base movers|what'?s moving on base|summarize base|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|what'?s going on base)\b/i.test(prompt.toLowerCase());
+  if (isBaseRadarHardRoutePrompt(prompt)) return true;
+  return /\b(what'?s happening on base radar|show base radar|open base radar|base radar|base movers|what'?s moving on base|summarize base|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|what'?s going on base|whats happening on base|whats hot on base|what is happening on base)\b/i.test(normalizePromptForIntent(prompt));
 }
 function isFeedSafestFollowup(prompt: string): boolean {
   return /\b(which one is safest|which is safest|what'?s the safest|which is cleanest|which one should i watch)\b/i.test(prompt.toLowerCase());
@@ -1339,10 +1367,10 @@ async function handlePumpFeedSnapshot(origin: string) {
     signal: AbortSignal.timeout(5000),
     headers: authHeader ? { authorization: authHeader } : {},
   });
-  if (!res.ok) return "PUMP ALERTS SNAPSHOT\nNo fresh pump signal passed the current quality filter.";
+  if (!res.ok) return "PUMP ALERTS READ\nNo fresh pump signal passed the current quality filter.";
   const json = await res.json();
   const alerts = Array.isArray(json?.alerts) ? (json.alerts as Record<string, unknown>[]) : [];
-  if (!alerts.length) return "PUMP ALERTS SNAPSHOT\nNo fresh pump signal passed the current quality filter.";
+  if (!alerts.length) return "PUMP ALERTS READ\nNo fresh pump signal passed the current quality filter.";
 
   const seen = new Set<string>();
   const deduped: Record<string, unknown>[] = [];
@@ -1367,15 +1395,25 @@ async function handlePumpFeedSnapshot(origin: string) {
     const risk = RISK_LABEL[String(a.riskLevel ?? "")] ?? String(a.riskLevel ?? "");
     const tags = Array.isArray(a.tags) && a.tags.length ? ` [${(a.tags as string[]).join(', ')}]` : '';
     const signal = String(a.reason ?? "Momentum candidate — verify before acting.");
-    const verdict = String(a.riskLevel ?? '') === 'HIGH' ? 'Worth monitoring — thin liquidity, treat as high risk.' : 'Worth scanning.';
-    return `${i + 1}. ${label} — ${formatPctOrUnverified(change)} | Liq ${formatUsdOrUnverified(liq)} | Vol ${formatUsdOrUnverified(vol)} | FDV ${formatUsdOrUnverified(fdv)} | ${cat}${tags} [${risk}]\n   Signal: ${signal} ${verdict}`;
+    const liqNum = parseMaybeNumber(liq);
+    const volNum = parseMaybeNumber(vol);
+    const fdvNum = parseMaybeNumber(fdv);
+    const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, symbol);
+    return `${i + 1}. ${label} — ${formatPctOrUnverified(change)} | Vol ${formatUsdOrUnverified(vol)} | Liq ${formatUsdOrUnverified(liq)} | ${cls}\n   Why: ${buildReasonLine(cls)} ${signal}`;
   });
 
-  return ["PUMP ALERTS SNAPSHOT", ...rows, "\nNext: pick a token and I'll run a full scan."].join("\n");
+  return [
+    "PUMP ALERTS READ",
+    "Momentum is active, but quality is mixed across the current leaders.",
+    "Strongest candidates:",
+    ...rows,
+    "Risk notes: thin-liquidity and microcap names can print large % moves without stable follow-through.",
+    "Next action: scan the cleanest non-stable mover first, then verify dev wallet + holders. No trade call — this is a watchlist read.",
+  ].join("\n");
 }
 
 
-async function handleBaseRadarSnapshot(origin: string) {
+async function handleBaseRadarSnapshot(origin: string, prompt = "") {
   const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
   const BASE_RADAR_EXCLUDED = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC', 'BUSD', 'FRAX', 'CBETH', 'STETH', 'RETH', 'WSTETH', 'EURC', 'BSDETH', 'USD+', 'AXLUSDC']);
 
@@ -1400,7 +1438,7 @@ async function handleBaseRadarSnapshot(origin: string) {
   });
 
   if (!baseFeed.length) {
-    return "BASE RADAR SNAPSHOT\nNo fresh Base Radar data loaded right now. Refresh Base Radar or try again in a moment.";
+    return `${pickBaseRadarTitle(prompt)}\nNo fresh Base Radar data loaded right now. Refresh Base Radar or try again in a moment.`;
   }
 
   const sorted = [...baseFeed].sort((a, b) => Number(b.change24h ?? 0) - Number(a.change24h ?? 0));
@@ -1422,19 +1460,45 @@ async function handleBaseRadarSnapshot(origin: string) {
     const price = t.price != null ? fmtPrice(Number(t.price)) : 'n/a';
     const vol = formatUsdShort(t.volume != null ? Number(t.volume) : null);
     const liq = formatUsdShort(t.liquidity != null ? Number(t.liquidity) : null);
-    const verdict = ch != null && ch >= 15 ? 'worth scanning' : ch != null && ch >= 5 ? 'worth monitoring' : 'watching';
-    return `${i + 1}. ${label} — ${chStr} | Price ${price} | Vol ${vol} | Liq ${liq} — ${verdict}`;
+    const liqNum = t.liquidity != null ? Number(t.liquidity) : null;
+    const volNum = t.volume != null ? Number(t.volume) : null;
+    const cls = classifyMarketTokenLabel(liqNum, volNum, null, sym);
+    return `${i + 1}. ${label} — ${chStr} | Price ${price} | Vol ${vol} | Liq ${liq} | ${cls}`;
   });
-
+  const title = pickBaseRadarTitle(prompt);
+  const watchout = top.some((t) => {
+    const liq = t.liquidity != null ? Number(t.liquidity) : null;
+    return liq != null && liq < 120_000;
+  }) ? "Watchouts: several leaders are still thin, so treat this as a watchlist until token scans confirm structure." : "Watchouts: leaders show better depth, but still verify holders and LP before trusting momentum.";
+  if (title === "HOT ON BASE") {
+    return [
+      "HOT ON BASE",
+      `Main read: ${marketRead}`,
+      "Worth checking:",
+      ...rows.slice(0, 3),
+      `Noise / caution: ${watchout.replace("Watchouts: ", "")}`,
+      "Next: Best next step: scan the cleanest non-stable mover.",
+    ].join("\n");
+  }
+  if (title === "BASE MARKET PULSE") {
+    const thinCount = top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) < 100_000).length;
+    return [
+      "BASE MARKET PULSE",
+      `Broad read: ${marketRead}`,
+      `Leading theme: ${thinCount >= 3 ? "thin pumps are leading" : "liquidity-backed movers are leading"}.`,
+      "What’s leading:",
+      ...rows.slice(0, 4),
+      `Watchouts: ${watchout.replace("Watchouts: ", "")}`,
+      "Next: Treat this as watchlist flow, not a trade call. Scan one clean mover deeply.",
+    ].join("\n");
+  }
   return [
-    "BASE RADAR SNAPSHOT",
-    "Source: live Base market feed",
-    "",
-    "Top movers:",
+    "BASE RADAR SUMMARY",
+    "Top 5 movers:",
     ...rows,
-    "",
-    `Market read: ${marketRead}`,
-    "Next: pick a token and I'll run a full scan.",
+    `Liquidity quality: ${top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) >= 100_000).length} liquid vs ${top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) < 100_000).length} thin.`,
+    `Rotation read: ${marketRead}`,
+    "Next: Run Token Scanner + Dev Wallet before trusting the move.",
   ].join("\n");
 }
 
@@ -1918,11 +1982,12 @@ const BASE_TOKEN_ALIAS_MAP: Record<string, BaseTokenCandidate> = {
 async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandidate[]> {
   const qLower = query.trim().toLowerCase();
   const aliasHit = BASE_TOKEN_ALIAS_MAP[qLower];
+  const normalizedQuery = aliasHit?.symbol ?? query.trim();
 
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
-    const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=base`;
+    const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(normalizedQuery)}&network=base`;
     const res = await fetch(url, {
       headers: { accept: "application/json" },
       cache: "no-store",
@@ -1987,7 +2052,7 @@ async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandid
     if (!out.length) return aliasHit ? [aliasHit] : [];
 
     // Sort: exact symbol match first, then by liquidity descending
-    const qUpper = query.trim().toUpperCase();
+    const qUpper = normalizedQuery.trim().toUpperCase();
     out.sort((a, b) => {
       const aEx = a.symbol === qUpper ? 1 : 0;
       const bEx = b.symbol === qUpper ? 1 : 0;
@@ -4256,8 +4321,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
-      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=25`, {
+      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=75&t=${Date.now()}`, {
         signal: AbortSignal.timeout(5000),
+        cache: "no-store",
         headers: authHeader ? { Authorization: authHeader } : {},
       });
       if (res.status === 403) {
@@ -4284,60 +4350,58 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
         }
         if (filtered.length > 0) {
           if (isStoredWhaleQuestion) {
-            const tokenCounts = new Map<string, number>()
-            let totalUsd = 0
-            let usdSeen = 0
-            let latestTs = 0
-            for (const row of filtered) {
-              const focusRaw = (((row as Record<string, unknown>).focus_token_symbol as string | undefined) ?? row.token_symbol ?? '').toUpperCase()
-              const firstNonRouting = focusRaw.split(' / ').map(s => s.trim()).find(sym => sym && !ROUTING_ONLY_SYMBOLS.has(sym)) ?? null
-              if (firstNonRouting) tokenCounts.set(firstNonRouting, (tokenCounts.get(firstNonRouting) ?? 0) + 1)
-              if (typeof row.amount_usd === "number" && Number.isFinite(row.amount_usd)) {
-                totalUsd += row.amount_usd
-                usdSeen += 1
-              }
-              const ts = row.occurred_at ? new Date(row.occurred_at).getTime() : 0
-              if (Number.isFinite(ts) && ts > latestTs) latestTs = ts
-            }
-            const ranked = [...tokenCounts.entries()].sort((a, b) => b[1] - a[1])
-            if (ranked.length === 0) {
+            const agg = aggregateWhaleRows(filtered)
+            if (!agg.repeatLeaders.length) {
               return {
-                feature: "clark-ai",
-                chain,
-                mode: "analysis",
-                intent: "whale_alert",
-                toolsUsed: ["whale_feed_stored"],
-                analysis: "Stored whale activity is mostly routing/stablecoin flow right now, so I don't have a clean non-stable token signal yet.",
+                feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"],
+                analysis: "WHALE FLOW READ\nStored flow is mostly routing/stable activity right now, so there is no clean non-stable token signal yet.",
               }
             }
-            const topTokens = ranked.slice(0, 4).map(([sym, count]) => `${sym} (${count})`).join(", ") || "No dominant token"
-            const strongest = ranked[0]?.[0] ?? "No repeated token yet"
-            const stale = latestTs === 0 || (Date.now() - latestTs) > (6 * 60 * 60 * 1000)
-            const staleText = stale ? "Data may be stale." : "Data appears recent."
-            const oldestTs = filtered.reduce((min, r) => {
-              const ts = r.occurred_at ? new Date(r.occurred_at).getTime() : 0
-              if (!Number.isFinite(ts) || ts <= 0) return min
-              return min === 0 ? ts : Math.min(min, ts)
-            }, 0)
-            const sevenDayWindowMs = 7 * 24 * 60 * 60 * 1000
-            const incomplete7d = window === "7d" && (oldestTs === 0 || (Date.now() - oldestTs) < sevenDayWindowMs)
-            const usdText = usdSeen > 0 ? `~$${Math.round(totalUsd).toLocaleString()} across priced alerts` : "USD mostly unverified"
-            return {
-              feature: "clark-ai",
-              chain,
-              mode: "analysis",
-              intent: "whale_alert",
-              toolsUsed: ["whale_feed_stored"],
-              analysis: [
-                `From stored Whale Alerts only: ${filtered.length} alert${filtered.length === 1 ? "" : "s"} in the ${window} window.`,
-                `Top focused/bought tokens: ${topTokens}.`,
-                `Approximate total USD: ${usdText}.`,
-                `Strongest repeated token: ${strongest}.`,
-                staleText,
-                incomplete7d ? "I only have stored Whale Alerts from the available saved window, so this may not cover the full 7 days yet." : "",
-                "Open Whale Alerts to refresh the feed.",
-              ].join(" "),
+            const strongest = agg.repeatLeaders[0]
+            const highestValue = agg.valueLeaders.find(g => g.totalUsd > 0) ?? null
+            const freshestAlt = agg.newestUniqueTokens.find(g => g.key !== strongest.key) ?? null
+            const secondary = agg.repeatLeaders.find(g => g.key !== strongest.key) ?? null
+            const stale = agg.newestTs === 0 || (Date.now() - agg.newestTs) > (6 * 60 * 60 * 1000)
+            const concentrationLine = agg.nonStableCount < 5
+              ? "Flow is concentrated — not much variety in the latest stored alerts."
+              : (agg.clustered ? "Flow is clustered around a few repeated names." : "Flow is broader across multiple non-stable names.")
+            const confidenceLine = agg.usdCoverage < 30 ? "USD confidence is low (most rows are unverified)." : "USD confidence is usable for sizing comparisons."
+            const title = pickWhaleTitle(prompt)
+            if (title === "TOP WHALE ALERTS TO WATCH") {
+              return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
+                "TOP WHALE ALERTS TO WATCH",
+                `1. Strongest repeat: ${strongest.key} (${strongest.count} repeats) — repeat activity is the strongest signal right now.`,
+                `2. Highest verified value: ${highestValue ? `${highestValue.key} (~$${Math.round(highestValue.totalUsd).toLocaleString()})` : "USD mostly unverified across current rows."}`,
+                `3. Freshest unique alert: ${freshestAlt ? freshestAlt.key : "No fresh secondary token yet."}`,
+                `4. Noisy alerts to ignore: base/stable routing and tiny-liquidity one-offs.`,
+                `5. Next: ${stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Monitor if the same repeat token still leads after the next refresh."}`,
+              ].join("\n") }
             }
+            if (title === "WHALE SELL-SIDE READ") {
+              const sellLeaders = agg.repeatLeaders.filter(g => g.sides.has("sell")).slice(0, 4)
+              if (!sellLeaders.length) {
+                return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
+                  "WHALE SELL-SIDE READ",
+                  "Sell-side read: no strong repeated sell clusters in current stored flow.",
+                  `Buy/swap flow is stronger around ${strongest.key}${secondary ? ` and ${secondary.key}` : ""}.`,
+                  `Next: ${stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Watch if sell-side clusters appear after next sync."}`,
+                ].join("\n") }
+              }
+              return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
+                "WHALE SELL-SIDE READ",
+                "Sell-side read: repeated exits are visible in stored alerts.",
+                ...sellLeaders.map((g, i) => `${i + 1}. ${g.key} — ${g.count} repeats${g.totalUsd > 0 ? `, ~$${Math.round(g.totalUsd).toLocaleString()} verified` : ""}.`),
+                `Next: ${stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Monitor whether sell clusters expand beyond current leaders."}`,
+              ].join("\n") }
+            }
+            return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
+              "WHALE FLOW READ",
+              `Main read: ${concentrationLine} ${confidenceLine}`,
+              `Buy/swap leaders: ${([strongest, secondary, freshestAlt].filter((g): g is WhaleGroup => Boolean(g)).slice(0,3).map(g => `${g.key} (${g.count})`).join(', '))}.`,
+              `What changed recently: ${freshestAlt ? `${freshestAlt.key} is the newest non-repeat token in current rows.` : "No meaningful new unique token has displaced the repeat leader yet."}`,
+              stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Freshness: latest stored alerts are recent.",
+              "Next: Monitor repeats; one alert is not enough.",
+            ].join("\n") }
           }
           const sigOrder: Record<string, number> = { HIGH: 0, WATCH: 1, LOW: 2 };
           filtered.sort((a, b) => {
@@ -4469,6 +4533,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return await handleStoredWhaleFlow(prompt, body, origin, authHeader);
   }
   if (isPumpFeedPrompt(prompt)) {
+    if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "pump_alerts", rendererUsed: "pump_alerts", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
     const analysis = await handlePumpFeedSnapshot(origin);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["pump_alerts_feed"], analysis };
   }
@@ -4483,7 +4548,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
   if (isBaseRadarPrompt(prompt)) {
-    const analysis = await handleBaseRadarSnapshot(origin);
+    if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_market", rendererUsed: pickBaseRadarTitle(prompt).toLowerCase().replace(/\s+/g, "_"), featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
+    const analysis = await handleBaseRadarSnapshot(origin, prompt);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_radar_feed"], analysis };
   }
   if (isFeedSafestFollowup(prompt)) {
@@ -5242,7 +5308,7 @@ export async function POST(req: NextRequest) {
   const authHeader = auth || undefined
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
   const verifiedPlan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : clarkPlan(req)
-  if (!clarkAllowed(req, verifiedPlan)) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
+  if (!clarkAllowed(req, verifiedPlan)) return NextResponse.json({ error: "Daily Clark limit reached for your plan." }, { status: 429 })
   try {
     clarkInternalCtx = { authToken: token || undefined, verifiedPlan }
     const body = (await req.json()) as ClarkRequestBody;

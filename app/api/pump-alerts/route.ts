@@ -3,7 +3,7 @@ import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 export const dynamic = 'force-dynamic'
-const PUMP_ROUTE_CACHE_TTL_MS = 45_000
+const PUMP_ROUTE_CACHE_TTL_MS = 90_000
 const pumpCache = new Map<string, { exp: number; payload: unknown }>()
 const pumpRate = new Map<string, { count: number; resetAt: number }>()
 const PUMP_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 24 }

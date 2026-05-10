@@ -99,8 +99,8 @@ function parseMessage(raw: string, clarkMode: ClarkMode): Record<string, string>
     return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
 
   // Market / radar — whale queries must NOT be routed here; they need clark-ai for auth-gated feed
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || MARKET_INTENT.test(t))
-    return { feature: 'base-radar' }
+  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || t.includes("what's hot on base") || t.includes("what's happening on base") || MARKET_INTENT.test(t))
+    return { feature: 'clark-ai', prompt: raw.trim() }
 
   // Bare address → scan-token
   if (address)
