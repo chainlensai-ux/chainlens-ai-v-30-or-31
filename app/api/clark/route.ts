@@ -1296,7 +1296,7 @@ function isHolderQuestion(prompt: string): boolean {
   return /\b(how many holders|holders?\??|what about holders|holder count|holder distribution)\b/i.test(prompt.trim().toLowerCase());
 }
 function isPumpFeedPrompt(prompt: string): boolean {
-  return /\b(what are pump alerts right now|pump alerts|show pump alerts|open pump alerts|pump alert feed|high momentum alerts)\b/i.test(prompt.toLowerCase());
+  return /\b(what are pump alerts right now|pump alerts|show pump alerts|open pump alerts|pump alert feed|high momentum alerts|what'?s pumping on base|early movers|what tokens are running|show base pumps|base pumps|what'?s moving up on base|momentum scan)\b/i.test(prompt.toLowerCase());
 }
 
 function isPumpSourceFollowupPrompt(prompt: string): boolean {
@@ -1334,34 +1334,44 @@ function wasLastFeedEmpty(history: ClarkRequestBody["history"]): boolean {
 }
 
 async function handlePumpFeedSnapshot(origin: string) {
-  const res = await fetch(`${origin}/api/pump-alerts?window=24h&limit=12`, { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) return "PUMP ALERTS SNAPSHOT\nPump Alerts: no fresh signal in the checked window.";
+  const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
+  const res = await fetch(`${origin}/api/pump-alerts`, {
+    signal: AbortSignal.timeout(5000),
+    headers: authHeader ? { authorization: authHeader } : {},
+  });
+  if (!res.ok) return "PUMP ALERTS SNAPSHOT\nNo fresh pump signal passed the current quality filter.";
   const json = await res.json();
   const alerts = Array.isArray(json?.alerts) ? (json.alerts as Record<string, unknown>[]) : [];
-  if (!alerts.length) return "PUMP ALERTS SNAPSHOT\nPump Alerts feed is empty right now.";
+  if (!alerts.length) return "PUMP ALERTS SNAPSHOT\nNo fresh pump signal passed the current quality filter.";
 
-  const byKey = new Map<string, Record<string, unknown>>();
-  for (const raw of alerts as Record<string, unknown>[]) {
-    const contract = String(raw.contract ?? raw.address ?? "").trim().toLowerCase();
-    const symbol = String(raw.symbol ?? raw.token_symbol ?? raw.name ?? "Unknown").trim().toUpperCase();
-    const key = contract || `sym:${symbol}`;
-    if (!byKey.has(key)) byKey.set(key, raw);
+  const seen = new Set<string>();
+  const deduped: Record<string, unknown>[] = [];
+  for (const raw of alerts) {
+    const key = String(raw.contract ?? raw.address ?? "").trim().toLowerCase() || `sym:${String(raw.symbol ?? "?").toUpperCase()}`;
+    if (!seen.has(key)) { seen.add(key); deduped.push(raw as Record<string, unknown>); }
   }
 
-  const items = Array.from(byKey.values()).slice(0, 8);
+  const RISK_LABEL: Record<string, string> = { HIGH: 'HIGH RISK', MEDIUM: 'WATCH RISK', LOW: 'LOWER RISK' };
+  const CAT_LABEL: Record<string, string> = { HIGH_MOMENTUM: 'High Momentum', VOLUME_EXPANSION: 'Vol Expansion', THIN_MOONSHOT: 'Thin Liquidity', WATCH: 'Watchlist' };
+
+  const items = deduped.slice(0, 5);
   const rows = items.map((a, i) => {
-    const symbol = String(a.symbol ?? a.token_symbol ?? "?").toUpperCase();
+    const symbol = String(a.symbol ?? "?").toUpperCase();
     const name = String(a.name ?? "").trim();
-    const label = name && name.toUpperCase() !== symbol ? `${symbol}/${name}` : symbol;
-    const change = a.change24h ?? a.priceChange24h ?? a.change_24h ?? a.price_change_24h;
-    const liq = a.liquidityUsd ?? a.liquidity_usd ?? a.liquidity;
-    const vol = a.volume24h ?? a.volume24hUsd ?? a.volume_usd ?? a.volume_24h_usd ?? a.volume;
-    const cat = String(a.category ?? a.alertType ?? a.reason ?? "unverified");
-    const read = String(a.reason ?? "Momentum candidate from Pump Alerts feed; verify contract and risk before acting.");
-    return `${i + 1}. ${label} — ${formatPctOrUnverified(change)} | Liq ${formatUsdOrUnverified(liq)} | Vol ${formatUsdOrUnverified(vol)} | ${cat}\nRead: ${read}`;
+    const label = name && name.toUpperCase() !== symbol ? `${symbol} (${name})` : symbol;
+    const change = a.change24h ?? a.priceChange24h;
+    const liq = a.liquidityUsd ?? a.liquidity_usd;
+    const vol = a.volume24hUsd ?? a.volume_usd;
+    const fdv = a.fdvUsd ?? a.fdv_usd;
+    const cat = CAT_LABEL[String(a.category ?? "")] ?? String(a.category ?? "Unknown");
+    const risk = RISK_LABEL[String(a.riskLevel ?? "")] ?? String(a.riskLevel ?? "");
+    const tags = Array.isArray(a.tags) && a.tags.length ? ` [${(a.tags as string[]).join(', ')}]` : '';
+    const signal = String(a.reason ?? "Momentum candidate — verify before acting.");
+    const verdict = String(a.riskLevel ?? '') === 'HIGH' ? 'Worth monitoring — thin liquidity, treat as high risk.' : 'Worth scanning.';
+    return `${i + 1}. ${label} — ${formatPctOrUnverified(change)} | Liq ${formatUsdOrUnverified(liq)} | Vol ${formatUsdOrUnverified(vol)} | FDV ${formatUsdOrUnverified(fdv)} | ${cat}${tags} [${risk}]\n   Signal: ${signal} ${verdict}`;
   });
 
-  return ["PUMP ALERTS SNAPSHOT", ...rows, "Next: Pick a token and I'll scan it."].join("\n");
+  return ["PUMP ALERTS SNAPSHOT", ...rows, "\nNext: pick a token and I'll run a full scan."].join("\n");
 }
 
 

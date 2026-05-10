@@ -20,6 +20,7 @@ interface PumpAlert {
   category: PumpCategory
   reason: string
   riskLevel: PumpRisk
+  tags: string[]
 }
 
 type FilterKey = 'ALL' | PumpCategory
@@ -222,6 +223,15 @@ function AlertCard({ alert, onScan, onAskClark }: {
           }}>
             {RISK_LABEL[alert.riskLevel]}
           </span>
+          {alert.tags?.map(tag => (
+            <span key={tag} style={{
+              padding: '2px 7px', borderRadius: '99px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.07em',
+              color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)',
+              fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+            }}>
+              {tag}
+            </span>
+          ))}
         </div>
         <div style={{ display: 'flex', gap: '4px' }}>
           <button
@@ -412,7 +422,7 @@ export default function PumpAlertsPage() {
             </span>
           </div>
           <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 16px' }}>
-            High-momentum Base tokens scored by volume, liquidity, and 24h price change. Not financial advice.
+            Ranked by momentum, volume, liquidity, and CORTEX quality filters. Not financial advice.
           </p>
 
           <div className="pump-strip">
@@ -505,11 +515,11 @@ export default function PumpAlertsPage() {
               <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>◈</div>
               <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 6px', color: '#64748b' }}>
                 {activeFilter !== 'ALL' && activeFilter in CATEGORY_LABEL
-                  ? `No ${CATEGORY_LABEL[activeFilter as PumpCategory]} alerts right now.`
-                  : 'No pump alerts right now. Refreshing shortly.'}
+                  ? `No ${CATEGORY_LABEL[activeFilter as PumpCategory]} signals right now.`
+                  : 'No fresh pump signals passed the quality filter.'}
               </p>
               <p style={{ fontSize: '11px', margin: 0, color: '#3a5268' }}>
-                Alerts appear when real Base tokens meet momentum thresholds.
+                Try refreshing or widening the watchlist.
               </p>
             </div>
           )}
