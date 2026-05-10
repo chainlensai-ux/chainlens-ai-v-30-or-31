@@ -44,6 +44,7 @@ export interface PumpAlert {
   category: PumpCategory
   reason: string
   riskLevel: PumpRisk
+  tags: string[]
 }
 
 type GTIncluded = { id?: string; attributes?: { address?: string; symbol?: string; name?: string } }
@@ -69,6 +70,23 @@ function parseNum(v: unknown): number | null {
     return Number.isFinite(n) && n !== 0 ? n : null
   }
   return null
+}
+
+function qualityScore(a: PumpAlert): number {
+  let s = 0
+  const liq = a.liquidityUsd ?? 0
+  const vol = a.volume24hUsd ?? 0
+  const fdv = a.fdvUsd ?? 0
+  if (liq >= 100_000) s += 3; else if (liq >= 25_000) s += 2
+  if (vol >= 500_000) s += 3; else if (vol >= 100_000) s += 2
+  if (fdv >= 100_000) s += 2; else if (fdv >= 50_000) s += 1
+  if ((a.change24h ?? 0) > 0) s += 1
+  if (liq > 0 && liq < 10_000) s -= 3
+  if (fdv > 0 && fdv < 20_000) s -= 2
+  if (a.volume24hUsd == null) s -= 2
+  if (!a.symbol || a.symbol === '?') s -= 1
+  if (!a.name || a.name === 'Unknown') s -= 1
+  return s
 }
 
 function categorize(
@@ -179,7 +197,9 @@ function applyRotationAndDiversity(scored: PumpAlert[]): RotationResult {
   // Sort by quality for display
   output.sort((a, b) => {
     const od = CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category]
-    return od !== 0 ? od : (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)
+    if (od !== 0) return od
+    const qd = qualityScore(b) - qualityScore(a)
+    return qd !== 0 ? qd : (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)
   })
 
   // Record batch only when we have real results
@@ -305,6 +325,10 @@ export async function GET(req: Request) {
     const scored = categorize(change24h, volume, liquidity)
     if (!scored) continue
 
+    const tags: string[] = []
+    if (fdv != null && fdv > 0 && fdv < 100_000) tags.push('Microcap')
+    if (volume == null || liquidity == null) tags.push('Needs Review')
+
     allScored.push({
       symbol: meta.attributes.symbol ?? '?',
       name: meta.attributes.name ?? 'Unknown',
@@ -315,13 +339,16 @@ export async function GET(req: Request) {
       liquidityUsd: liquidity,
       fdvUsd: fdv,
       ...scored,
+      tags,
     })
   }
 
   // Quality-sort before rotation so rotation prioritises best candidates
   allScored.sort((a, b) => {
     const od = CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category]
-    return od !== 0 ? od : (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)
+    if (od !== 0) return od
+    const qd = qualityScore(b) - qualityScore(a)
+    return qd !== 0 ? qd : (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)
   })
 
   const { alerts, freshCount, staleCount, fallbackUsed } = applyRotationAndDiversity(allScored)
