@@ -73,44 +73,8 @@ const MARKET_INTENT = /\b(pumping|pump(?:ing)?|hot\b|moving\b|movers?|gainers?|r
 
 function parseMessage(raw: string): Record<string, string> {
   const t = raw.trim().toLowerCase()
-  const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
-  const address = addrMatch?.[0]
-
-  // Explicit wallet commands
-  if (t.startsWith('scan wallet') && address)
-    return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
-  if (t.startsWith('dev wallet') && address)
-    return { feature: 'dev-wallet-detector', tokenAddress: address }
-  if (t.startsWith('whale alert') && address)
-    return { feature: 'whale-alerts', walletAddress: address }
-
-  // Wallet intent + address — higher priority than market check
-  if (address && WALLET_INTENT.test(t))
-    return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
-
-  // Market / radar — checked after wallet intent to avoid collision
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes("what's hot") || t.includes("what's happening on base") || MARKET_INTENT.test(t))
-    return { feature: 'clark-ai', prompt: raw.trim() }
-
-  // Explicit token/contract intent with address → scan-token
-  if (address && /\b(scan\s+token|token\s+scan|contract\b)/i.test(t))
-    return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
-
-  // Bare or ambiguous address → clark-ai for smarter routing
-  // Backend detects wallet intent from history and falls back to wallet scan if token not found
-  if (address)
-    return { feature: 'clark-ai', prompt: raw.trim() }
-
-  // Token name + signal keyword → scan-token
-  const TOKEN_SIGNALS = /\b(price|liquidity|volume|safe|safety|pools?|rug|trap|pump|pumping|dump|degen|volatile|volatility|risk|cap|chart|scan|check|analyze|analysis|is\s+it|verdict)\b/i
-  if (TOKEN_SIGNALS.test(t)) {
-    const name = extractTokenQuery(t)
-    if (name) return { feature: 'scan-token', query: name, prompt: raw.trim() }
-  }
-
   if (t.startsWith('clark ai:'))
     return { feature: 'clark-ai', prompt: raw.trim().slice(9).trim() }
-
   return { feature: 'clark-ai', prompt: raw.trim() }
 }
 
@@ -188,7 +152,7 @@ export default function ClarkChat({
         body: JSON.stringify({
           ...body,
           message: text,
-          mode: body.feature,
+          mode: "chat",
           uiModeHint: mode,
           context: null,
           history,
