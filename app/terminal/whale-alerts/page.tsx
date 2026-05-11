@@ -4,6 +4,21 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
+type WalletCtx = {
+  shortAddress: string
+  isContract: boolean | null
+  nativeBalanceEth: number | null
+  txCount: number | null
+  alertCount24h: number
+  buyCount24h: number
+  sellCount24h: number
+  totalVerifiedUsd24h: number | null
+  repeatedTokens: string[]
+  repeatedTokenCount: number
+  tags: string[]
+  confidence: 'high' | 'medium' | 'low'
+  status: 'ok' | 'partial' | 'unverified'
+}
 type AlertItem = {
   id?: string
   wallet_address?: string | null
@@ -252,6 +267,7 @@ export default function WhaleAlertsPage() {
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
   const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
+  const [intelligence, setIntelligence] = useState<AlertIntelligence | null>(null)
   const [syncCooldownLeftMs, setSyncCooldownLeftMs] = useState(0)
   const [fullSyncCooldownLeftMs, setFullSyncCooldownLeftMs] = useState(0)
 
@@ -293,6 +309,7 @@ export default function WhaleAlertsPage() {
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
       setFeedDiagnostics(json?.diagnostics ?? null)
+      setIntelligence(json?.intelligence ?? null)
     } catch {
       setFeedError(true)
     } finally {

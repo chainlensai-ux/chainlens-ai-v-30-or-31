@@ -4515,8 +4515,15 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             return (b.legs ?? 1) - (a.legs ?? 1);
           });
           const lines = filtered.slice(0, 20).map(formatWhaleAlertForClark);
+          const intelBlock = intel ? (() => {
+            const topWalletLines = (intel.topWallets ?? []).slice(0, 3).map(w =>
+              `  <wallet short="${w.shortAddress}" alerts="${w.alertCount24h}" flow="${(w.totalVerifiedUsd24h ?? 0) > 0 ? `$${Math.round(w.totalVerifiedUsd24h!)}` : 'unverified'}" tokens="${w.repeatedTokens.slice(0, 3).join(',')}" confidence="${w.confidence}" />`
+            ).join("\n")
+            return `<intelligence wallets="${intel.walletCount}" active="${intel.activeWalletCount}" priced="${intel.pricedAlertCount}" unpriced="${intel.unpricedAlertCount}" top_tokens="${(intel.topRepeatedTokens ?? []).join(',')}">\n${topWalletLines}\n</intelligence>\n`
+          })() : ''
           contextXml =
             `<whale_alerts count="${filtered.length}" window="${window}"${isBuyQuery ? ' side="buy"' : isSellQuery ? ' side="sell"' : ""}>\n` +
+            intelBlock +
             lines.join("\n") + "\n\n" +
             (isBuyQuery ? "Focus: summarize which tokens whales are buying, using wallet_label where available (not raw addresses). Group by token.\n" : isSellQuery ? "Focus: summarize which tokens whales are selling, using wallet_label where available (not raw addresses). Group by token. Highlight any HIGH SIGNAL sell pressure.\n" : "") +
             "Note: wallet_label is an internal ChainLens label, not a verified public identity.\n" +
