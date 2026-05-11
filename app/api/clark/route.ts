@@ -4191,6 +4191,7 @@ async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
 
 type WhaleAlertRow = {
   wallet_label?: string | null
+  wallet_address?: string | null
   token_symbol?: string | null
   side?: string | null
   amount_token?: number | null
@@ -4201,13 +4202,30 @@ type WhaleAlertRow = {
   occurred_at?: string | null
   summary?: string | null
   tx_hash?: string | null
+  walletContext?: {
+    shortAddress: string
+    alertCount24h: number
+    totalVerifiedUsd24h: number | null
+    repeatedTokens: string[]
+    tags: string[]
+    confidence: string
+    status: string
+  } | null
+}
+type WhaleIntelligence = {
+  walletCount: number
+  activeWalletCount: number
+  pricedAlertCount: number
+  unpricedAlertCount: number
+  topRepeatedTokens: string[]
+  topWallets: Array<{ shortAddress: string; alertCount24h: number; totalVerifiedUsd24h: number | null; repeatedTokens: string[]; tags: string[]; confidence: string }>
 }
 
 function formatWhaleAlertForClark(a: WhaleAlertRow): string {
   const label  = a.wallet_label || "Tracked Wallet";
   const tok    = a.token_symbol || "Unknown token";
   const side   = a.side ?? "move";
-  const amtUsd = a.amount_usd != null ? `$${a.amount_usd.toFixed(0)}` : "USD unverified";
+  const amtUsd = (a.amount_usd != null && a.amount_usd > 0) ? `$${a.amount_usd.toFixed(0)}` : "USD unverified";
   const amtTok = a.amount_token != null ? `${a.amount_token} ${tok}`.trim() : null;
   const amtStr = amtTok ? `${amtTok} (${amtUsd})` : amtUsd;
   const sig    = a.signal_score ?? "LOW";
@@ -4215,7 +4233,9 @@ function formatWhaleAlertForClark(a: WhaleAlertRow): string {
     (a.legs ?? 1) > 1    ? `${a.legs} legs`       : null,
     (a.repeats ?? 1) > 1 ? `×${a.repeats} in 5m`  : null,
   ].filter(Boolean).join(" | ");
-  return `[${sig}] ${label} ${side} ${amtStr}${extra ? ` | ${extra}` : ""}`;
+  const ctx = a.walletContext
+  const ctxStr = ctx ? ` | wallet_alerts=${ctx.alertCount24h} confidence=${ctx.confidence}${ctx.repeatedTokens.length ? ` repeats=${ctx.repeatedTokens.slice(0, 3).join(',')}` : ''}${(ctx.totalVerifiedUsd24h ?? 0) > 0 ? ` flow=$${Math.round(ctx.totalVerifiedUsd24h!)}` : ''}` : ''
+  return `[${sig}] ${label} ${side} ${amtStr}${extra ? ` | ${extra}` : ""}${ctxStr}`;
 }
 
 // Dedicated Anthropic call for whale alert analysis with a whale-specific system prompt.
@@ -4331,6 +4351,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
       }
       if (res.ok) {
         const json = await res.json();
+        const intel = json?.intelligence as WhaleIntelligence | undefined
         let raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
         // Interesting mode may filter all base-asset moves. Fallback to all activity if needed.
         if (raw.length === 0) {
@@ -4430,12 +4451,20 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             return (b.legs ?? 1) - (a.legs ?? 1);
           });
           const lines = filtered.slice(0, 20).map(formatWhaleAlertForClark);
+          const intelBlock = intel ? (() => {
+            const topWalletLines = (intel.topWallets ?? []).slice(0, 3).map(w =>
+              `  <wallet short="${w.shortAddress}" alerts="${w.alertCount24h}" flow="${(w.totalVerifiedUsd24h ?? 0) > 0 ? `$${Math.round(w.totalVerifiedUsd24h!)}` : 'unverified'}" tokens="${w.repeatedTokens.slice(0, 3).join(',')}" confidence="${w.confidence}" />`
+            ).join("\n")
+            return `<intelligence wallets="${intel.walletCount}" active="${intel.activeWalletCount}" priced="${intel.pricedAlertCount}" unpriced="${intel.unpricedAlertCount}" top_tokens="${(intel.topRepeatedTokens ?? []).join(',')}">\n${topWalletLines}\n</intelligence>\n`
+          })() : ''
           contextXml =
             `<whale_alerts count="${filtered.length}" window="${window}"${isBuyQuery ? ' side="buy"' : isSellQuery ? ' side="sell"' : ""}>\n` +
+            intelBlock +
             lines.join("\n") + "\n\n" +
             (isBuyQuery ? "Focus: summarize which tokens whales are buying, using wallet_label where available (not raw addresses). Group by token.\n" : isSellQuery ? "Focus: summarize which tokens whales are selling, using wallet_label where available (not raw addresses). Group by token. Highlight any HIGH SIGNAL sell pressure.\n" : "") +
             "Note: wallet_label is an internal ChainLens label, not a verified public identity.\n" +
             "USD value shown as 'USD unverified' for tokens outside USDC/USDT/WETH/cbBTC.\n" +
+            (intel?.topRepeatedTokens?.length ? `Key repeated tokens across wallets: ${intel.topRepeatedTokens.join(', ')}. Use this to identify concentrated flow.\n` : '') +
             "</whale_alerts>";
         } else {
           if (isStoredWhaleQuestion) {

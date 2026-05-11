@@ -4,6 +4,21 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
+type WalletCtx = {
+  shortAddress: string
+  isContract: boolean | null
+  nativeBalanceEth: number | null
+  txCount: number | null
+  alertCount24h: number
+  buyCount24h: number
+  sellCount24h: number
+  totalVerifiedUsd24h: number | null
+  repeatedTokens: string[]
+  repeatedTokenCount: number
+  tags: string[]
+  confidence: 'high' | 'medium' | 'low'
+  status: 'ok' | 'partial' | 'unverified'
+}
 type AlertItem = {
   id?: string
   wallet_address?: string | null
@@ -27,6 +42,15 @@ type AlertItem = {
   logo_url?: string | null
   image?: string | null
   token_logo?: string | null
+  walletContext?: WalletCtx | null
+}
+type AlertIntelligence = {
+  walletCount: number
+  activeWalletCount: number
+  pricedAlertCount: number
+  unpricedAlertCount: number
+  topRepeatedTokens: string[]
+  topWallets: Array<{ shortAddress: string; alertCount24h: number; totalVerifiedUsd24h: number | null; repeatedTokens: string[]; tags: string[]; confidence: string }>
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type ValueRange = 'all' | '100-500' | '500-1000' | '1000-5000' | '5000-10000' | '10000+'
@@ -246,6 +270,7 @@ export default function WhaleAlertsPage() {
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
   const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
+  const [intelligence, setIntelligence] = useState<AlertIntelligence | null>(null)
   const [syncCooldownLeftMs, setSyncCooldownLeftMs] = useState(0)
   const [fullSyncCooldownLeftMs, setFullSyncCooldownLeftMs] = useState(0)
 
@@ -287,6 +312,7 @@ export default function WhaleAlertsPage() {
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
       setFeedDiagnostics(json?.diagnostics ?? null)
+      setIntelligence(json?.intelligence ?? null)
     } catch {
       setFeedError(true)
     } finally {
@@ -1068,6 +1094,30 @@ export default function WhaleAlertsPage() {
                       {(alert.repeats ?? 1) > 1 ? ` · ×${alert.repeats} in 5m` : ''}
                       {' · '}{timeAgo(alert.occurred_at)}
                     </p>
+
+                    {/* Wallet intelligence tags */}
+                    {alert.walletContext && (() => {
+                      const ctx = alert.walletContext!
+                      const visibleTags = ctx.tags.slice(0, 3)
+                      return (
+                        <div className="flex flex-wrap items-center" style={{ gap: 4, marginTop: 4 }}>
+                          {visibleTags.map(tag => (
+                            <span key={tag} style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.14)', color: '#475569' }}>
+                              {tag}
+                            </span>
+                          ))}
+                          {ctx.alertCount24h > 1 && (
+                            <span style={{ fontSize: 9, color: '#334155' }}>· {ctx.alertCount24h} alerts</span>
+                          )}
+                          {(ctx.totalVerifiedUsd24h ?? 0) > 0 && (
+                            <span style={{ fontSize: 9, color: '#334155' }}>· {fmtUsd(ctx.totalVerifiedUsd24h)} flow</span>
+                          )}
+                          {ctx.repeatedTokens.length > 0 && (
+                            <span style={{ fontSize: 9, color: '#334155' }}>· {ctx.repeatedTokens.slice(0, 2).join(', ')}</span>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
 
                   {/* Right column */}
