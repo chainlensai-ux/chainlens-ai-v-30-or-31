@@ -4321,7 +4321,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
-      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&limit=75&t=${Date.now()}`, {
+      const res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&valueRange=all&limit=75&t=${Date.now()}`, {
         signal: AbortSignal.timeout(5000),
         cache: "no-store",
         headers: authHeader ? { Authorization: authHeader } : {},
@@ -4335,7 +4335,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
         // Interesting mode may filter all base-asset moves. Fallback to all activity if needed.
         if (raw.length === 0) {
           try {
-            const res2 = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=false&limit=75&t=${Date.now()}`, {
+            const res2 = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=false&valueRange=all&limit=75&t=${Date.now()}`, {
               signal: AbortSignal.timeout(5000),
               cache: "no-store",
               headers: authHeader ? { Authorization: authHeader } : {},
