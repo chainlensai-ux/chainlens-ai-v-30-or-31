@@ -324,12 +324,15 @@ function parseValueRange(value: string | null): ValueRangeSpec {
 
 // Post-enrichment, post-grouping value filter.
 // null ("All"): quality floor — hide known-tiny moves, keep unpriced rows.
+//   skipFloor=true (feedMode=all): bypass the quality floor entirely, keep all rows.
 // range: require known amount_usd within [min, max).
 function filterByValueRange(
   rows: RawRow[],
   range: ValueRangeSpec,
+  skipFloor = false,
 ): { rows: RawRow[]; hiddenByFilter: number; hiddenAsDust: number } {
   if (range === null) {
+    if (skipFloor) return { rows, hiddenByFilter: 0, hiddenAsDust: 0 }
     let hiddenAsDust = 0
     const result = rows.filter(row => {
       if (!passesQualityFloor(row)) { hiddenAsDust++; return false }
@@ -624,9 +627,10 @@ export async function GET(req: NextRequest) {
       signal_score: computeSignalScore(row),
       interesting_score: computeInterestScore(row),
     }))
-    const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueRange(scored, valueRange)
+    const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueRange(scored, valueRange, !interestingMode)
     const { rows: boringFiltered, hiddenAsBoring } = filterBoringAssets(valueFiltered, interestingMode)
-    const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(boringFiltered)).map(applyHeadlineTokenFocus)
+    const stableFiltered = interestingMode ? filterStablecoinNoise(boringFiltered) : boringFiltered
+    const deNoised = filterRoutingOnlySwaps(stableFiltered).map(applyHeadlineTokenFocus)
     const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
     // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
     const interestSorted = [...diversityCapped].sort(
