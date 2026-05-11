@@ -2,8 +2,9 @@
 
 import { useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { supabase } from '@/lib/supabaseClient'
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────────────
 
 type Holding = {
   name: string
@@ -65,7 +66,7 @@ type WalletResult = {
   }
 }
 
-// ── Formatters ───────────────────────────────────────────────────────────────
+// ── Formatters ───────────────────────────────────────────────────────────────────────────
 
 function fmtUSD(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`
@@ -90,7 +91,7 @@ function shortAddr(a: string): string {
   return `${a.slice(0, 6)}…${a.slice(-4)}`
 }
 
-// ── Clark verdict parser ─────────────────────────────────────────────────────
+// ── Clark verdict parser ──────────────────────────────────────────────────────────────────────────
 
 type ClarkVerdictCard = {
   verdict: 'AVOID' | 'WATCH' | 'SCAN DEEPER' | 'TRUSTWORTHY' | 'UNKNOWN'
@@ -146,7 +147,7 @@ function parseStructuredClark(text: string): ClarkVerdictCard | null {
   }
 }
 
-// ── Loading dots ─────────────────────────────────────────────────────────────
+// ── Loading dots ──────────────────────────────────────────────────────────────────────────────
 
 function ClarkDots() {
   return (
@@ -163,10 +164,10 @@ function ClarkDots() {
   )
 }
 
-// ── Main page ────────────────────────────────────────────────────────────────
+// ── Main page ────────────────────────────────────────────────────────────────────────────
 
 export default function WalletScannerPage() {
-  const { plan, loading: planLoading } = usePlanWithLoading()
+  const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
   const [input, setInput]               = useState('')
   const [loading, setLoading]           = useState(false)
   const [error, setError]               = useState<string | null>(null)
@@ -185,9 +186,14 @@ export default function WalletScannerPage() {
     setShowAllHoldings(false)
 
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
       const res  = await fetch('/api/wallet', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ address: q }),
       })
       const json = await res.json()
@@ -266,7 +272,7 @@ export default function WalletScannerPage() {
   }
 
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
-  if (!canAccessFeature(plan, 'wallet-scanner')) return <LockedPanel feature="wallet-scanner" />
+  if (!betaEliteActive && !canAccessFeature(plan, 'wallet-scanner')) return <LockedPanel feature="wallet-scanner" />
 
   return (
     <>
@@ -293,7 +299,7 @@ export default function WalletScannerPage() {
 
       <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
 
-        {/* ── Left: scrollable main area ───────────────────────────────── */}
+        {/* ── Left: scrollable main area ─────────────────────────────────── */}
         <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px' }}>
 
           {/* Header */}
@@ -528,7 +534,7 @@ export default function WalletScannerPage() {
                   </span>
                 ))}
               </div>
-              {/* ── Behavior card ────────────────────────────────── */}
+              {/* ── Behavior card ────────────────────────────────────────────────── */}
               {hasUsefulActivity && result.walletBehavior?.status === 'ok' && (
                 <div style={{
                   background: '#080c14',
@@ -773,7 +779,7 @@ export default function WalletScannerPage() {
           })()}
         </div>
 
-        {/* ── Right: Clark verdict panel ───────────────────────────────── */}
+        {/* ── Right: Clark verdict panel ────────────────────────────────────────────── */}
         <aside className="mob-verdict-panel" style={{
           width: '380px', flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
