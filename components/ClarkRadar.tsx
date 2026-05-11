@@ -69,50 +69,7 @@ const MARKET_INTENT = /\b(pumping|pump(?:ing)?|hot\b|moving\b|movers?|gainers?|r
 
 function parseMessage(raw: string, clarkMode: ClarkMode): Record<string, string> {
   const t = raw.trim().toLowerCase()
-  const addrMatch = raw.match(/0x[a-fA-F0-9]{40}/)
-  const address = addrMatch?.[0]
-
-  if (clarkMode === 'chat') {
-    if (address) {
-      // Wallet intent (balance/holdings/portfolio/wallet keywords) → wallet-scanner
-      if (WALLET_INTENT.test(t)) {
-        if (t.includes('dev wallet')) return { feature: 'dev-wallet-detector', tokenAddress: address, prompt: raw.trim() }
-        return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
-      }
-      // Explicit scan keywords → scan-token
-      const explicitScan = /\b(scan|analy[sz]e|check|risk|verdict|liquidity)\b/i.test(t)
-      if (explicitScan) return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
-    }
-    return { feature: 'clark-ai', prompt: raw.trim() }
-  }
-
-  // Explicit wallet commands
-  if (t.startsWith('scan wallet') && address)
-    return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
-  if (t.startsWith('dev wallet') && address)
-    return { feature: 'dev-wallet-detector', tokenAddress: address }
-  if (t.includes('whale') && address)
-    return { feature: 'whale-alerts', walletAddress: address }
-
-  // Wallet intent + address — higher priority than market check
-  if (address && WALLET_INTENT.test(t))
-    return { feature: 'wallet-scanner', walletAddress: address, prompt: raw.trim() }
-
-  // Market / radar — whale queries must NOT be routed here; they need clark-ai for auth-gated feed
-  if (t.startsWith('base radar') || t.includes('trending') || t.includes('deployments') || MARKET_INTENT.test(t))
-    return { feature: 'base-radar' }
-
-  // Bare address → scan-token
-  if (address)
-    return { feature: 'scan-token', tokenAddress: address, prompt: raw.trim() }
-
-  // Token name + signal keyword → scan-token
-  const TOKEN_SIGNALS = /\b(price|liquidity|volume|safe|safety|pools?|rug|trap|pump|pumping|dump|degen|volatile|volatility|risk|cap|chart|scan|check|analyze|analysis|verdict)\b/i
-  if (TOKEN_SIGNALS.test(t)) {
-    const name = extractTokenQuery(t)
-    if (name) return { feature: 'scan-token', query: name, prompt: raw.trim() }
-  }
-
+  if (t.startsWith('clark ai:')) return { feature: 'clark-ai', prompt: raw.trim().slice(9).trim() }
   return { feature: 'clark-ai', prompt: raw.trim() }
 }
 
@@ -181,7 +138,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
 
     try {
       const body = parseMessage(text, clarkMode)
-      const requestMode = body.feature === 'clark-ai' ? clarkMode : 'analyst'
+      const requestMode = clarkMode
       const history = [...messagesRef.current, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))

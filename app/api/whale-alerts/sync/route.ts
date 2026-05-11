@@ -453,6 +453,8 @@ export async function POST(request: Request) {
   let fetchedTxCount = 0
   let parsedMovementCount = 0
   let alertCandidateCount = 0
+  let newestAlertAtTs = 0
+  const insertedSymbols = new Set<string>()
   const providerErrorSamples: ProviderErrorSample[] = []
   const skipSummary = makeSkipSummary()
   const skipSamples: SkipSample[] = []
@@ -533,6 +535,12 @@ export async function POST(request: Request) {
 
       let walletInserted = 0
       if (filteredAlerts.length > 0) {
+        for (const alert of filteredAlerts) {
+          const sym = ((alert.token_symbol as string | null) ?? '').toUpperCase().trim()
+          if (sym) insertedSymbols.add(sym)
+          const ts = alert.occurred_at ? new Date(String(alert.occurred_at)).getTime() : 0
+          if (Number.isFinite(ts) && ts > newestAlertAtTs) newestAlertAtTs = ts
+        }
         finalPipelineSummary.attemptedInsert += filteredAlerts.length
         const { data, error } = await supabase
           .from('whale_alerts')
@@ -630,6 +638,7 @@ export async function POST(request: Request) {
     earlyStopped,
     earlyStopReason: earlyStopped ? 'safety_timeout' : null,
     noFreshSignal,
+    insertedCount: inserted,
     refreshStatus,
     providerErrors,
     skipReasons: skipSummary,
@@ -641,6 +650,10 @@ export async function POST(request: Request) {
           ? 'No fresh signal in the checked window.'
           : `Checked ${walletsChecked} of ${trackedWalletsTotal} wallets. No fresh signal yet — continue to scan more.`,
   }
+  const newestAlertAt = newestAlertAtTs > 0 ? new Date(newestAlertAtTs).toISOString() : null
+  const tokenSymbolsInserted = [...insertedSymbols].slice(0, 10)
+  response.newestAlertAt = newestAlertAt
+  response.tokenSymbolsInserted = tokenSymbolsInserted
 
   if (debug) {
     response._diagnostics = {
