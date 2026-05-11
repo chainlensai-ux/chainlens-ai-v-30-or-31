@@ -110,6 +110,96 @@ const whaleCache = new Map<string, { exp: number; payload: unknown }>()
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
 
+// ─── Wallet context enrichment ───────────────────────────────────────────────
+
+type OnChainWalletData = { isContract: boolean | null; nativeBalanceEth: number | null; txCount: number | null }
+type WalletBehavior = { alertCount24h: number; buyCount24h: number; sellCount24h: number; totalVerifiedUsd24h: number; tokenCounts: Map<string, number>; firstSeen: string | null; lastSeen: string | null }
+type WalletContext = {
+  address: string; shortAddress: string
+  isContract: boolean | null; nativeBalanceEth: number | null; txCount: number | null
+  recentActivityCount: number | null; firstSeenApprox: string | null; lastSeenApprox: string | null
+  repeatedTokenCount: number; repeatedTokens: string[]
+  alertCount24h: number; buyCount24h: number; sellCount24h: number; totalVerifiedUsd24h: number | null
+  confidence: 'high' | 'medium' | 'low'; tags: string[]; status: 'ok' | 'partial' | 'unverified'
+}
+
+const walletOnChainCache = new Map<string, { exp: number; data: OnChainWalletData }>()
+const WALLET_CTX_TTL_MS = 4 * 60 * 1000
+const MAX_WALLETS_TO_ENRICH = 20
+
+function resolveBaseRpc(): string {
+  const explicit = process.env.ALCHEMY_BASE_RPC_URL ?? process.env.BASE_RPC_URL
+  if (explicit && /^https?:\/\//.test(explicit)) return explicit
+  const key = process.env.ALCHEMY_BASE_KEY ?? process.env.ALCHEMY_API_KEY
+  if (key) return `https://base-mainnet.g.alchemy.com/v2/${key}`
+  return 'https://mainnet.base.org'
+}
+const BASE_RPC_ENDPOINT = resolveBaseRpc()
+
+async function fetchOnChainWalletData(address: string): Promise<OnChainWalletData> {
+  const cached = walletOnChainCache.get(address.toLowerCase())
+  if (cached && cached.exp > Date.now()) return cached.data
+  let isContract: boolean | null = null
+  let nativeBalanceEth: number | null = null
+  let txCount: number | null = null
+  try {
+    const res = await fetch(BASE_RPC_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([
+        { jsonrpc: '2.0', id: 1, method: 'eth_getBalance',          params: [address, 'latest'] },
+        { jsonrpc: '2.0', id: 2, method: 'eth_getTransactionCount', params: [address, 'latest'] },
+        { jsonrpc: '2.0', id: 3, method: 'eth_getCode',             params: [address, 'latest'] },
+      ]),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (res.ok) {
+      const results = (await res.json()) as Array<{ id: number; result?: string; error?: unknown }>
+      for (const r of results) {
+        if (!r.result || r.error) continue
+        if (r.id === 1) { const wei = parseInt(r.result, 16); if (Number.isFinite(wei)) nativeBalanceEth = wei / 1e18 }
+        if (r.id === 2) { const n = parseInt(r.result, 16); if (Number.isFinite(n)) txCount = n }
+        if (r.id === 3) isContract = r.result !== '0x' && r.result.length > 2
+      }
+    }
+  } catch { /* leave as null */ }
+  const data: OnChainWalletData = { isContract, nativeBalanceEth, txCount }
+  walletOnChainCache.set(address.toLowerCase(), { exp: Date.now() + WALLET_CTX_TTL_MS, data })
+  return data
+}
+
+function buildWalletContext(address: string, beh: WalletBehavior, onChain: OnChainWalletData): WalletContext {
+  const { isContract, nativeBalanceEth, txCount } = onChain
+  const repeatedTokens = [...beh.tokenCounts.entries()].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t]) => t)
+  const repeatedTokenCount = repeatedTokens.length
+  const totalVerifiedUsd24h = beh.totalVerifiedUsd24h > 0 ? beh.totalVerifiedUsd24h : null
+  const hasRepeated = beh.alertCount24h >= 3 || repeatedTokenCount >= 2
+  const hasVerifiedUsd = (totalVerifiedUsd24h ?? 0) > 0
+  const confidence: 'high' | 'medium' | 'low' =
+    (hasRepeated && hasVerifiedUsd && isContract === false) ? 'high' :
+    (hasRepeated || hasVerifiedUsd) ? 'medium' : 'low'
+  const tags: string[] = []
+  if (isContract === true) tags.push('Contract wallet')
+  if (txCount !== null && txCount < 50) tags.push('Fresh wallet')
+  else if (txCount !== null && txCount >= 1000) tags.push('Active wallet')
+  if (repeatedTokenCount >= 2) tags.push('Repeat flow')
+  if (beh.alertCount24h >= 5) tags.push('High frequency')
+  if (beh.buyCount24h === 0 && beh.sellCount24h === 0 && beh.alertCount24h > 0) tags.push('Direction unverified')
+  if (txCount === null) tags.push('History limited')
+  const status: 'ok' | 'partial' | 'unverified' =
+    (nativeBalanceEth !== null && txCount !== null) ? 'ok' :
+    (nativeBalanceEth !== null || txCount !== null) ? 'partial' : 'unverified'
+  return {
+    address, shortAddress: `${address.slice(0, 6)}…${address.slice(-4)}`,
+    isContract, nativeBalanceEth, txCount,
+    recentActivityCount: beh.alertCount24h,
+    firstSeenApprox: beh.firstSeen, lastSeenApprox: beh.lastSeen,
+    repeatedTokenCount, repeatedTokens,
+    alertCount24h: beh.alertCount24h, buyCount24h: beh.buyCount24h, sellCount24h: beh.sellCount24h,
+    totalVerifiedUsd24h, confidence, tags, status,
+  }
+}
+
 // Rank alerts so non-stablecoin buys/swaps surface first, stablecoin moves last.
 // Score is purely for display ordering — never used to filter.
 function computeInterestScore(row: RawRow): number {
@@ -649,6 +739,66 @@ export async function GET(req: NextRequest) {
     const unpricedCount = grouped.filter(r => (r.amount_usd as number | null) == null).length
     const zeroValueCount = grouped.filter(r => r.amount_usd === 0).length
 
+    // ─── Wallet behavioral stats ──────────────────────────────────────────────
+    const walletBehaviorMap = new Map<string, WalletBehavior>()
+    for (const alert of grouped) {
+      const addr = (alert.wallet_address as string | null)?.toLowerCase()
+      if (!addr) continue
+      const beh = walletBehaviorMap.get(addr) ?? { alertCount24h: 0, buyCount24h: 0, sellCount24h: 0, totalVerifiedUsd24h: 0, tokenCounts: new Map<string, number>(), firstSeen: null, lastSeen: null }
+      beh.alertCount24h++
+      const s = (alert.side as string | null)?.toLowerCase()
+      if (s === 'buy') beh.buyCount24h++; if (s === 'sell') beh.sellCount24h++
+      const usd = alert.amount_usd as number | null
+      if (usd != null && usd > 0) beh.totalVerifiedUsd24h += usd
+      const tok = ((alert.focus_token_symbol as string | null) ?? (alert.token_symbol as string | null))?.split(' / ')[0]?.trim()?.toUpperCase() ?? null
+      if (tok && !LOW_SIGNAL_ROUTING.has(tok)) beh.tokenCounts.set(tok, (beh.tokenCounts.get(tok) ?? 0) + 1)
+      const ts = alert.occurred_at as string | null
+      if (ts) { if (!beh.lastSeen || ts > beh.lastSeen) beh.lastSeen = ts; if (!beh.firstSeen || ts < beh.firstSeen) beh.firstSeen = ts }
+      walletBehaviorMap.set(addr, beh)
+    }
+
+    // ─── On-chain enrichment (max 20 wallets, cached, parallel) ─────────────
+    const walletAddrs = [...walletBehaviorMap.keys()].slice(0, MAX_WALLETS_TO_ENRICH)
+    let enrichCacheHits = 0, enrichFailed = 0
+    const onChainSettled = await Promise.allSettled(
+      walletAddrs.map(async addr => {
+        const c = walletOnChainCache.get(addr)
+        if (c && c.exp > Date.now()) { enrichCacheHits++; return { addr, data: c.data } }
+        return { addr, data: await fetchOnChainWalletData(addr) }
+      })
+    )
+    const walletContextMap = new Map<string, WalletContext>()
+    for (const r of onChainSettled) {
+      if (r.status === 'rejected') { enrichFailed++; continue }
+      const beh = walletBehaviorMap.get(r.value.addr)
+      if (beh) walletContextMap.set(r.value.addr, buildWalletContext(r.value.addr, beh, r.value.data))
+    }
+    for (const [addr, beh] of walletBehaviorMap) {
+      if (!walletContextMap.has(addr)) walletContextMap.set(addr, buildWalletContext(addr, beh, { isContract: null, nativeBalanceEth: null, txCount: null }))
+    }
+
+    // ─── Attach walletContext to alerts ───────────────────────────────────────
+    const alertsWithContext = grouped.map(alert => {
+      const addr = (alert.wallet_address as string | null)?.toLowerCase()
+      const ctx = addr ? walletContextMap.get(addr) : undefined
+      return ctx ? { ...alert, walletContext: ctx } : alert
+    })
+
+    // ─── Intelligence aggregate ───────────────────────────────────────────────
+    const tokenGlobalFreq = new Map<string, number>()
+    for (const [, beh] of walletBehaviorMap) for (const [tok, cnt] of beh.tokenCounts) if (cnt >= 2) tokenGlobalFreq.set(tok, (tokenGlobalFreq.get(tok) ?? 0) + 1)
+    const topRepeatedTokens = [...tokenGlobalFreq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t]) => t)
+    const topWallets = [...walletContextMap.values()]
+      .sort((a, b) => b.alertCount24h - a.alertCount24h || (b.totalVerifiedUsd24h ?? 0) - (a.totalVerifiedUsd24h ?? 0))
+      .slice(0, 5)
+      .map(ctx => ({ address: ctx.address, shortAddress: ctx.shortAddress, alertCount24h: ctx.alertCount24h, totalVerifiedUsd24h: ctx.totalVerifiedUsd24h, repeatedTokens: ctx.repeatedTokens, tags: ctx.tags, confidence: ctx.confidence }))
+    const intelligence = {
+      walletCount: walletBehaviorMap.size,
+      activeWalletCount: [...walletBehaviorMap.values()].filter(b => b.alertCount24h >= 2).length,
+      pricedAlertCount: pricedCount, unpricedAlertCount: unpricedCount,
+      topRepeatedTokens, topWallets,
+    }
+
     let debugExtra: Record<string, unknown> | null = null
     if (debugMode) {
       const rawData = (alertsRes.data ?? []) as RawRow[]
@@ -666,11 +816,12 @@ export async function GET(req: NextRequest) {
         else if (amt == null) sampleUnpricedReasons.push(`${sym}: no_amount`)
         else             sampleUnpricedReasons.push(`${sym}: price_lookup_failed`)
       }
-      debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons }
+      debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons, walletEnrichment: { requestedWallets: walletAddrs.length, enrichedWallets: walletContextMap.size, cacheHits: enrichCacheHits, failedWallets: enrichFailed } }
     }
 
     const payload = {
-      alerts: grouped,
+      alerts: alertsWithContext,
+      intelligence,
       stats: {
         alerts15m:      countStatsFiltered(stats15m.data, majorPrices, 0, tokenPrices),
         alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, 0, tokenPrices),
