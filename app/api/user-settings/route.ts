@@ -82,8 +82,8 @@ export async function GET(request: NextRequest) {
     {
       settings: result.settings,
       plan,
-      effectivePlan: plan,
-      verifiedPlan: plan,
+      effectivePlan,
+      verifiedPlan,
       subscription_status: result.settings.subscription_status ?? null,
       fallback: false,
       ...betaFields,
