@@ -6,18 +6,18 @@ import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
 import type { UserPlan } from '@/lib/planFeatures'
 
+type PlanId = 'free' | 'pro' | 'elite'
+
 type Plan = {
-  id: 'free' | 'pro' | 'elite'
+  id: PlanId
   label: string
   price: string
   subtext: string
   sectionTitle: string
   features: string[]
   note?: string
-  cta: string
-  ctaHref: string
-  ctaClass: string
   badge?: string
+  ctaClass: string
 }
 
 const plans: Plan[] = [
@@ -39,8 +39,6 @@ const plans: Plan[] = [
       'No Whale / Pump Alerts',
       'No Base Radar',
     ],
-    cta: 'Enter Terminal',
-    ctaHref: '/terminal',
     ctaClass: 'cta-free',
   },
   {
@@ -64,8 +62,6 @@ const plans: Plan[] = [
       'Portfolio + saved settings',
       'Fair-use Clark AI limits',
     ],
-    cta: 'Upgrade to Pro',
-    ctaHref: 'https://chainlens-ai.lemonsqueezy.com/checkout/buy/a9ab7a81-bcde-4efe-9ed7-705d83471061',
     ctaClass: 'cta-pro',
     badge: 'MOST POPULAR',
   },
@@ -85,8 +81,6 @@ const plans: Plan[] = [
       'Early access to new ChainLens features',
       'Priority CORTEX processing where available',
     ],
-    cta: 'Upgrade to Elite',
-    ctaHref: 'https://chainlens-ai.lemonsqueezy.com/checkout/buy/7848d92a-f82f-41a6-8c2d-f14e9c041f90',
     ctaClass: 'cta-elite',
   },
 ]
@@ -100,10 +94,13 @@ const PRODUCT_PROOF = [
 
 export default function PricingPage() {
   const [userPlan, setUserPlan] = useState<UserPlan>('free')
-  const currentPlan: Plan['id'] = userPlan === 'pro' || userPlan === 'elite' ? userPlan : 'free'
+  const [sessionReady, setSessionReady] = useState(false)
+  const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null)
+  const [checkoutError, setCheckoutError] = useState<string | null>(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
+      setSessionReady(true)
       const token = data.session?.access_token
       if (!token) return
       try {
@@ -112,19 +109,51 @@ export default function PricingPage() {
         })
         if (res.ok) {
           const json = await res.json()
-          const p = (json?.settings as Record<string, unknown>)?.plan
+          const p = (json as Record<string, unknown>)?.plan ??
+            (json?.settings as Record<string, unknown>)?.plan
           if (p === 'pro' || p === 'elite') setUserPlan(p)
         }
       } catch { /* stay on free */ }
     })
   }, [])
 
+  async function handleCryptoPay(planId: 'pro' | 'elite') {
+    setCheckoutError(null)
+    setCheckoutLoading(planId)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) {
+        setCheckoutError('Sign in to start checkout.')
+        return
+      }
+      const res = await fetch('/api/checkout/crypto', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ plan: planId }),
+      })
+      const json = await res.json() as Record<string, unknown>
+      if (!res.ok || !json.checkoutUrl) {
+        setCheckoutError((json.error as string) ?? 'Checkout creation failed. Try again.')
+        return
+      }
+      window.location.href = json.checkoutUrl as string
+    } catch {
+      setCheckoutError('Checkout creation failed. Try again.')
+    } finally {
+      setCheckoutLoading(null)
+    }
+  }
+
   return (
     <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflow: 'hidden' }}>
       <style>{`
         .glass{background:linear-gradient(170deg,rgba(10,17,33,.88),rgba(5,9,20,.82));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.18);border-radius:18px}
-        .cta{display:block;text-align:center;border-radius:11px;padding:12px 14px;font-weight:800;font-size:12px;letter-spacing:.09em;text-decoration:none;transition:.2s transform,.2s box-shadow,.2s opacity}.cta:hover{transform:translateY(-2px)}
-        .cta-free{border:1px solid rgba(148,163,184,.36);color:#e2e8f0;background:rgba(15,23,42,.55)}
+        .cta{display:block;width:100%;text-align:center;border-radius:11px;padding:12px 14px;font-weight:800;font-size:12px;letter-spacing:.09em;text-decoration:none;transition:.2s transform,.2s box-shadow,.2s opacity;cursor:pointer;border:none}.cta:hover:not(:disabled){transform:translateY(-2px)}
+        .cta-free{border:1px solid rgba(148,163,184,.36) !important;color:#e2e8f0;background:rgba(15,23,42,.55)}
         .cta-pro{color:#fff;background:linear-gradient(98deg,#7c3aed,#a855f7,#ec4899);box-shadow:0 12px 30px rgba(168,85,247,.55)}
         .cta-elite{color:#221300;background:linear-gradient(120deg,#f59e0b,#fde047,#facc15);box-shadow:0 12px 32px rgba(251,191,36,.5)}
         .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.17;background:repeating-linear-gradient(135deg,rgba(217,70,239,.45) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
@@ -150,41 +179,72 @@ export default function PricingPage() {
           <div className='intro' style={{ padding: '18px 12px 8px 6px', minHeight: 468 }}>
             <div style={{ color: '#67e8f9', fontSize: 11, letterSpacing: '.2em', marginBottom: 14 }}>• PRICING</div>
             <div style={{ fontSize: 'clamp(40px,3.6vw,66px)', lineHeight: .95, fontWeight: 900 }}>ONE PRICE.<br /><span style={{ background: 'linear-gradient(90deg,#22d3ee,#a855f7,#ec4899)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>WORLDWIDE.</span></div>
-            <p style={{ marginTop: 14, color: '#94a3b8', lineHeight: 1.5, fontSize: 14 }}>No dark patterns. No regional pricing.<br />Cancel any time. Your data stays yours.</p>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>{['Secure Checkout', 'Cancel Anytime', 'Built for Base'].map((chip) => <span key={chip} style={{ borderRadius: 999, border: '1px solid rgba(148,163,184,.28)', padding: '6px 10px', fontSize: 11, color: '#dbeafe', background: 'rgba(15,23,42,.55)', boxShadow: '0 0 16px rgba(34,211,238,.12)' }}>{chip}</span>)}</div>
+            <p style={{ marginTop: 14, color: '#94a3b8', lineHeight: 1.5, fontSize: 14 }}>No dark patterns. No regional pricing.<br />Your data stays yours.</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>{['Crypto Payments', 'Built for Base', 'Manual Activation'].map((chip) => <span key={chip} style={{ borderRadius: 999, border: '1px solid rgba(148,163,184,.28)', padding: '6px 10px', fontSize: 11, color: '#dbeafe', background: 'rgba(15,23,42,.55)', boxShadow: '0 0 16px rgba(34,211,238,.12)' }}>{chip}</span>)}</div>
             <div style={{ marginTop: 12, fontSize: 12, color: '#94a3b8' }}>Powered by <span style={{ color: '#e2e8f0', fontWeight: 700 }}>BASE</span></div>
           </div>
 
           <div className='plan-grid' style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 14 }}>
-            {plans.map((plan) => { const isCurrent = plan.id===userPlan && plan.id!=='free'; const ctaText = isCurrent ? 'Current plan' : plan.cta; return (
-              <div key={plan.id} className='glass' style={{ padding: '18px 18px 16px', minHeight: 468, borderColor: plan.id === 'pro' ? 'rgba(217,70,239,.72)' : plan.id === 'elite' ? 'rgba(251,191,36,.66)' : 'rgba(147,51,234,.36)', boxShadow: plan.id === 'pro' ? '0 0 56px rgba(217,70,239,.38),inset 0 0 0 1px rgba(217,70,239,.24)' : plan.id === 'elite' ? '0 0 56px rgba(251,191,36,.35),inset 0 0 0 1px rgba(250,204,21,.22)' : '0 0 26px rgba(168,85,247,.14)', position: 'relative', transform: plan.id === 'pro' ? 'translateY(-3px)' : 'none' }}>
-                {plan.badge && <div style={{ position: 'absolute', top: -11, left: '50%', transform: 'translateX(-50%)', borderRadius: 999, background: 'linear-gradient(90deg,#a855f7,#ec4899)', color: '#fff', fontSize: 10, letterSpacing: '.12em', fontWeight: 800, padding: '4px 12px', boxShadow: '0 0 24px rgba(217,70,239,.6)' }}>{plan.badge}</div>}
-                <div style={{ fontSize: 12, letterSpacing: '.18em', color: plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#a78bfa' : '#e879f9' }}>{plan.label}</div>
-                <div style={{ fontSize: 48, fontWeight: 800, marginTop: 8, color: plan.id === 'elite' ? '#fde68a' : '#fff', lineHeight: 1 }}>{plan.price}</div>
-                <div style={{ color: '#94a3b8', marginTop: 0, fontSize: 13 }}>{plan.subtext}</div>
-                <div style={{ marginTop: 8, fontSize: 11, color: '#94a3b8' }}>{plan.note}</div>
-                <div style={{ marginTop: 14, fontSize: 10, color: plan.id === 'elite' ? '#fcd34d' : plan.id === 'pro' ? '#67e8f9' : '#f0abfc', letterSpacing: '.15em' }}>{plan.sectionTitle}</div>
-                <div style={{ display: 'grid', gap: 8, marginTop: 10, minHeight: 248 }}>
-                  {plan.features.map((f) => {
-                    const no = f.startsWith('No ')
-                    return (
-                      <div key={f} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', color: no ? '#64748b' : '#dbeafe', fontSize: 12.5, lineHeight: 1.45 }}>
-                        <span style={{ color: no ? '#475569' : plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#22d3ee' : '#c084fc' }}>{no ? '✕' : '✓'}</span>
-                        <span>{f}</span>
-                      </div>
-                    )
-                  })}
+            {plans.map((plan) => {
+              const isCurrent = userPlan === plan.id
+              const isPaid = plan.id === 'pro' || plan.id === 'elite'
+              const isLoading = checkoutLoading === plan.id
+
+              return (
+                <div key={plan.id} className='glass' style={{ padding: '18px 18px 16px', minHeight: 468, borderColor: plan.id === 'pro' ? 'rgba(217,70,239,.72)' : plan.id === 'elite' ? 'rgba(251,191,36,.66)' : 'rgba(147,51,234,.36)', boxShadow: plan.id === 'pro' ? '0 0 56px rgba(217,70,239,.38),inset 0 0 0 1px rgba(217,70,239,.24)' : plan.id === 'elite' ? '0 0 56px rgba(251,191,36,.35),inset 0 0 0 1px rgba(250,204,21,.22)' : '0 0 26px rgba(168,85,247,.14)', position: 'relative', transform: plan.id === 'pro' ? 'translateY(-3px)' : 'none' }}>
+                  {plan.badge && <div style={{ position: 'absolute', top: -11, left: '50%', transform: 'translateX(-50%)', borderRadius: 999, background: 'linear-gradient(90deg,#a855f7,#ec4899)', color: '#fff', fontSize: 10, letterSpacing: '.12em', fontWeight: 800, padding: '4px 12px', boxShadow: '0 0 24px rgba(217,70,239,.6)' }}>{plan.badge}</div>}
+                  <div style={{ fontSize: 12, letterSpacing: '.18em', color: plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#a78bfa' : '#e879f9' }}>{plan.label}</div>
+                  <div style={{ fontSize: 48, fontWeight: 800, marginTop: 8, color: plan.id === 'elite' ? '#fde68a' : '#fff', lineHeight: 1 }}>{plan.price}</div>
+                  <div style={{ color: '#94a3b8', marginTop: 0, fontSize: 13 }}>{plan.subtext}</div>
+                  <div style={{ marginTop: 8, fontSize: 11, color: '#94a3b8' }}>{plan.note}</div>
+                  <div style={{ marginTop: 14, fontSize: 10, color: plan.id === 'elite' ? '#fcd34d' : plan.id === 'pro' ? '#67e8f9' : '#f0abfc', letterSpacing: '.15em' }}>{plan.sectionTitle}</div>
+                  <div style={{ display: 'grid', gap: 8, marginTop: 10, minHeight: 248 }}>
+                    {plan.features.map((f) => {
+                      const no = f.startsWith('No ')
+                      return (
+                        <div key={f} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', color: no ? '#64748b' : '#dbeafe', fontSize: 12.5, lineHeight: 1.45 }}>
+                          <span style={{ color: no ? '#475569' : plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#22d3ee' : '#c084fc' }}>{no ? '✕' : '✓'}</span>
+                          <span>{f}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {plan.id === 'elite' && (
+                    <div style={{ border: '1px solid rgba(250,204,21,.4)', background: 'rgba(250,204,21,.1)', color: '#fde68a', borderRadius: 11, padding: 10, fontSize: 12, marginBottom: 10 }}>
+                      Everything in Pro — plus higher limits and CORTEX tools where available.
+                    </div>
+                  )}
+
+                  {/* CTA */}
+                  {isCurrent ? (
+                    <span className={`cta ${plan.ctaClass}`} style={{ opacity: 0.75, cursor: 'default', pointerEvents: 'none', display: 'block' }}>
+                      ✓ Current plan
+                    </span>
+                  ) : plan.id === 'free' ? (
+                    <Link href='/terminal' className={`cta ${plan.ctaClass}`} style={{ display: 'block' }}>
+                      Enter Terminal
+                    </Link>
+                  ) : (
+                    <button
+                      className={`cta ${plan.ctaClass}`}
+                      disabled={isLoading || checkoutLoading !== null}
+                      onClick={() => handleCryptoPay(plan.id as 'pro' | 'elite')}
+                      style={{ opacity: isLoading ? 0.7 : 1 }}
+                    >
+                      {isLoading ? 'Opening checkout…' : 'Pay with crypto'}
+                    </button>
+                  )}
+
+                  {/* Crypto payment note */}
+                  {isPaid && !isCurrent && (
+                    <p style={{ margin: '8px 0 0', fontSize: 10, color: '#475569', lineHeight: 1.4, textAlign: 'center' }}>
+                      Manual activation after payment verification.
+                    </p>
+                  )}
                 </div>
-                {plan.id === 'elite' && <div style={{ border: '1px solid rgba(250,204,21,.4)', background: 'rgba(250,204,21,.1)', color: '#fde68a', borderRadius: 11, padding: 10, fontSize: 12, marginBottom: 10 }}>Everything in Pro — plus higher limits and CORTEX tools where available.</div>}
-                {userPlan === plan.id ? (
-                  <span className={`cta ${plan.ctaClass}`} style={{ opacity: 0.75, cursor: 'default', pointerEvents: 'none' }}>✓ Current plan</span>
-                ) : plan.ctaHref.startsWith('http') ? (
-                  <a href={plan.ctaHref} target="_blank" rel="noopener noreferrer" className={`cta ${plan.ctaClass}`}>{plan.cta}</a>
-                ) : (
-                  <Link href={plan.ctaHref} className={`cta ${plan.ctaClass}`}>{ctaText}</Link>
-                )}
-              </div>
-            )})}
+              )
+            })}
           </div>
 
           <aside className='glass stats' style={{ padding: 14, minHeight: 468, borderColor: 'rgba(34,211,238,.46)', boxShadow: '0 0 30px rgba(34,211,238,.16)' }}>
@@ -197,6 +257,21 @@ export default function PricingPage() {
             ))}
           </aside>
         </section>
+
+        {/* Global checkout error */}
+        {checkoutError && (
+          <div style={{ marginTop: 16, maxWidth: 480, marginLeft: 'auto', marginRight: 'auto', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.30)', borderRadius: 10, padding: '10px 16px', color: '#fca5a5', fontSize: 13, textAlign: 'center' }}>
+            {checkoutError}
+            <button onClick={() => setCheckoutError(null)} style={{ marginLeft: 10, background: 'none', border: 'none', color: '#fca5a5', cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>×</button>
+          </div>
+        )}
+
+        {/* Crypto payment disclosure */}
+        {!sessionReady || userPlan === 'free' ? (
+          <p style={{ marginTop: 18, textAlign: 'center', fontSize: 11, color: '#3a5268', letterSpacing: '.04em' }}>
+            Prefer crypto? Pay with crypto and your plan activates automatically after payment confirmation.
+          </p>
+        ) : null}
       </div>
     </div>
   )
