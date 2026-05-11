@@ -462,7 +462,7 @@ export default function WhaleAlertsPage() {
         const label  = a.wallet_label || 'Tracked Wallet'
         const tok    = a.focus_token_symbol ?? a.token_symbol ?? a.token_name ?? 'Unknown token'
         const side   = a.side ?? 'move'
-        const usd    = a.amount_usd != null ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
+        const usd    = (a.amount_usd != null && a.amount_usd > 0) ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
         const sig    = a.signal_score ?? 'LOW'
         const sev    = a.severity ?? 'unknown'
         const age    = ageStr(a.occurred_at)
@@ -980,11 +980,12 @@ export default function WhaleAlertsPage() {
             const s          = alert.side?.toLowerCase() ?? ''
             const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
 
-            // Amount: prefer USD; fall back to token number; show "Value unverified" if both null
-            const amtUnverified = alert.amount_usd == null
-            const amtU    = fmtUsd(alert.amount_usd)
+            // Amount: prefer USD; fall back to token number; never render $0 for unpriced rows.
+            // amount_usd=0 means the DB did not have a verified price — treat it as null.
+            const amtUnverified = alert.amount_usd == null || alert.amount_usd === 0
+            const amtU    = (!amtUnverified && alert.amount_usd != null) ? fmtUsd(alert.amount_usd) : null
             const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
-            const amtShow = amtU !== '—' ? amtU : (amtTNum ?? (amtUnverified ? 'Value unverified' : null))
+            const amtShow = amtU ?? (amtTNum ?? (amtUnverified ? 'Value unverified' : null))
 
             // Verb and preposition split so amount fits between them for swaps
             const isSwap   = isMultiTok || (focusTok != null && s !== 'buy')
@@ -1007,7 +1008,7 @@ export default function WhaleAlertsPage() {
               `Token: ${tok}`,
               alert.token_symbol && tok !== alert.token_symbol ? `Raw token symbol: ${alert.token_symbol}` : null,
               `Side: ${alert.side ?? 'unknown'}`,
-              alert.amount_usd != null
+              (alert.amount_usd != null && alert.amount_usd > 0)
                 ? `Value (USD): $${alert.amount_usd.toFixed(2)}`
                 : 'Value (USD): unverified',
               alert.amount_token != null
