@@ -180,7 +180,7 @@ export default function PricingPage() {
             <div style={{ color: '#67e8f9', fontSize: 11, letterSpacing: '.2em', marginBottom: 14 }}>• PRICING</div>
             <div style={{ fontSize: 'clamp(40px,3.6vw,66px)', lineHeight: .95, fontWeight: 900 }}>ONE PRICE.<br /><span style={{ background: 'linear-gradient(90deg,#22d3ee,#a855f7,#ec4899)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>WORLDWIDE.</span></div>
             <p style={{ marginTop: 14, color: '#94a3b8', lineHeight: 1.5, fontSize: 14 }}>No dark patterns. No regional pricing.<br />Your data stays yours.</p>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>{['Crypto Payments', 'Built for Base', 'Manual Activation'].map((chip) => <span key={chip} style={{ borderRadius: 999, border: '1px solid rgba(148,163,184,.28)', padding: '6px 10px', fontSize: 11, color: '#dbeafe', background: 'rgba(15,23,42,.55)', boxShadow: '0 0 16px rgba(34,211,238,.12)' }}>{chip}</span>)}</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>{['Pay with crypto', 'Built for Base', 'Auto activation'].map((chip) => <span key={chip} style={{ borderRadius: 999, border: '1px solid rgba(148,163,184,.28)', padding: '6px 10px', fontSize: 11, color: '#dbeafe', background: 'rgba(15,23,42,.55)', boxShadow: '0 0 16px rgba(34,211,238,.12)' }}>{chip}</span>)}</div>
             <div style={{ marginTop: 12, fontSize: 12, color: '#94a3b8' }}>Powered by <span style={{ color: '#e2e8f0', fontWeight: 700 }}>BASE</span></div>
           </div>
 
@@ -239,7 +239,7 @@ export default function PricingPage() {
                   {/* Crypto payment note */}
                   {isPaid && !isCurrent && (
                     <p style={{ margin: '8px 0 0', fontSize: 10, color: '#475569', lineHeight: 1.4, textAlign: 'center' }}>
-                      Manual activation after payment verification.
+                      Recommended: USDC on Base, USDC on Ethereum, or ETH.
                     </p>
                   )}
                 </div>
@@ -269,7 +269,7 @@ export default function PricingPage() {
         {/* Crypto payment disclosure */}
         {!sessionReady || userPlan === 'free' ? (
           <p style={{ marginTop: 18, textAlign: 'center', fontSize: 11, color: '#3a5268', letterSpacing: '.04em' }}>
-            Prefer crypto? Pay with crypto and your plan activates automatically after payment confirmation.
+            Pay with crypto. Recommended: USDC on Base, USDC on Ethereum, or ETH. Your plan activates automatically after payment confirmation.
           </p>
         ) : null}
       </div>

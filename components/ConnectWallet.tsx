@@ -51,6 +51,20 @@ function dedupeConnectors(all: ReturnType<typeof useConnect>['connectors']) {
   })
 }
 
+
+const CONNECTOR_PRIORITY: string[] = ['WalletConnect', 'MetaMask', 'Coinbase Wallet']
+
+function visibleConnectors(connectors: ReturnType<typeof useConnect>['connectors']) {
+  const firstByLabel = new Map<string, (typeof connectors)[number]>()
+  for (const connector of connectors) {
+    const label = connectorLabel(connector.id, connector.name)
+    if (label === 'Phantom') continue
+    if (!CONNECTOR_PRIORITY.includes(label)) continue
+    if (!firstByLabel.has(label)) firstByLabel.set(label, connector)
+  }
+  return CONNECTOR_PRIORITY.map(label => firstByLabel.get(label)).filter(Boolean) as (typeof connectors)[number][]
+}
+
 // ---------- WCBridge: only mounts client-side, provides web3modal.open via ref ----------
 // Separated so that useWeb3Modal() is never called during SSR (it throws before
 // createWeb3Modal is initialised).
@@ -316,7 +330,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-                {connectors.map(c => {
+                {filteredConnectors.map(c => {
                   const label = connectorLabel(c.id, c.name)
                   const icon = connectorIcon(c.id)
                   const isWC = isWalletConnect(c.id)
