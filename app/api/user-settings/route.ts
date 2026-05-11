@@ -42,7 +42,10 @@ export async function GET(request: NextRequest) {
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
   const betaAllElite = process.env.BETA_ALL_ELITE === 'true';
   const rawPlan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
-  const plan = betaOverride ? 'elite' : rawPlan;
+  const betaEliteActive = betaAllElite;
+  const effectivePlan = betaEliteActive ? 'elite' : rawPlan;
+  const plan = effectivePlan;
+  const verifiedPlan = effectivePlan;
   const debugMode = request.nextUrl.searchParams.get('debug') === 'true';
 
   const diagnostics = (process.env.NODE_ENV !== 'production' || debugMode)
@@ -52,19 +55,19 @@ export async function GET(request: NextRequest) {
         hasSettingsRow: !result.error,
         plan,
         fallback: Boolean(result.error),
-        ...(debugMode && { rawPlan, betaAllElite: betaOverride, settingsRowFound: !result.error }),
+        ...(debugMode && { rawPlan, betaAllElite, settingsRowFound: !result.error }),
       }
     : undefined;
 
-  const betaFields = betaOverride ? { betaEliteActive: true } : {};
+  const betaFields = betaEliteActive ? { betaEliteActive: true } : {};
 
   if (result.error) {
     return NextResponse.json(
       {
         settings: result.settings,
         plan,
-        effectivePlan: plan,
-        verifiedPlan: plan,
+        effectivePlan,
+        verifiedPlan,
         subscription_status: result.settings.subscription_status ?? null,
         error: result.error,
         fallback: true,
