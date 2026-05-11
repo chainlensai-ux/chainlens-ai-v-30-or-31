@@ -27,6 +27,10 @@ const ICON_MAP: Record<string, string> = {
   safe: '🔒',
 }
 
+const ALLOWED_CONNECTOR_IDS = new Set([
+  'walletConnect', 'walletConnectLegacy', 'injected', 'metaMask', 'coinbaseWalletSDK', 'coinbaseWallet',
+])
+
 function connectorLabel(id: string, name: string) {
   return LABEL_MAP[id] ?? LABEL_MAP[name.toLowerCase().replace(/\s+/g, '')] ?? name
 }
@@ -35,6 +39,16 @@ function connectorIcon(id: string) {
 }
 function isWalletConnect(id: string) {
   return /walletconnect/i.test(id)
+}
+function dedupeConnectors(all: ReturnType<typeof useConnect>['connectors']) {
+  const seen = new Set<string>()
+  return all.filter(c => {
+    if (!ALLOWED_CONNECTOR_IDS.has(c.id)) return false
+    const label = connectorLabel(c.id, c.name)
+    if (seen.has(label)) return false
+    seen.add(label)
+    return true
+  })
 }
 
 
@@ -65,8 +79,8 @@ function WCBridge({ openRef }: { openRef: React.MutableRefObject<(() => void) | 
 
 export default function ConnectWallet({ className }: { className?: string }) {
   const { address, isConnected } = useAccount()
-  const { connectAsync, connectors } = useConnect()
-  const filteredConnectors = visibleConnectors(connectors)
+  const { connectAsync, connectors: allConnectors } = useConnect()
+  const connectors = dedupeConnectors(allConnectors)
   const { disconnect } = useDisconnect()
 
   // web3modal.open is populated by WCBridge once it mounts (client-only)
@@ -256,17 +270,25 @@ export default function ConnectWallet({ className }: { className?: string }) {
         <div
           onClick={closeModal}
           style={{
-            position: 'fixed', inset: 0, zIndex: 9000,
+            position: 'fixed', inset: 0, zIndex: 99999,
             background: 'rgba(0,4,15,0.80)', backdropFilter: 'blur(6px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             padding: '16px',
           }}
         >
+          <style>{`
+            @media (max-width: 540px) {
+              .cl-wallet-modal { flex-direction: column !important; max-height: 90vh; overflow-y: auto; }
+              .cl-wallet-left { flex: 0 0 auto !important; border-right: none !important; border-bottom: 1px solid rgba(148,163,184,0.08) !important; }
+              .cl-wallet-right { flex: 0 0 auto !important; min-height: 160px !important; }
+            }
+          `}</style>
           <div
             onClick={e => e.stopPropagation()}
+            className="cl-wallet-modal"
             style={{
               position: 'relative',
-              display: 'flex', flexWrap: 'wrap',
+              display: 'flex',
               width: '100%', maxWidth: '680px',
               background: 'linear-gradient(170deg, rgba(8,14,30,0.99) 0%, rgba(4,8,20,0.98) 100%)',
               border: '1px solid rgba(34,211,238,0.18)',
@@ -294,7 +316,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
             </button>
 
             {/* ── left column: wallet list ────────────────────────────── */}
-            <div style={{
+            <div className="cl-wallet-left" style={{
               flex: '0 0 260px', padding: '32px 22px',
               borderRight: '1px solid rgba(148,163,184,0.08)',
             }}>
@@ -358,7 +380,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
             </div>
 
             {/* ── right column: status panel ──────────────────────────── */}
-            <div style={{
+            <div className="cl-wallet-right" style={{
               flex: '1 1 260px', padding: '32px 24px',
               display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center',
