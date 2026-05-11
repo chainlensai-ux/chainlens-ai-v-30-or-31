@@ -232,7 +232,7 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 }
 
 export default function WhaleAlertsPage() {
-  const { plan, loading: planLoading } = usePlanWithLoading()
+  const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
   const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('interesting')
   const [valueRange, setValueRange]   = useState<ValueRange>('all')
@@ -507,7 +507,7 @@ export default function WhaleAlertsPage() {
   const bdrInner = '1px solid rgba(255,255,255,0.06)'
 
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
-  if (!canAccessFeature(plan, 'whale-alerts')) return <LockedPanel feature="whale-alerts" />
+  if (!betaEliteActive && !canAccessFeature(plan, 'whale-alerts')) return <LockedPanel feature="whale-alerts" />
 
   return (
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden"
@@ -1093,6 +1093,3 @@ export default function WhaleAlertsPage() {
     </div>
   )
 }
-            <p style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: '#94a3b8' }}>
-              Whale Alerts refreshes on demand during beta to reduce infrastructure waste.
-            </p>
