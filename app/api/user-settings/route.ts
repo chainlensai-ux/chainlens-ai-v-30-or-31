@@ -40,7 +40,9 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
-  const plan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
+  const betaOverride = process.env.BETA_ALL_ELITE === 'true';
+  const rawPlan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
+  const plan = betaOverride ? 'elite' : rawPlan;
   const diagnostics = process.env.NODE_ENV !== 'production'
     ? {
         authenticated: true,
@@ -59,6 +61,7 @@ export async function GET(request: NextRequest) {
         subscription_status: result.settings.subscription_status ?? null,
         error: result.error,
         fallback: true,
+        ...(betaOverride && { betaOverride: true }),
         diagnostics,
       },
       { status: 200 }
@@ -71,6 +74,7 @@ export async function GET(request: NextRequest) {
       plan,
       subscription_status: result.settings.subscription_status ?? null,
       fallback: false,
+      ...(betaOverride && { betaOverride: true }),
       diagnostics,
     },
     { status: 200 }

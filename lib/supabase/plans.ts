@@ -32,6 +32,9 @@ export async function getCurrentUserPlanFromBearerToken(token: string) {
   const { data } = await anon.auth.getUser(token)
   const user = data.user
   if (!user) return { plan: 'free' as ChainlensPlan, userId: null, email: null, settingsRowFound: false }
+  if (process.env.BETA_ALL_ELITE === 'true') {
+    return { plan: 'elite' as ChainlensPlan, userId: user.id, email: user.email ?? null, settingsRowFound: true }
+  }
   // Use authed client so Bearer token is forwarded in global headers — required when RLS checks auth.uid().
   const authed = createAuthedSupabaseClient(token)
   const { data: row } = await (authed ?? anon)
