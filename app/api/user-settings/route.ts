@@ -42,28 +42,32 @@ export async function GET(request: NextRequest) {
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
   const betaAllElite = process.env.BETA_ALL_ELITE === 'true';
   const rawPlan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
-  const effectivePlan = betaAllElite ? 'elite' : rawPlan;
   const betaEliteActive = betaAllElite;
-  const betaFields = betaEliteActive ? { betaEliteActive: true } : { betaEliteActive: false };
-  const debugMode = process.env.NODE_ENV !== 'production' || request.nextUrl.searchParams.get('debug') === 'true';
-  const debug = debugMode
+  const effectivePlan = betaEliteActive ? 'elite' : rawPlan;
+  const plan = effectivePlan;
+  const verifiedPlan = effectivePlan;
+  const debugMode = request.nextUrl.searchParams.get('debug') === 'true';
+
+  const diagnostics = (process.env.NODE_ENV !== 'production' || debugMode)
     ? {
-        rawPlan,
-        effectivePlan,
-        betaAllElite,
-        settingsRowFound: !result.error,
+        authenticated: true,
+        userIdPresent: Boolean(auth.userId),
+        hasSettingsRow: !result.error,
+        plan,
+        fallback: Boolean(result.error),
+        ...(debugMode && { rawPlan, betaAllElite, settingsRowFound: !result.error }),
       }
     : undefined;
 
-  const betaFields = betaOverride ? { betaEliteActive: true } : {};
+  const betaFields = betaEliteActive ? { betaEliteActive: true } : {};
 
   if (result.error) {
     return NextResponse.json(
       {
         settings: result.settings,
-        plan: effectivePlan,
+        plan,
         effectivePlan,
-        verifiedPlan: effectivePlan,
+        verifiedPlan,
         subscription_status: result.settings.subscription_status ?? null,
         error: result.error,
         fallback: true,
@@ -77,9 +81,9 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(
     {
       settings: result.settings,
-      plan: effectivePlan,
+      plan,
       effectivePlan,
-      verifiedPlan: effectivePlan,
+      verifiedPlan,
       subscription_status: result.settings.subscription_status ?? null,
       fallback: false,
       ...betaFields,
