@@ -81,6 +81,24 @@ export default function ConnectWallet({ className }: { className?: string }) {
   const { address, isConnected } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
+  const seenWallets = new Set<string>()
+
+  const filteredConnectors = connectors.filter((connector) => {
+    const id = String(connector.id || '').toLowerCase()
+    const name = String(connector.name || '').toLowerCase()
+
+    const walletConnect = id.includes('walletconnect') || name.includes('walletconnect')
+    const metaMask = id.includes('metamask') || name.includes('metamask') || id.includes('injected')
+    const coinbase = id.includes('coinbase') || name.includes('coinbase')
+
+    if (!walletConnect && !metaMask && !coinbase) return false
+
+    const key = walletConnect ? 'walletconnect' : metaMask ? 'metamask' : 'coinbase'
+    if (seenWallets.has(key)) return false
+    seenWallets.add(key)
+
+    return true
+  })
   const { disconnect } = useDisconnect()
 
   // web3modal.open is populated by WCBridge once it mounts (client-only)
