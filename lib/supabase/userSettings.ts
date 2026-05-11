@@ -58,6 +58,42 @@ const ALLOWED_KEYS = new Set([
   'onboarding_progress',
 ]);
 
+export function createServiceRoleClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key) return null
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+}
+
+// Server-side plan activation — uses service role to bypass RLS.
+// Called only from trusted webhook handler; never exposed to the client.
+export async function activateUserPlanServerSide(
+  userId: string,
+  plan: 'pro' | 'elite',
+  paymentRef?: string,
+): Promise<{ error: string | null }> {
+  const client = createServiceRoleClient()
+  if (!client) return { error: 'Service role client unavailable — check SUPABASE_SERVICE_ROLE_KEY' }
+
+  const payload: Record<string, unknown> = {
+    user_id: userId,
+    plan,
+    subscription_status: 'active',
+    updated_at: new Date().toISOString(),
+  }
+  // Re-use lemon_subscription_id as a generic payment reference column
+  if (paymentRef) payload.lemon_subscription_id = paymentRef
+
+  const { error } = await client
+    .from('user_settings')
+    .upsert(payload, { onConflict: 'user_id' })
+
+  return { error: error?.message ?? null }
+}
+
+
 export function createAnonSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -66,7 +102,7 @@ export function createAnonSupabaseClient() {
     url,
     key,
     { auth: { persistSession: false, autoRefreshToken: false } }
-  );
+  )
 }
 
 export function createAuthedSupabaseClient(token: string) {
