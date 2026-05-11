@@ -1019,10 +1019,46 @@ export default function HomePage() {
           {/* 2 × 2 grid */}
           <div className="feat-grid mob-grid-1" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             {[
-              { accent: '#2DD4BF', title: 'Trending Tokens',    desc: "A clean overview of what's moving on-chain. Shows which tokens are gaining attention, volume, or momentum." },
-              { accent: '#ec4899', title: 'Smart Money Moves',  desc: 'A preview of how ChainLens will track high-value wallets and their actions in real time.' },
-              { accent: '#8b5cf6', title: 'Liquidity Scanner',  desc: 'An overview of how ChainLens will analyze liquidity health, LP status, and contract safety.' },
-              { accent: '#60a5fa', title: 'Token Scan + Clark AI', desc: 'A preview of how ChainLens AI will break down any token and provide insights, risks, and context.' },
+              {
+                accent: '#2DD4BF',
+                title: 'Trending Tokens',
+                label: 'Preview interface',
+                rows: [
+                  ['VIRTUAL', 'Base', 'Momentum detected'],
+                  ['AERO', 'Base', 'Liquidity leader'],
+                  ['BRETT', 'Base', 'Watchlist activity'],
+                ],
+              },
+              {
+                accent: '#ec4899',
+                title: 'Smart Money Moves',
+                label: 'Example read',
+                rows: [
+                  ['Tracked wallet', 'Action', 'Bought VIRTUAL'],
+                  ['Whale swap', 'Flow', 'Into AERO'],
+                  ['Repeat wallet', 'Signal', 'Activity detected'],
+                ],
+              },
+              {
+                accent: '#8b5cf6',
+                title: 'Liquidity Scanner',
+                label: 'Preview interface',
+                rows: [
+                  ['LP control', 'Status', 'Unverified'],
+                  ['Pool depth', 'Status', 'Strong'],
+                  ['Slippage risk', 'Status', 'Medium'],
+                ],
+              },
+              {
+                accent: '#60a5fa',
+                title: 'Token Scan + Clark AI',
+                label: 'Example read',
+                rows: [
+                  ['Verdict', '', 'WATCH'],
+                  ['Confidence', '', 'Medium'],
+                  ['Next', '', 'Verify holders + LP control'],
+                ],
+              },
             ].map((p, i) => (
               <Reveal key={p.title} delayMs={i * 100}><div
                 className="feat-card mobile-static-card"
@@ -1049,16 +1085,18 @@ export default function HomePage() {
                     <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: p.accent, textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Preview</span>
                   </div>
                   <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#f1f5f9', margin: '0 0 8px', letterSpacing: '-0.01em' }}>{p.title}</h3>
-                  <p style={{ fontSize: '13px', lineHeight: 1.65, color: 'rgba(255,255,255,0.38)', margin: 0 }}>{p.desc}</p>
+                  <p style={{ fontSize: '12px', lineHeight: 1.65, color: 'rgba(148,163,184,0.95)', margin: 0, letterSpacing: '0.04em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{p.label}</p>
                 </div>
 
-                {/* Placeholder box */}
-                <div style={{ height: '160px', borderRadius: '12px', background: 'linear-gradient(160deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.008) 100%)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '10px', position: 'relative', overflow: 'hidden' }}>
-                  <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: 'radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
-                  <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
-                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 8px rgba(45,212,191,0.6)', animation: 'cl-pulse 2s ease-in-out infinite' }} />
-                    <span style={{ fontSize: '12px', color: '#475569', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>Coming Soon</span>
-                  </div>
+                {/* Preview rows */}
+                <div style={{ minHeight: '160px', borderRadius: '12px', background: 'linear-gradient(160deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.008) 100%)', border: '1px solid rgba(255,255,255,0.06)', display: 'grid', gap: '8px', padding: '12px', position: 'relative', overflow: 'hidden' }}>
+                  {p.rows.map((row) => (
+                    <div key={`${p.title}-${row[0]}-${row[2]}`} style={{ display: 'grid', gridTemplateColumns: '1.1fr .7fr 1.4fr', gap: '8px', alignItems: 'center', borderRadius: '8px', border: '1px solid rgba(148,163,184,0.18)', background: 'rgba(15,23,42,0.55)', padding: '8px 10px' }}>
+                      <span style={{ fontSize: '11px', color: '#e2e8f0', fontWeight: 600 }}>{row[0]}</span>
+                      <span style={{ fontSize: '10px', color: 'rgba(148,163,184,0.95)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{row[1]}</span>
+                      <span style={{ fontSize: '11px', color: '#cbd5e1', textAlign: 'right' }}>{row[2]}</span>
+                    </div>
+                  ))}
                 </div>
               </div></Reveal>
             ))}
