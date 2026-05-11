@@ -42,17 +42,14 @@ export async function GET(request: NextRequest) {
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
   const betaAllElite = process.env.BETA_ALL_ELITE === 'true';
   const rawPlan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
-  const plan = betaOverride ? 'elite' : rawPlan;
-  const debugMode = request.nextUrl.searchParams.get('debug') === 'true';
-
-  const diagnostics = (process.env.NODE_ENV !== 'production' || debugMode)
+  const effectivePlan = betaAllElite ? 'elite' : rawPlan;
+  const debugMode = process.env.NODE_ENV !== 'production' || request.nextUrl.searchParams.get('debug') === 'true';
+  const debug = debugMode
     ? {
-        authenticated: true,
-        userIdPresent: Boolean(auth.userId),
-        hasSettingsRow: !result.error,
-        plan,
-        fallback: Boolean(result.error),
-        ...(debugMode && { rawPlan, betaAllElite: betaOverride, settingsRowFound: !result.error }),
+        rawPlan,
+        effectivePlan,
+        betaAllElite,
+        settingsRowFound: !result.error,
       }
     : undefined;
 
@@ -62,14 +59,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         settings: result.settings,
-        plan,
-        effectivePlan: plan,
-        verifiedPlan: plan,
+        plan: effectivePlan,
+        effectivePlan,
+        verifiedPlan: effectivePlan,
         subscription_status: result.settings.subscription_status ?? null,
         error: result.error,
         fallback: true,
-        ...betaFields,
-        diagnostics,
+        betaEliteActive: betaAllElite,
+        ...(debug ? { debug } : {}),
       },
       { status: 200 }
     );
@@ -78,13 +75,13 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(
     {
       settings: result.settings,
-      plan,
-      effectivePlan: plan,
-      verifiedPlan: plan,
+      plan: effectivePlan,
+      effectivePlan,
+      verifiedPlan: effectivePlan,
       subscription_status: result.settings.subscription_status ?? null,
       fallback: false,
-      ...betaFields,
-      diagnostics,
+      betaEliteActive: betaAllElite,
+      ...(debug ? { debug } : {}),
     },
     { status: 200 }
   );
