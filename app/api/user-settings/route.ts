@@ -43,25 +43,32 @@ export async function GET(request: NextRequest) {
   const betaOverride = process.env.BETA_ALL_ELITE === 'true';
   const rawPlan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
   const plan = betaOverride ? 'elite' : rawPlan;
-  const diagnostics = process.env.NODE_ENV !== 'production'
+  const debugMode = request.nextUrl.searchParams.get('debug') === 'true';
+
+  const diagnostics = (process.env.NODE_ENV !== 'production' || debugMode)
     ? {
         authenticated: true,
         userIdPresent: Boolean(auth.userId),
         hasSettingsRow: !result.error,
         plan,
         fallback: Boolean(result.error),
+        ...(debugMode && { rawPlan, betaAllElite: betaOverride, settingsRowFound: !result.error }),
       }
     : undefined;
+
+  const betaFields = betaOverride ? { betaEliteActive: true } : {};
 
   if (result.error) {
     return NextResponse.json(
       {
         settings: result.settings,
         plan,
+        effectivePlan: plan,
+        verifiedPlan: plan,
         subscription_status: result.settings.subscription_status ?? null,
         error: result.error,
         fallback: true,
-        ...(betaOverride && { betaOverride: true }),
+        ...betaFields,
         diagnostics,
       },
       { status: 200 }
@@ -72,9 +79,11 @@ export async function GET(request: NextRequest) {
     {
       settings: result.settings,
       plan,
+      effectivePlan: plan,
+      verifiedPlan: plan,
       subscription_status: result.settings.subscription_status ?? null,
       fallback: false,
-      ...(betaOverride && { betaOverride: true }),
+      ...betaFields,
       diagnostics,
     },
     { status: 200 }
