@@ -50,7 +50,7 @@ type SyncResponse = {
   skipReasons?: Record<string, number>
   message?: string
 }
-type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number }
+type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number; hiddenAsBoring?: number; hiddenByFilter?: number; hiddenAsDust?: number }
 
 const RANGE_OPTIONS: { label: string; value: ValueRange }[] = [
   { label: 'All',       value: 'all' },
@@ -234,7 +234,7 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 export default function WhaleAlertsPage() {
   const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
-  const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('interesting')
+  const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('all')
   const [valueRange, setValueRange]   = useState<ValueRange>('all')
   const [typeFilter, setTypeFilter]   = useState('all')
   const [sevFilter, setSevFilter]     = useState('all')
@@ -393,7 +393,14 @@ export default function WhaleAlertsPage() {
     setSideFilter('all')
     setValueRange('all')
     setWindowValue('24h')
-    setFeedMode('interesting')
+    setFeedMode('all')
+  }
+  const showAllAlerts = () => {
+    setFeedMode('all')
+    setValueRange('all')
+    setTypeFilter('all')
+    setSevFilter('all')
+    setSideFilter('all')
   }
   const clearSyncState = () => {
     window.localStorage.removeItem(CLIENT_SYNC_STATE_CACHE_KEY)
@@ -877,14 +884,20 @@ export default function WhaleAlertsPage() {
             const partial = Boolean(syncState && (syncState.hasMore ?? false))
             const allDone = Boolean(syncState && !(syncState.hasMore ?? false))
             const hasProviderErrors = (syncState?.providerErrors ?? 0) > 0
-            const insertedSoFar = syncState?.inserted ?? 0
+            const insertedSoFar = syncState?.insertedTotal ?? syncState?.inserted ?? 0
             const rangeActive = valueRange !== 'all'
-            const isInterestingMode = feedMode === 'interesting'
-            const filtersActive = rangeActive || isInterestingMode || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
-            const hiddenByFilters = insertedSoFar > 0 && filtersActive
+            // Use server diagnostics to detect API-side filtering
+            const serverHiddenBoring = feedDiagnostics?.hiddenAsBoring ?? 0
+            const serverHiddenFilter = feedDiagnostics?.hiddenByFilter ?? 0
+            const serverRawRows = feedDiagnostics?.rawRows ?? 0
+            const serverFilteredSomething = serverHiddenBoring > 0 || serverHiddenFilter > 0 || serverRawRows > 0
+            // UI-level filters user explicitly set (not interesting mode which is implicit)
+            const uiFiltersActive = rangeActive || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
+            const hiddenByFilters = serverFilteredSomething || (insertedSoFar > 0 && uiFiltersActive)
+            const hiddenCount = serverHiddenBoring + serverHiddenFilter || insertedSoFar
             const rangeLabel = RANGE_OPTIONS.find(o => o.value === valueRange)?.label ?? valueRange
             const title = hiddenByFilters
-              ? 'Alerts found — hidden by filters'
+              ? `${hiddenCount > 0 ? `${hiddenCount} alerts` : 'Alerts'} found — hidden by filters`
               : rangeActive
                 ? 'No alerts match this range in the selected window.'
                 : partial
@@ -893,18 +906,14 @@ export default function WhaleAlertsPage() {
                     ? 'No qualifying whale alerts found'
                     : 'No whale alerts yet'
             const body = hiddenByFilters
-              ? `${insertedSoFar} alert${insertedSoFar !== 1 ? 's' : ''} found in this batch, but hidden by the current filter settings. Try "All" value range or reset filters.`
-              : rangeActive && isInterestingMode
-                ? `No interesting alerts in the ${rangeLabel} range. Switch to All activity to see base/stable moves.`
-                : rangeActive
-                  ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
-                  : partial
-                    ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
-                    : allDone && isInterestingMode
-                      ? 'No interesting alerts match this filter. Switch to All activity to see base/stable moves.'
-                      : allDone
-                        ? 'No qualifying recent whale activity found in this batch.'
-                        : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
+              ? 'Switch to All activity or reset filters to view them.'
+              : rangeActive
+                ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
+                : partial
+                  ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
+                  : allDone
+                    ? 'No qualifying recent whale activity found in this batch.'
+                    : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
             return (
               <div style={{ padding: '64px 20px', textAlign: 'center' }}>
                 <div className="mx-auto flex items-center justify-center rounded-[16px]"
@@ -918,6 +927,20 @@ export default function WhaleAlertsPage() {
                 <p className="mx-auto" style={{ marginTop: 8, maxWidth: 400, fontSize: 14, lineHeight: 1.6, color: '#64748b' }}>
                   {body}
                 </p>
+                {hiddenByFilters && (
+                  <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
+                    <button onClick={showAllAlerts}
+                      className="rounded-[12px] hover:opacity-90"
+                      style={{ padding: '9px 20px', fontSize: 13, fontWeight: 700, color: '#fff', background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', border: 'none', boxShadow: '0 0 18px rgba(45,212,191,0.18)' }}>
+                      Show all alerts
+                    </button>
+                    <button onClick={resetFilters}
+                      className="rounded-[12px] hover:opacity-80"
+                      style={{ padding: '9px 20px', fontSize: 13, fontWeight: 600, color: '#94a3b8', background: 'rgba(255,255,255,0.05)', border: bdr }}>
+                      Reset filters
+                    </button>
+                  </div>
+                )}
                 {hasProviderErrors && (
                   <p className="mx-auto rounded-[10px]"
                     style={{ marginTop: 12, maxWidth: 400, padding: '8px 14px', fontSize: 12, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', color: '#fcd34d' }}>
@@ -929,10 +952,10 @@ export default function WhaleAlertsPage() {
                   {syncState
                     ? <Pill color="teal">{scanned} of {total || stats.trackedWallets} scanned</Pill>
                     : <Pill color="teal">No sync yet</Pill>}
-                  {syncState && <Pill color="purple">Found {syncState.inserted ?? 0} qualifying alerts</Pill>}
-                  {syncState && <Pill color="amber">{syncState.skipped ?? 0} skipped (stable/routing/duplicate/no recent movement)</Pill>}
+                  {syncState && insertedSoFar > 0 && <Pill color="purple">{insertedSoFar} qualifying alerts found</Pill>}
+                  {syncState && <Pill color="amber">{syncState.skipped ?? 0} skipped</Pill>}
                   <Pill color={hasProviderErrors ? 'amber' : 'purple'}>
-                    {hasProviderErrors ? 'Provider degraded' : 'Provider healthy'}
+                    {hasProviderErrors ? 'Source delay' : 'Provider healthy'}
                   </Pill>
                 </div>
               </div>
