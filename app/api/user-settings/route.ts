@@ -72,7 +72,7 @@ export async function GET(request: NextRequest) {
         error: result.error,
         fallback: true,
         ...betaFields,
-        diagnostics,
+        ...(debug ? { debug } : {}),
       },
       { status: 200 }
     );
@@ -87,7 +87,7 @@ export async function GET(request: NextRequest) {
       subscription_status: result.settings.subscription_status ?? null,
       fallback: false,
       ...betaFields,
-      diagnostics,
+      ...(debug ? { debug } : {}),
     },
     { status: 200 }
   );
