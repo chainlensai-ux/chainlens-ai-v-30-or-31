@@ -331,7 +331,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-                {filteredConnectors.map(c => {
+                {connectors.map(c => {
                   const label = connectorLabel(c.id, c.name)
                   const icon = connectorIcon(c.id)
                   const isWC = isWalletConnect(c.id)
