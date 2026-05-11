@@ -42,15 +42,12 @@ type AlertItem = {
   logo_url?: string | null
   image?: string | null
   token_logo?: string | null
-  walletContext?: WalletCtx | null
-}
-type AlertIntelligence = {
-  walletCount: number
-  activeWalletCount: number
-  pricedAlertCount: number
-  unpricedAlertCount: number
-  topRepeatedTokens: string[]
-  topWallets: Array<{ shortAddress: string; alertCount24h: number; totalVerifiedUsd24h: number | null; repeatedTokens: string[]; tags: string[]; confidence: string }>
+  walletContext?: {
+    shortAddress: string; behaviorType: string; behaviorScore: number; confidence: string
+    repeatedTokens: string[]; alertCount24h: number; alertCount7d: number
+    verifiedUsdFlow7d: number | null; monitorReason: string; nextWatch: string
+    tags: string[]; isContract: boolean | null
+  } | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type ValueRange = 'all' | '100-500' | '500-1000' | '1000-5000' | '5000-10000' | '10000+'
@@ -1094,26 +1091,35 @@ export default function WhaleAlertsPage() {
                       {(alert.repeats ?? 1) > 1 ? ` · ×${alert.repeats} in 5m` : ''}
                       {' · '}{timeAgo(alert.occurred_at)}
                     </p>
-
-                    {/* Wallet intelligence tags */}
+                    {/* Wallet behavior tags */}
                     {alert.walletContext && (() => {
                       const ctx = alert.walletContext!
-                      const visibleTags = ctx.tags.slice(0, 3)
+                      const TYPE_LABEL: Record<string, string> = {
+                        repeat_accumulator: 'Repeat accumulator', active_rotator: 'Active rotator',
+                        fresh_wallet: 'Fresh wallet', seller_distribution: 'Seller / distribution',
+                        mixed_flow: 'Mixed flow', contract_or_router: 'Contract / router',
+                        one_off: 'One-off',
+                      }
+                      const typeLabel = TYPE_LABEL[ctx.behaviorType] ?? ''
+                      const showMonitor = ctx.behaviorScore >= 60 && ctx.confidence !== 'low'
+                      if (!typeLabel && !showMonitor) return null
                       return (
                         <div className="flex flex-wrap items-center" style={{ gap: 4, marginTop: 4 }}>
-                          {visibleTags.map(tag => (
-                            <span key={tag} style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.14)', color: '#475569' }}>
-                              {tag}
+                          {typeLabel && (
+                            <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.14)', color: '#475569' }}>
+                              {typeLabel}
                             </span>
-                          ))}
-                          {ctx.alertCount24h > 1 && (
-                            <span style={{ fontSize: 9, color: '#334155' }}>· {ctx.alertCount24h} alerts</span>
                           )}
-                          {(ctx.totalVerifiedUsd24h ?? 0) > 0 && (
-                            <span style={{ fontSize: 9, color: '#334155' }}>· {fmtUsd(ctx.totalVerifiedUsd24h)} flow</span>
+                          {showMonitor && (
+                            <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.20)', color: '#34d399' }}>
+                              Worth monitoring
+                            </span>
                           )}
-                          {ctx.repeatedTokens.length > 0 && (
-                            <span style={{ fontSize: 9, color: '#334155' }}>· {ctx.repeatedTokens.slice(0, 2).join(', ')}</span>
+                          {ctx.alertCount7d > 1 && (
+                            <span style={{ fontSize: 9, color: '#334155' }}>· {ctx.alertCount7d} alerts/7d</span>
+                          )}
+                          {(ctx.verifiedUsdFlow7d ?? 0) > 0 && (
+                            <span style={{ fontSize: 9, color: '#334155' }}>· {fmtUsd(ctx.verifiedUsdFlow7d)} 7d flow</span>
                           )}
                         </div>
                       )

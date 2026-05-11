@@ -4193,6 +4193,7 @@ type WhaleAlertRow = {
   wallet_label?: string | null
   wallet_address?: string | null
   token_symbol?: string | null
+  focus_token_symbol?: string | null
   side?: string | null
   amount_token?: number | null
   amount_usd?: number | null
@@ -4203,22 +4204,23 @@ type WhaleAlertRow = {
   summary?: string | null
   tx_hash?: string | null
   walletContext?: {
-    shortAddress: string
-    alertCount24h: number
-    totalVerifiedUsd24h: number | null
-    repeatedTokens: string[]
-    tags: string[]
-    confidence: string
-    status: string
+    shortAddress: string; behaviorType: string; behaviorScore: number; confidence: string
+    repeatedTokens: string[]; alertCount24h: number; alertCount7d: number
+    verifiedUsdFlow7d: number | null; monitorReason: string; nextWatch: string
+    tags: string[]; isContract: boolean | null
   } | null
 }
+type WalletBehaviorLeader = {
+  address: string; shortAddress: string; behaviorType: string; behaviorScore: number; confidence: string
+  repeatedTokens: string[]; verifiedUsdFlow24h: number | null; alertCount24h: number; alertCount7d: number
+  monitorReason: string; nextWatch: string
+}
 type WhaleIntelligence = {
-  walletCount: number
-  activeWalletCount: number
-  pricedAlertCount: number
-  unpricedAlertCount: number
-  topRepeatedTokens: string[]
-  topWallets: Array<{ shortAddress: string; alertCount24h: number; totalVerifiedUsd24h: number | null; repeatedTokens: string[]; tags: string[]; confidence: string }>
+  walletBehavior?: {
+    monitoredWallets: number
+    behaviorLeaders: WalletBehaviorLeader[]
+    repeatedTokenWalletMap: Array<{ token: string; walletCount: number; wallets: string[]; totalVerifiedUsd: number | null }>
+  }
 }
 
 function formatWhaleAlertForClark(a: WhaleAlertRow): string {
@@ -4233,8 +4235,10 @@ function formatWhaleAlertForClark(a: WhaleAlertRow): string {
     (a.legs ?? 1) > 1    ? `${a.legs} legs`       : null,
     (a.repeats ?? 1) > 1 ? `×${a.repeats} in 5m`  : null,
   ].filter(Boolean).join(" | ");
-  const ctx = a.walletContext
-  const ctxStr = ctx ? ` | wallet_alerts=${ctx.alertCount24h} confidence=${ctx.confidence}${ctx.repeatedTokens.length ? ` repeats=${ctx.repeatedTokens.slice(0, 3).join(',')}` : ''}${(ctx.totalVerifiedUsd24h ?? 0) > 0 ? ` flow=$${Math.round(ctx.totalVerifiedUsd24h!)}` : ''}` : ''
+  const ctx = a.walletContext;
+  const ctxStr = ctx
+    ? ` | behavior=${ctx.behaviorType} score=${ctx.behaviorScore} conf=${ctx.confidence}${ctx.repeatedTokens.length ? ` repeats=${ctx.repeatedTokens.slice(0, 2).join(',')}` : ''}${(ctx.verifiedUsdFlow7d ?? 0) > 0 ? ` flow7d=$${Math.round(ctx.verifiedUsdFlow7d!)}` : ''}`
+    : '';
   return `[${sig}] ${label} ${side} ${amtStr}${extra ? ` | ${extra}` : ""}${ctxStr}`;
 }
 
@@ -4264,10 +4268,19 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
         "- repeats: same wallet + token + side seen multiple times within 5 minutes.\n" +
         "- side: buy / sell / transfer.\n" +
         "- tx_hash: on-chain reference. Do not construct Basescan URLs.\n\n" +
+        "BEHAVIOR FIELDS (when present in alert rows):\n" +
+        "- behavior=: wallet's derived pattern type (repeat_accumulator, active_rotator, fresh_wallet, etc.).\n" +
+        "- score=: 0–100 conservative behavior score. Never treat as win rate or PnL.\n" +
+        "- conf=: high/medium/low confidence in the pattern.\n" +
+        "- repeats=: tokens this wallet has repeatedly touched.\n" +
+        "- flow7d=: verified USD flow over 7 days, when available.\n\n" +
         "HARD RULES:\n" +
         "- Use only data present in the prompt or whale_alerts block. Never invent amounts or identities.\n" +
         "- Never claim insider knowledge, profit certainty, or smart-money status.\n" +
+        "- Never call a wallet 'smart money' unless a curated label explicitly says so.\n" +
+        "- Say 'worth monitoring', never 'copy trade'.\n" +
         "- If amount_usd is null or 'USD unverified', state that clearly.\n" +
+        "- If behavior signal is limited, say 'behavior signal is still forming'.\n" +
         "- Wallet identity is an internal ChainLens label, not a public claim.\n" +
         "- Do not expose raw wallet addresses.\n" +
         "- End every response with 'Not financial advice.'\n\n" +
@@ -4338,6 +4351,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
     const isSellQuery = /\bwhales?\s+sell(?:ing)?\b|\bwhat are whales?\s+sell(?:ing)\b|\bsell[\s-]?side\s+whale\b/i.test(prompt);
     const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b|\blast week whale activity\b|\b7d whale flows\b|\bwhat were whales buying last 7 days\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
     const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b|\blast 7 days\b/i.test(prompt.toLowerCase());
+    const isBehaviorQuery = /\bmonitor\s+whale\s+wallets?\b|\bwhich\s+wallets?\s+(should\s+I\s+)?(track|monitor|watch)\b|\bwallet\s+behav(ior|iour)\b|\btrack\s+whale\s+wallets?\b|\bwhale\s+wallet\s+(monitor|track|watch|behavior|pattern|activity)\b|\bwallet\s+patterns?\b/i.test(prompt);
     const window = is7dQuery ? "7d" : "24h";
     let contextXml = "<whale_alerts>Data unavailable right now.</whale_alerts>";
     try {
@@ -4351,7 +4365,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
       }
       if (res.ok) {
         const json = await res.json();
-        const intel = json?.intelligence as WhaleIntelligence | undefined
+        const intel = json?.intelligence as WhaleIntelligence | undefined;
         let raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
         // Interesting mode may filter all base-asset moves. Fallback to all activity if needed.
         if (raw.length === 0) {
@@ -4385,6 +4399,56 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
           return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: `No strong sell-side alerts in the current ${window} Interesting feed.${_topBuy ? ` Buying/swap flow is stronger around ${_topBuy}.` : " No dominant sell pressure found."} Worth monitoring if the picture changes.` };
         }
         if (filtered.length > 0) {
+          // Behavior monitoring query — format structured WHALE BEHAVIOR READ from intelligence
+          if (isBehaviorQuery) {
+            const wb = intel?.walletBehavior;
+            if (!wb || wb.behaviorLeaders.length === 0) {
+              return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_behavior", toolsUsed: ["whale_feed_stored"],
+                analysis: "Behavior signal is still forming — not enough repeated wallet activity in the current window. Try the 7d view for a broader read." };
+            }
+            const leaders = wb.behaviorLeaders.slice(0, 4);
+            const tokenMap = (wb.repeatedTokenWalletMap ?? []).slice(0, 5);
+            const behaviorTypeLabel = (t: string) => t.replace(/_/g, ' ');
+            const lines: string[] = [
+              "WHALE BEHAVIOR READ",
+              "",
+              `Main read: ${leaders.length} wallet${leaders.length > 1 ? 's' : ''} showing notable behavior patterns across ${wb.monitoredWallets} tracked in current view.`,
+              "",
+              "Wallets worth monitoring:",
+            ];
+            for (const w of leaders) {
+              lines.push(`- ${w.shortAddress} — ${behaviorTypeLabel(w.behaviorType)}`);
+              lines.push(`  Why: ${w.monitorReason}`);
+              const signals = [
+                `${w.alertCount24h} alert${w.alertCount24h !== 1 ? 's' : ''}/24h`,
+                w.alertCount7d > w.alertCount24h ? `${w.alertCount7d} alerts/7d` : null,
+                w.repeatedTokens.length ? `repeats: ${w.repeatedTokens.slice(0, 2).join(', ')}` : null,
+                (w.verifiedUsdFlow24h ?? 0) > 0 ? `~$${Math.round(w.verifiedUsdFlow24h!).toLocaleString()} 24h flow` : null,
+                `confidence: ${w.confidence}`,
+              ].filter(Boolean).join(' | ');
+              lines.push(`  Signals: ${signals}`);
+              lines.push(`  Next watch: ${w.nextWatch}`);
+            }
+            if (tokenMap.length > 0) {
+              lines.push("", "Repeated token flow:");
+              for (const t of tokenMap) {
+                const usdPart = t.totalVerifiedUsd ? ` (~$${Math.round(t.totalVerifiedUsd).toLocaleString()} verified)` : '';
+                lines.push(`- ${t.token}: seen across ${t.walletCount} wallet${t.walletCount > 1 ? 's' : ''}${usdPart}`);
+              }
+            }
+            lines.push(
+              "",
+              "Risk / uncertainty:",
+              "- Buy/sell direction may be unverified for some rows if token side was not captured on-chain.",
+              "- USD values are verified only for stablecoins, WETH, cbBTC, and GeckoTerminal-priced tokens.",
+              "- Patterns are derived from stored alerts only — not a complete on-chain history.",
+              "",
+              `Next: Monitor whether activity from these wallets continues or shifts tokens. Worth monitoring, not a trade signal.`,
+              "",
+              "Not financial advice.",
+            );
+            return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_behavior", toolsUsed: ["whale_feed_stored", "wallet_behavior"], analysis: lines.join("\n") };
+          }
           if (isStoredWhaleQuestion) {
             const agg = aggregateWhaleRows(filtered)
             if (!agg.repeatLeaders.length) {
@@ -4464,7 +4528,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             (isBuyQuery ? "Focus: summarize which tokens whales are buying, using wallet_label where available (not raw addresses). Group by token.\n" : isSellQuery ? "Focus: summarize which tokens whales are selling, using wallet_label where available (not raw addresses). Group by token. Highlight any HIGH SIGNAL sell pressure.\n" : "") +
             "Note: wallet_label is an internal ChainLens label, not a verified public identity.\n" +
             "USD value shown as 'USD unverified' for tokens outside USDC/USDT/WETH/cbBTC.\n" +
-            (intel?.topRepeatedTokens?.length ? `Key repeated tokens across wallets: ${intel.topRepeatedTokens.join(', ')}. Use this to identify concentrated flow.\n` : '') +
+            (intel?.walletBehavior?.behaviorLeaders.length
+              ? `\nTop behavior patterns:\n${intel.walletBehavior.behaviorLeaders.slice(0, 3).map(w => `- ${w.shortAddress}: ${w.behaviorType.replace(/_/g, ' ')} (score=${w.behaviorScore}, conf=${w.confidence}${w.repeatedTokens.length ? `, repeats=${w.repeatedTokens.slice(0,2).join(',')}` : ''})`).join('\n')}\n`
+              : '') +
             "</whale_alerts>";
         } else {
           if (isStoredWhaleQuestion) {
