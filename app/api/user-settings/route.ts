@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
-  const betaOverride = process.env.BETA_ALL_ELITE === 'true';
+  const betaAllElite = process.env.BETA_ALL_ELITE === 'true';
   const rawPlan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
   const plan = betaOverride ? 'elite' : rawPlan;
   const debugMode = request.nextUrl.searchParams.get('debug') === 'true';

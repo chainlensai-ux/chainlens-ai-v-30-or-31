@@ -81,6 +81,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
   const { address, isConnected } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
+  const filteredConnectors = visibleConnectors(connectors)
   const { disconnect } = useDisconnect()
 
   // web3modal.open is populated by WCBridge once it mounts (client-only)

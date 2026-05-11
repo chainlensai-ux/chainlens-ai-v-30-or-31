@@ -229,6 +229,7 @@ export async function getOrCreateUserSettings(
 const _planCache = new Map<string, { plan: 'free' | 'pro' | 'elite'; exp: number }>()
 const PLAN_CACHE_TTL_MS = 60_000
 const PLAN_CACHE_MAX = 500
+const BETA_ALL_ELITE = process.env.BETA_ALL_ELITE === 'true'
 
 export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'pro' | 'elite'> {
   const authHeader = request.headers.get('authorization') ?? ''
@@ -243,6 +244,11 @@ export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'p
     if (!sb) return 'free'
     const { data: userData, error: authErr } = await sb.auth.getUser(token)
     if (authErr || !userData.user) return 'free'
+    if (BETA_ALL_ELITE) {
+      if (_planCache.size >= PLAN_CACHE_MAX) _planCache.clear()
+      _planCache.set(token, { plan: 'elite', exp: now + PLAN_CACHE_TTL_MS })
+      return 'elite'
+    }
     // Use authed client with Bearer in global headers for RLS-compatible DB query.
     const authedSb = createAuthedSupabaseClient(token) ?? sb
     const { data: row } = await authedSb
