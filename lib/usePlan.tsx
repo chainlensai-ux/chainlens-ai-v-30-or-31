@@ -6,6 +6,11 @@ import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
 
 export { canAccessFeature }
 
+function resolvePlan(json: Record<string, unknown>): UserPlan {
+  const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
+  return p === 'pro' || p === 'elite' ? p : 'free'
+}
+
 export function usePlan(): UserPlan {
   const [plan, setPlan] = useState<UserPlan>('free')
   useEffect(() => {
@@ -15,8 +20,7 @@ export function usePlan(): UserPlan {
         const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const json = await res.json()
-          const p = (json?.plan ?? (json?.settings as Record<string, unknown>)?.plan)
-          setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+          setPlan(resolvePlan(json))
         }
       } catch { setPlan('free') }
     }
@@ -29,22 +33,23 @@ export function usePlan(): UserPlan {
 
 /** Like usePlan but exposes loading state so pages can suppress the locked
  *  panel flash while the session/plan are still resolving. */
-export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null } {
+export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null; betaEliteActive: boolean } {
   const [plan, setPlan] = useState<UserPlan>('free')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [betaEliteActive, setBetaEliteActive] = useState(false)
   useEffect(() => {
     async function load(token: string | undefined) {
-      if (!token) { setPlan('free'); setError(null); setLoading(false); return }
+      if (!token) { setPlan('free'); setBetaEliteActive(false); setError(null); setLoading(false); return }
       try {
         const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const json = await res.json()
-          const p = (json?.plan ?? (json?.settings as Record<string, unknown>)?.plan)
-          setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+          setPlan(resolvePlan(json))
+          setBetaEliteActive(json?.betaEliteActive === true)
           setError(null)
         }
-      } catch { setPlan('free'); setError('plan_fetch_failed') }
+      } catch { setPlan('free'); setBetaEliteActive(false); setError('plan_fetch_failed') }
       setLoading(false)
     }
     supabase.auth.getSession().then(({ data }) => load(data.session?.access_token))
@@ -54,7 +59,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
     })
     return () => l.subscription.unsubscribe()
   }, [])
-  return { plan, loading, error }
+  return { plan, loading, error, betaEliteActive }
 }
 
 const FEATURE_DISPLAY: Record<string, string> = {
