@@ -43,6 +43,8 @@ export async function GET(request: NextRequest) {
   const betaAllElite = process.env.BETA_ALL_ELITE === 'true';
   const rawPlan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
   const effectivePlan = betaAllElite ? 'elite' : rawPlan;
+  const betaEliteActive = betaAllElite;
+  const betaFields = betaEliteActive ? { betaEliteActive: true } : { betaEliteActive: false };
   const debugMode = process.env.NODE_ENV !== 'production' || request.nextUrl.searchParams.get('debug') === 'true';
   const debug = debugMode
     ? {
@@ -65,7 +67,7 @@ export async function GET(request: NextRequest) {
         subscription_status: result.settings.subscription_status ?? null,
         error: result.error,
         fallback: true,
-        betaEliteActive: betaAllElite,
+        ...betaFields,
         ...(debug ? { debug } : {}),
       },
       { status: 200 }
@@ -80,7 +82,7 @@ export async function GET(request: NextRequest) {
       verifiedPlan: effectivePlan,
       subscription_status: result.settings.subscription_status ?? null,
       fallback: false,
-      betaEliteActive: betaAllElite,
+      ...betaFields,
       ...(debug ? { debug } : {}),
     },
     { status: 200 }
