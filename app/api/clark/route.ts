@@ -4331,7 +4331,22 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
       }
       if (res.ok) {
         const json = await res.json();
-        const raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
+        let raw: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
+        // Interesting mode may filter all base-asset moves. Fallback to all activity if needed.
+        if (raw.length === 0) {
+          try {
+            const res2 = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=false&limit=75&t=${Date.now()}`, {
+              signal: AbortSignal.timeout(5000),
+              cache: "no-store",
+              headers: authHeader ? { Authorization: authHeader } : {},
+            });
+            if (res2.ok) {
+              const json2 = await res2.json();
+              const all: WhaleAlertRow[] = Array.isArray(json2?.alerts) ? json2.alerts : [];
+              if (all.length > 0) raw = all;
+            }
+          } catch { /* keep raw empty */ }
+        }
         const filtered = isBuyQuery
           ? raw.filter(a => (a as Record<string, unknown>).side === "buy" || !(a as Record<string, unknown>).side)
           : isSellQuery
