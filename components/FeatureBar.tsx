@@ -322,18 +322,20 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
   const router = useRouter()
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
   const [plan, setPlan] = useState<UserPlan>('free')
+  const [betaElite, setBetaElite] = useState(false)
 
   useEffect(() => {
     async function loadPlan(token: string | undefined) {
-      if (!token) { setPlan('free'); return }
+      if (!token) { setPlan('free'); setBetaElite(false); return }
       try {
         const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const json = await res.json()
-          const p = (json?.settings as Record<string, unknown>)?.plan
+          const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
           setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+          setBetaElite(json?.betaEliteActive === true)
         }
-      } catch { setPlan('free') }
+      } catch { setPlan('free'); setBetaElite(false) }
     }
 
     supabase.auth.getSession().then(({ data }) => {
@@ -493,12 +495,12 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
             </span>
             <span style={{
               fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em',
-              color: plan === 'elite' ? '#fbbf24' : plan === 'pro' ? '#a78bfa' : '#64748b',
-              background: plan === 'elite' ? 'rgba(251,191,36,0.12)' : plan === 'pro' ? 'rgba(139,92,246,0.14)' : 'rgba(100,116,139,0.12)',
-              border: `1px solid ${plan === 'elite' ? 'rgba(251,191,36,0.28)' : plan === 'pro' ? 'rgba(139,92,246,0.30)' : 'rgba(100,116,139,0.22)'}`,
+              color: betaElite ? '#2DD4BF' : plan === 'elite' ? '#fbbf24' : plan === 'pro' ? '#a78bfa' : '#64748b',
+              background: betaElite ? 'rgba(45,212,191,0.12)' : plan === 'elite' ? 'rgba(251,191,36,0.12)' : plan === 'pro' ? 'rgba(139,92,246,0.14)' : 'rgba(100,116,139,0.12)',
+              border: `1px solid ${betaElite ? 'rgba(45,212,191,0.30)' : plan === 'elite' ? 'rgba(251,191,36,0.28)' : plan === 'pro' ? 'rgba(139,92,246,0.30)' : 'rgba(100,116,139,0.22)'}`,
               borderRadius: '5px', padding: '2px 5px',
             }}>
-              {plan.toUpperCase()}
+              {betaElite ? 'BETA' : plan.toUpperCase()}
             </span>
           </button>
         ) : (

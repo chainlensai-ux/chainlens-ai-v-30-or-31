@@ -55,6 +55,8 @@ export async function GET(request: NextRequest) {
       }
     : undefined;
 
+  const betaFields = betaOverride ? { betaEliteActive: true } : {};
+
   if (result.error) {
     return NextResponse.json(
       {

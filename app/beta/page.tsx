@@ -116,10 +116,27 @@ export default function BetaPage() {
           ChainLens
         </div>
 
-        <h1 style={{ margin: '0 0 8px', color: '#f1f5f9', textAlign: 'center', fontSize: '24px' }}>Access Temporarily Closed</h1>
-        <p style={{ margin: '0', color: '#94a3b8', textAlign: 'center', fontSize: '13px', lineHeight: 1.6 }}>
-          ChainLens access is temporarily closed while we prepare the final release.
+        <h1 style={{ margin: '0 0 8px', color: '#f1f5f9', textAlign: 'center', fontSize: '24px' }}>Beta Access</h1>
+        <p style={{ margin: '0 0 20px', color: '#94a3b8', textAlign: 'center', fontSize: '13px', lineHeight: 1.6 }}>
+          Enter your beta access code to continue.
         </p>
+
+        <form onSubmit={handleSubmit}>
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="Beta access code"
+            style={inputStyle}
+            autoFocus
+          />
+          {error && (
+            <p style={{ color: '#fca5a5', fontSize: '12px', margin: '0 0 8px', textAlign: 'center' }}>{error}</p>
+          )}
+          <button type="submit" style={buttonStyle}>
+            Enter Beta
+          </button>
+        </form>
       </div>
     </main>
   )
