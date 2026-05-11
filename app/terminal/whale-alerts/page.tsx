@@ -27,6 +27,12 @@ type AlertItem = {
   logo_url?: string | null
   image?: string | null
   token_logo?: string | null
+  walletContext?: {
+    shortAddress: string; behaviorType: string; behaviorScore: number; confidence: string
+    repeatedTokens: string[]; alertCount24h: number; alertCount7d: number
+    verifiedUsdFlow7d: number | null; monitorReason: string; nextWatch: string
+    tags: string[]; isContract: boolean | null
+  } | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type ValueRange = 'all' | '100-500' | '500-1000' | '1000-5000' | '5000-10000' | '10000+'
@@ -1068,6 +1074,39 @@ export default function WhaleAlertsPage() {
                       {(alert.repeats ?? 1) > 1 ? ` · ×${alert.repeats} in 5m` : ''}
                       {' · '}{timeAgo(alert.occurred_at)}
                     </p>
+                    {/* Wallet behavior tags */}
+                    {alert.walletContext && (() => {
+                      const ctx = alert.walletContext!
+                      const TYPE_LABEL: Record<string, string> = {
+                        repeat_accumulator: 'Repeat accumulator', active_rotator: 'Active rotator',
+                        fresh_wallet: 'Fresh wallet', seller_distribution: 'Seller / distribution',
+                        mixed_flow: 'Mixed flow', contract_or_router: 'Contract / router',
+                        one_off: 'One-off',
+                      }
+                      const typeLabel = TYPE_LABEL[ctx.behaviorType] ?? ''
+                      const showMonitor = ctx.behaviorScore >= 60 && ctx.confidence !== 'low'
+                      if (!typeLabel && !showMonitor) return null
+                      return (
+                        <div className="flex flex-wrap items-center" style={{ gap: 4, marginTop: 4 }}>
+                          {typeLabel && (
+                            <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.14)', color: '#475569' }}>
+                              {typeLabel}
+                            </span>
+                          )}
+                          {showMonitor && (
+                            <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.20)', color: '#34d399' }}>
+                              Worth monitoring
+                            </span>
+                          )}
+                          {ctx.alertCount7d > 1 && (
+                            <span style={{ fontSize: 9, color: '#334155' }}>· {ctx.alertCount7d} alerts/7d</span>
+                          )}
+                          {(ctx.verifiedUsdFlow7d ?? 0) > 0 && (
+                            <span style={{ fontSize: 9, color: '#334155' }}>· {fmtUsd(ctx.verifiedUsdFlow7d)} 7d flow</span>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
 
                   {/* Right column */}

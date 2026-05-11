@@ -497,6 +497,156 @@ function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
   return usd !== null && usd > 0 ? { ...base, amount_usd: usd } : base
 }
 
+// ─── On-chain wallet enrichment ──────────────────────────────────────────────
+
+type OnChainData = { isContract: boolean | null; nativeBalanceEth: number | null; txCount: number | null }
+const onChainCache = new Map<string, { exp: number; data: OnChainData }>()
+const ONCHAIN_TTL_MS = 4 * 60 * 1000
+const MAX_WALLETS = 20
+
+function resolveBaseRpc(): string {
+  const explicit = process.env.ALCHEMY_BASE_RPC_URL ?? process.env.BASE_RPC_URL
+  if (explicit && /^https?:\/\//.test(explicit)) return explicit
+  const key = process.env.ALCHEMY_BASE_KEY ?? process.env.ALCHEMY_API_KEY
+  if (key) return `https://base-mainnet.g.alchemy.com/v2/${key}`
+  return 'https://mainnet.base.org'
+}
+const BASE_RPC = resolveBaseRpc()
+
+async function fetchOnChain(address: string): Promise<OnChainData> {
+  const cached = onChainCache.get(address.toLowerCase())
+  if (cached && cached.exp > Date.now()) return cached.data
+  let isContract: boolean | null = null, nativeBalanceEth: number | null = null, txCount: number | null = null
+  try {
+    const res = await fetch(BASE_RPC, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([
+        { jsonrpc: '2.0', id: 1, method: 'eth_getBalance',          params: [address, 'latest'] },
+        { jsonrpc: '2.0', id: 2, method: 'eth_getTransactionCount', params: [address, 'latest'] },
+        { jsonrpc: '2.0', id: 3, method: 'eth_getCode',             params: [address, 'latest'] },
+      ]),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (res.ok) {
+      const results = (await res.json()) as Array<{ id: number; result?: string; error?: unknown }>
+      for (const r of results) {
+        if (!r.result || r.error) continue
+        if (r.id === 1) { const wei = parseInt(r.result, 16); if (Number.isFinite(wei)) nativeBalanceEth = wei / 1e18 }
+        if (r.id === 2) { const n = parseInt(r.result, 16); if (Number.isFinite(n)) txCount = n }
+        if (r.id === 3) isContract = r.result !== '0x' && r.result.length > 2
+      }
+    }
+  } catch { /* leave as null */ }
+  const data: OnChainData = { isContract, nativeBalanceEth, txCount }
+  onChainCache.set(address.toLowerCase(), { exp: Date.now() + ONCHAIN_TTL_MS, data })
+  return data
+}
+
+// ─── Wallet behavior analysis ─────────────────────────────────────────────────
+
+type BehaviorWindow = {
+  alertCount: number; verifiedUsdFlow: number | null; uniqueTokens: number
+  buyCount: number; sellCount: number; unknownDirectionCount: number; repeatedTokens: string[]
+}
+type BehaviorType =
+  | 'repeat_accumulator' | 'active_rotator' | 'fresh_wallet' | 'one_off'
+  | 'seller_distribution' | 'mixed_flow' | 'contract_or_router' | 'unverified'
+type WalletBehavior = {
+  address: string; shortAddress: string
+  windows: { h24: BehaviorWindow; d7: BehaviorWindow }
+  behaviorType: BehaviorType; behaviorScore: number
+  confidence: 'high' | 'medium' | 'low'
+  reasons: string[]; monitorReason: string; nextWatch: string
+  isContract: boolean | null; nativeBalanceEth: number | null; txCount: number | null
+}
+
+const behaviorHistCache = new Map<string, { exp: number; rows: RawRow[] }>()
+const BEHAV_HIST_TTL_MS = 4 * 60 * 1000
+
+function buildBehaviorWindow(rows: RawRow[]): BehaviorWindow {
+  const tokenCounts = new Map<string, number>()
+  let buyCount = 0, sellCount = 0, unknownDir = 0, usdSum = 0, hasUsd = false
+  for (const row of rows) {
+    const s = (row.side as string | null)?.toLowerCase()
+    if (s === 'buy') buyCount++; else if (s === 'sell') sellCount++; else unknownDir++
+    const usd = row.amount_usd as number | null
+    if (usd != null && usd > 0) { usdSum += usd; hasUsd = true }
+    const tok = ((row.focus_token_symbol as string | null) ?? (row.token_symbol as string | null))?.split(' / ')[0]?.trim()?.toUpperCase() ?? null
+    if (tok && !LOW_SIGNAL_ROUTING.has(tok)) tokenCounts.set(tok, (tokenCounts.get(tok) ?? 0) + 1)
+  }
+  const repeatedTokens = [...tokenCounts.entries()].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([t]) => t)
+  return { alertCount: rows.length, verifiedUsdFlow: hasUsd ? usdSum : null, uniqueTokens: tokenCounts.size, buyCount, sellCount, unknownDirectionCount: unknownDir, repeatedTokens }
+}
+
+function deriveBehaviorType(d7: BehaviorWindow, onChain: OnChainData): BehaviorType {
+  if (onChain.isContract === true) return 'contract_or_router'
+  if (d7.alertCount === 0) return 'unverified'
+  if (d7.alertCount === 1) return 'one_off'
+  if (d7.repeatedTokens.length >= 2 && d7.buyCount >= 2 && d7.buyCount >= d7.sellCount * 2) return 'repeat_accumulator'
+  if (d7.sellCount >= 2 && d7.sellCount >= d7.buyCount * 2) return 'seller_distribution'
+  if (d7.uniqueTokens >= 4 && d7.alertCount >= 5) return 'active_rotator'
+  if (onChain.txCount !== null && onChain.txCount < 50 && d7.alertCount < 4) return 'fresh_wallet'
+  if (d7.buyCount > 0 && d7.sellCount > 0) return 'mixed_flow'
+  return 'unverified'
+}
+
+function computeBehaviorScore(d7: BehaviorWindow, behaviorType: BehaviorType, onChain: OnChainData): number {
+  let score = 0
+  if (d7.alertCount >= 5)  score += 20
+  if (d7.alertCount >= 10) score += 15
+  if (d7.repeatedTokens.length >= 2) score += 15
+  if ((d7.verifiedUsdFlow ?? 0) > 0)     score += 20
+  if ((d7.verifiedUsdFlow ?? 0) > 10000) score += 10
+  if (onChain.isContract === false) score += 10
+  if ((onChain.txCount ?? 0) >= 100) score += 10
+  if (d7.unknownDirectionCount > d7.alertCount * 0.6) score -= 15
+  if (behaviorType === 'contract_or_router') score -= 15
+  if (d7.alertCount <= 1) score -= 10
+  if (d7.verifiedUsdFlow == null) score -= 10
+  return Math.max(0, Math.min(100, score))
+}
+
+function buildWalletBehavior(address: string, h24Rows: RawRow[], d7Rows: RawRow[], onChain: OnChainData): WalletBehavior {
+  const h24 = buildBehaviorWindow(h24Rows)
+  const d7  = buildBehaviorWindow(d7Rows)
+  const behaviorType = deriveBehaviorType(d7, onChain)
+  const behaviorScore = computeBehaviorScore(d7, behaviorType, onChain)
+  const confidence: WalletBehavior['confidence'] =
+    (behaviorScore >= 60 && d7.alertCount >= 3 && (d7.verifiedUsdFlow ?? 0) > 0) ? 'high' :
+    (behaviorScore >= 30 || d7.alertCount >= 2) ? 'medium' : 'low'
+  const reasons: string[] = []
+  if (d7.alertCount >= 3) reasons.push(`${d7.alertCount} alerts in 7d`)
+  if (d7.repeatedTokens.length >= 2) reasons.push(`Repeated: ${d7.repeatedTokens.slice(0, 2).join(', ')}`)
+  if ((d7.verifiedUsdFlow ?? 0) > 0) reasons.push(`~$${Math.round(d7.verifiedUsdFlow!).toLocaleString()} 7d flow`)
+  if (onChain.txCount !== null) reasons.push(`${onChain.txCount.toLocaleString()} on-chain txs`)
+  if (d7.unknownDirectionCount > d7.alertCount * 0.5) reasons.push('Direction mostly unverified')
+  const MONITOR_REASON: Record<BehaviorType, string> = {
+    repeat_accumulator:  `Repeated buy/swap into ${d7.repeatedTokens.slice(0, 2).join(' & ') || 'non-stable tokens'} over 7d with limited sell pressure`,
+    active_rotator:      `High-frequency rotations across ${d7.uniqueTokens} unique tokens — early signal potential`,
+    fresh_wallet:        'New or limited-history wallet with recent activity — pattern still forming',
+    one_off:             'Single alert only — insufficient data to assess',
+    seller_distribution: 'Sell-heavy activity — potential distribution or exit pattern',
+    mixed_flow:          'Mixed buy/sell — no clear directional signal yet',
+    contract_or_router:  'Detected as contract or routing address — likely automated',
+    unverified:          'Behavior signal is still forming',
+  }
+  const NEXT_WATCH: Record<BehaviorType, string> = {
+    repeat_accumulator:  `Watch if ${d7.repeatedTokens[0] ?? 'token'} activity continues or new tokens enter rotation`,
+    active_rotator:      'Monitor for concentration — does rotation narrow to 1–2 tokens?',
+    fresh_wallet:        'Check again in 24h — fresh wallets can signal early positioning',
+    one_off:             'Gather more data over next 24h before drawing conclusions',
+    seller_distribution: 'Monitor if sell clusters expand or volume accelerates',
+    mixed_flow:          'Watch for directional shift — does buy or sell side dominate?',
+    contract_or_router:  'No further monitoring needed unless linked to a known protocol',
+    unverified:          'Gather more activity data over the next 24h window',
+  }
+  return {
+    address, shortAddress: `${address.slice(0, 6)}…${address.slice(-4)}`,
+    windows: { h24, d7 }, behaviorType, behaviorScore, confidence, reasons,
+    monitorReason: MONITOR_REASON[behaviorType], nextWatch: NEXT_WATCH[behaviorType],
+    isContract: onChain.isContract, nativeBalanceEth: onChain.nativeBalanceEth, txCount: onChain.txCount,
+  }
+}
 
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? ''
@@ -645,6 +795,103 @@ export async function GET(req: NextRequest) {
     )
     const grouped  = collapseRapidRepeats(interestSorted).slice(0, limit)
 
+    // ─── Wallet behavior analysis ─────────────────────────────────────────────
+    const walletAddrs = [...new Set(
+      grouped.map(r => (r.wallet_address as string | null)?.toLowerCase()).filter((a): a is string => !!a)
+    )].slice(0, MAX_WALLETS)
+    // h24 rows: derive from grouped (already in memory)
+    const h24ByWallet = new Map<string, RawRow[]>()
+    for (const alert of grouped) {
+      const addr = (alert.wallet_address as string | null)?.toLowerCase()
+      if (!addr) continue
+      const list = h24ByWallet.get(addr) ?? []; list.push(alert); h24ByWallet.set(addr, list)
+    }
+    // d7 rows: one extra DB query for uncached wallets, select only needed columns
+    const d7ByWallet = new Map<string, RawRow[]>()
+    const needsHistory = walletAddrs.filter(a => { const c = behaviorHistCache.get(a); return !c || c.exp <= Date.now() })
+    let historyRowsUsed = 0
+    if (needsHistory.length > 0) {
+      try {
+        const histRes = await supabase
+          .from('whale_alerts')
+          .select('wallet_address, side, amount_usd, token_symbol, focus_token_symbol')
+          .gte('occurred_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+          .in('wallet_address', needsHistory)
+          .limit(500)
+        if (!histRes.error && histRes.data) {
+          historyRowsUsed = histRes.data.length
+          const tempMap = new Map<string, RawRow[]>()
+          for (const row of histRes.data as RawRow[]) {
+            const addr = (row.wallet_address as string | null)?.toLowerCase()
+            if (!addr) continue
+            const list = tempMap.get(addr) ?? []; list.push(row); tempMap.set(addr, list)
+          }
+          for (const addr of needsHistory) behaviorHistCache.set(addr, { exp: Date.now() + BEHAV_HIST_TTL_MS, rows: tempMap.get(addr) ?? [] })
+        }
+      } catch { /* non-critical — falls back to h24 rows */ }
+    }
+    for (const addr of walletAddrs) {
+      const c = behaviorHistCache.get(addr)
+      d7ByWallet.set(addr, c ? c.rows : (h24ByWallet.get(addr) ?? []))
+    }
+    // On-chain enrichment: parallel, cached, timeout-protected
+    const onChainResults = await Promise.allSettled(walletAddrs.map(addr => fetchOnChain(addr)))
+    const walletBehaviorMap = new Map<string, WalletBehavior>()
+    let behaviorSkippedCount = 0
+    for (let i = 0; i < walletAddrs.length; i++) {
+      const addr = walletAddrs[i]
+      const h24Rows = h24ByWallet.get(addr) ?? []
+      const d7Rows  = d7ByWallet.get(addr) ?? h24Rows
+      if (h24Rows.length === 0 && d7Rows.length === 0) { behaviorSkippedCount++; continue }
+      const r = onChainResults[i]
+      const onChain: OnChainData = r.status === 'fulfilled' ? r.value : { isContract: null, nativeBalanceEth: null, txCount: null }
+      walletBehaviorMap.set(addr, buildWalletBehavior(addr, h24Rows, d7Rows, onChain))
+    }
+    // Attach walletContext to alert rows
+    const alertsWithContext = grouped.map(alert => {
+      const addr = (alert.wallet_address as string | null)?.toLowerCase()
+      const beh = addr ? walletBehaviorMap.get(addr) : undefined
+      if (!beh) return alert
+      return {
+        ...alert,
+        walletContext: {
+          shortAddress: beh.shortAddress, behaviorType: beh.behaviorType,
+          behaviorScore: beh.behaviorScore, confidence: beh.confidence,
+          repeatedTokens: beh.windows.d7.repeatedTokens,
+          alertCount24h: beh.windows.h24.alertCount, alertCount7d: beh.windows.d7.alertCount,
+          verifiedUsdFlow7d: beh.windows.d7.verifiedUsdFlow,
+          monitorReason: beh.monitorReason, nextWatch: beh.nextWatch,
+          tags: beh.reasons.slice(0, 3), isContract: beh.isContract,
+        },
+      }
+    })
+    // Intelligence aggregate
+    const tokenToWallets = new Map<string, { wallets: Set<string>; usdSum: number }>()
+    for (const [, beh] of walletBehaviorMap) {
+      for (const tok of beh.windows.d7.repeatedTokens) {
+        const e = tokenToWallets.get(tok) ?? { wallets: new Set(), usdSum: 0 }
+        e.wallets.add(beh.shortAddress); e.usdSum += beh.windows.d7.verifiedUsdFlow ?? 0
+        tokenToWallets.set(tok, e)
+      }
+    }
+    const repeatedTokenWalletMap = [...tokenToWallets.entries()]
+      .map(([token, { wallets, usdSum }]) => ({ token, walletCount: wallets.size, wallets: [...wallets].slice(0, 4), totalVerifiedUsd: usdSum > 0 ? usdSum : null }))
+      .sort((a, b) => b.walletCount - a.walletCount).slice(0, 8)
+    const behaviorLeaders = [...walletBehaviorMap.values()]
+      .filter(b => b.behaviorScore > 0 && b.behaviorType !== 'unverified' && b.behaviorType !== 'one_off')
+      .sort((a, b) => b.behaviorScore - a.behaviorScore || b.windows.d7.alertCount - a.windows.d7.alertCount)
+      .slice(0, 5)
+      .map(b => ({
+        address: b.address, shortAddress: b.shortAddress, behaviorType: b.behaviorType,
+        behaviorScore: b.behaviorScore, confidence: b.confidence,
+        repeatedTokens: b.windows.d7.repeatedTokens, verifiedUsdFlow24h: b.windows.h24.verifiedUsdFlow,
+        alertCount24h: b.windows.h24.alertCount, alertCount7d: b.windows.d7.alertCount,
+        monitorReason: b.monitorReason, nextWatch: b.nextWatch,
+      }))
+    const intelligence = {
+      walletBehavior: { monitoredWallets: walletBehaviorMap.size, behaviorLeaders, repeatedTokenWalletMap },
+    }
+
     const pricedCount   = grouped.filter(r => (r.amount_usd as number | null) != null && (r.amount_usd as number) > 0).length
     const unpricedCount = grouped.filter(r => (r.amount_usd as number | null) == null).length
     const zeroValueCount = grouped.filter(r => r.amount_usd === 0).length
@@ -666,11 +913,13 @@ export async function GET(req: NextRequest) {
         else if (amt == null) sampleUnpricedReasons.push(`${sym}: no_amount`)
         else             sampleUnpricedReasons.push(`${sym}: price_lookup_failed`)
       }
-      debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons }
+      debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons,
+        behaviorDiagnostics: { walletsAnalyzed: walletBehaviorMap.size, alertHistoryRowsUsed: historyRowsUsed, historyWindowUsed: '7d', behaviorLeadersCount: behaviorLeaders.length, skippedWallets: behaviorSkippedCount } }
     }
 
     const payload = {
-      alerts: grouped,
+      alerts: alertsWithContext,
+      intelligence,
       stats: {
         alerts15m:      countStatsFiltered(stats15m.data, majorPrices, 0, tokenPrices),
         alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, 0, tokenPrices),
