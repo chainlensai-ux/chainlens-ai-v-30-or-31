@@ -324,12 +324,15 @@ function parseValueRange(value: string | null): ValueRangeSpec {
 
 // Post-enrichment, post-grouping value filter.
 // null ("All"): quality floor — hide known-tiny moves, keep unpriced rows.
+//   skipFloor=true (feedMode=all): bypass the quality floor entirely, keep all rows.
 // range: require known amount_usd within [min, max).
 function filterByValueRange(
   rows: RawRow[],
   range: ValueRangeSpec,
+  skipFloor = false,
 ): { rows: RawRow[]; hiddenByFilter: number; hiddenAsDust: number } {
   if (range === null) {
+    if (skipFloor) return { rows, hiddenByFilter: 0, hiddenAsDust: 0 }
     let hiddenAsDust = 0
     const result = rows.filter(row => {
       if (!passesQualityFloor(row)) { hiddenAsDust++; return false }
@@ -425,16 +428,19 @@ async function batchFetchTokenPrices(
 
 // Second enrichment pass: price rows that still have amount_usd=null
 // using a pre-fetched token-price map keyed by token_address (lowercased).
+// Also normalizes amount_usd=0 → null (same as enrichRowUsd).
 function enrichRowWithTokenPrice(row: RawRow, tokenPrices: Map<string, number>): RawRow {
-  if ((row.amount_usd as number | null) !== null) return row
-  const addr = (row.token_address as string | null)?.toLowerCase()
-  if (!addr) return row
-  const amt = row.amount_token as number | null
-  if (amt === null || amt <= 0) return row
+  const existingUsd = row.amount_usd as number | null
+  const base: RawRow = existingUsd !== null && existingUsd <= 0 ? { ...row, amount_usd: null } : row
+  if ((base.amount_usd as number | null) !== null) return base
+  const addr = (base.token_address as string | null)?.toLowerCase()
+  if (!addr) return base
+  const amt = base.amount_token as number | null
+  if (amt === null || amt <= 0) return base
   const price = tokenPrices.get(addr)
-  if (price === undefined) return row
+  if (price === undefined) return base
   const usd = Math.round(amt * price * 100) / 100
-  return usd > 0 ? { ...row, amount_usd: usd } : row
+  return usd > 0 ? { ...base, amount_usd: usd } : base
 }
 
 type MajorPrices = { eth: number | null; btc: number | null }
@@ -468,13 +474,16 @@ async function fetchMajorPrices(): Promise<MajorPrices> {
 //   Stablecoins (USDC/USDT/DAI/USDbC)  → amount_token 1:1
 //   WETH / ETH                          → amount_token × live ETH price
 //   cbBTC / WBTC                        → amount_token × live BTC price
-//   Everything else                     → leave amount_usd unchanged (null or DB value)
-// Never overwrites an existing DB-provided amount_usd.
+//   Everything else                     → leave amount_usd as null (unverified)
+// DB may store amount_usd=0 for rows without verified pricing — treat as null.
 function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
-  if ((row.amount_usd as number | null) !== null) return row
-  const sym = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
-  const amt = row.amount_token as number | null
-  if (amt === null || amt <= 0) return row
+  const existingUsd = row.amount_usd as number | null
+  // Normalize 0 → null: 0 is not a valid verified price, re-run enrichment
+  const base: RawRow = existingUsd !== null && existingUsd <= 0 ? { ...row, amount_usd: null } : row
+  if ((base.amount_usd as number | null) !== null) return base  // already has positive USD
+  const sym = ((base.token_symbol as string | null) ?? '').toUpperCase().trim()
+  const amt = base.amount_token as number | null
+  if (amt === null || amt <= 0) return base
 
   let usd: number | null = null
   if (sym === 'USDC' || sym === 'USDT' || sym === 'DAI' || sym === 'USDBC') {
@@ -485,7 +494,7 @@ function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
     usd = prices.btc !== null ? Math.round(amt * prices.btc * 100) / 100 : null
   }
 
-  return usd !== null ? { ...row, amount_usd: usd } : row
+  return usd !== null && usd > 0 ? { ...base, amount_usd: usd } : base
 }
 
 
@@ -522,6 +531,7 @@ export async function GET(req: NextRequest) {
     const valueRange = parseValueRange(valueRangeRaw)
     const interestingRaw = params.get('interesting') ?? 'true'
     const interestingMode = interestingRaw !== 'false'
+    const debugMode = params.get('debug') === 'true'
     const type = params.get('type')?.trim() || null
     const side = params.get('side')?.trim() || null
     const severity = params.get('severity')?.trim() || null
@@ -624,15 +634,40 @@ export async function GET(req: NextRequest) {
       signal_score: computeSignalScore(row),
       interesting_score: computeInterestScore(row),
     }))
-    const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueRange(scored, valueRange)
+    const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueRange(scored, valueRange, !interestingMode)
     const { rows: boringFiltered, hiddenAsBoring } = filterBoringAssets(valueFiltered, interestingMode)
-    const deNoised = filterRoutingOnlySwaps(filterStablecoinNoise(boringFiltered)).map(applyHeadlineTokenFocus)
+    const stableFiltered = interestingMode ? filterStablecoinNoise(boringFiltered) : boringFiltered
+    const deNoised = filterRoutingOnlySwaps(stableFiltered).map(applyHeadlineTokenFocus)
     const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
     // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
     const interestSorted = [...diversityCapped].sort(
       (a, b) => ((b.interesting_score as number) ?? 0) - ((a.interesting_score as number) ?? 0),
     )
     const grouped  = collapseRapidRepeats(interestSorted).slice(0, limit)
+
+    const pricedCount   = grouped.filter(r => (r.amount_usd as number | null) != null && (r.amount_usd as number) > 0).length
+    const unpricedCount = grouped.filter(r => (r.amount_usd as number | null) == null).length
+    const zeroValueCount = grouped.filter(r => r.amount_usd === 0).length
+
+    let debugExtra: Record<string, unknown> | null = null
+    if (debugMode) {
+      const rawData = (alertsRes.data ?? []) as RawRow[]
+      const missingTokenAddressCount = rawData.filter(r => !(r.token_address as string | null)).length
+      const missingAmountCount       = rawData.filter(r => (r.amount_token as number | null) == null).length
+      const missingPriceCount        = enriched.filter(r => (r.amount_usd as number | null) == null).length
+      const sampleUnpricedReasons: string[] = []
+      for (const r of grouped) {
+        if ((r.amount_usd as number | null) != null) continue
+        if (sampleUnpricedReasons.length >= 5) break
+        const sym  = ((r.token_symbol as string | null) ?? 'unknown').slice(0, 12)
+        const addr = r.token_address as string | null
+        const amt  = r.amount_token as number | null
+        if (!addr)       sampleUnpricedReasons.push(`${sym}: no_token_address`)
+        else if (amt == null) sampleUnpricedReasons.push(`${sym}: no_amount`)
+        else             sampleUnpricedReasons.push(`${sym}: price_lookup_failed`)
+      }
+      debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons }
+    }
 
     const payload = {
       alerts: grouped,
@@ -658,6 +693,8 @@ export async function GET(req: NextRequest) {
         hiddenByFilter,
         hiddenAsDust,
         hiddenAsBoring,
+        pricedCount,
+        unpricedCount,
         filtersActive:            { type: type ?? null, side: side ?? null, severity: severity ?? null },
         priceEnrichment:          { ethPrice: majorPrices.eth, btcPrice: majorPrices.btc },
         randomTokenPriceLookups:  randomAddresses.length,
@@ -666,6 +703,7 @@ export async function GET(req: NextRequest) {
         cacheHit: false,
         providerStatus: 'ok',
         rateLimited: false,
+        ...(debugExtra ?? {}),
       },
     }
     whaleCache.set(cacheKey, { exp: Date.now() + WHALE_CACHE_TTL_MS, payload })

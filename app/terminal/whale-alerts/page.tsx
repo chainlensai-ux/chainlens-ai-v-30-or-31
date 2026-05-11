@@ -103,7 +103,7 @@ const getSide = (s: string | null | undefined) => {
   const k = (s ?? '').toLowerCase()
   if (k === 'buy')  return { line: '#2dd4bf', avatarBg: '#0d3b35', chipBg: 'rgba(45,212,191,0.12)',  chipBd: 'rgba(45,212,191,0.32)',  chipTx: '#5eead4', label: 'BUY'      }
   if (k === 'sell') return { line: '#f43f5e', avatarBg: '#3d0d1a', chipBg: 'rgba(244,63,94,0.12)',   chipBd: 'rgba(244,63,94,0.32)',   chipTx: '#fda4af', label: 'SELL'     }
-  return               { line: '#8b5cf6', avatarBg: '#1e0d3b', chipBg: 'rgba(139,92,246,0.12)',  chipBd: 'rgba(139,92,246,0.32)',  chipTx: '#c4b5fd', label: 'TRANSFER' }
+  return               { line: '#8b5cf6', avatarBg: '#1e0d3b', chipBg: 'rgba(139,92,246,0.12)',  chipBd: 'rgba(139,92,246,0.32)',  chipTx: '#c4b5fd', label: 'Activity' }
 }
 
 const sevLabel = (sev: string | null | undefined) => {
@@ -462,7 +462,7 @@ export default function WhaleAlertsPage() {
         const label  = a.wallet_label || 'Tracked Wallet'
         const tok    = a.focus_token_symbol ?? a.token_symbol ?? a.token_name ?? 'Unknown token'
         const side   = a.side ?? 'move'
-        const usd    = a.amount_usd != null ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
+        const usd    = (a.amount_usd != null && a.amount_usd > 0) ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
         const sig    = a.signal_score ?? 'LOW'
         const sev    = a.severity ?? 'unknown'
         const age    = ageStr(a.occurred_at)
@@ -896,24 +896,30 @@ export default function WhaleAlertsPage() {
             const hiddenByFilters = serverFilteredSomething || (insertedSoFar > 0 && uiFiltersActive)
             const hiddenCount = serverHiddenBoring + serverHiddenFilter || insertedSoFar
             const rangeLabel = RANGE_OPTIONS.find(o => o.value === valueRange)?.label ?? valueRange
-            const title = hiddenByFilters
-              ? `${hiddenCount > 0 ? `${hiddenCount} alerts` : 'Alerts'} found — hidden by filters`
-              : rangeActive
-                ? 'No alerts match this range in the selected window.'
-                : partial
-                  ? 'Batch scan in progress'
-                  : allDone
-                    ? 'No qualifying whale alerts found'
-                    : 'No whale alerts yet'
-            const body = hiddenByFilters
-              ? 'Switch to All activity or reset filters to view them.'
-              : rangeActive
-                ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
-                : partial
-                  ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
-                  : allDone
-                    ? 'No qualifying recent whale activity found in this batch.'
-                    : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
+            // Specific case: value range filter is hiding unpriced (null-USD) activity
+            const unpricedHidden = rangeActive && serverHiddenFilter > 0
+            const title = unpricedHidden
+              ? 'Alerts exist, but this value filter hides unpriced activity.'
+              : hiddenByFilters
+                ? `${hiddenCount > 0 ? `${hiddenCount} alerts` : 'Alerts'} found — hidden by filters`
+                : rangeActive
+                  ? 'No alerts match this range in the selected window.'
+                  : partial
+                    ? 'Batch scan in progress'
+                    : allDone
+                      ? 'No qualifying whale alerts found'
+                      : 'No whale alerts yet'
+            const body = unpricedHidden
+              ? `${serverHiddenFilter} alert${serverHiddenFilter !== 1 ? 's' : ''} found with unverified USD value. Switch to All value range and All activity to see them.`
+              : hiddenByFilters
+                ? 'Switch to All activity or reset filters to view them.'
+                : rangeActive
+                  ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
+                  : partial
+                    ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
+                    : allDone
+                      ? 'No qualifying recent whale activity found in this batch.'
+                      : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
             return (
               <div style={{ padding: '64px 20px', textAlign: 'center' }}>
                 <div className="mx-auto flex items-center justify-center rounded-[16px]"
@@ -927,12 +933,12 @@ export default function WhaleAlertsPage() {
                 <p className="mx-auto" style={{ marginTop: 8, maxWidth: 400, fontSize: 14, lineHeight: 1.6, color: '#64748b' }}>
                   {body}
                 </p>
-                {hiddenByFilters && (
+                {(unpricedHidden || hiddenByFilters) && (
                   <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
                     <button onClick={showAllAlerts}
                       className="rounded-[12px] hover:opacity-90"
                       style={{ padding: '9px 20px', fontSize: 13, fontWeight: 700, color: '#fff', background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', border: 'none', boxShadow: '0 0 18px rgba(45,212,191,0.18)' }}>
-                      Show all alerts
+                      {unpricedHidden ? 'Show all unpriced activity' : 'Show all alerts'}
                     </button>
                     <button onClick={resetFilters}
                       className="rounded-[12px] hover:opacity-80"
@@ -974,10 +980,12 @@ export default function WhaleAlertsPage() {
             const s          = alert.side?.toLowerCase() ?? ''
             const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
 
-            // Amount: prefer USD; fall back to token number (no symbol — tok appended in render)
-            const amtU    = fmtUsd(alert.amount_usd)
+            // Amount: prefer USD; fall back to token number; never render $0 for unpriced rows.
+            // amount_usd=0 means the DB did not have a verified price — treat it as null.
+            const amtUnverified = alert.amount_usd == null || alert.amount_usd === 0
+            const amtU    = (!amtUnverified && alert.amount_usd != null) ? fmtUsd(alert.amount_usd) : null
             const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
-            const amtShow = amtU !== '—' ? amtU : amtTNum
+            const amtShow = amtU ?? (amtTNum ?? (amtUnverified ? 'Value unverified' : null))
 
             // Verb and preposition split so amount fits between them for swaps
             const isSwap   = isMultiTok || (focusTok != null && s !== 'buy')
@@ -1000,7 +1008,7 @@ export default function WhaleAlertsPage() {
               `Token: ${tok}`,
               alert.token_symbol && tok !== alert.token_symbol ? `Raw token symbol: ${alert.token_symbol}` : null,
               `Side: ${alert.side ?? 'unknown'}`,
-              alert.amount_usd != null
+              (alert.amount_usd != null && alert.amount_usd > 0)
                 ? `Value (USD): $${alert.amount_usd.toFixed(2)}`
                 : 'Value (USD): unverified',
               alert.amount_token != null
@@ -1047,7 +1055,7 @@ export default function WhaleAlertsPage() {
                         {walletName}{' '}
                         <span style={{ color: '#64748b' }}>{baseVerb}</span>
                         {amtShow
-                          ? <>{' '}<span style={{ fontWeight: 700, color: '#5eead4' }}>{amtShow}</span>{isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}</>
+                          ? <>{' '}<span style={{ fontWeight: 700, color: amtShow === 'Value unverified' ? '#475569' : '#5eead4' }}>{amtShow}</span>{isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}</>
                           : isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}
                         {' '}<span style={{ fontWeight: 700, color: '#f8fafc' }}>{tok}</span>
                       </span>
