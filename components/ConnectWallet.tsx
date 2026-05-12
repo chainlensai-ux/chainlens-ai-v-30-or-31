@@ -41,6 +41,9 @@ function connectorIcon(id: string) {
 function isWalletConnect(id: string) {
   return /walletconnect/i.test(id)
 }
+function isMetaMaskConnector(id: string, name: string) {
+  return /metamask/i.test(id) || /metamask/i.test(name)
+}
 function dedupeConnectors(all: ReturnType<typeof useConnect>['connectors']) {
   const seen = new Set<string>()
   return all.filter(c => {
@@ -156,10 +159,10 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const handleConnector = useCallback(async (connector: (typeof connectors)[number]) => {
     if (!connector) return
     const connectorId = String(connector.id || '').toLowerCase()
+    const isMetaMask = isMetaMaskConnector(connector.id, connector.name)
     const strictDesktopInjectedCheck =
       !isMobileClient &&
-      !isWalletConnect(connector.id) &&
-      (connectorId.includes('injected') || connectorId.includes('metamask'))
+      isMetaMask
 
     if (strictDesktopInjectedCheck && typeof connector.getProvider === 'function') {
       const provider = await connector.getProvider().catch(() => null)
@@ -197,12 +200,21 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         msg.includes('not installed') ||
         msg.includes('unsupported') ||
         msg.includes('unavailable')
+
+      if (isMetaMask && isMobileClient && unavailable && mounted) {
+        const currentUrl = window.location.href.replace(/^https?:\/\//, '')
+        setErrorMsg('Opening MetaMask...')
+        setConnecting(false)
+        window.location.href = `https://metamask.app.link/dapp/${currentUrl}`
+        return
+      }
+
       if (cancelled) setErrorMsg('Connection cancelled.')
       else if (unavailable) setErrorMsg('Wallet unavailable. Try another wallet.')
       else setErrorMsg('Connection failed. Please try again.')
       setConnecting(false)
     }
-  }, [connectAsync, connectors, closeModal, isMobileClient])
+  }, [connectAsync, connectors, closeModal, isMobileClient, mounted])
 
   // ── shared button styles ──────────────────────────────────────────────────
 
