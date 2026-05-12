@@ -56,9 +56,8 @@ function parseOrderId(orderId: string): { userId: string; plan: string } | null 
 export async function POST(req: NextRequest) {
   const secret = process.env.NOWPAYMENTS_IPN_SECRET
   if (!secret) {
-    console.warn('[crypto-webhook] NOWPAYMENTS_IPN_SECRET not set')
-    // Acknowledge to stop provider retries during initial setup
-    return NextResponse.json({ ok: true }, { status: 200 })
+    console.error('[crypto-webhook] webhook secret not configured')
+    return NextResponse.json({ ok: false }, { status: 500 })
   }
 
   let rawBody: string
@@ -100,7 +99,7 @@ export async function POST(req: NextRequest) {
   // Parse order_id
   const parsed = parseOrderId(orderId)
   if (!parsed || (parsed.plan !== 'pro' && parsed.plan !== 'elite')) {
-    console.warn('[crypto-webhook] unparseable or invalid order_id:', orderId)
+    console.warn('[crypto-webhook] invalid order_id')
     return NextResponse.json({ ok: true })
   }
 
@@ -112,19 +111,17 @@ export async function POST(req: NextRequest) {
   const expectedAmount = PLAN_AMOUNTS[plan]
 
   if (priceCurrency !== 'usd' || priceAmount !== expectedAmount) {
-    console.warn(
-      `[crypto-webhook] amount/currency mismatch: expected ${expectedAmount} usd, got ${priceAmount} ${priceCurrency}`,
-    )
+    console.warn('[crypto-webhook] amount/currency mismatch')
     return NextResponse.json({ ok: true })
   }
 
   const { error } = await activateUserPlanServerSide(userId, plan as 'pro' | 'elite', paymentId || undefined)
   if (error) {
-    console.error('[crypto-webhook] plan activation failed:', error)
+    console.error('[crypto-webhook] plan activation failed')
     return NextResponse.json({ ok: false }, { status: 500 })
   }
 
   if (paymentId) processedPaymentIds.add(paymentId)
-  console.info(`[crypto-webhook] activated plan=${plan} for userId=${userId} paymentId=${paymentId}`)
+  console.info(`[crypto-webhook] activated plan=${plan}`)
   return NextResponse.json({ ok: true })
 }
