@@ -235,7 +235,7 @@ export default function AffiliatePage() {
               <input type="text" name="website" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} tabIndex={-1} autoComplete="off" style={{ position: 'absolute', left: '-9999px', opacity: 0 }} />
               <div className="aff-grid">
                 {[
-                  ['Name', 'name'], ['Email', 'email'], ['Telegram', 'telegram'], ['X handle', 'x_handle'], ['Audience size', 'audience_size'], ['Audience type / niche', 'audience_type'], ['Wallet address for payouts', 'payout_wallet'],
+                  ['Name', 'name'], ['Email', 'email'], ['Telegram (optional)', 'telegram'], ['X handle', 'x_handle'], ['Audience size', 'audience_size'], ['Audience type / niche', 'audience_type'], ['Wallet address for payouts (optional)', 'payout_wallet'],
                 ].map(([label, key]) => (
                   <label key={key} style={{ display: 'grid', gap: 6, fontSize: 12, color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>
                     {label}
