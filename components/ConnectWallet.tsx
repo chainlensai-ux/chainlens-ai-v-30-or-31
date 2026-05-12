@@ -78,33 +78,17 @@ function WCBridge({ openRef }: { openRef: React.MutableRefObject<(() => void) | 
 
 // ---------- component ----------
 
-export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void }) {
+export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void | Promise<void> }) {
   const { address, isConnected } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
-  const seenWallets = new Set<string>()
-
-  const filteredConnectors = connectors.filter((connector) => {
-    const id = String(connector.id || '').toLowerCase()
-    const name = String(connector.name || '').toLowerCase()
-
-    const walletConnect = id.includes('walletconnect') || name.includes('walletconnect')
-    const metaMask = id.includes('metamask') || name.includes('metamask') || id.includes('injected')
-    const coinbase = id.includes('coinbase') || name.includes('coinbase')
-
-    if (!walletConnect && !metaMask && !coinbase) return false
-
-    const key = walletConnect ? 'walletconnect' : metaMask ? 'metamask' : 'coinbase'
-    if (seenWallets.has(key)) return false
-    seenWallets.add(key)
-
-    return true
-  })
+  const filteredConnectors = visibleConnectors(connectors)
   const { disconnect } = useDisconnect()
 
   // web3modal.open is populated by WCBridge once it mounts (client-only)
   const openWeb3ModalRef = useRef<(() => void) | null>(null)
   const [mounted, setMounted] = useState(false)
+  const [isMobileClient, setIsMobileClient] = useState(false)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
@@ -115,6 +99,13 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { setMounted(true) }, [])
+  useEffect(() => {
+    if (!mounted) return
+    const ua = navigator.userAgent || ''
+    const mobileUa = /android|iphone|ipad|ipod|mobile/i.test(ua)
+    const touch = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)
+    setIsMobileClient(mobileUa || touch)
+  }, [mounted])
 
   // close modal / menus on ESC
   useEffect(() => {
@@ -146,8 +137,9 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     }
   }, [isConnected, modalOpen])
 
-  const openModal = useCallback(() => {
-    onBeforeOpen?.()
+  const openModal = useCallback(async () => {
+    await onBeforeOpen?.()
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
     setSelected(null)
     setConnecting(false)
     setErrorMsg(null)
@@ -162,6 +154,23 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   }, [])
 
   const handleConnector = useCallback(async (connector: (typeof connectors)[number]) => {
+    if (!connector) return
+    const connectorId = String(connector.id || '').toLowerCase()
+    const strictDesktopInjectedCheck =
+      !isMobileClient &&
+      !isWalletConnect(connector.id) &&
+      (connectorId.includes('injected') || connectorId.includes('metamask'))
+
+    if (strictDesktopInjectedCheck && typeof connector.getProvider === 'function') {
+      const provider = await connector.getProvider().catch(() => null)
+      if (!provider) {
+        setSelected(connector.id)
+        setErrorMsg('Wallet unavailable. Try another wallet.')
+        setConnecting(false)
+        return
+      }
+    }
+
     setSelected(connector.id)
     setErrorMsg(null)
 
@@ -176,11 +185,24 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       await connectAsync({ connector })
       // useEffect closes modal on isConnected change
     } catch (err) {
-      void err
-      setErrorMsg('Connection failed. Try again.')
+      const msg = err instanceof Error ? err.message.toLowerCase() : ''
+      const cancelled =
+        msg.includes('rejected') ||
+        msg.includes('cancelled') ||
+        msg.includes('canceled') ||
+        msg.includes('denied') ||
+        msg.includes('user rejected')
+      const unavailable =
+        msg.includes('not found') ||
+        msg.includes('not installed') ||
+        msg.includes('unsupported') ||
+        msg.includes('unavailable')
+      if (cancelled) setErrorMsg('Connection cancelled.')
+      else if (unavailable) setErrorMsg('Wallet unavailable. Try another wallet.')
+      else setErrorMsg('Connection failed. Please try again.')
       setConnecting(false)
     }
-  }, [connectAsync, connectors, closeModal])
+  }, [connectAsync, connectors, closeModal, isMobileClient])
 
   // ── shared button styles ──────────────────────────────────────────────────
 
@@ -325,7 +347,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-                {connectors.map(c => {
+                {filteredConnectors.map(c => {
                   const label = connectorLabel(c.id, c.name)
                   const icon = connectorIcon(c.id)
                   const isWC = isWalletConnect(c.id)
@@ -436,7 +458,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
                 </div>
               )}
 
-              {errorMsg && (
+                {errorMsg && (
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: '28px', marginBottom: '14px' }}>⚠️</div>
                   <div style={{ fontSize: '13px', color: '#f87171', marginBottom: '16px', maxWidth: '220px', lineHeight: 1.5 }}>
@@ -467,7 +489,11 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       {mounted && walletConnectEnabled && <WCBridge openRef={openWeb3ModalRef} />}
 
       <button
-        onClick={openModal}
+        onClick={async (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          await openModal()
+        }}
         className={className}
         style={baseStyle}
         onMouseEnter={e => {
