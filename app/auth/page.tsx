@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 
-type Mode = 'signin' | 'signup';
+type Mode = 'signin' | 'signup' | 'forgot';
 
 export default function AuthPage() {
   const router = useRouter();
@@ -65,27 +65,50 @@ export default function AuthPage() {
     if (oauthError) setError(oauthError.message);
   }
 
+  async function handleForgotPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+    setLoading(true);
+    const cleanEmail = email.trim().toLowerCase();
+    // Always show success to avoid leaking whether email exists
+    await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    setSuccess('If this email has an account, a reset link has been sent. Check your inbox.');
+    setLoading(false);
+  }
+
   async function handleEmailSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setSuccess(null);
     setLoading(true);
 
+    const cleanEmail = email.trim().toLowerCase();
+
     if (mode === 'signin') {
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
       if (signInError) {
-        setError(signInError.message);
+        setError('Email or password is incorrect. Try again or reset your password.');
       } else {
-        router.replace('/terminal');
+        router.replace('/');
       }
     } else {
       const { error: signUpError } = await supabase.auth.signUp({
-        email,
+        email: cleanEmail,
         password,
         options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
       });
       if (signUpError) {
-        setError(signUpError.message);
+        const msg = signUpError.message.toLowerCase();
+        if (msg.includes('already registered') || msg.includes('already exists')) {
+          setError('An account with this email already exists. Try signing in.');
+        } else if (msg.includes('password')) {
+          setError('Password must be at least 6 characters.');
+        } else {
+          setError('Unable to create account. Please try again.');
+        }
       } else {
         setSuccess('Check your email to confirm your account.');
       }
@@ -322,7 +345,7 @@ export default function AuthPage() {
         </div>
 
         {/* Email / password form */}
-        <form onSubmit={handleEmailSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {mode !== 'forgot' && <form onSubmit={handleEmailSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <input
             type="email"
             placeholder="Email address"
@@ -349,6 +372,7 @@ export default function AuthPage() {
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 type="button"
+                onClick={() => { setMode('forgot'); setError(null); setSuccess(null); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#475569', fontFamily: 'inherit', transition: 'color 0.15s' }}
                 onMouseEnter={e => (e.currentTarget.style.color = '#94a3b8')}
                 onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
@@ -406,9 +430,62 @@ export default function AuthPage() {
             onMouseEnter={e => { if (!loading) { e.currentTarget.style.opacity = '0.96'; e.currentTarget.style.transform = 'translateY(-1px)'; } }}
             onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'translateY(0)'; }}
           >
-            {loading ? 'Signing in…' : mode === 'signin' ? 'Sign In' : 'Create Account'}
+            {loading ? (mode === 'signup' ? 'Creating…' : 'Signing in…') : mode === 'signin' ? 'Sign In' : 'Create Account'}
           </button>
-        </form>
+        </form>}
+
+        {/* Forgot password inline form */}
+        {mode === 'forgot' && (
+          <form onSubmit={handleForgotPassword} style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px' }}>
+            <div style={{ height: '1px', background: 'rgba(255,255,255,0.07)', margin: '0 0 4px' }} />
+            <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', textAlign: 'center' }}>
+              Enter your email and we&apos;ll send a reset link.
+            </p>
+            <input
+              type="email"
+              placeholder="Email address"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              required
+              style={inputStyle}
+              onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15)'; }}
+              onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
+            />
+            {error && (
+              <div style={{ padding: '10px 12px', borderRadius: '9px', background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.22)', color: '#fca5a5', fontSize: '12px', lineHeight: 1.5 }}>
+                {error}
+              </div>
+            )}
+            {success && (
+              <div style={{ padding: '10px 12px', borderRadius: '9px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)', color: '#5eead4', fontSize: '12px', lineHeight: 1.5 }}>
+                {success}
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={loading}
+              style={{ width: '100%', padding: '12px 16px', borderRadius: '11px', background: loading ? 'rgba(139,92,246,0.35)' : 'linear-gradient(135deg, #2DD4BF 0%, #0ea5e9 42%, #8b5cf6 100%)', border: 'none', color: '#fff', fontSize: '13px', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit', marginTop: '4px' }}
+            >
+              {loading ? 'Sending…' : 'Send Reset Link'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setMode('signin'); setError(null); setSuccess(null); }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#475569', fontFamily: 'inherit', textAlign: 'center', marginTop: '2px' }}
+              onMouseEnter={e => (e.currentTarget.style.color = '#94a3b8')}
+              onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
+            >
+              ← Back to sign in
+            </button>
+          </form>
+        )}
+
+        {/* Beta tester hint */}
+        {mode === 'signin' && (
+          <p style={{ marginTop: '18px', marginBottom: 0, textAlign: 'center', fontSize: '11px', color: '#334155', lineHeight: 1.6 }}>
+            New beta tester? Use <button type="button" onClick={() => { setMode('signup'); setError(null); setSuccess(null); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', fontFamily: 'inherit', fontSize: '11px', textDecoration: 'underline', padding: 0 }}>Sign Up</button> or Continue with Google above.
+          </p>
+        )}
         {/* Bottom gradient accent line */}
         <div style={{ position: 'absolute', bottom: 0, left: '15%', right: '15%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(139,92,246,0.30), rgba(45,212,191,0.30), transparent)' }} />
       </div>
