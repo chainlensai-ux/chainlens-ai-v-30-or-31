@@ -72,6 +72,35 @@ type SyncResponse = {
   message?: string
 }
 type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number; hiddenAsBoring?: number; hiddenByFilter?: number; hiddenAsDust?: number }
+type AlertIntelligence = {
+  walletCount?: number
+  activeWalletCount?: number
+  pricedAlertCount?: number
+  unpricedAlertCount?: number
+  topRepeatedTokens?: string[]
+  walletBehavior?: {
+    monitoredWallets?: number
+    behaviorLeaders?: Array<{
+      address?: string
+      shortAddress?: string
+      behaviorType?: string
+      behaviorScore?: number
+      confidence?: 'high' | 'medium' | 'low' | string
+      repeatedTokens?: string[]
+      verifiedUsdFlow24h?: number | null
+      alertCount24h?: number
+      alertCount7d?: number
+      monitorReason?: string
+      nextWatch?: string
+    }>
+    repeatedTokenWalletMap?: Array<{
+      token?: string
+      walletCount?: number
+      wallets?: string[]
+      totalVerifiedUsd?: number | null
+    }>
+  }
+}
 
 const RANGE_OPTIONS: { label: string; value: ValueRange }[] = [
   { label: 'All',       value: 'all' },
