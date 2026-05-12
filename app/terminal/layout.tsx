@@ -37,7 +37,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
         />
       )}
 
-      <FeatureBar active={active} />
+      <FeatureBar active={active} onWalletOpen={() => setSidebarOpen(false)} />
 
       <div className="flex-1 min-w-0 overflow-hidden relative">
         {/* Mobile sidebar toggle button */}

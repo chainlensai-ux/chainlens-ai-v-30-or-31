@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useAccount, useConnect, useDisconnect } from 'wagmi'
 import { useWeb3Modal } from '@web3modal/wagmi/react'
 import { walletConnectEnabled } from '@/lib/wallet'
@@ -77,7 +78,7 @@ function WCBridge({ openRef }: { openRef: React.MutableRefObject<(() => void) | 
 
 // ---------- component ----------
 
-export default function ConnectWallet({ className }: { className?: string }) {
+export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void }) {
   const { address, isConnected } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
@@ -146,11 +147,12 @@ export default function ConnectWallet({ className }: { className?: string }) {
   }, [isConnected, modalOpen])
 
   const openModal = useCallback(() => {
+    onBeforeOpen?.()
     setSelected(null)
     setConnecting(false)
     setErrorMsg(null)
     setModalOpen(true)
-  }, [])
+  }, [onBeforeOpen])
 
   const closeModal = useCallback(() => {
     setModalOpen(false)
@@ -174,7 +176,8 @@ export default function ConnectWallet({ className }: { className?: string }) {
       await connectAsync({ connector })
       // useEffect closes modal on isConnected change
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message.slice(0, 100) : 'Connection failed. Try again.')
+      void err
+      setErrorMsg('Connection failed. Try again.')
       setConnecting(false)
     }
   }, [connectAsync, connectors, closeModal])
@@ -258,33 +261,7 @@ export default function ConnectWallet({ className }: { className?: string }) {
 
   // ── disconnected — trigger button + modal ─────────────────────────────────
 
-  return (
-    <>
-      {/* WCBridge only renders client-side; keeps useWeb3Modal() out of SSR */}
-      {mounted && walletConnectEnabled && <WCBridge openRef={openWeb3ModalRef} />}
-
-      <button
-        onClick={openModal}
-        className={className}
-        style={baseStyle}
-        onMouseEnter={e => {
-          const el = e.currentTarget as HTMLButtonElement
-          el.style.opacity = '0.90'
-          el.style.transform = 'translateY(-1px)'
-          el.style.boxShadow = '0 0 44px rgba(34,211,238,0.65), 0 0 44px rgba(45,212,191,0.40)'
-        }}
-        onMouseLeave={e => {
-          const el = e.currentTarget as HTMLButtonElement
-          el.style.opacity = '1'
-          el.style.transform = 'translateY(0)'
-          el.style.boxShadow = '0 0 28px rgba(34,211,238,0.45), 0 0 28px rgba(45,212,191,0.25)'
-        }}
-      >
-        Connect Wallet
-      </button>
-
-      {/* ── modal ─────────────────────────────────────────────────────────── */}
-      {modalOpen && (
+  const modalJsx = (
         <div
           onClick={closeModal}
           style={{
@@ -482,7 +459,35 @@ export default function ConnectWallet({ className }: { className?: string }) {
             </div>
           </div>
         </div>
-      )}
+  )
+
+  return (
+    <>
+      {/* WCBridge only renders client-side; keeps useWeb3Modal() out of SSR */}
+      {mounted && walletConnectEnabled && <WCBridge openRef={openWeb3ModalRef} />}
+
+      <button
+        onClick={openModal}
+        className={className}
+        style={baseStyle}
+        onMouseEnter={e => {
+          const el = e.currentTarget as HTMLButtonElement
+          el.style.opacity = '0.90'
+          el.style.transform = 'translateY(-1px)'
+          el.style.boxShadow = '0 0 44px rgba(34,211,238,0.65), 0 0 44px rgba(45,212,191,0.40)'
+        }}
+        onMouseLeave={e => {
+          const el = e.currentTarget as HTMLButtonElement
+          el.style.opacity = '1'
+          el.style.transform = 'translateY(0)'
+          el.style.boxShadow = '0 0 28px rgba(34,211,238,0.45), 0 0 28px rgba(45,212,191,0.25)'
+        }}
+      >
+        Connect Wallet
+      </button>
+
+      {/* ── modal rendered via portal so it escapes sidebar stacking context ── */}
+      {mounted && modalOpen && createPortal(modalJsx, document.body)}
     </>
   )
 }

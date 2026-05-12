@@ -312,13 +312,14 @@ function NavItem({ item, active, onSelect, locked = false }: { item: Item; activ
 // ─── Component ────────────────────────────────────────────────────────────
 
 interface Props {
-  active?:   string | null
-  onSelect?: (key: string) => void
+  active?:       string | null
+  onSelect?:     (key: string) => void
+  onWalletOpen?: () => void
 }
 
 
 
-export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }: Props) {
+export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, onWalletOpen }: Props) {
   const router = useRouter()
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
   const [plan, setPlan] = useState<UserPlan>('free')
@@ -445,7 +446,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {} }
         }}
       >
         {/* Connect Wallet — full width */}
-        <ConnectWallet className="w-full active:scale-[0.98]" />
+        <ConnectWallet className="w-full active:scale-[0.98]" onBeforeOpen={onWalletOpen} />
 
         {accountEmail ? (
           <button
