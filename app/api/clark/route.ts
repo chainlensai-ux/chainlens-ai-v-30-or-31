@@ -4216,11 +4216,36 @@ type WalletBehaviorLeader = {
   monitorReason: string; nextWatch: string
 }
 type WhaleIntelligence = {
+  walletCount: number
+  activeWalletCount: number
+  pricedAlertCount: number
+  unpricedAlertCount: number
+  topRepeatedTokens?: string[]
   walletBehavior?: {
-    monitoredWallets: number
-    behaviorLeaders: WalletBehaviorLeader[]
-    repeatedTokenWalletMap: Array<{ token: string; walletCount: number; wallets: string[]; totalVerifiedUsd: number | null }>
+    monitoredWallets?: number
+    behaviorLeaders?: Array<{
+      address?: string
+      shortAddress?: string
+      behaviorType?: string
+      behaviorScore?: number
+      confidence?: "high" | "medium" | "low" | string
+      repeatedTokens?: string[]
+      verifiedUsdFlow24h?: number | null
+      alertCount24h?: number
+      alertCount7d?: number
+      monitorReason?: string
+      nextWatch?: string
+    }>
+    repeatedTokenWalletMap?: Array<{ token?: string; walletCount?: number; wallets?: string[]; totalVerifiedUsd?: number | null }>
   }
+  topWallets?: Array<{
+    address?: string
+    shortAddress?: string
+    alertCount24h?: number
+    totalVerifiedUsd24h?: number | null
+    repeatedTokens?: string[]
+    confidence?: string
+  }>
 }
 
 function formatWhaleAlertForClark(a: WhaleAlertRow): string {
@@ -4402,11 +4427,12 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
           // Behavior monitoring query — format structured WHALE BEHAVIOR READ from intelligence
           if (isBehaviorQuery) {
             const wb = intel?.walletBehavior;
-            if (!wb || wb.behaviorLeaders.length === 0) {
+            const wbLeaders = wb?.behaviorLeaders ?? [];
+            if (!wb || wbLeaders.length === 0) {
               return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_behavior", toolsUsed: ["whale_feed_stored"],
                 analysis: "Behavior signal is still forming — not enough repeated wallet activity in the current window. Try the 7d view for a broader read." };
             }
-            const leaders = wb.behaviorLeaders.slice(0, 4);
+            const leaders = wbLeaders.slice(0, 4);
             const tokenMap = (wb.repeatedTokenWalletMap ?? []).slice(0, 5);
             const behaviorTypeLabel = (t: string) => t.replace(/_/g, ' ');
             const lines: string[] = [
@@ -4417,23 +4443,31 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
               "Wallets worth monitoring:",
             ];
             for (const w of leaders) {
-              lines.push(`- ${w.shortAddress} — ${behaviorTypeLabel(w.behaviorType)}`);
-              lines.push(`  Why: ${w.monitorReason}`);
+              const short = w.shortAddress ?? 'unknown';
+              const bType = w.behaviorType ?? 'unverified';
+              const monitorReason = w.monitorReason ?? 'behavior signal is still forming';
+              const alertCount24h = w.alertCount24h ?? 0;
+              const alertCount7d = w.alertCount7d ?? alertCount24h;
+              const repeatedTokens = w.repeatedTokens ?? [];
+              lines.push(`- ${short} — ${behaviorTypeLabel(bType)}`);
+              lines.push(`  Why: ${monitorReason}`);
               const signals = [
-                `${w.alertCount24h} alert${w.alertCount24h !== 1 ? 's' : ''}/24h`,
-                w.alertCount7d > w.alertCount24h ? `${w.alertCount7d} alerts/7d` : null,
-                w.repeatedTokens.length ? `repeats: ${w.repeatedTokens.slice(0, 2).join(', ')}` : null,
+                `${alertCount24h} alert${alertCount24h !== 1 ? 's' : ''}/24h`,
+                alertCount7d > alertCount24h ? `${alertCount7d} alerts/7d` : null,
+                repeatedTokens.length ? `repeats: ${repeatedTokens.slice(0, 2).join(', ')}` : null,
                 (w.verifiedUsdFlow24h ?? 0) > 0 ? `~$${Math.round(w.verifiedUsdFlow24h!).toLocaleString()} 24h flow` : null,
                 `confidence: ${w.confidence}`,
               ].filter(Boolean).join(' | ');
               lines.push(`  Signals: ${signals}`);
-              lines.push(`  Next watch: ${w.nextWatch}`);
+              lines.push(`  Next watch: ${w.nextWatch ?? 'watch for continued activity'}`);
             }
             if (tokenMap.length > 0) {
               lines.push("", "Repeated token flow:");
               for (const t of tokenMap) {
+                const walletCount = t.walletCount ?? 0;
+                const token = t.token ?? 'unknown';
                 const usdPart = t.totalVerifiedUsd ? ` (~$${Math.round(t.totalVerifiedUsd).toLocaleString()} verified)` : '';
-                lines.push(`- ${t.token}: seen across ${t.walletCount} wallet${t.walletCount > 1 ? 's' : ''}${usdPart}`);
+                lines.push(`- ${token}: seen across ${walletCount} wallet${walletCount > 1 ? 's' : ''}${usdPart}`);
               }
             }
             lines.push(
@@ -4516,11 +4550,25 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
           });
           const lines = filtered.slice(0, 20).map(formatWhaleAlertForClark);
           const intelBlock = intel ? (() => {
-            const topWalletLines = (intel.topWallets ?? []).slice(0, 3).map(w =>
-              `  <wallet short="${w.shortAddress}" alerts="${w.alertCount24h}" flow="${(w.totalVerifiedUsd24h ?? 0) > 0 ? `$${Math.round(w.totalVerifiedUsd24h!)}` : 'unverified'}" tokens="${w.repeatedTokens.slice(0, 3).join(',')}" confidence="${w.confidence}" />`
+            const behaviorLeaders = (intel.walletBehavior?.behaviorLeaders ?? intel.topWallets ?? []).map(w => ({
+              shortAddress: w.shortAddress ?? 'unknown',
+              behaviorType: 'behaviorType' in w ? (w.behaviorType ?? 'unverified') : 'unverified',
+              behaviorScore: 'behaviorScore' in w ? (w.behaviorScore ?? 0) : 0,
+              confidence: w.confidence ?? 'low',
+              alertCount24h: w.alertCount24h ?? 0,
+              alertCount7d: 'alertCount7d' in w ? (w.alertCount7d ?? (w.alertCount24h ?? 0)) : (w.alertCount24h ?? 0),
+              verifiedUsdFlow24h: 'verifiedUsdFlow24h' in w ? (w.verifiedUsdFlow24h ?? null) : ('totalVerifiedUsd24h' in w ? (w.totalVerifiedUsd24h ?? null) : null),
+              repeatedTokens: w.repeatedTokens ?? [],
+              monitorReason: 'monitorReason' in w ? (w.monitorReason ?? 'behavior signal is still forming') : 'behavior signal is still forming',
+              nextWatch: 'nextWatch' in w ? (w.nextWatch ?? 'watch for continued activity') : 'watch for continued activity',
+            }))
+            const repeatedFlow = intel.walletBehavior?.repeatedTokenWalletMap ?? (intel.topRepeatedTokens ?? []).map(t => ({ token: t }))
+            const topWalletLines = behaviorLeaders.slice(0, 3).map(w =>
+              `  <wallet short="${w.shortAddress}" behavior="${w.behaviorType}" score="${w.behaviorScore}" confidence="${w.confidence}" alerts24h="${w.alertCount24h}" alerts7d="${w.alertCount7d}" flow24h="${(w.verifiedUsdFlow24h ?? 0) > 0 ? `$${Math.round(w.verifiedUsdFlow24h!)}` : 'unverified'}" tokens="${w.repeatedTokens.slice(0, 3).join(',')}" monitor="${w.monitorReason}" next="${w.nextWatch}" />`
             ).join("\n")
-            return `<intelligence wallets="${intel.walletCount}" active="${intel.activeWalletCount}" priced="${intel.pricedAlertCount}" unpriced="${intel.unpricedAlertCount}" top_tokens="${(intel.topRepeatedTokens ?? []).join(',')}">\n${topWalletLines}\n</intelligence>\n`
+            return `<intelligence wallets="${intel.walletCount}" active="${intel.activeWalletCount}" priced="${intel.pricedAlertCount}" unpriced="${intel.unpricedAlertCount}" top_tokens="${repeatedFlow.map(t => t.token ?? '').filter(Boolean).join(',')}">\n${topWalletLines}\n</intelligence>\n`
           })() : ''
+          const topBehaviorPatterns = intel?.walletBehavior?.behaviorLeaders ?? [];
           contextXml =
             `<whale_alerts count="${filtered.length}" window="${window}"${isBuyQuery ? ' side="buy"' : isSellQuery ? ' side="sell"' : ""}>\n` +
             intelBlock +
@@ -4528,8 +4576,8 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             (isBuyQuery ? "Focus: summarize which tokens whales are buying, using wallet_label where available (not raw addresses). Group by token.\n" : isSellQuery ? "Focus: summarize which tokens whales are selling, using wallet_label where available (not raw addresses). Group by token. Highlight any HIGH SIGNAL sell pressure.\n" : "") +
             "Note: wallet_label is an internal ChainLens label, not a verified public identity.\n" +
             "USD value shown as 'USD unverified' for tokens outside USDC/USDT/WETH/cbBTC.\n" +
-            (intel?.walletBehavior?.behaviorLeaders.length
-              ? `\nTop behavior patterns:\n${intel.walletBehavior.behaviorLeaders.slice(0, 3).map(w => `- ${w.shortAddress}: ${w.behaviorType.replace(/_/g, ' ')} (score=${w.behaviorScore}, conf=${w.confidence}${w.repeatedTokens.length ? `, repeats=${w.repeatedTokens.slice(0,2).join(',')}` : ''})`).join('\n')}\n`
+            (topBehaviorPatterns.length
+              ? `\nTop behavior patterns:\n${topBehaviorPatterns.slice(0, 3).map(w => `- ${w.shortAddress ?? 'unknown'}: ${(w.behaviorType ?? 'unverified').replace(/_/g, ' ')} (score=${w.behaviorScore ?? 0}, conf=${w.confidence ?? 'low'}${(w.repeatedTokens ?? []).length ? `, repeats=${(w.repeatedTokens ?? []).slice(0,2).join(',')}` : ''})`).join('\n')}\n`
               : '') +
             "</whale_alerts>";
         } else {
