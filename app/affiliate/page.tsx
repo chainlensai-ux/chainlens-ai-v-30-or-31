@@ -11,13 +11,13 @@ type FormState = {
   x_handle: string
   audience_size: string
   audience_type: string
-  promotion_plan: string
-  wallet_address: string
+  promo_plan: string
+  payout_wallet: string
   website: string
 }
 
 const initialForm: FormState = {
-  name: '', email: '', telegram: '', x_handle: '', audience_size: '', audience_type: '', promotion_plan: '', wallet_address: '', website: '',
+  name: '', email: '', telegram: '', x_handle: '', audience_size: '', audience_type: '', promo_plan: '', payout_wallet: '', website: '',
 }
 
 export default function AffiliatePage() {
@@ -38,7 +38,8 @@ export default function AffiliatePage() {
         body: JSON.stringify(form),
       })
       if (!res.ok) {
-        setError('Submission is temporarily unavailable. Please try again soon.')
+        const data = await res.json().catch(() => null)
+        setError(typeof data?.error === 'string' ? data.error : 'Submission is temporarily unavailable. Please try again soon.')
       } else {
         setSuccess("Application sent. We’ll review it manually during beta.")
         setForm(initialForm)
@@ -234,16 +235,16 @@ export default function AffiliatePage() {
               <input type="text" name="website" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} tabIndex={-1} autoComplete="off" style={{ position: 'absolute', left: '-9999px', opacity: 0 }} />
               <div className="aff-grid">
                 {[
-                  ['Name', 'name'], ['Email', 'email'], ['Telegram', 'telegram'], ['X handle', 'x_handle'], ['Audience size', 'audience_size'], ['Audience type / niche', 'audience_type'], ['Wallet address for payouts', 'wallet_address'],
+                  ['Name', 'name'], ['Email', 'email'], ['Telegram', 'telegram'], ['X handle', 'x_handle'], ['Audience size', 'audience_size'], ['Audience type / niche', 'audience_type'], ['Wallet address for payouts', 'payout_wallet'],
                 ].map(([label, key]) => (
                   <label key={key} style={{ display: 'grid', gap: 6, fontSize: 12, color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>
                     {label}
-                    <input className="aff-input" required={key === 'name' || key === 'email'} type={key === 'email' ? 'email' : 'text'} value={form[key as keyof FormState]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} style={inputStyle} />
+                    <input className="aff-input" required={key === 'name' || key === 'email' || key === 'x_handle' || key === 'audience_size' || key === 'audience_type'} type={key === 'email' ? 'email' : 'text'} value={form[key as keyof FormState]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} style={inputStyle} />
                   </label>
                 ))}
                 <label style={{ gridColumn: '1 / -1', display: 'grid', gap: 6, fontSize: 12, color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>
                   How would you promote ChainLens?
-                  <textarea className="aff-input" rows={5} value={form.promotion_plan} onChange={(e) => setForm({ ...form, promotion_plan: e.target.value })} style={{ ...inputStyle, resize: 'vertical' }} />
+                  <textarea className="aff-input" required rows={5} value={form.promo_plan} onChange={(e) => setForm({ ...form, promo_plan: e.target.value })} style={{ ...inputStyle, resize: 'vertical' }} />
                 </label>
               </div>
               {success && <p style={{ marginTop: 14, color: '#2dd4bf', fontSize: 13 }}>{success}</p>}
