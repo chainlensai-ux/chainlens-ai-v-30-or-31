@@ -37,14 +37,14 @@ export default function AffiliatePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       })
-      const json = await res.json()
-      if (!res.ok) setError(json?.error || "Couldn't submit right now. Try again.")
-      else {
-        setSuccess("Application sent. We'll review it and reach out.")
+      if (!res.ok) {
+        setError('Submission is temporarily unavailable. Please try again soon.')
+      } else {
+        setSuccess("Application sent. We’ll review it manually during beta.")
         setForm(initialForm)
       }
     } catch {
-      setError("Couldn't submit right now. Try again.")
+      setError('Submission is temporarily unavailable. Please try again soon.')
     } finally {
       setLoading(false)
     }

@@ -53,22 +53,22 @@ export async function POST(req: Request) {
     const walletAddress = sanitize(body.wallet_address, MAX.wallet_address)
 
     if (!name) {
-      return NextResponse.json({ error: 'Name is required.' }, { status: 400 })
+      return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 400 })
     }
     if (!email || !emailRegex.test(email)) {
-      return NextResponse.json({ error: 'A valid email is required.' }, { status: 400 })
+      return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 400 })
     }
 
     const filledCount = [telegram, xHandle, audienceSize, audienceType, promotionPlan, walletAddress].filter(Boolean).length
     if (filledCount === 0) {
-      return NextResponse.json({ error: 'Please include at least one application detail.' }, { status: 400 })
+      return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 400 })
     }
 
     const supabaseUrl = process.env.SUPABASE_URL
     const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
     if (!supabaseUrl || !serviceRole) {
       console.error('[affiliate] missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY')
-      return NextResponse.json({ error: 'Submission unavailable right now.' }, { status: 503 })
+      return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 503 })
     }
 
     const userAgent = req.headers.get('user-agent') ?? ''
@@ -93,7 +93,7 @@ export async function POST(req: Request) {
 
     if (insertError) {
       console.error('[affiliate] db insert failed', insertError.message)
-      return NextResponse.json({ error: 'Could not save application.' }, { status: 500 })
+      return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 500 })
     }
 
     const notifyEmail = process.env.AFFILIATE_NOTIFY_EMAIL || 'chainlensai@gmail.com'
@@ -126,6 +126,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error('[affiliate] unexpected error', err)
-    return NextResponse.json({ error: 'Could not submit right now.' }, { status: 500 })
+    return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 500 })
   }
 }
