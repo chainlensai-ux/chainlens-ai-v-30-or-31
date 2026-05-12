@@ -287,9 +287,9 @@ export default function Navbar() {
 
           {/* Logo */}
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '9px', textDecoration: 'none', flexShrink: 0 }}>
-            <Image src="/cl-logo.png" alt="ChainLens AI" width={36} height={36} />
+            <Image src="/cl-logo.png" alt="ChainLens AI" width={40} height={40} />
             <div>
-              <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '18px', lineHeight: 1.15 }}>
+              <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '20px', lineHeight: 1.15 }}>
                 <span style={{ color: '#f1f5f9' }}>Chain</span>
                 <span style={{
                   background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 60%, #ec4899 100%)',
@@ -297,7 +297,7 @@ export default function Navbar() {
                 }}>Lens</span>
               </div>
               <div style={{
-                fontSize: '8px', color: 'rgba(255,255,255,0.58)',
+                fontSize: '9px', color: 'rgba(255,255,255,0.58)',
                 letterSpacing: '0.20em', textTransform: 'uppercase',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               }}>
