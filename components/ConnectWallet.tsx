@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useAccount, useConnect, useDisconnect } from 'wagmi'
 import { useWeb3Modal } from '@web3modal/wagmi/react'
+import { usePathname } from 'next/navigation'
 import { walletConnectEnabled } from '@/lib/wallet'
 
 // ---------- connector display metadata ----------
@@ -82,6 +83,7 @@ function WCBridge({ openRef }: { openRef: React.MutableRefObject<(() => void) | 
 // ---------- component ----------
 
 export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void | Promise<void> }) {
+  const pathname = usePathname()
   const { address, isConnected } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
@@ -139,6 +141,22 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       setErrorMsg(null)
     }
   }, [isConnected, modalOpen])
+
+  useEffect(() => {
+    setModalOpen(false)
+    setDisconnectOpen(false)
+    setConnecting(false)
+    setSelected(null)
+    setErrorMsg(null)
+  }, [pathname])
+
+  useEffect(() => {
+    if (!mounted) return
+    document.body.style.overflow = modalOpen ? 'hidden' : ''
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [modalOpen, mounted])
 
   const openModal = useCallback(async () => {
     await onBeforeOpen?.()
@@ -502,8 +520,6 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
 
       <button
         onClick={async (e) => {
-          e.preventDefault()
-          e.stopPropagation()
           await openModal()
         }}
         className={className}

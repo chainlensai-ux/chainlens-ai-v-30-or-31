@@ -172,8 +172,6 @@ export default function WalletScannerPage() {
   const [loading, setLoading]           = useState(false)
   const [error, setError]               = useState<string | null>(null)
   const [result, setResult]             = useState<WalletResult | null>(null)
-  const [clarkLoading, setClarkLoading]       = useState(false)
-  const [clarkVerdict, setClarkVerdict]       = useState<ClarkVerdictCard | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
 
   async function handleScan() {
@@ -182,7 +180,6 @@ export default function WalletScannerPage() {
     setLoading(true)
     setError(null)
     setResult(null)
-    setClarkVerdict(null)
     setShowAllHoldings(false)
 
     try {
@@ -199,7 +196,6 @@ export default function WalletScannerPage() {
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Scan failed')
       setResult(json)
-      triggerClark(q, json)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Scan failed')
     } finally {
@@ -212,62 +208,33 @@ export default function WalletScannerPage() {
     return hasPortfolio ? 'Release view' : 'No signal in checked window'
   }
 
-  async function triggerClark(address: string, data: WalletResult) {
-    setClarkLoading(true)
-    try {
-      const sorted = [...data.holdings].sort((a, b) => b.value - a.value)
-      const topHoldings = sorted.slice(0, 10).map(h => ({
-        symbol: h.symbol,
-        name: h.name,
-        balance: h.balance,
-        valueUsd: h.value,
-        change24h: h.change24h,
-        chain: h.chain,
-      }))
-      const largest = sorted[0] ?? null
-      const stablecoinExposureUsd = sorted
-        .filter(h => /^(USDC|USDT|DAI|LUSD|USDE|USDBC)$/i.test(h.symbol))
-        .reduce((acc, h) => acc + h.value, 0)
-      const nativeEthBalance = sorted.find(h => /^ETH$/i.test(h.symbol))?.balance ?? null
-      const notableActivity: string[] = []
-      if (data.txCount !== null) notableActivity.push(`Transaction count observed: ${data.txCount}`)
-      if (data.firstTxDate) notableActivity.push(`First seen activity: ${new Date(data.firstTxDate).toISOString().slice(0, 10)}`)
-      const payload = {
-        feature: 'clark-ai',
-        mode: 'wallet-analysis',
-        message: 'Analyze this wallet summary',
-        prompt: 'Analyze this wallet summary',
-        walletAddress: address,
-        context: {
-          walletAddress: address,
-          portfolioValueUsd: data.totalValue,
-          tokenCount: data.holdings.length,
-          topHoldings,
-          largestHolding: largest ? { symbol: largest.symbol, name: largest.name, valueUsd: largest.value } : null,
-          stablecoinExposureUsd,
-          nativeEthBalance,
-          dataQuality: dataQualityForWallet(data),
-          warnings: [],
-          transactionCount: data.txCount,
-          latestActivityAt: null,
-          notableActivity: notableActivity.slice(0, 5),
-          walletBehavior: data.walletBehavior ?? null,
-        },
-      }
 
-      const clarkRes = await fetch('/api/clark', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const clarkJson = await clarkRes.json()
-      const text = clarkJson?.data?.reply ?? clarkJson?.data?.analysis ?? clarkJson?.data?.response ?? null
-      const parsed = typeof text === 'string' ? parseStructuredClark(text) : null
-      setClarkVerdict(parsed ?? FALLBACK_VERDICT)
-    } catch {
-      setClarkVerdict(FALLBACK_VERDICT)
-    } finally {
-      setClarkLoading(false)
+  function getCortexRead(data: WalletResult): { summary: string; bullets: string[]; caveat: string } {
+    if (!data || data.holdings.length === 0) {
+      return {
+        summary: 'Scan a wallet to generate a CORTEX wallet read.',
+        bullets: [],
+        caveat: '',
+      }
+    }
+    const sorted = [...data.holdings].sort((a, b) => b.value - a.value)
+    const total = data.totalValue > 0 ? data.totalValue : sorted.reduce((acc, h) => acc + (Number.isFinite(h.value) ? h.value : 0), 0)
+    const top = sorted.slice(0, 3)
+    const topShare = total > 0 ? (top.reduce((acc, h) => acc + h.value, 0) / total) * 100 : null
+    const concentration = topShare === null ? 'Unverified' : topShare >= 70 ? 'High concentration' : topShare >= 40 ? 'Balanced concentration' : 'Diversified spread'
+    const activity = data.walletBehavior?.status === 'ok'
+      ? ((data.walletBehavior.txCount ?? 0) > 0 ? 'Activity detected in checked Base window.' : 'No recent Base activity in checked window.')
+      : 'Activity signal is limited in current checks.'
+    const bullets = [
+      total > 0 ? `Portfolio value observed: ${fmtUSD(total)}` : 'Portfolio value: Unverified',
+      top.length > 0 ? `Top holdings: ${top.map(h => h.symbol || h.name).filter(Boolean).join(', ')}` : 'Top holdings: Unverified',
+      `Concentration read: ${concentration}`,
+      activity,
+    ]
+    return {
+      summary: 'CORTEX can read verified holdings, but deeper behavior data is still forming.',
+      bullets,
+      caveat: data.totalValue <= 0 ? 'Some holdings are unpriced or still being verified.' : '',
     }
   }
 
@@ -294,6 +261,8 @@ export default function WalletScannerPage() {
           .wallet-main { padding: 20px 14px 120px !important; }
           .wallet-input-row { flex-direction: column; max-width: 100% !important; }
           .wallet-input-row button { width: 100%; justify-content: center; }
+          .wallet-stats-grid { grid-template-columns: 1fr !important; }
+          .mob-scan-main { max-width: 100% !important; }
         }
       `}</style>
 
@@ -444,7 +413,7 @@ export default function WalletScannerPage() {
               ((b.txCount ?? 0) > 0 || (b.activeDays ?? 0) > 0 || (b.inboundCount ?? 0) > 0 || (b.outboundCount ?? 0) > 0 || (b.topTokens?.length ?? 0) > 0 || (b.topContracts?.length ?? 0) > 0)
             )
             return (
-            <div style={{ maxWidth: '720px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
               {/* Portfolio value card */}
               <div style={{
@@ -485,7 +454,7 @@ export default function WalletScannerPage() {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+              <div className="wallet-stats-grid" style={{ display: 'grid', gap: '12px' }}>
                 {[
                   { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending in current checks' : 'No signal in checked window', sub: 'Portfolio read active', color: '#2DD4BF' },
                   { label: 'Token Count', value: sorted.length.toLocaleString(), sub: 'Visible token balances', color: '#a78bfa' },
@@ -550,7 +519,7 @@ export default function WalletScannerPage() {
                     Base Activity
                   </div>
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>Behavior scope: Base only</div>
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '12px', marginBottom: '12px' }}>
                     {[
                       { label: 'Recent Txs', value: result.walletBehavior.txCount ?? '—' },
                       { label: 'Active Days', value: result.walletBehavior.activeDays ?? '—' },
@@ -582,6 +551,21 @@ export default function WalletScannerPage() {
                 </div>
               )}
 
+              <div style={{
+                background: '#080c14',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: '14px', padding: '16px 18px'
+              }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: '#2DD4BF', textTransform: 'uppercase', marginBottom: 10 }}>CORTEX Wallet Read</div>
+                {(() => { const read = getCortexRead(result); return (
+                  <>
+                    <p style={{ fontSize: 13, color: '#cbd5e1', margin: '0 0 8px' }}>{read.summary}</p>
+                    {read.bullets.map((bline, idx) => <p key={idx} style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)', margin: '0 0 4px' }}>• {bline}</p>)}
+                    {read.caveat && <p style={{ fontSize: 11, color: '#94a3b8', margin: '8px 0 0' }}>{read.caveat}</p>}
+                  </>
+                )})()}
+              </div>
+
               {sorted.length > 0 ? (() => {
                 const PREVIEW = 10
                 const visible = showAllHoldings ? sorted : sorted.slice(0, PREVIEW)
@@ -592,9 +576,34 @@ export default function WalletScannerPage() {
                     border: '1px solid rgba(255,255,255,0.08)',
                     borderRadius: '16px', overflow: 'hidden',
                   }}>
+                    <div className="md:hidden" style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px' }}>
+                      {visible.map((h, i) => {
+                        const up = (h.change24h ?? 0) >= 0
+                        const chainLabel = h.chain ? h.chain.replace(/-mainnet$/, '').replace(/-/g, ' ') : null
+                        return (
+                          <div key={`m-${i}`} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '12px', background: 'rgba(255,255,255,0.01)', width: '100%', maxWidth: '100%', minWidth: 0 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, minWidth: 0 }}>
+                              <div style={{ display: 'flex', gap: 10, minWidth: 0 }}>
+                                {h.icon ? <img src={h.icon} alt={h.symbol} width={30} height={30} style={{ borderRadius: '50%', flexShrink: 0 }} /> : <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color: '#04101a', flexShrink: 0 }}>{h.symbol.slice(0,2).toUpperCase()}</div>}
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.symbol || h.name}</div>
+                                  {h.name && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.name}</div>}
+                                </div>
+                              </div>
+                              {chainLabel && <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', padding: '2px 6px', borderRadius: 999, background: 'rgba(0,82,255,0.14)', border: '1px solid rgba(0,82,255,0.28)', color: '#6ea8ff', textTransform: 'uppercase', height: 'fit-content', flexShrink: 0 }}>{chainLabel}</span>}
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: 10 }}>
+                              <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Balance</div><div style={{ fontSize: 13 }}>{fmtBalance(h.balance)}</div></div>
+                              <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Value</div><div style={{ fontSize: 13 }}>{h.value > 0 ? fmtUSD(h.value) : 'Unverified'}</div></div>
+                              <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>24h</div><div style={{ fontSize: 13, color: h.change24h === null ? 'rgba(255,255,255,0.5)' : up ? '#2DD4BF' : '#ef4444' }}>{h.change24h === null ? 'Unverified' : fmtPct(h.change24h)}</div></div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
                     {/* Table header */}
-                    <div style={{
-                      display: 'grid', gridTemplateColumns: '1fr 110px 120px 88px',
+                    <div className="hidden md:grid" style={{
+                      gridTemplateColumns: '1fr 110px 120px 88px',
                       padding: '12px 20px',
                       borderBottom: '1px solid rgba(255,255,255,0.06)',
                       fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
@@ -617,7 +626,7 @@ export default function WalletScannerPage() {
                       return (
                         <div
                           key={i}
-                          className="ws-row"
+                          className="ws-row hidden md:grid"
                           style={{
                             display: 'grid', gridTemplateColumns: '1fr 110px 120px 88px',
                             padding: '14px 20px',
@@ -780,7 +789,7 @@ export default function WalletScannerPage() {
         </div>
 
         {/* ── Right: Clark verdict panel ────────────────────────────────────────────── */}
-        <aside className="mob-verdict-panel" style={{
+        <aside className="mob-verdict-panel hidden md:flex" style={{
           width: '380px', flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           background: '#080c14',
@@ -790,7 +799,7 @@ export default function WalletScannerPage() {
           <div style={{
             height: '2px', flexShrink: 0,
             background: 'linear-gradient(90deg, #2DD4BF, #8b5cf6)',
-            opacity: (clarkLoading || clarkVerdict) ? 1 : 0.18,
+            opacity: false ? 1 : 0.18,
             transition: 'opacity 0.4s',
           }} />
 
@@ -802,9 +811,9 @@ export default function WalletScannerPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: result ? '10px' : 0 }}>
               <div style={{
                 width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
-                background: (clarkLoading || clarkVerdict) ? '#2DD4BF' : 'rgba(45,212,191,0.22)',
-                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 8px rgba(45,212,191,0.70)' : 'none',
-                animation: clarkLoading ? 'clarkPulse 1.2s ease-in-out infinite' : 'none',
+                background: false ? '#2DD4BF' : 'rgba(45,212,191,0.22)',
+                boxShadow: false ? '0 0 8px rgba(45,212,191,0.70)' : 'none',
+                animation: 'none',
                 transition: 'background 0.3s, box-shadow 0.3s',
               }} />
               <span style={{
@@ -828,57 +837,12 @@ export default function WalletScannerPage() {
 
           {/* Body */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-
-            {/* Idle */}
-            {!result && !clarkLoading && !clarkVerdict && (
-              <p style={{
-                fontSize: '13px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.7,
-                fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
-              }}>
-                Scan a wallet and Clark will return a structured verdict with key signals and risks.
-              </p>
-            )}
-
-            {/* Loading */}
-            {clarkLoading && <ClarkDots />}
-
-            {/* Structured verdict */}
-            {clarkVerdict && !clarkLoading && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{
-                  background: 'rgba(255,255,255,0.03)',
-                  border: '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: '12px', padding: '14px 16px',
-                }}>
-                  <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: '10px', fontWeight: 700, color: '#2DD4BF', letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                      {clarkVerdict.verdict}
-                    </span>
-                    <span style={{ fontSize: '10px', fontWeight: 700, color: '#fbbf24', letterSpacing: '0.10em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                      {clarkVerdict.confidence} confidence
-                    </span>
-                  </div>
-
-                  <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', margin: '0 0 6px' }}>Read</p>
-                  <p style={{ fontSize: '13px', color: '#ffffff', lineHeight: 1.6, margin: '0 0 12px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                    {clarkVerdict.read}
-                  </p>
-
-                  <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', margin: '0 0 6px' }}>Key signals</p>
-                  {clarkVerdict.keySignals.slice(0, 3).map((line, i) => (
-                    <p key={`s-${i}`} style={{ fontSize: '12px', color: '#cbd5e1', margin: '0 0 4px' }}>- {line}</p>
-                  ))}
-
-                  <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', margin: '12px 0 6px' }}>Risks</p>
-                  {clarkVerdict.risks.slice(0, 3).map((line, i) => (
-                    <p key={`r-${i}`} style={{ fontSize: '12px', color: '#fca5a5', margin: '0 0 4px' }}>- {line}</p>
-                  ))}
-
-                  <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', margin: '12px 0 6px' }}>Next action</p>
-                  <p style={{ fontSize: '12px', color: '#94a3b8', margin: 0 }}>{clarkVerdict.nextAction}</p>
-                </div>
-              </div>
-            )}
+            <p style={{
+              fontSize: '13px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.7,
+              fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
+            }}>
+              Scan a wallet to generate a CORTEX wallet read.
+            </p>
           </div>
 
           {/* Footer */}
