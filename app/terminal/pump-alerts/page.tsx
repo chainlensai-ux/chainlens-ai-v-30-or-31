@@ -391,14 +391,17 @@ export default function PumpAlertsPage() {
           100% { transform: rotate(360deg); }
         }
         @media (max-width: 768px) {
-          .pump-main   { padding: 16px 12px 120px !important; }
-          .pump-strip  { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+          /* 60px top clears the fixed hamburger button (top:12 + height:36 + 12 buffer) */
+          .pump-main        { padding: 60px 12px 120px !important; }
+          /* target the actual grid div inside SummaryStrip */
+          .pump-strip > div { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+          .pump-header-row  { padding-left: 0 !important; }
         }
         @media (max-width: 640px) {
-          .pump-card       { flex-direction: column !important; }
-          .pump-card-left  { width: auto !important; border-right: none !important; padding-right: 0 !important; padding-bottom: 8px !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; }
+          .pump-card        { flex-direction: column !important; }
+          .pump-card-left   { width: auto !important; border-right: none !important; padding-right: 0 !important; padding-bottom: 8px !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; }
           .pump-card-center { padding: 4px 0 !important; }
-          .pump-card-right { flex-direction: row !important; align-items: center !important; border-left: none !important; padding-left: 0 !important; padding-top: 8px !important; border-top: 1px solid rgba(255,255,255,0.06) !important; justify-content: space-between !important; }
+          .pump-card-right  { flex-direction: row !important; align-items: center !important; border-left: none !important; padding-left: 0 !important; padding-top: 8px !important; border-top: 1px solid rgba(255,255,255,0.06) !important; justify-content: space-between !important; }
         }
       `}</style>
 
@@ -406,7 +409,7 @@ export default function PumpAlertsPage() {
 
         {/* Header */}
         <div style={{ marginBottom: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '6px' }}>
+          <div className="pump-header-row" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '6px' }}>
             <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#f8fafc', margin: 0, letterSpacing: '-0.01em' }}>
               Pump Alerts
             </h1>
