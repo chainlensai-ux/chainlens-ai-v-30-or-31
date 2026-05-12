@@ -78,7 +78,7 @@ function WCBridge({ openRef }: { openRef: React.MutableRefObject<(() => void) | 
 
 // ---------- component ----------
 
-export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void }) {
+export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void | Promise<void> }) {
   const { address, isConnected } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
@@ -129,8 +129,9 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     }
   }, [isConnected, modalOpen])
 
-  const openModal = useCallback(() => {
-    onBeforeOpen?.()
+  const openModal = useCallback(async () => {
+    await onBeforeOpen?.()
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
     setSelected(null)
     setConnecting(false)
     setErrorMsg(null)
@@ -474,7 +475,11 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       {mounted && walletConnectEnabled && <WCBridge openRef={openWeb3ModalRef} />}
 
       <button
-        onClick={openModal}
+        onClick={async (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          await openModal()
+        }}
         className={className}
         style={baseStyle}
         onMouseEnter={e => {
