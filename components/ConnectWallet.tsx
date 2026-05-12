@@ -88,6 +88,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   // web3modal.open is populated by WCBridge once it mounts (client-only)
   const openWeb3ModalRef = useRef<(() => void) | null>(null)
   const [mounted, setMounted] = useState(false)
+  const [isMobileClient, setIsMobileClient] = useState(false)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
@@ -98,6 +99,13 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { setMounted(true) }, [])
+  useEffect(() => {
+    if (!mounted) return
+    const ua = navigator.userAgent || ''
+    const mobileUa = /android|iphone|ipad|ipod|mobile/i.test(ua)
+    const touch = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)
+    setIsMobileClient(mobileUa || touch)
+  }, [mounted])
 
   // close modal / menus on ESC
   useEffect(() => {
@@ -147,9 +155,15 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
 
   const handleConnector = useCallback(async (connector: (typeof connectors)[number]) => {
     if (!connector) return
-    if (typeof connector.getProvider === 'function') {
+    const connectorId = String(connector.id || '').toLowerCase()
+    const strictDesktopInjectedCheck =
+      !isMobileClient &&
+      !isWalletConnect(connector.id) &&
+      (connectorId.includes('injected') || connectorId.includes('metamask'))
+
+    if (strictDesktopInjectedCheck && typeof connector.getProvider === 'function') {
       const provider = await connector.getProvider().catch(() => null)
-      if (!provider && !isWalletConnect(connector.id)) {
+      if (!provider) {
         setSelected(connector.id)
         setErrorMsg('Wallet unavailable. Try another wallet.')
         setConnecting(false)
@@ -188,7 +202,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       else setErrorMsg('Connection failed. Please try again.')
       setConnecting(false)
     }
-  }, [connectAsync, connectors, closeModal])
+  }, [connectAsync, connectors, closeModal, isMobileClient])
 
   // ── shared button styles ──────────────────────────────────────────────────
 
