@@ -526,10 +526,24 @@ export default function WhaleAlertsPage() {
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden"
       style={{ background: 'radial-gradient(ellipse 90% 60% at 50% -8%,rgba(45,212,191,0.09) 0%,transparent 52%),radial-gradient(ellipse 55% 45% at 88% 6%,rgba(139,92,246,0.07) 0%,transparent 46%),#060810', color: '#f1f5f9' }}>
 
-      <div className="mx-auto w-full flex flex-col" style={{ maxWidth: 1280, gap: 24, padding: '24px 16px' }}>
+      <style>{`
+        @media (max-width: 767px) {
+          .wa-main-wrap  { padding-top: 60px !important; }
+          .wa-hero       { grid-template-columns: 1fr !important; }
+          .wa-metrics    { grid-template-columns: repeat(2, 1fr) !important; }
+          .wa-controls   { grid-template-columns: 1fr !important; }
+          .wa-dropdowns  { grid-template-columns: 1fr 1fr !important; }
+          .wa-sync-btns  { flex-wrap: wrap !important; }
+          .wa-sync-btns > button { flex: 1 1 auto !important; min-width: 0 !important; }
+          .wa-timewin, .wa-feedmode { width: 100% !important; flex-wrap: wrap !important; }
+          .wa-hero-right { min-width: 0 !important; }
+        }
+      `}</style>
+
+      <div className="wa-main-wrap mx-auto w-full flex flex-col" style={{ maxWidth: 1280, gap: 24, padding: '24px 16px' }}>
 
         {/* ═══ 1. HERO ═══════════════════════════════════════════════════════ */}
-        <div className="grid rounded-[28px]"
+        <div className="wa-hero grid rounded-[28px]"
           style={{ gridTemplateColumns: '1.4fr 360px', gap: 24, border: bdr, background: cardBg, padding: 24, boxShadow: '0 0 80px rgba(45,212,191,0.05),0 24px 64px rgba(0,0,0,0.55)' }}>
 
           <div className="flex flex-col justify-center">
@@ -558,7 +572,7 @@ export default function WhaleAlertsPage() {
             </div>
           </div>
 
-          <div className="flex flex-col justify-center rounded-[16px]" style={{ background: innerBg, border: bdrInner, padding: 16 }}>
+          <div className="wa-hero-right flex flex-col justify-center rounded-[16px]" style={{ background: innerBg, border: bdrInner, padding: 16 }}>
             <div className="flex items-start" style={{ gap: 16 }}>
               <div className="relative shrink-0" style={{ width: 76, height: 76, marginTop: 2 }}>
                 {([0, 9, 18, 27] as const).map((ins, ri) => (
@@ -596,7 +610,7 @@ export default function WhaleAlertsPage() {
         </div>
 
         {/* ═══ 2. METRICS ════════════════════════════════════════════════════ */}
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(4,1fr)', gap: 16 }}>
+        <div className="wa-metrics grid" style={{ gridTemplateColumns: 'repeat(4,1fr)', gap: 16 }}>
           {metrics.map((m, idx) => (
             <div key={m.label} className="relative overflow-hidden rounded-[16px]"
               style={{ minHeight: 132, border: bdr, background: cardBg, padding: 20 }}>
@@ -617,13 +631,13 @@ export default function WhaleAlertsPage() {
 
         {/* ═══ 3. CONTROLS + SYNC ════════════════════════════════════════════ */}
         <div className="rounded-[24px]" style={{ border: bdr, background: cardBg, padding: 20 }}>
-          <div className="grid" style={{ gridTemplateColumns: '1.35fr 0.95fr', gap: 20 }}>
+          <div className="wa-controls grid" style={{ gridTemplateColumns: '1.35fr 0.95fr', gap: 20 }}>
 
             {/* left: filters */}
             <div className="flex flex-col" style={{ gap: 16 }}>
               <div>
                 <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Time Window</p>
-                <div className="flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
+                <div className="wa-timewin flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
                   {WINDOWS.map(w => (
                     <button key={w} onClick={() => setWindowValue(w)}
                       className="rounded-[9px]"
@@ -656,7 +670,7 @@ export default function WhaleAlertsPage() {
 
               <div>
                 <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Feed Mode</p>
-                <div className="flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
+                <div className="wa-feedmode flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
                   {(['interesting', 'all'] as const).map(mode => (
                     <button key={mode} onClick={() => setFeedMode(mode)}
                       className="rounded-[9px]"
@@ -672,7 +686,7 @@ export default function WhaleAlertsPage() {
                 )}
               </div>
 
-              <div className="grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+              <div className="wa-dropdowns grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
                 {[
                   { label: 'Alert Type', val: typeFilter, set: setTypeFilter, opts: types },
                   { label: 'Severity',   val: sevFilter,  set: setSevFilter,  opts: sevs  },
@@ -758,7 +772,7 @@ export default function WhaleAlertsPage() {
                 </p>
               )}
 
-              <div className="flex" style={{ gap: 8 }}>
+              <div className="wa-sync-btns flex" style={{ gap: 8 }}>
                 <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }} disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}
                   className="flex flex-1 items-center justify-center rounded-[12px]"
                   style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore) ? 0.5 : 1, border: 'none' }}>
