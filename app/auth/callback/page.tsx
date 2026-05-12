@@ -19,17 +19,19 @@ export default function AuthCallbackPage() {
         console.info('[auth-callback] reached', { hasCode, nextPath });
       }
 
-      const { error } = await supabase.auth.exchangeCodeForSession(window.location.href);
+      const { data: sessionData, error } = await supabase.auth.exchangeCodeForSession(window.location.href);
       if (!active) return;
       if (error) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('[auth-callback] exchange failed', { hasCode, nextPath });
-        }
-        router.replace(`/auth?error=${encodeURIComponent(error.message)}`);
+        router.replace(`/auth?error=${encodeURIComponent('Sign-in link expired or invalid. Please try again.')}`);
         return;
       }
-      if (process.env.NODE_ENV !== 'production') {
-        console.info('[auth-callback] exchange success', { hasCode, redirectTarget: nextPath });
+      // Password recovery flow — send to reset page instead of terminal
+      const tokenType = sessionData?.session?.user?.app_metadata?.provider;
+      const urlType = callbackUrl.searchParams.get('type');
+      const isRecovery = urlType === 'recovery' || tokenType === 'recovery';
+      if (isRecovery) {
+        router.replace('/reset-password');
+        return;
       }
       router.replace(nextPath.startsWith('/') ? nextPath : '/terminal');
     }
