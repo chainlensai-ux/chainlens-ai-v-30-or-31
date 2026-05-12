@@ -42,8 +42,8 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
       <div className="flex-1 min-w-0 overflow-hidden relative">
         {/* Mobile sidebar toggle button */}
         <button
+          type="button"
           className="mob-sidebar-btn"
-          style={{ zIndex: 35 }}
           onClick={() => setSidebarOpen(o => !o)}
           aria-label="Toggle sidebar"
         >

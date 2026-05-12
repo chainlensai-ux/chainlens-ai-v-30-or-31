@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
@@ -55,6 +56,7 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
   const [plan, setPlan] = useState<UserPlan>('free')
+  const pathname = usePathname()
 
   useEffect(() => {
     async function loadSession(token?: string) {
@@ -84,6 +86,8 @@ export default function Navbar() {
 
     return () => listener.subscription.unsubscribe()
   }, [])
+
+  useEffect(() => { setMobileOpen(false) }, [pathname])
 
   const shortEmail = accountEmail
     ? accountEmail.length > 20
@@ -308,6 +312,7 @@ export default function Navbar() {
 
           {/* Mobile hamburger */}
           <button
+            type="button"
             className={`mob-ham${mobileOpen ? ' is-open' : ''}`}
             onClick={() => setMobileOpen(o => !o)}
             aria-label="Toggle navigation"
