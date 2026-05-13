@@ -92,6 +92,16 @@ type ScanResult = {
     couldNotVerify?: string[]
     nextAction?: string
   } | null
+  poolActivity?: {
+    transactions24h: number | null
+    buys24h: number | null
+    sells24h: number | null
+    volume24hUsd: number | null
+    buyVolume24hUsd: number | null
+    sellVolume24hUsd: number | null
+    pairCreatedAt: string | null
+    pairAgeLabel: string | null
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -132,16 +142,14 @@ type VerdictInput = {
 // ─── Formatters ───────────────────────────────────────────────────────────
 
 function fmtPrice(v: number | null | undefined): string {
-  if (v == null) return 'N/A'
-  if (v <= 0) return 'N/A'
-  if (v < 0.000000001) return `< $0.000000001`
-  if (v < 0.00001) {
-    // Fixed notation to avoid scientific output like $2.35e-10
-    const s = v.toFixed(12).replace(/0+$/, '').replace(/\.$/, '')
-    return `$${s}`
+  if (v == null || v <= 0) return 'N/A'
+  if (v < 0.001) {
+    // Dynamically scale decimal places to show ~3 significant figures, never scientific notation
+    const exp = Math.floor(Math.log10(v))      // e.g. -10 for 2.35e-10
+    const decimals = Math.min(-exp + 2, 20)    // e.g. 12 decimal places
+    return `$${v.toFixed(decimals)}`
   }
-  if (v < 0.001) return `$${v.toFixed(8)}`
-  if (v < 1)     return `$${v.toFixed(6)}`
+  if (v < 1) return `$${v.toFixed(6)}`
   return `$${v.toFixed(4)}`
 }
 
@@ -620,6 +628,7 @@ export default function TerminalTokenScanner() {
           debugHolderStatus: json.debugHolderStatus ?? null,
           sections: json.sections ?? null,
           lpControl: json.lpControl ?? null,
+          poolActivity: json.poolActivity ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -654,6 +663,9 @@ export default function TerminalTokenScanner() {
         }
         @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(6,minmax(0,1fr)) !important;} }
         @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
+        .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
+        @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
+        @media (max-width: 767px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
       `}</style>
 
       <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
@@ -803,21 +815,14 @@ export default function TerminalTokenScanner() {
                     accent={pctColor(result.priceChange24h)}
                   />
                   {(() => {
-                    const mcLabel = result.displayMarketValueLabel ?? 'Market Cap'
-                    const mcIsEstimated = mcLabel === 'Estimated MC'
-                    const mcIsLowConf = result.displayMarketValueConfidence !== 'verified' && result.displayMarketValueConfidence !== 'medium'
-                    const mcValue = result.displayMarketValue != null && !(mcIsEstimated && mcIsLowConf)
-                      ? fmtLarge(result.displayMarketValue)
-                      : 'MC unverified'
-                    const mcHelper = mcIsEstimated && mcIsLowConf
-                      ? 'Circulating supply not verified'
-                      : result.displayMarketValueConfidence === 'verified'
-                        ? 'Verified from live market data'
-                        : mcIsEstimated
-                          ? 'Estimated · supply not fully verified'
-                          : mcLabel === 'FDV'
-                            ? 'FDV fallback · true MC unavailable'
-                            : 'Market value unavailable'
+                    const mcValue = result.marketCapStatus === 'verified' && result.marketCapUsd != null
+                      ? fmtLarge(result.marketCapUsd)
+                      : 'Supply unverified'
+                    const mcHelper = result.marketCapStatus === 'verified'
+                      ? 'Verified from live market data'
+                      : result.marketCapStatus === 'estimated'
+                        ? 'FDV shown separately'
+                        : 'Circulating supply not confirmed'
                     return (
                       <StatCard
                         label='Market Cap'
@@ -834,13 +839,59 @@ export default function TerminalTokenScanner() {
                     accent="#a78bfa"
                   />
                   <StatCard
-                    label='DEX'
-                    value={result.primaryDexName ?? 'DEX unverified'}
-                    helper={result.primaryDexName ? 'Primary pool protocol' : 'Protocol not identified from live pool data'}
+                    label='Pool Protocol'
+                    value={result.primaryDexName ?? 'Protocol not confirmed'}
+                    helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'}
                     accent={result.primaryDexName ? '#67e8f9' : '#64748b'}
                   />
                 </div>
               )}
+
+              {/* Pool Activity */}
+              {!result.noActivePools && (
+                <div style={{ marginBottom: '28px' }}>
+                  <p style={{
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                    color: '#3a5268', textTransform: 'uppercase',
+                    marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
+                  }}>
+                    Pool Activity
+                  </p>
+                  <div className="activity-grid">
+                    <StatCard
+                      label="Transactions 24H"
+                      value={result.poolActivity?.transactions24h != null
+                        ? result.poolActivity.transactions24h.toLocaleString()
+                        : 'Activity unavailable'}
+                      helper="Primary pool activity"
+                    />
+                    <StatCard
+                      label="Buys / Sells"
+                      value={result.poolActivity?.buys24h != null && result.poolActivity?.sells24h != null
+                        ? `${result.poolActivity.buys24h.toLocaleString()} / ${result.poolActivity.sells24h.toLocaleString()}`
+                        : 'Buy/sell split unavailable'}
+                      helper="24h pool flow"
+                    />
+                    <StatCard
+                      label="Buy / Sell Vol"
+                      value={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null
+                        ? `${fmtLarge(result.poolActivity.buyVolume24hUsd)} / ${fmtLarge(result.poolActivity.sellVolume24hUsd)}`
+                        : 'Split unavailable'}
+                      helper={result.poolActivity?.buyVolume24hUsd == null && result.poolActivity?.volume24hUsd != null
+                        ? `24h volume: ${fmtLarge(result.poolActivity.volume24hUsd)}`
+                        : result.poolActivity?.buyVolume24hUsd != null
+                          ? '24h buy and sell volume'
+                          : 'Volume split not exposed'}
+                    />
+                    <StatCard
+                      label="Pair Age"
+                      value={result.poolActivity?.pairAgeLabel ?? 'Pool age unavailable'}
+                      helper={result.poolActivity?.pairAgeLabel != null ? 'Primary pool created' : 'Creation time not exposed'}
+                    />
+                  </div>
+                </div>
+              )}
+
               {result.sections && (
                 <div style={{ marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
                   {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]

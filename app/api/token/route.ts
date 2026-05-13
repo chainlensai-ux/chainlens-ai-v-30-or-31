@@ -496,6 +496,20 @@ function normalizeDexLabel(raw: string | null): string | null {
   return null
 }
 
+function computePairAge(createdAt: string): string | null {
+  try {
+    const ms = Date.now() - new Date(createdAt).getTime()
+    if (isNaN(ms) || ms < 0) return null
+    const mins  = Math.floor(ms / 60000)
+    const hours = Math.floor(ms / 3600000)
+    const days  = Math.floor(ms / 86400000)
+    if (mins  < 60) return `${mins}m`
+    if (hours < 48) return `${hours}h`
+    if (days  < 60) return `${days}d`
+    return `${Math.floor(days / 30)}mo`
+  } catch { return null }
+}
+
 function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[]): { dexId: string; dexName: string } {
   if (!pool) return { dexId: "", dexName: "" };
   const a = (pool.attributes ?? {}) as Record<string, unknown>;
@@ -684,9 +698,8 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract, debugHolder } = body;
-    const debugMode = new URL(req.url).searchParams.get('debug') === 'true' || body?.debug === true || body?.debug === 'true'
-    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base" })
+    const { contract, debugHolder, debug: debugMode } = body;
+    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base", _cv: 3 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
@@ -1172,6 +1185,28 @@ export async function POST(req: Request) {
 
     const liquidityUsd = pickNum(mainPool?.attributes?.reserve_in_usd)
     const volume24hUsd = pickNum((mainPool?.attributes?.volume_usd as Record<string, unknown> | undefined)?.h24)
+    // Pool activity — extracted from primary pool attributes, no extra API calls
+    const _txns = mainPoolAttr.transactions as Record<string, unknown> | null | undefined
+    const _txnsH24Any = _txns?.h24
+    const _txnsH24Obj = _txnsH24Any && typeof _txnsH24Any === 'object' ? _txnsH24Any as Record<string, unknown> : null
+    const _txnsH24Total = _txnsH24Any && typeof _txnsH24Any !== 'object' ? toNum(_txnsH24Any) : null
+    const buys24h: number | null = _txnsH24Obj != null ? (toNum(_txnsH24Obj.buys) ?? toNum(_txnsH24Obj.buy) ?? null) : null
+    const sells24h: number | null = _txnsH24Obj != null ? (toNum(_txnsH24Obj.sells) ?? toNum(_txnsH24Obj.sell) ?? null) : null
+    const transactions24h: number | null = buys24h != null && sells24h != null ? buys24h + sells24h : (_txnsH24Total ?? null)
+    const _volH24 = (mainPoolAttr.volume_usd as Record<string, unknown> | undefined)?.h24
+    const _volH24Obj = typeof _volH24 === 'object' && _volH24 !== null ? _volH24 as Record<string, unknown> : null
+    const buyVolume24hUsd: number | null = pickNum(
+      _volH24Obj?.buy, _volH24Obj?.buys,
+      (mainPoolAttr.buy_volume_usd  as Record<string, unknown> | undefined)?.h24,
+      (mainPoolAttr.volume_buy_usd  as Record<string, unknown> | undefined)?.h24,
+    )
+    const sellVolume24hUsd: number | null = pickNum(
+      _volH24Obj?.sell, _volH24Obj?.sells,
+      (mainPoolAttr.sell_volume_usd  as Record<string, unknown> | undefined)?.h24,
+      (mainPoolAttr.volume_sell_usd  as Record<string, unknown> | undefined)?.h24,
+    )
+    const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
+    const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
     if (process.env.NODE_ENV === "development") {
       console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] tokenEndpointMarketCapPresent', tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0, '[gt-market] poolEndpointMarketCapPresent', poolEndpointMarketCapPresent, '[gt-market] marketCap available', marketCapFromGt != null, '[gt-market] fdv available', fdv != null)
@@ -1281,6 +1316,17 @@ export async function POST(req: Request) {
       estimatedMarketCap,
       estimatedMarketCapConfidence,
       estimatedMarketCapReason,
+
+      poolActivity: {
+        transactions24h,
+        buys24h,
+        sells24h,
+        volume24hUsd,
+        buyVolume24hUsd,
+        sellVolume24hUsd,
+        pairCreatedAt,
+        pairAgeLabel,
+      },
 
       pairs: matchingPools,
       gtPools: matchingPools,
@@ -1428,6 +1474,19 @@ export async function POST(req: Request) {
               dexCard: primaryDexName ?? 'DEX unverified',
               marketCapCard: marketCapFromGt != null ? `$${marketCapFromGt}` : (estimatedMarketCap != null && estimatedMarketCapConfidence !== 'low' ? `~$${estimatedMarketCap}` : 'MC unverified'),
               fdvCard: fdv != null ? `$${fdv}` : 'Unverified',
+            },
+            // H) Pool activity diagnostics
+            transactionRawShape: mainPoolAttr.transactions ?? null,
+            volumeRawShape: mainPoolAttr.volume_usd ?? null,
+            poolActivityExtractionReason: {
+              transactions24hSource: _txnsH24Obj != null ? 'transactions.h24 (object)' : _txnsH24Total != null ? 'transactions.h24 (scalar)' : 'unavailable',
+              buys24hFound: buys24h != null,
+              sells24hFound: sells24h != null,
+              transactions24hResult: transactions24h,
+              buyVolumeFound: buyVolume24hUsd != null,
+              sellVolumeFound: sellVolume24hUsd != null,
+              pairCreatedAtFound: pairCreatedAt != null,
+              pairAgeLabelResult: pairAgeLabel,
             },
           }
         })() } : {}),
