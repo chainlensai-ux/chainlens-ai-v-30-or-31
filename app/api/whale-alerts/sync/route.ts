@@ -656,6 +656,18 @@ export async function POST(request: Request) {
   response.tokenSymbolsInserted = tokenSymbolsInserted
 
   if (debug) {
+    response._debug = {
+      routeName: `/api/whale-alerts/sync/${mode}`,
+      cacheHit: false,
+      alchemyConfigured: false,
+      alchemyCallsAttempted: 0,
+      alchemyCallsSucceeded: 0,
+      alchemyCallsFailed: 0,
+      rpcMethodsUsed: [],
+      skippedReason: 'route_uses_goldrush_not_alchemy',
+      fallbackUsed: false,
+      requestDurationMs: Date.now() - startedAt,
+    }
     response._diagnostics = {
       providerErrorCount: providerErrors,
       providerErrorSamples: providerErrorSamples.slice(0, 5).map(s => ({

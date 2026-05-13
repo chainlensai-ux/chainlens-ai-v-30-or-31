@@ -674,12 +674,13 @@ export async function POST(req: Request) {
 
     const body = await req.json();
     const { contract, debugHolder } = body;
+    const debugMode = new URL(req.url).searchParams.get('debug') === 'true' || body?.debug === true || body?.debug === 'true'
     const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base" })
     const cached = tokenResponseCache.get(cacheKey)
-    if (cached && cached.exp > Date.now()) {
+    if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
         const cp: any = { ...(cached.payload as any) }
-        cp._diagnostics = { ...(cp._diagnostics ?? {}), cacheHit: true }
+        delete cp._diagnostics
         return NextResponse.json(cp)
       }
       return NextResponse.json(cached.payload)
@@ -697,16 +698,54 @@ export async function POST(req: Request) {
     let rpcCallsAttempted = 0
     let rpcCallsSucceeded = 0
     let rpcCallsFailed = 0
-    const countedRpcCall = async (method: string, params: unknown[]) => {
+    const rpcCheckDiagnostics: Array<{ checkName: string; method: string; attempted: boolean; succeeded: boolean; critical: boolean; failureStage: string | null; safeReasonCode: string | null; durationMs: number | null }> = []
+    const countedRpcCall = async (method: string, params: unknown[], checkName = "rpcCheck", critical = false) => {
+      const t0 = Date.now()
       rpcCallsAttempted += 1
       const out = await rpcCall(chain, method, params)
-      if (out) rpcCallsSucceeded += 1
-      else rpcCallsFailed += 1
+      if (out) {
+        rpcCallsSucceeded += 1
+      } else {
+        rpcCallsFailed += 1
+      }
+      if (debugMode) {
+        rpcCheckDiagnostics.push({
+          checkName,
+          method,
+          attempted: true,
+          succeeded: Boolean(out),
+          critical,
+          failureStage: out ? null : 'rpc_call',
+          safeReasonCode: out
+            ? null
+            : (!alchemyConfigured
+              ? 'missing_env'
+              : (checkName === 'ownerCheck' ? 'owner_not_exposed' : 'invalid_contract_response')),
+          durationMs: Date.now() - t0,
+        })
+      }
       return out
     }
 
+    const bytecodePromise = (async () => {
+      const t0 = Date.now()
+      const out = await fetchBytecode(chain, contract)
+      if (debugMode) {
+        rpcCheckDiagnostics.push({
+          checkName: 'bytecodeCheck',
+          method: 'eth_getCode',
+          attempted: alchemyConfigured,
+          succeeded: Boolean(out),
+          critical: true,
+          failureStage: out ? null : (alchemyConfigured ? 'rpc_call' : 'preflight'),
+          safeReasonCode: out ? null : (alchemyConfigured ? 'rpc_unavailable' : 'missing_env'),
+          durationMs: Date.now() - t0,
+        })
+      }
+      return out
+    })()
     const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpResult] = await Promise.all([
-      fetchBytecode(chain, contract),
+      bytecodePromise,
       fetchGoldRush(chain, contract),
       fetchTokenHolders(chain, contract),
       fetchGeckoTerminal(contract, chain),
@@ -872,14 +911,14 @@ export async function POST(req: Request) {
         const confidenceFor = (pct: number): "high" | "medium" | "low" => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
         const DEAD = new Set(["0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"]);
         const KNOWN_LOCKERS = new Set(["0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", "0x71b5759d73262fbb223956913ecf4ecc51057641"]);
-        const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
+        const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
           lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
-            const balHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data }, "latest"]);
+            const balHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data }, "latest"], "lpControlCheck.balanceOf", false);
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
@@ -925,14 +964,14 @@ export async function POST(req: Request) {
         lpControl = { status: "team_controlled", confidence: "high", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
       } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
         // Alchemy RPC fallback when GoldRush holder percentages are unavailable
-        const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"]);
+        const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
           lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
-            const balHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data }, "latest"]);
+            const balHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data }, "latest"], "lpControlCheck.balanceOf", false);
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
@@ -1157,10 +1196,10 @@ export async function POST(req: Request) {
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (matchingPools.length > 0 ? "partial" : "unavailable");
     const liquidityReason = mainPool ? null : "no_active_liquidity_pool_found";
-    const ownerCall = await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'])
+    const ownerCall = await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
-    const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'])
-    const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'])
+    const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
+    const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
     const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
     const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
 
@@ -1384,6 +1423,23 @@ export async function POST(req: Request) {
       console.log('[token-timing] totalMs', _totalMs, 'contract', contract)
       console.log('[alchemy-diag] route=/api/token configured=', alchemyConfigured, 'lpProbeAttempted=', Boolean(lpPoolAddress && (lpPoolType === "unknown" || lpPoolType === "v2")), 'rpcAttempted=', rpcCallsAttempted, 'rpcSucceeded=', rpcCallsSucceeded, 'rpcFailed=', rpcCallsFailed, 'totalMs=', _totalMs)
       ;(responsePayload as any)._timing = { totalMs: _totalMs }
+    }
+    if (debugMode) {
+      ;(responsePayload as any)._debug = {
+        routeName: '/api/token',
+        cacheHit: false,
+        alchemyConfigured,
+        alchemyCallsAttempted: rpcCallsAttempted,
+        alchemyCallsSucceeded: rpcCallsSucceeded,
+        alchemyCallsFailed: rpcCallsFailed,
+        rpcMethodsUsed: rpcCallsAttempted > 0 ? ['eth_call'] : [],
+        skippedReason: rpcCallsAttempted > 0 ? null : (alchemyConfigured ? 'no_rpc_path_needed' : 'alchemy_not_configured'),
+        fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
+        requestDurationMs: Date.now() - _t0,
+        checks: rpcCheckDiagnostics,
+      }
+    } else {
+      delete (responsePayload as any)._diagnostics
     }
     tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
     return NextResponse.json(responsePayload)
