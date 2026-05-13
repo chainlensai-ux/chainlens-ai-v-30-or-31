@@ -175,10 +175,16 @@ function pctColor(v: number | null | undefined): string {
 function humanizeReasonCode(reason?: string): string {
   if (!reason) return 'Additional verification is required.'
   const map: Record<string, string> = {
-    contract_bytecode_unavailable_from_rpc: 'No signal in checked window from current checks.',
-    unavailable_circulating_supply_not_verified: 'Circulating supply is not verified by provider.',
-    honeypot_simulation_unavailable_from_provider: 'Security simulation is unavailable from provider.',
-    no_active_liquidity_pool_found: 'No active liquidity pool was found.',
+    contract_bytecode_unavailable_from_rpc:          'No signal in checked window from current checks.',
+    unavailable_circulating_supply_not_verified:      'Circulating supply not fully verified.',
+    honeypot_simulation_unavailable_from_provider:    'Live security simulation unavailable.',
+    honeypot_provider_unavailable_using_limited_fallback: 'Live simulation unavailable, using limited safety signals.',
+    security_simulation_unavailable:                  'Live security simulation unavailable.',
+    security_check_limited_signals_used:              'Live simulation unavailable, using limited safety signals.',
+    no_active_liquidity_pool_found:                   'No active liquidity pool was found.',
+    partial_market_fields_from_provider:              'Some market fields unavailable.',
+    partial_market_data:                              'Some market fields unavailable.',
+    holder_data_unavailable:                          'Holder data unavailable for this scan.',
   }
   if (map[reason]) return map[reason]
   if (/^[a-z0-9_]+$/.test(reason)) return reason.replace(/_/g, ' ')
@@ -187,15 +193,19 @@ function humanizeReasonCode(reason?: string): string {
 
 function humanizeSectionLine(source?: string, status?: string, reason?: string): string {
   const sourceMap: Record<string, string> = {
-    base_rpc: 'Contract verification',
-    geckoterminal: 'Market data',
-    goldrush: 'Holder data',
-    honeypot: 'Security simulation',
+    base_rpc:                  'Contract verification',
+    alchemy_rpc:               'Contract verification',
+    geckoterminal:             'Market data',
+    goldrush:                  'Holder data',
+    honeypot:                  'Security simulation',
+    'honeypot.is':             'Security simulation',
+    goplus_limited_fallback:   'Security signals',
+    goplus_optional_fallback:  'Security signals',
+    unavailable:               'Data check',
   }
-  const sourceLabel = sourceMap[source ?? ''] ?? 'Provider check'
+  const sourceLabel = sourceMap[source ?? ''] ?? 'CORTEX check'
   const statusLabel = status ? status.charAt(0).toUpperCase() + status.slice(1) : 'No signal in checked window'
   const reasonText = reason ? humanizeReasonCode(reason) : ''
-  // Avoid "No signal in checked window — No signal in checked window from ..." double-unavailable: use reason as the suffix directly
   if (reasonText && reasonText.toLowerCase().startsWith(statusLabel.toLowerCase())) {
     return `${sourceLabel}: ${reasonText}`
   }
@@ -226,10 +236,10 @@ function holderSafeReason(
   providerStatus: HolderProviderStatus,
   hasRows: boolean
 ): string {
-  if (hasRows) return 'Holder rows available from provider.'
-  if (providerStatus === 'unavailable') return 'Holder provider unavailable for this scan.'
-  if (providerStatus === 'error') return 'Holder source returned no usable rows.'
-  if (providerStatus === 'empty') return 'Holder provider returned no rows for this token.'
+  if (hasRows) return 'Holder data available.'
+  if (providerStatus === 'unavailable') return 'Holder data unavailable for this scan.'
+  if (providerStatus === 'error') return 'Holder data returned no usable rows.'
+  if (providerStatus === 'empty') return 'Holder data unavailable for this token.'
   return 'Holder concentration currently unverified.'
 }
 
@@ -786,17 +796,31 @@ export default function TerminalTokenScanner() {
                     value={fmtPct(result.priceChange24h)}
                     accent={pctColor(result.priceChange24h)}
                   />
-                  <StatCard
-                    label={result.displayMarketValueLabel ?? 'Market Cap'}
-                    value={result.displayMarketValue != null ? fmtLarge(result.displayMarketValue) : 'No signal in checked window'}
-                    helper={
-                      result.displayMarketValueConfidence === 'verified' ? 'Provider-verified' :
-                      result.displayMarketValueLabel === 'Estimated MC' ? 'Estimated · supply not fully verified' :
-                      result.displayMarketValueLabel === 'FDV' ? 'FDV fallback · true MC unavailable' :
-                      'Market value unavailable'
-                    }
-                    accent="#a78bfa"
-                  />
+                  {(() => {
+                    const mcLabel = result.displayMarketValueLabel ?? 'Market Cap'
+                    const mcIsEstimated = mcLabel === 'Estimated MC'
+                    const mcIsLowConf = result.displayMarketValueConfidence !== 'verified' && result.displayMarketValueConfidence !== 'medium'
+                    const mcValue = result.displayMarketValue != null && !(mcIsEstimated && mcIsLowConf)
+                      ? fmtLarge(result.displayMarketValue)
+                      : 'MC unverified'
+                    const mcHelper = mcIsEstimated && mcIsLowConf
+                      ? 'Circulating supply not verified'
+                      : result.displayMarketValueConfidence === 'verified'
+                        ? 'Verified from live market data'
+                        : mcIsEstimated
+                          ? 'Estimated · supply not fully verified'
+                          : mcLabel === 'FDV'
+                            ? 'FDV fallback · true MC unavailable'
+                            : 'Market value unavailable'
+                    return (
+                      <StatCard
+                        label='Market Cap'
+                        value={mcValue}
+                        helper={mcHelper}
+                        accent="#a78bfa"
+                      />
+                    )
+                  })()}
                   <StatCard
                     label='FDV'
                     value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}
@@ -806,7 +830,7 @@ export default function TerminalTokenScanner() {
                   <StatCard
                     label='DEX'
                     value={result.primaryDexName ?? 'DEX unverified'}
-                    helper={result.primaryDexName ? 'Primary pool protocol' : 'Protocol not identified from pool data'}
+                    helper={result.primaryDexName ? 'Primary pool protocol' : 'Protocol not identified from live pool data'}
                     accent={result.primaryDexName ? '#67e8f9' : '#64748b'}
                   />
                 </div>
@@ -842,7 +866,7 @@ export default function TerminalTokenScanner() {
                 const fallbackChecked: string[] = []
                 if (lp.poolAddressPresent || evidenceText.includes('verification pool')) fallbackChecked.push('Pool address found')
                 if (verificationPool !== 'Unverified') fallbackChecked.push('Major quote verification pool selected')
-                if (evidenceText.includes('alchemy') || evidenceText.includes('rpc')) fallbackChecked.push('Alchemy RPC checks attempted')
+                if (evidenceText.includes('alchemy') || evidenceText.includes('rpc') || evidenceText.includes('probe')) fallbackChecked.push('On-chain verification checks attempted')
                 if (lp.status !== 'error' && lp.status !== 'unverified' ? true : lp.poolAddressPresent) fallbackChecked.push('Liquidity pool found')
                 const checked = ((read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x)).length
                   ? (read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x))
@@ -953,7 +977,7 @@ export default function TerminalTokenScanner() {
                         <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
                         {result.holderDistribution?.holderCount != null && <p style={{margin:'0 0 10px',fontSize:'11px',color:'#67e8f9'}}>Holder count: {result.holderDistribution.holderCount.toLocaleString()}</p>}
                         {holderState.kind === 'rowsWithoutPercent' && (
-                          <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets were returned, but supply percentages were not available from the provider.</p>
+                          <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets found, but supply percentages were not available for this scan.</p>
                         )}
                         <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
                       </div>
@@ -997,7 +1021,7 @@ export default function TerminalTokenScanner() {
                         </div>
                       ))}
                     </div>
-                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8'}}>Holder provider did not return holder rows for this token. This usually happens on new, thin, or low-coverage microcaps, so concentration should be treated as unverified.</p>
+                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8'}}>Holder data was unavailable for this token. This usually happens on new, thin, or low-coverage microcaps, so concentration should be treated as unverified.</p>
                   </div>
                 )
               })()}
