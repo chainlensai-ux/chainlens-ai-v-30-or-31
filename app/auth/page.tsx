@@ -63,6 +63,14 @@ export default function AuthPage() {
       if (!isMounted) return;
 
       if (!sessionError && data.session?.user) {
+        const user = data.session.user;
+        const provider = user.app_metadata?.provider;
+        if (provider === 'email' && !user.email_confirmed_at) {
+          // Unverified email session — clear it and stay on auth page
+          await supabase.auth.signOut();
+          setAuthCheckLoading(false);
+          return;
+        }
         router.replace('/terminal');
         return;
       }
@@ -75,6 +83,11 @@ export default function AuthPage() {
     // Handle OAuth callback and email-confirm sign-ins
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_IN' && session) {
+        const provider = session.user.app_metadata?.provider;
+        if (provider === 'email' && !session.user.email_confirmed_at) {
+          Promise.resolve().then(() => supabase.auth.signOut());
+          return;
+        }
         router.replace('/terminal');
       }
     });
@@ -119,7 +132,7 @@ export default function AuthPage() {
     const cleanEmail = email.trim().toLowerCase();
 
     if (mode === 'signin') {
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
       if (signInError) {
         const msg = signInError.message.toLowerCase();
         if (msg.includes('email not confirmed') || msg.includes('not confirmed')) {
@@ -127,9 +140,11 @@ export default function AuthPage() {
         } else {
           setError('Email or password is incorrect. Try again or reset your password.');
         }
-      } else {
-        router.replace('/');
+      } else if (!signInData.user?.email_confirmed_at) {
+        setError('Please verify your email before signing in. Check your inbox for a confirmation link.');
+        await supabase.auth.signOut();
       }
+      // Verified users are redirected by onAuthStateChange
     } else {
       if (!policyPassed) {
         setError('Use at least 10 characters with uppercase, lowercase, a number, and a symbol.');
