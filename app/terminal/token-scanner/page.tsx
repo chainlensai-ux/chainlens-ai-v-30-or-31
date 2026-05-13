@@ -767,17 +767,19 @@ export default function TerminalTokenScanner() {
           .mob-verdict-panel { width: 100% !important; border-left: none !important; border-top: 1px solid rgba(255,255,255,0.08); }
           .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
         }
-        @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(6,minmax(0,1fr)) !important;} }
+        @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(7,minmax(0,1fr)) !important;} }
+        .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.86),rgba(4,10,22,.82));border:1px solid rgba(148,163,184,.2);border-radius:14px;box-shadow:0 0 0 1px rgba(45,212,191,.06) inset,0 18px 45px rgba(2,6,23,.35);} 
+        @media (max-width: 768px) { .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .pools-row{min-width:860px} }
         @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
         @media (max-width: 767px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
       `}</style>
 
-      <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
+      <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%)' }}>
 
         {/* ── Left: scrollable scan area ──────────────────────────── */}
-        <div className="mob-scan-main token-main" style={{ flex: '0 0 70%', minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '56px 44px 120px' }}>
+        <div className="mob-scan-main token-main" style={{ flex: '0 0 70%', minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px 34px 120px', maxWidth: '1240px' }}>
 
           {/* Header */}
           <div style={{ marginBottom: '32px' }}>
@@ -799,7 +801,7 @@ export default function TerminalTokenScanner() {
           </div>
 
           {/* Input row */}
-          <div className="token-input-row" style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '28px' }}>
+          <div className="token-input-row glass-card" style={{ display: 'flex', gap: '10px', maxWidth: '820px', marginBottom: '24px', padding: '10px' }}>
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
@@ -914,7 +916,7 @@ export default function TerminalTokenScanner() {
               ) : (
                 <div className="metric-grid" style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+                  gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
                   gap: '10px', marginBottom: '28px',
                 }}>
                   <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
@@ -963,7 +965,7 @@ export default function TerminalTokenScanner() {
 
               {/* Pool Activity */}
               {!result.noActivePools && (
-                <div style={{ marginBottom: '22px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(15,23,42,0.55)', borderRadius: '12px', padding: '14px' }}>
+                <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
                     <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
                     <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>24h primary pool price action</p>
@@ -1160,8 +1162,8 @@ export default function TerminalTokenScanner() {
                 const fallback = deriveHolderFallbackEvidence(result)
                 if (holderState.kind !== 'noRowsFallback') {
                   return (
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
-                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
+                    <div className="holders-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
+                      <div className="glass-card" style={{padding:'14px'}}>
                         <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
                         {result.holderDistribution?.holderCount != null && <p style={{margin:'0 0 10px',fontSize:'11px',color:'#67e8f9'}}>Holder count: {result.holderDistribution.holderCount.toLocaleString()}</p>}
                         {holderState.kind === 'rowsWithoutPercent' && (
@@ -1169,7 +1171,7 @@ export default function TerminalTokenScanner() {
                         )}
                         <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
                       </div>
-                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px',minWidth:0,overflow:'hidden'}}>
+                      <div className="glass-card" style={{padding:'14px',minWidth:0,overflow:'hidden'}}>
                         <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
                         {/* Header */}
                         <div style={{display:'grid',gridTemplateColumns:'24px minmax(0,1fr) 64px 52px',gap:'8px',fontSize:'9px',letterSpacing:'0.10em',color:'#475569',marginBottom:'6px',fontFamily:'var(--font-plex-mono)'}}>
@@ -1224,7 +1226,7 @@ export default function TerminalTokenScanner() {
                   }}>
                     LIQUIDITY & POOLS
                   </p><div style={{display:'inline-flex',marginBottom:'10px',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} POOLS</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ overflowX: 'auto', paddingBottom: '6px' }}><div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
                         key={i}
@@ -1257,7 +1259,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>APR N/A</span><span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>{fmtPct(pool.priceChange24h)}</span><span style={{whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24'}}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
                       </div>
                     ))}
-                  </div>
+                  </div></div>
                 </>
               )}
             </div>
@@ -1266,16 +1268,19 @@ export default function TerminalTokenScanner() {
 
         {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
         <aside className="mob-verdict-panel" style={{
-          width: '30%',
+          width: '28%',
           minWidth: '320px',
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
-          background: '#080c14',
+          background: 'linear-gradient(180deg, rgba(6,10,20,.96), rgba(4,8,18,.96))',
           overflowY: 'auto',
           padding: '28px 20px',
           display: 'flex',
           flexDirection: 'column',
           gap: '16px',
+          position: 'sticky',
+          top: 0,
+          height: '100vh',
         }}>
           {/* Label */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
