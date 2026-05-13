@@ -132,16 +132,14 @@ type VerdictInput = {
 // ─── Formatters ───────────────────────────────────────────────────────────
 
 function fmtPrice(v: number | null | undefined): string {
-  if (v == null) return 'N/A'
-  if (v <= 0) return 'N/A'
-  if (v < 0.000000001) return `< $0.000000001`
-  if (v < 0.00001) {
-    // Fixed notation to avoid scientific output like $2.35e-10
-    const s = v.toFixed(12).replace(/0+$/, '').replace(/\.$/, '')
-    return `$${s}`
+  if (v == null || v <= 0) return 'N/A'
+  if (v < 0.001) {
+    // Dynamically scale decimal places to show ~3 significant figures, never scientific notation
+    const exp = Math.floor(Math.log10(v))      // e.g. -10 for 2.35e-10
+    const decimals = Math.min(-exp + 2, 20)    // e.g. 12 decimal places
+    return `$${v.toFixed(decimals)}`
   }
-  if (v < 0.001) return `$${v.toFixed(8)}`
-  if (v < 1)     return `$${v.toFixed(6)}`
+  if (v < 1) return `$${v.toFixed(6)}`
   return `$${v.toFixed(4)}`
 }
 
@@ -803,21 +801,14 @@ export default function TerminalTokenScanner() {
                     accent={pctColor(result.priceChange24h)}
                   />
                   {(() => {
-                    const mcLabel = result.displayMarketValueLabel ?? 'Market Cap'
-                    const mcIsEstimated = mcLabel === 'Estimated MC'
-                    const mcIsLowConf = result.displayMarketValueConfidence !== 'verified' && result.displayMarketValueConfidence !== 'medium'
-                    const mcValue = result.displayMarketValue != null && !(mcIsEstimated && mcIsLowConf)
-                      ? fmtLarge(result.displayMarketValue)
-                      : 'MC unverified'
-                    const mcHelper = mcIsEstimated && mcIsLowConf
-                      ? 'Circulating supply not verified'
-                      : result.displayMarketValueConfidence === 'verified'
-                        ? 'Verified from live market data'
-                        : mcIsEstimated
-                          ? 'Estimated · supply not fully verified'
-                          : mcLabel === 'FDV'
-                            ? 'FDV fallback · true MC unavailable'
-                            : 'Market value unavailable'
+                    const mcValue = result.marketCapStatus === 'verified' && result.marketCapUsd != null
+                      ? fmtLarge(result.marketCapUsd)
+                      : 'Supply unverified'
+                    const mcHelper = result.marketCapStatus === 'verified'
+                      ? 'Verified from live market data'
+                      : result.marketCapStatus === 'estimated'
+                        ? 'FDV shown separately'
+                        : 'Circulating supply not confirmed'
                     return (
                       <StatCard
                         label='Market Cap'
@@ -834,9 +825,9 @@ export default function TerminalTokenScanner() {
                     accent="#a78bfa"
                   />
                   <StatCard
-                    label='DEX'
-                    value={result.primaryDexName ?? 'DEX unverified'}
-                    helper={result.primaryDexName ? 'Primary pool protocol' : 'Protocol not identified from live pool data'}
+                    label='Pool Protocol'
+                    value={result.primaryDexName ?? 'Protocol not confirmed'}
+                    helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'}
                     accent={result.primaryDexName ? '#67e8f9' : '#64748b'}
                   />
                 </div>

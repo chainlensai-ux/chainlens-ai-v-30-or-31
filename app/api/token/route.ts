@@ -685,7 +685,7 @@ export async function POST(req: Request) {
 
     const body = await req.json();
     const { contract, debugHolder, debug: debugMode } = body;
-    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base" })
+    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base", _cv: 2 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
