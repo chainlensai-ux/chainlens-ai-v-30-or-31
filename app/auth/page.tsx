@@ -8,6 +8,30 @@ import { supabase } from '@/lib/supabaseClient';
 
 type Mode = 'signin' | 'signup' | 'forgot';
 
+const BANNED_PASSWORDS = new Set([
+  '123456','12345678','123456789','password','password123',
+  'qwerty','qwerty123','chainlens','chainlens123','letmein','admin123',
+])
+
+function checkPolicy(pw: string) {
+  return {
+    minLen: pw.length >= 10,
+    hasUpper: /[A-Z]/.test(pw),
+    hasLower: /[a-z]/.test(pw),
+    hasNum: /[0-9]/.test(pw),
+    hasSpecial: /[^A-Za-z0-9]/.test(pw),
+    notBanned: !BANNED_PASSWORDS.has(pw.toLowerCase()),
+  }
+}
+
+function getStrength(pw: string): 'weak' | 'medium' | 'strong' {
+  if (!pw) return 'weak'
+  const c = checkPolicy(pw)
+  if (c.notBanned && c.minLen && c.hasUpper && c.hasLower && c.hasNum && c.hasSpecial) return 'strong'
+  const met = [c.minLen, c.hasUpper, c.hasLower, c.hasNum, c.hasSpecial].filter(Boolean).length
+  return met >= 3 ? 'medium' : 'weak'
+}
+
 export default function AuthPage() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>('signin');
@@ -22,6 +46,13 @@ export default function AuthPage() {
     return oauthErr ? decodeURIComponent(oauthErr.replace(/\+/g, ' ')) : null;
   });
   const [success, setSuccess] = useState<string | null>(null);
+  const [confirmPassword, setConfirmPassword] = useState('');
+
+  const policy = checkPolicy(password);
+  const strength = getStrength(password);
+  const policyPassed = policy.minLen && policy.hasUpper && policy.hasLower && policy.hasNum && policy.hasSpecial && policy.notBanned;
+  const confirmMismatch = mode === 'signup' && confirmPassword.length > 0 && confirmPassword !== password;
+  const submitDisabled = loading || !email.trim() || (mode === 'signup' && (!policyPassed || password !== confirmPassword));
 
   useEffect(() => {
     let isMounted = true;
@@ -95,6 +126,16 @@ export default function AuthPage() {
         router.replace('/');
       }
     } else {
+      if (!policyPassed) {
+        setError('Use at least 10 characters with uppercase, lowercase, a number, and a symbol.');
+        setLoading(false);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError('Passwords do not match.');
+        setLoading(false);
+        return;
+      }
       const { error: signUpError } = await supabase.auth.signUp({
         email: cleanEmail,
         password,
@@ -104,8 +145,10 @@ export default function AuthPage() {
         const msg = signUpError.message.toLowerCase();
         if (msg.includes('already registered') || msg.includes('already exists')) {
           setError('An account with this email already exists. Try signing in.');
-        } else if (msg.includes('password')) {
-          setError('Password must be at least 6 characters.');
+        } else if (msg.includes('invalid email') || msg.includes('valid email')) {
+          setError('Please enter a valid email address.');
+        } else if (msg.includes('rate limit') || msg.includes('too many')) {
+          setError('Too many attempts. Please wait a moment and try again.');
         } else {
           setError('Unable to create account. Please try again.');
         }
@@ -293,7 +336,7 @@ export default function AuthPage() {
           {(['signin', 'signup'] as Mode[]).map(m => (
             <button
               key={m}
-              onClick={() => { setMode(m); setError(null); setSuccess(null); }}
+              onClick={() => { setMode(m); setError(null); setSuccess(null); setConfirmPassword(''); }}
               style={{
                 flex: 1,
                 padding: '9px',
@@ -367,12 +410,78 @@ export default function AuthPage() {
             onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
           />
 
+          {/* Password strength — signup only */}
+          {mode === 'signup' && password.length > 0 && (
+            <div style={{ marginTop: '2px' }}>
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center', marginBottom: '5px' }}>
+                {(['weak', 'medium', 'strong'] as const).map((lvl, i) => {
+                  const idx = strength === 'weak' ? 0 : strength === 'medium' ? 1 : 2;
+                  const barColors = ['#ef4444', '#f59e0b', '#2DD4BF'];
+                  return (
+                    <div key={lvl} style={{
+                      flex: 1, height: '3px', borderRadius: '2px',
+                      background: idx >= i ? barColors[i] : 'rgba(255,255,255,0.08)',
+                      transition: 'background 0.2s',
+                    }} />
+                  );
+                })}
+                <span style={{
+                  fontSize: '11px', fontWeight: 600, marginLeft: '6px', minWidth: '40px',
+                  color: strength === 'strong' ? '#2DD4BF' : strength === 'medium' ? '#f59e0b' : '#ef4444',
+                }}>
+                  {strength === 'strong' ? 'Strong' : strength === 'medium' ? 'Medium' : 'Weak'}
+                </span>
+              </div>
+              <div style={{
+                display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 6px',
+                padding: '7px 10px', background: 'rgba(255,255,255,0.03)',
+                borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)',
+              }}>
+                {[
+                  { label: '10+ characters', met: policy.minLen },
+                  { label: 'Uppercase (A–Z)', met: policy.hasUpper },
+                  { label: 'Lowercase (a–z)', met: policy.hasLower },
+                  { label: 'Number (0–9)', met: policy.hasNum },
+                  { label: 'Special character', met: policy.hasSpecial },
+                ].map(({ label, met }) => (
+                  <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: met ? '#2DD4BF' : 'rgba(255,255,255,0.35)', lineHeight: 1.7 }}>
+                    {met
+                      ? <svg width="9" height="9" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L19 7" stroke="#2DD4BF" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      : <svg width="9" height="9" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4" fill="rgba(255,255,255,0.22)"/></svg>
+                    }
+                    {label}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Confirm password — signup only */}
+          {mode === 'signup' && (
+            <>
+              <input
+                type="password"
+                placeholder="Confirm password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                style={inputStyle}
+                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15), 0 0 22px rgba(139,92,246,0.14)'; }}
+                onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
+              />
+              {confirmMismatch && (
+                <div style={{ fontSize: '11px', color: '#fca5a5', marginTop: '-4px', paddingLeft: '2px' }}>
+                  Passwords do not match.
+                </div>
+              )}
+            </>
+          )}
+
           {/* Forgot password — sign in only */}
           {mode === 'signin' && (
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 type="button"
-                onClick={() => { setMode('forgot'); setError(null); setSuccess(null); }}
+                onClick={() => { setMode('forgot'); setError(null); setSuccess(null); setConfirmPassword(''); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: '#475569', fontFamily: 'inherit', transition: 'color 0.15s' }}
                 onMouseEnter={e => (e.currentTarget.style.color = '#94a3b8')}
                 onMouseLeave={e => (e.currentTarget.style.color = '#475569')}
@@ -417,17 +526,17 @@ export default function AuthPage() {
           {/* Submit */}
           <button
             type="submit"
-            disabled={loading}
+            disabled={submitDisabled}
             style={{
               width: '100%', padding: '12px 16px', borderRadius: '11px',
-              background: loading ? 'rgba(139,92,246,0.35)' : 'linear-gradient(135deg, #2DD4BF 0%, #0ea5e9 42%, #8b5cf6 100%)',
+              background: submitDisabled ? 'rgba(139,92,246,0.35)' : 'linear-gradient(135deg, #2DD4BF 0%, #0ea5e9 42%, #8b5cf6 100%)',
               border: 'none', color: '#ffffff', fontSize: '13px', fontWeight: 600,
-              cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-              boxShadow: loading ? 'none' : '0 0 30px rgba(45,212,191,0.24), 0 0 24px rgba(139,92,246,0.20), 0 8px 24px rgba(8,14,28,0.55)',
+              cursor: submitDisabled ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+              boxShadow: submitDisabled ? 'none' : '0 0 30px rgba(45,212,191,0.24), 0 0 24px rgba(139,92,246,0.20), 0 8px 24px rgba(8,14,28,0.55)',
               transition: 'opacity 0.15s, box-shadow 0.15s, transform 0.15s',
               marginTop: '4px',
             }}
-            onMouseEnter={e => { if (!loading) { e.currentTarget.style.opacity = '0.96'; e.currentTarget.style.transform = 'translateY(-1px)'; } }}
+            onMouseEnter={e => { if (!submitDisabled) { e.currentTarget.style.opacity = '0.96'; e.currentTarget.style.transform = 'translateY(-1px)'; } }}
             onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'translateY(0)'; }}
           >
             {loading ? (mode === 'signup' ? 'Creating…' : 'Signing in…') : mode === 'signin' ? 'Sign In' : 'Create Account'}
