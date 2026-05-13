@@ -52,6 +52,7 @@ type ScanResult = {
     simulationSuccess: boolean
   } | null
   noActivePools?: boolean
+  primaryDexName?: string | null
   decimals?: number
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
@@ -570,6 +571,7 @@ export default function TerminalTokenScanner() {
           contract:       json.contract,
           chain:          json.chain ?? 'base',
           noActivePools:  json.noActivePools ?? false,
+          primaryDexName: json.primaryDexName ?? null,
           price:          mainPool ? num(attr(mainPool).base_token_price_usd) : null,
           liquidity:      mainPool ? num(attr(mainPool).reserve_in_usd) : null,
           volume24h:      mainPool ? num((attr(mainPool).volume_usd as Record<string, unknown> | undefined)?.h24) : null,
@@ -800,6 +802,12 @@ export default function TerminalTokenScanner() {
                     value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}
                     helper='Fully Diluted Valuation'
                     accent="#a78bfa"
+                  />
+                  <StatCard
+                    label='DEX'
+                    value={result.primaryDexName ?? 'DEX unverified'}
+                    helper={result.primaryDexName ? 'Primary pool protocol' : 'Protocol not identified from pool data'}
+                    accent={result.primaryDexName ? '#67e8f9' : '#64748b'}
                   />
                 </div>
               )}

@@ -132,19 +132,26 @@ export default function AuthPage() {
     const cleanEmail = email.trim().toLowerCase();
 
     if (mode === 'signin') {
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
-      if (signInError) {
-        const msg = signInError.message.toLowerCase();
-        if (msg.includes('email not confirmed') || msg.includes('not confirmed')) {
-          setError('Please verify your email before signing in. Check your inbox for a confirmation link.');
-        } else {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: cleanEmail, password }),
+        });
+        const data: { ok?: boolean; session?: { access_token: string; refresh_token: string }; error?: string; message?: string } = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          setError(data.message ?? 'Too many login attempts. Please wait before trying again.');
+        } else if (res.status === 403 && data.error === 'unverified') {
+          setError(data.message ?? 'Please verify your email before signing in. Check your inbox for a confirmation link.');
+        } else if (!res.ok) {
           setError('Email or password is incorrect. Try again or reset your password.');
+        } else if (data.session) {
+          // Establish session in browser — onAuthStateChange fires SIGNED_IN → redirect
+          await supabase.auth.setSession(data.session);
         }
-      } else if (!signInData.user?.email_confirmed_at) {
-        setError('Please verify your email before signing in. Check your inbox for a confirmation link.');
-        await supabase.auth.signOut();
+      } catch {
+        setError('Network error — please check your connection and try again.');
       }
-      // Verified users are redirected by onAuthStateChange
     } else {
       if (!policyPassed) {
         setError('Use at least 10 characters with uppercase, lowercase, a number, and a symbol.');

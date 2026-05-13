@@ -458,6 +458,30 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
   }
 }
 
+function normalizeDexLabel(raw: string | null): string | null {
+  if (!raw) return null
+  const s = raw.toLowerCase().replace(/[-\s]+/g, '_')
+  const map: Record<string, string> = {
+    uniswap_v4:          'Uniswap V4',
+    uniswap_v3:          'Uniswap V3',
+    uniswap_v2:          'Uniswap V2',
+    uniswap:             'Uniswap',
+    aerodrome_slipstream:'Aerodrome Slipstream',
+    aerodrome:           'Aerodrome',
+    baseswap_v2:         'BaseSwap',
+    baseswap:            'BaseSwap',
+    pancakeswap_v3:      'PancakeSwap V3',
+    pancakeswap_v2:      'PancakeSwap V2',
+    pancakeswap:         'PancakeSwap',
+    sushiswap_v3:        'SushiSwap V3',
+    sushiswap_v2:        'SushiSwap V2',
+    sushiswap:           'SushiSwap',
+    alienbase:           'AlienBase',
+    swapbased:           'SwapBased',
+  }
+  return map[s] ?? null
+}
+
 function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[]): { dexId: string; dexName: string } {
   if (!pool) return { dexId: "", dexName: "" };
   const a = (pool.attributes ?? {}) as Record<string, unknown>;
@@ -721,6 +745,9 @@ export async function POST(req: Request) {
     const lpPoolType = lpPool?.poolType ?? "unknown";
     const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
     const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
+    // Primary pool DEX display name — extracted from attributes + relationships, then normalized
+    const { dexId: _primaryDexId } = extractPoolDex(mainPool, gtIncluded)
+    const primaryDexName = normalizeDexLabel(_primaryDexId || dexId || dexName)
     const pairName = String(mainPoolAttr.name ?? mainPoolAttr.pool_name ?? mainPoolAttr.pair_name ?? "").trim() || null;
     const selectedPrimaryPoolSource = String(mainPoolAttr.address ?? "").trim() ? "attributes.address" : (String(mainPool?.id ?? "").trim() ? "pool.id_normalized" : "none");
     const poolAddressPresent = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress));
@@ -1156,6 +1183,7 @@ export async function POST(req: Request) {
       liquidityUsd,
       volume24hUsd,
       poolCount,
+      primaryDexName,
       // Legacy pool-level field kept for frontend pair display
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
       market_cap: marketCapFromGt,
