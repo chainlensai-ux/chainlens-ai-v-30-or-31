@@ -317,6 +317,42 @@ export default function HomePage() {
             inset: 0,
             background: 'radial-gradient(80% 120% at 50% 50%, transparent 50%, rgba(1,2,7,0.58) 92%)',
           }} />
+
+          {/* Floating orb — purple, left side */}
+          <div className="home-orb-1 home-heavy-visual" style={{
+            position: 'absolute',
+            width: '520px', height: '520px',
+            borderRadius: '50%',
+            top: '-80px', left: '-100px',
+            background: 'radial-gradient(circle, rgba(139,92,246,0.18) 0%, rgba(139,92,246,0.06) 50%, transparent 75%)',
+            filter: 'blur(40px)',
+            animation: 'floatSlow 20s ease-in-out infinite',
+            pointerEvents: 'none',
+          }} />
+
+          {/* Floating orb — cyan/teal, right side */}
+          <div className="home-orb-2 home-heavy-visual" style={{
+            position: 'absolute',
+            width: '440px', height: '440px',
+            borderRadius: '50%',
+            top: '100px', right: '-80px',
+            background: 'radial-gradient(circle, rgba(45,212,191,0.12) 0%, rgba(45,212,191,0.04) 50%, transparent 75%)',
+            filter: 'blur(36px)',
+            animation: 'floatSlow 26s ease-in-out infinite',
+            animationDelay: '-9s',
+            pointerEvents: 'none',
+          }} />
+
+          {/* Horizontal wave sweep */}
+          <div className="home-wave home-heavy-visual" style={{
+            position: 'absolute',
+            left: 0, right: 0, top: '300px', height: '160px',
+            background: 'linear-gradient(90deg, transparent 0%, rgba(139,92,246,0.07) 20%, rgba(45,212,191,0.09) 50%, rgba(139,92,246,0.07) 80%, transparent 100%)',
+            filter: 'blur(20px)',
+            animation: 'driftWave 16s ease-in-out infinite',
+            animationDelay: '-5s',
+            pointerEvents: 'none',
+          }} />
         </div>
 
         {/* ── Cinematic background layer ── */}
