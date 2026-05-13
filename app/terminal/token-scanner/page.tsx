@@ -666,6 +666,25 @@ export default function TerminalTokenScanner() {
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
         @media (max-width: 767px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
+        /* Mobile: stack scan area + Clark vertically, Clark shown below */
+        @media (max-width: 767px) {
+          .token-shell { flex-direction: column !important; height: auto !important; overflow: visible !important; }
+          .mob-scan-main { flex: none !important; overflow-y: visible !important; width: 100% !important; }
+          .token-shell .mob-verdict-panel {
+            display: flex !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: 100% !important;
+            min-height: 0 !important;
+            border-left: none !important;
+            border-top: 1px solid rgba(255,255,255,0.08) !important;
+            position: static !important;
+            overflow-y: visible !important;
+          }
+          .pools-scroll { overflow-x: auto !important; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
+          .pools-inner { min-width: 560px; }
+          .holder-grid { grid-template-columns: 1fr !important; }
+        }
       `}</style>
 
       <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
@@ -1029,7 +1048,7 @@ export default function TerminalTokenScanner() {
                 const fallback = deriveHolderFallbackEvidence(result)
                 if (holderState.kind !== 'noRowsFallback') {
                   return (
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
+                    <div className="holder-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
                       <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
                         <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
                         {result.holderDistribution?.holderCount != null && <p style={{margin:'0 0 10px',fontSize:'11px',color:'#67e8f9'}}>Holder count: {result.holderDistribution.holderCount.toLocaleString()}</p>}
@@ -1093,7 +1112,8 @@ export default function TerminalTokenScanner() {
                   }}>
                     LIQUIDITY & POOLS
                   </p><div style={{display:'inline-flex',marginBottom:'10px',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} POOLS</div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div className="pools-scroll">
+                  <div className="pools-inner" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
                         key={i}
@@ -1126,6 +1146,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>APR N/A</span><span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>{fmtPct(pool.priceChange24h)}</span><span style={{whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24'}}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
                       </div>
                     ))}
+                  </div>
                   </div>
                 </>
               )}

@@ -315,11 +315,12 @@ interface Props {
   active?:       string | null
   onSelect?:     (key: string) => void
   onWalletOpen?: () => void
+  onClose?:      () => void
 }
 
 
 
-export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, onWalletOpen }: Props) {
+export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, onWalletOpen, onClose }: Props) {
   const router = useRouter()
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
   const [plan, setPlan] = useState<UserPlan>('free')
@@ -367,6 +368,21 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         borderRight: '1px solid rgba(255,255,255,0.08)',
       }}
     >
+
+      {/* ── Mobile close button ───────────────────────────────── */}
+      {onClose && (
+        <button
+          type="button"
+          className="mob-sidebar-close-btn"
+          onClick={onClose}
+          aria-label="Close navigation"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      )}
 
       {/* ── Branding ──────────────────────────────────────────── */}
       <Link
