@@ -684,13 +684,15 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract, debugHolder, debug: debugMode } = body;
+    const { contract, debugHolder } = body;
+    const debug = new URL(req.url).searchParams.get('debug') === 'true' || body?.debug === true || body?.debug === 'true'
     const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base" })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
         const cp: any = { ...(cached.payload as any) }
-        cp._diagnostics = { ...(cp._diagnostics ?? {}), cacheHit: true }
+        if (debug) cp._debug = { routeName: '/api/token', cacheHit: true }
+        else delete cp._diagnostics
         return NextResponse.json(cp)
       }
       return NextResponse.json(cached.payload)
@@ -1483,6 +1485,22 @@ export async function POST(req: Request) {
       console.log('[token-timing] totalMs', _totalMs, 'contract', contract)
       console.log('[alchemy-diag] route=/api/token configured=', alchemyConfigured, 'lpProbeAttempted=', Boolean(lpPoolAddress && (lpPoolType === "unknown" || lpPoolType === "v2")), 'rpcAttempted=', rpcCallsAttempted, 'rpcSucceeded=', rpcCallsSucceeded, 'rpcFailed=', rpcCallsFailed, 'totalMs=', _totalMs)
       ;(responsePayload as any)._timing = { totalMs: _totalMs }
+    }
+    if (debug) {
+      ;(responsePayload as any)._debug = {
+        routeName: '/api/token',
+        cacheHit: false,
+        alchemyConfigured,
+        alchemyCallsAttempted: rpcCallsAttempted,
+        alchemyCallsSucceeded: rpcCallsSucceeded,
+        alchemyCallsFailed: rpcCallsFailed,
+        rpcMethodsUsed: rpcCallsAttempted > 0 ? ['eth_call'] : [],
+        skippedReason: rpcCallsAttempted > 0 ? null : (alchemyConfigured ? 'no_rpc_path_needed' : 'alchemy_not_configured'),
+        fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
+        requestDurationMs: Date.now() - _t0,
+      }
+    } else {
+      delete (responsePayload as any)._diagnostics
     }
     tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
     return NextResponse.json(responsePayload)
