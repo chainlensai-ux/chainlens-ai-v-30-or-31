@@ -136,24 +136,20 @@ export default function AuthPage() {
         setLoading(false);
         return;
       }
-      const { error: signUpError } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
-      });
-      if (signUpError) {
-        const msg = signUpError.message.toLowerCase();
-        if (msg.includes('already registered') || msg.includes('already exists')) {
-          setError('An account with this email already exists. Try signing in.');
-        } else if (msg.includes('invalid email') || msg.includes('valid email')) {
-          setError('Please enter a valid email address.');
-        } else if (msg.includes('rate limit') || msg.includes('too many')) {
-          setError('Too many attempts. Please wait a moment and try again.');
+      try {
+        const res = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: cleanEmail, password }),
+        });
+        const data: { message?: string } = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setError(data.message || 'Unable to create account. Please try again.');
         } else {
-          setError('Unable to create account. Please try again.');
+          setSuccess('Check your email to confirm your account.');
         }
-      } else {
-        setSuccess('Check your email to confirm your account.');
+      } catch {
+        setError('Unable to create account. Please try again.');
       }
     }
     setLoading(false);
