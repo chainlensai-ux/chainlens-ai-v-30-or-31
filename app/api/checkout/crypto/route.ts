@@ -5,8 +5,31 @@ export const dynamic = 'force-dynamic'
 
 const PLAN_AMOUNTS: Record<string, number> = { pro: 30, elite: 60 }
 const PLAN_LABELS: Record<string, string> = { pro: 'Pro', elite: 'Elite' }
+const CHECKOUT_WINDOW_MS = 60 * 1000
+const CHECKOUT_LIMIT_PER_IP = 6
+const checkoutRate = new Map<string, { count: number; resetAt: number }>()
+
+function checkoutIp(req: NextRequest): string {
+  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+}
+
+function checkoutAllowed(req: NextRequest): boolean {
+  const key = checkoutIp(req)
+  const now = Date.now()
+  const cur = checkoutRate.get(key)
+  if (!cur || cur.resetAt <= now) {
+    checkoutRate.set(key, { count: 1, resetAt: now + CHECKOUT_WINDOW_MS })
+    return true
+  }
+  if (cur.count >= CHECKOUT_LIMIT_PER_IP) return false
+  cur.count += 1
+  return true
+}
 
 export async function POST(req: NextRequest) {
+  if (!checkoutAllowed(req)) {
+    return NextResponse.json({ error: 'Too many checkout attempts. Try again shortly.' }, { status: 429 })
+  }
   const apiKey = process.env.NOWPAYMENTS_API_KEY
   if (!apiKey) {
     return NextResponse.json(

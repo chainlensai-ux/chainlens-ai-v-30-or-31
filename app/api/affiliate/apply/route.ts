@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { createHash } from 'crypto'
 
 type AffiliatePayload = {
   name?: string
@@ -9,10 +8,9 @@ type AffiliatePayload = {
   x_handle?: string
   audience_size?: string
   audience_type?: string
-  promotion_plan?: string
-  wallet_address?: string
+  payout_wallet?: string
+  promo_plan?: string
   website?: string
-  company_url?: string
 }
 
 const MAX = {
@@ -22,8 +20,9 @@ const MAX = {
   x_handle: 100,
   audience_size: 120,
   audience_type: 160,
-  promotion_plan: 1200,
-  wallet_address: 120,
+  payout_wallet: 120,
+  promo_plan: 1200,
+  website: 300,
 }
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -33,15 +32,21 @@ function sanitize(value: unknown, max: number): string {
   return text.slice(0, max)
 }
 
+function unavailableResponse(status: number, debug = false, code?: string) {
+  if (debug) {
+    return NextResponse.json({ ok: false, reason: 'db_insert_failed', code: code ?? null }, { status })
+  }
+  return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status })
+}
+
 export async function POST(req: Request) {
+  const debug = new URL(req.url).searchParams.get('debug') === 'true'
+
   try {
     const body = (await req.json()) as AffiliatePayload
 
-    const honeypotWebsite = sanitize(body.website, 300)
-    const honeypotCompanyUrl = sanitize(body.company_url, 300)
-    if (honeypotWebsite || honeypotCompanyUrl) {
-      return NextResponse.json({ ok: true })
-    }
+    const website = sanitize(body.website, MAX.website)
+    if (website) return NextResponse.json({ ok: true })
 
     const name = sanitize(body.name, MAX.name)
     const email = sanitize(body.email, MAX.email).toLowerCase()
@@ -49,58 +54,54 @@ export async function POST(req: Request) {
     const xHandle = sanitize(body.x_handle, MAX.x_handle)
     const audienceSize = sanitize(body.audience_size, MAX.audience_size)
     const audienceType = sanitize(body.audience_type, MAX.audience_type)
-    const promotionPlan = sanitize(body.promotion_plan, MAX.promotion_plan)
-    const walletAddress = sanitize(body.wallet_address, MAX.wallet_address)
+    const payoutWallet = sanitize(body.payout_wallet, MAX.payout_wallet)
+    const promoPlan = sanitize(body.promo_plan, MAX.promo_plan)
 
-    if (!name) {
-      return NextResponse.json({ error: 'Name is required.' }, { status: 400 })
-    }
-    if (!email || !emailRegex.test(email)) {
-      return NextResponse.json({ error: 'A valid email is required.' }, { status: 400 })
-    }
+    if (!name) return NextResponse.json({ error: 'Name is required.' }, { status: 400 })
+    if (!email || !emailRegex.test(email)) return NextResponse.json({ error: 'Please enter a valid email.' }, { status: 400 })
+    if (!xHandle) return NextResponse.json({ error: 'X handle is required.' }, { status: 400 })
+    if (!audienceSize) return NextResponse.json({ error: 'Audience size is required.' }, { status: 400 })
+    if (!audienceType) return NextResponse.json({ error: 'Audience type is required.' }, { status: 400 })
+    if (!promoPlan) return NextResponse.json({ error: 'Promotion plan is required.' }, { status: 400 })
 
-    const filledCount = [telegram, xHandle, audienceSize, audienceType, promotionPlan, walletAddress].filter(Boolean).length
-    if (filledCount === 0) {
-      return NextResponse.json({ error: 'Please include at least one application detail.' }, { status: 400 })
-    }
-
-    const supabaseUrl = process.env.SUPABASE_URL
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
-    if (!supabaseUrl || !serviceRole) {
-      console.error('[affiliate] missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY')
-      return NextResponse.json({ error: 'Submission unavailable right now.' }, { status: 503 })
-    }
 
-    const userAgent = req.headers.get('user-agent') ?? ''
-    const ipRaw = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? req.headers.get('x-real-ip') ?? ''
-    const ipHash = ipRaw ? createHash('sha256').update(ipRaw).digest('hex') : null
+    if (!supabaseUrl || !serviceRole) {
+      console.error('affiliate_apply_failed', {
+        code: 'missing_env',
+        message: 'Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY',
+        details: null,
+      })
+      return unavailableResponse(503, debug, 'missing_env')
+    }
 
     const supabase = createClient(supabaseUrl, serviceRole)
-    const source = 'affiliate_page'
-    const { error: insertError } = await supabase.from('affiliate_applications').insert({
+    const { error } = await supabase.from('affiliate_applications').insert({
       name,
       email,
       telegram: telegram || null,
-      x_handle: xHandle || null,
-      audience_size: audienceSize || null,
-      audience_type: audienceType || null,
-      promotion_plan: promotionPlan || null,
-      wallet_address: walletAddress || null,
-      source,
-      user_agent: userAgent || null,
-      ip_hash: ipHash,
+      x_handle: xHandle,
+      audience_size: audienceSize,
+      audience_type: audienceType,
+      payout_wallet: payoutWallet || null,
+      promo_plan: promoPlan,
     })
 
-    if (insertError) {
-      console.error('[affiliate] db insert failed', insertError.message)
-      return NextResponse.json({ error: 'Could not save application.' }, { status: 500 })
+    if (error) {
+      console.error('affiliate_apply_failed', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+      })
+      return unavailableResponse(500, debug, error.code)
     }
 
-    const notifyEmail = process.env.AFFILIATE_NOTIFY_EMAIL || 'chainlensai@gmail.com'
     const resendApiKey = process.env.RESEND_API_KEY
     if (resendApiKey) {
+      const notifyEmail = process.env.AFFILIATE_NOTIFY_EMAIL || 'chainlensai@gmail.com'
       const submittedAt = new Date().toISOString()
-      const message = `New ChainLens Affiliate Application\n\nname: ${name}\nemail: ${email}\ntelegram: ${telegram || 'N/A'}\nX handle: ${xHandle || 'N/A'}\naudience size: ${audienceSize || 'N/A'}\naudience type: ${audienceType || 'N/A'}\npromotion plan: ${promotionPlan || 'N/A'}\nwallet address: ${walletAddress || 'N/A'}\nsubmitted at: ${submittedAt}\nsource: ${source}`
+      const message = `New ChainLens Affiliate Application\n\nname: ${name}\nemail: ${email}\ntelegram: ${telegram || 'N/A'}\nX handle: ${xHandle}\naudience size: ${audienceSize}\naudience type: ${audienceType}\npromo plan: ${promoPlan}\npayout wallet: ${payoutWallet || 'N/A'}\nsubmitted at: ${submittedAt}`
 
       const mailResp = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -117,15 +118,16 @@ export async function POST(req: Request) {
       })
 
       if (!mailResp.ok) {
-        console.error('[affiliate] resend email failed', mailResp.status)
+        console.error('affiliate_apply_failed', {
+          code: `resend_${mailResp.status}`,
+          message: 'Resend notification failed after successful DB insert',
+          details: null,
+        })
       }
-    } else {
-      console.warn('[affiliate] RESEND_API_KEY not set; application saved without email notification')
     }
 
     return NextResponse.json({ ok: true })
-  } catch (err) {
-    console.error('[affiliate] unexpected error', err)
-    return NextResponse.json({ error: 'Could not submit right now.' }, { status: 500 })
+  } catch {
+    return unavailableResponse(500, debug)
   }
 }

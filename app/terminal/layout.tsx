@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import FeatureBar from '@/components/FeatureBar'
 
@@ -22,6 +22,18 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
   const pathname = usePathname()
   const active = PATH_TO_KEY[pathname] ?? 'dashboard'
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  useEffect(() => {
+    setSidebarOpen(false)
+    document.body.style.overflow = ''
+  }, [pathname])
+
+  useEffect(() => {
+    document.body.style.overflow = sidebarOpen ? 'hidden' : ''
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [sidebarOpen])
 
   return (
     <div

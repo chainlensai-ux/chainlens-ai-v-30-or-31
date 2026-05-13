@@ -110,6 +110,7 @@ const whaleCache = new Map<string, { exp: number; payload: unknown }>()
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
 
+
 // Rank alerts so non-stablecoin buys/swaps surface first, stablecoin moves last.
 // Score is purely for display ordering — never used to filter.
 function computeInterestScore(row: RawRow): number {
