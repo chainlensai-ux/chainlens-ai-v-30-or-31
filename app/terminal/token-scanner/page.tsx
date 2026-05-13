@@ -102,6 +102,19 @@ type ScanResult = {
     pairCreatedAt: string | null
     pairAgeLabel: string | null
   } | null
+  priceChart?: {
+    timeframe: '24h'
+    points: Array<{ timestamp: string; priceUsd: number }>
+    sourceStatus: 'ok' | 'unavailable' | 'error'
+    reason?: string
+  } | null
+  resolvedInput?: {
+    original: string
+    type: 'address' | 'alias' | 'live_search'
+    resolvedAddress: string
+    symbol?: string
+    confidence: 'high' | 'medium' | 'low'
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -184,6 +197,100 @@ function fmtTokenAmt(raw: string | number | null, decimals: number): string {
 function pctColor(v: number | null | undefined): string {
   if (v == null) return '#94a3b8'
   return v >= 0 ? '#2DD4BF' : '#f87171'
+}
+
+function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUsd: number }> }) {
+  if (points.length < 2) return null
+  const w = 960
+  const h = 360
+  const padX = 30
+  const padY = 32
+  const min = Math.min(...points.map((p) => p.priceUsd))
+  const max = Math.max(...points.map((p) => p.priceUsd))
+  const spread = Math.max(max - min, 1e-12)
+  const yFor = (v: number) => h - padY - ((v - min) / spread) * (h - padY * 2)
+  const xFor = (i: number) => padX + (i / (points.length - 1)) * (w - padX * 2)
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
+  const d = points.map((p, i) => {
+    const x = xFor(i)
+    const y = yFor(p.priceUsd)
+    return `${i === 0 ? 'M' : 'L'}${x},${y}`
+  }).join(' ')
+  const area = `${d} L ${xFor(points.length - 1)},${h - padY} L ${xFor(0)},${h - padY} Z`
+  const last = points[points.length - 1]
+  const lastX = xFor(points.length - 1)
+  const lastY = yFor(last.priceUsd)
+  const hoverPoint = hoverIndex != null ? points[hoverIndex] : null
+  const hoverX = hoverIndex != null ? xFor(hoverIndex) : null
+  const hoverY = hoverPoint ? yFor(hoverPoint.priceUsd) : null
+  const startTs = new Date(points[0].timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const endTs = new Date(last.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const priceDeltaPct = points[0].priceUsd > 0
+    ? ((last.priceUsd - points[0].priceUsd) / points[0].priceUsd) * 100
+    : null
+  const guideRows = [0, 0.25, 0.5, 0.75, 1].map((r) => padY + r * (h - padY * 2))
+  const onMove = (clientX: number, rect: DOMRect) => {
+    const relativeX = Math.max(padX, Math.min(clientX - rect.left, w - padX))
+    const ratio = (relativeX - padX) / (w - padX * 2)
+    const idx = Math.max(0, Math.min(points.length - 1, Math.round(ratio * (points.length - 1))))
+    setHoverIndex(idx)
+  }
+
+  return (
+    <div
+      style={{ position: 'relative' }}
+      onMouseLeave={() => setHoverIndex(null)}
+      onMouseMove={(e) => onMove(e.clientX, e.currentTarget.getBoundingClientRect())}
+      onTouchMove={(e) => onMove(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
+      onTouchStart={(e) => onMove(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
+    >
+      <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'clamp(260px, 34vw, 360px)', display: 'block' }}>
+        <defs>
+          <linearGradient id="clLine" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#2dd4bf" />
+            <stop offset="100%" stopColor="#a78bfa" />
+          </linearGradient>
+          <linearGradient id="clFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgba(45,212,191,0.42)" />
+            <stop offset="100%" stopColor="rgba(167,139,250,0.01)" />
+          </linearGradient>
+          <filter id="clGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="3.2" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        {guideRows.map((y) => <line key={y} x1={padX} y1={y} x2={w - padX} y2={y} stroke="rgba(148,163,184,0.24)" strokeWidth="1" />)}
+        <path d={area} fill="url(#clFill)" />
+        <path d={d} fill="none" stroke="url(#clLine)" strokeWidth="3.2" strokeLinejoin="round" strokeLinecap="round" filter="url(#clGlow)" />
+        <circle cx={lastX} cy={lastY} r="5.4" fill="#e2e8f0" />
+        <circle cx={lastX} cy={lastY} r="10" fill="rgba(226,232,240,0.16)" />
+        {hoverX != null && hoverY != null && hoverPoint && (
+          <>
+            <line x1={hoverX} y1={padY} x2={hoverX} y2={h - padY} stroke="rgba(148,163,184,0.34)" strokeDasharray="4 4" />
+            <circle cx={hoverX} cy={hoverY} r="4.8" fill="#c4b5fd" />
+          </>
+        )}
+        <text x={padX} y={20} fill="#94a3b8" style={{ fontSize: 12 }}>Low {fmtPrice(min)}</text>
+        <text x={w - padX} y={20} textAnchor="end" fill="#94a3b8" style={{ fontSize: 12 }}>High {fmtPrice(max)}</text>
+      </svg>
+      <div style={{ position: 'absolute', top: '12px', right: '12px', border: '1px solid rgba(167,139,250,0.5)', background: 'rgba(15,23,42,0.82)', borderRadius: '999px', padding: '6px 10px', color: '#e2e8f0', fontSize: '11px', fontWeight: 700 }}>
+        Latest {fmtPrice(last.priceUsd)}
+      </div>
+      {hoverPoint && (
+        <div style={{ position: 'absolute', left: '12px', bottom: '12px', border: '1px solid rgba(45,212,191,0.36)', background: 'rgba(2,6,23,0.88)', borderRadius: '10px', padding: '7px 10px', color: '#cbd5e1', fontSize: '11px' }}>
+          <div>{new Date(hoverPoint.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+          <div style={{ color: '#99f6e4', fontWeight: 700 }}>{fmtPrice(hoverPoint.priceUsd)}</div>
+        </div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
+        <span>{startTs}</span>
+        <span style={{ color: priceDeltaPct == null ? '#94a3b8' : priceDeltaPct >= 0 ? '#2dd4bf' : '#f87171' }}>
+          {priceDeltaPct == null ? '24h Δ N/A' : `24h Δ ${fmtPct(priceDeltaPct)}`}
+        </span>
+        <span>{endTs}</span>
+      </div>
+    </div>
+  )
 }
 
 function humanizeReasonCode(reason?: string): string {
@@ -560,10 +667,6 @@ export default function TerminalTokenScanner() {
   async function handleScan(override?: string) {
     const q = (override ?? input).trim()
     if (!q || loading) return
-    if (!/^0x[a-fA-F0-9]{40}$/.test(q)) {
-      setError('Please enter a valid contract address (0x…)')
-      return
-    }
     setLoading(true)
     setClarkLoading(true)
     setError(null)
@@ -581,7 +684,8 @@ export default function TerminalTokenScanner() {
       })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setError(json.error ?? 'No Base token match from current checks. Paste a contract address for a deeper scan.')
+        if (json?.status === 'ambiguous') setError('Multiple Base tokens match this. Paste the contract address or choose one.')
+        else setError("Couldn’t resolve that Base token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
@@ -629,6 +733,8 @@ export default function TerminalTokenScanner() {
           sections: json.sections ?? null,
           lpControl: json.lpControl ?? null,
           poolActivity: json.poolActivity ?? null,
+          priceChart: json.priceChart ?? null,
+          resolvedInput: json.resolvedInput ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -661,7 +767,9 @@ export default function TerminalTokenScanner() {
           .mob-verdict-panel { width: 100% !important; border-left: none !important; border-top: 1px solid rgba(255,255,255,0.08); }
           .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
         }
-        @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(6,minmax(0,1fr)) !important;} }
+        @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(7,minmax(0,1fr)) !important;} }
+        .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.86),rgba(4,10,22,.82));border:1px solid rgba(148,163,184,.2);border-radius:14px;box-shadow:0 0 0 1px rgba(45,212,191,.06) inset,0 18px 45px rgba(2,6,23,.35);} 
+        @media (max-width: 768px) { .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .pools-row{min-width:860px} }
         @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
@@ -687,10 +795,10 @@ export default function TerminalTokenScanner() {
         }
       `}</style>
 
-      <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
+      <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%)' }}>
 
         {/* ── Left: scrollable scan area ──────────────────────────── */}
-        <div className="mob-scan-main token-main" style={{ flex: '0 0 70%', minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '56px 44px 120px' }}>
+        <div className="mob-scan-main token-main" style={{ flex: '0 0 70%', minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px 34px 120px', maxWidth: '1240px' }}>
 
           {/* Header */}
           <div style={{ marginBottom: '32px' }}>
@@ -712,13 +820,13 @@ export default function TerminalTokenScanner() {
           </div>
 
           {/* Input row */}
-          <div className="token-input-row" style={{ display: 'flex', gap: '10px', maxWidth: '680px', marginBottom: '28px' }}>
+          <div className="token-input-row glass-card" style={{ display: 'flex', gap: '10px', maxWidth: '820px', marginBottom: '24px', padding: '10px' }}>
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="Paste Base contract or token symbol"
+              placeholder="Paste Base contract, symbol, or token name"
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
@@ -805,6 +913,11 @@ export default function TerminalTokenScanner() {
                     <span style={{marginLeft:'8px',padding:'2px 8px',border:'1px solid rgba(59,130,246,.35)',borderRadius:'999px',color:'#93c5fd'}}>BASE</span>
                   </p>
                 )}
+                {result.resolvedInput && result.resolvedInput.type !== 'address' && (
+                  <p style={{ margin: '6px 0 0', color: '#94a3b8', fontSize: '11px' }}>
+                    Resolved from {result.resolvedInput.original.toUpperCase()}.
+                  </p>
+                )}
               </div>
 
               {/* Stat cards — or no-pools message */}
@@ -822,7 +935,7 @@ export default function TerminalTokenScanner() {
               ) : (
                 <div className="metric-grid" style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+                  gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
                   gap: '10px', marginBottom: '28px',
                 }}>
                   <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
@@ -836,12 +949,10 @@ export default function TerminalTokenScanner() {
                   {(() => {
                     const mcValue = result.marketCapStatus === 'verified' && result.marketCapUsd != null
                       ? fmtLarge(result.marketCapUsd)
-                      : 'Supply unverified'
+                      : 'Supply not verified'
                     const mcHelper = result.marketCapStatus === 'verified'
                       ? 'Verified from live market data'
-                      : result.marketCapStatus === 'estimated'
-                        ? 'FDV shown separately'
-                        : 'Circulating supply not confirmed'
+                      : 'FDV shown separately'
                     return (
                       <StatCard
                         label='Market Cap'
@@ -865,8 +976,32 @@ export default function TerminalTokenScanner() {
                   />
                 </div>
               )}
+              {result.marketCapStatus !== 'verified' && (
+                <p style={{ marginTop: '-14px', marginBottom: '20px', color: '#94a3b8', fontSize: '12px' }}>
+                  FDV is available, but circulating supply was not verified live.
+                </p>
+              )}
 
               {/* Pool Activity */}
+              {!result.noActivePools && (
+                <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
+                    <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>24h primary pool price action</p>
+                  </div>
+                  {result.priceChart?.sourceStatus === 'ok' && result.priceChart.points.length >= 2 ? (
+                    <>
+                      <MiniPriceChart points={result.priceChart.points} />
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
+                        <span>{new Date(result.priceChart.points[0].timestamp).toLocaleTimeString()}</span>
+                        <span>Latest {fmtPrice(result.priceChart.points[result.priceChart.points.length - 1].priceUsd)}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <StatCard label="Chart unavailable" value="Chart unavailable" helper="Live price history was not exposed for this pool." />
+                  )}
+                </div>
+              )}
               {!result.noActivePools && (
                 <div style={{ marginBottom: '28px' }}>
                   <p style={{
@@ -895,12 +1030,10 @@ export default function TerminalTokenScanner() {
                       label="Buy / Sell Vol"
                       value={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null
                         ? `${fmtLarge(result.poolActivity.buyVolume24hUsd)} / ${fmtLarge(result.poolActivity.sellVolume24hUsd)}`
-                        : 'Split unavailable'}
-                      helper={result.poolActivity?.buyVolume24hUsd == null && result.poolActivity?.volume24hUsd != null
-                        ? `24h volume: ${fmtLarge(result.poolActivity.volume24hUsd)}`
-                        : result.poolActivity?.buyVolume24hUsd != null
-                          ? '24h buy and sell volume'
-                          : 'Volume split not exposed'}
+                        : result.poolActivity?.volume24hUsd != null ? `Total ${fmtLarge(result.poolActivity.volume24hUsd)}` : 'Volume unavailable'}
+                      helper={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null
+                        ? '24h buy/sell volume'
+                        : result.poolActivity?.volume24hUsd != null ? 'Buy/sell volume split not exposed' : '24h volume not exposed'}
                     />
                     <StatCard
                       label="Pair Age"
@@ -1057,7 +1190,7 @@ export default function TerminalTokenScanner() {
                         )}
                         <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
                       </div>
-                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px',minWidth:0,overflow:'hidden'}}>
+                      <div className="glass-card" style={{padding:'14px',minWidth:0,overflow:'hidden'}}>
                         <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
                         {/* Header */}
                         <div style={{display:'grid',gridTemplateColumns:'24px minmax(0,1fr) 64px 52px',gap:'8px',fontSize:'9px',letterSpacing:'0.10em',color:'#475569',marginBottom:'6px',fontFamily:'var(--font-plex-mono)'}}>
@@ -1156,16 +1289,19 @@ export default function TerminalTokenScanner() {
 
         {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
         <aside className="mob-verdict-panel" style={{
-          width: '30%',
+          width: '28%',
           minWidth: '320px',
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
-          background: '#080c14',
+          background: 'linear-gradient(180deg, rgba(6,10,20,.96), rgba(4,8,18,.96))',
           overflowY: 'auto',
           padding: '28px 20px',
           display: 'flex',
           flexDirection: 'column',
           gap: '16px',
+          position: 'sticky',
+          top: 0,
+          height: '100vh',
         }}>
           {/* Label */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

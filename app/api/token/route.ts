@@ -35,6 +35,20 @@ const TOKEN_RATE_WINDOW_MS = 60 * 1000
 const TOKEN_RATE_BY_PLAN: Record<string, number> = { free: 12, pro: 40, elite: 120 }
 const tokenResponseCache = new Map<string, { exp: number; payload: unknown }>()
 const tokenRateMap = new Map<string, { count: number; resetAt: number }>()
+const BASE_TOKEN_ALIAS_MAP: Record<string, { address: string; symbol: string }> = {
+  WETH: { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH' },
+  ETH: { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH' },
+  USDC: { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC' },
+  USDBC: { address: '0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA', symbol: 'USDbC' },
+  AERO: { address: '0x940181a94A35A4569E4529A3CDfB74e38FD98631', symbol: 'AERO' },
+  BRETT: { address: '0x532f27101965dd16442E59d40670FaF5eBB142E4', symbol: 'BRETT' },
+  VIRTUAL: { address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b', symbol: 'VIRTUAL' },
+  DEGEN: { address: '0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed', symbol: 'DEGEN' },
+  TOSHI: { address: '0xAC1bd2486aAf3B5C0B7b8f6e7DfeF5C0a05D0D89', symbol: 'TOSHI' },
+  MORPHO: { address: '0xBAa5BDeA6D371052a6BDeB0eD79B147C43aABF84', symbol: 'MORPHO' },
+  CBBTC: { address: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', symbol: 'cbBTC' },
+  CBETH: { address: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22', symbol: 'cbETH' },
+}
 
 function getClientIp(req: Request): string {
   return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
@@ -250,6 +264,27 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
     console.error("Error fetching GeckoTerminal token info:", err);
     return null;
   }
+}
+
+async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey): Promise<any> {
+  try {
+    const networkMap: Record<ChainKey, string> = {
+      eth: 'eth',
+      base: 'base',
+      polygon: 'polygon_pos',
+      bnb: 'bsc',
+    }
+    const network = networkMap[chain] ?? 'base'
+    const res = await fetch(
+      `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/minute?aggregate=15&limit=96&currency=usd&token=base`,
+      {
+        headers: { Accept: 'application/json;version=20230302' },
+        cache: 'no-store',
+        signal: withTimeout(5000),
+      }
+    )
+    return res.ok ? await res.json() : null
+  } catch { return null }
 }
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
@@ -698,8 +733,20 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract, debugHolder, debug: debugMode } = body;
-    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base", _cv: 3 })
+    const { contract: contractInput, debugHolder, debug: debugMode } = body;
+    const originalInput = String(contractInput ?? '').trim()
+    const normalizedInput = originalInput.toUpperCase()
+    const isAddressInput = /^0x[a-fA-F0-9]{40}$/.test(originalInput)
+    const aliasHit = !isAddressInput ? BASE_TOKEN_ALIAS_MAP[normalizedInput] : null
+    const resolvedAddress = isAddressInput ? originalInput : (aliasHit?.address ?? null)
+    const resolvedInput = resolvedAddress ? {
+      original: originalInput,
+      type: (isAddressInput ? 'address' : 'alias') as 'address' | 'alias' | 'live_search',
+      resolvedAddress,
+      symbol: aliasHit?.symbol,
+      confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
+    } : null
+    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain: "base", _cv: 6 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
@@ -710,9 +757,14 @@ export async function POST(req: Request) {
       return NextResponse.json(cached.payload)
     }
 
-    if (!contract || !/^0x[a-fA-F0-9]{40}$/.test(contract)) {
-      return NextResponse.json({ error: "Invalid contract address" }, { status: 400 })
+    if (!resolvedAddress) {
+      return NextResponse.json({
+        status: 'not_found',
+        error: "Couldn’t resolve that Base token. Paste the contract address or try a verified symbol.",
+        ...(debugMode === true ? { _diagnostics: { resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map' } } : {}),
+      }, { status: 404 })
     }
+    const contract = resolvedAddress
 
     console.log("Incoming scan request:", contract);
 
@@ -1124,15 +1176,26 @@ export async function POST(req: Request) {
     // True market cap priority:
     // 1) GeckoTerminal token endpoint attributes.market_cap_usd
     // 2) explicit market cap fields from token metadata responses (never FDV fields)
-    const tokenEndpointMarketCap = toNum(gtToken?.market_cap_usd)
-    const metadataMarketCap = pickNum(gtToken?.market_cap, gtToken?.marketCap, gtToken?.market_cap_in_usd, goldItem?.market_cap, metaItem?.market_cap)
+    const tokenEndpointMarketCap = pickNum(
+      gtToken?.market_cap_usd,
+      gtToken?.market_cap,
+      gtTokenInfo?.data?.attributes?.market_cap_usd,
+      gtTokenInfo?.data?.attributes?.market_cap,
+      gtToken?.marketCap,
+      gtToken?.market_cap_in_usd,
+      goldItem?.market_cap,
+      metaItem?.market_cap
+    )
+    const selectedPoolMarketCapUsd = pickNum(poolAttr.market_cap_usd, poolAttr.market_cap)
     const marketCapFromGt = (tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0)
       ? tokenEndpointMarketCap
-      : (metadataMarketCap != null && metadataMarketCap > 0 ? metadataMarketCap : null)
+      : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0 ? selectedPoolMarketCapUsd : null)
     const poolEndpointMarketCapPresent = toNum(poolAttr.market_cap_usd) != null;
     const circulatingSupply = pickNum(gtToken?.circulating_supply, goldItem?.circulating_supply, gmgnItem?.circulating_supply)
     const tokenPrice = pickNum(poolAttr.base_token_price_usd, gtToken?.price_usd, gtToken?.price)
-    const marketCapSource = marketCapFromGt != null ? 'geckoterminal' : 'unavailable'
+    const marketCapSource = marketCapFromGt != null
+      ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'geckoterminal' : 'coingecko_terminal')
+      : 'unavailable'
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'unavailable'
     const priceUsd = tokenPrice
@@ -1166,11 +1229,6 @@ export async function POST(req: Request) {
       displayMarketValueLabel = 'Market Cap'
       displayMarketValueConfidence = 'verified'
       displayMarketValueReason = 'Verified market cap from live token market data.'
-    } else if (estimatedMarketCap != null) {
-      displayMarketValue = estimatedMarketCap
-      displayMarketValueLabel = 'Estimated MC'
-      displayMarketValueConfidence = estimatedMarketCapConfidence
-      displayMarketValueReason = estimatedMarketCapReason
     } else if (fdv != null) {
       displayMarketValue = fdv
       displayMarketValueLabel = 'FDV'
@@ -1195,16 +1253,97 @@ export async function POST(req: Request) {
     const transactions24h: number | null = buys24h != null && sells24h != null ? buys24h + sells24h : (_txnsH24Total ?? null)
     const _volH24 = (mainPoolAttr.volume_usd as Record<string, unknown> | undefined)?.h24
     const _volH24Obj = typeof _volH24 === 'object' && _volH24 !== null ? _volH24 as Record<string, unknown> : null
-    const buyVolume24hUsd: number | null = pickNum(
-      _volH24Obj?.buy, _volH24Obj?.buys,
-      (mainPoolAttr.buy_volume_usd  as Record<string, unknown> | undefined)?.h24,
-      (mainPoolAttr.volume_buy_usd  as Record<string, unknown> | undefined)?.h24,
-    )
-    const sellVolume24hUsd: number | null = pickNum(
-      _volH24Obj?.sell, _volH24Obj?.sells,
-      (mainPoolAttr.sell_volume_usd  as Record<string, unknown> | undefined)?.h24,
-      (mainPoolAttr.volume_sell_usd  as Record<string, unknown> | undefined)?.h24,
-    )
+    const splitCandidates: Array<{ key: string; value: unknown; side: 'buy'|'sell'|'total' }> = [
+      { key: 'attributes.volume_usd.h24.buy', value: _volH24Obj?.buy, side: 'buy' },
+      { key: 'attributes.volume_usd.h24.sell', value: _volH24Obj?.sell, side: 'sell' },
+      { key: 'attributes.volume_usd.h24.buys', value: _volH24Obj?.buys, side: 'buy' },
+      { key: 'attributes.volume_usd.h24.sells', value: _volH24Obj?.sells, side: 'sell' },
+      { key: 'attributes.volume_usd.h24.buy_volume', value: _volH24Obj?.buy_volume, side: 'buy' },
+      { key: 'attributes.volume_usd.h24.sell_volume', value: _volH24Obj?.sell_volume, side: 'sell' },
+      { key: 'attributes.volume_usd.h24.buy_volume_usd', value: _volH24Obj?.buy_volume_usd, side: 'buy' },
+      { key: 'attributes.volume_usd.h24.sell_volume_usd', value: _volH24Obj?.sell_volume_usd, side: 'sell' },
+      { key: 'attributes.buy_volume_usd.h24', value: (mainPoolAttr.buy_volume_usd as Record<string, unknown> | undefined)?.h24, side: 'buy' },
+      { key: 'attributes.sell_volume_usd.h24', value: (mainPoolAttr.sell_volume_usd as Record<string, unknown> | undefined)?.h24, side: 'sell' },
+      { key: 'attributes.volume_buy_usd.h24', value: (mainPoolAttr.volume_buy_usd as Record<string, unknown> | undefined)?.h24, side: 'buy' },
+      { key: 'attributes.volume_sell_usd.h24', value: (mainPoolAttr.volume_sell_usd as Record<string, unknown> | undefined)?.h24, side: 'sell' },
+      { key: 'attributes.buyVolumeUsd.h24', value: (mainPoolAttr.buyVolumeUsd as Record<string, unknown> | undefined)?.h24, side: 'buy' },
+      { key: 'attributes.sellVolumeUsd.h24', value: (mainPoolAttr.sellVolumeUsd as Record<string, unknown> | undefined)?.h24, side: 'sell' },
+      { key: 'attributes.buy_volume_usd_24h', value: mainPoolAttr.buy_volume_usd_24h, side: 'buy' },
+      { key: 'attributes.sell_volume_usd_24h', value: mainPoolAttr.sell_volume_usd_24h, side: 'sell' },
+      { key: 'attributes.volume_usd.h24.total', value: _volH24Obj?.total, side: 'total' },
+      { key: 'attributes.volume_usd.h24', value: typeof _volH24 === 'object' ? null : _volH24, side: 'total' },
+      { key: 'selectedPoolVolume24h', value: volume24hUsd, side: 'total' },
+    ]
+    const pickFrom = (side: 'buy'|'sell'|'total') => {
+      for (const c of splitCandidates) {
+        if (c.side !== side) continue
+        const n = toNum(c.value)
+        if (n != null) return { value: n, key: c.key }
+      }
+      return { value: null as number | null, key: null as string | null }
+    }
+    const buyPick = pickFrom('buy')
+    const sellPick = pickFrom('sell')
+    const totalPick = pickFrom('total')
+    const buyVolume24hUsd: number | null = buyPick.value
+    const sellVolume24hUsd: number | null = sellPick.value
+    const resolvedVolume24hUsd: number | null = totalPick.value ?? volume24hUsd
+    const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
+    const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
+    let priceChart: { timeframe: '24h'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'unavailable'|'error'; reason?: string } = {
+      timeframe: '24h',
+      points: [],
+      sourceStatus: 'unavailable',
+      reason: 'primary_pool_missing',
+    }
+    const chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
+    const chartPoolCandidates = [mainPool, ...matchingPools.filter((p) => p !== mainPool)]
+      .filter((p): p is NonNullable<typeof mainPool> => Boolean(p?.attributes?.address))
+      .map((p) => ({
+        pool: p,
+        address: String(p.attributes.address),
+        name: typeof p.attributes.name === 'string' ? p.attributes.name : null,
+        liquidityUsd: toNum(p.attributes.reserve_in_usd),
+      }))
+      .sort((a, b) => (b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1))
+    const primaryAddr = String(mainPoolAttr.address ?? '').toLowerCase()
+    chartPoolCandidates.sort((a, b) => {
+      if (a.address.toLowerCase() === primaryAddr) return -1
+      if (b.address.toLowerCase() === primaryAddr) return 1
+      return 0
+    })
+    const uniqueChartPools = chartPoolCandidates.filter((c, i, arr) => arr.findIndex((x) => x.address.toLowerCase() === c.address.toLowerCase()) === i)
+    const maxAttempts = Math.min(uniqueChartPools.length, 3)
+    let chartFailureReason: string | null = maxAttempts > 0 ? null : 'primary_pool_missing'
+    let chartSelectedPoolForChart: { address: string; name: string | null } | null = null
+    for (let i = 0; i < maxAttempts; i += 1) {
+      const candidate = uniqueChartPools[i]
+      chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
+      const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain)
+      const list = chartRaw?.data?.attributes?.ohlcv_list
+      if (!Array.isArray(list)) { chartFailureReason = 'ohlcv_not_exposed'; continue }
+      const points = list.map((row: unknown) => {
+        const arr = Array.isArray(row) ? row : null
+        const tsNum = toNum(arr?.[0])
+        const close = toNum(arr?.[4])
+        if (tsNum == null || close == null || close <= 0) return null
+        const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
+        return { timestamp: new Date(ms).toISOString(), priceUsd: close }
+      }).filter((p: { timestamp: string; priceUsd: number } | null): p is { timestamp: string; priceUsd: number } => p != null)
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+      if (points.length >= 2) {
+        priceChart = { timeframe: '24h', points, sourceStatus: 'ok' }
+        chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
+        chartFailureReason = null
+        break
+      }
+      chartFailureReason = 'insufficient_points'
+    }
+    if (priceChart.sourceStatus !== 'ok' && maxAttempts > 0) {
+      priceChart = { timeframe: '24h', points: [], sourceStatus: 'unavailable', reason: chartFailureReason ?? 'ohlcv_not_exposed' }
+    }
+    const chartAttempted = chartAttemptedPools.length > 0
+    const chartFallbackUsed = chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr
     const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
     const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
@@ -1263,6 +1402,7 @@ export async function POST(req: Request) {
     const responsePayload = {
       chain,
       contract,
+      resolvedInput,
 
       // Core token fields
       name: resolvedName,
@@ -1303,8 +1443,11 @@ export async function POST(req: Request) {
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
       market_cap: marketCapFromGt,
       marketCapUsd: marketCapFromGt,
-      marketCapStatus: marketCapFromGt != null ? 'verified' : (estimatedMarketCap != null ? 'estimated' : 'unverified'),
+      marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
       marketCapSource,
+      marketCapReason: marketCapFromGt != null
+        ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
+        : 'Circulating supply not verified by live market data',
       circulating_supply: circulatingSupply,
       fdv,
       fdvUsd: fdv,
@@ -1313,20 +1456,21 @@ export async function POST(req: Request) {
       displayMarketValueLabel,
       displayMarketValueConfidence,
       displayMarketValueReason,
-      estimatedMarketCap,
-      estimatedMarketCapConfidence,
-      estimatedMarketCapReason,
+      estimatedMarketCap: null,
+      estimatedMarketCapConfidence: null,
+      estimatedMarketCapReason: marketCapFromGt != null ? 'Verified live market data' : 'Circulating supply not verified by live market data',
 
       poolActivity: {
         transactions24h,
         buys24h,
         sells24h,
-        volume24hUsd,
+        volume24hUsd: resolvedVolume24hUsd,
         buyVolume24hUsd,
         sellVolume24hUsd,
         pairCreatedAt,
         pairAgeLabel,
       },
+      priceChart,
 
       pairs: matchingPools,
       gtPools: matchingPools,
@@ -1397,6 +1541,11 @@ export async function POST(req: Request) {
           const mpRelDexes = ((mpRel.dexes as Record<string, unknown>)?.data) as Array<Record<string, unknown>> | undefined
           const gtTokenAttr = gtTokenInfo?.data?.attributes ?? null
           return {
+            resolverInput: originalInput,
+            resolverType: resolvedInput?.type ?? 'none',
+            resolverCandidatesCount: resolvedInput ? 1 : 0,
+            resolverSelectedAddress: resolvedInput?.resolvedAddress ?? null,
+            resolverReason: resolvedInput ? (resolvedInput.type === 'alias' ? 'canonical_alias' : 'direct_address') : 'not_resolved',
             // A) Token identity
             inputContract: contract,
             normalizedContract: String(contract).toLowerCase(),
@@ -1418,10 +1567,16 @@ export async function POST(req: Request) {
             rawEstimatedMarketCap: estimatedMarketCap,
             rawFdvUsd: fdv,
             circulatingSupply,
-            marketCapStatus: marketCapFromGt != null ? 'verified' : (estimatedMarketCap != null ? 'estimated' : 'unverified'),
-            marketCapReason: displayMarketValueReason,
-            estimatedMcFormula: estimatedMarketCap != null ? { priceUsd, estimatedMarketCap, estimatedMarketCapConfidence, estimatedMarketCapReason } : null,
+            marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
+            marketCapReason: marketCapFromGt != null
+              ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
+              : 'Circulating supply not verified by live market data',
+            marketCapFinalSource: marketCapFromGt != null
+              ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'token_endpoint' : 'selected_pool')
+              : 'none',
+            estimatedMarketCapDebugOnly: estimatedMarketCap,
             gtTokenMarketCapUsd: gtTokenAttr?.market_cap_usd ?? null,
+            selectedPoolMarketCapUsd: selectedPoolMarketCapUsd,
             gtTokenFdvUsd: gtTokenAttr?.fdv_usd ?? null,
             // D) Pool diagnostics
             totalPoolsReturned: matchingPools.length,
@@ -1478,6 +1633,23 @@ export async function POST(req: Request) {
             // H) Pool activity diagnostics
             transactionRawShape: mainPoolAttr.transactions ?? null,
             volumeRawShape: mainPoolAttr.volume_usd ?? null,
+            volumeSplitCandidateFields: splitCandidates.map((c) => c.key),
+            buyVolumeFoundFrom: buyPick.key,
+            sellVolumeFoundFrom: sellPick.key,
+            volumeTotalFoundFrom: totalPick.key,
+            buySellVolumeSplitAvailable,
+            buySellVolumeReason,
+            chartAttempted,
+            chartPointCount: priceChart.points.length,
+            chartAttemptedPools,
+            chartSelectedPoolForChart,
+            chartFallbackUsed,
+            chartTimeframe: '24h',
+            chartSelectedPoolId: mp?.id ?? null,
+            chartSelectedPoolAddress: mpAttr.address ?? null,
+            chartFailureReason,
+            chartFirstTimestamp: priceChart.points[0]?.timestamp ?? null,
+            chartLastTimestamp: priceChart.points[priceChart.points.length - 1]?.timestamp ?? null,
             poolActivityExtractionReason: {
               transactions24hSource: _txnsH24Obj != null ? 'transactions.h24 (object)' : _txnsH24Total != null ? 'transactions.h24 (scalar)' : 'unavailable',
               buys24hFound: buys24h != null,
