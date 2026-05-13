@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
   const origin = request.headers.get('origin') || ''
   const redirectTo = origin ? `${origin}/auth/callback` : undefined
 
-  const { error: signUpError } = await supabase.auth.signUp({
+  const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
     email: email.trim().toLowerCase(),
     password: password as string,
     options: { emailRedirectTo: redirectTo },
@@ -129,5 +129,8 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  return NextResponse.json({ success: true })
+  return NextResponse.json({
+    ok: true,
+    requiresEmailVerification: !signUpData?.user?.email_confirmed_at,
+  })
 }

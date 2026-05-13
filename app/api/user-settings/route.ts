@@ -1,4 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
+
+function isValidAvatarUrl(url: unknown): boolean {
+  if (!url || typeof url !== 'string' || url.trim() === '') return true
+  let parsed: URL
+  try { parsed = new URL(url.trim()) } catch { return false }
+  if (parsed.protocol !== 'https:') return false
+  if (parsed.username || parsed.password) return false
+  const host = parsed.hostname.toLowerCase()
+  if (['localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.169.254'].includes(host)) return false
+  const parts = host.split('.').map(Number)
+  if (parts.length === 4 && parts.every(p => Number.isInteger(p) && p >= 0 && p <= 255)) {
+    const [a, b] = parts
+    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)) return false
+  }
+  return true
+}
 import {
   createAuthedSupabaseClient,
   createAnonSupabaseClient,
@@ -116,6 +132,14 @@ export async function PATCH(request: NextRequest) {
   }
 
   const { valid, invalidKeys } = sanitizeSettingsUpdate(body);
+
+  if ('avatar_url' in valid && !isValidAvatarUrl(valid.avatar_url)) {
+    return NextResponse.json(
+      { error: 'invalid_avatar_url', message: 'Use a public HTTPS image URL.' },
+      { status: 400 },
+    );
+  }
+
   if (invalidKeys.length > 0) {
     return NextResponse.json(
       { error: `Unknown or invalid fields: ${invalidKeys.join(', ')}` },

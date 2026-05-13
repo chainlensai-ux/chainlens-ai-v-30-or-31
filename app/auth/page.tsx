@@ -121,7 +121,12 @@ export default function AuthPage() {
     if (mode === 'signin') {
       const { error: signInError } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
       if (signInError) {
-        setError('Email or password is incorrect. Try again or reset your password.');
+        const msg = signInError.message.toLowerCase();
+        if (msg.includes('email not confirmed') || msg.includes('not confirmed')) {
+          setError('Please verify your email before signing in. Check your inbox for a confirmation link.');
+        } else {
+          setError('Email or password is incorrect. Try again or reset your password.');
+        }
       } else {
         router.replace('/');
       }
@@ -142,11 +147,13 @@ export default function AuthPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: cleanEmail, password }),
         });
-        const data: { message?: string } = await res.json().catch(() => ({}));
+        const data: { ok?: boolean; requiresEmailVerification?: boolean; message?: string } = await res.json().catch(() => ({}));
         if (!res.ok) {
           setError(data.message || 'Unable to create account. Please try again.');
+        } else if (data.requiresEmailVerification !== false) {
+          setSuccess('Account created! Check your email to verify your account before signing in.');
         } else {
-          setSuccess('Check your email to confirm your account.');
+          setSuccess('Account created. You can now sign in.');
         }
       } catch {
         setError('Unable to create account. Please try again.');
