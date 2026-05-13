@@ -482,7 +482,18 @@ function normalizeDexLabel(raw: string | null): string | null {
     alienbase:            'AlienBase',
     swapbased:            'SwapBased',
   }
-  return map[s] ?? null
+  if (map[s]) return map[s]
+  // Partial prefix match for network-specific variants (e.g. "uniswap-v4-base", "aerodrome-base")
+  if (s.startsWith('uniswap_v4')) return 'Uniswap V4'
+  if (s.startsWith('uniswap_v3')) return 'Uniswap V3'
+  if (s.startsWith('uniswap_v2')) return 'Uniswap V2'
+  if (s.startsWith('aerodrome')) return 'Aerodrome'
+  if (s.startsWith('pancakeswap_v3')) return 'PancakeSwap V3'
+  if (s.startsWith('pancakeswap')) return 'PancakeSwap'
+  if (s.startsWith('sushiswap_v3')) return 'SushiSwap V3'
+  if (s.startsWith('sushiswap')) return 'SushiSwap'
+  if (s.startsWith('baseswap')) return 'BaseSwap'
+  return null
 }
 
 function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[]): { dexId: string; dexName: string } {
@@ -673,10 +684,10 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract, debugHolder } = body;
+    const { contract, debugHolder, debug: debugMode } = body;
     const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base" })
     const cached = tokenResponseCache.get(cacheKey)
-    if (cached && cached.exp > Date.now()) {
+    if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
         const cp: any = { ...(cached.payload as any) }
         cp._diagnostics = { ...(cp._diagnostics ?? {}), cacheHit: true }
@@ -1293,6 +1304,94 @@ export async function POST(req: Request) {
           marketCapFromGt == null ? 'marketCapUsd: not in GT token response' : '',
           fdv == null ? 'fdvUsd: not in GT token or pool response' : '',
         ].filter(Boolean),
+        ...((debugMode === true || debugHolder === true) ? { debug: (() => {
+          const mp = mainPool as Record<string, unknown> | null
+          const mpAttr = (mp?.attributes ?? {}) as Record<string, unknown>
+          const mpRel = (mp?.relationships ?? {}) as Record<string, unknown>
+          const mpRelDex = ((mpRel.dex as Record<string, unknown>)?.data) as Record<string, unknown> | undefined
+          const mpRelDexes = ((mpRel.dexes as Record<string, unknown>)?.data) as Array<Record<string, unknown>> | undefined
+          const gtTokenAttr = gtTokenInfo?.data?.attributes ?? null
+          return {
+            // A) Token identity
+            inputContract: contract,
+            normalizedContract: String(contract).toLowerCase(),
+            chain: 'base',
+            tokenName: resolvedName,
+            tokenSymbol: resolvedSymbol,
+            tokenDecimals: resolvedDecimals,
+            // B) Price diagnostics
+            rawPriceUsd: priceUsd,
+            priceIsScientificRisk: priceUsd != null && priceUsd < 0.000001,
+            priceSourceField: priceUsd === pickNum(mpAttr.base_token_price_usd) ? 'pool.attributes.base_token_price_usd'
+              : priceUsd === pickNum(gtTokenAttr?.price_usd) ? 'gtToken.attributes.price_usd'
+              : priceUsd === pickNum(gtTokenAttr?.price) ? 'gtToken.attributes.price'
+              : 'unknown',
+            rawPoolBaseTokenPriceUsd: mpAttr.base_token_price_usd ?? null,
+            rawGtTokenPriceUsd: gtTokenAttr?.price_usd ?? null,
+            // C) Market cap diagnostics
+            rawMarketCapUsd: marketCapFromGt,
+            rawEstimatedMarketCap: estimatedMarketCap,
+            rawFdvUsd: fdv,
+            circulatingSupply,
+            marketCapStatus: marketCapFromGt != null ? 'verified' : (estimatedMarketCap != null ? 'estimated' : 'unverified'),
+            marketCapReason: displayMarketValueReason,
+            estimatedMcFormula: estimatedMarketCap != null ? { priceUsd, estimatedMarketCap, estimatedMarketCapConfidence, estimatedMarketCapReason } : null,
+            gtTokenMarketCapUsd: gtTokenAttr?.market_cap_usd ?? null,
+            gtTokenFdvUsd: gtTokenAttr?.fdv_usd ?? null,
+            // D) Pool diagnostics
+            totalPoolsReturned: matchingPools.length,
+            selectedPoolIndex: 0,
+            selectedPoolId: mp?.id ?? null,
+            selectedPoolAddress: mpAttr.address ?? null,
+            selectedPoolName: mpAttr.name ?? null,
+            selectedPoolLiquidityUsd: mpAttr.reserve_in_usd ?? null,
+            selectedPoolVolume24h: (mpAttr.volume_usd as Record<string, unknown> | undefined)?.h24 ?? null,
+            selectedPoolCreatedAt: mpAttr.pool_created_at ?? null,
+            // E) DEX/protocol diagnostics
+            dexNameFinal: primaryDexName,
+            dexExtractedRawId: _extractedDexId,
+            dexRawCandidates: {
+              'pool.dex': (mp as Record<string, unknown>)?.dex ?? null,
+              'pool.dex_id': (mp as Record<string, unknown>)?.dex_id ?? null,
+              'attributes.dex': mpAttr.dex ?? null,
+              'attributes.dex_id': mpAttr.dex_id ?? null,
+              'attributes.dexId': (mpAttr as Record<string, unknown>).dexId ?? null,
+              'attributes.exchange': mpAttr.exchange ?? null,
+              'attributes.protocol': mpAttr.protocol ?? null,
+              'attributes.name': mpAttr.name ?? null,
+              'attributes.pool_name': mpAttr.pool_name ?? null,
+              'relationships.dex.data.id': mpRelDex?.id ?? null,
+              'relationships.dex.data.type': mpRelDex?.type ?? null,
+              'relationships.dexes.data[0].id': mpRelDexes?.[0]?.id ?? null,
+            },
+            poolTopLevelKeys: mp ? Object.keys(mp) : [],
+            poolAttributeKeys: Object.keys(mpAttr),
+            poolRelationshipKeys: Object.keys(mpRel),
+            whyDexNotConfirmed: primaryDexName ? null
+              : _extractedDexId ? `normalizeDexLabel("${_extractedDexId}") returned null — add to map`
+              : 'No dex id found in any checked field',
+            // F) First 3 pool summaries
+            first3Pools: matchingPools.slice(0, 3).map((p) => {
+              const pa = (p?.attributes ?? {}) as Record<string, unknown>
+              const pr = (p?.relationships ?? {}) as Record<string, unknown>
+              const prd = ((pr.dex as Record<string, unknown>)?.data) as Record<string, unknown> | undefined
+              return {
+                id: p.id ?? null,
+                name: pa.name ?? null,
+                liquidityUsd: pa.reserve_in_usd ?? null,
+                dex_id_attr: pa.dex_id ?? null,
+                dex_rel_id: prd?.id ?? null,
+              }
+            }),
+            // G) UI mapping summary
+            uiMapping: {
+              priceCard: priceUsd != null ? (priceUsd < 0.000001 ? `SCIENTIFIC RISK: ${priceUsd}` : String(priceUsd)) : 'N/A',
+              dexCard: primaryDexName ?? 'DEX unverified',
+              marketCapCard: marketCapFromGt != null ? `$${marketCapFromGt}` : (estimatedMarketCap != null && estimatedMarketCapConfidence !== 'low' ? `~$${estimatedMarketCap}` : 'MC unverified'),
+              fdvCard: fdv != null ? `$${fdv}` : 'Unverified',
+            },
+          }
+        })() } : {}),
       },
 
       // Security simulation — Honeypot.is is the preferred provider.
