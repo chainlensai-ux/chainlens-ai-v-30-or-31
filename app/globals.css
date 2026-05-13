@@ -113,6 +113,9 @@ html, body {
 /* Terminal sidebar toggle — hidden on desktop */
 .mob-sidebar-btn { display: none; }
 
+/* Sidebar X close button — hidden on desktop */
+.mob-sidebar-close-btn { display: none; }
+
 /* Sidebar backdrop — hidden on desktop */
 .mob-sidebar-overlay { display: none; }
 
@@ -166,6 +169,29 @@ html, body {
     padding: 0;
   }
 
+  /* Sidebar X close button (mobile only) */
+  .mob-sidebar-close-btn {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    cursor: pointer;
+    color: #94a3b8;
+    padding: 0;
+    z-index: 1;
+  }
+  .mob-sidebar-close-btn:active { background: rgba(255,255,255,0.10); color: #e2e8f0; }
+
+  /* Terminal content wrapper — enables full-page scroll on mobile */
+  .mob-content-wrap { overflow-x: hidden !important; overflow-y: auto !important; height: 100% !important; -webkit-overflow-scrolling: touch; }
+
   /* Terminal: hide ClarkRadar right panel */
   .mob-radar { display: none !important; }
 
@@ -182,8 +208,8 @@ html, body {
   .mob-footer-grid > div:last-child { text-align: left !important; }
   .mob-footer-grid > div:last-child > div { justify-content: flex-start !important; }
 
-  /* Token scanner: reduce padding */
-  .mob-scan-main { padding: 24px 16px !important; }
+  /* Token scanner: top padding clears fixed hamburger button (36px + 12px top + 14px gap) */
+  .mob-scan-main { padding: 62px 16px 80px !important; }
 
   /* Portfolio: hide multi-col table, show single col */
   .mob-holdings-table { grid-template-columns: 1fr auto auto !important; }

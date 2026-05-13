@@ -57,14 +57,13 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
       {sidebarOpen && (
         <div
           className="mob-sidebar-overlay"
-          style={{ zIndex: 30 }}
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
-      <FeatureBar active={active} onWalletOpen={() => setSidebarOpen(false)} />
+      <FeatureBar active={active} onWalletOpen={() => setSidebarOpen(false)} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 min-w-0 overflow-hidden relative">
+      <div className="flex-1 min-w-0 overflow-hidden relative mob-content-wrap">
         {/* Mobile sidebar toggle button */}
         <button
           type="button"
