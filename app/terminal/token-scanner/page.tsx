@@ -780,6 +780,25 @@ export default function TerminalTokenScanner() {
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
         @media (max-width: 767px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
+        /* Mobile: stack scan area + Clark vertically, Clark shown below */
+        @media (max-width: 767px) {
+          .token-shell { flex-direction: column !important; height: auto !important; overflow: visible !important; }
+          .mob-scan-main { flex: none !important; overflow-y: visible !important; width: 100% !important; }
+          .token-shell .mob-verdict-panel {
+            display: flex !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: 100% !important;
+            min-height: 0 !important;
+            border-left: none !important;
+            border-top: 1px solid rgba(255,255,255,0.08) !important;
+            position: static !important;
+            overflow-y: visible !important;
+          }
+          .pools-scroll { overflow-x: auto !important; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
+          .pools-inner { min-width: 560px; }
+          .holder-grid { grid-template-columns: 1fr !important; }
+        }
       `}</style>
 
       <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%)' }}>
