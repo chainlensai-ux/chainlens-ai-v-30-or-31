@@ -108,6 +108,13 @@ type ScanResult = {
     sourceStatus: 'ok' | 'unavailable' | 'error'
     reason?: string
   } | null
+  resolvedInput?: {
+    original: string
+    type: 'address' | 'alias' | 'live_search'
+    resolvedAddress: string
+    symbol?: string
+    confidence: 'high' | 'medium' | 'low'
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -194,26 +201,44 @@ function pctColor(v: number | null | undefined): string {
 
 function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUsd: number }> }) {
   if (points.length < 2) return null
-  const w = 720
-  const h = 220
-  const pad = 14
+  const w = 960
+  const h = 280
+  const padX = 24
+  const padY = 24
   const min = Math.min(...points.map((p) => p.priceUsd))
   const max = Math.max(...points.map((p) => p.priceUsd))
   const spread = Math.max(max - min, 1e-12)
+  const yFor = (v: number) => h - padY - ((v - min) / spread) * (h - padY * 2)
+  const xFor = (i: number) => padX + (i / (points.length - 1)) * (w - padX * 2)
   const d = points.map((p, i) => {
-    const x = pad + (i / (points.length - 1)) * (w - pad * 2)
-    const y = h - pad - ((p.priceUsd - min) / spread) * (h - pad * 2)
+    const x = xFor(i)
+    const y = yFor(p.priceUsd)
     return `${i === 0 ? 'M' : 'L'}${x},${y}`
   }).join(' ')
+  const area = `${d} L ${xFor(points.length - 1)},${h - padY} L ${xFor(0)},${h - padY} Z`
+  const last = points[points.length - 1]
+  const lastX = xFor(points.length - 1)
+  const lastY = yFor(last.priceUsd)
+  const guideRows = [0.2, 0.4, 0.6, 0.8].map((r) => padY + r * (h - padY * 2))
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: '220px', display: 'block' }}>
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: '280px', display: 'block' }}>
       <defs>
         <linearGradient id="clLine" x1="0" y1="0" x2="1" y2="0">
           <stop offset="0%" stopColor="#2dd4bf" />
           <stop offset="100%" stopColor="#a78bfa" />
         </linearGradient>
+        <linearGradient id="clFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(45,212,191,0.32)" />
+          <stop offset="100%" stopColor="rgba(167,139,250,0.02)" />
+        </linearGradient>
       </defs>
+      {guideRows.map((y) => <line key={y} x1={padX} y1={y} x2={w - padX} y2={y} stroke="rgba(148,163,184,0.18)" strokeWidth="1" />)}
+      <path d={area} fill="url(#clFill)" />
       <path d={d} fill="none" stroke="url(#clLine)" strokeWidth="3" strokeLinecap="round" />
+      <circle cx={lastX} cy={lastY} r="4.5" fill="#e2e8f0" />
+      <text x={lastX - 6} y={Math.max(16, lastY - 10)} textAnchor="end" fill="#cbd5e1" style={{ fontSize: 11 }}>{fmtPrice(last.priceUsd)}</text>
+      <text x={padX} y={16} fill="#94a3b8" style={{ fontSize: 11 }}>Low {fmtPrice(min)}</text>
+      <text x={w - padX} y={16} textAnchor="end" fill="#94a3b8" style={{ fontSize: 11 }}>High {fmtPrice(max)}</text>
     </svg>
   )
 }
@@ -592,10 +617,6 @@ export default function TerminalTokenScanner() {
   async function handleScan(override?: string) {
     const q = (override ?? input).trim()
     if (!q || loading) return
-    if (!/^0x[a-fA-F0-9]{40}$/.test(q)) {
-      setError('Please enter a valid contract address (0x…)')
-      return
-    }
     setLoading(true)
     setClarkLoading(true)
     setError(null)
@@ -613,7 +634,8 @@ export default function TerminalTokenScanner() {
       })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setError(json.error ?? 'No Base token match from current checks. Paste a contract address for a deeper scan.')
+        if (json?.status === 'ambiguous') setError('Multiple Base tokens match this. Paste the contract address or choose one.')
+        else setError("Couldn’t resolve that Base token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
@@ -662,6 +684,7 @@ export default function TerminalTokenScanner() {
           lpControl: json.lpControl ?? null,
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
+          resolvedInput: json.resolvedInput ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -732,7 +755,7 @@ export default function TerminalTokenScanner() {
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="Paste Base contract or token symbol"
+              placeholder="Paste Base contract, symbol, or token name"
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
@@ -819,6 +842,11 @@ export default function TerminalTokenScanner() {
                     <span style={{marginLeft:'8px',padding:'2px 8px',border:'1px solid rgba(59,130,246,.35)',borderRadius:'999px',color:'#93c5fd'}}>BASE</span>
                   </p>
                 )}
+                {result.resolvedInput && result.resolvedInput.type !== 'address' && (
+                  <p style={{ margin: '6px 0 0', color: '#94a3b8', fontSize: '11px' }}>
+                    Resolved from {result.resolvedInput.original.toUpperCase()}.
+                  </p>
+                )}
               </div>
 
               {/* Stat cards — or no-pools message */}
@@ -850,12 +878,10 @@ export default function TerminalTokenScanner() {
                   {(() => {
                     const mcValue = result.marketCapStatus === 'verified' && result.marketCapUsd != null
                       ? fmtLarge(result.marketCapUsd)
-                      : 'Supply unverified'
+                      : 'Supply not verified'
                     const mcHelper = result.marketCapStatus === 'verified'
                       ? 'Verified from live market data'
-                      : result.marketCapStatus === 'estimated'
-                        ? 'FDV shown separately'
-                        : 'Circulating supply not confirmed'
+                      : 'FDV shown separately'
                     return (
                       <StatCard
                         label='Market Cap'
@@ -879,6 +905,11 @@ export default function TerminalTokenScanner() {
                   />
                 </div>
               )}
+              {result.marketCapStatus !== 'verified' && (
+                <p style={{ marginTop: '-14px', marginBottom: '20px', color: '#94a3b8', fontSize: '12px' }}>
+                  FDV is available, but circulating supply was not verified live.
+                </p>
+              )}
 
               {/* Pool Activity */}
               {!result.noActivePools && (
@@ -896,7 +927,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     </>
                   ) : (
-                    <StatCard label="Price Chart" value="Chart unavailable" helper="Live price history was not exposed for this pool." />
+                    <StatCard label="Chart unavailable" value="Chart unavailable" helper="Live price history was not exposed for this pool." />
                   )}
                 </div>
               )}
