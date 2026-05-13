@@ -32,6 +32,15 @@ type WalletBehavior = {
   reason: string
 }
 
+type ClarkVerdict = {
+  verdict: string
+  confidence: string
+  read: string
+  keySignals: string[]
+  risks: string[]
+  nextAction: string
+}
+
 type WalletResult = {
   address: string
   totalValue: number
@@ -173,8 +182,8 @@ export default function WalletScannerPage() {
   const [error, setError]               = useState<string | null>(null)
   const [result, setResult]             = useState<WalletResult | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
-  const clarkLoading = loading
-  const clarkVerdict: ClarkVerdictCard | null = result ? FALLBACK_VERDICT : null
+  const [clarkVerdict] = useState<ClarkVerdict | null>(null)
+  const [clarkLoading] = useState(false)
 
   async function handleScan() {
     const q = input.trim()
@@ -843,6 +852,12 @@ export default function WalletScannerPage() {
                         Analyzing wallet data…
                       </p>
                     </div>
+                  )}
+
+                  {!clarkLoading && !clarkVerdict && (
+                    <p style={{ margin: 0, fontSize: '12px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                      Scan a wallet to generate a CORTEX wallet read.
+                    </p>
                   )}
 
                   {!clarkLoading && clarkVerdict && (
