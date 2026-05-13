@@ -770,6 +770,12 @@ export default function TerminalTokenScanner() {
         @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(7,minmax(0,1fr)) !important;} }
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.86),rgba(4,10,22,.82));border:1px solid rgba(148,163,184,.2);border-radius:14px;box-shadow:0 0 0 1px rgba(45,212,191,.06) inset,0 18px 45px rgba(2,6,23,.35);} 
         @media (max-width: 768px) { .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .pools-row{min-width:860px} }
+        @media (max-width: 768px) {
+          .top-holder-head{display:none !important;}
+          .top-holder-row{display:block !important;padding:10px 12px !important;}
+          .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;}
+          .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;}
+        }
         @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
@@ -1181,29 +1187,31 @@ export default function TerminalTokenScanner() {
                 const fallback = deriveHolderFallbackEvidence(result)
                 if (holderState.kind !== 'noRowsFallback') {
                   return (
-                    <div className="holder-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
-                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
-                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
-                        {result.holderDistribution?.holderCount != null && <p style={{margin:'0 0 10px',fontSize:'11px',color:'#67e8f9'}}>Holder count: {result.holderDistribution.holderCount.toLocaleString()}</p>}
+                    <div className="holders-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
+                      <div className="glass-card" style={{padding:'18px'}}>
+                        <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',marginBottom:'12px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                        {result.holderDistribution?.holderCount != null && <div style={{margin:'0 0 12px',fontSize:'13px',color:'#67e8f9',border:'1px solid rgba(45,212,191,.3)',background:'rgba(6,78,59,.16)',padding:'8px 10px',borderRadius:'10px',display:'inline-flex',gap:'8px'}}><span style={{color:'#99f6e4'}}>Holder count</span><strong style={{fontFamily:'var(--font-plex-mono)',color:'#e6fffa'}}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
                         {holderState.kind === 'rowsWithoutPercent' && (
                           <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets found, but supply percentages were not available for this scan.</p>
                         )}
-                        <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+                        <div style={{display:'grid',gap:'10px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'82px 1fr 64px',alignItems:'center',gap:'10px'}}><span style={{fontSize:'12px',color:'#d6e6f3',fontWeight:700}}>{l}</span><div style={{height:'12px',borderRadius:'999px',background:'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))',border:'1px solid rgba(148,163,184,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#2dd4bf,#a855f7)',boxShadow:'0 0 14px rgba(45,212,191,.28)'}} /></div><span style={{fontSize:'13px',fontWeight:800,color:'#eef6ff',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+                        <p style={{margin:'12px 0 0',fontSize:'11px',color:'#8aa3b8'}}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
                       </div>
-                      <div className="glass-card" style={{padding:'14px',minWidth:0,overflow:'hidden'}}>
-                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
+                      <div className="glass-card" style={{padding:'18px',minWidth:0,overflow:'hidden'}}>
+                        <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',marginBottom:'4px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
+                        <p style={{margin:'0 0 10px',fontSize:'11px',color:'#8aa3b8'}}>Top 10 holders</p>
                         {/* Header */}
-                        <div style={{display:'grid',gridTemplateColumns:'24px minmax(0,1fr) 64px 52px',gap:'8px',fontSize:'9px',letterSpacing:'0.10em',color:'#475569',marginBottom:'6px',fontFamily:'var(--font-plex-mono)'}}>
+                        <div className="top-holder-head" style={{display:'grid',gridTemplateColumns:'36px minmax(0,1fr) 88px 62px',gap:'10px',fontSize:'10px',letterSpacing:'0.10em',color:'#6a8198',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>
                           <span>#</span><span>WALLET</span><span style={{textAlign:'right'}}>AMOUNT</span><span style={{textAlign:'right'}}>%</span>
                         </div>
                         {/* Rows */}
-                        <div style={{display:'flex',flexDirection:'column',gap:'1px',maxHeight:'216px',overflowY:'auto'}}>
+                        <div style={{display:'flex',flexDirection:'column',gap:'8px',maxHeight:'320px',overflowY:'auto',paddingRight:'3px'}}>
                           {holderState.rows.slice(0,20).map((h) => (
-                            <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'24px minmax(0,1fr) 64px 52px',gap:'8px',alignItems:'center',padding:'5px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
-                              <span style={{fontSize:'10px',color:'#475569',fontFamily:'var(--font-plex-mono)'}}>{h.rank}</span>
-                              <span style={{fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{shorten(h.address)}</span>
-                              <span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{fmtTokenAmt(h.amount, result.decimals ?? 18)}</span>
-                              <span style={{fontSize:'11px',fontWeight:600,textAlign:'right',fontFamily:'var(--font-plex-mono)',color: h.percent != null && h.percent >= 10 ? '#f87171' : h.percent != null && h.percent >= 5 ? '#fb923c' : h.percent != null && h.percent >= 1 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span>
+                            <div className="top-holder-row" key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'36px minmax(0,1fr) 88px 62px',gap:'10px',alignItems:'center',padding:'10px 10px',border:'1px solid rgba(148,163,184,.18)',borderRadius:'10px',background:'rgba(15,23,42,.45)',transition:'all .16s'}}>
+                              <span style={{fontSize:'11px',color:'#dbeafe',fontFamily:'var(--font-plex-mono)',fontWeight:700,display:'inline-flex',justifyContent:'center',padding:'2px 0',borderRadius:'999px',background:h.rank<=3?'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))':'transparent',border:h.rank<=3?'1px solid rgba(167,139,250,.45)':'none'}}>{h.rank}</span>
+                              <span className="top-holder-mobile-meta" style={{fontSize:'12px',color:'#c5d8ea',fontFamily:'var(--font-plex-mono)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{shorten(h.address)}<span style={{display:'none',fontSize:'12px',fontWeight:800,color: h.percent != null && h.percent >= 10 ? '#fb7185' : h.percent != null && h.percent >= 5 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span></span>
+                              <span className="top-holder-mobile-amt" style={{fontSize:'12px',color:'#e5eef9',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{fmtTokenAmt(h.amount, result.decimals ?? 18)}</span>
+                              <span style={{fontSize:'12px',fontWeight:800,textAlign:'right',fontFamily:'var(--font-plex-mono)',color: h.percent != null && h.percent >= 10 ? '#fb7185' : h.percent != null && h.percent >= 5 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span>
                             </div>
                           ))}
                         </div>
@@ -1245,8 +1253,7 @@ export default function TerminalTokenScanner() {
                   }}>
                     LIQUIDITY & POOLS
                   </p><div style={{display:'inline-flex',marginBottom:'10px',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} POOLS</div>
-                  <div className="pools-scroll">
-                  <div className="pools-inner" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ overflowX: 'auto', paddingBottom: '6px' }}><div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
                         key={i}
@@ -1279,8 +1286,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>APR N/A</span><span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>{fmtPct(pool.priceChange24h)}</span><span style={{whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24'}}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
                       </div>
                     ))}
-                  </div>
-                  </div>
+                  </div></div>
                 </>
               )}
             </div>
