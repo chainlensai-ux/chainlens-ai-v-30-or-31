@@ -5,6 +5,22 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import type { UserSettingsUpdate } from '@/lib/supabase/userSettings'
 
+function isValidAvatarUrl(url: string): boolean {
+  if (!url || url.trim() === '') return true
+  let parsed: URL
+  try { parsed = new URL(url.trim()) } catch { return false }
+  if (parsed.protocol !== 'https:') return false
+  if (parsed.username || parsed.password) return false
+  const host = parsed.hostname.toLowerCase()
+  if (['localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.169.254'].includes(host)) return false
+  const parts = host.split('.').map(Number)
+  if (parts.length === 4 && parts.every(p => Number.isInteger(p) && p >= 0 && p <= 255)) {
+    const [a, b] = parts
+    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)) return false
+  }
+  return true
+}
+
 const AVATAR_COLORS: Record<string, string> = {
   mint: 'linear-gradient(135deg, #2DD4BF 0%, #14b8a6 100%)',
   purple: 'linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%)',
@@ -145,6 +161,7 @@ export default function SettingsPage() {
   const [signingOut, setSigningOut] = useState(false)
   const [savingState, setSavingState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [saveMessage, setSaveMessage] = useState<string>('')
+  const [avatarUrlError, setAvatarUrlError] = useState<string | null>(null)
 
   const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')
   const [clarkDetailLevel, setClarkDetailLevel] = useState<'concise' | 'normal' | 'detailed'>('normal')
@@ -294,6 +311,11 @@ export default function SettingsPage() {
   }
 
   async function handleSaveSettings() {
+    if (avatarUrl.trim() && !isValidAvatarUrl(avatarUrl)) {
+      setAvatarUrlError('Use a public HTTPS image URL.')
+      return
+    }
+    setAvatarUrlError(null)
     const payload = buildPayload()
     setSavingState('saving')
     setSaveMessage('Saving...')
@@ -330,6 +352,11 @@ export default function SettingsPage() {
   }
 
   async function handleSaveProfile() {
+    if (avatarUrl.trim() && !isValidAvatarUrl(avatarUrl)) {
+      setAvatarUrlError('Use a public HTTPS image URL.')
+      return
+    }
+    setAvatarUrlError(null)
     setSavingState('saving')
     setSaveMessage('Saving profile...')
 
@@ -456,7 +483,10 @@ export default function SettingsPage() {
               </div>
               <div>
                 <Label>Avatar URL</Label>
-                <Input value={avatarUrl} onChange={setAvatarUrl} placeholder="https://..." />
+                <Input value={avatarUrl} onChange={v => { setAvatarUrl(v); setAvatarUrlError(null) }} placeholder="https://..." />
+                {avatarUrlError && (
+                  <div style={{ marginTop: '6px', fontSize: '11px', color: '#fca5a5' }}>{avatarUrlError}</div>
+                )}
               </div>
               <div>
                 <Label>Avatar Color</Label>

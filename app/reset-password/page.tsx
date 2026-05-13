@@ -66,11 +66,17 @@ export default function ResetPasswordPage() {
     };
   }, []);
 
+  function meetsPolicy(pw: string): boolean {
+    const banned = new Set(['123456','12345678','123456789','password','password123','qwerty','qwerty123','chainlens','chainlens123','letmein','admin123'])
+    if (banned.has(pw.toLowerCase())) return false
+    return pw.length >= 10 && /[A-Z]/.test(pw) && /[a-z]/.test(pw) && /[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw)
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
+    if (!meetsPolicy(password)) {
+      setError('Use at least 10 characters with uppercase, lowercase, a number, and a symbol.');
       return;
     }
     if (password !== confirm) {
@@ -83,7 +89,7 @@ export default function ResetPasswordPage() {
       setError('Unable to update password. The reset link may have expired — please request a new one.');
     } else {
       setStatus('success');
-      setTimeout(() => router.replace('/'), 2000);
+      setTimeout(() => router.replace('/auth'), 2000);
     }
     setSubmitting(false);
   }
@@ -173,7 +179,7 @@ export default function ResetPasswordPage() {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <input
             type="password"
-            placeholder="New password (min. 8 characters)"
+            placeholder="New password (10+ chars, mixed case, number, symbol)"
             value={password}
             onChange={e => setPassword(e.target.value)}
             required
