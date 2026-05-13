@@ -35,6 +35,14 @@ type ScanResult = {
   fdvUsd?: number | null
   marketCapSource?: 'geckoterminal' | 'coingecko_terminal' | 'computed' | 'unavailable'
   marketCapStatus?: string | null
+  valuationContext?: {
+    primaryValuationLabel: 'Market Cap' | 'FDV'
+    primaryValuationUsd: number | null
+    primaryValuationStatus: 'verified_mc' | 'fdv_only' | 'unavailable'
+    marketCapStatus: 'verified' | 'unverified'
+    fdvUsd: number | null
+    reason: string
+  } | null
   fdvSource?: 'geckoterminal' | 'coingecko_terminal' | 'unavailable'
   circulatingSupply?: number | null
   displayMarketValue?: number | null
@@ -103,10 +111,11 @@ type ScanResult = {
     pairAgeLabel: string | null
   } | null
   priceChart?: {
-    timeframe: '24h'
+    timeframe: '24h' | '48h' | '7d'
     points: Array<{ timestamp: string; priceUsd: number }>
     sourceStatus: 'ok' | 'unavailable' | 'error'
     reason?: string
+    fallbackUsed?: boolean
   } | null
   resolvedInput?: {
     original: string
@@ -707,6 +716,7 @@ export default function TerminalTokenScanner() {
           marketCap: num(json.marketCapUsd),
           marketCapUsd: num(json.marketCapUsd),
           marketCapStatus: json.marketCapStatus ?? 'unavailable',
+          valuationContext: json.valuationContext ?? null,
           circulatingSupply: num(json.circulating_supply),
           fdv: num(json.fdvUsd ?? json.fdv),
           fdvUsd: num(json.fdvUsd ?? json.fdv),
@@ -953,15 +963,17 @@ export default function TerminalTokenScanner() {
                     accent={pctColor(result.priceChange24h)}
                   />
                   {(() => {
-                    const mcValue = result.marketCapStatus === 'verified' && result.marketCapUsd != null
-                      ? fmtLarge(result.marketCapUsd)
-                      : 'Supply not verified'
-                    const mcHelper = result.marketCapStatus === 'verified'
-                      ? 'Verified from live market data'
-                      : 'FDV shown separately'
+                    const valuation = result.valuationContext
+                    const showFdvContext = valuation?.primaryValuationStatus === 'fdv_only' && valuation?.primaryValuationUsd != null
+                    const mcValue = valuation?.primaryValuationStatus === 'verified_mc'
+                      ? fmtLarge(valuation.primaryValuationUsd)
+                      : showFdvContext ? `FDV ${fmtLarge(valuation.primaryValuationUsd)}` : 'Supply not confirmed'
+                    const mcHelper = valuation?.primaryValuationStatus === 'verified_mc'
+                      ? 'Verified live market data'
+                      : showFdvContext ? 'Market cap not verified live' : 'Live valuation not verified'
                     return (
                       <StatCard
-                        label='Market Cap'
+                        label={valuation?.primaryValuationStatus === 'fdv_only' ? 'Valuation' : 'Market Cap'}
                         value={mcValue}
                         helper={mcHelper}
                         accent="#a78bfa"
@@ -993,10 +1005,13 @@ export default function TerminalTokenScanner() {
                 <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
                     <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>24h primary pool price action</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart?.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
                   </div>
                   {result.priceChart?.sourceStatus === 'ok' && result.priceChart.points.length >= 2 ? (
                     <>
+                      <div style={{ display: 'inline-flex', marginBottom: '8px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
+                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : '7D'}
+                      </div>
                       <MiniPriceChart points={result.priceChart.points} />
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
                         <span>{new Date(result.priceChart.points[0].timestamp).toLocaleTimeString()}</span>
@@ -1004,7 +1019,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     </>
                   ) : (
-                    <StatCard label="Chart unavailable" value="Chart unavailable" helper="Live price history was not exposed for this pool." />
+                    <StatCard label="Chart not available" value="Chart not available" helper="Live pool price history was not exposed for this token. Pool data and current price are still live." />
                   )}
                 </div>
               )}
@@ -1410,7 +1425,7 @@ export default function TerminalTokenScanner() {
                   <div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div>
                   <div style={{fontSize:'24px',fontWeight:800,color:verdictColor}}>{verdict}</div>
                 </div>
-                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Market Read: Price {fmtPrice(result.price)}, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Unverified'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}, MC/FDV {mcFdv}</div>
+                <div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',fontSize:'12px',lineHeight:1.6,color:'#b7c9da',background:'rgba(15,23,42,.5)'}}>Market Read: <strong style={{color:'#e2e8f0'}}>Price {fmtPrice(result.price)}</strong>, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Not verified live'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not verified live'}, {result.marketCapUsd == null && result.fdvUsd != null ? 'Market cap was not verified live; FDV is the safer valuation context.' : `MC/FDV ${mcFdv}`}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Security Read: Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'}, Sell Tax {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}, Transfer Risk {transferTax != null ? `${transferTax.toFixed(1)}%` : 'N/A'}, Simulation {hp?.simulationSuccess ? 'Verified' : 'Unverified'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Holder/Supply Read: {result.holderDistribution?.holderCount != null ? `holders ${result.holderDistribution.holderCount.toLocaleString()}, ` : ''}{top10 != null ? `top10 ${top10.toFixed(1)}%, ` : 'holder concentration unverified, '}{top20 != null ? `top20 ${top20.toFixed(1)}%` : 'top20 unavailable'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Liquidity/Pools Read: pools {poolCount}, primary pool {result.pools?.[0]?.name ?? 'Unverified'}, liquidity depth {fmtLarge(result.pools?.[0]?.liquidity ?? result.liquidity)}, {(liq > 0 && liq < 50000) ? 'liquidity thin.' : liq === 0 ? 'liquidity unverified.' : 'liquidity present.'}</div>
