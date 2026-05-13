@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import type { UserSettingsUpdate } from '@/lib/supabase/userSettings'
@@ -17,8 +17,8 @@ const AVATAR_COLORS: Record<string, string> = {
 function Card({ children, danger = false }: { children: React.ReactNode; danger?: boolean }) {
   return (
     <div style={{
-      background: '#080c14',
-      border: `1px solid ${danger ? 'rgba(239,68,68,0.25)' : 'rgba(255,255,255,0.08)'}`,
+      background: 'var(--cl-card-bg)',
+      border: `1px solid ${danger ? 'var(--cl-danger-border)' : 'var(--cl-card-border)'}`,
       borderRadius: '14px',
       padding: '24px',
     }}>
@@ -147,8 +147,8 @@ export default function SettingsPage() {
   const [saveMessage, setSaveMessage] = useState<string>('')
 
   const [darkMode, setDarkMode] = useState(true)
-  const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum' | 'solana'>('base')
-  const [clarkDetailLevel, setClarkDetailLevel] = useState<'low' | 'normal' | 'high'>('normal')
+  const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')
+  const [clarkDetailLevel, setClarkDetailLevel] = useState<'concise' | 'normal' | 'detailed'>('normal')
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -174,7 +174,7 @@ export default function SettingsPage() {
       theme: darkMode ? 'dark' : 'light',
       accent_color: 'mint',
       default_chain: defaultChain,
-      clark_detail_level: clarkDetailLevel,
+      clark_detail_level: clarkDetailLevel === 'concise' ? 'low' : clarkDetailLevel === 'detailed' ? 'high' : 'normal',
       display_name: displayName.trim() || null,
       avatar_url: avatarUrl.trim() || null,
       avatar_color: avatarColor,
@@ -194,14 +194,14 @@ export default function SettingsPage() {
     setDarkMode(settings.theme !== 'light')
 
     const chain = settings.default_chain
-    if (chain === 'base' || chain === 'ethereum' || chain === 'solana') {
+    if (chain === 'base' || chain === 'ethereum') {
       setDefaultChain(chain)
     }
 
-    const detail = settings.clark_detail_level
-    if (detail === 'low' || detail === 'normal' || detail === 'high') {
-      setClarkDetailLevel(detail)
-    }
+    const detail = settings.clark_detail_level ?? settings.clarkDetailLevel
+    if (detail === 'low' || detail === 'concise') setClarkDetailLevel('concise')
+    if (detail === 'normal') setClarkDetailLevel('normal')
+    if (detail === 'high' || detail === 'detailed') setClarkDetailLevel('detailed')
 
     if (typeof settings.display_name === 'string') setDisplayName(settings.display_name)
     if (typeof settings.avatar_url === 'string') setAvatarUrl(settings.avatar_url)
@@ -280,6 +280,21 @@ export default function SettingsPage() {
     return () => { canceled = true }
   }, [authChecked, isAuthed, accessToken])
 
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    document.documentElement.dataset.theme = darkMode ? 'dark' : 'light'
+  }, [darkMode])
+
+  useEffect(() => {
+    if (!authChecked) return
+    const timer = window.setTimeout(() => {
+      void handleSaveSettings()
+    }, 450)
+
+    return () => window.clearTimeout(timer)
+    // Only appearance settings auto-save here to avoid noisy writes.
+  }, [authChecked, darkMode, defaultChain, clarkDetailLevel])
+
   async function handleSignOut() {
     setSigningOut(true)
     await supabase.auth.signOut()
@@ -293,10 +308,10 @@ export default function SettingsPage() {
 
     if (!isAuthed || !accessToken) {
       if (typeof window !== 'undefined') {
-        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify(payload))
+        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, darkMode, defaultChain, clarkDetailLevel }))
       }
       setSavingState('saved')
-      setSaveMessage('Saved locally. Sign in to sync settings across devices.')
+      setSaveMessage('Saved locally.')
       return
     }
 
@@ -312,13 +327,13 @@ export default function SettingsPage() {
 
       if (!res.ok) throw new Error('Save failed')
       setSavingState('saved')
-      setSaveMessage('Saved to your account.')
+      setSaveMessage('Settings saved.')
     } catch {
       if (typeof window !== 'undefined') {
-        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify(payload))
+        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, darkMode, defaultChain, clarkDetailLevel }))
       }
-      setSavingState('error')
-      setSaveMessage('Failed to save remotely. Local backup saved.')
+      setSavingState('saved')
+      setSaveMessage('Saved locally.')
     }
   }
 
@@ -365,8 +380,10 @@ export default function SettingsPage() {
     { name: 'Clark AI',       sub: 'Conversational intelligence', connected: true },
   ]
 
+  const isLight = !darkMode
+
   return (
-    <div style={{ height: '100%', overflowY: 'auto', background: '#06060a', color: '#e2e8f0' }}>
+    <div style={({ height: '100%', overflowY: 'auto', background: isLight ? '#f6f7fb' : '#06060a', color: isLight ? '#0f172a' : '#e2e8f0', transition: 'background 0.2s ease, color 0.2s ease', ['--cl-card-bg' as string]: isLight ? '#ffffff' : '#080c14', ['--cl-card-border' as string]: isLight ? 'rgba(148,163,184,0.35)' : 'rgba(255,255,255,0.08)', ['--cl-danger-border' as string]: isLight ? 'rgba(239,68,68,0.2)' : 'rgba(239,68,68,0.25)' } as CSSProperties)} >
       <div style={{ maxWidth: '720px', margin: '0 auto', padding: '40px 32px 80px' }}>
 
         {/* Page header */}
@@ -570,7 +587,7 @@ export default function SettingsPage() {
               right={(
                 <select
                   value={defaultChain}
-                  onChange={e => setDefaultChain(e.target.value as 'base' | 'ethereum' | 'solana')}
+                  onChange={e => setDefaultChain(e.target.value as 'base' | 'ethereum')}
                   style={{
                     background: 'rgba(255,255,255,0.04)',
                     color: '#e2e8f0',
@@ -582,8 +599,7 @@ export default function SettingsPage() {
                 >
                   <option value="base">Base</option>
                   <option value="ethereum">Ethereum</option>
-                  <option value="solana">Solana</option>
-                </select>
+                                  </select>
               )}
             />
             <Row
@@ -592,7 +608,7 @@ export default function SettingsPage() {
               right={(
                 <select
                   value={clarkDetailLevel}
-                  onChange={e => setClarkDetailLevel(e.target.value as 'low' | 'normal' | 'high')}
+                  onChange={e => setClarkDetailLevel(e.target.value as 'concise' | 'normal' | 'detailed')}
                   style={{
                     background: 'rgba(255,255,255,0.04)',
                     color: '#e2e8f0',
@@ -602,13 +618,13 @@ export default function SettingsPage() {
                     fontSize: '12px',
                   }}
                 >
-                  <option value="low">Low</option>
+                  <option value="concise">Concise</option>
                   <option value="normal">Normal</option>
-                  <option value="high">High</option>
+                  <option value="detailed">Detailed</option>
                 </select>
               )}
             />
-            <div style={{ paddingTop: '4px' }} />
+            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(148,163,184,0.8)' }}>Base remains the primary live scan network during beta.</div>
           </Card>
 
           {/* ── Notifications ───────────────────────────── */}
@@ -629,7 +645,7 @@ export default function SettingsPage() {
               sub="New token deployments and liquidity events"
               right={<Toggle on={notifRadar} onChange={() => setNotifRadar(v => !v)} />}
             />
-            <div style={{ paddingTop: '4px' }} />
+            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(148,163,184,0.8)' }}>Base remains the primary live scan network during beta.</div>
           </Card>
 
           {/* ── API ─────────────────────────────────────── */}
@@ -643,7 +659,7 @@ export default function SettingsPage() {
                 right={<StatusBadge connected={api.connected} />}
               />
             ))}
-            <div style={{ paddingTop: '4px' }} />
+            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(148,163,184,0.8)' }}>Base remains the primary live scan network during beta.</div>
           </Card>
 
           {/* ── Danger Zone ─────────────────────────────── */}
