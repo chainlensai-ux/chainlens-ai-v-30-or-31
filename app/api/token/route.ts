@@ -685,14 +685,13 @@ export async function POST(req: Request) {
 
     const body = await req.json();
     const { contract, debugHolder } = body;
-    const debug = new URL(req.url).searchParams.get('debug') === 'true' || body?.debug === true || body?.debug === 'true'
+    const debugMode = new URL(req.url).searchParams.get('debug') === 'true' || body?.debug === true || body?.debug === 'true'
     const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base" })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
         const cp: any = { ...(cached.payload as any) }
-        if (debug) cp._debug = { routeName: '/api/token', cacheHit: true }
-        else delete cp._diagnostics
+        delete cp._diagnostics
         return NextResponse.json(cp)
       }
       return NextResponse.json(cached.payload)
@@ -1486,7 +1485,7 @@ export async function POST(req: Request) {
       console.log('[alchemy-diag] route=/api/token configured=', alchemyConfigured, 'lpProbeAttempted=', Boolean(lpPoolAddress && (lpPoolType === "unknown" || lpPoolType === "v2")), 'rpcAttempted=', rpcCallsAttempted, 'rpcSucceeded=', rpcCallsSucceeded, 'rpcFailed=', rpcCallsFailed, 'totalMs=', _totalMs)
       ;(responsePayload as any)._timing = { totalMs: _totalMs }
     }
-    if (debug) {
+    if (debugMode) {
       ;(responsePayload as any)._debug = {
         routeName: '/api/token',
         cacheHit: false,
