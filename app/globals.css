@@ -87,6 +87,23 @@ html { scroll-behavior: smooth; }
   50% { opacity: 1; }
 }
 
+@keyframes ambient-shift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25%       { transform: translate(1.5%, -2%) scale(1.03); }
+  50%       { transform: translate(-1%, 1.5%) scale(0.98); }
+  75%       { transform: translate(2%, 0.5%) scale(1.02); }
+}
+
+@keyframes floatSlow {
+  0%, 100% { transform: translateY(0) scale(1); opacity: 0.55; }
+  50%       { transform: translateY(-20px) scale(1.04); opacity: 0.75; }
+}
+
+@keyframes driftWave {
+  0%, 100% { transform: translateX(0) scaleY(1); opacity: 0.18; }
+  50%       { transform: translateX(-3%) scaleY(1.1); opacity: 0.28; }
+}
+
 *:focus {
   outline: none !important;
   box-shadow: none !important;
