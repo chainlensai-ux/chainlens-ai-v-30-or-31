@@ -146,7 +146,6 @@ export default function SettingsPage() {
   const [savingState, setSavingState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [saveMessage, setSaveMessage] = useState<string>('')
 
-  const [darkMode, setDarkMode] = useState(true)
   const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')
   const [clarkDetailLevel, setClarkDetailLevel] = useState<'concise' | 'normal' | 'detailed'>('normal')
 
@@ -171,7 +170,7 @@ export default function SettingsPage() {
 
   function buildPayload(): UserSettingsUpdate {
     return {
-      theme: darkMode ? 'dark' : 'light',
+      theme: 'dark',
       accent_color: 'mint',
       default_chain: defaultChain,
       clark_detail_level: clarkDetailLevel === 'concise' ? 'low' : clarkDetailLevel === 'detailed' ? 'high' : 'normal',
@@ -191,8 +190,6 @@ export default function SettingsPage() {
   }
 
   function hydrateFromSettings(settings: Record<string, unknown>) {
-    setDarkMode(settings.theme !== 'light')
-
     const chain = settings.default_chain
     if (chain === 'base' || chain === 'ethereum') {
       setDefaultChain(chain)
@@ -281,11 +278,6 @@ export default function SettingsPage() {
   }, [authChecked, isAuthed, accessToken])
 
   useEffect(() => {
-    if (typeof document === 'undefined') return
-    document.documentElement.dataset.theme = darkMode ? 'dark' : 'light'
-  }, [darkMode])
-
-  useEffect(() => {
     if (!authChecked) return
     const timer = window.setTimeout(() => {
       void handleSaveSettings()
@@ -293,7 +285,7 @@ export default function SettingsPage() {
 
     return () => window.clearTimeout(timer)
     // Only appearance settings auto-save here to avoid noisy writes.
-  }, [authChecked, darkMode, defaultChain, clarkDetailLevel])
+  }, [authChecked, defaultChain, clarkDetailLevel])
 
   async function handleSignOut() {
     setSigningOut(true)
@@ -308,7 +300,7 @@ export default function SettingsPage() {
 
     if (!isAuthed || !accessToken) {
       if (typeof window !== 'undefined') {
-        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, darkMode, defaultChain, clarkDetailLevel }))
+        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, defaultChain, clarkDetailLevel }))
       }
       setSavingState('saved')
       setSaveMessage('Saved locally.')
@@ -330,7 +322,7 @@ export default function SettingsPage() {
       setSaveMessage('Settings saved.')
     } catch {
       if (typeof window !== 'undefined') {
-        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, darkMode, defaultChain, clarkDetailLevel }))
+        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, defaultChain, clarkDetailLevel }))
       }
       setSavingState('saved')
       setSaveMessage('Saved locally.')
@@ -380,10 +372,8 @@ export default function SettingsPage() {
     { name: 'Clark AI',       sub: 'Conversational intelligence', connected: true },
   ]
 
-  const isLight = !darkMode
-
   return (
-    <div style={({ height: '100%', overflowY: 'auto', background: isLight ? '#f6f7fb' : '#06060a', color: isLight ? '#0f172a' : '#e2e8f0', transition: 'background 0.2s ease, color 0.2s ease', ['--cl-card-bg' as string]: isLight ? '#ffffff' : '#080c14', ['--cl-card-border' as string]: isLight ? 'rgba(148,163,184,0.35)' : 'rgba(255,255,255,0.08)', ['--cl-danger-border' as string]: isLight ? 'rgba(239,68,68,0.2)' : 'rgba(239,68,68,0.25)' } as CSSProperties)} >
+    <div style={({ height: '100%', overflowY: 'auto', background: '#06060a', color: '#e2e8f0', transition: 'background 0.2s ease, color 0.2s ease', ['--cl-card-bg' as string]: '#080c14', ['--cl-card-border' as string]: 'rgba(255,255,255,0.08)', ['--cl-danger-border' as string]: 'rgba(239,68,68,0.25)' } as CSSProperties)} >
       <div style={{ maxWidth: '720px', margin: '0 auto', padding: '40px 32px 80px' }}>
 
         {/* Page header */}
@@ -576,11 +566,6 @@ export default function SettingsPage() {
           {/* ── Appearance ──────────────────────────────── */}
           <Card>
             <SectionTitle>Appearance</SectionTitle>
-            <Row
-              label="Dark Mode"
-              sub="Always-on dark theme optimised for on-chain data"
-              right={<Toggle on={darkMode} onChange={() => setDarkMode(v => !v)} />}
-            />
             <Row
               label="Default Chain"
               sub="Used as your account default for scanner context"
