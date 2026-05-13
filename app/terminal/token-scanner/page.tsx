@@ -202,14 +202,15 @@ function pctColor(v: number | null | undefined): string {
 function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUsd: number }> }) {
   if (points.length < 2) return null
   const w = 960
-  const h = 280
-  const padX = 24
-  const padY = 24
+  const h = 360
+  const padX = 30
+  const padY = 32
   const min = Math.min(...points.map((p) => p.priceUsd))
   const max = Math.max(...points.map((p) => p.priceUsd))
   const spread = Math.max(max - min, 1e-12)
   const yFor = (v: number) => h - padY - ((v - min) / spread) * (h - padY * 2)
   const xFor = (i: number) => padX + (i / (points.length - 1)) * (w - padX * 2)
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const d = points.map((p, i) => {
     const x = xFor(i)
     const y = yFor(p.priceUsd)
@@ -219,27 +220,76 @@ function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUs
   const last = points[points.length - 1]
   const lastX = xFor(points.length - 1)
   const lastY = yFor(last.priceUsd)
-  const guideRows = [0.2, 0.4, 0.6, 0.8].map((r) => padY + r * (h - padY * 2))
+  const hoverPoint = hoverIndex != null ? points[hoverIndex] : null
+  const hoverX = hoverIndex != null ? xFor(hoverIndex) : null
+  const hoverY = hoverPoint ? yFor(hoverPoint.priceUsd) : null
+  const startTs = new Date(points[0].timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const endTs = new Date(last.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const priceDeltaPct = points[0].priceUsd > 0
+    ? ((last.priceUsd - points[0].priceUsd) / points[0].priceUsd) * 100
+    : null
+  const guideRows = [0, 0.25, 0.5, 0.75, 1].map((r) => padY + r * (h - padY * 2))
+  const onMove = (clientX: number, rect: DOMRect) => {
+    const relativeX = Math.max(padX, Math.min(clientX - rect.left, w - padX))
+    const ratio = (relativeX - padX) / (w - padX * 2)
+    const idx = Math.max(0, Math.min(points.length - 1, Math.round(ratio * (points.length - 1))))
+    setHoverIndex(idx)
+  }
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: '280px', display: 'block' }}>
-      <defs>
-        <linearGradient id="clLine" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#2dd4bf" />
-          <stop offset="100%" stopColor="#a78bfa" />
-        </linearGradient>
-        <linearGradient id="clFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="rgba(45,212,191,0.32)" />
-          <stop offset="100%" stopColor="rgba(167,139,250,0.02)" />
-        </linearGradient>
-      </defs>
-      {guideRows.map((y) => <line key={y} x1={padX} y1={y} x2={w - padX} y2={y} stroke="rgba(148,163,184,0.18)" strokeWidth="1" />)}
-      <path d={area} fill="url(#clFill)" />
-      <path d={d} fill="none" stroke="url(#clLine)" strokeWidth="3" strokeLinecap="round" />
-      <circle cx={lastX} cy={lastY} r="4.5" fill="#e2e8f0" />
-      <text x={lastX - 6} y={Math.max(16, lastY - 10)} textAnchor="end" fill="#cbd5e1" style={{ fontSize: 11 }}>{fmtPrice(last.priceUsd)}</text>
-      <text x={padX} y={16} fill="#94a3b8" style={{ fontSize: 11 }}>Low {fmtPrice(min)}</text>
-      <text x={w - padX} y={16} textAnchor="end" fill="#94a3b8" style={{ fontSize: 11 }}>High {fmtPrice(max)}</text>
-    </svg>
+    <div
+      style={{ position: 'relative' }}
+      onMouseLeave={() => setHoverIndex(null)}
+      onMouseMove={(e) => onMove(e.clientX, e.currentTarget.getBoundingClientRect())}
+      onTouchMove={(e) => onMove(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
+      onTouchStart={(e) => onMove(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
+    >
+      <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'clamp(260px, 34vw, 360px)', display: 'block' }}>
+        <defs>
+          <linearGradient id="clLine" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#2dd4bf" />
+            <stop offset="100%" stopColor="#a78bfa" />
+          </linearGradient>
+          <linearGradient id="clFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgba(45,212,191,0.42)" />
+            <stop offset="100%" stopColor="rgba(167,139,250,0.01)" />
+          </linearGradient>
+          <filter id="clGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="3.2" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        {guideRows.map((y) => <line key={y} x1={padX} y1={y} x2={w - padX} y2={y} stroke="rgba(148,163,184,0.24)" strokeWidth="1" />)}
+        <path d={area} fill="url(#clFill)" />
+        <path d={d} fill="none" stroke="url(#clLine)" strokeWidth="3.2" strokeLinejoin="round" strokeLinecap="round" filter="url(#clGlow)" />
+        <circle cx={lastX} cy={lastY} r="5.4" fill="#e2e8f0" />
+        <circle cx={lastX} cy={lastY} r="10" fill="rgba(226,232,240,0.16)" />
+        {hoverX != null && hoverY != null && hoverPoint && (
+          <>
+            <line x1={hoverX} y1={padY} x2={hoverX} y2={h - padY} stroke="rgba(148,163,184,0.34)" strokeDasharray="4 4" />
+            <circle cx={hoverX} cy={hoverY} r="4.8" fill="#c4b5fd" />
+          </>
+        )}
+        <text x={padX} y={20} fill="#94a3b8" style={{ fontSize: 12 }}>Low {fmtPrice(min)}</text>
+        <text x={w - padX} y={20} textAnchor="end" fill="#94a3b8" style={{ fontSize: 12 }}>High {fmtPrice(max)}</text>
+      </svg>
+      <div style={{ position: 'absolute', top: '12px', right: '12px', border: '1px solid rgba(167,139,250,0.5)', background: 'rgba(15,23,42,0.82)', borderRadius: '999px', padding: '6px 10px', color: '#e2e8f0', fontSize: '11px', fontWeight: 700 }}>
+        Latest {fmtPrice(last.priceUsd)}
+      </div>
+      {hoverPoint && (
+        <div style={{ position: 'absolute', left: '12px', bottom: '12px', border: '1px solid rgba(45,212,191,0.36)', background: 'rgba(2,6,23,0.88)', borderRadius: '10px', padding: '7px 10px', color: '#cbd5e1', fontSize: '11px' }}>
+          <div>{new Date(hoverPoint.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+          <div style={{ color: '#99f6e4', fontWeight: 700 }}>{fmtPrice(hoverPoint.priceUsd)}</div>
+        </div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
+        <span>{startTs}</span>
+        <span style={{ color: priceDeltaPct == null ? '#94a3b8' : priceDeltaPct >= 0 ? '#2dd4bf' : '#f87171' }}>
+          {priceDeltaPct == null ? '24h Δ N/A' : `24h Δ ${fmtPct(priceDeltaPct)}`}
+        </span>
+        <span>{endTs}</span>
+      </div>
+    </div>
   )
 }
 
