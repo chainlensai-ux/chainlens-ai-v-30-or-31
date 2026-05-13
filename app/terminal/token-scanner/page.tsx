@@ -108,6 +108,13 @@ type ScanResult = {
     sourceStatus: 'ok' | 'unavailable' | 'error'
     reason?: string
   } | null
+  resolvedInput?: {
+    original: string
+    type: 'address' | 'alias' | 'live_search'
+    resolvedAddress: string
+    symbol?: string
+    confidence: 'high' | 'medium' | 'low'
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -610,10 +617,6 @@ export default function TerminalTokenScanner() {
   async function handleScan(override?: string) {
     const q = (override ?? input).trim()
     if (!q || loading) return
-    if (!/^0x[a-fA-F0-9]{40}$/.test(q)) {
-      setError('Please enter a valid contract address (0x…)')
-      return
-    }
     setLoading(true)
     setClarkLoading(true)
     setError(null)
@@ -631,7 +634,8 @@ export default function TerminalTokenScanner() {
       })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setError(json.error ?? 'No Base token match from current checks. Paste a contract address for a deeper scan.')
+        if (json?.status === 'ambiguous') setError('Multiple Base tokens match this. Paste the contract address or choose one.')
+        else setError("Couldn’t resolve that Base token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
@@ -680,6 +684,7 @@ export default function TerminalTokenScanner() {
           lpControl: json.lpControl ?? null,
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
+          resolvedInput: json.resolvedInput ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -750,7 +755,7 @@ export default function TerminalTokenScanner() {
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="Paste Base contract or token symbol"
+              placeholder="Paste Base contract, symbol, or token name"
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
@@ -835,6 +840,11 @@ export default function TerminalTokenScanner() {
                     {shorten(result.contract)}
                     {` · ${String(result.chain ?? 'Base').toUpperCase()}`}
                     <span style={{marginLeft:'8px',padding:'2px 8px',border:'1px solid rgba(59,130,246,.35)',borderRadius:'999px',color:'#93c5fd'}}>BASE</span>
+                  </p>
+                )}
+                {result.resolvedInput && result.resolvedInput.type !== 'address' && (
+                  <p style={{ margin: '6px 0 0', color: '#94a3b8', fontSize: '11px' }}>
+                    Resolved from {result.resolvedInput.original.toUpperCase()}.
                   </p>
                 )}
               </div>

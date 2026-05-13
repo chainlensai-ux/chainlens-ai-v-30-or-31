@@ -35,6 +35,20 @@ const TOKEN_RATE_WINDOW_MS = 60 * 1000
 const TOKEN_RATE_BY_PLAN: Record<string, number> = { free: 12, pro: 40, elite: 120 }
 const tokenResponseCache = new Map<string, { exp: number; payload: unknown }>()
 const tokenRateMap = new Map<string, { count: number; resetAt: number }>()
+const BASE_TOKEN_ALIAS_MAP: Record<string, { address: string; symbol: string }> = {
+  WETH: { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH' },
+  ETH: { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH' },
+  USDC: { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC' },
+  USDBC: { address: '0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA', symbol: 'USDbC' },
+  AERO: { address: '0x940181a94A35A4569E4529A3CDfB74e38FD98631', symbol: 'AERO' },
+  BRETT: { address: '0x532f27101965dd16442E59d40670FaF5eBB142E4', symbol: 'BRETT' },
+  VIRTUAL: { address: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b', symbol: 'VIRTUAL' },
+  DEGEN: { address: '0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed', symbol: 'DEGEN' },
+  TOSHI: { address: '0xAC1bd2486aAf3B5C0B7b8f6e7DfeF5C0a05D0D89', symbol: 'TOSHI' },
+  MORPHO: { address: '0xBAa5BDeA6D371052a6BDeB0eD79B147C43aABF84', symbol: 'MORPHO' },
+  CBBTC: { address: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', symbol: 'cbBTC' },
+  CBETH: { address: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22', symbol: 'cbETH' },
+}
 
 function getClientIp(req: Request): string {
   return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
@@ -719,8 +733,20 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract, debugHolder, debug: debugMode } = body;
-    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base", _cv: 5 })
+    const { contract: contractInput, debugHolder, debug: debugMode } = body;
+    const originalInput = String(contractInput ?? '').trim()
+    const normalizedInput = originalInput.toUpperCase()
+    const isAddressInput = /^0x[a-fA-F0-9]{40}$/.test(originalInput)
+    const aliasHit = !isAddressInput ? BASE_TOKEN_ALIAS_MAP[normalizedInput] : null
+    const resolvedAddress = isAddressInput ? originalInput : (aliasHit?.address ?? null)
+    const resolvedInput = resolvedAddress ? {
+      original: originalInput,
+      type: (isAddressInput ? 'address' : 'alias') as 'address' | 'alias' | 'live_search',
+      resolvedAddress,
+      symbol: aliasHit?.symbol,
+      confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
+    } : null
+    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain: "base", _cv: 6 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
@@ -731,9 +757,14 @@ export async function POST(req: Request) {
       return NextResponse.json(cached.payload)
     }
 
-    if (!contract || !/^0x[a-fA-F0-9]{40}$/.test(contract)) {
-      return NextResponse.json({ error: "Invalid contract address" }, { status: 400 })
+    if (!resolvedAddress) {
+      return NextResponse.json({
+        status: 'not_found',
+        error: "Couldn’t resolve that Base token. Paste the contract address or try a verified symbol.",
+        ...(debugMode === true ? { _diagnostics: { resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map' } } : {}),
+      }, { status: 404 })
     }
+    const contract = resolvedAddress
 
     console.log("Incoming scan request:", contract);
 
@@ -1371,6 +1402,7 @@ export async function POST(req: Request) {
     const responsePayload = {
       chain,
       contract,
+      resolvedInput,
 
       // Core token fields
       name: resolvedName,
@@ -1509,6 +1541,11 @@ export async function POST(req: Request) {
           const mpRelDexes = ((mpRel.dexes as Record<string, unknown>)?.data) as Array<Record<string, unknown>> | undefined
           const gtTokenAttr = gtTokenInfo?.data?.attributes ?? null
           return {
+            resolverInput: originalInput,
+            resolverType: resolvedInput?.type ?? 'none',
+            resolverCandidatesCount: resolvedInput ? 1 : 0,
+            resolverSelectedAddress: resolvedInput?.resolvedAddress ?? null,
+            resolverReason: resolvedInput ? (resolvedInput.type === 'alias' ? 'canonical_alias' : 'direct_address') : 'not_resolved',
             // A) Token identity
             inputContract: contract,
             normalizedContract: String(contract).toLowerCase(),
