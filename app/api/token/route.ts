@@ -727,7 +727,11 @@ export async function POST(req: Request) {
           succeeded: Boolean(out),
           critical,
           failureStage: out ? null : 'rpc_call',
-          safeReasonCode: out ? null : (alchemyConfigured ? 'invalid_contract_response' : 'missing_env'),
+          safeReasonCode: out
+            ? null
+            : (!alchemyConfigured
+              ? 'missing_env'
+              : (checkName === 'ownerCheck' ? 'owner_not_exposed' : 'invalid_contract_response')),
           durationMs: Date.now() - t0,
         })
       }
@@ -1203,7 +1207,7 @@ export async function POST(req: Request) {
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (matchingPools.length > 0 ? "partial" : "unavailable");
     const liquidityReason = mainPool ? null : "no_active_liquidity_pool_found";
-    const ownerCall = await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', true)
+    const ownerCall = await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
