@@ -133,9 +133,15 @@ type VerdictInput = {
 
 function fmtPrice(v: number | null | undefined): string {
   if (v == null) return 'N/A'
-  if (v < 0.000001) return `$${v.toExponential(2)}`
-  if (v < 0.001)    return `$${v.toFixed(8)}`
-  if (v < 1)        return `$${v.toFixed(6)}`
+  if (v <= 0) return 'N/A'
+  if (v < 0.000000001) return `< $0.000000001`
+  if (v < 0.00001) {
+    // Fixed notation to avoid scientific output like $2.35e-10
+    const s = v.toFixed(12).replace(/0+$/, '').replace(/\.$/, '')
+    return `$${s}`
+  }
+  if (v < 0.001) return `$${v.toFixed(8)}`
+  if (v < 1)     return `$${v.toFixed(6)}`
   return `$${v.toFixed(4)}`
 }
 
