@@ -74,6 +74,8 @@ async function resolveServerPlan(req: Request): Promise<PlanResolution> {
   if (!hasBearer) return { plan: 'free', hasBearer: false, userPresent: false, settingsRowFound: false, planSource: 'fallback' }
   const token = auth.slice(7).trim()
   try {
+    const startedAt = Date.now()
+    const debug = new URL(req.url).searchParams.get('debug') === 'true'
     const result = await getCurrentUserPlanFromBearerToken(token)
     return {
       plan: result.plan,
@@ -1286,6 +1288,8 @@ export async function POST(req: Request) {
   const warnings: string[] = []
 
   try {
+    const startedAt = Date.now()
+    const debug = new URL(req.url).searchParams.get('debug') === 'true'
     const planRes = await resolveServerPlan(req)
     const { plan } = planRes
     if (plan === 'free') return NextResponse.json({
@@ -1323,7 +1327,11 @@ export async function POST(req: Request) {
 
     const normalizedAddress = contractAddress.toLowerCase()
     const cached = devCache.get(normalizedAddress)
-    if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
+    if (cached && cached.exp > Date.now()) {
+      const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload
+      if (debug && cp && typeof cp === 'object') cp._debug = { routeName: '/api/dev-wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
+      return NextResponse.json(cp)
+    }
 
     let bytecode: string | null = null
     let rpcStatus: 'ok' | 'partial' | 'unavailable' = 'ok'
@@ -1343,7 +1351,7 @@ export async function POST(req: Request) {
 
     const origin = new URL(req.url).origin
     const reqAuthHeader = req.headers.get('authorization') ?? undefined
-    const debugMode = process.env.NODE_ENV === 'development' || new URL(req.url).searchParams.get('debug') === 'true'
+    const debugMode = debug
     const tokenEvidenceResult = await fetchTokenEvidence(origin, normalizedAddress, reqAuthHeader)
     const tokenEvidence = tokenEvidenceResult.data
 
@@ -1611,6 +1619,20 @@ export async function POST(req: Request) {
         },
       } : {}),
       fetchedAt: new Date().toISOString(),
+    }
+    if (debug) {
+      ;(responsePayload as any)._debug = {
+        routeName: '/api/dev-wallet',
+        cacheHit: false,
+        alchemyConfigured: Boolean(ALCHEMY_BASE_URL),
+        alchemyCallsAttempted: 1,
+        alchemyCallsSucceeded: rpcStatus === 'ok' ? 1 : 0,
+        alchemyCallsFailed: rpcStatus === 'unavailable' ? 1 : 0,
+        rpcMethodsUsed: ['eth_getCode', 'alchemy_getAssetTransfers', 'eth_getTransactionReceipt'],
+        skippedReason: ALCHEMY_BASE_URL ? null : 'alchemy_not_configured',
+        fallbackUsed: tokenEvidenceResult.ok === false || linkedWalletsCheckStatus !== 'ok',
+        requestDurationMs: Date.now() - startedAt,
+      }
     }
     devCache.set(normalizedAddress, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
     return NextResponse.json(responsePayload)

@@ -20,7 +20,9 @@ export async function POST(req: Request) {
   if (plan === 'free') return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
   if (!(await walletAllowed(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   try {
+    const startedAt = Date.now()
     const requestUrl = new URL(req.url)
+    const debug = requestUrl.searchParams.get('debug') === 'true'
     const body = await req.json()
     const address = body?.address
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
@@ -30,13 +32,27 @@ export async function POST(req: Request) {
     const cached = allowDebugFresh ? null : walletCache.get(key)
     if (cached && cached.exp > Date.now()) {
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload
-      if (cp && typeof cp === 'object') {
-        cp._diagnostics = { ...(cp._diagnostics ?? {}), providers: { ...((cp._diagnostics ?? {}).providers ?? {}), cacheHit: true } }
-      }
+      if (cp && typeof cp === 'object' && debug) cp._debug = { routeName: '/api/wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
+      if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
     const snapshot = await fetchWalletSnapshot(address ?? '')
-    ;(snapshot as any)._diagnostics = { ...((snapshot as any)._diagnostics ?? {}), providers: { ...(((snapshot as any)._diagnostics ?? {}).providers ?? {}), cacheHit: false } }
+    const providers: any = (snapshot as any)._diagnostics?.providers ?? {}
+    if (debug) {
+      ;(snapshot as any)._debug = {
+        routeName: '/api/wallet',
+        cacheHit: false,
+        alchemyConfigured: Boolean(providers.alchemy?.configured),
+        alchemyCallsAttempted: providers.alchemy?.behaviorAttempted ? 1 : 0,
+        alchemyCallsSucceeded: Number(providers.alchemy?.transfersReturned ?? 0) > 0 ? 1 : 0,
+        alchemyCallsFailed: providers.alchemy?.behaviorAttempted && Number(providers.alchemy?.transfersReturned ?? 0) === 0 ? 1 : 0,
+        rpcMethodsUsed: providers.alchemy?.behaviorAttempted ? ['alchemy_getAssetTransfers'] : [],
+        skippedReason: providers.alchemy?.behaviorAttempted ? null : 'alchemy_not_configured',
+        fallbackUsed: (snapshot as any).providerUsed !== 'goldrush',
+        requestDurationMs: Date.now() - startedAt,
+      }
+    }
+    delete (snapshot as any)._diagnostics
     if (!allowDebugFresh) walletCache.set(key, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot })
     return NextResponse.json(snapshot)
   } catch (err: unknown) {
