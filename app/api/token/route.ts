@@ -460,24 +460,27 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
 
 function normalizeDexLabel(raw: string | null): string | null {
   if (!raw) return null
-  const s = raw.toLowerCase().replace(/[-\s]+/g, '_')
+  const s = raw.toLowerCase().replace(/[-_\s]+/g, '_')
   const map: Record<string, string> = {
-    uniswap_v4:          'Uniswap V4',
-    uniswap_v3:          'Uniswap V3',
-    uniswap_v2:          'Uniswap V2',
-    uniswap:             'Uniswap',
-    aerodrome_slipstream:'Aerodrome Slipstream',
-    aerodrome:           'Aerodrome',
-    baseswap_v2:         'BaseSwap',
-    baseswap:            'BaseSwap',
-    pancakeswap_v3:      'PancakeSwap V3',
-    pancakeswap_v2:      'PancakeSwap V2',
-    pancakeswap:         'PancakeSwap',
-    sushiswap_v3:        'SushiSwap V3',
-    sushiswap_v2:        'SushiSwap V2',
-    sushiswap:           'SushiSwap',
-    alienbase:           'AlienBase',
-    swapbased:           'SwapBased',
+    uniswap_v4:           'Uniswap V4',
+    uniswapv4:            'Uniswap V4',
+    uniswap_v3:           'Uniswap V3',
+    uniswapv3:            'Uniswap V3',
+    uniswap_v2:           'Uniswap V2',
+    uniswapv2:            'Uniswap V2',
+    uniswap:              'Uniswap',
+    aerodrome_slipstream: 'Aerodrome Slipstream',
+    aerodrome:            'Aerodrome',
+    baseswap_v2:          'BaseSwap',
+    baseswap:             'BaseSwap',
+    pancakeswap_v3:       'PancakeSwap V3',
+    pancakeswap_v2:       'PancakeSwap V2',
+    pancakeswap:          'PancakeSwap',
+    sushiswap_v3:         'SushiSwap V3',
+    sushiswap_v2:         'SushiSwap V2',
+    sushiswap:            'SushiSwap',
+    alienbase:            'AlienBase',
+    swapbased:            'SwapBased',
   }
   return map[s] ?? null
 }
@@ -745,9 +748,36 @@ export async function POST(req: Request) {
     const lpPoolType = lpPool?.poolType ?? "unknown";
     const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
     const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
-    // Primary pool DEX display name — extracted from attributes + relationships, then normalized
-    const { dexId: _primaryDexId } = extractPoolDex(mainPool, gtIncluded)
-    const primaryDexName = normalizeDexLabel(_primaryDexId || dexId || dexName)
+    // Primary pool DEX display name — exhaustive field search across attributes + relationships
+    const _extractedDexId = (() => {
+      if (!mainPool) return null
+      const mp = mainPool as Record<string, unknown>
+      const a = (mp.attributes ?? {}) as Record<string, unknown>
+      const rel = (mp.relationships ?? {}) as Record<string, unknown>
+      // Pool-level and attribute-level fields
+      for (const v of [
+        mp.dex, mp.dex_id, mp.dexId, mp.exchange, mp.protocol,
+        a.dex, a.dex_id, a.dexId, a.exchange, a.protocol,
+      ]) {
+        if (v && typeof v === 'string' && v.trim()) return v.trim()
+      }
+      // relationships.dex.data.id (standard JSON:API format)
+      const dexRelData = ((rel.dex as Record<string, unknown>)?.data) as Record<string, unknown> | undefined
+      if (dexRelData?.id && typeof dexRelData.id === 'string') return String(dexRelData.id).trim()
+      // relationships.dexes.data[0].id
+      const dexesArr = ((rel.dexes as Record<string, unknown>)?.data) as Array<Record<string, unknown>> | undefined
+      if (Array.isArray(dexesArr) && dexesArr[0]?.id) return String(dexesArr[0].id).trim()
+      // Hint from pool name or ID
+      const nameHint = String(a.name ?? a.pool_name ?? mp.id ?? '').toLowerCase()
+      if (/uniswap[\s\-_v]*4/i.test(nameHint)) return 'uniswap-v4'
+      if (/uniswap[\s\-_v]*3/i.test(nameHint)) return 'uniswap-v3'
+      if (/uniswap[\s\-_v]*2/i.test(nameHint)) return 'uniswap-v2'
+      if (/aerodrome/i.test(nameHint)) return 'aerodrome'
+      if (/baseswap/i.test(nameHint)) return 'baseswap'
+      if (/pancakeswap/i.test(nameHint)) return 'pancakeswap'
+      return dexId || dexName || null
+    })()
+    const primaryDexName = normalizeDexLabel(_extractedDexId)
     const pairName = String(mainPoolAttr.name ?? mainPoolAttr.pool_name ?? mainPoolAttr.pair_name ?? "").trim() || null;
     const selectedPrimaryPoolSource = String(mainPoolAttr.address ?? "").trim() ? "attributes.address" : (String(mainPool?.id ?? "").trim() ? "pool.id_normalized" : "none");
     const poolAddressPresent = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress));
@@ -1058,7 +1088,7 @@ export async function POST(req: Request) {
         if (circulatingHuman > 0) {
           estimatedMarketCap = priceUsd * circulatingHuman
           estimatedMarketCapConfidence = (onchain.burnedZero != null || onchain.burnedDead != null) ? 'medium' : 'low'
-          estimatedMarketCapReason = `Estimated from price × onchain totalSupply${burned > BigInt(0) ? ' minus burn balances' : ''}. Circulating supply not provider-verified.`
+          estimatedMarketCapReason = `Estimated from price × on-chain total supply${burned > BigInt(0) ? ' minus burn balances' : ''}. Circulating supply not fully verified.`
         }
       }
     }
@@ -1072,7 +1102,7 @@ export async function POST(req: Request) {
       displayMarketValue = marketCapFromGt
       displayMarketValueLabel = 'Market Cap'
       displayMarketValueConfidence = 'verified'
-      displayMarketValueReason = 'Provider-backed market_cap_usd from GeckoTerminal.'
+      displayMarketValueReason = 'Verified market cap from live token market data.'
     } else if (estimatedMarketCap != null) {
       displayMarketValue = estimatedMarketCap
       displayMarketValueLabel = 'Estimated MC'
@@ -1118,7 +1148,7 @@ export async function POST(req: Request) {
       : "partial_market_fields_from_provider";
     const securityStatus: "ok" | "partial" | "unavailable" | "error" =
       hpResult.ok ? "ok" : gpHasData ? "partial" : "unavailable";
-    const securityReason = hpResult.ok ? null : (gpHasData ? "honeypot_provider_unavailable_using_limited_fallback" : "honeypot_simulation_unavailable_from_provider");
+    const securityReason = hpResult.ok ? null : (gpHasData ? "security_check_limited_signals_used" : "security_simulation_unavailable");
     const holdersStatus: "ok" | "partial" | "unavailable" | "error" =
       holderDistribution && hasPct ? "ok" :
       holderDistribution ? "partial" :
@@ -1143,7 +1173,7 @@ export async function POST(req: Request) {
       bytecodeStatus === 'ok' && (ownerStatus === 'ok' || mintStatus === 'ok' || proxyStatus === 'ok') ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
     const contractChecksReason = contractChecksStatus === 'unavailable'
       ? 'Unavailable from current checks.'
-      : 'Alchemy bytecode/supply/owner checks plus available security flags.'
+      : 'Contract bytecode, supply, owner, and available safety flags reviewed.'
 
     const responsePayload = {
       chain,
@@ -1188,7 +1218,7 @@ export async function POST(req: Request) {
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
       market_cap: marketCapFromGt,
       marketCapUsd: marketCapFromGt,
-      marketCapStatus: marketCapFromGt != null ? 'ok' : 'unavailable_circulating_supply_not_verified',
+      marketCapStatus: marketCapFromGt != null ? 'verified' : (estimatedMarketCap != null ? 'estimated' : 'unverified'),
       marketCapSource,
       circulating_supply: circulatingSupply,
       fdv,
