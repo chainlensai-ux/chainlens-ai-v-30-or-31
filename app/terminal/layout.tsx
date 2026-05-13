@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import FeatureBar from '@/components/FeatureBar'
+import { supabase } from '@/lib/supabaseClient'
 
 const PATH_TO_KEY: Record<string, string> = {
   '/terminal':                  'dashboard',
@@ -20,8 +21,20 @@ const PATH_TO_KEY: Record<string, string> = {
 
 export default function TerminalLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const router = useRouter()
   const active = PATH_TO_KEY[pathname] ?? 'dashboard'
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      const user = data.session?.user
+      if (!user) return
+      const provider = user.app_metadata?.provider
+      if (provider === 'email' && !user.email_confirmed_at) {
+        supabase.auth.signOut().then(() => router.replace('/auth'))
+      }
+    })
+  }, [router])
 
   useEffect(() => {
     setSidebarOpen(false)

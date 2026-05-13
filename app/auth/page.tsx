@@ -63,6 +63,14 @@ export default function AuthPage() {
       if (!isMounted) return;
 
       if (!sessionError && data.session?.user) {
+        const user = data.session.user;
+        const provider = user.app_metadata?.provider;
+        if (provider === 'email' && !user.email_confirmed_at) {
+          // Unverified email session — clear it and stay on auth page
+          await supabase.auth.signOut();
+          setAuthCheckLoading(false);
+          return;
+        }
         router.replace('/terminal');
         return;
       }
@@ -75,6 +83,11 @@ export default function AuthPage() {
     // Handle OAuth callback and email-confirm sign-ins
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_IN' && session) {
+        const provider = session.user.app_metadata?.provider;
+        if (provider === 'email' && !session.user.email_confirmed_at) {
+          Promise.resolve().then(() => supabase.auth.signOut());
+          return;
+        }
         router.replace('/terminal');
       }
     });
@@ -119,16 +132,25 @@ export default function AuthPage() {
     const cleanEmail = email.trim().toLowerCase();
 
     if (mode === 'signin') {
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
-      if (signInError) {
-        const msg = signInError.message.toLowerCase();
-        if (msg.includes('email not confirmed') || msg.includes('not confirmed')) {
-          setError('Please verify your email before signing in. Check your inbox for a confirmation link.');
-        } else {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: cleanEmail, password }),
+        });
+        const data: { ok?: boolean; session?: { access_token: string; refresh_token: string }; error?: string; message?: string } = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          setError(data.message ?? 'Too many login attempts. Please wait before trying again.');
+        } else if (res.status === 403 && data.error === 'unverified') {
+          setError(data.message ?? 'Please verify your email before signing in. Check your inbox for a confirmation link.');
+        } else if (!res.ok) {
           setError('Email or password is incorrect. Try again or reset your password.');
+        } else if (data.session) {
+          // Establish session in browser — onAuthStateChange fires SIGNED_IN → redirect
+          await supabase.auth.setSession(data.session);
         }
-      } else {
-        router.replace('/');
+      } catch {
+        setError('Network error — please check your connection and try again.');
       }
     } else {
       if (!policyPassed) {
