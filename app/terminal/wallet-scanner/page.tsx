@@ -258,11 +258,24 @@ export default function WalletScannerPage() {
           box-shadow: 0 0 24px rgba(45,212,191,0.40) !important;
         }
         @media (max-width: 768px) {
-          .wallet-main { padding: 20px 14px 120px !important; }
+          .wallet-main { padding: 60px 14px 120px !important; }
           .wallet-input-row { flex-direction: column; max-width: 100% !important; }
           .wallet-input-row button { width: 100%; justify-content: center; }
-          .wallet-stats-grid { grid-template-columns: 1fr !important; }
-          .mob-scan-main { max-width: 100% !important; }
+          .ws-stat-grid     { grid-template-columns: repeat(2, 1fr) !important; }
+          .ws-behavior-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          .ws-val-52        { font-size: 32px !important; letter-spacing: -0.02em !important; }
+          .ws-holdings-header { display: none !important; }
+          .ws-holdings-row {
+            display: flex !important; flex-wrap: wrap !important;
+            padding: 12px 14px !important; gap: 6px 0 !important; align-items: center !important;
+          }
+          .ws-col-token { flex: 0 0 100% !important; padding-bottom: 8px !important; border-bottom: 1px solid rgba(255,255,255,0.04) !important; }
+          .ws-col-balance, .ws-col-value, .ws-col-change {
+            flex: 1 1 33% !important; text-align: left !important; font-size: 12px !important;
+          }
+          .ws-col-balance::before { content: "Balance"; display: block; font-size: 8px; color: rgba(255,255,255,0.25); font-family: var(--font-plex-mono, monospace); text-transform: uppercase; letter-spacing: 0.10em; margin-bottom: 2px; }
+          .ws-col-value::before   { content: "Value";   display: block; font-size: 8px; color: rgba(255,255,255,0.25); font-family: var(--font-plex-mono, monospace); text-transform: uppercase; letter-spacing: 0.10em; margin-bottom: 2px; }
+          .ws-col-change::before  { content: "24h";     display: block; font-size: 8px; color: rgba(255,255,255,0.25); font-family: var(--font-plex-mono, monospace); text-transform: uppercase; letter-spacing: 0.10em; margin-bottom: 2px; }
         }
       `}</style>
 
@@ -402,6 +415,23 @@ export default function WalletScannerPage() {
             </div>
           )}
 
+          {/* CORTEX idle placeholder — shown before first scan */}
+          {!result && !loading && (
+            <div style={{ maxWidth: '720px', marginTop: '8px' }}>
+              <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '18px 22px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '8px' }}>
+                  <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'rgba(45,212,191,0.22)' }} />
+                  <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    CORTEX Wallet Read
+                  </span>
+                </div>
+                <p style={{ margin: 0, fontSize: '13px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                  Scan a wallet to generate a CORTEX wallet read.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Results */}
           {result && !loading && (() => {
             const sorted = [...result.holdings].sort((a, b) => b.value - a.value)
@@ -435,7 +465,7 @@ export default function WalletScannerPage() {
                   }}>
                     Portfolio Value
                   </div>
-                  <div style={{
+                  <div className="ws-val-52" style={{
                     fontSize: '52px', fontWeight: 900, color: '#f1f5f9',
                     fontFamily: 'var(--font-inter, Inter, sans-serif)',
                     letterSpacing: '-0.03em', lineHeight: 1,
@@ -454,7 +484,7 @@ export default function WalletScannerPage() {
                 </div>
               </div>
 
-              <div className="wallet-stats-grid" style={{ display: 'grid', gap: '12px' }}>
+              <div className="ws-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                 {[
                   { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending in current checks' : 'No signal in checked window', sub: 'Portfolio read active', color: '#2DD4BF' },
                   { label: 'Token Count', value: sorted.length.toLocaleString(), sub: 'Visible token balances', color: '#a78bfa' },
@@ -519,7 +549,7 @@ export default function WalletScannerPage() {
                     Base Activity
                   </div>
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>Behavior scope: Base only</div>
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '12px', marginBottom: '12px' }}>
+                                    <div className="ws-behavior-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
                     {[
                       { label: 'Recent Txs', value: result.walletBehavior.txCount ?? '—' },
                       { label: 'Active Days', value: result.walletBehavior.activeDays ?? '—' },
@@ -602,8 +632,8 @@ export default function WalletScannerPage() {
                       })}
                     </div>
                     {/* Table header */}
-                    <div className="hidden md:grid" style={{
-                      gridTemplateColumns: '1fr 110px 120px 88px',
+                    <div className="ws-holdings-header" style={{
+                      display: 'grid', gridTemplateColumns: '1fr 110px 120px 88px',
                       padding: '12px 20px',
                       borderBottom: '1px solid rgba(255,255,255,0.06)',
                       fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
@@ -626,7 +656,7 @@ export default function WalletScannerPage() {
                       return (
                         <div
                           key={i}
-                          className="ws-row hidden md:grid"
+                          className="ws-row ws-holdings-row"
                           style={{
                             display: 'grid', gridTemplateColumns: '1fr 110px 120px 88px',
                             padding: '14px 20px',
@@ -636,7 +666,7 @@ export default function WalletScannerPage() {
                           }}
                         >
                           {/* Token col */}
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '11px', minWidth: 0 }}>
+                          <div className="ws-col-token" style={{ display: 'flex', alignItems: 'center', gap: '11px', minWidth: 0 }}>
                             {/* Logo */}
                             {h.icon ? (
                               <img src={h.icon} alt={h.symbol} width={34} height={34}
@@ -702,7 +732,7 @@ export default function WalletScannerPage() {
                           </div>
 
                           {/* Balance */}
-                          <div style={{
+                          <div className="ws-col-balance" style={{
                             textAlign: 'right', fontSize: '13px', color: 'rgba(255,255,255,0.50)',
                             fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                           }}>
@@ -710,7 +740,7 @@ export default function WalletScannerPage() {
                           </div>
 
                           {/* Value */}
-                          <div style={{
+                          <div className="ws-col-value" style={{
                             textAlign: 'right', fontSize: '14px', fontWeight: 600, color: '#e2e8f0',
                             fontFamily: 'var(--font-inter, Inter, sans-serif)',
                           }}>
@@ -718,7 +748,7 @@ export default function WalletScannerPage() {
                           </div>
 
                           {/* 24h */}
-                          <div style={{
+                          <div className="ws-col-change" style={{
                             textAlign: 'right', fontSize: '13px', fontWeight: 600,
                             color: h.change24h === null
                               ? 'rgba(255,255,255,0.18)'
@@ -783,6 +813,78 @@ export default function WalletScannerPage() {
                   </div>
                 </div>
               )}
+
+              {/* ── CORTEX Wallet Read (inline — visible on mobile where sidebar is hidden) ── */}
+              <div style={{
+                background: '#080c14',
+                border: '1px solid rgba(45,212,191,0.18)',
+                borderRadius: '16px', overflow: 'hidden',
+              }}>
+                <div style={{ height: '2px', background: 'linear-gradient(90deg,#2DD4BF,#8b5cf6)', opacity: clarkVerdict ? 1 : 0.25 }} />
+                <div style={{ padding: '18px 22px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '16px' }}>
+                    <div style={{
+                      width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0,
+                      background: (clarkLoading || clarkVerdict) ? '#2DD4BF' : 'rgba(45,212,191,0.22)',
+                      boxShadow: (clarkLoading || clarkVerdict) ? '0 0 8px rgba(45,212,191,0.70)' : 'none',
+                      animation: clarkLoading ? 'clarkPulse 1.2s ease-in-out infinite' : 'none',
+                    }} />
+                    <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                      CORTEX Wallet Read
+                    </span>
+                  </div>
+
+                  {clarkLoading && (
+                    <div>
+                      <ClarkDots />
+                      <p style={{ marginTop: '8px', fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        Analyzing wallet data…
+                      </p>
+                    </div>
+                  )}
+
+                  {!clarkLoading && clarkVerdict && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ padding: '3px 10px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.28)', color: '#2DD4BF' }}>
+                          {clarkVerdict.verdict}
+                        </span>
+                        <span style={{ padding: '3px 10px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.25)', color: '#fbbf24' }}>
+                          {clarkVerdict.confidence} confidence
+                        </span>
+                      </div>
+
+                      <p style={{ margin: 0, fontSize: '13px', color: '#f1f5f9', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                        {clarkVerdict.read}
+                      </p>
+
+                      <div>
+                        <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Key signals</p>
+                        {clarkVerdict.keySignals.slice(0, 3).map((line, i) => (
+                          <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#cbd5e1' }}>— {line}</p>
+                        ))}
+                      </div>
+
+                      <div>
+                        <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Risks</p>
+                        {clarkVerdict.risks.slice(0, 3).map((line, i) => (
+                          <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#fca5a5' }}>— {line}</p>
+                        ))}
+                      </div>
+
+                      <div>
+                        <p style={{ margin: '0 0 4px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Next action</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8' }}>{clarkVerdict.nextAction}</p>
+                      </div>
+
+                      <p style={{ margin: 0, fontSize: '10px', color: 'rgba(255,255,255,0.20)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        Powered by CORTEX — verified on-chain data only
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
             </div>
             )
           })()}
