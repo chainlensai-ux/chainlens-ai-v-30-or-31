@@ -92,6 +92,16 @@ type ScanResult = {
     couldNotVerify?: string[]
     nextAction?: string
   } | null
+  poolActivity?: {
+    transactions24h: number | null
+    buys24h: number | null
+    sells24h: number | null
+    volume24hUsd: number | null
+    buyVolume24hUsd: number | null
+    sellVolume24hUsd: number | null
+    pairCreatedAt: string | null
+    pairAgeLabel: string | null
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -618,6 +628,7 @@ export default function TerminalTokenScanner() {
           debugHolderStatus: json.debugHolderStatus ?? null,
           sections: json.sections ?? null,
           lpControl: json.lpControl ?? null,
+          poolActivity: json.poolActivity ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -652,6 +663,9 @@ export default function TerminalTokenScanner() {
         }
         @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(6,minmax(0,1fr)) !important;} }
         @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
+        .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
+        @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
+        @media (max-width: 767px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
       `}</style>
 
       <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
@@ -832,6 +846,52 @@ export default function TerminalTokenScanner() {
                   />
                 </div>
               )}
+
+              {/* Pool Activity */}
+              {!result.noActivePools && (
+                <div style={{ marginBottom: '28px' }}>
+                  <p style={{
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                    color: '#3a5268', textTransform: 'uppercase',
+                    marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
+                  }}>
+                    Pool Activity
+                  </p>
+                  <div className="activity-grid">
+                    <StatCard
+                      label="Transactions 24H"
+                      value={result.poolActivity?.transactions24h != null
+                        ? result.poolActivity.transactions24h.toLocaleString()
+                        : 'Activity unavailable'}
+                      helper="Primary pool activity"
+                    />
+                    <StatCard
+                      label="Buys / Sells"
+                      value={result.poolActivity?.buys24h != null && result.poolActivity?.sells24h != null
+                        ? `${result.poolActivity.buys24h.toLocaleString()} / ${result.poolActivity.sells24h.toLocaleString()}`
+                        : 'Buy/sell split unavailable'}
+                      helper="24h pool flow"
+                    />
+                    <StatCard
+                      label="Buy / Sell Vol"
+                      value={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null
+                        ? `${fmtLarge(result.poolActivity.buyVolume24hUsd)} / ${fmtLarge(result.poolActivity.sellVolume24hUsd)}`
+                        : 'Split unavailable'}
+                      helper={result.poolActivity?.buyVolume24hUsd == null && result.poolActivity?.volume24hUsd != null
+                        ? `24h volume: ${fmtLarge(result.poolActivity.volume24hUsd)}`
+                        : result.poolActivity?.buyVolume24hUsd != null
+                          ? '24h buy and sell volume'
+                          : 'Volume split not exposed'}
+                    />
+                    <StatCard
+                      label="Pair Age"
+                      value={result.poolActivity?.pairAgeLabel ?? 'Pool age unavailable'}
+                      helper={result.poolActivity?.pairAgeLabel != null ? 'Primary pool created' : 'Creation time not exposed'}
+                    />
+                  </div>
+                </div>
+              )}
+
               {result.sections && (
                 <div style={{ marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
                   {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]
