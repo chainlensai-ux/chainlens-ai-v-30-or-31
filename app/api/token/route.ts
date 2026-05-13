@@ -720,7 +720,7 @@ export async function POST(req: Request) {
 
     const body = await req.json();
     const { contract, debugHolder, debug: debugMode } = body;
-    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base", _cv: 4 })
+    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base", _cv: 5 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
@@ -1145,15 +1145,26 @@ export async function POST(req: Request) {
     // True market cap priority:
     // 1) GeckoTerminal token endpoint attributes.market_cap_usd
     // 2) explicit market cap fields from token metadata responses (never FDV fields)
-    const tokenEndpointMarketCap = toNum(gtToken?.market_cap_usd)
-    const metadataMarketCap = pickNum(gtToken?.market_cap, gtToken?.marketCap, gtToken?.market_cap_in_usd, goldItem?.market_cap, metaItem?.market_cap)
+    const tokenEndpointMarketCap = pickNum(
+      gtToken?.market_cap_usd,
+      gtToken?.market_cap,
+      gtTokenInfo?.data?.attributes?.market_cap_usd,
+      gtTokenInfo?.data?.attributes?.market_cap,
+      gtToken?.marketCap,
+      gtToken?.market_cap_in_usd,
+      goldItem?.market_cap,
+      metaItem?.market_cap
+    )
+    const selectedPoolMarketCapUsd = pickNum(poolAttr.market_cap_usd, poolAttr.market_cap)
     const marketCapFromGt = (tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0)
       ? tokenEndpointMarketCap
-      : (metadataMarketCap != null && metadataMarketCap > 0 ? metadataMarketCap : null)
+      : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0 ? selectedPoolMarketCapUsd : null)
     const poolEndpointMarketCapPresent = toNum(poolAttr.market_cap_usd) != null;
     const circulatingSupply = pickNum(gtToken?.circulating_supply, goldItem?.circulating_supply, gmgnItem?.circulating_supply)
     const tokenPrice = pickNum(poolAttr.base_token_price_usd, gtToken?.price_usd, gtToken?.price)
-    const marketCapSource = marketCapFromGt != null ? 'geckoterminal' : 'unavailable'
+    const marketCapSource = marketCapFromGt != null
+      ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'geckoterminal' : 'coingecko_terminal')
+      : 'unavailable'
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'unavailable'
     const priceUsd = tokenPrice
@@ -1187,11 +1198,6 @@ export async function POST(req: Request) {
       displayMarketValueLabel = 'Market Cap'
       displayMarketValueConfidence = 'verified'
       displayMarketValueReason = 'Verified market cap from live token market data.'
-    } else if (estimatedMarketCap != null) {
-      displayMarketValue = estimatedMarketCap
-      displayMarketValueLabel = 'Estimated MC'
-      displayMarketValueConfidence = estimatedMarketCapConfidence
-      displayMarketValueReason = estimatedMarketCapReason
     } else if (fdv != null) {
       displayMarketValue = fdv
       displayMarketValueLabel = 'FDV'
@@ -1259,26 +1265,54 @@ export async function POST(req: Request) {
       sourceStatus: 'unavailable',
       reason: 'primary_pool_missing',
     }
-    const chartAttempted = Boolean(mainPoolAttr.address)
-    let chartFailureReason: string | null = chartAttempted ? null : 'primary_pool_missing'
-    if (chartAttempted) {
-      const chartRaw = await fetchGeckoTerminalPoolOhlcv(String(mainPoolAttr.address), chain)
+    const chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
+    const chartPoolCandidates = [mainPool, ...matchingPools.filter((p) => p !== mainPool)]
+      .filter((p): p is NonNullable<typeof mainPool> => Boolean(p?.attributes?.address))
+      .map((p) => ({
+        pool: p,
+        address: String(p.attributes.address),
+        name: typeof p.attributes.name === 'string' ? p.attributes.name : null,
+        liquidityUsd: toNum(p.attributes.reserve_in_usd),
+      }))
+      .sort((a, b) => (b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1))
+    const primaryAddr = String(mainPoolAttr.address ?? '').toLowerCase()
+    chartPoolCandidates.sort((a, b) => {
+      if (a.address.toLowerCase() === primaryAddr) return -1
+      if (b.address.toLowerCase() === primaryAddr) return 1
+      return 0
+    })
+    const uniqueChartPools = chartPoolCandidates.filter((c, i, arr) => arr.findIndex((x) => x.address.toLowerCase() === c.address.toLowerCase()) === i)
+    const maxAttempts = Math.min(uniqueChartPools.length, 3)
+    let chartFailureReason: string | null = maxAttempts > 0 ? null : 'primary_pool_missing'
+    let chartSelectedPoolForChart: { address: string; name: string | null } | null = null
+    for (let i = 0; i < maxAttempts; i += 1) {
+      const candidate = uniqueChartPools[i]
+      chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
+      const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain)
       const list = chartRaw?.data?.attributes?.ohlcv_list
-      if (Array.isArray(list)) {
-        const points = list.map((row: unknown) => {
-          const arr = Array.isArray(row) ? row : null
-          const ts = arr?.[0]
-          const close = arr?.[4]
-          const tsNum = toNum(ts)
-          const px = toNum(close)
-          if (tsNum == null || px == null || px <= 0) return null
-          const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
-          return { timestamp: new Date(ms).toISOString(), priceUsd: px }
-        }).filter((p: { timestamp: string; priceUsd: number } | null): p is { timestamp: string; priceUsd: number } => p != null).sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-        if (points.length >= 2) priceChart = { timeframe: '24h', points, sourceStatus: 'ok' }
-        else { priceChart = { timeframe: '24h', points: [], sourceStatus: 'unavailable', reason: 'insufficient_points' }; chartFailureReason = 'insufficient_points' }
-      } else { priceChart = { timeframe: '24h', points: [], sourceStatus: 'unavailable', reason: 'ohlcv_not_exposed' }; chartFailureReason = 'ohlcv_not_exposed' }
+      if (!Array.isArray(list)) { chartFailureReason = 'ohlcv_not_exposed'; continue }
+      const points = list.map((row: unknown) => {
+        const arr = Array.isArray(row) ? row : null
+        const tsNum = toNum(arr?.[0])
+        const close = toNum(arr?.[4])
+        if (tsNum == null || close == null || close <= 0) return null
+        const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
+        return { timestamp: new Date(ms).toISOString(), priceUsd: close }
+      }).filter((p: { timestamp: string; priceUsd: number } | null): p is { timestamp: string; priceUsd: number } => p != null)
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+      if (points.length >= 2) {
+        priceChart = { timeframe: '24h', points, sourceStatus: 'ok' }
+        chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
+        chartFailureReason = null
+        break
+      }
+      chartFailureReason = 'insufficient_points'
     }
+    if (priceChart.sourceStatus !== 'ok' && maxAttempts > 0) {
+      priceChart = { timeframe: '24h', points: [], sourceStatus: 'unavailable', reason: chartFailureReason ?? 'ohlcv_not_exposed' }
+    }
+    const chartAttempted = chartAttemptedPools.length > 0
+    const chartFallbackUsed = chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr
     const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
     const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
@@ -1377,8 +1411,11 @@ export async function POST(req: Request) {
       liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
       market_cap: marketCapFromGt,
       marketCapUsd: marketCapFromGt,
-      marketCapStatus: marketCapFromGt != null ? 'verified' : (estimatedMarketCap != null ? 'estimated' : 'unverified'),
+      marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
       marketCapSource,
+      marketCapReason: marketCapFromGt != null
+        ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
+        : 'Circulating supply not verified by live market data',
       circulating_supply: circulatingSupply,
       fdv,
       fdvUsd: fdv,
@@ -1387,9 +1424,9 @@ export async function POST(req: Request) {
       displayMarketValueLabel,
       displayMarketValueConfidence,
       displayMarketValueReason,
-      estimatedMarketCap,
-      estimatedMarketCapConfidence,
-      estimatedMarketCapReason,
+      estimatedMarketCap: null,
+      estimatedMarketCapConfidence: null,
+      estimatedMarketCapReason: marketCapFromGt != null ? 'Verified live market data' : 'Circulating supply not verified by live market data',
 
       poolActivity: {
         transactions24h,
@@ -1493,10 +1530,16 @@ export async function POST(req: Request) {
             rawEstimatedMarketCap: estimatedMarketCap,
             rawFdvUsd: fdv,
             circulatingSupply,
-            marketCapStatus: marketCapFromGt != null ? 'verified' : (estimatedMarketCap != null ? 'estimated' : 'unverified'),
-            marketCapReason: displayMarketValueReason,
-            estimatedMcFormula: estimatedMarketCap != null ? { priceUsd, estimatedMarketCap, estimatedMarketCapConfidence, estimatedMarketCapReason } : null,
+            marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
+            marketCapReason: marketCapFromGt != null
+              ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
+              : 'Circulating supply not verified by live market data',
+            marketCapFinalSource: marketCapFromGt != null
+              ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'token_endpoint' : 'selected_pool')
+              : 'none',
+            estimatedMarketCapDebugOnly: estimatedMarketCap,
             gtTokenMarketCapUsd: gtTokenAttr?.market_cap_usd ?? null,
+            selectedPoolMarketCapUsd: selectedPoolMarketCapUsd,
             gtTokenFdvUsd: gtTokenAttr?.fdv_usd ?? null,
             // D) Pool diagnostics
             totalPoolsReturned: matchingPools.length,
@@ -1561,6 +1604,9 @@ export async function POST(req: Request) {
             buySellVolumeReason,
             chartAttempted,
             chartPointCount: priceChart.points.length,
+            chartAttemptedPools,
+            chartSelectedPoolForChart,
+            chartFallbackUsed,
             chartTimeframe: '24h',
             chartSelectedPoolId: mp?.id ?? null,
             chartSelectedPoolAddress: mpAttr.address ?? null,
