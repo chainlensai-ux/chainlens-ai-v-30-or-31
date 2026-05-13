@@ -173,6 +173,8 @@ export default function WalletScannerPage() {
   const [error, setError]               = useState<string | null>(null)
   const [result, setResult]             = useState<WalletResult | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
+  const clarkLoading = loading
+  const clarkVerdict: ClarkVerdictCard | null = result ? FALLBACK_VERDICT : null
 
   async function handleScan() {
     const q = input.trim()
