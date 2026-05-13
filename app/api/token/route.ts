@@ -252,6 +252,27 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
   }
 }
 
+async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey): Promise<any> {
+  try {
+    const networkMap: Record<ChainKey, string> = {
+      eth: 'eth',
+      base: 'base',
+      polygon: 'polygon_pos',
+      bnb: 'bsc',
+    }
+    const network = networkMap[chain] ?? 'base'
+    const res = await fetch(
+      `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/minute?aggregate=15&limit=96&currency=usd&token=base`,
+      {
+        headers: { Accept: 'application/json;version=20230302' },
+        cache: 'no-store',
+        signal: withTimeout(5000),
+      }
+    )
+    return res.ok ? await res.json() : null
+  } catch { return null }
+}
+
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
 
@@ -699,7 +720,7 @@ export async function POST(req: Request) {
 
     const body = await req.json();
     const { contract, debugHolder, debug: debugMode } = body;
-    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base", _cv: 3 })
+    const cacheKey = JSON.stringify({ contract: String(contract ?? "").toLowerCase(), chain: "base", _cv: 4 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
@@ -1195,16 +1216,69 @@ export async function POST(req: Request) {
     const transactions24h: number | null = buys24h != null && sells24h != null ? buys24h + sells24h : (_txnsH24Total ?? null)
     const _volH24 = (mainPoolAttr.volume_usd as Record<string, unknown> | undefined)?.h24
     const _volH24Obj = typeof _volH24 === 'object' && _volH24 !== null ? _volH24 as Record<string, unknown> : null
-    const buyVolume24hUsd: number | null = pickNum(
-      _volH24Obj?.buy, _volH24Obj?.buys,
-      (mainPoolAttr.buy_volume_usd  as Record<string, unknown> | undefined)?.h24,
-      (mainPoolAttr.volume_buy_usd  as Record<string, unknown> | undefined)?.h24,
-    )
-    const sellVolume24hUsd: number | null = pickNum(
-      _volH24Obj?.sell, _volH24Obj?.sells,
-      (mainPoolAttr.sell_volume_usd  as Record<string, unknown> | undefined)?.h24,
-      (mainPoolAttr.volume_sell_usd  as Record<string, unknown> | undefined)?.h24,
-    )
+    const splitCandidates: Array<{ key: string; value: unknown; side: 'buy'|'sell'|'total' }> = [
+      { key: 'attributes.volume_usd.h24.buy', value: _volH24Obj?.buy, side: 'buy' },
+      { key: 'attributes.volume_usd.h24.sell', value: _volH24Obj?.sell, side: 'sell' },
+      { key: 'attributes.volume_usd.h24.buys', value: _volH24Obj?.buys, side: 'buy' },
+      { key: 'attributes.volume_usd.h24.sells', value: _volH24Obj?.sells, side: 'sell' },
+      { key: 'attributes.volume_usd.h24.buy_volume', value: _volH24Obj?.buy_volume, side: 'buy' },
+      { key: 'attributes.volume_usd.h24.sell_volume', value: _volH24Obj?.sell_volume, side: 'sell' },
+      { key: 'attributes.volume_usd.h24.buy_volume_usd', value: _volH24Obj?.buy_volume_usd, side: 'buy' },
+      { key: 'attributes.volume_usd.h24.sell_volume_usd', value: _volH24Obj?.sell_volume_usd, side: 'sell' },
+      { key: 'attributes.buy_volume_usd.h24', value: (mainPoolAttr.buy_volume_usd as Record<string, unknown> | undefined)?.h24, side: 'buy' },
+      { key: 'attributes.sell_volume_usd.h24', value: (mainPoolAttr.sell_volume_usd as Record<string, unknown> | undefined)?.h24, side: 'sell' },
+      { key: 'attributes.volume_buy_usd.h24', value: (mainPoolAttr.volume_buy_usd as Record<string, unknown> | undefined)?.h24, side: 'buy' },
+      { key: 'attributes.volume_sell_usd.h24', value: (mainPoolAttr.volume_sell_usd as Record<string, unknown> | undefined)?.h24, side: 'sell' },
+      { key: 'attributes.buyVolumeUsd.h24', value: (mainPoolAttr.buyVolumeUsd as Record<string, unknown> | undefined)?.h24, side: 'buy' },
+      { key: 'attributes.sellVolumeUsd.h24', value: (mainPoolAttr.sellVolumeUsd as Record<string, unknown> | undefined)?.h24, side: 'sell' },
+      { key: 'attributes.buy_volume_usd_24h', value: mainPoolAttr.buy_volume_usd_24h, side: 'buy' },
+      { key: 'attributes.sell_volume_usd_24h', value: mainPoolAttr.sell_volume_usd_24h, side: 'sell' },
+      { key: 'attributes.volume_usd.h24.total', value: _volH24Obj?.total, side: 'total' },
+      { key: 'attributes.volume_usd.h24', value: typeof _volH24 === 'object' ? null : _volH24, side: 'total' },
+      { key: 'selectedPoolVolume24h', value: volume24hUsd, side: 'total' },
+    ]
+    const pickFrom = (side: 'buy'|'sell'|'total') => {
+      for (const c of splitCandidates) {
+        if (c.side !== side) continue
+        const n = toNum(c.value)
+        if (n != null) return { value: n, key: c.key }
+      }
+      return { value: null as number | null, key: null as string | null }
+    }
+    const buyPick = pickFrom('buy')
+    const sellPick = pickFrom('sell')
+    const totalPick = pickFrom('total')
+    const buyVolume24hUsd: number | null = buyPick.value
+    const sellVolume24hUsd: number | null = sellPick.value
+    const resolvedVolume24hUsd: number | null = totalPick.value ?? volume24hUsd
+    const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
+    const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
+    let priceChart: { timeframe: '24h'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'unavailable'|'error'; reason?: string } = {
+      timeframe: '24h',
+      points: [],
+      sourceStatus: 'unavailable',
+      reason: 'primary_pool_missing',
+    }
+    const chartAttempted = Boolean(mainPoolAttr.address)
+    let chartFailureReason: string | null = chartAttempted ? null : 'primary_pool_missing'
+    if (chartAttempted) {
+      const chartRaw = await fetchGeckoTerminalPoolOhlcv(String(mainPoolAttr.address), chain)
+      const list = chartRaw?.data?.attributes?.ohlcv_list
+      if (Array.isArray(list)) {
+        const points = list.map((row: unknown) => {
+          const arr = Array.isArray(row) ? row : null
+          const ts = arr?.[0]
+          const close = arr?.[4]
+          const tsNum = toNum(ts)
+          const px = toNum(close)
+          if (tsNum == null || px == null || px <= 0) return null
+          const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
+          return { timestamp: new Date(ms).toISOString(), priceUsd: px }
+        }).filter((p: { timestamp: string; priceUsd: number } | null): p is { timestamp: string; priceUsd: number } => p != null).sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+        if (points.length >= 2) priceChart = { timeframe: '24h', points, sourceStatus: 'ok' }
+        else { priceChart = { timeframe: '24h', points: [], sourceStatus: 'unavailable', reason: 'insufficient_points' }; chartFailureReason = 'insufficient_points' }
+      } else { priceChart = { timeframe: '24h', points: [], sourceStatus: 'unavailable', reason: 'ohlcv_not_exposed' }; chartFailureReason = 'ohlcv_not_exposed' }
+    }
     const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
     const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
@@ -1321,12 +1395,13 @@ export async function POST(req: Request) {
         transactions24h,
         buys24h,
         sells24h,
-        volume24hUsd,
+        volume24hUsd: resolvedVolume24hUsd,
         buyVolume24hUsd,
         sellVolume24hUsd,
         pairCreatedAt,
         pairAgeLabel,
       },
+      priceChart,
 
       pairs: matchingPools,
       gtPools: matchingPools,
@@ -1478,6 +1553,20 @@ export async function POST(req: Request) {
             // H) Pool activity diagnostics
             transactionRawShape: mainPoolAttr.transactions ?? null,
             volumeRawShape: mainPoolAttr.volume_usd ?? null,
+            volumeSplitCandidateFields: splitCandidates.map((c) => c.key),
+            buyVolumeFoundFrom: buyPick.key,
+            sellVolumeFoundFrom: sellPick.key,
+            volumeTotalFoundFrom: totalPick.key,
+            buySellVolumeSplitAvailable,
+            buySellVolumeReason,
+            chartAttempted,
+            chartPointCount: priceChart.points.length,
+            chartTimeframe: '24h',
+            chartSelectedPoolId: mp?.id ?? null,
+            chartSelectedPoolAddress: mpAttr.address ?? null,
+            chartFailureReason,
+            chartFirstTimestamp: priceChart.points[0]?.timestamp ?? null,
+            chartLastTimestamp: priceChart.points[priceChart.points.length - 1]?.timestamp ?? null,
             poolActivityExtractionReason: {
               transactions24hSource: _txnsH24Obj != null ? 'transactions.h24 (object)' : _txnsH24Total != null ? 'transactions.h24 (scalar)' : 'unavailable',
               buys24hFound: buys24h != null,

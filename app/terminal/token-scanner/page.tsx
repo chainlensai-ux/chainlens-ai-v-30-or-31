@@ -102,6 +102,12 @@ type ScanResult = {
     pairCreatedAt: string | null
     pairAgeLabel: string | null
   } | null
+  priceChart?: {
+    timeframe: '24h'
+    points: Array<{ timestamp: string; priceUsd: number }>
+    sourceStatus: 'ok' | 'unavailable' | 'error'
+    reason?: string
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -184,6 +190,32 @@ function fmtTokenAmt(raw: string | number | null, decimals: number): string {
 function pctColor(v: number | null | undefined): string {
   if (v == null) return '#94a3b8'
   return v >= 0 ? '#2DD4BF' : '#f87171'
+}
+
+function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUsd: number }> }) {
+  if (points.length < 2) return null
+  const w = 720
+  const h = 220
+  const pad = 14
+  const min = Math.min(...points.map((p) => p.priceUsd))
+  const max = Math.max(...points.map((p) => p.priceUsd))
+  const spread = Math.max(max - min, 1e-12)
+  const d = points.map((p, i) => {
+    const x = pad + (i / (points.length - 1)) * (w - pad * 2)
+    const y = h - pad - ((p.priceUsd - min) / spread) * (h - pad * 2)
+    return `${i === 0 ? 'M' : 'L'}${x},${y}`
+  }).join(' ')
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: '220px', display: 'block' }}>
+      <defs>
+        <linearGradient id="clLine" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#2dd4bf" />
+          <stop offset="100%" stopColor="#a78bfa" />
+        </linearGradient>
+      </defs>
+      <path d={d} fill="none" stroke="url(#clLine)" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  )
 }
 
 function humanizeReasonCode(reason?: string): string {
@@ -629,6 +661,7 @@ export default function TerminalTokenScanner() {
           sections: json.sections ?? null,
           lpControl: json.lpControl ?? null,
           poolActivity: json.poolActivity ?? null,
+          priceChart: json.priceChart ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -849,6 +882,25 @@ export default function TerminalTokenScanner() {
 
               {/* Pool Activity */}
               {!result.noActivePools && (
+                <div style={{ marginBottom: '22px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(15,23,42,0.55)', borderRadius: '12px', padding: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
+                    <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>24h primary pool price action</p>
+                  </div>
+                  {result.priceChart?.sourceStatus === 'ok' && result.priceChart.points.length >= 2 ? (
+                    <>
+                      <MiniPriceChart points={result.priceChart.points} />
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
+                        <span>{new Date(result.priceChart.points[0].timestamp).toLocaleTimeString()}</span>
+                        <span>Latest {fmtPrice(result.priceChart.points[result.priceChart.points.length - 1].priceUsd)}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <StatCard label="Price Chart" value="Chart unavailable" helper="Live price history was not exposed for this pool." />
+                  )}
+                </div>
+              )}
+              {!result.noActivePools && (
                 <div style={{ marginBottom: '28px' }}>
                   <p style={{
                     fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
@@ -876,12 +928,10 @@ export default function TerminalTokenScanner() {
                       label="Buy / Sell Vol"
                       value={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null
                         ? `${fmtLarge(result.poolActivity.buyVolume24hUsd)} / ${fmtLarge(result.poolActivity.sellVolume24hUsd)}`
-                        : 'Split unavailable'}
-                      helper={result.poolActivity?.buyVolume24hUsd == null && result.poolActivity?.volume24hUsd != null
-                        ? `24h volume: ${fmtLarge(result.poolActivity.volume24hUsd)}`
-                        : result.poolActivity?.buyVolume24hUsd != null
-                          ? '24h buy and sell volume'
-                          : 'Volume split not exposed'}
+                        : result.poolActivity?.volume24hUsd != null ? `Total ${fmtLarge(result.poolActivity.volume24hUsd)}` : 'Volume unavailable'}
+                      helper={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null
+                        ? '24h buy/sell volume'
+                        : result.poolActivity?.volume24hUsd != null ? 'Buy/sell volume split not exposed' : '24h volume not exposed'}
                     />
                     <StatCard
                       label="Pair Age"
