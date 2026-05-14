@@ -41,7 +41,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(45,212,191,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/wallet-scanner',
     title: 'Scan Wallets Instantly',
-    body: 'Check a Base wallet’s available holdings, portfolio signals, recent activity where available, and Clark’s wallet read.',
+    body: "Check a Base wallet's available holdings, portfolio signals, recent activity where available, and Clark's wallet read.",
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="16" cy="15" r="1.5"/>
@@ -983,12 +983,12 @@ export default function HomePage() {
           {/* 3 × 2 grid */}
           <div className="mob-grid-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {[
-              { handle: '@_Foster_x',   name: 'Foster',             initials: 'F', grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', date: 'May 7, 2026',  quote: 'This is going to change the game forever and for the next generation coming up.' },
-              { handle: '@Vicrypt_01',  name: 'Vicrypt🔥', initials: 'V', grad: 'linear-gradient(135deg,#f97316,#ec4899)', date: 'May 7, 2026',  quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
-              { handle: '@Veeekthorr', name: 'Victor ✕✕',  initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', date: 'May 7, 2026',  quote: "Crypto’s 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
-              { handle: '@TySeen',      name: 'TYSON∼OF∼WEB3 📊', initials: 'T', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', date: 'Apr 29, 2026', quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
-              { handle: '@Big_Wealthz', name: 'Big Wealth',          initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', date: 'Apr 29, 2026', quote: 'know what whales are doing before Twitter even wakes up.' },
-              { handle: '@StardomJnr',  name: 'Stardom',             initials: 'S', grad: 'linear-gradient(135deg,#f59e0b,#f97316)', date: 'Apr 29, 2026', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
+              { handle: '@_Foster_x',     name: 'Foster',            initials: 'F',  grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', date: 'May 7, 2026',  verified: true,  quote: 'This is going to change the game forever and for the next generation coming up.' },
+              { handle: '@Vicrypt_01',    name: 'Vicrypt🔥',         initials: 'V',  grad: 'linear-gradient(135deg,#f97316,#ec4899)', date: 'May 7, 2026',  verified: true,  quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
+              { handle: '@Veeekthorr',   name: 'Victor xx',          initials: 'V',  grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', date: 'May 7, 2026',  verified: true,  quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
+              { handle: '@_FinegirlDami', name: 'FinegirlDami🤍💜',  initials: 'FD', grad: 'linear-gradient(135deg,#a78bfa,#ec4899)', date: 'May 6, 2026',  verified: true,  quote: "Finally something that doesn't require 10 tabs and a headache to understand wallets" },
+              { handle: '@Baltomisin10',  name: 'Baltom🔥',          initials: 'B',  grad: 'linear-gradient(135deg,#f97316,#fbbf24)', date: 'May 5, 2026',  verified: false, quote: 'this turns raw onchain data into simple, actionable insights you can actually trade with' },
+              { handle: '@StardomJnr',    name: 'Stardom',            initials: 'S',  grad: 'linear-gradient(135deg,#f59e0b,#f97316)', date: 'Apr 29, 2026', verified: true,  quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
             ].map((t, i) => (
               <Reveal key={i} delayMs={i * 90}><div
                 className="mobile-static-card"
@@ -1026,11 +1026,13 @@ export default function HomePage() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
                       <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
-                      {/* Verified blue tick */}
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
-                        <circle cx="12" cy="12" r="12" fill="#1d9bf0"/>
-                        <path d="M9.5 16.5l-3.5-3.5 1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z" fill="#fff"/>
-                      </svg>
+                      {/* Verified blue tick — only where visible in screenshot */}
+                      {t.verified && (
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+                          <circle cx="12" cy="12" r="12" fill="#1d9bf0"/>
+                          <path d="M9.5 16.5l-3.5-3.5 1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z" fill="#fff"/>
+                        </svg>
+                      )}
                     </div>
                     <div style={{ fontSize: '12px', color: '#2DD4BF', fontWeight: 500 }}>{t.handle}</div>
                   </div>
