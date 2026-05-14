@@ -14,24 +14,29 @@ const {
 
 const CLARK_CACHE_TTL_MS = 90 * 1000
 const clarkCache = new Map<string, { exp: number; payload: unknown }>()
-const clarkRate = new Map<string, { count: number; resetAt: number }>()
-const CLARK_RATE_BY_PLAN: Record<string, number> = { free: 5, pro: 50, elite: 200, unauth: 3 }
+const clarkRateDaily = new Map<string, { count: number; resetAt: number }>()
+const clarkRateMinute = new Map<string, { count: number; resetAt: number }>()
+const CLARK_DAILY_BY_PLAN: Record<string, number> = { free: 5, pro: 50, elite: 300, unauth: 3 }
+const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5, unauth: 1 }
 let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite' } = {}
-function clarkPlan(req: NextRequest): 'free' | 'pro' | 'elite' { const p=(req.headers.get('x-user-plan')??'').toLowerCase(); return p==='elite'?'elite':p==='pro'?'pro':'free' }
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
-function clarkActor(req: NextRequest): string { return req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}` }
-function clarkAllowed(req: NextRequest, plan: 'free' | 'pro' | 'elite'): boolean {
-  const hasAuth = Boolean(clarkInternalCtx.authToken)
-  const planKey = hasAuth ? plan : 'unauth'
-  const key = `${planKey}:${clarkActor(req)}`
+function clarkActor(req: NextRequest, authenticated: boolean): string { return authenticated ? (req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}`) : `ip:${clarkIp(req)}` }
+type ClarkRateResult = { allowed: true } | { allowed: false; window: 'minute' | 'daily' }
+function checkClarkRate(actor: string, planKey: string): ClarkRateResult {
   const now = Date.now()
-  const cur = clarkRate.get(key)
-  const lim = CLARK_RATE_BY_PLAN[planKey]
-  const dayMs = 24 * 60 * 60 * 1000
-  if (!cur || cur.resetAt <= now) { clarkRate.set(key, { count: 1, resetAt: now + dayMs }); return true }
-  if (cur.count >= lim) return false
-  cur.count += 1
-  return true
+  const minuteKey = `clark:${actor}:${planKey}:minute`
+  const dailyKey = `clark:${actor}:${planKey}:daily`
+  const minuteLim = CLARK_MINUTE_BY_PLAN[planKey] ?? 1
+  const dailyLim = CLARK_DAILY_BY_PLAN[planKey] ?? 3
+  const curMinute = clarkRateMinute.get(minuteKey)
+  const minuteActive = Boolean(curMinute && curMinute.resetAt > now)
+  if (minuteActive && curMinute!.count >= minuteLim) return { allowed: false, window: 'minute' }
+  const curDaily = clarkRateDaily.get(dailyKey)
+  const dailyActive = Boolean(curDaily && curDaily.resetAt > now)
+  if (dailyActive && curDaily!.count >= dailyLim) return { allowed: false, window: 'daily' }
+  if (!minuteActive) { clarkRateMinute.set(minuteKey, { count: 1, resetAt: now + 60_000 }) } else { curMinute!.count += 1 }
+  if (!dailyActive) { clarkRateDaily.set(dailyKey, { count: 1, resetAt: now + 24 * 60 * 60 * 1000 }) } else { curDaily!.count += 1 }
+  return { allowed: true }
 }
 
 // ---------- Types ----------
@@ -5602,12 +5607,29 @@ export async function POST(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? ''
   const authHeader = auth || undefined
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  const verifiedPlan: 'free' | 'pro' | 'elite' = token ? (await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')) : clarkPlan(req)
-  if (!clarkAllowed(req, verifiedPlan)) return NextResponse.json({ error: "Daily Clark limit reached for your plan." }, { status: 429 })
+  const authenticated = Boolean(token)
+  const rawPlan: 'free' | 'pro' | 'elite' = authenticated
+    ? await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')
+    : 'free'
+  const betaAllElite = process.env.BETA_ALL_ELITE === 'true'
+  const betaEliteActive = betaAllElite && authenticated
+  const effectivePlan: 'free' | 'pro' | 'elite' = betaEliteActive ? 'elite' : rawPlan
+  const actor = clarkActor(req, authenticated)
+  const planKey = authenticated ? effectivePlan : 'unauth'
+  const rateResult = checkClarkRate(actor, planKey)
+  if (!rateResult.allowed) {
+    const errMsg = rateResult.window === 'minute'
+      ? "Clark is cooling down for a moment. Try again shortly."
+      : "Daily Clark limit reached for your plan."
+    const debugInfo = process.env.NODE_ENV !== 'production'
+      ? { effectivePlan, betaAllElite, betaEliteActive, limitWindow: rateResult.window }
+      : undefined
+    return NextResponse.json({ error: errMsg, ...debugInfo }, { status: 429 })
+  }
   try {
-    clarkInternalCtx = { authToken: token || undefined, verifiedPlan }
+    clarkInternalCtx = { authToken: token || undefined, verifiedPlan: effectivePlan }
     const body = (await req.json()) as ClarkRequestBody;
-    const cacheKey = JSON.stringify({ actor: clarkActor(req), verifiedPlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
+    const cacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     if (body.message && !body.prompt) body.prompt = body.message;
@@ -5649,7 +5671,7 @@ export async function POST(req: NextRequest) {
         result = await handleBaseRadar(body, origin);
         break;
       case "clark-ai":
-        result = await handleClarkAI(body, origin, authHeader, verifiedPlan);
+        result = await handleClarkAI(body, origin, authHeader, effectivePlan);
         break;
       default:
         return NextResponse.json(
