@@ -39,6 +39,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
   const [error, setError] = useState<string | null>(null)
   const [betaEliteActive, setBetaEliteActive] = useState(false)
   useEffect(() => {
+    const hardStop = window.setTimeout(() => setLoading(false), 3500)
     async function load(token: string | undefined) {
       if (!token) { setPlan('free'); setBetaEliteActive(false); setError(null); setLoading(false); return }
       try {
@@ -57,7 +58,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
       setLoading(true)
       void load(session?.access_token)
     })
-    return () => l.subscription.unsubscribe()
+    return () => { l.subscription.unsubscribe(); window.clearTimeout(hardStop) }
   }, [])
   return { plan, loading, error, betaEliteActive }
 }
@@ -93,19 +94,35 @@ export function LockedPanel({ feature }: { feature: string }) {
           margin: '0 0 10px',
           fontFamily: 'var(--font-inter, Inter, sans-serif)',
         }}>
-          Pro Feature
+          Sign in for Beta access
         </h2>
         <p style={{
           fontSize: '14px', color: '#94a3b8', lineHeight: 1.6,
           margin: '0 0 28px',
           fontFamily: 'var(--font-inter, Inter, sans-serif)',
         }}>
-          {name} requires a Pro or Elite plan.
+          {name} is available in Pro and Elite. This tool runs live CORTEX checks. Sign in to access Beta Elite during the testing campaign.
         </p>
-        <a
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <a
+          href="/sign-in"
+          style={{
+            display: 'inline-block', padding: '11px 20px',
+            borderRadius: '10px',
+            background: 'linear-gradient(98deg, #0ea5e9, #6366f1)',
+            color: '#fff', fontWeight: 700, fontSize: '13px',
+            textDecoration: 'none',
+            fontFamily: 'var(--font-inter, Inter, sans-serif)',
+            boxShadow: '0 8px 24px rgba(59,130,246,0.35)',
+            letterSpacing: '0.02em',
+          }}
+        >
+          Sign In
+        </a>
+          <a
           href="/pricing"
           style={{
-            display: 'inline-block', padding: '11px 28px',
+            display: 'inline-block', padding: '11px 20px',
             borderRadius: '10px',
             background: 'linear-gradient(98deg, #7c3aed, #a855f7, #ec4899)',
             color: '#fff', fontWeight: 700, fontSize: '13px',
@@ -115,8 +132,9 @@ export function LockedPanel({ feature }: { feature: string }) {
             letterSpacing: '0.02em',
           }}
         >
-          View Plans →
+          Get Access
         </a>
+        </div>
       </div>
     </div>
   )

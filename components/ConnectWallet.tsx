@@ -84,7 +84,7 @@ function WCBridge({ openRef }: { openRef: React.MutableRefObject<(() => void) | 
 
 export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void | Promise<void> }) {
   const pathname = usePathname()
-  const { address, isConnected } = useAccount()
+  const { address, isConnected, isReconnecting } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
   const filteredConnectors = visibleConnectors(connectors)
@@ -308,6 +308,14 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
           </div>
         )}
       </div>
+    )
+  }
+
+  if (isReconnecting) {
+    return (
+      <button className={className} style={{ ...baseStyle, opacity: 0.85, cursor: 'wait' }} disabled>
+        Reconnecting wallet…
+      </button>
     )
   }
 

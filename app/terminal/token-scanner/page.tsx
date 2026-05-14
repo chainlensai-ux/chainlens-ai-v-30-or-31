@@ -35,6 +35,14 @@ type ScanResult = {
   fdvUsd?: number | null
   marketCapSource?: 'geckoterminal' | 'coingecko_terminal' | 'computed' | 'unavailable'
   marketCapStatus?: string | null
+  valuationContext?: {
+    primaryValuationLabel: 'Market Cap' | 'FDV'
+    primaryValuationUsd: number | null
+    primaryValuationStatus: 'verified_mc' | 'fdv_only' | 'unavailable'
+    marketCapStatus: 'verified' | 'unverified'
+    fdvUsd: number | null
+    reason: string
+  } | null
   fdvSource?: 'geckoterminal' | 'coingecko_terminal' | 'unavailable'
   circulatingSupply?: number | null
   displayMarketValue?: number | null
@@ -103,10 +111,11 @@ type ScanResult = {
     pairAgeLabel: string | null
   } | null
   priceChart?: {
-    timeframe: '24h'
+    timeframe: '24h' | '48h' | '7d'
     points: Array<{ timestamp: string; priceUsd: number }>
     sourceStatus: 'ok' | 'unavailable' | 'error'
     reason?: string
+    fallbackUsed?: boolean
   } | null
   resolvedInput?: {
     original: string
@@ -707,6 +716,7 @@ export default function TerminalTokenScanner() {
           marketCap: num(json.marketCapUsd),
           marketCapUsd: num(json.marketCapUsd),
           marketCapStatus: json.marketCapStatus ?? 'unavailable',
+          valuationContext: json.valuationContext ?? null,
           circulatingSupply: num(json.circulating_supply),
           fdv: num(json.fdvUsd ?? json.fdv),
           fdvUsd: num(json.fdvUsd ?? json.fdv),
@@ -757,48 +767,25 @@ export default function TerminalTokenScanner() {
       <style>{`
         @keyframes clarkDot {
           0%, 80%, 100% { opacity: 0.25; transform: scale(0.75); }
-          40%            { opacity: 1;    transform: scale(1);    }
+          40% { opacity: 1; transform: scale(1); }
         }
-        @media (max-width: 768px) {
-          .token-main { padding: 32px 14px 120px !important; }
-          .token-input-row { flex-direction: column; max-width: 100% !important; }
-          .token-input-row button { width: 100%; }
-          .token-shell { display: block !important; }
-          .mob-verdict-panel { width: 100% !important; border-left: none !important; border-top: 1px solid rgba(255,255,255,0.08); }
-          .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
-        }
-        @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(7,minmax(0,1fr)) !important;} }
+        .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background:radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%);} 
+        .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
+        .token-main{max-width:none;}
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.86),rgba(4,10,22,.82));border:1px solid rgba(148,163,184,.2);border-radius:14px;box-shadow:0 0 0 1px rgba(45,212,191,.06) inset,0 18px 45px rgba(2,6,23,.35);} 
-        @media (max-width: 768px) { .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .pools-row{min-width:860px} }
-        @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
+        .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
-        @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
-        @media (max-width: 767px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
-        /* Mobile: stack scan area + Clark vertically, Clark shown below */
-        @media (max-width: 767px) {
-          .token-shell { flex-direction: column !important; height: auto !important; overflow: visible !important; }
-          .mob-scan-main { flex: none !important; overflow-y: visible !important; width: 100% !important; }
-          .token-shell .mob-verdict-panel {
-            display: flex !important;
-            width: 100% !important;
-            min-width: 0 !important;
-            max-width: 100% !important;
-            min-height: 0 !important;
-            border-left: none !important;
-            border-top: 1px solid rgba(255,255,255,0.08) !important;
-            position: static !important;
-            overflow-y: visible !important;
-          }
-          .pools-scroll { overflow-x: auto !important; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
-          .pools-inner { min-width: 560px; }
-          .holder-grid { grid-template-columns: 1fr !important; }
-        }
+        @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
+        @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(320px,24vw,360px);} .token-main{max-width:1120px;margin:0 auto;} .mob-verdict-panel{padding:24px 16px;font-size:12px;} .activity-grid{gap:8px;}}
+        @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
+        @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
+        @media (max-width:768px){.token-main{padding:32px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:10px 12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;}}
       `}</style>
 
-      <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%)' }}>
+      <div className="token-shell" style={{ color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%)' }}>
 
         {/* ── Left: scrollable scan area ──────────────────────────── */}
-        <div className="mob-scan-main token-main" style={{ flex: '0 0 70%', minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px 34px 120px', maxWidth: '1240px' }}>
+        <div className="mob-scan-main token-main" style={{ minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px clamp(16px, 2.2vw, 34px) 120px', width: '100%' }}>
 
           {/* Header */}
           <div style={{ marginBottom: '32px' }}>
@@ -935,7 +922,7 @@ export default function TerminalTokenScanner() {
               ) : (
                 <div className="metric-grid" style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
                   gap: '10px', marginBottom: '28px',
                 }}>
                   <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
@@ -947,15 +934,17 @@ export default function TerminalTokenScanner() {
                     accent={pctColor(result.priceChange24h)}
                   />
                   {(() => {
-                    const mcValue = result.marketCapStatus === 'verified' && result.marketCapUsd != null
-                      ? fmtLarge(result.marketCapUsd)
-                      : 'Supply not verified'
-                    const mcHelper = result.marketCapStatus === 'verified'
-                      ? 'Verified from live market data'
-                      : 'FDV shown separately'
+                    const valuation = result.valuationContext
+                    const showFdvContext = valuation?.primaryValuationStatus === 'fdv_only' && valuation?.primaryValuationUsd != null
+                    const mcValue = valuation?.primaryValuationStatus === 'verified_mc'
+                      ? fmtLarge(valuation.primaryValuationUsd)
+                      : showFdvContext ? `FDV ${fmtLarge(valuation.primaryValuationUsd)}` : 'Supply not confirmed'
+                    const mcHelper = valuation?.primaryValuationStatus === 'verified_mc'
+                      ? 'Verified live market data'
+                      : showFdvContext ? 'Market cap not verified live' : 'Live valuation not verified'
                     return (
                       <StatCard
-                        label='Market Cap'
+                        label={valuation?.primaryValuationStatus === 'fdv_only' ? 'Valuation' : 'Market Cap'}
                         value={mcValue}
                         helper={mcHelper}
                         accent="#a78bfa"
@@ -987,10 +976,13 @@ export default function TerminalTokenScanner() {
                 <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
                     <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>24h primary pool price action</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart?.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
                   </div>
                   {result.priceChart?.sourceStatus === 'ok' && result.priceChart.points.length >= 2 ? (
                     <>
+                      <div style={{ display: 'inline-flex', marginBottom: '8px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
+                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : '7D'}
+                      </div>
                       <MiniPriceChart points={result.priceChart.points} />
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
                         <span>{new Date(result.priceChart.points[0].timestamp).toLocaleTimeString()}</span>
@@ -998,7 +990,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     </>
                   ) : (
-                    <StatCard label="Chart unavailable" value="Chart unavailable" helper="Live price history was not exposed for this pool." />
+                    <StatCard label="Chart not available" value="Chart not available" helper="Live pool price history was not exposed for this token. Pool data and current price are still live." />
                   )}
                 </div>
               )}
@@ -1181,29 +1173,31 @@ export default function TerminalTokenScanner() {
                 const fallback = deriveHolderFallbackEvidence(result)
                 if (holderState.kind !== 'noRowsFallback') {
                   return (
-                    <div className="holder-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
-                      <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(125,211,252,.16)',borderRadius:'12px',padding:'14px'}}>
-                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
-                        {result.holderDistribution?.holderCount != null && <p style={{margin:'0 0 10px',fontSize:'11px',color:'#67e8f9'}}>Holder count: {result.holderDistribution.holderCount.toLocaleString()}</p>}
+                    <div className="holders-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
+                      <div className="glass-card" style={{padding:'18px'}}>
+                        <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',marginBottom:'12px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                        {result.holderDistribution?.holderCount != null && <div style={{margin:'0 0 12px',fontSize:'13px',color:'#67e8f9',border:'1px solid rgba(45,212,191,.3)',background:'rgba(6,78,59,.16)',padding:'8px 10px',borderRadius:'10px',display:'inline-flex',gap:'8px'}}><span style={{color:'#99f6e4'}}>Holder count</span><strong style={{fontFamily:'var(--font-plex-mono)',color:'#e6fffa'}}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
                         {holderState.kind === 'rowsWithoutPercent' && (
                           <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets found, but supply percentages were not available for this scan.</p>
                         )}
-                        <div style={{display:'grid',gap:'6px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'70px 1fr 50px',alignItems:'center',gap:'8px'}}><span style={{fontSize:'11px',color:'#94a3b8'}}>{l}</span><div style={{height:'7px',borderRadius:'999px',background:'rgba(100,116,139,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#22d3ee,#a855f7)'}} /></div><span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+                        <div style={{display:'grid',gap:'10px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'82px 1fr 64px',alignItems:'center',gap:'10px'}}><span style={{fontSize:'12px',color:'#d6e6f3',fontWeight:700}}>{l}</span><div style={{height:'12px',borderRadius:'999px',background:'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))',border:'1px solid rgba(148,163,184,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#2dd4bf,#a855f7)',boxShadow:'0 0 14px rgba(45,212,191,.28)'}} /></div><span style={{fontSize:'13px',fontWeight:800,color:'#eef6ff',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
+                        <p style={{margin:'12px 0 0',fontSize:'11px',color:'#8aa3b8'}}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
                       </div>
-                      <div className="glass-card" style={{padding:'14px',minWidth:0,overflow:'hidden'}}>
-                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'10px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
+                      <div className="glass-card" style={{padding:'18px',minWidth:0,overflow:'hidden'}}>
+                        <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',marginBottom:'4px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
+                        <p style={{margin:'0 0 10px',fontSize:'11px',color:'#8aa3b8'}}>Top 10 holders</p>
                         {/* Header */}
-                        <div style={{display:'grid',gridTemplateColumns:'24px minmax(0,1fr) 64px 52px',gap:'8px',fontSize:'9px',letterSpacing:'0.10em',color:'#475569',marginBottom:'6px',fontFamily:'var(--font-plex-mono)'}}>
+                        <div className="top-holder-head" style={{display:'grid',gridTemplateColumns:'36px minmax(0,1fr) 88px 62px',gap:'10px',fontSize:'10px',letterSpacing:'0.10em',color:'#6a8198',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>
                           <span>#</span><span>WALLET</span><span style={{textAlign:'right'}}>AMOUNT</span><span style={{textAlign:'right'}}>%</span>
                         </div>
                         {/* Rows */}
-                        <div style={{display:'flex',flexDirection:'column',gap:'1px',maxHeight:'216px',overflowY:'auto'}}>
+                        <div style={{display:'flex',flexDirection:'column',gap:'8px',maxHeight:'320px',overflowY:'auto',paddingRight:'3px'}}>
                           {holderState.rows.slice(0,20).map((h) => (
-                            <div key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'24px minmax(0,1fr) 64px 52px',gap:'8px',alignItems:'center',padding:'5px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
-                              <span style={{fontSize:'10px',color:'#475569',fontFamily:'var(--font-plex-mono)'}}>{h.rank}</span>
-                              <span style={{fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{shorten(h.address)}</span>
-                              <span style={{fontSize:'11px',color:'#cbd5e1',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{fmtTokenAmt(h.amount, result.decimals ?? 18)}</span>
-                              <span style={{fontSize:'11px',fontWeight:600,textAlign:'right',fontFamily:'var(--font-plex-mono)',color: h.percent != null && h.percent >= 10 ? '#f87171' : h.percent != null && h.percent >= 5 ? '#fb923c' : h.percent != null && h.percent >= 1 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span>
+                            <div className="top-holder-row" key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'36px minmax(0,1fr) 88px 62px',gap:'10px',alignItems:'center',padding:'10px 10px',border:'1px solid rgba(148,163,184,.18)',borderRadius:'10px',background:'rgba(15,23,42,.45)',transition:'all .16s'}}>
+                              <span style={{fontSize:'11px',color:'#dbeafe',fontFamily:'var(--font-plex-mono)',fontWeight:700,display:'inline-flex',justifyContent:'center',padding:'2px 0',borderRadius:'999px',background:h.rank<=3?'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))':'transparent',border:h.rank<=3?'1px solid rgba(167,139,250,.45)':'none'}}>{h.rank}</span>
+                              <span className="top-holder-mobile-meta" style={{fontSize:'12px',color:'#c5d8ea',fontFamily:'var(--font-plex-mono)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{shorten(h.address)}<span style={{display:'none',fontSize:'12px',fontWeight:800,color: h.percent != null && h.percent >= 10 ? '#fb7185' : h.percent != null && h.percent >= 5 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span></span>
+                              <span className="top-holder-mobile-amt" style={{fontSize:'12px',color:'#e5eef9',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{fmtTokenAmt(h.amount, result.decimals ?? 18)}</span>
+                              <span style={{fontSize:'12px',fontWeight:800,textAlign:'right',fontFamily:'var(--font-plex-mono)',color: h.percent != null && h.percent >= 10 ? '#fb7185' : h.percent != null && h.percent >= 5 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span>
                             </div>
                           ))}
                         </div>
@@ -1215,7 +1209,7 @@ export default function TerminalTokenScanner() {
                   <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px',padding:'16px'}}>
                     <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>Holder Intelligence</p>
                     <p style={{margin:'0 0 8px',fontSize:'12px',color:'#cbd5e1',fontWeight:700}}>State: {holderSafeReason(normalizeHolderProviderStatus(result.holderDistributionStatus), false)}</p>
-                    <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
+                    <div className="intel-grid" style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
                       {[
                         ['Owner status', fallback.ownerStatus],
                         ['Pool count', String(fallback.poolCount)],
@@ -1245,14 +1239,13 @@ export default function TerminalTokenScanner() {
                   }}>
                     LIQUIDITY & POOLS
                   </p><div style={{display:'inline-flex',marginBottom:'10px',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} POOLS</div>
-                  <div className="pools-scroll">
-                  <div className="pools-inner" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div className="pools-scroll" style={{ overflowX: 'auto', paddingBottom: '6px', maxWidth: '100%' }}><div className="pools-inner" style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '940px' }}>
                     {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
                         key={i}
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: '1.2fr repeat(6, auto)',
+                          gridTemplateColumns: 'minmax(220px,1.2fr) repeat(6, minmax(82px, auto))',
                           alignItems: 'center', gap: '20px',
                           padding: '12px 18px',
                           background: 'rgba(255,255,255,0.025)',
@@ -1279,8 +1272,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>APR N/A</span><span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>{fmtPct(pool.priceChange24h)}</span><span style={{whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24'}}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
                       </div>
                     ))}
-                  </div>
-                  </div>
+                  </div></div>
                 </>
               )}
             </div>
@@ -1289,8 +1281,8 @@ export default function TerminalTokenScanner() {
 
         {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
         <aside className="mob-verdict-panel" style={{
-          width: '28%',
-          minWidth: '320px',
+          width: 'clamp(320px, 24vw, 400px)',
+          minWidth: 0,
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           background: 'linear-gradient(180deg, rgba(6,10,20,.96), rgba(4,8,18,.96))',
@@ -1404,7 +1396,7 @@ export default function TerminalTokenScanner() {
                   <div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div>
                   <div style={{fontSize:'24px',fontWeight:800,color:verdictColor}}>{verdict}</div>
                 </div>
-                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Market Read: Price {fmtPrice(result.price)}, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Unverified'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}, MC/FDV {mcFdv}</div>
+                <div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',fontSize:'12px',lineHeight:1.6,color:'#b7c9da',background:'rgba(15,23,42,.5)'}}>Market Read: <strong style={{color:'#e2e8f0'}}>Price {fmtPrice(result.price)}</strong>, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Not verified live'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not verified live'}, {result.marketCapUsd == null && result.fdvUsd != null ? 'Market cap was not verified live; FDV is the safer valuation context.' : `MC/FDV ${mcFdv}`}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Security Read: Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'}, Sell Tax {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}, Transfer Risk {transferTax != null ? `${transferTax.toFixed(1)}%` : 'N/A'}, Simulation {hp?.simulationSuccess ? 'Verified' : 'Unverified'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Holder/Supply Read: {result.holderDistribution?.holderCount != null ? `holders ${result.holderDistribution.holderCount.toLocaleString()}, ` : ''}{top10 != null ? `top10 ${top10.toFixed(1)}%, ` : 'holder concentration unverified, '}{top20 != null ? `top20 ${top20.toFixed(1)}%` : 'top20 unavailable'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Liquidity/Pools Read: pools {poolCount}, primary pool {result.pools?.[0]?.name ?? 'Unverified'}, liquidity depth {fmtLarge(result.pools?.[0]?.liquidity ?? result.liquidity)}, {(liq > 0 && liq < 50000) ? 'liquidity thin.' : liq === 0 ? 'liquidity unverified.' : 'liquidity present.'}</div>
@@ -1415,7 +1407,6 @@ export default function TerminalTokenScanner() {
               </div>
             )
           })()}
-          <div style={{marginTop:'auto',paddingTop:'8px',borderTop:'1px solid rgba(148,163,184,.12)',fontSize:'10px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)'}}>RPC: hidden<br/>We never render RPC URLs or API keys in the interface. Debug via server logs only.</div>
         </aside>
 
       </div>
