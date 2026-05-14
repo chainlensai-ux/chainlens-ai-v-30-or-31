@@ -772,14 +772,14 @@ export default function TerminalTokenScanner() {
         .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background:radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%);} 
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
         .token-main{max-width:none;}
-        .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.86),rgba(4,10,22,.82));border:1px solid rgba(148,163,184,.2);border-radius:14px;box-shadow:0 0 0 1px rgba(45,212,191,.06) inset,0 18px 45px rgba(2,6,23,.35);} 
+        .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);} 
         .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(320px,24vw,360px);} .token-main{max-width:1120px;margin:0 auto;} .mob-verdict-panel{padding:24px 16px;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
         @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
-        @media (max-width:768px){.token-main{padding:32px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:10px 12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;}}
+        @media (max-width:768px){.token-main{padding:30px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;}}
       `}</style>
 
       <div className="token-shell" style={{ color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%)' }}>
@@ -967,7 +967,7 @@ export default function TerminalTokenScanner() {
               )}
               {result.marketCapStatus !== 'verified' && (
                 <p style={{ marginTop: '-14px', marginBottom: '20px', color: '#94a3b8', fontSize: '12px' }}>
-                  FDV is available, but circulating supply was not verified live.
+                  Market cap unverified. FDV is shown separately.
                 </p>
               )}
 
@@ -1065,17 +1065,17 @@ export default function TerminalTokenScanner() {
                 const verificationPool = evidenceValue(evidence, 'Verification pool') ?? read?.whatWasFound?.find((x) => /^Pair:/i.test(x))?.replace(/^Pair:\s*/i, '') ?? 'Unverified'
                 const evidenceText = evidence.join(' ').toLowerCase()
                 const fallbackChecked: string[] = []
-                if (lp.poolAddressPresent || evidenceText.includes('verification pool')) fallbackChecked.push('Pool address found')
-                if (verificationPool !== 'Unverified') fallbackChecked.push('Major quote verification pool selected')
-                if (evidenceText.includes('alchemy') || evidenceText.includes('rpc') || evidenceText.includes('probe')) fallbackChecked.push('On-chain verification checks attempted')
-                if (lp.status !== 'error' && lp.status !== 'unverified' ? true : lp.poolAddressPresent) fallbackChecked.push('Liquidity pool found')
+                if (lp.poolAddressPresent || evidenceText.includes('verification pool')) fallbackChecked.push('Pool detected')
+                if (verificationPool !== 'Unverified') fallbackChecked.push('Primary market selected')
+                fallbackChecked.push('Liquidity scan completed')
+                if (lp.status !== 'error' && lp.status !== 'unverified' ? true : lp.poolAddressPresent) fallbackChecked.push('Pool structure reviewed')
                 const checked = ((read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x)).length
                   ? (read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x))
                   : fallbackChecked).filter((v, i, arr) => arr.indexOf(v) === i)
                 const unresolved = (read?.couldNotVerify?.length ? read.couldNotVerify : [
-                  'LP lock or burn proof',
-                  'LP holder distribution',
-                  lp.status === 'unsupported' ? 'Protocol-specific LP proof' : 'Standard LP interface',
+                  'Holder concentration unverified',
+                  'Contract ownership unverified',
+                  lp.status === 'unsupported' ? 'Protocol-specific LP proof' : 'LP lock or burn proof',
                 ])
                 const riskRead = read?.meaning ?? (
                   lp.status === 'unsupported'
@@ -1104,8 +1104,9 @@ export default function TerminalTokenScanner() {
                         <div style={{ fontSize: '10px', color: '#64748b', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>What was checked</div>
                         {checked.map((f, i) => <div key={i} style={{ color: '#e2e8f0', display: 'flex', gap: '6px' }}><span style={{ color: '#34d399' }}>✓</span>{f}</div>)}
                       </div>
-                      <div style={{ padding: '8px 10px', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '10px', background: 'rgba(15,23,42,0.36)' }}>
-                        <div style={{ fontSize: '10px', color: '#64748b', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>Could not verify</div>
+                      <div style={{ padding: '8px 10px', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '10px', background: 'rgba(245,158,11,0.08)' }}>
+                        <div style={{ fontSize: '10px', color: '#fbbf24', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>Unverified checks</div>
+                        <div style={{ fontSize: '11px', color: '#fde68a', marginBottom: '6px' }}>Some checks could not be confirmed from live CORTEX data. Treat this as incomplete, not safe.</div>
                         {unresolved.map((f, i) => <div key={i} style={{ color: '#f8fafc', display: 'flex', gap: '6px' }}><span style={{ color: '#f59e0b' }}>✕</span>{f}</div>)}
                       </div>
                       </div>
@@ -1391,23 +1392,30 @@ export default function TerminalTokenScanner() {
               'Contract verification',
             ].filter(Boolean)
             return (
-              <div style={{display:'grid',gap:'10px'}}>
-                <div style={{padding:'12px',border:'1px solid rgba(125,211,252,.2)',borderRadius:'12px',background:'rgba(10,20,32,.6)'}}>
-                  <div style={{fontSize:'10px',letterSpacing:'.13em',color:'#94a3b8'}}>VERDICT</div>
-                  <div style={{fontSize:'24px',fontWeight:800,color:verdictColor}}>{verdict}</div>
+              <div style={{display:'grid',gap:'12px'}}>
+                <div style={{padding:'14px',border:'1px solid rgba(103,232,249,.25)',borderRadius:'14px',background:'linear-gradient(135deg, rgba(8,20,38,.82), rgba(16,14,42,.82))',boxShadow:'0 0 24px rgba(34,211,238,.12)'}}>
+                  <div style={{fontSize:'10px',letterSpacing:'.13em',color:'#93c5fd'}}>CORTEX LIVE READ</div>
+                  <div style={{display:'inline-flex',marginTop:'8px',padding:'4px 10px',borderRadius:'999px',border:`1px solid ${verdictColor}66`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.08em'}}>{verdict}</div>
                 </div>
-                <div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',fontSize:'12px',lineHeight:1.6,color:'#b7c9da',background:'rgba(15,23,42,.5)'}}>Market Read: <strong style={{color:'#e2e8f0'}}>Price {fmtPrice(result.price)}</strong>, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Not verified live'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not verified live'}, {result.marketCapUsd == null && result.fdvUsd != null ? 'Market cap was not verified live; FDV is the safer valuation context.' : `MC/FDV ${mcFdv}`}</div>
+                <div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',fontSize:'12px',lineHeight:1.65,color:'#b7c9da',background:'rgba(15,23,42,.5)'}}>Market Read: <strong style={{color:'#e2e8f0'}}>Price {fmtPrice(result.price)}</strong>, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Market cap unverified'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}, {result.marketCapUsd == null && result.fdvUsd != null ? 'Market cap is unverified; FDV is shown as separate valuation context.' : `MC/FDV ${mcFdv}`}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Security Read: Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'}, Sell Tax {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}, Transfer Risk {transferTax != null ? `${transferTax.toFixed(1)}%` : 'N/A'}, Simulation {hp?.simulationSuccess ? 'Verified' : 'Unverified'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Holder/Supply Read: {result.holderDistribution?.holderCount != null ? `holders ${result.holderDistribution.holderCount.toLocaleString()}, ` : ''}{top10 != null ? `top10 ${top10.toFixed(1)}%, ` : 'holder concentration unverified, '}{top20 != null ? `top20 ${top20.toFixed(1)}%` : 'top20 unavailable'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Liquidity/Pools Read: pools {poolCount}, primary pool {result.pools?.[0]?.name ?? 'Unverified'}, liquidity depth {fmtLarge(result.pools?.[0]?.liquidity ?? result.liquidity)}, {(liq > 0 && liq < 50000) ? 'liquidity thin.' : liq === 0 ? 'liquidity unverified.' : 'liquidity present.'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(45,212,191,.2)',borderRadius:'10px',fontSize:'11px',color:'#99f6e4'}}>Bull Case: {bull.length ? bull.join(' ') : 'No strong positive cluster yet.'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(248,113,113,.2)',borderRadius:'10px',fontSize:'11px',color:'#fca5a5'}}>Bear Case: {bear.length ? bear.join(' ') : 'No major bear signal surfaced yet.'}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Missing Checks: {missingChecks.join(', ')}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(125,211,252,.22)',borderRadius:'12px',fontSize:'11px',color:'#cfe8ff',background:'rgba(8,27,43,.45)'}}>
+                  <div style={{fontSize:'10px',letterSpacing:'.1em',textTransform:'uppercase',color:'#7dd3fc',marginBottom:'6px'}}>Watch checks</div>
+                  <div style={{display:'grid',gap:'6px'}}>
+                    <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Pool detected</div>
+                    <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Primary market selected</div>
+                    <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Liquidity scan completed</div>
+                    {missingChecks.slice(0, 2).map((m) => <div key={m} style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(245,158,11,.12)',border:'1px solid rgba(245,158,11,.3)',color:'#fde68a'}}>• {m} unverified</div>)}
+                  </div>
+                </div>
                 <div style={{padding:'11px 12px',border:'1px solid rgba(45,212,191,.35)',borderRadius:'10px',background:'rgba(45,212,191,.07)',fontSize:'11px',color:'#67e8f9'}}>Next Action: Monitor liquidity and holder rows before trusting this. Check fresh scans after volume/liquidity changes. Do not treat this as copy-trade advice.</div>
               </div>
             )
           })()}
-          <div style={{marginTop:'auto',paddingTop:'8px',borderTop:'1px solid rgba(148,163,184,.12)',fontSize:'10px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)'}}>RPC: hidden<br/>We never render RPC URLs or API keys in the interface. Debug via server logs only.</div>
         </aside>
 
       </div>

@@ -69,7 +69,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
 
   return (
-    <WagmiProvider config={wagmiConfig}>
+    <WagmiProvider config={wagmiConfig} reconnectOnMount>
       <QueryClientProvider client={queryClient}>
         {children}
         {androidDebugBadge && (

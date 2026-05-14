@@ -182,8 +182,7 @@ export default function WalletScannerPage() {
   const [error, setError]               = useState<string | null>(null)
   const [result, setResult]             = useState<WalletResult | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
-  const [clarkVerdict] = useState<ClarkVerdict | null>(null)
-  const [clarkLoading] = useState(false)
+  const clarkLoading = loading
 
   async function handleScan() {
     const q = input.trim()
@@ -248,6 +247,38 @@ export default function WalletScannerPage() {
       caveat: data.totalValue <= 0 ? 'Some holdings are unpriced or still being verified.' : '',
     }
   }
+
+  function buildWalletVerdict(data: WalletResult): ClarkVerdict {
+    const sorted = [...data.holdings].sort((a, b) => b.value - a.value)
+    const total = data.totalValue > 0 ? data.totalValue : sorted.reduce((acc, h) => acc + (Number.isFinite(h.value) ? h.value : 0), 0)
+    const largest = sorted[0] ?? null
+    const top3 = sorted.slice(0, 3)
+    const topShare = total > 0 ? (top3.reduce((acc, h) => acc + h.value, 0) / total) * 100 : null
+    const baseTx = data.walletBehavior?.txCount ?? 0
+    const hasActivity = data.walletBehavior?.status === 'ok' && baseTx > 0
+    const verdict = sorted.length === 0 ? 'INCOMPLETE READ' : hasActivity ? 'ACTIVE WALLET' : 'WATCH'
+    return {
+      verdict,
+      confidence: hasActivity ? 'Medium' : 'Low',
+      read: total > 0
+        ? 'CORTEX verified visible holdings and estimated portfolio value from live Base data.'
+        : 'CORTEX found visible holdings, but value is incomplete or unverified in current checks.',
+      keySignals: [
+        `Portfolio read: ${total > 0 ? fmtUSD(total) : 'unverified value'} across ${sorted.length} tracked token${sorted.length === 1 ? '' : 's'}.`,
+        hasActivity ? 'Activity read: Recent Base activity detected in the checked window.' : 'Activity read: Recent Base activity is limited in the checked window.',
+        `Risk / concentration: ${largest ? `${largest.symbol || 'Top asset'} is the largest visible holding${topShare != null ? ` (${topShare.toFixed(1)}% top-3 concentration)` : ''}.` : 'Largest holding remains unverified.'}`,
+      ],
+      risks: [
+        'PnL is not verified from this scan.',
+        'Win rate and wallet intent are not verified.',
+        'Entries and exits timing are not verified.',
+      ],
+      nextAction: 'Monitor entries/exits and run token scans on major holdings. No trade call.',
+    }
+  }
+
+  const clarkVerdict = result ? buildWalletVerdict(result) : null
+  const clarkError = !loading && error ? 'Wallet read could not be completed. Check the address and try again.' : null
 
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!betaEliteActive && !canAccessFeature(plan, 'wallet-scanner')) return <LockedPanel feature="wallet-scanner" />
@@ -849,9 +880,15 @@ export default function WalletScannerPage() {
                     <div>
                       <ClarkDots />
                       <p style={{ marginTop: '8px', fontSize: '12px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                        Analyzing wallet data…
+                        CORTEX is reading wallet activity…
                       </p>
                     </div>
+                  )}
+
+                  {!clarkLoading && clarkError && (
+                    <p style={{ margin: 0, fontSize: '12px', color: '#fca5a5', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                      {clarkError}
+                    </p>
                   )}
 
                   {!clarkLoading && !clarkVerdict && (
@@ -876,14 +913,14 @@ export default function WalletScannerPage() {
                       </p>
 
                       <div>
-                        <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Key signals</p>
+                        <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity Read</p>
                         {clarkVerdict.keySignals.slice(0, 3).map((line, i) => (
                           <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#cbd5e1' }}>— {line}</p>
                         ))}
                       </div>
 
                       <div>
-                        <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Risks</p>
+                        <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Missing Checks</p>
                         {clarkVerdict.risks.slice(0, 3).map((line, i) => (
                           <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#fca5a5' }}>— {line}</p>
                         ))}
@@ -956,12 +993,36 @@ export default function WalletScannerPage() {
 
           {/* Body */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <p style={{
-              fontSize: '13px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.7,
-              fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0,
-            }}>
-              Scan a wallet to generate a CORTEX wallet read.
-            </p>
+            {clarkLoading && (
+              <div>
+                <ClarkDots />
+                <p style={{ marginTop: '8px', fontSize: '12px', color: '#67e8f9', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                  CORTEX is reading wallet activity…
+                </p>
+              </div>
+            )}
+            {!clarkLoading && clarkError && (
+              <p style={{ fontSize: '13px', color: '#fca5a5', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0 }}>
+                {clarkError}
+              </p>
+            )}
+            {!clarkLoading && !clarkError && !clarkVerdict && (
+              <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0 }}>
+                Scan a wallet to generate a CORTEX wallet read.
+              </p>
+            )}
+            {!clarkLoading && clarkVerdict && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ padding: '3px 10px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.12)', border: '1px solid rgba(45,212,191,0.28)', color: '#2DD4BF' }}>{clarkVerdict.verdict}</span>
+                </div>
+                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Portfolio Read</p><p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', lineHeight: 1.6 }}>{clarkVerdict.read}</p></div>
+                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Activity Read</p>{clarkVerdict.keySignals.slice(0, 2).map((line, i) => <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#cbd5e1' }}>— {line}</p>)}</div>
+                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Risk / Concentration</p><p style={{ margin: 0, fontSize: '12px', color: '#fcd34d' }}>— {clarkVerdict.keySignals[2]}</p></div>
+                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Missing Checks</p>{clarkVerdict.risks.slice(0, 3).map((line, i) => <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#fca5a5' }}>— {line}</p>)}</div>
+                <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Next Action</p><p style={{ margin: 0, fontSize: '12px', color: '#94a3b8' }}>{clarkVerdict.nextAction}</p></div>
+              </div>
+            )}
           </div>
 
           {/* Footer */}

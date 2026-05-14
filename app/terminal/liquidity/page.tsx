@@ -50,7 +50,7 @@ export default function LiquiditySafetyPage() {
     }
   }
 
-  if (planLoading) return null
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading access…</div>
   if (!canAccessFeature(plan, 'liquidity-safety')) return <LockedPanel feature="liquidity-safety" />
 
   return (
