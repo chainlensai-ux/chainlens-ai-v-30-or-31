@@ -162,6 +162,9 @@ export default function SettingsPage() {
   const [savingState, setSavingState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [saveMessage, setSaveMessage] = useState<string>('')
   const [avatarUrlError, setAvatarUrlError] = useState<string | null>(null)
+  const [emailVerified, setEmailVerified] = useState<boolean | null>(null)
+  const [authProvider, setAuthProvider] = useState<string | null>(null)
+  const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
 
   const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')
   const [clarkDetailLevel, setClarkDetailLevel] = useState<'concise' | 'normal' | 'detailed'>('normal')
@@ -173,6 +176,8 @@ export default function SettingsPage() {
       setAccessToken(session?.access_token ?? null)
       setIsAuthed(Boolean(session?.user))
       setAuthChecked(true)
+      setEmailVerified(session?.user ? Boolean(session.user.email_confirmed_at) : null)
+      setAuthProvider((session?.user?.app_metadata as Record<string, unknown> | undefined)?.provider as string ?? null)
     })
   }, [])
 
@@ -391,6 +396,15 @@ export default function SettingsPage() {
     }
   }
 
+  async function handlePasswordReset() {
+    if (!userEmail) return
+    setResetState('sending')
+    const { error } = await supabase.auth.resetPasswordForEmail(userEmail, {
+      redirectTo: `${window.location.origin}/auth/callback?type=recovery`,
+    })
+    setResetState(error ? 'error' : 'sent')
+  }
+
   const APIS = [
     { name: 'GeckoTerminal',  sub: 'Token & pool data',         connected: true  },
     { name: 'Base RPC',       sub: 'On-chain reads',            connected: true  },
@@ -571,6 +585,70 @@ export default function SettingsPage() {
                 Sign in to save your profile and settings.
               </div>
             )}
+          </Card>
+
+          {/* ── Account Security ────────────────────────── */}
+          <Card>
+            <SectionTitle>Account Security</SectionTitle>
+            <Row
+              label="Email Verification"
+              sub={emailVerified === false ? 'Check your inbox for a confirmation link.' : 'Identity confirmed via email.'}
+              right={
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '5px',
+                  padding: '3px 10px', borderRadius: '999px',
+                  background: emailVerified ? 'rgba(45,212,191,0.10)' : emailVerified === false ? 'rgba(251,191,36,0.10)' : 'rgba(255,255,255,0.06)',
+                  border: `1px solid ${emailVerified ? 'rgba(45,212,191,0.25)' : emailVerified === false ? 'rgba(251,191,36,0.25)' : 'rgba(255,255,255,0.10)'}`,
+                  fontSize: '10px', fontWeight: 600, letterSpacing: '0.10em',
+                  color: emailVerified ? '#2DD4BF' : emailVerified === false ? '#fbbf24' : 'rgba(255,255,255,0.35)',
+                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                }}>
+                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: emailVerified ? '#2DD4BF' : emailVerified === false ? '#fbbf24' : 'rgba(255,255,255,0.25)', boxShadow: emailVerified ? '0 0 6px #2DD4BF' : 'none' }} />
+                  {emailVerified == null ? 'NOT SIGNED IN' : emailVerified ? 'VERIFIED' : 'UNVERIFIED'}
+                </span>
+              }
+            />
+            <Row
+              label="Sign-in Method"
+              sub="How you authenticate to ChainLens AI"
+              right={
+                <span style={{
+                  fontSize: '12px', color: 'rgba(255,255,255,0.55)',
+                  fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  letterSpacing: '0.06em',
+                }}>
+                  {authProvider === 'google' ? 'Google OAuth' : authProvider === 'email' ? 'Email / Password' : '—'}
+                </span>
+              }
+            />
+            {isAuthed && authProvider !== 'google' && (
+              <Row
+                label="Password Reset"
+                sub="Send a reset link to your registered email address"
+                right={
+                  <button
+                    onClick={handlePasswordReset}
+                    disabled={resetState === 'sending' || resetState === 'sent'}
+                    style={{
+                      padding: '7px 16px', borderRadius: '8px', flexShrink: 0,
+                      background: resetState === 'sent' ? 'rgba(45,212,191,0.10)' : 'rgba(255,255,255,0.06)',
+                      border: `1px solid ${resetState === 'sent' ? 'rgba(45,212,191,0.25)' : resetState === 'error' ? 'rgba(239,68,68,0.30)' : 'rgba(255,255,255,0.12)'}`,
+                      color: resetState === 'sent' ? '#2DD4BF' : resetState === 'error' ? '#fca5a5' : 'rgba(255,255,255,0.60)',
+                      fontSize: '11px', fontWeight: 600,
+                      cursor: (resetState === 'sending' || resetState === 'sent') ? 'default' : 'pointer',
+                      fontFamily: 'var(--font-inter, Inter, sans-serif)',
+                      letterSpacing: '0.06em', textTransform: 'uppercase',
+                      transition: 'background 0.15s',
+                    }}
+                  >
+                    {resetState === 'sending' ? 'Sending…' : resetState === 'sent' ? 'Email Sent' : resetState === 'error' ? 'Failed — Retry' : 'Send Reset Link'}
+                  </button>
+                }
+              />
+            )}
+            <div style={{ paddingTop: '12px', fontSize: '11px', color: 'rgba(255,255,255,0.25)', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: '1.6' }}>
+              Two-factor authentication is on the roadmap for a future update. All sessions are protected with server-side rate limiting and email verification enforcement.
+            </div>
           </Card>
 
           <Card>
