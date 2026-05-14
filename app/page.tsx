@@ -166,6 +166,33 @@ const FEATURES = [
   },
 ]
 
+function AvatarOrInitials({ src, initials, grad, name }: { src: string; initials: string; grad: string; name: string }) {
+  return (
+    <div style={{ width: '44px', height: '44px', borderRadius: '50%', flexShrink: 0, overflow: 'hidden', background: grad, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={`${name} profile avatar`}
+        width={44}
+        height={44}
+        style={{ width: '44px', height: '44px', objectFit: 'cover', borderRadius: '50%', display: 'block' }}
+        onError={e => {
+          const img = e.currentTarget;
+          img.style.display = 'none';
+          const parent = img.parentElement;
+          if (parent) {
+            parent.style.fontSize = '14px';
+            parent.style.fontWeight = '800';
+            parent.style.color = '#fff';
+            parent.style.letterSpacing = '-0.02em';
+            parent.textContent = initials;
+          }
+        }}
+      />
+    </div>
+  );
+}
+
 export default function HomePage() {
 
   return (
@@ -983,12 +1010,12 @@ export default function HomePage() {
           {/* 3 × 2 grid */}
           <div className="mob-grid-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {[
-              { handle: '@_Foster_x',   name: 'Foster',             initials: 'F',  grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', date: 'May 7, 2026',  verified: true,  quote: 'This is going to change the game forever and for the next generation coming up.' },
-              { handle: '@Vicrypt_01',  name: 'Vicrypt🔥', initials: 'V',  grad: 'linear-gradient(135deg,#f97316,#ec4899)', date: 'May 7, 2026',  verified: true,  quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
-              { handle: '@Veeekthorr', name: 'Victor xx',            initials: 'V',  grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', date: 'May 7, 2026',  verified: true,  quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
-              { handle: '@TyeSeen',    name: 'TYSON~OF~WEB3📊', initials: 'T', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', date: 'Apr 29, 2026', verified: true,  quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
-              { handle: '@Big_Wealthz', name: 'Big Wealth',           initials: 'B',  grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', date: 'Apr 29, 2026', verified: true,  quote: 'know what whales are doing before Twitter even wakes up.' },
-              { handle: '@StardomJnr', name: 'Stardom',               initials: 'S',  grad: 'linear-gradient(135deg,#f59e0b,#f97316)', date: 'Apr 29, 2026', verified: true,  quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
+              { handle: '@_Foster_x',   name: 'Foster',          initials: 'F', grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', avatar: '/testimonials/foster.png',     date: 'May 7, 2026',  verified: true,  quote: 'This is going to change the game forever and for the next generation coming up.' },
+              { handle: '@Vicrypt_01',  name: 'Vicrypt🔥',       initials: 'V', grad: 'linear-gradient(135deg,#f97316,#ec4899)', avatar: '/testimonials/vicrypt.png',    date: 'May 7, 2026',  verified: true,  quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
+              { handle: '@Veeekthorr', name: 'Victor xx',         initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', avatar: '/testimonials/victor.png',     date: 'May 7, 2026',  verified: true,  quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
+              { handle: '@TyeSeen',    name: 'TYSON~OF~WEB3📊',  initials: 'T', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', avatar: '/testimonials/tyson.png',      date: 'Apr 29, 2026', verified: true,  quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
+              { handle: '@Big_Wealthz', name: 'Big Wealth',       initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', avatar: '/testimonials/big-wealth.png', date: 'Apr 29, 2026', verified: true,  quote: 'know what whales are doing before Twitter even wakes up.' },
+              { handle: '@StardomJnr', name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#f59e0b,#f97316)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
             ].map((t, i) => (
               <Reveal key={i} delayMs={i * 90}><div
                 className="mobile-static-card"
@@ -1011,17 +1038,8 @@ export default function HomePage() {
               >
                 {/* Header row: avatar + name/handle */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  {/* Avatar */}
-                  <div style={{
-                    width: '44px', height: '44px', borderRadius: '50%',
-                    background: t.grad,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    flexShrink: 0,
-                    fontSize: '14px', fontWeight: 800, color: '#fff',
-                    letterSpacing: '-0.02em',
-                  }}>
-                    {t.initials}
-                  </div>
+                  {/* Avatar — image when file present, gradient initials fallback */}
+                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} />
                   {/* Name + handle */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
