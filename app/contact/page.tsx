@@ -79,7 +79,7 @@ export default function ContactPage() {
           padding-top: 1px;
           flex-shrink: 0;
         }
-        @media (max-width: 640px) {
+        @media (max-width: 860px) {
           .contact-grid { grid-template-columns: 1fr !important; }
           .bug-field { flex-direction: column; gap: 4px; }
           .bug-label { min-width: unset; }
@@ -139,7 +139,7 @@ export default function ContactPage() {
           {/* ── Support cards grid ───────────────────────── */}
           <div className="contact-grid" style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
+            gridTemplateColumns: '1fr 1fr 1fr',
             gap: '16px',
             marginBottom: '16px',
           }}>
@@ -227,6 +227,66 @@ export default function ContactPage() {
                   <path d="M22 2L15 22 11 13 2 9l20-7z" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
                 Join Telegram
+              </a>
+            </div>
+
+            {/* X / Twitter */}
+            <div className="contact-card">
+              <div style={{
+                width: '44px', height: '44px', borderRadius: '12px',
+                background: 'rgba(255,255,255,0.07)',
+                border: '1px solid rgba(255,255,255,0.14)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L2.127 2.25H8.08l4.261 5.632 5.903-5.632Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" fill="rgba(255,255,255,0.75)"/>
+                </svg>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '16px', fontWeight: 700, color: '#f1f5f9', marginBottom: '6px' }}>
+                  Follow on X
+                </div>
+                <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.6 }}>
+                  Updates, announcements, and community posts from the ChainLens team.
+                </div>
+              </div>
+
+              <div style={{
+                fontSize: '12px', color: 'rgba(255,255,255,0.40)',
+                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                letterSpacing: '0.05em',
+              }}>
+                @chainlens__ai
+              </div>
+
+              <a
+                href="https://x.com/chainlens__ai"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="contact-cta"
+                style={{
+                  alignSelf: 'flex-start',
+                  background: 'rgba(255,255,255,0.07)',
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  color: 'rgba(255,255,255,0.80)',
+                  padding: '12px 24px',
+                  borderRadius: '999px',
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  textDecoration: 'none',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'background 0.15s, border-color 0.15s',
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L2.127 2.25H8.08l4.261 5.632 5.903-5.632Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" fill="currentColor"/>
+                </svg>
+                Follow @chainlens__ai
               </a>
             </div>
           </div>
