@@ -1264,7 +1264,14 @@ function isHolderQuestion(prompt: string): boolean {
   return /\b(how many holders|holders?\??|what about holders|holder count|holder distribution)\b/i.test(prompt.trim().toLowerCase());
 }
 function isPumpFeedPrompt(prompt: string): boolean {
-  return /\b(what are pump alerts right now|pump alerts|show pump alerts|open pump alerts|pump alert feed|high momentum alerts|what'?s pumping on base|early movers|what tokens are running|show base pumps|base pumps|what'?s moving up on base|momentum scan)\b/i.test(prompt.toLowerCase());
+  // Only explicit pump-alert feed requests — NOT general "pumping on base" market queries
+  return /\b(what are pump alerts right now|show pump alerts|open pump alerts|pump alert feed|refresh pump alerts|high momentum alerts)\b/i.test(prompt.toLowerCase())
+    || /^pump alerts?\b/i.test(prompt.trim().toLowerCase());
+}
+
+function isBaseMomentumPrompt(prompt: string): boolean {
+  // Broad "what's pumping / running / moving on Base" → live Base market data, not pump-alerts feed
+  return /\b(what'?s pumping on base|what tokens are pumping|what'?s running on base|what'?s moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read)\b/i.test(prompt.toLowerCase());
 }
 
 function isPumpSourceFollowupPrompt(prompt: string): boolean {
@@ -1412,6 +1419,131 @@ async function handlePumpFeedSnapshot(origin: string) {
   ].join("\n");
 }
 
+
+async function handleBasePumpMap(prompt: string, origin: string) {
+  const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
+  const EXCLUDED = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC', 'CBETH', 'STETH', 'WSTETH', 'EURC', 'BUSD', 'FRAX', 'USD+', 'AXLUSDC', 'BSDETH']);
+
+  // Primary: live Base market/pool data from trending feed
+  let tokens: Record<string, unknown>[] = [];
+  try {
+    const res = await fetch(`${origin}/api/trending`, {
+      signal: AbortSignal.timeout(5500),
+      headers: authHeader ? { authorization: authHeader } : {},
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const all = Array.isArray(json?.data) ? (json.data as Record<string, unknown>[]) : [];
+      tokens = all.filter(t => {
+        const sym = String(t.symbol ?? '').toUpperCase();
+        const ch = String(t.chain ?? '');
+        return sym && !EXCLUDED.has(sym) && (ch === 'base' || ch === 'geckoterminal' || !ch);
+      });
+    }
+  } catch { /* fallback to pump-alerts only */ }
+
+  // Enrichment: pump-alerts as secondary source
+  let pumpAlerts: Record<string, unknown>[] = [];
+  try {
+    const res = await fetch(`${origin}/api/pump-alerts`, {
+      signal: AbortSignal.timeout(4000),
+      headers: authHeader ? { authorization: authHeader } : {},
+    });
+    if (res.ok) {
+      const json = await res.json();
+      pumpAlerts = Array.isArray(json?.alerts) ? (json.alerts as Record<string, unknown>[]) : [];
+    }
+  } catch { /* optional — ignore */ }
+
+  // Merge: trending tokens first, then non-duplicate pump-alert items
+  const merged: Record<string, unknown>[] = [...tokens];
+  const seenSymbols = new Set(tokens.map(t => String(t.symbol ?? '').toUpperCase()));
+  for (const pa of pumpAlerts) {
+    const sym = String(pa.symbol ?? '').toUpperCase();
+    if (sym && !seenSymbols.has(sym) && !EXCLUDED.has(sym)) {
+      seenSymbols.add(sym);
+      merged.push({
+        symbol: pa.symbol,
+        name: pa.name,
+        change24h: pa.change24h ?? pa.priceChange24h,
+        volume: pa.volume24hUsd ?? pa.volume_usd,
+        liquidity: pa.liquidityUsd ?? pa.liquidity_usd,
+        fdv: pa.fdvUsd ?? pa.fdv_usd,
+      });
+    }
+  }
+
+  if (!merged.length) {
+    return "BASE PUMP MAP\nBase market feed is delayed right now. Try again or scan a specific token directly.";
+  }
+
+  // Rank: 24h change desc, then volume, then liquidity
+  const ranked = [...merged].sort((a, b) => {
+    const chDiff = Number(b.change24h ?? 0) - Number(a.change24h ?? 0);
+    if (Math.abs(chDiff) > 0.1) return chDiff;
+    const volDiff = Number(b.volume ?? 0) - Number(a.volume ?? 0);
+    if (Math.abs(volDiff) > 1) return volDiff;
+    return Number(b.liquidity ?? 0) - Number(a.liquidity ?? 0);
+  });
+
+  const candidates = ranked.slice(0, 12);
+  const top = candidates.slice(0, 7);
+
+  const liquidCount = top.filter(t => Number(t.liquidity ?? 0) >= 100_000).length;
+  const broadCount = top.filter(t => Number(t.change24h ?? 0) > 5).length;
+
+  const marketRead = liquidCount >= 4
+    ? "Momentum is broad with real liquidity support across multiple leaders."
+    : liquidCount >= 2
+    ? "Momentum is active but mixed — a few liquid names leading, others are thinner pumps."
+    : "Moves are mostly thin-liquidity right now. Treat this as a watchlist, not conviction.";
+
+  const rows = top.map((t, i) => {
+    const sym = String(t.symbol ?? '?').toUpperCase();
+    const name = String(t.name ?? '').trim();
+    const label = name && name.toUpperCase() !== sym ? `${sym} (${name})` : sym;
+    const ch = Number(t.change24h ?? 0);
+    const chStr = `${ch >= 0 ? '+' : ''}${ch.toFixed(1)}% 24h`;
+    const vol = formatUsdShort(Number(t.volume ?? 0) || null);
+    const liq = formatUsdShort(Number(t.liquidity ?? 0) || null);
+    const liqNum = Number(t.liquidity ?? 0) || null;
+    const volNum = Number(t.volume ?? 0) || null;
+    const fdvNum = t.fdv != null ? Number(t.fdv) : null;
+    const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, sym);
+    const reason = buildReasonLine(cls);
+    return `${i + 1}. ${label} — ${chStr} | Vol ${vol} | Liq ${liq} | ${cls}\n   Read: ${reason}`;
+  });
+
+  const thinCount = top.filter(t => Number(t.liquidity ?? 0) < 50_000).length;
+  const qualityLine = thinCount >= 3
+    ? `Quality filter: ${thinCount} of top ${top.length} are thin (<$50K liq) — verify slippage before trusting the move.`
+    : liquidCount >= 3
+    ? "Quality filter: several leaders show tradable liquidity depth — stronger base for follow-through than a pure thin pump."
+    : "Quality filter: mixed depth. Verify LP and holders before conviction on any single mover.";
+
+  const pumpNote = pumpAlerts.length > 0
+    ? `Pump-alert filter also flags additional momentum candidates — ask "show pump alerts" for the dedicated high-momentum filtered feed.`
+    : null;
+
+  const title = broadCount >= 5 ? "BASE MOMENTUM READ" : "BASE PUMP MAP";
+
+  return [
+    title,
+    `Market read: ${marketRead}`,
+    broadCount >= 4
+      ? "Participation is broad — multiple tokens posting strong 24h moves."
+      : "Participation is selective — not all Base tickers are joining the move.",
+    "",
+    "Strongest movers:",
+    ...rows,
+    "",
+    qualityLine,
+    "Watchouts: liquidity, slippage, holder concentration, and dev wallet checks are not yet verified for any of the above.",
+    "",
+    pumpNote,
+    "Next: reply with a rank number or symbol (e.g. \"scan 1\" or \"scan BRETT\") to run a full Token Scanner + Dev Wallet + Liquidity check.",
+  ].filter(Boolean).join("\n");
+}
 
 async function handleBaseRadarSnapshot(origin: string, prompt = "") {
   const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined;
@@ -4689,6 +4821,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (isWhaleFlowPrompt(prompt, body.history)) {
     return await handleStoredWhaleFlow(prompt, body, origin, authHeader);
+  }
+  if (isBaseMomentumPrompt(prompt)) {
+    if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
+    const analysis = await handleBasePumpMap(prompt, origin);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"], analysis };
   }
   if (isPumpFeedPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "pump_alerts", rendererUsed: "pump_alerts", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
