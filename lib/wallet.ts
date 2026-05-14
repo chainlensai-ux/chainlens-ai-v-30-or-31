@@ -19,7 +19,6 @@ export const wagmiConfig = walletConnectEnabled
   ? defaultWagmiConfig({
       projectId,
       chains: [base],
-      storage: createStorage({ storage: cookieStorage }),
       metadata: {
         name: 'ChainLens AI',
         description: 'AI-powered Base analytics',
