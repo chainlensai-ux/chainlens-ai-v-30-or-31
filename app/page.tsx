@@ -1520,7 +1520,7 @@ export default function HomePage() {
               Scan wallets, track whales, detect pumps, and get AI-powered analysis from Clark — all in one terminal.
             </div>
             {/* Social pills */}
-            <div style={{ display: 'flex', gap: '10px', position: 'relative' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', position: 'relative' }}>
               <Link
                 href="https://x.com/chainlens__ai"
                 target="_blank" rel="noopener noreferrer"
@@ -1563,6 +1563,34 @@ export default function HomePage() {
                 </svg>
                 Telegram
               </Link>
+              <a
+                href="mailto:chainlensai@gmail.com"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '7px',
+                  padding: '8px 16px', borderRadius: '999px',
+                  background: 'rgba(12,14,24,0.72)',
+                  border: '1px solid rgba(45,212,191,0.24)',
+                  boxShadow: '0 0 0 1px rgba(255,255,255,0.02) inset',
+                  fontSize: '12px', fontWeight: 600, color: 'rgba(226,232,240,0.68)',
+                  textDecoration: 'none',
+                  transition: 'border-color 150ms, color 150ms, background 150ms, box-shadow 150ms',
+                }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(45,212,191,0.54)'; el.style.color = '#99f6e4'; el.style.background = 'rgba(45,212,191,0.08)'; el.style.boxShadow = '0 0 24px rgba(45,212,191,0.18)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(45,212,191,0.24)'; el.style.color = 'rgba(226,232,240,0.68)'; el.style.background = 'rgba(12,14,24,0.72)'; el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.02) inset' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                </svg>
+                Email
+              </a>
+            </div>
+            {/* Support contact line */}
+            <div style={{ marginTop: '14px', fontSize: '11.5px', color: 'rgba(148,163,184,0.52)', lineHeight: 1.5, position: 'relative' }}>
+              Support &amp; legal:{' '}
+              <a href="mailto:chainlensai@gmail.com" style={{ color: 'rgba(45,212,191,0.72)', textDecoration: 'none', fontWeight: 500 }}
+                onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(45,212,191,0.72)' }}
+              >chainlensai@gmail.com</a>
             </div>
           </div></Reveal>
 
