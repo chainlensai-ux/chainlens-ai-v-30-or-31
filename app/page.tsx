@@ -1317,8 +1317,18 @@ export default function HomePage() {
 
         {/* ── Pricing ──────────────────────────────────────────────────────── */}
         <section style={{ position: 'relative', zIndex: 1, padding: '88px 24px 96px' }}>
-          {/* Top separator */}
-          <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.25), rgba(139,92,246,0.25), transparent)' }} />
+          {/* Glowing horizon separator */}
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,.52) 25%, rgba(168,85,247,.52) 55%, rgba(251,191,36,.28) 80%, transparent 100%)', boxShadow: '0 0 28px rgba(34,211,238,.28), 0 0 48px rgba(168,85,247,.16)' }} />
+          {/* Cyan arc — bottom-left sweep */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '-30%', right: '-30%', bottom: -180, height: 420, borderTop: '2px solid rgba(34,211,238,.55)', borderRadius: '60% 60% 0 0 / 100% 100% 0 0', boxShadow: '0 -18px 80px rgba(34,211,238,.42), 0 -10px 110px rgba(59,130,246,.22)', pointerEvents: 'none' }} />
+          {/* Purple arc — center sweep */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '-22%', right: '-22%', bottom: -200, height: 420, borderTop: '1px solid rgba(168,85,247,.40)', borderRadius: '56% 56% 0 0 / 100% 100% 0 0', boxShadow: '0 -8px 56px rgba(168,85,247,.18)', pointerEvents: 'none' }} />
+          {/* Gold glow — Elite right side */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', right: '-8%', top: '10%', bottom: 0, width: '38%', background: 'radial-gradient(ellipse at 95% 60%, rgba(251,191,36,.11) 0%, transparent 55%)', pointerEvents: 'none' }} />
+          {/* Purple blob — Pro center-left */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '15%', top: '20%', width: '30%', height: '60%', background: 'radial-gradient(ellipse at 50% 50%, rgba(139,92,246,.10) 0%, transparent 65%)', pointerEvents: 'none' }} />
+          {/* Deep bottom fill */}
+          <div style={{ position: 'absolute', inset: 'auto -20% -100px -20%', height: 300, background: 'radial-gradient(ellipse at 50% 0%, rgba(7,12,28,.95) 0%, transparent 80%)', pointerEvents: 'none' }} />
 
           {/* Header */}
           <Reveal><div style={{ textAlign: 'center', marginBottom: '48px' }}>
@@ -1341,7 +1351,7 @@ export default function HomePage() {
               {
                 id: 'free', label: 'FREE', labelColor: '#ec4899', price: '$0',
                 billing: 'forever free · no card required', engine: 'CORTEX LITE', engineColor: 'rgba(236,72,153,0.65)',
-                cta: 'Get Started Free', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null,
+                cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null,
                 bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '20px 16px 18px', mt: '0',
                 sections: [
                   { title: 'Token Scanner', items: ['Price, liquidity, volume, 24h change', 'Basic token info only', 'No AI verdict'] },
@@ -1352,8 +1362,8 @@ export default function HomePage() {
               },
               {
                 id: 'pro', label: 'PRO', labelColor: '#2DD4BF', price: '$30',
-                billing: 'per month · 7-day free trial', engine: 'CORTEX STANDARD', engineColor: 'rgba(45,212,191,0.65)',
-                cta: 'Start Free Trial', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR',
+                billing: 'per month', engine: 'CORTEX STANDARD', engineColor: 'rgba(45,212,191,0.65)',
+                cta: 'Pay with Crypto', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR',
                 bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '20px 16px 18px', mt: '-8px',
                 sections: [
                   { title: 'Everything in Free, plus', items: ['Full Token Scanner', 'Full Liquidity Safety', 'Wallet Scanner', 'Dev Wallet Detector', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Clark AI — 50 prompts / day'] },
@@ -1361,8 +1371,8 @@ export default function HomePage() {
               },
               {
                 id: 'elite', label: 'ELITE', labelColor: '#fbbf24', price: '$60',
-                billing: 'per month · 7-day free trial', engine: 'CORTEX FULL INTELLIGENCE', engineColor: 'rgba(251,191,36,0.75)',
-                cta: 'Unlock Elite', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'FULL INTELLIGENCE',
+                billing: 'per month', engine: 'CORTEX FULL INTELLIGENCE', engineColor: 'rgba(251,191,36,0.75)',
+                cta: 'Pay with Crypto', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'FULL INTELLIGENCE',
                 bg: 'rgba(16,12,4,0.95)', radius: '18px', pad: '24px 22px 20px', mt: '-14px',
                 sections: [
                   { title: 'Everything in Pro, plus', items: ['Clark AI — unlimited prompts', 'Auto Clark verdict on every scan', 'Smart money tracking', 'Advanced whale alerts', 'Priority CORTEX processing', 'Early access to new features'] },
@@ -1452,20 +1462,14 @@ export default function HomePage() {
       </div>
 
       {/* ── Footer ───────────────────────────────────────────────────────────── */}
+      {/* Glowing horizon line above footer */}
+      <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,.52) 25%, rgba(168,85,247,.52) 55%, rgba(251,191,36,.28) 80%, transparent 100%)', boxShadow: '0 0 32px rgba(34,211,238,.30), 0 0 52px rgba(168,85,247,.18)', position: 'relative', zIndex: 2 }} />
       <footer style={{
-        background: 'linear-gradient(180deg, #05060d 0%, #05050b 100%)',
+        background: 'rgba(2,5,13,.96)',
         position: 'relative', zIndex: 1,
         padding: '72px 32px 64px',
-        borderTop: '1px solid rgba(167,139,250,0.16)',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
+        backdropFilter: 'blur(8px)',
       }}>
-        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(180deg, #05060d 0%, #04050c 100%)' }} />
-
-        {/* Premium top separator */}
-        <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
-          background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.26) 28%, rgba(167,139,250,0.5) 50%, rgba(45,212,191,0.26) 72%, transparent 100%)',
-        }} />
 
         <div className="mob-footer-grid" style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr', gap: '42px', alignItems: 'start', position: 'relative' }}>
 
