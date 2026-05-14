@@ -165,6 +165,7 @@ export default function SettingsPage() {
 
   const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')
   const [clarkDetailLevel, setClarkDetailLevel] = useState<'concise' | 'normal' | 'detailed'>('normal')
+  const [whaleTrackerEnabled, setWhaleTrackerEnabled] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -203,6 +204,7 @@ export default function SettingsPage() {
         base_radar_alerts: notifRadar,
       },
       onboarding_progress: {},
+      whaleTrackerEnabled,
     }
   }
 
@@ -222,6 +224,9 @@ export default function SettingsPage() {
     if (settings.avatar_color === 'mint' || settings.avatar_color === 'purple' || settings.avatar_color === 'pink' || settings.avatar_color === 'blue') {
       setAvatarColor(settings.avatar_color)
     }
+
+    const whaleTracker = settings.whaleTrackerEnabled
+    if (typeof whaleTracker === 'boolean') setWhaleTrackerEnabled(whaleTracker)
 
     const filters = settings.saved_filters
     if (filters && typeof filters === 'object' && !Array.isArray(filters)) {
@@ -278,11 +283,14 @@ export default function SettingsPage() {
         })
 
         if (!res.ok) throw new Error('Failed to load settings')
-        const data = await res.json() as { settings?: Record<string, unknown>; error?: string }
+        const data = await res.json() as { settings?: Record<string, unknown>; error?: string; effectivePlan?: string; betaEliteActive?: boolean }
         if (canceled) return
 
         if (data.settings) {
           hydrateFromSettings(data.settings)
+          if (typeof data.settings.whaleTrackerEnabled !== 'boolean' && (data.betaEliteActive || data.effectivePlan === 'elite')) {
+            setWhaleTrackerEnabled(true)
+          }
           setSaveMessage(data.error ? 'Loaded defaults (settings fetch had an issue).' : 'Loaded saved account settings.')
         }
       } catch {
@@ -302,7 +310,7 @@ export default function SettingsPage() {
 
     return () => window.clearTimeout(timer)
     // Only appearance settings auto-save here to avoid noisy writes.
-  }, [authChecked, defaultChain, clarkDetailLevel])
+  }, [authChecked, defaultChain, clarkDetailLevel, whaleTrackerEnabled])
 
   async function handleSignOut() {
     setSigningOut(true)
@@ -322,10 +330,10 @@ export default function SettingsPage() {
 
     if (!isAuthed || !accessToken) {
       if (typeof window !== 'undefined') {
-        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, defaultChain, clarkDetailLevel }))
+        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, defaultChain, clarkDetailLevel, whaleTrackerEnabled }))
       }
       setSavingState('saved')
-      setSaveMessage('Saved locally.')
+      setSaveMessage('Saved locally')
       return
     }
 
@@ -341,13 +349,13 @@ export default function SettingsPage() {
 
       if (!res.ok) throw new Error('Save failed')
       setSavingState('saved')
-      setSaveMessage('Settings saved.')
+      setSaveMessage('Settings saved')
     } catch {
       if (typeof window !== 'undefined') {
-        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, defaultChain, clarkDetailLevel }))
+        window.localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify({ ...payload, defaultChain, clarkDetailLevel, whaleTrackerEnabled }))
       }
       setSavingState('saved')
-      setSaveMessage('Saved locally.')
+      setSaveMessage('Saved locally')
     }
   }
 
@@ -646,9 +654,23 @@ export default function SettingsPage() {
           <Card>
             <SectionTitle>Notifications</SectionTitle>
             <Row
-              label="Whale Alerts"
-              sub="Get notified when large wallets make moves"
-              right={<Toggle on={notifWhale} onChange={() => setNotifWhale(v => !v)} />}
+              label="Whale Tracker"
+              sub="Monitor tracked Base wallets and whale activity signals."
+              right={(
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center',
+                    padding: '3px 10px', borderRadius: '999px',
+                    background: whaleTrackerEnabled ? 'rgba(45,212,191,0.10)' : 'rgba(148,163,184,0.12)',
+                    border: `1px solid ${whaleTrackerEnabled ? 'rgba(45,212,191,0.25)' : 'rgba(148,163,184,0.20)'}`,
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
+                    color: whaleTrackerEnabled ? '#2DD4BF' : 'rgba(148,163,184,0.95)',
+                    fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    textTransform: 'uppercase',
+                  }}>{whaleTrackerEnabled ? 'Active' : 'Paused'}</span>
+                  <Toggle on={whaleTrackerEnabled} onChange={() => setWhaleTrackerEnabled(v => !v)} />
+                </div>
+              )}
             />
             <Row
               label="Pump Alerts"

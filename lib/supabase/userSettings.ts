@@ -15,6 +15,7 @@ export type UserSettings = {
   saved_layout: JsonMap;
   saved_filters: JsonMap;
   onboarding_progress: JsonMap;
+  whaleTrackerEnabled: boolean;
   created_at?: string;
   updated_at?: string;
   // Subscription plan fields (added by supabase-subscriptions.sql migration)
@@ -28,7 +29,7 @@ export type UserSettings = {
 
 export type UserSettingsUpdate = Partial<Pick<
   UserSettings,
-  'theme' | 'accent_color' | 'default_chain' | 'clark_detail_level' | 'display_name' | 'avatar_url' | 'avatar_color' | 'saved_layout' | 'saved_filters' | 'onboarding_progress'
+  'theme' | 'accent_color' | 'default_chain' | 'clark_detail_level' | 'display_name' | 'avatar_url' | 'avatar_color' | 'saved_layout' | 'saved_filters' | 'onboarding_progress' | 'whaleTrackerEnabled'
 >>;
 
 export const USER_SETTINGS_DEFAULTS: Omit<UserSettings, 'user_id'> = {
@@ -42,6 +43,7 @@ export const USER_SETTINGS_DEFAULTS: Omit<UserSettings, 'user_id'> = {
   saved_layout: {},
   saved_filters: {},
   onboarding_progress: {},
+  whaleTrackerEnabled: false,
   plan: 'free',
 };
 
@@ -56,6 +58,7 @@ const ALLOWED_KEYS = new Set([
   'saved_layout',
   'saved_filters',
   'onboarding_progress',
+  'whaleTrackerEnabled',
 ]);
 
 export function createServiceRoleClient() {
@@ -141,6 +144,12 @@ export function sanitizeSettingsUpdate(input: unknown): { valid: UserSettingsUpd
       } else {
         invalidKeys.push(key);
       }
+      continue;
+    }
+
+    if (key === 'whaleTrackerEnabled') {
+      if (typeof value === 'boolean') valid.whaleTrackerEnabled = value;
+      else invalidKeys.push(key);
       continue;
     }
 
