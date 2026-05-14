@@ -767,54 +767,25 @@ export default function TerminalTokenScanner() {
       <style>{`
         @keyframes clarkDot {
           0%, 80%, 100% { opacity: 0.25; transform: scale(0.75); }
-          40%            { opacity: 1;    transform: scale(1);    }
+          40% { opacity: 1; transform: scale(1); }
         }
-        @media (max-width: 768px) {
-          .token-main { padding: 32px 14px 120px !important; }
-          .token-input-row { flex-direction: column; max-width: 100% !important; }
-          .token-input-row button { width: 100%; }
-          .token-shell { display: block !important; }
-          .mob-verdict-panel { width: 100% !important; border-left: none !important; border-top: 1px solid rgba(255,255,255,0.08); }
-          .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
-        }
-        @media (min-width: 1024px){ .metric-grid{grid-template-columns:repeat(7,minmax(0,1fr)) !important;} }
+        .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background:radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%);} 
+        .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
+        .token-main{max-width:none;}
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.86),rgba(4,10,22,.82));border:1px solid rgba(148,163,184,.2);border-radius:14px;box-shadow:0 0 0 1px rgba(45,212,191,.06) inset,0 18px 45px rgba(2,6,23,.35);} 
-        @media (max-width: 768px) { .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .pools-row{min-width:860px} }
-        @media (max-width: 768px) {
-          .top-holder-head{display:none !important;}
-          .top-holder-row{display:block !important;padding:10px 12px !important;}
-          .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;}
-          .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;}
-        }
-        @media (min-width: 768px) and (max-width: 1023px){ .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;} }
+        .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
-        @media (min-width: 768px) and (max-width: 1023px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
-        @media (max-width: 767px){ .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} }
-        /* Mobile: stack scan area + Clark vertically, Clark shown below */
-        @media (max-width: 767px) {
-          .token-shell { flex-direction: column !important; height: auto !important; overflow: visible !important; }
-          .mob-scan-main { flex: none !important; overflow-y: visible !important; width: 100% !important; }
-          .token-shell .mob-verdict-panel {
-            display: flex !important;
-            width: 100% !important;
-            min-width: 0 !important;
-            max-width: 100% !important;
-            min-height: 0 !important;
-            border-left: none !important;
-            border-top: 1px solid rgba(255,255,255,0.08) !important;
-            position: static !important;
-            overflow-y: visible !important;
-          }
-          .pools-scroll { overflow-x: auto !important; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
-          .pools-inner { min-width: 560px; }
-          .holder-grid { grid-template-columns: 1fr !important; }
-        }
+        @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
+        @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(320px,24vw,360px);} .token-main{max-width:1120px;margin:0 auto;} .mob-verdict-panel{padding:24px 16px;font-size:12px;} .activity-grid{gap:8px;}}
+        @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
+        @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
+        @media (max-width:768px){.token-main{padding:32px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:10px 12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;}}
       `}</style>
 
-      <div className="token-shell flex h-full overflow-hidden" style={{ color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%)' }}>
+      <div className="token-shell" style={{ color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(20,35,68,.45), rgba(2,6,23,1) 55%)' }}>
 
         {/* ── Left: scrollable scan area ──────────────────────────── */}
-        <div className="mob-scan-main token-main" style={{ flex: '0 0 70%', minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px 34px 120px', maxWidth: '1240px' }}>
+        <div className="mob-scan-main token-main" style={{ minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px clamp(16px, 2.2vw, 34px) 120px', width: '100%' }}>
 
           {/* Header */}
           <div style={{ marginBottom: '32px' }}>
@@ -951,7 +922,7 @@ export default function TerminalTokenScanner() {
               ) : (
                 <div className="metric-grid" style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
                   gap: '10px', marginBottom: '28px',
                 }}>
                   <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
@@ -1238,7 +1209,7 @@ export default function TerminalTokenScanner() {
                   <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px',padding:'16px'}}>
                     <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>Holder Intelligence</p>
                     <p style={{margin:'0 0 8px',fontSize:'12px',color:'#cbd5e1',fontWeight:700}}>State: {holderSafeReason(normalizeHolderProviderStatus(result.holderDistributionStatus), false)}</p>
-                    <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
+                    <div className="intel-grid" style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
                       {[
                         ['Owner status', fallback.ownerStatus],
                         ['Pool count', String(fallback.poolCount)],
@@ -1268,13 +1239,13 @@ export default function TerminalTokenScanner() {
                   }}>
                     LIQUIDITY & POOLS
                   </p><div style={{display:'inline-flex',marginBottom:'10px',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} POOLS</div>
-                  <div style={{ overflowX: 'auto', paddingBottom: '6px' }}><div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div className="pools-scroll" style={{ overflowX: 'auto', paddingBottom: '6px', maxWidth: '100%' }}><div className="pools-inner" style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '940px' }}>
                     {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
                         key={i}
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: '1.2fr repeat(6, auto)',
+                          gridTemplateColumns: 'minmax(220px,1.2fr) repeat(6, minmax(82px, auto))',
                           alignItems: 'center', gap: '20px',
                           padding: '12px 18px',
                           background: 'rgba(255,255,255,0.025)',
@@ -1310,8 +1281,8 @@ export default function TerminalTokenScanner() {
 
         {/* ── Right: Clark verdict panel (288px) ─────────────────── */}
         <aside className="mob-verdict-panel" style={{
-          width: '28%',
-          minWidth: '320px',
+          width: 'clamp(320px, 24vw, 400px)',
+          minWidth: 0,
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           background: 'linear-gradient(180deg, rgba(6,10,20,.96), rgba(4,8,18,.96))',
