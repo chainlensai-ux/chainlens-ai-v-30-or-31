@@ -172,16 +172,17 @@ function AvatarOrInitials({ src, initials, grad, name }: { src: string; initials
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}
-        alt={`${name} profile avatar`}
+        alt=""
+        aria-label={`${name} profile avatar`}
         width={44}
         height={44}
-        style={{ width: '44px', height: '44px', objectFit: 'cover', borderRadius: '50%', display: 'block' }}
+        style={{ width: '44px', height: '44px', objectFit: 'cover', objectPosition: 'center', borderRadius: '50%', display: 'block' }}
         onError={e => {
           const img = e.currentTarget;
           img.style.display = 'none';
           const parent = img.parentElement;
           if (parent) {
-            parent.style.fontSize = '14px';
+            parent.style.fontSize = '15px';
             parent.style.fontWeight = '800';
             parent.style.color = '#fff';
             parent.style.letterSpacing = '-0.02em';
