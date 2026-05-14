@@ -1,6 +1,7 @@
 import { defaultWagmiConfig } from '@web3modal/wagmi/react/config'
 import { base } from 'viem/chains'
-import { cookieStorage, createConfig, createStorage, http } from 'wagmi'
+import { createConfig, createStorage, http } from 'wagmi'
+import { cookieStorage } from 'wagmi'
 import { injected } from 'wagmi/connectors'
 
 export const projectId =
