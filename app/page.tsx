@@ -39,8 +39,10 @@ const FEATURES = [
     accent: '#2DD4BF',
     grad: 'linear-gradient(90deg, #2DD4BF 0%, #22d3ee 100%)',
     borderColor: 'rgba(45,212,191,0.16)',
-    hoverBorder: 'rgba(45,212,191,0.42)',
-    hoverShadow: '0 16px 56px rgba(45,212,191,0.18), 0 0 32px rgba(45,212,191,0.12), 0 4px 20px rgba(0,0,0,0.45)',
+    hoverBorder: 'rgba(45,212,191,0.44)',
+    hoverShadow: '0 0 40px rgba(45,212,191,0.20), 0 8px 48px rgba(0,0,0,0.50)',
+    hoverBg: 'linear-gradient(145deg, rgba(45,212,191,0.06) 0%, rgba(255,255,255,0.02) 100%)',
+    href: '/terminal/wallet-scanner',
     title: 'Scan Wallets Instantly',
     body: 'Check a Base wallet’s available holdings, portfolio signals, recent activity where available, and Clark’s wallet read.',
     icon: (
@@ -53,10 +55,12 @@ const FEATURES = [
     accent: '#ec4899',
     grad: 'linear-gradient(90deg, #ec4899 0%, #f472b6 100%)',
     borderColor: 'rgba(236,72,153,0.16)',
-    hoverBorder: 'rgba(236,72,153,0.42)',
-    hoverShadow: '0 16px 56px rgba(236,72,153,0.12), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
+    hoverBorder: 'rgba(236,72,153,0.44)',
+    hoverShadow: '0 0 40px rgba(236,72,153,0.18), 0 8px 48px rgba(0,0,0,0.50)',
+    hoverBg: 'linear-gradient(145deg, rgba(236,72,153,0.06) 0%, rgba(255,255,255,0.02) 100%)',
+    href: '/terminal/whale-alerts',
     title: 'Track Base Alerts Live',
-    body: 'See tracked-wallet buys, high-momentum Base tokens, volume expansion, and alert context in one feed.',
+    body: 'See tracked-wallet activity, high-momentum Base tokens, volume expansion, and alert context in one feed.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -67,8 +71,10 @@ const FEATURES = [
     accent: '#8b5cf6',
     grad: 'linear-gradient(90deg, #8b5cf6 0%, #a78bfa 100%)',
     borderColor: 'rgba(139,92,246,0.16)',
-    hoverBorder: 'rgba(139,92,246,0.42)',
-    hoverShadow: '0 16px 56px rgba(139,92,246,0.14), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
+    hoverBorder: 'rgba(139,92,246,0.44)',
+    hoverShadow: '0 0 40px rgba(139,92,246,0.20), 0 8px 48px rgba(0,0,0,0.50)',
+    hoverBg: 'linear-gradient(145deg, rgba(139,92,246,0.06) 0%, rgba(255,255,255,0.02) 100%)',
+    href: '/terminal/token-scanner',
     title: 'Analyze Base Tokens',
     body: 'Scan contracts for price, liquidity, FDV, holder concentration, security/tax checks where available, pools, and Clark verdicts.',
     icon: (
@@ -81,13 +87,83 @@ const FEATURES = [
     accent: '#60a5fa',
     grad: 'linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%)',
     borderColor: 'rgba(96,165,250,0.16)',
-    hoverBorder: 'rgba(96,165,250,0.42)',
-    hoverShadow: '0 16px 56px rgba(96,165,250,0.12), 0 0 28px rgba(45,212,191,0.10), 0 4px 20px rgba(0,0,0,0.45)',
+    hoverBorder: 'rgba(96,165,250,0.44)',
+    hoverShadow: '0 0 40px rgba(96,165,250,0.18), 0 8px 48px rgba(0,0,0,0.50)',
+    hoverBg: 'linear-gradient(145deg, rgba(96,165,250,0.06) 0%, rgba(255,255,255,0.02) 100%)',
+    href: '/terminal/liquidity',
     title: 'Read Liquidity & Pools',
     body: 'Review pool depth, pair routes, liquidity strength, weak pools, and missing LP-control checks before trusting a token.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>
+      </svg>
+    ),
+  },
+  {
+    accent: '#f97316',
+    grad: 'linear-gradient(90deg, #f97316 0%, #fb923c 100%)',
+    borderColor: 'rgba(249,115,22,0.16)',
+    hoverBorder: 'rgba(249,115,22,0.44)',
+    hoverShadow: '0 0 40px rgba(249,115,22,0.18), 0 8px 48px rgba(0,0,0,0.50)',
+    hoverBg: 'linear-gradient(145deg, rgba(249,115,22,0.06) 0%, rgba(255,255,255,0.02) 100%)',
+    href: '/terminal/dev-wallet',
+    title: 'Dev Wallet Detector',
+    body: 'Identify developer and deployer wallets linked to any token. Detect concentrated insider holdings before they become a risk.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
+    ),
+  },
+  {
+    accent: '#22d3ee',
+    grad: 'linear-gradient(90deg, #06b6d4 0%, #22d3ee 100%)',
+    borderColor: 'rgba(34,211,238,0.16)',
+    hoverBorder: 'rgba(34,211,238,0.44)',
+    hoverShadow: '0 0 40px rgba(34,211,238,0.18), 0 8px 48px rgba(0,0,0,0.50)',
+    hoverBg: 'linear-gradient(145deg, rgba(34,211,238,0.06) 0%, rgba(255,255,255,0.02) 100%)',
+    href: '/terminal/base-radar',
+    title: 'Base Radar',
+    body: 'Spot emerging tokens and momentum signals on Base before they hit mainstream feeds. Filter by volume, velocity, and recency.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>
+        <line x1="22" y1="12" x2="17" y2="12"/><line x1="12" y1="2" x2="12" y2="7"/>
+      </svg>
+    ),
+  },
+  {
+    accent: '#a78bfa',
+    grad: 'linear-gradient(90deg, #8b5cf6 0%, #c084fc 100%)',
+    borderColor: 'rgba(167,139,250,0.16)',
+    hoverBorder: 'rgba(167,139,250,0.44)',
+    hoverShadow: '0 0 40px rgba(167,139,250,0.20), 0 8px 48px rgba(0,0,0,0.50)',
+    hoverBg: 'linear-gradient(145deg, rgba(167,139,250,0.06) 0%, rgba(255,255,255,0.02) 100%)',
+    href: '/terminal/pump-alerts',
+    title: 'Pump Alerts',
+    body: 'Get notified when tokens on Base show rapid volume expansion, price velocity, or unusual buy pressure patterns.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+      </svg>
+    ),
+  },
+  {
+    accent: '#818cf8',
+    grad: 'linear-gradient(90deg, #2DD4BF 0%, #818cf8 60%, #c084fc 100%)',
+    borderColor: 'rgba(129,140,248,0.16)',
+    hoverBorder: 'rgba(129,140,248,0.44)',
+    hoverShadow: '0 0 40px rgba(129,140,248,0.20), 0 8px 48px rgba(0,0,0,0.50)',
+    hoverBg: 'linear-gradient(145deg, rgba(129,140,248,0.06) 0%, rgba(45,212,191,0.03) 100%)',
+    href: '/terminal/clark-ai',
+    title: 'Clark AI',
+    body: 'Ask Clark anything onchain. Get plain-English verdicts on tokens, wallets, and market moves — powered by CORTEX.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="8" width="18" height="12" rx="2"/>
+        <path d="M7 8V6a5 5 0 0 1 10 0v2"/>
+        <line x1="12" y1="13" x2="12" y2="15"/><circle cx="12" cy="15" r="1"/>
       </svg>
     ),
   },
@@ -290,6 +366,18 @@ export default function HomePage() {
       <Navbar />
 
       <div className={`home-page relative min-h-dvh w-full bg-[#05050b]`} style={{ display: 'flex', flexDirection: 'column' }}>
+
+        {/* ── Full-page edge energy — left cyan, right purple ── */}
+        <div className="home-heavy-visual" style={{
+          position: 'absolute', top: 0, bottom: 0, left: 0, width: '38%',
+          background: 'radial-gradient(ellipse at 0% 38%, rgba(45,212,191,0.07) 0%, transparent 62%)',
+          pointerEvents: 'none', zIndex: 0,
+        }} />
+        <div className="home-heavy-visual" style={{
+          position: 'absolute', top: 0, bottom: 0, right: 0, width: '38%',
+          background: 'radial-gradient(ellipse at 100% 38%, rgba(139,92,246,0.09) 0%, transparent 62%)',
+          pointerEvents: 'none', zIndex: 0,
+        }} />
 
         {/* ── Unified page ambient system ── */}
         <div className="home-heavy-visual home-ambient" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '780px', pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
@@ -723,70 +811,83 @@ export default function HomePage() {
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
             </div>
             <h2 className="section-heading" style={{
-              fontSize: 'clamp(30px, 4vw, 44px)', fontWeight: 800,
-              letterSpacing: '-0.02em', lineHeight: 1.1,
-              color: '#f8fafc', margin: '0 0 16px',
+              fontSize: 'clamp(34px, 4.8vw, 56px)', fontWeight: 900,
+              letterSpacing: '-0.03em', lineHeight: 1.06,
+              color: '#f8fafc', margin: '0 0 18px',
             }}>
               What ChainLens Does
             </h2>
             <p style={{
-              fontSize: '16px', color: 'rgba(255,255,255,0.42)',
-              maxWidth: '460px', margin: '0 auto', lineHeight: 1.65,
+              fontSize: '17px', color: 'rgba(255,255,255,0.46)',
+              maxWidth: '480px', margin: '0 auto', lineHeight: 1.68,
+              fontWeight: 400,
             }}>
               Eight features. One terminal. Built natively on Base.
             </p>
           </div></Reveal>
 
-          {/* 2 × 2 grid */}
+          {/* 2-column grid — 4 rows on desktop, 1 column on mobile */}
           <div className="feat-grid" style={{
             display: 'grid',
             gridTemplateColumns: '1fr 1fr',
             gap: '20px',
           }}>
             {FEATURES.map((f, i) => (
-              <Reveal key={f.title} delayMs={i * 110}><div
+              <Reveal key={f.title} delayMs={i * 80}><div
                 className="feat-card"
                 style={{
-                  background: 'linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%)',
+                  background: 'linear-gradient(145deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.012) 100%)',
                   border: `1px solid ${f.borderColor}`,
-                  borderRadius: '20px',
-                  padding: '32px 28px',
+                  borderRadius: '22px',
+                  padding: '32px 30px 28px',
                   backdropFilter: 'blur(6px)',
                   WebkitBackdropFilter: 'blur(6px)',
-                  boxShadow: '0 4px 24px rgba(0,0,0,0.30)',
-                  animationDelay: `${i * 0.10}s`,
+                  boxShadow: '0 4px 28px rgba(0,0,0,0.32)',
+                  animationDelay: `${i * 0.08}s`,
                   position: 'relative',
                   overflow: 'hidden',
-                  transition: 'border-color 300ms ease, box-shadow 300ms ease, background 300ms ease',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  transition: 'border-color 280ms ease, box-shadow 280ms ease, background 280ms ease, transform 280ms cubic-bezier(0.22,1,0.36,1)',
                 }}
                 onMouseEnter={e => {
                   const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = 'rgba(45,212,191,0.55)'
-                  el.style.boxShadow   = '0 0 32px rgba(45,212,191,0.18), 0 8px 40px rgba(0,0,0,0.40)'
-                  el.style.background  = 'linear-gradient(145deg, rgba(255,255,255,0.05) 0%, rgba(45,212,191,0.03) 100%)'
+                  el.style.borderColor = f.hoverBorder
+                  el.style.boxShadow   = f.hoverShadow
+                  el.style.background  = f.hoverBg
+                  el.style.transform   = 'translateY(-5px)'
                 }}
                 onMouseLeave={e => {
                   const el = e.currentTarget as HTMLDivElement
                   el.style.borderColor = f.borderColor
-                  el.style.boxShadow   = '0 4px 24px rgba(0,0,0,0.30)'
-                  el.style.background  = 'linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%)'
+                  el.style.boxShadow   = '0 4px 28px rgba(0,0,0,0.32)'
+                  el.style.background  = 'linear-gradient(145deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.012) 100%)'
+                  el.style.transform   = 'translateY(0)'
                 }}
               >
                 {/* Top accent line — slides in on hover */}
                 <div className="feat-top-line" style={{
                   position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
-                  background: `linear-gradient(90deg, transparent 0%, ${f.accent}88 50%, transparent 100%)`,
+                  background: `linear-gradient(90deg, transparent 0%, ${f.accent}aa 50%, transparent 100%)`,
+                }} />
+
+                {/* Inner radial glow — subtle card depth */}
+                <div style={{
+                  position: 'absolute', bottom: 0, right: 0,
+                  width: '180px', height: '180px',
+                  background: `radial-gradient(circle at 80% 80%, ${f.accent}12 0%, transparent 65%)`,
+                  pointerEvents: 'none',
                 }} />
 
                 {/* Icon — circular ring */}
                 <div style={{
-                  width: '56px', height: '56px', borderRadius: '50%',
-                  background: `rgba(${f.accent === '#2DD4BF' ? '45,212,191' : f.accent === '#ec4899' ? '236,72,153' : f.accent === '#8b5cf6' ? '139,92,246' : '96,165,250'}, 0.08)`,
-                  border: `2px solid ${f.accent}55`,
+                  width: '54px', height: '54px', borderRadius: '50%',
+                  background: `${f.accent}16`,
+                  border: `1.5px solid ${f.accent}55`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   color: f.accent,
                   marginBottom: '20px',
-                  boxShadow: `0 0 24px ${f.accent}33, inset 0 0 12px ${f.accent}11`,
+                  boxShadow: `0 0 20px ${f.accent}30`,
                   flexShrink: 0,
                 }}>
                   {f.icon}
@@ -807,13 +908,36 @@ export default function HomePage() {
 
                 {/* Body */}
                 <p style={{
-                  fontSize: '14px', lineHeight: 1.7,
-                  color: 'rgba(255,255,255,0.45)',
-                  margin: 0,
+                  fontSize: '14px', lineHeight: 1.72,
+                  color: 'rgba(255,255,255,0.48)',
+                  margin: '0 0 20px',
                   fontWeight: 400,
+                  flex: 1,
                 }}>
                   {f.body}
                 </p>
+
+                {/* Arrow link */}
+                <Link
+                  href={f.href}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '6px',
+                    fontSize: '12px', fontWeight: 700,
+                    letterSpacing: '0.06em', textTransform: 'uppercase',
+                    textDecoration: 'none',
+                    color: f.accent,
+                    opacity: 0.80,
+                    transition: 'opacity 0.15s, gap 0.15s',
+                    alignSelf: 'flex-start',
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.opacity = '1' }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.opacity = '0.80' }}
+                >
+                  Open in Terminal
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+                    <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </Link>
               </div></Reveal>
             ))}
           </div>
