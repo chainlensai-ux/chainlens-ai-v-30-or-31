@@ -965,27 +965,30 @@ export default function HomePage() {
           <Reveal><div style={{ textAlign: 'center', marginBottom: '56px' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
-              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Traders</span>
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>X Feedback</span>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
             </div>
             <h2 className="section-heading" style={{
               fontSize: 'clamp(28px, 3.8vw, 42px)', fontWeight: 800,
               letterSpacing: '-0.02em', lineHeight: 1.1,
-              color: '#f8fafc', margin: 0,
+              color: '#f8fafc', margin: '0 0 16px',
             }}>
               What Base traders are saying.
             </h2>
+            <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.42)', margin: 0, maxWidth: '520px', marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.6 }}>
+              Early reactions from Base-native traders, builders, and crypto accounts testing the ChainLens vision.
+            </p>
           </div></Reveal>
 
           {/* 3 × 2 grid */}
           <div className="mob-grid-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {[
-              { handle: '@0xdegen_base',   name: '0xDegen',        initials: '0D', grad: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', quote: 'clark called the rug before it happened. saved me $4k. nothing else on base does this.' },
-              { handle: '@basewhale_eth',  name: 'BaseWhale.eth',  initials: 'BW', grad: 'linear-gradient(135deg,#3b82f6,#2DD4BF)', quote: 'scanned a wallet and clark literally described my trading personality. eerie accurate.' },
-              { handle: '@virtualsmaxi',   name: 'VirtualsMaxi',   initials: 'VM', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', quote: 'been using nansen for 2 years. chainlens does more for base at $30. not even close.' },
-              { handle: '@defi_lurker',    name: 'DeFi Lurker',    initials: 'DL', grad: 'linear-gradient(135deg,#ec4899,#f97316)', quote: 'base radar found a gem 40 minutes before it hit ct. already 8x.' },
-              { handle: '@0xalphahunter', name: '0xAlphaHunter',  initials: '0A', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', quote: 'the liquidity scanner flagged an unlocked lp. token rugged 3 hours later. this thing works.' },
-              { handle: '@basedegen99',    name: 'BaseDegen99',    initials: 'BD', grad: 'linear-gradient(135deg,#a78bfa,#3b82f6)', quote: 'clark ai is the real deal. asked about a token and got a full breakdown in 5 seconds. insane.' },
+              { handle: '@_Foster_x',   name: 'Foster',             initials: 'F', grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', date: 'May 7, 2026',  quote: 'This is going to change the game forever and for the next generation coming up.' },
+              { handle: '@Vicrypt_01',  name: 'Vicrypt🔥', initials: 'V', grad: 'linear-gradient(135deg,#f97316,#ec4899)', date: 'May 7, 2026',  quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
+              { handle: '@Veeekthorr', name: 'Victor ✕✕',  initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', date: 'May 7, 2026',  quote: "Crypto’s 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
+              { handle: '@TySeen',      name: 'TYSON∼OF∼WEB3 📊', initials: 'T', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', date: 'Apr 29, 2026', quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
+              { handle: '@Big_Wealthz', name: 'Big Wealth',          initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', date: 'Apr 29, 2026', quote: 'know what whales are doing before Twitter even wakes up.' },
+              { handle: '@StardomJnr',  name: 'Stardom',             initials: 'S', grad: 'linear-gradient(135deg,#f59e0b,#f97316)', date: 'Apr 29, 2026', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
             ].map((t, i) => (
               <Reveal key={i} delayMs={i * 90}><div
                 className="mobile-static-card"
@@ -1024,32 +1027,28 @@ export default function HomePage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
                       <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
                       {/* Verified blue tick */}
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
                         <circle cx="12" cy="12" r="12" fill="#1d9bf0"/>
                         <path d="M9.5 16.5l-3.5-3.5 1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z" fill="#fff"/>
                       </svg>
                     </div>
                     <div style={{ fontSize: '12px', color: '#2DD4BF', fontWeight: 500 }}>{t.handle}</div>
                   </div>
-                  {/* X/Twitter logo top right */}
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="rgba(255,255,255,0.25)" style={{ flexShrink: 0 }}>
+                  {/* Subtle X icon */}
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="rgba(255,255,255,0.18)" style={{ flexShrink: 0 }}>
                     <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.261 5.632zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
                   </svg>
                 </div>
 
-                {/* Stars */}
-                <div style={{ display: 'flex', gap: '2px' }}>
-                  {[...Array(5)].map((_, s) => (
-                    <svg key={s} width="14" height="14" viewBox="0 0 24 24" fill="#fbbf24">
-                      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
-                    </svg>
-                  ))}
-                </div>
-
                 {/* Quote */}
-                <p style={{ fontSize: '14px', lineHeight: 1.65, color: 'rgba(255,255,255,0.85)', margin: 0, fontWeight: 400, flex: 1 }}>
+                <p style={{ fontSize: '14px', lineHeight: 1.65, color: 'rgba(255,255,255,0.85)', margin: 0, fontWeight: 400, flex: 1, whiteSpace: 'pre-line' }}>
                   {t.quote}
                 </p>
+
+                {/* Date */}
+                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.28)', fontWeight: 500, letterSpacing: '0.02em' }}>
+                  {t.date}
+                </div>
               </div></Reveal>
             ))}
           </div>
