@@ -1699,6 +1699,15 @@ function shortAddress(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
+function normalizeTrustedWalletLabel(label: string): string {
+  const clean = label.trim().toLowerCase();
+  if (!clean) return "tracked wallet";
+  if (clean.includes("bot farmer")) return "repeat activity wallet";
+  if (clean.includes("institutional-style whale")) return "large wallet";
+  if (clean.includes("socialfi power user")) return "tracked wallet";
+  return label;
+}
+
 function inferAssetLine(userContent: string, isDevWalletMode: boolean): string {
   const contractM = userContent.match(/"contract"\s*:\s*"(0x[a-fA-F0-9]{40})"/);
   const walletM = userContent.match(/"address"\s*:\s*"(0x[a-fA-F0-9]{40})"/);
@@ -4453,13 +4462,19 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
         "Risk / Unverified: 1 bullet — what is not confirmed.\n" +
         "Next watch: 1 clear sentence.\n\n" +
         "SUMMARY FORMAT (multiple alerts):\n" +
-        "Market read: 1–2 sentences.\n" +
-        "Top movements: up to 5 bullets, HIGH SIGNAL first.\n" +
-        "Repeating tokens: list any token appearing in ≥ 2 HIGH or WATCH alerts.\n" +
-        "Active labels: note any wallet label appearing ≥ 2 times.\n" +
-        "Noise / caveats: what may not be meaningful.\n" +
-        "Next watch: 1 sentence.\n\n" +
-        "LENGTH: 100–180 words for a single alert. 150–250 for a summary.",
+        "Use plain text labels only (no markdown syntax).\n" +
+        "Market read:\n" +
+        "Top movements: max 4 lines.\n" +
+        "Repeating tokens:\n" +
+        "Noise / caveats:\n" +
+        "Next watch:\n" +
+        "No trade call.\n\n" +
+        "WORDING RULES:\n" +
+        "- Prefer: activity, rotation, repeat movement, value unverified, direction unverified.\n" +
+        "- If buy direction is not verified, say: 'Buy-side direction is not fully verified. Here is the strongest tracked activity instead.'\n" +
+        "- Replace 'ChainLens pricing rules' with 'current value filters' or 'unverified USD value'.\n" +
+        "- Treat wallet labels as internal tracking only (tracked wallet / repeat activity wallet / large wallet).\n\n" +
+        "LENGTH: keep concise and mobile-readable (5-6 short sections).",
       messages: [{ role: "user", content: userContent }],
     }),
   });
@@ -4571,7 +4586,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             }
             const leaders = wbLeaders.slice(0, 4);
             const tokenMap = (wb.repeatedTokenWalletMap ?? []).slice(0, 5);
-            const behaviorTypeLabel = (t: string) => t.replace(/_/g, ' ');
+            const behaviorTypeLabel = (t: string) => normalizeTrustedWalletLabel(t.replace(/_/g, ' '));
             const lines: string[] = [
               "WHALE BEHAVIOR READ",
               "",
@@ -4609,7 +4624,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             }
             lines.push(
               "",
-              "Risk / uncertainty:",
+              "Noise / caveats:",
               "- Buy/sell direction may be unverified for some rows if token side was not captured on-chain.",
               "- USD values are verified only for stablecoins, WETH, cbBTC, and GeckoTerminal-priced tokens.",
               "- Patterns are derived from stored alerts only — not a complete on-chain history.",
@@ -4636,16 +4651,16 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
             const concentrationLine = agg.nonStableCount < 5
               ? "Flow is concentrated — not much variety in the latest stored alerts."
               : (agg.clustered ? "Flow is clustered around a few repeated names." : "Flow is broader across multiple non-stable names.")
-            const confidenceLine = agg.usdCoverage < 30 ? "USD confidence is low (most rows are unverified)." : "USD confidence is usable for sizing comparisons."
+            const confidenceLine = agg.usdCoverage < 30 ? "value unverified on many rows." : "verified values are partial."
             const title = pickWhaleTitle(prompt)
             if (title === "TOP WHALE ALERTS TO WATCH") {
               return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
                 "TOP WHALE ALERTS TO WATCH",
-                `1. Strongest repeat: ${strongest.key} (${strongest.count} repeats) — repeat activity is the strongest signal right now.`,
-                `2. Highest verified value: ${highestValue ? `${highestValue.key} (~$${Math.round(highestValue.totalUsd).toLocaleString()})` : "USD mostly unverified across current rows."}`,
-                `3. Freshest unique alert: ${freshestAlt ? freshestAlt.key : "No fresh secondary token yet."}`,
-                `4. Noisy alerts to ignore: base/stable routing and tiny-liquidity one-offs.`,
-                `5. Next: ${stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Monitor if the same repeat token still leads after the next refresh."}`,
+                `- strongest repeat: ${strongest.key} (${strongest.count} repeats).`,
+                `- highest confidence value: ${highestValue ? `${highestValue.key} (~$${Math.round(highestValue.totalUsd).toLocaleString()} verified)` : "value unverified on most rows."}`,
+                `- freshest unique activity: ${freshestAlt ? freshestAlt.key : "no clear secondary token yet."}`,
+                `- noisy / ignore: base or stable routing plus tiny one-off moves.`,
+                `- next watch: ${stale ? "latest stored flow is stale; run a refresh." : "check if the same repeat token still leads after refresh."}`,
               ].join("\n") }
             }
             if (title === "WHALE SELL-SIDE READ") {
@@ -4666,12 +4681,16 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
               ].join("\n") }
             }
             return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
-              "WHALE FLOW READ",
-              `Main read: ${concentrationLine} ${confidenceLine}`,
-              `Buy/swap leaders: ${([strongest, secondary, freshestAlt].filter((g): g is WhaleGroup => Boolean(g)).slice(0,3).map(g => `${g.key} (${g.count})`).join(', '))}.`,
-              `What changed recently: ${freshestAlt ? `${freshestAlt.key} is the newest non-repeat token in current rows.` : "No meaningful new unique token has displaced the repeat leader yet."}`,
-              stale ? "Latest stored flow is stale; run a full refresh for a cleaner read." : "Freshness: latest stored alerts are recent.",
-              "Next: Monitor repeats; one alert is not enough.",
+              "WHALE ACTIVITY READ",
+              `Market read: ${concentrationLine} ${confidenceLine} Direction unverified on some rows.`,
+              ...(isBuyQuery ? ["Buy-side direction is not fully verified. Here is the strongest tracked activity instead."] : []),
+              "Top movements:",
+              ...([strongest, secondary, freshestAlt].filter((g): g is WhaleGroup => Boolean(g)).slice(0, 3).map((g, i) => `${i + 1}. ${g.key} — repeat activity (${g.count}). ${g.totalUsd > 0 ? "partly verified value." : "value unverified."}`)),
+              `4. ${agg.repeatLeaders[3]?.key ?? "Secondary names"} — lower-confidence activity.`,
+              `Repeating tokens: ${agg.repeatLeaders.slice(0, 6).map(g => g.key).join(', ')}.`,
+              "Noise / caveats: stablecoin and routing flow can dominate sections of this feed, so treat this as activity flow, not confirmed buying.",
+              `Next watch: ${stale ? "latest stored flow is stale; run a refresh and re-check repeat movement." : "monitor repeat movement and look for fresh token-side flow from the same wallets."}`,
+              "No trade call.",
             ].join("\n") }
           }
           const sigOrder: Record<string, number> = { HIGH: 0, WATCH: 1, LOW: 2 };
