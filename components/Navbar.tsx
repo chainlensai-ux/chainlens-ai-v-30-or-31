@@ -525,6 +525,7 @@ export default function Navbar() {
           <Link href="/pricing"   className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Pricing</Link>
           <Link href="/affiliate" className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Affiliate</Link>
           <Link href="/about"     className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
+          <Link href="/contact"   className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Contact</Link>
 
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '16px 0' }} />
 
