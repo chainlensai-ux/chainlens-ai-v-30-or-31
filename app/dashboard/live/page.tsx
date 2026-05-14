@@ -5,14 +5,17 @@ import { useEffect, useState } from "react";
 export default function LiveFeed() {
   const [tokens, setTokens] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
 
   const loadData = async () => {
     try {
       const res = await fetch(`/api/trending`);
       const data = await res.json();
       setTokens(data?.data || []);
+      setFailed(false);
     } catch (err) {
-      console.error("Live feed error:", err);
+      setFailed(true);
+      setTokens([]);
     }
     setLoading(false);
   };
@@ -29,6 +32,12 @@ export default function LiveFeed() {
 
       {loading && (
         <p className="text-white/60">Loading live data…</p>
+      )}
+
+      {!loading && (failed || tokens.length === 0) && (
+        <p className="text-white/60">
+          {failed ? "Base preview loading delayed. Try refresh." : "Live Base feed appears after sign-in."}
+        </p>
       )}
 
       <div className="space-y-4">
