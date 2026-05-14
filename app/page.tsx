@@ -10,26 +10,23 @@ const Reveal = ({ children }: { children: ReactNode; [key: string]: unknown }) =
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
 
+// Base-native tokens only — static fallback (live feed via /api/trending when available)
 const TICKER = [
-  { sym: 'ADA',  price: '$0.2493', pct: '+3.88%' },
-  { sym: 'AVAX', price: '$9.47',   pct: '+1.25%' },
-  { sym: 'DOGE', price: '$0.0963', pct: '+3.55%' },
-  { sym: 'DOT',  price: '$1.26',   pct: '+8.60%' },
-  { sym: 'LINK', price: '$9.29',   pct: '+2.44%' },
-  { sym: 'UNI',  price: '$3.27',   pct: '+3.63%' },
-  { sym: 'LTC',  price: '$55.50',  pct: '+2.21%' },
-  { sym: 'BCH',  price: '$439.90', pct: '+1.39%' },
-  { sym: 'XLM',  price: '$0.1619', pct: '+3.78%' },
-  { sym: 'ATOM', price: '$1.80',   pct: '+3.35%' },
-  { sym: 'XMR',  price: '$344.77', pct: '+1.22%' },
-  { sym: 'ETC',  price: '$8.55',   pct: '+2.79%' },
-  { sym: 'FIL',  price: '$0.9692', pct: '+8.31%' },
-  { sym: 'AAVE', price: '$106.45', pct: '+5.66%' },
-  { sym: 'MKR',  price: '$1,773',  pct: '+0.78%' },
-  { sym: 'OP',   price: '$0.1227', pct: '+8.46%' },
-  { sym: 'ARB',  price: '$0.1190', pct: '+5.54%' },
-  { sym: 'NEAR', price: '$1.43',   pct: '+6.09%' },
-  { sym: 'FTM',  price: '$0.0471', pct: '+3.84%' },
+  { sym: 'WETH',    price: '$2,481',      pct: '+1.44%' },
+  { sym: 'cbBTC',   price: '$103,510',    pct: '+2.06%' },
+  { sym: 'USDC',    price: '$1.000',      pct: '+0.02%' },
+  { sym: 'VIRTUAL', price: '$1.92',       pct: '+4.87%' },
+  { sym: 'AERO',    price: '$0.8140',     pct: '+3.22%' },
+  { sym: 'BRETT',   price: '$0.0708',     pct: '+6.91%' },
+  { sym: 'DEGEN',   price: '$0.003780',   pct: '+3.55%' },
+  { sym: 'TOSHI',   price: '$0.0001241',  pct: '+5.18%' },
+  { sym: 'NORMIE',  price: '$0.002140',   pct: '+7.32%' },
+  { sym: 'CLANKER', price: '$8.14',       pct: '+11.6%' },
+  { sym: 'MOCHI',   price: '$0.006210',   pct: '+4.28%' },
+  { sym: 'KEYCAT',  price: '$0.004380',   pct: '+5.44%' },
+  { sym: 'SERAPH',  price: '$0.508',      pct: '+2.91%' },
+  { sym: 'HIGHER',  price: '$0.0312',     pct: '+9.15%' },
+  { sym: 'BASED',   price: '$0.0004170',  pct: '+8.74%' },
 ]
 
 // ─── Feature cards ────────────────────────────────────────────────────────────
@@ -44,7 +41,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(45,212,191,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/wallet-scanner',
     title: 'Scan Wallets Instantly',
-    body: 'Check a Base wallet’s available holdings, portfolio signals, recent activity where available, and Clark’s wallet read.',
+    body: "Check a Base wallet's available holdings, portfolio signals, recent activity where available, and Clark's wallet read.",
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="16" cy="15" r="1.5"/>
@@ -169,6 +166,34 @@ const FEATURES = [
   },
 ]
 
+function AvatarOrInitials({ src, initials, grad, name }: { src: string; initials: string; grad: string; name: string }) {
+  return (
+    <div style={{ width: '44px', height: '44px', borderRadius: '50%', flexShrink: 0, overflow: 'hidden', background: grad, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt=""
+        aria-label={`${name} profile avatar`}
+        width={44}
+        height={44}
+        style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', display: 'block' }}
+        onError={e => {
+          const img = e.currentTarget;
+          img.style.display = 'none';
+          const parent = img.parentElement;
+          if (parent) {
+            parent.style.fontSize = '15px';
+            parent.style.fontWeight = '800';
+            parent.style.color = '#fff';
+            parent.style.letterSpacing = '-0.02em';
+            parent.textContent = initials;
+          }
+        }}
+      />
+    </div>
+  );
+}
+
 export default function HomePage() {
 
   return (
@@ -263,6 +288,15 @@ export default function HomePage() {
           .home-heavy-visual, .home-particles { display: none !important; }
           .home-ticker-track, .card-pro, .card-elite, .cortex-badge, .hero-horizon { animation: none !important; }
           .pricing-card, .feat-card { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+        }
+
+        /* Laptop/short-screen hero fix: reduce padding + feature row padding so buttons stay visible */
+        @media (min-width: 768px) and (max-height: 860px) {
+          .mob-hero-main { padding: 56px 20px 36px !important; }
+          .hero-feat-row > div { padding: 14px 12px !important; }
+        }
+        @media (min-width: 768px) and (max-height: 960px) and (min-height: 861px) {
+          .mob-hero-main { padding: 64px 20px 44px !important; }
         }
 
         @media (max-width: 767px) {
@@ -518,7 +552,7 @@ export default function HomePage() {
             border: '1px solid rgba(45,212,191,0.32)',
             borderRadius: '999px',
             padding: '6px 18px',
-            marginBottom: '24px',
+            marginBottom: 'min(22px, 2.6vh)',
             boxShadow: '0 0 12px rgba(45,212,191,0.10), 0 1px 0 rgba(255,255,255,0.04) inset',
           }}>
             <span style={{
@@ -543,11 +577,11 @@ export default function HomePage() {
 
           {/* Headline */}
           <h1 style={{
-            fontSize: 'clamp(52px, 7.2vw, 102px)',
+            fontSize: 'clamp(38px, 5.2vw, 92px)',
             fontWeight: 900,
             lineHeight: 1.03,
             letterSpacing: '-0.025em',
-            margin: '0 0 24px',
+            margin: '0 0 min(22px, 2.5vh)',
             maxWidth: '1100px',
             textShadow: '0 8px 30px rgba(0,0,0,0.46)',
           }}>
@@ -584,7 +618,7 @@ export default function HomePage() {
             color: 'rgba(255,255,255,0.66)',
             lineHeight: 1.62,
             maxWidth: '700px',
-            margin: '0 0 38px',
+            margin: '0 0 min(36px, 3.6vh)',
             fontWeight: 400,
           }}>
             Ask Clark anything — scan wallets, find early pumps, track
@@ -598,7 +632,7 @@ export default function HomePage() {
             gap: '0',
             maxWidth: '1060px',
             width: '100%',
-            margin: '8px 0 36px',
+            margin: '6px 0 min(30px, 2.8vh)',
             background: 'linear-gradient(180deg, rgba(6,11,28,0.82) 0%, rgba(5,10,24,0.66) 100%)',
             border: '1px solid rgba(148,163,184,0.24)',
             borderRadius: '22px',
@@ -760,25 +794,31 @@ export default function HomePage() {
 
         </main>
 
-        {/* Token price ticker — live prices bar */}
+        {/* Base momentum ticker */}
         <div style={{
           position: 'relative', zIndex: 1,
-          borderTop: '1px solid rgba(255,255,255,0.06)',
-          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          borderTop: '1px solid rgba(45,212,191,0.12)',
+          borderBottom: '1px solid rgba(255,255,255,0.05)',
           background: 'linear-gradient(180deg, #04040b 0%, #05050c 100%)',
           height: '44px', overflow: 'hidden',
           display: 'flex', alignItems: 'center',
         }}>
-          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '80px', background: 'linear-gradient(90deg, #05050c 0%, transparent 100%)', zIndex: 2, pointerEvents: 'none' }} />
+          {/* BASE MOVERS label — pinned left */}
+          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '6px', padding: '0 14px 0 16px', borderRight: '1px solid rgba(45,212,191,0.18)', height: '100%', background: 'linear-gradient(90deg, #04040b 60%, transparent 100%)', zIndex: 3, position: 'relative' }}>
+            <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.8)', flexShrink: 0 }} />
+            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', whiteSpace: 'nowrap' }}>BASE MOVERS</span>
+          </div>
           <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '80px', background: 'linear-gradient(270deg, #05050c 0%, transparent 100%)', zIndex: 2, pointerEvents: 'none' }} />
-          <div className="home-ticker-track" style={{ display: 'flex', gap: '0', whiteSpace: 'nowrap', animation: 'ticker-scroll 44s linear infinite', willChange: 'transform' }}>
-            {[...TICKER, ...TICKER].map((t, i) => (
-              <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '0 32px', fontSize: '11.5px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
-                <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
-                <span style={{ color: 'rgba(255,255,255,0.40)' }}>{t.price}</span>
-                <span style={{ color: '#4ade80', fontWeight: 600 }}>{t.pct}</span>
-              </span>
-            ))}
+          <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+            <div className="home-ticker-track" style={{ display: 'flex', gap: '0', whiteSpace: 'nowrap', animation: 'ticker-scroll 52s linear infinite', willChange: 'transform' }}>
+              {[...TICKER, ...TICKER].map((t, i) => (
+                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '0 28px', fontSize: '11.5px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
+                  <span style={{ color: 'rgba(255,255,255,0.38)' }}>{t.price}</span>
+                  <span style={{ color: '#4ade80', fontWeight: 600 }}>{t.pct}</span>
+                </span>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -953,27 +993,30 @@ export default function HomePage() {
           <Reveal><div style={{ textAlign: 'center', marginBottom: '56px' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
-              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Traders</span>
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>X Feedback</span>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
             </div>
             <h2 className="section-heading" style={{
               fontSize: 'clamp(28px, 3.8vw, 42px)', fontWeight: 800,
               letterSpacing: '-0.02em', lineHeight: 1.1,
-              color: '#f8fafc', margin: 0,
+              color: '#f8fafc', margin: '0 0 16px',
             }}>
               What Base traders are saying.
             </h2>
+            <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.42)', margin: 0, maxWidth: '520px', marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.6 }}>
+              Early reactions from Base-native traders, builders, and crypto accounts testing the ChainLens vision.
+            </p>
           </div></Reveal>
 
           {/* 3 × 2 grid */}
           <div className="mob-grid-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
             {[
-              { handle: '@0xdegen_base',   name: '0xDegen',        initials: '0D', grad: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', quote: 'clark called the rug before it happened. saved me $4k. nothing else on base does this.' },
-              { handle: '@basewhale_eth',  name: 'BaseWhale.eth',  initials: 'BW', grad: 'linear-gradient(135deg,#3b82f6,#2DD4BF)', quote: 'scanned a wallet and clark literally described my trading personality. eerie accurate.' },
-              { handle: '@virtualsmaxi',   name: 'VirtualsMaxi',   initials: 'VM', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', quote: 'been using nansen for 2 years. chainlens does more for base at $30. not even close.' },
-              { handle: '@defi_lurker',    name: 'DeFi Lurker',    initials: 'DL', grad: 'linear-gradient(135deg,#ec4899,#f97316)', quote: 'base radar found a gem 40 minutes before it hit ct. already 8x.' },
-              { handle: '@0xalphahunter', name: '0xAlphaHunter',  initials: '0A', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', quote: 'the liquidity scanner flagged an unlocked lp. token rugged 3 hours later. this thing works.' },
-              { handle: '@basedegen99',    name: 'BaseDegen99',    initials: 'BD', grad: 'linear-gradient(135deg,#a78bfa,#3b82f6)', quote: 'clark ai is the real deal. asked about a token and got a full breakdown in 5 seconds. insane.' },
+              { handle: '@_Foster_x',   name: 'Foster',          initials: 'F', grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', avatar: '/testimonials/foster.png',     date: 'May 7, 2026',  verified: true,  quote: 'This is going to change the game forever and for the next generation coming up.' },
+              { handle: '@Vicrypt_01',  name: 'Vicrypt🔥',       initials: 'V', grad: 'linear-gradient(135deg,#f97316,#ec4899)', avatar: '/testimonials/vicrypt.png',    date: 'May 7, 2026',  verified: true,  quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
+              { handle: '@Veeekthorr', name: 'Victor xx',         initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', avatar: '/testimonials/victor.png',     date: 'May 7, 2026',  verified: true,  quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
+              { handle: '@TyeSeen',    name: 'TYSON~OF~WEB3📊',  initials: 'T', grad: 'linear-gradient(135deg,#4ade80,#2DD4BF)', avatar: '/testimonials/tyson.png',      date: 'Apr 29, 2026', verified: true,  quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
+              { handle: '@Big_Wealthz', name: 'Big Wealth',       initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', avatar: '/testimonials/big-wealth.png', date: 'Apr 29, 2026', verified: true,  quote: 'know what whales are doing before Twitter even wakes up.' },
+              { handle: '@StardomJnr', name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#f59e0b,#f97316)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
             ].map((t, i) => (
               <Reveal key={i} delayMs={i * 90}><div
                 className="mobile-static-card"
@@ -996,48 +1039,37 @@ export default function HomePage() {
               >
                 {/* Header row: avatar + name/handle */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  {/* Avatar */}
-                  <div style={{
-                    width: '44px', height: '44px', borderRadius: '50%',
-                    background: t.grad,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    flexShrink: 0,
-                    fontSize: '14px', fontWeight: 800, color: '#fff',
-                    letterSpacing: '-0.02em',
-                  }}>
-                    {t.initials}
-                  </div>
+                  {/* Avatar — image when file present, gradient initials fallback */}
+                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} />
                   {/* Name + handle */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
                       <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
-                      {/* Verified blue tick */}
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
-                        <circle cx="12" cy="12" r="12" fill="#1d9bf0"/>
-                        <path d="M9.5 16.5l-3.5-3.5 1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z" fill="#fff"/>
-                      </svg>
+                      {/* Verified blue tick — only where visible in screenshot */}
+                      {t.verified && (
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+                          <circle cx="12" cy="12" r="12" fill="#1d9bf0"/>
+                          <path d="M9.5 16.5l-3.5-3.5 1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z" fill="#fff"/>
+                        </svg>
+                      )}
                     </div>
                     <div style={{ fontSize: '12px', color: '#2DD4BF', fontWeight: 500 }}>{t.handle}</div>
                   </div>
-                  {/* X/Twitter logo top right */}
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="rgba(255,255,255,0.25)" style={{ flexShrink: 0 }}>
+                  {/* Subtle X icon */}
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="rgba(255,255,255,0.18)" style={{ flexShrink: 0 }}>
                     <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.261 5.632zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
                   </svg>
                 </div>
 
-                {/* Stars */}
-                <div style={{ display: 'flex', gap: '2px' }}>
-                  {[...Array(5)].map((_, s) => (
-                    <svg key={s} width="14" height="14" viewBox="0 0 24 24" fill="#fbbf24">
-                      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>
-                    </svg>
-                  ))}
-                </div>
-
                 {/* Quote */}
-                <p style={{ fontSize: '14px', lineHeight: 1.65, color: 'rgba(255,255,255,0.85)', margin: 0, fontWeight: 400, flex: 1 }}>
+                <p style={{ fontSize: '14px', lineHeight: 1.65, color: 'rgba(255,255,255,0.85)', margin: 0, fontWeight: 400, flex: 1, whiteSpace: 'pre-line' }}>
                   {t.quote}
                 </p>
+
+                {/* Date */}
+                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.28)', fontWeight: 500, letterSpacing: '0.02em' }}>
+                  {t.date}
+                </div>
               </div></Reveal>
             ))}
           </div>
@@ -1317,8 +1349,18 @@ export default function HomePage() {
 
         {/* ── Pricing ──────────────────────────────────────────────────────── */}
         <section style={{ position: 'relative', zIndex: 1, padding: '88px 24px 96px' }}>
-          {/* Top separator */}
-          <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.25), rgba(139,92,246,0.25), transparent)' }} />
+          {/* Glowing horizon separator */}
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,.52) 25%, rgba(168,85,247,.52) 55%, rgba(251,191,36,.28) 80%, transparent 100%)', boxShadow: '0 0 28px rgba(34,211,238,.28), 0 0 48px rgba(168,85,247,.16)' }} />
+          {/* Cyan arc — bottom-left sweep */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '-30%', right: '-30%', bottom: -180, height: 420, borderTop: '2px solid rgba(34,211,238,.55)', borderRadius: '60% 60% 0 0 / 100% 100% 0 0', boxShadow: '0 -18px 80px rgba(34,211,238,.42), 0 -10px 110px rgba(59,130,246,.22)', pointerEvents: 'none' }} />
+          {/* Purple arc — center sweep */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '-22%', right: '-22%', bottom: -200, height: 420, borderTop: '1px solid rgba(168,85,247,.40)', borderRadius: '56% 56% 0 0 / 100% 100% 0 0', boxShadow: '0 -8px 56px rgba(168,85,247,.18)', pointerEvents: 'none' }} />
+          {/* Gold glow — Elite right side */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', right: '-8%', top: '10%', bottom: 0, width: '38%', background: 'radial-gradient(ellipse at 95% 60%, rgba(251,191,36,.11) 0%, transparent 55%)', pointerEvents: 'none' }} />
+          {/* Purple blob — Pro center-left */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '15%', top: '20%', width: '30%', height: '60%', background: 'radial-gradient(ellipse at 50% 50%, rgba(139,92,246,.10) 0%, transparent 65%)', pointerEvents: 'none' }} />
+          {/* Deep bottom fill */}
+          <div style={{ position: 'absolute', inset: 'auto -20% -100px -20%', height: 300, background: 'radial-gradient(ellipse at 50% 0%, rgba(7,12,28,.95) 0%, transparent 80%)', pointerEvents: 'none' }} />
 
           {/* Header */}
           <Reveal><div style={{ textAlign: 'center', marginBottom: '48px' }}>
@@ -1341,7 +1383,7 @@ export default function HomePage() {
               {
                 id: 'free', label: 'FREE', labelColor: '#ec4899', price: '$0',
                 billing: 'forever free · no card required', engine: 'CORTEX LITE', engineColor: 'rgba(236,72,153,0.65)',
-                cta: 'Get Started Free', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null,
+                cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null,
                 bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '20px 16px 18px', mt: '0',
                 sections: [
                   { title: 'Token Scanner', items: ['Price, liquidity, volume, 24h change', 'Basic token info only', 'No AI verdict'] },
@@ -1352,8 +1394,8 @@ export default function HomePage() {
               },
               {
                 id: 'pro', label: 'PRO', labelColor: '#2DD4BF', price: '$30',
-                billing: 'per month · 7-day free trial', engine: 'CORTEX STANDARD', engineColor: 'rgba(45,212,191,0.65)',
-                cta: 'Start Free Trial', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR',
+                billing: 'per month', engine: 'CORTEX STANDARD', engineColor: 'rgba(45,212,191,0.65)',
+                cta: 'Pay with Crypto', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR',
                 bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '20px 16px 18px', mt: '-8px',
                 sections: [
                   { title: 'Everything in Free, plus', items: ['Full Token Scanner', 'Full Liquidity Safety', 'Wallet Scanner', 'Dev Wallet Detector', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Clark AI — 50 prompts / day'] },
@@ -1361,8 +1403,8 @@ export default function HomePage() {
               },
               {
                 id: 'elite', label: 'ELITE', labelColor: '#fbbf24', price: '$60',
-                billing: 'per month · 7-day free trial', engine: 'CORTEX FULL INTELLIGENCE', engineColor: 'rgba(251,191,36,0.75)',
-                cta: 'Unlock Elite', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'FULL INTELLIGENCE',
+                billing: 'per month', engine: 'CORTEX FULL INTELLIGENCE', engineColor: 'rgba(251,191,36,0.75)',
+                cta: 'Pay with Crypto', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'FULL INTELLIGENCE',
                 bg: 'rgba(16,12,4,0.95)', radius: '18px', pad: '24px 22px 20px', mt: '-14px',
                 sections: [
                   { title: 'Everything in Pro, plus', items: ['Clark AI — unlimited prompts', 'Auto Clark verdict on every scan', 'Smart money tracking', 'Advanced whale alerts', 'Priority CORTEX processing', 'Early access to new features'] },
@@ -1452,20 +1494,14 @@ export default function HomePage() {
       </div>
 
       {/* ── Footer ───────────────────────────────────────────────────────────── */}
+      {/* Glowing horizon line above footer */}
+      <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,.52) 25%, rgba(168,85,247,.52) 55%, rgba(251,191,36,.28) 80%, transparent 100%)', boxShadow: '0 0 32px rgba(34,211,238,.30), 0 0 52px rgba(168,85,247,.18)', position: 'relative', zIndex: 2 }} />
       <footer style={{
-        background: 'linear-gradient(180deg, #05060d 0%, #05050b 100%)',
+        background: 'rgba(2,5,13,.96)',
         position: 'relative', zIndex: 1,
         padding: '72px 32px 64px',
-        borderTop: '1px solid rgba(167,139,250,0.16)',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
+        backdropFilter: 'blur(8px)',
       }}>
-        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(180deg, #05060d 0%, #04050c 100%)' }} />
-
-        {/* Premium top separator */}
-        <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0, height: '1px',
-          background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.26) 28%, rgba(167,139,250,0.5) 50%, rgba(45,212,191,0.26) 72%, transparent 100%)',
-        }} />
 
         <div className="mob-footer-grid" style={{ maxWidth: '1120px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1.1fr 1fr 1fr', gap: '42px', alignItems: 'start', position: 'relative' }}>
 
@@ -1484,7 +1520,7 @@ export default function HomePage() {
               Scan wallets, track whales, detect pumps, and get AI-powered analysis from Clark — all in one terminal.
             </div>
             {/* Social pills */}
-            <div style={{ display: 'flex', gap: '10px', position: 'relative' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', position: 'relative' }}>
               <Link
                 href="https://x.com/chainlens__ai"
                 target="_blank" rel="noopener noreferrer"
@@ -1527,6 +1563,34 @@ export default function HomePage() {
                 </svg>
                 Telegram
               </Link>
+              <a
+                href="mailto:chainlensai@gmail.com"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '7px',
+                  padding: '8px 16px', borderRadius: '999px',
+                  background: 'rgba(12,14,24,0.72)',
+                  border: '1px solid rgba(45,212,191,0.24)',
+                  boxShadow: '0 0 0 1px rgba(255,255,255,0.02) inset',
+                  fontSize: '12px', fontWeight: 600, color: 'rgba(226,232,240,0.68)',
+                  textDecoration: 'none',
+                  transition: 'border-color 150ms, color 150ms, background 150ms, box-shadow 150ms',
+                }}
+                onMouseEnter={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(45,212,191,0.54)'; el.style.color = '#99f6e4'; el.style.background = 'rgba(45,212,191,0.08)'; el.style.boxShadow = '0 0 24px rgba(45,212,191,0.18)' }}
+                onMouseLeave={e => { const el = e.currentTarget as HTMLAnchorElement; el.style.borderColor = 'rgba(45,212,191,0.24)'; el.style.color = 'rgba(226,232,240,0.68)'; el.style.background = 'rgba(12,14,24,0.72)'; el.style.boxShadow = '0 0 0 1px rgba(255,255,255,0.02) inset' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                </svg>
+                Email
+              </a>
+            </div>
+            {/* Support contact line */}
+            <div style={{ marginTop: '14px', fontSize: '11.5px', color: 'rgba(148,163,184,0.52)', lineHeight: 1.5, position: 'relative' }}>
+              Support &amp; legal:{' '}
+              <a href="mailto:chainlensai@gmail.com" style={{ color: 'rgba(45,212,191,0.72)', textDecoration: 'none', fontWeight: 500 }}
+                onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.color = '#2DD4BF' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.color = 'rgba(45,212,191,0.72)' }}
+              >chainlensai@gmail.com</a>
             </div>
           </div></Reveal>
 

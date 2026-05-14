@@ -239,12 +239,17 @@ export default function Navbar() {
           .nav-live-badge { display: none !important; }
           .mob-nav-links { display: none !important; }
           .mob-ham { display: flex !important; }
+          /* Hide Sign In from top bar — it lives in the mobile menu instead */
+          .mob-auth-wrap .btn-signin { display: none !important; }
+          .nav-shell { gap: 16px !important; }
         }
         @media (max-width: 767px) {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 10px 12px !important; }
-          .nav-shell { height: 58px !important; border-radius: 16px !important; }
-          .mob-auth-wrap { display: none !important; }
+          .nav-shell { height: 58px !important; border-radius: 16px !important; gap: 0 !important; padding: 0 14px !important; }
+          /* Show Get Access, keep Sign In hidden (handled above) */
+          .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: 8px !important; }
+          .btn-access { padding: 9px 14px !important; font-size: 11px !important; }
         }
       `}</style>
 
@@ -520,6 +525,7 @@ export default function Navbar() {
           <Link href="/pricing"   className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Pricing</Link>
           <Link href="/affiliate" className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Affiliate</Link>
           <Link href="/about"     className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
+          <Link href="/contact"   className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Contact</Link>
 
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '16px 0' }} />
 

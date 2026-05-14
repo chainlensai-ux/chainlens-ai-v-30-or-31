@@ -10,6 +10,11 @@ export const projectId =
   ''
 export const walletConnectEnabled = projectId.length > 0
 
+const persistOptions = {
+  ssr: true,
+  storage: createStorage({ storage: cookieStorage }),
+} as const
+
 export const wagmiConfig = walletConnectEnabled
   ? defaultWagmiConfig({
       projectId,
@@ -21,6 +26,7 @@ export const wagmiConfig = walletConnectEnabled
         url: 'https://chainlens.ai',
         icons: ['https://chainlens.ai/icon.png'],
       },
+      ...persistOptions,
     })
   : createConfig({
       chains: [base],
@@ -29,4 +35,5 @@ export const wagmiConfig = walletConnectEnabled
       transports: {
         [base.id]: http(),
       },
+      ...persistOptions,
     })

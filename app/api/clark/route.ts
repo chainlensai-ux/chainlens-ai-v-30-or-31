@@ -21,7 +21,7 @@ const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5
 let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite' } = {}
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 function clarkActor(req: NextRequest, authenticated: boolean): string { return authenticated ? (req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}`) : `ip:${clarkIp(req)}` }
-type ClarkRateResult = { allowed: true } | { allowed: false; window: 'minute' | 'daily' }
+type ClarkRateResult = { allowed: true; commitDaily: () => void } | { allowed: false; window: 'minute' | 'daily' }
 function checkClarkRate(actor: string, planKey: string): ClarkRateResult {
   const now = Date.now()
   const minuteKey = `clark:${actor}:${planKey}:minute`
@@ -35,8 +35,12 @@ function checkClarkRate(actor: string, planKey: string): ClarkRateResult {
   const dailyActive = Boolean(curDaily && curDaily.resetAt > now)
   if (dailyActive && curDaily!.count >= dailyLim) return { allowed: false, window: 'daily' }
   if (!minuteActive) { clarkRateMinute.set(minuteKey, { count: 1, resetAt: now + 60_000 }) } else { curMinute!.count += 1 }
-  if (!dailyActive) { clarkRateDaily.set(dailyKey, { count: 1, resetAt: now + 24 * 60 * 60 * 1000 }) } else { curDaily!.count += 1 }
-  return { allowed: true }
+  const commitDaily = () => {
+    const cur = clarkRateDaily.get(dailyKey)
+    const active = Boolean(cur && cur.resetAt > Date.now())
+    if (!active) { clarkRateDaily.set(dailyKey, { count: 1, resetAt: Date.now() + 24 * 60 * 60 * 1000 }) } else { cur!.count += 1 }
+  }
+  return { allowed: true, commitDaily }
 }
 
 // ---------- Types ----------
@@ -194,6 +198,29 @@ function requireEnv(name: string, value: string | undefined): string {
 function extractAddress(text: string): string | null {
   const match = text.match(/0x[a-fA-F0-9]{40}/);
   return match ? match[0] : null;
+}
+
+const ENS_NAME_RE = /\b([a-z0-9][a-z0-9-]*\.(?:base\.eth|cb\.id|eth))\b/i
+function extractEnsName(text: string): string | null {
+  const m = text.match(ENS_NAME_RE)
+  if (!m) return null
+  return m[1].toLowerCase().replace(/[.,;:!?'"]+$/, '')
+}
+async function resolveEnsOrBasename(name: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.ensdata.net/${encodeURIComponent(name)}`, {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(4500),
+    })
+    if (!res.ok) return null
+    const data = await res.json() as Record<string, unknown>
+    const addr = typeof data?.address === 'string' ? data.address : null
+    if (addr && /^0x[a-fA-F0-9]{40}$/.test(addr)) return addr
+  } catch { /* timeout or network error */ }
+  return null
+}
+function isValidationOnlyAnalysis(analysis: string): boolean {
+  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token/i.test(analysis)
 }
 
 function idToAddress(id: string): string {
@@ -4908,7 +4935,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return { feature: "clark-ai", chain, mode: "casual_help", intent: "strategy", toolsUsed: [], analysis: buildFinancialAdviceReply(prompt) };
   }
   if (directIntent.intent === "wallet_analysis" && !directIntent.address) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data." };
+    const ensName = extractEnsName(prompt)
+    if (ensName) {
+      const resolved = await resolveEnsOrBasename(ensName)
+      if (resolved) {
+        const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolved }, authHeader ?? undefined)
+        const w = (walletRes.json ?? {}) as Record<string, unknown>
+        const resolvedNote = `Resolved wallet: **${ensName}** → \`${resolved}\`\n\n`
+        if (walletRes.ok && Object.keys(w).length > 0) {
+          const snapshot = normalizeWalletSnapshotEvidence(w, resolved)
+          return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: resolvedNote + formatWalletBalanceSummary(snapshot) }
+        }
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: resolvedNote + "I couldn't pull wallet data for that address right now. Try pasting the 0x address directly or use Wallet Scanner." }
+      }
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: `I couldn't resolve **${ensName}** to a wallet address. Try pasting the 0x address directly, or check the name spelling.` }
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet (or a .base.eth / .eth name) and I'll analyze the available data." };
   }
   if (directIntent.intent === "whale_alert" && !directIntent.address) {
     return await handleWhaleAlertFeed(prompt, body, origin, authHeader);
@@ -5700,6 +5742,8 @@ export async function POST(req: NextRequest) {
     }
 
     const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) }
+    const resultAnalysis = typeof (result as Record<string, unknown>)?.analysis === 'string' ? (result as Record<string, unknown>).analysis as string : ''
+    if (!isValidationOnlyAnalysis(resultAnalysis)) rateResult.commitDaily()
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
     clarkCache.set(cacheKey, { exp: Date.now() + cacheTtl, payload: normalized })
     return NextResponse.json(normalized, { status: 200 });
