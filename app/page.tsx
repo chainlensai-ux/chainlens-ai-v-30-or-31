@@ -176,7 +176,7 @@ function AvatarOrInitials({ src, initials, grad, name }: { src: string; initials
         aria-label={`${name} profile avatar`}
         width={44}
         height={44}
-        style={{ width: '44px', height: '44px', objectFit: 'cover', objectPosition: 'center', borderRadius: '50%', display: 'block' }}
+        style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', display: 'block' }}
         onError={e => {
           const img = e.currentTarget;
           img.style.display = 'none';
