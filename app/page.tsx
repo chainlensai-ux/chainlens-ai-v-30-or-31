@@ -10,26 +10,23 @@ const Reveal = ({ children }: { children: ReactNode; [key: string]: unknown }) =
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
 
+// Base-native tokens only — static fallback (live feed via /api/trending when available)
 const TICKER = [
-  { sym: 'ADA',  price: '$0.2493', pct: '+3.88%' },
-  { sym: 'AVAX', price: '$9.47',   pct: '+1.25%' },
-  { sym: 'DOGE', price: '$0.0963', pct: '+3.55%' },
-  { sym: 'DOT',  price: '$1.26',   pct: '+8.60%' },
-  { sym: 'LINK', price: '$9.29',   pct: '+2.44%' },
-  { sym: 'UNI',  price: '$3.27',   pct: '+3.63%' },
-  { sym: 'LTC',  price: '$55.50',  pct: '+2.21%' },
-  { sym: 'BCH',  price: '$439.90', pct: '+1.39%' },
-  { sym: 'XLM',  price: '$0.1619', pct: '+3.78%' },
-  { sym: 'ATOM', price: '$1.80',   pct: '+3.35%' },
-  { sym: 'XMR',  price: '$344.77', pct: '+1.22%' },
-  { sym: 'ETC',  price: '$8.55',   pct: '+2.79%' },
-  { sym: 'FIL',  price: '$0.9692', pct: '+8.31%' },
-  { sym: 'AAVE', price: '$106.45', pct: '+5.66%' },
-  { sym: 'MKR',  price: '$1,773',  pct: '+0.78%' },
-  { sym: 'OP',   price: '$0.1227', pct: '+8.46%' },
-  { sym: 'ARB',  price: '$0.1190', pct: '+5.54%' },
-  { sym: 'NEAR', price: '$1.43',   pct: '+6.09%' },
-  { sym: 'FTM',  price: '$0.0471', pct: '+3.84%' },
+  { sym: 'WETH',    price: '$2,481',      pct: '+1.44%' },
+  { sym: 'cbBTC',   price: '$103,510',    pct: '+2.06%' },
+  { sym: 'USDC',    price: '$1.000',      pct: '+0.02%' },
+  { sym: 'VIRTUAL', price: '$1.92',       pct: '+4.87%' },
+  { sym: 'AERO',    price: '$0.8140',     pct: '+3.22%' },
+  { sym: 'BRETT',   price: '$0.0708',     pct: '+6.91%' },
+  { sym: 'DEGEN',   price: '$0.003780',   pct: '+3.55%' },
+  { sym: 'TOSHI',   price: '$0.0001241',  pct: '+5.18%' },
+  { sym: 'NORMIE',  price: '$0.002140',   pct: '+7.32%' },
+  { sym: 'CLANKER', price: '$8.14',       pct: '+11.6%' },
+  { sym: 'MOCHI',   price: '$0.006210',   pct: '+4.28%' },
+  { sym: 'KEYCAT',  price: '$0.004380',   pct: '+5.44%' },
+  { sym: 'SERAPH',  price: '$0.508',      pct: '+2.91%' },
+  { sym: 'HIGHER',  price: '$0.0312',     pct: '+9.15%' },
+  { sym: 'BASED',   price: '$0.0004170',  pct: '+8.74%' },
 ]
 
 // ─── Feature cards ────────────────────────────────────────────────────────────
@@ -263,6 +260,15 @@ export default function HomePage() {
           .home-heavy-visual, .home-particles { display: none !important; }
           .home-ticker-track, .card-pro, .card-elite, .cortex-badge, .hero-horizon { animation: none !important; }
           .pricing-card, .feat-card { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+        }
+
+        /* Laptop/short-screen hero fix: reduce padding + feature row padding so buttons stay visible */
+        @media (min-width: 768px) and (max-height: 860px) {
+          .mob-hero-main { padding: 56px 20px 36px !important; }
+          .hero-feat-row > div { padding: 14px 12px !important; }
+        }
+        @media (min-width: 768px) and (max-height: 960px) and (min-height: 861px) {
+          .mob-hero-main { padding: 64px 20px 44px !important; }
         }
 
         @media (max-width: 767px) {
@@ -518,7 +524,7 @@ export default function HomePage() {
             border: '1px solid rgba(45,212,191,0.32)',
             borderRadius: '999px',
             padding: '6px 18px',
-            marginBottom: '24px',
+            marginBottom: 'min(22px, 2.6vh)',
             boxShadow: '0 0 12px rgba(45,212,191,0.10), 0 1px 0 rgba(255,255,255,0.04) inset',
           }}>
             <span style={{
@@ -543,11 +549,11 @@ export default function HomePage() {
 
           {/* Headline */}
           <h1 style={{
-            fontSize: 'clamp(52px, 7.2vw, 102px)',
+            fontSize: 'clamp(38px, 5.2vw, 92px)',
             fontWeight: 900,
             lineHeight: 1.03,
             letterSpacing: '-0.025em',
-            margin: '0 0 24px',
+            margin: '0 0 min(22px, 2.5vh)',
             maxWidth: '1100px',
             textShadow: '0 8px 30px rgba(0,0,0,0.46)',
           }}>
@@ -584,7 +590,7 @@ export default function HomePage() {
             color: 'rgba(255,255,255,0.66)',
             lineHeight: 1.62,
             maxWidth: '700px',
-            margin: '0 0 38px',
+            margin: '0 0 min(36px, 3.6vh)',
             fontWeight: 400,
           }}>
             Ask Clark anything — scan wallets, find early pumps, track
@@ -598,7 +604,7 @@ export default function HomePage() {
             gap: '0',
             maxWidth: '1060px',
             width: '100%',
-            margin: '8px 0 36px',
+            margin: '6px 0 min(30px, 2.8vh)',
             background: 'linear-gradient(180deg, rgba(6,11,28,0.82) 0%, rgba(5,10,24,0.66) 100%)',
             border: '1px solid rgba(148,163,184,0.24)',
             borderRadius: '22px',
@@ -760,25 +766,31 @@ export default function HomePage() {
 
         </main>
 
-        {/* Token price ticker — live prices bar */}
+        {/* Base momentum ticker */}
         <div style={{
           position: 'relative', zIndex: 1,
-          borderTop: '1px solid rgba(255,255,255,0.06)',
-          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          borderTop: '1px solid rgba(45,212,191,0.12)',
+          borderBottom: '1px solid rgba(255,255,255,0.05)',
           background: 'linear-gradient(180deg, #04040b 0%, #05050c 100%)',
           height: '44px', overflow: 'hidden',
           display: 'flex', alignItems: 'center',
         }}>
-          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '80px', background: 'linear-gradient(90deg, #05050c 0%, transparent 100%)', zIndex: 2, pointerEvents: 'none' }} />
+          {/* BASE MOVERS label — pinned left */}
+          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '6px', padding: '0 14px 0 16px', borderRight: '1px solid rgba(45,212,191,0.18)', height: '100%', background: 'linear-gradient(90deg, #04040b 60%, transparent 100%)', zIndex: 3, position: 'relative' }}>
+            <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.8)', flexShrink: 0 }} />
+            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', whiteSpace: 'nowrap' }}>BASE MOVERS</span>
+          </div>
           <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '80px', background: 'linear-gradient(270deg, #05050c 0%, transparent 100%)', zIndex: 2, pointerEvents: 'none' }} />
-          <div className="home-ticker-track" style={{ display: 'flex', gap: '0', whiteSpace: 'nowrap', animation: 'ticker-scroll 44s linear infinite', willChange: 'transform' }}>
-            {[...TICKER, ...TICKER].map((t, i) => (
-              <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '0 32px', fontSize: '11.5px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
-                <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
-                <span style={{ color: 'rgba(255,255,255,0.40)' }}>{t.price}</span>
-                <span style={{ color: '#4ade80', fontWeight: 600 }}>{t.pct}</span>
-              </span>
-            ))}
+          <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+            <div className="home-ticker-track" style={{ display: 'flex', gap: '0', whiteSpace: 'nowrap', animation: 'ticker-scroll 52s linear infinite', willChange: 'transform' }}>
+              {[...TICKER, ...TICKER].map((t, i) => (
+                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '0 28px', fontSize: '11.5px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
+                  <span style={{ color: 'rgba(255,255,255,0.38)' }}>{t.price}</span>
+                  <span style={{ color: '#4ade80', fontWeight: 600 }}>{t.pct}</span>
+                </span>
+              ))}
+            </div>
           </div>
         </div>
 
