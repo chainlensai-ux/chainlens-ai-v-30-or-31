@@ -1,6 +1,6 @@
 'use client'
 
-import { WagmiProvider } from 'wagmi'
+import { WagmiProvider, type State } from 'wagmi'
 import { createWeb3Modal } from '@web3modal/wagmi/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig, projectId, walletConnectEnabled } from '@/lib/wallet'
@@ -40,7 +40,7 @@ function shouldEnableAndroidSafeMode() {
   }
 }
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({ children, initialState }: { children: React.ReactNode; initialState?: State }) {
   const [androidDebugBadge, setAndroidDebugBadge] = useState(false)
   const [androidDebugText, setAndroidDebugText] = useState('')
 
@@ -69,7 +69,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
 
   return (
-    <WagmiProvider config={wagmiConfig} reconnectOnMount>
+    <WagmiProvider config={wagmiConfig} initialState={initialState}>
       <QueryClientProvider client={queryClient}>
         {children}
         {androidDebugBadge && (
