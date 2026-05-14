@@ -1296,55 +1296,134 @@ export default function HomePage() {
         </section>
 
         {/* ── CTA ─────────────────────────────────────────────────────────── */}
-        <section style={{
-          position: 'relative', zIndex: 1,
-          padding: '80px 24px 100px',
-          textAlign: 'center',
-        }}>
-          <h2 className="section-heading" style={{
-            fontSize: 'clamp(26px, 3.5vw, 40px)', fontWeight: 800,
-            letterSpacing: '-0.02em', lineHeight: 1.15,
-            color: '#f8fafc', margin: '0 0 36px',
+        <section style={{ position: 'relative', zIndex: 1, padding: '0 24px 0', overflow: 'hidden' }}>
+          {/* Full-width glass card */}
+          <div style={{
+            maxWidth: '1100px', margin: '0 auto',
+            position: 'relative',
+            background: 'linear-gradient(135deg, rgba(10,16,36,0.95) 0%, rgba(6,8,20,0.98) 100%)',
+            border: '1px solid rgba(45,212,191,0.18)',
+            borderRadius: '28px',
+            padding: 'clamp(52px, 8vw, 88px) clamp(24px, 6vw, 80px)',
+            textAlign: 'center',
+            boxShadow: '0 0 0 1px rgba(139,92,246,0.10), 0 40px 120px rgba(0,0,0,0.60), 0 0 80px rgba(45,212,191,0.08)',
+            overflow: 'hidden',
           }}>
-            Ready to see the market before it moves?
-          </h2>
-          <Link href="/terminal" style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '10px',
-            padding: '16px 44px',
-            borderRadius: '12px',
-            background: 'linear-gradient(90deg, #2DD4BF 0%, #0ea5e9 100%)',
-            color: '#07070f',
-            fontSize: '14px',
-            fontWeight: 800,
-            letterSpacing: '0.12em',
-            textTransform: 'uppercase',
-            textDecoration: 'none',
-            boxShadow: '0 0 40px rgba(45,212,191,0.45), 0 0 80px rgba(45,212,191,0.15)',
-            transition: 'opacity 0.15s, transform 0.15s, box-shadow 0.15s',
-          }}
-            onMouseEnter={e => {
-              const el = e.currentTarget as HTMLAnchorElement
-              el.style.opacity   = '0.90'
-              el.style.transform = 'translateY(-2px)'
-              el.style.boxShadow = '0 0 56px rgba(45,212,191,0.60), 0 0 100px rgba(45,212,191,0.22)'
-            }}
-            onMouseLeave={e => {
-              const el = e.currentTarget as HTMLAnchorElement
-              el.style.opacity   = '1'
-              el.style.transform = 'translateY(0)'
-              el.style.boxShadow = '0 0 40px rgba(45,212,191,0.45), 0 0 80px rgba(45,212,191,0.15)'
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="2"/>
-              <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              <path d="M7 8l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              <line x1="13" y1="11" x2="17" y2="11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-            </svg>
-            Enter Terminal
-          </Link>
+            {/* Ambient background glows */}
+            <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden', borderRadius: '28px' }}>
+              <div style={{ position: 'absolute', top: '-40%', left: '50%', transform: 'translateX(-50%)', width: '70%', height: '160%', background: 'radial-gradient(ellipse at 50% 0%, rgba(45,212,191,0.13) 0%, rgba(139,92,246,0.08) 40%, transparent 70%)', pointerEvents: 'none' }} />
+              <div style={{ position: 'absolute', bottom: '-30%', left: '-10%', width: '55%', height: '100%', background: 'radial-gradient(ellipse at 0% 100%, rgba(56,189,248,0.07) 0%, transparent 60%)', pointerEvents: 'none' }} />
+              <div style={{ position: 'absolute', bottom: '-30%', right: '-10%', width: '55%', height: '100%', background: 'radial-gradient(ellipse at 100% 100%, rgba(168,85,247,0.07) 0%, transparent 60%)', pointerEvents: 'none' }} />
+              {/* Top accent line */}
+              <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.55) 35%, rgba(139,92,246,0.45) 65%, transparent)' }} />
+            </div>
+
+            {/* Live badge */}
+            <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '5px 14px', borderRadius: '999px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)', marginBottom: '28px' }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 8px rgba(74,222,128,0.85)', display: 'inline-block', flexShrink: 0 }} />
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.85)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                Live on Base — Beta v3
+              </span>
+            </div>
+
+            {/* Headline */}
+            <h2 className="section-heading" style={{ position: 'relative', fontSize: 'clamp(30px, 5vw, 58px)', fontWeight: 900, letterSpacing: '-0.03em', lineHeight: 1.08, margin: '0 0 22px', background: 'linear-gradient(135deg, #f1f5f9 0%, #2DD4BF 45%, #8b5cf6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+              See the market<br />before it moves.
+            </h2>
+
+            {/* Sub copy */}
+            <p style={{ position: 'relative', fontSize: 'clamp(14px, 1.8vw, 17px)', color: 'rgba(255,255,255,0.48)', maxWidth: '520px', margin: '0 auto 44px', lineHeight: 1.65, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+              Clark AI, CORTEX Engine, whale tracking, and real-time Base analytics — all in one terminal. Built for traders who need an edge.
+            </p>
+
+            {/* CTA buttons */}
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', flexWrap: 'wrap', marginBottom: '48px' }}>
+              <Link
+                href="/terminal"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '10px',
+                  padding: '15px 36px', borderRadius: '999px',
+                  background: 'linear-gradient(115deg, rgba(45,212,191,0.22) 0%, rgba(56,189,248,0.30) 30%, rgba(124,58,237,0.44) 70%, rgba(168,85,247,0.66) 100%)',
+                  border: '1px solid rgba(167,139,250,0.65)',
+                  color: '#fff', fontSize: '14px', fontWeight: 800,
+                  letterSpacing: '0.08em', textTransform: 'uppercase',
+                  textDecoration: 'none',
+                  boxShadow: '0 0 24px rgba(45,212,191,0.28), 0 0 40px rgba(139,92,246,0.22)',
+                  transition: 'box-shadow 0.15s, transform 0.15s, border-color 0.15s',
+                  whiteSpace: 'nowrap',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLAnchorElement
+                  el.style.transform = 'translateY(-2px)'
+                  el.style.boxShadow = '0 0 40px rgba(45,212,191,0.45), 0 0 64px rgba(139,92,246,0.35)'
+                  el.style.borderColor = 'rgba(196,181,253,0.90)'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLAnchorElement
+                  el.style.transform = 'translateY(0)'
+                  el.style.boxShadow = '0 0 24px rgba(45,212,191,0.28), 0 0 40px rgba(139,92,246,0.22)'
+                  el.style.borderColor = 'rgba(167,139,250,0.65)'
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                  <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="2"/>
+                  <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  <path d="M7 8l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  <line x1="13" y1="11" x2="17" y2="11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                </svg>
+                Enter Terminal
+              </Link>
+              <Link
+                href="/pricing"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '8px',
+                  padding: '15px 32px', borderRadius: '999px',
+                  background: 'rgba(255,255,255,0.05)',
+                  border: '1px solid rgba(255,255,255,0.14)',
+                  color: 'rgba(255,255,255,0.72)', fontSize: '14px', fontWeight: 600,
+                  letterSpacing: '0.06em', textTransform: 'uppercase',
+                  textDecoration: 'none',
+                  transition: 'background 0.15s, border-color 0.15s, color 0.15s',
+                  whiteSpace: 'nowrap',
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLAnchorElement
+                  el.style.background = 'rgba(255,255,255,0.09)'
+                  el.style.borderColor = 'rgba(255,255,255,0.28)'
+                  el.style.color = '#fff'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLAnchorElement
+                  el.style.background = 'rgba(255,255,255,0.05)'
+                  el.style.borderColor = 'rgba(255,255,255,0.14)'
+                  el.style.color = 'rgba(255,255,255,0.72)'
+                }}
+              >
+                View Pricing
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </Link>
+            </div>
+
+            {/* Trust row */}
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'clamp(16px, 4vw, 40px)', flexWrap: 'wrap', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '28px' }}>
+              {[
+                { icon: '⚡', label: 'Real-time Base data' },
+                { icon: '🧠', label: 'CORTEX AI scoring' },
+                { icon: '🐋', label: 'Whale intelligence' },
+                { icon: '🔒', label: 'No wallet custody' },
+              ].map(({ icon, label }) => (
+                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                  <span style={{ fontSize: '14px', lineHeight: 1 }}>{icon}</span>
+                  <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.38)', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Bottom spacer */}
+          <div style={{ height: 'clamp(64px, 8vw, 100px)' }} />
         </section>
 
         {/* ── Pricing ──────────────────────────────────────────────────────── */}
