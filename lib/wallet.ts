@@ -1,6 +1,7 @@
 import { defaultWagmiConfig } from '@web3modal/wagmi/react/config'
 import { base } from 'viem/chains'
-import { createConfig, http } from 'wagmi'
+import { createConfig, createStorage, http } from 'wagmi'
+import { cookieStorage } from 'wagmi'
 import { injected } from 'wagmi/connectors'
 
 export const projectId =
@@ -13,6 +14,7 @@ export const wagmiConfig = walletConnectEnabled
   ? defaultWagmiConfig({
       projectId,
       chains: [base],
+      storage: createStorage({ storage: cookieStorage }),
       metadata: {
         name: 'ChainLens AI',
         description: 'AI-powered Base analytics',
@@ -22,6 +24,7 @@ export const wagmiConfig = walletConnectEnabled
     })
   : createConfig({
       chains: [base],
+      storage: createStorage({ storage: cookieStorage }),
       connectors: [injected()],
       transports: {
         [base.id]: http(),
