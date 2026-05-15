@@ -1684,6 +1684,7 @@ export default function HomePage() {
                 { label: 'Pricing',   href: '/pricing'   },
                 { label: 'Affiliate', href: '/affiliate' },
                 { label: 'About',     href: '/about'     },
+                { label: 'Contact',   href: '/contact'   },
                 { label: 'Terms',     href: '/terms'     },
               ].map(l => (
                 <Link key={l.label} href={l.href} style={{ fontSize: '14px', fontWeight: 500, color: 'rgba(226,232,240,0.9)', textDecoration: 'none', transition: 'color 150ms' }}
