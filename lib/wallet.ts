@@ -42,8 +42,8 @@ export const wagmiConfig = walletConnectEnabled
       metadata: {
         name: 'ChainLens AI',
         description: 'AI-powered Base analytics',
-        url: 'https://chainlens.ai',
-        icons: ['https://chainlens.ai/icon.png'],
+        url: 'https://www.chainlensai.app',
+        icons: ['https://www.chainlensai.app/favicon.svg'],
       },
       ...persistOptions,
     })
