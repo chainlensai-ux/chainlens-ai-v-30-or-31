@@ -308,7 +308,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/\b(should i buy this|should i ape|should i buy)\b/i.test(t)) {
     return { intent: "financial_advice", address };
   }
-  if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock|what is slippage|explain slippage/i.test(t)) {
+  if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock|what is slippage|explain slippage|what is market cap|what is fdv|what is a honeypot|how do whale alerts work|how do pump alerts work|what is base radar|explain whale alerts?|explain pump alerts?/i.test(t)) {
     return { intent: "educational", address };
   }
   if (/how do i scan|where do i check deployer|how do i track a wallet|how do i use this|which feature|where should i go/i.test(t)) {
@@ -509,7 +509,7 @@ function extractLastTokenScanFromHistory(history: ClarkRequestBody["history"]): 
   const lines = getHistoryMessages(history);
   for (let i = lines.length - 1; i >= 0; i--) {
     const msg = lines[i] ?? "";
-    if (!msg.includes("CLARK TOKEN SCAN")) continue;
+    if (!msg.includes("TOKEN SCAN READ") && !msg.includes("CLARK TOKEN SCAN")) continue;
     const m = msg.match(/Contract:\s*(0x[a-fA-F0-9]{40})/i);
     if (m?.[1]) return { contractAddress: m[1], scanText: msg };
   }
@@ -542,12 +542,12 @@ function resolveClarkContext(message: string, history: ClarkRequestBody["history
   const followupWords = /\b(it|this|this token|this wallet|what about|go deeper|why|is it safe|dev wallet|liquidity|holders|risks|more)\b/i.test(normalized);
   const shortFollowup = /^(go|next|continue|deeper|full report|why|is it risky|what should i watch)$/i.test(normalized);
   const lastIntent: ClarkPlannerIntent | "unknown" =
-    /CLARK FULL REPORT|Bull case|Bear case/i.test(marketText) ? "token_full_report_request" :
+    /TOKEN SCAN READ|CLARK TOKEN SCAN|CLARK FULL REPORT|Bull case|Bear case/i.test(marketText) ? "token_full_report_request" :
     /Which Base token should I run the full report on/i.test(marketText) ? "token_full_report_request" :
     /I can run that, but I need a token contract first/i.test(marketText) ? "token_analysis" :
-    /Dev wallet read:/i.test(marketText) ? "dev_wallet" :
+    /DEV WALLET READ|Dev wallet read:/i.test(marketText) ? "dev_wallet" :
     /Liquidity read:/i.test(marketText) ? "liquidity_safety" :
-    /Wallet:|wallet quality|Asset: Wallet/i.test(marketText) ? "wallet_quality" :
+    /WALLET READ|Wallet:|wallet quality|Asset: Wallet/i.test(marketText) ? "wallet_quality" :
     /Base Market|what'?s pumping|movers?/i.test(marketText) ? "market" :
     "unknown";
 
@@ -933,7 +933,7 @@ function formatBaseMarketReply(candidates: BaseMarketCandidate[], total: number,
     const addr = c.tokenAddress ?? c.poolAddress ?? "unresolved";
     return `${idx}. ${c.symbol ?? "?"} — ${move}, vol ${vol}, liq ${liq} — ${reason}\n   Contract: ${addr}`;
   });
-  const header = extended ? "BASE MOVERS — extended list:" : "BASE MOVERS";
+  const header = extended ? "BASE MARKET READ — extended list:" : "BASE MARKET READ";
   const read = candidates.some((c) => (c.liquidityUsd ?? 0) > 100_000)
     ? "This list is led by tokens with real liquidity, but there are still noisy runners mixed in."
     : "This feed is mostly thinner-liquidity momentum; treat fast moves as high-risk until depth confirms.";
@@ -1220,6 +1220,12 @@ function buildEducationalReply(prompt: string): string {
   if (/dev wallet/.test(t)) return "A dev wallet is a deployer-linked wallet that can reveal insider coordination, funding links, or early sell pressure.";
   if (/holder concentration/.test(t)) return "Holder concentration means too much supply sits in a few wallets, increasing dump and manipulation risk.";
   if (/lp lock/.test(t)) return "LP lock matters because unlocked liquidity can be pulled, which can collapse tradability and price.";
+  if (/market cap/.test(t)) return "Market cap is the total value of all circulating tokens at current price. Low market cap means a small move in price requires less volume — high volatility, both directions.";
+  if (/fdv/.test(t)) return "FDV (fully diluted valuation) is market cap calculated using the max token supply, not just circulating. High FDV vs market cap means there's a lot of future dilution risk.";
+  if (/honeypot/.test(t)) return "A honeypot token lets you buy but blocks selling via a contract-level restriction. Always check sell simulation before entering any new token.";
+  if (/whale alert/.test(t)) return "Whale Alerts track large on-chain moves from monitored wallets. HIGH SIGNAL means the move is large, repeated, or from a tracked active wallet. WATCH means it's noteworthy but unconfirmed direction.";
+  if (/pump alert/.test(t)) return "Pump Alerts filter momentum tokens by volume expansion, price change, and liquidity quality. HIGH MOMENTUM means the move is broad and volume-backed; THIN MOONSHOT means big % move but thin liquidity.";
+  if (/base radar/.test(t)) return "Base Radar aggregates live Base chain pool data to surface the top movers by volume, price change, and liquidity depth. It's a discovery feed — not a trade signal.";
   return "Great question. Share the exact risk concept and I'll break it down quickly.";
 }
 
@@ -1255,7 +1261,7 @@ function detectLiveIntent(prompt: string): LiveIntent {
 function isWhaleFlowPrompt(message: string, history?: ClarkRequestBody["history"]): boolean {
   const t = message.toLowerCase().trim();
   if (extractAddress(message)) return false;
-  const directWhalePrompt = /\b(show base whales|base whales|show whales|whale alerts|whale alert|whale moves|whale activity|smart money moves|whales selling|summarize whale|whale feed|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows)\b/i.test(t);
+  const directWhalePrompt = /\b(show base whales|base whales|show whales|whale alerts|whale alert|whale moves|whale activity|smart money moves|whales selling|summarize whale|whale feed|what are whales buying on base|what whales are buying on base|what are whales buying|what whales are rotating into|what are whales rotating into|whale rotation|whale flows|base whale flows|smart money on base|what are smart wallets buying|what were whales buying last 7 days|last 7 days whale activity|last week whale activity|7d whale flows|whale buying|whale selling|whale movement|whales? buying\b|whale alerts? right now|show whale activity|whale accumulation|whale distribution)\b/i.test(t);
   if (directWhalePrompt) return true;
   const followupWhalePrompt = /\b(what are they rotating into|what are they buying|last 7 days|last week|7d)\b/i.test(t);
   if (!followupWhalePrompt) return false;
@@ -1297,13 +1303,15 @@ function isHolderQuestion(prompt: string): boolean {
 }
 function isPumpFeedPrompt(prompt: string): boolean {
   // Only explicit pump-alert feed requests — NOT general "pumping on base" market queries
-  return /\b(what are pump alerts right now|show pump alerts|open pump alerts|pump alert feed|refresh pump alerts|high momentum alerts)\b/i.test(prompt.toLowerCase())
+  const t = prompt.toLowerCase()
+  return /\b(what are pump alerts right now|show pump alerts|open pump alerts|pump alert feed|refresh pump alerts|high momentum alerts|latest pump alerts|which pump alerts matter)\b/i.test(t)
     || /^pump alerts?\b/i.test(prompt.trim().toLowerCase());
 }
 
 function isBaseMomentumPrompt(prompt: string): boolean {
   // Broad "what's pumping / running / moving on Base" → live Base market data, not pump-alerts feed
-  return /\b(what'?s pumping on base|what tokens are pumping|what'?s running on base|what'?s moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read)\b/i.test(prompt.toLowerCase());
+  const t = prompt.toLowerCase()
+  return /\b(what'?s pumping on base|what tokens are pumping|what'?s running on base|what'?s moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read|new deployments on base|new base deployments|what'?s hot on base right now|top base tokens|base runners|base gainers|what tokens are moving|what'?s moving|what'?s happening on base)\b/i.test(t);
 }
 
 function isPumpSourceFollowupPrompt(prompt: string): boolean {
@@ -1913,7 +1921,7 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
   if (snapshot.holdingsTop10.length < 3) notes.push("- Fewer than 3 priced holdings were available in this scan.");
 
   return [
-    "Wallet:",
+    "WALLET READ",
     shortAddress(snapshot.address),
     "",
     "Summary:",
@@ -1947,6 +1955,7 @@ async function callInternalApi(origin: string, path: string, payload: Record<str
     method: "POST",
     headers,
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(9000),
   });
   const json = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, json };
@@ -2089,6 +2098,7 @@ async function callGeckoTerminal(network: "base" | "eth", origin: string, option
   const perPage = options?.perPage ?? 20;
   const res = await fetch(`${origin}/api/proxy/gt?network=${network}&type=${type}&page=${page}&per_page=${perPage}`, {
     next: { revalidate: 30 },
+    signal: AbortSignal.timeout(8000),
   });
 
   if (!res.ok) {
@@ -2101,8 +2111,11 @@ async function callGeckoTerminal(network: "base" | "eth", origin: string, option
 
 // Uses req.nextUrl.origin so the call always targets the same deployment
 async function callTrending(origin: string): Promise<unknown[]> {
+  const authHeader = clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined
   const res = await fetch(`${origin}/api/trending`, {
     next: { revalidate: 30 },
+    signal: AbortSignal.timeout(8000),
+    headers: authHeader ? { Authorization: authHeader } : {},
   });
 
   if (!res.ok) {
@@ -3713,7 +3726,7 @@ function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
     report.liquidity.lpLocked === null ? "LP control not confirmed." : "",
   ]).filter(Boolean).slice(0, 5);
   return [
-    "CLARK TOKEN SCAN",
+    "TOKEN SCAN READ",
     `Asset: ${name} (${symbol})`,
     `Contract: ${address}`,
     `Verdict: ${verdict.verdict}`,
@@ -3800,7 +3813,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
   const lowCap = buildLowCapRead(report);
 
   return [
-    "CLARK TOKEN SCAN",
+    "TOKEN SCAN READ",
     `Asset: ${name} (${symbol})`,
     `Contract: ${address}`,
     `Verdict: ${verdict.verdict}`,
@@ -3859,7 +3872,7 @@ function renderDevWalletFocusedRead(
         ? "This is usable watch evidence, but not proof of malicious intent."
         : "This read is incomplete; treat as early warning only.";
   return [
-    "Dev wallet read:",
+    "DEV WALLET READ",
     `- Asset: ${tokenName} (${tokenSymbol})`,
     `- Contract: ${tokenAddress}`,
     `- Likely deployer: ${devWallet.deployerAddress ? shortAddress(devWallet.deployerAddress) : "Unverified"}`,
@@ -3882,7 +3895,7 @@ function renderLiquidityFocusedRead(
       ? "Liquidity structure is fragile. LP control not confirmed from provider."
       : "LP control not confirmed — limited visibility from available data.";
   return [
-    "Liquidity read:",
+    "LIQUIDITY READ",
     `- Asset: ${tokenName} (${tokenSymbol})`,
     `- Contract: ${tokenAddress}`,
     `- Pool depth: ${formatUsdShort(liquidity.liquidityUsd)}`,
@@ -4060,7 +4073,7 @@ function buildCasualContextualReply(prompt: string, lastScanText: string | null,
     return "Why what? Share context or a contract and I can break it down.";
   }
   if (/^explain this$/i.test(t)) {
-    if (recentContext.includes("CLARK TOKEN SCAN")) {
+    if (recentContext.includes("TOKEN SCAN READ") || recentContext.includes("CLARK TOKEN SCAN")) {
       const verdict = recentContext.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
       return `The token came back ${verdict}. ${
         verdict === "AVOID" ? "Confirmed risk flags from security simulation or contract checks." :
@@ -5142,7 +5155,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     structuredMarketList,
     clarkContext: body.clarkContext,
   });
-  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, verifiedPlan: clarkInternalCtx.verifiedPlan ?? 'free', authHeader: clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined });
+  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, verifiedPlan: verifiedPlan ?? clarkInternalCtx.verifiedPlan ?? 'free', authHeader: authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined) });
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {
@@ -5386,7 +5399,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       chain,
       mode: "analysis",
       analysis: [
-        "Dev wallet read:",
+        "DEV WALLET READ",
         `- Asset: ${tokenName} (${tokenSymbol})`,
         `- Contract: ${resolvedAddress}`,
         "- Likely deployer: Unverified",
@@ -5423,10 +5436,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       chain,
       mode: "analysis",
       analysis: [
-        "Liquidity/control could not be confirmed from current checks.",
+        "LIQUIDITY READ",
         `- Asset: ${tokenName} (${tokenSymbol})`,
         `- Contract: ${resolvedAddress}`,
-        "- Pool depth: Unverified",
+        "- Pool depth: Unverified — incomplete data in this pass",
         "- LP control: Unverified",
         "- Concentration: Unverified",
         "Worth monitoring once liquidity data is available.",
@@ -5652,7 +5665,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       mode: "casual_help",
       intent: plan.intent,
       toolsUsed,
-      analysis: "I can't do that yet. I can help with token scans, wallet reads, Whale Alerts, Pump Alerts, Base Radar, liquidity checks, and risk explanations.",
+      analysis: [
+        "I can help with on-chain intelligence on Base. Try one of these:",
+        "- \"scan BRETT\" — token risk, security, holders, and LP check",
+        "- \"show Base whales\" — current whale activity feed",
+        "- \"what's pumping on Base?\" — live Base market movers",
+        "- \"scan wallet 0x...\" — wallet holdings and behavior read",
+        "- \"liquidity check AERO\" — LP depth and control status",
+        "- \"show pump alerts\" — high-momentum pump alert feed",
+        "- \"who deployed BRETT\" — dev wallet and deployer check",
+      ].join("\n"),
     };
   }
   const memoryPrompt = historyContext
