@@ -425,6 +425,7 @@ export default function Navbar() {
             <Link href="/pricing"   className="nav-link">Pricing</Link>
             <Link href="/affiliate" className="nav-link">Affiliate</Link>
             <Link href="/about"     className="nav-link">About</Link>
+            <Link href="/contact"   className="nav-link">Contact</Link>
           </div>
 
           {/* Right: LIVE badge + auth buttons */}
