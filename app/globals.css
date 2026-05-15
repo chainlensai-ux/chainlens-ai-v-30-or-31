@@ -547,3 +547,28 @@ body.android-safe-mode div {
   filter: none !important;
   backdrop-filter: none !important;
 }
+
+/* ── Instant interaction feedback ─────────────────────────────────────────── */
+button, [role="button"], a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Smooth transitions for interactive elements */
+.btn-instant {
+  transition: transform 120ms ease, opacity 120ms ease, box-shadow 150ms ease;
+}
+.btn-instant:active {
+  transform: scale(0.98);
+}
+.btn-instant:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+/* Page transition smoothing */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
