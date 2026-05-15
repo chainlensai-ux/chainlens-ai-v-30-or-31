@@ -260,7 +260,7 @@ export default function AffiliatePage() {
           <div className="aff-stats-grid" style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'12px', marginBottom:'80px' }}>
             {([
               { accent:'#2DD4BF', rgb:'45,212,191',  value:'30%',         label:'Recurring commission',   sub:'Earn while users stay subscribed' },
-              { accent:'#8b5cf6', rgb:'139,92,246',  value:'Monthly',     label:'Manual payouts',         sub:'Paid in crypto during beta' },
+              { accent:'#8b5cf6', rgb:'139,92,246',  value:'Monthly',     label:'Manual payouts',         sub:'Manual monthly payouts in crypto' },
               { accent:'#f59e0b', rgb:'245,158,11',  value:'Quality',     label:'First program',          sub:'Partners reviewed manually' },
               { accent:'#67e8f9', rgb:'103,232,249', value:'Creator',     label:'Native program',         sub:'Built for X, Telegram, and Base' },
             ] as Array<{accent:string;rgb:string;value:string;label:string;sub:string}>).map(({ accent, rgb, value, label, sub }) => (

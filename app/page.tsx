@@ -1322,7 +1322,7 @@ export default function HomePage() {
             <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '5px 14px', borderRadius: '999px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)', marginBottom: '28px' }}>
               <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 8px rgba(74,222,128,0.85)', display: 'inline-block', flexShrink: 0 }} />
               <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.85)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                Live on Base — Beta v3
+                Live on Base — V3
               </span>
             </div>
 
