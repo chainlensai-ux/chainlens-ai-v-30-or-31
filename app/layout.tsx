@@ -8,17 +8,39 @@ import { Providers } from './providers'
 import MobileClarkDrawer from '@/components/MobileClarkDrawer'
 import { wagmiConfig } from '@/lib/wallet'
 
+const SITE_URL = 'https://www.chainlensai.app'
+const TITLE = 'ChainLens AI — Base Onchain Intelligence Terminal'
+const DESCRIPTION =
+  'Scan tokens, track whales, detect pumps, analyze wallets, and ask Clark AI what matters on Base.'
+
 export const metadata: Metadata = {
-  title: 'ChainLens AI — Crypto Intelligence Platform',
-  description:
-    'AI-powered crypto intelligence — wallet scanner, bear market scoring, paper trading and more.',
-  themeColor: '#06060a',
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  icons: {
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+    ],
+  },
+  openGraph: {
+    type: 'website',
+    url: SITE_URL,
+    siteName: 'ChainLens AI',
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: TITLE,
+    description: DESCRIPTION,
+  },
 }
 
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
+  themeColor: '#050816',
 }
 
 export default async function RootLayout({
