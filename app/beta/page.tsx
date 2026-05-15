@@ -1,5 +1,3 @@
-'use client'
-
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 
@@ -40,15 +38,12 @@ export default function BetaPage() {
             Public access is moving into the next release phase. The platform is available through standard sign-in and subscription.
           </p>
 
-          {/* CTAs */}
+          {/* CTAs — no terminal entry point, page is a closed notice only */}
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '56px' }}>
-            <Link href="/terminal" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '13px 28px', borderRadius: '10px', fontWeight: 700, fontSize: '14px', letterSpacing: '.04em', background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', color: '#04060d', textDecoration: 'none', boxShadow: '0 4px 20px rgba(45,212,191,.2)' }}>
-              Go to Terminal
-            </Link>
-            <Link href="/pricing" style={{ display: 'inline-flex', alignItems: 'center', padding: '13px 24px', borderRadius: '10px', fontWeight: 600, fontSize: '14px', border: '1px solid rgba(148,163,184,.22)', color: '#cbd5e1', background: 'rgba(255,255,255,.025)', textDecoration: 'none' }}>
+            <Link href="/pricing" style={{ display: 'inline-flex', alignItems: 'center', padding: '13px 28px', borderRadius: '10px', fontWeight: 700, fontSize: '14px', letterSpacing: '.04em', background: 'linear-gradient(135deg,#2DD4BF,#8b5cf6)', color: '#04060d', textDecoration: 'none', boxShadow: '0 4px 20px rgba(45,212,191,.2)' }}>
               View Pricing
             </Link>
-            <Link href="/contact" style={{ display: 'inline-flex', alignItems: 'center', padding: '13px 24px', borderRadius: '10px', fontWeight: 600, fontSize: '14px', border: '1px solid rgba(148,163,184,.12)', color: '#64748b', background: 'transparent', textDecoration: 'none' }}>
+            <Link href="/contact" style={{ display: 'inline-flex', alignItems: 'center', padding: '13px 24px', borderRadius: '10px', fontWeight: 600, fontSize: '14px', border: '1px solid rgba(148,163,184,.22)', color: '#cbd5e1', background: 'rgba(255,255,255,.025)', textDecoration: 'none' }}>
               Contact Support
             </Link>
           </div>
