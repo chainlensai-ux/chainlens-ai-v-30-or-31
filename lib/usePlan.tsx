@@ -94,14 +94,14 @@ export function LockedPanel({ feature }: { feature: string }) {
           margin: '0 0 10px',
           fontFamily: 'var(--font-inter, Inter, sans-serif)',
         }}>
-          Sign in for Beta access
+          Pro or Elite required
         </h2>
         <p style={{
           fontSize: '14px', color: '#94a3b8', lineHeight: 1.6,
           margin: '0 0 28px',
           fontFamily: 'var(--font-inter, Inter, sans-serif)',
         }}>
-          {name} is available in Pro and Elite. This tool runs live CORTEX checks. Sign in to access Beta Elite during the testing campaign.
+          {name} is available on Pro and Elite plans. Sign in or upgrade to unlock live CORTEX intelligence for this tool.
         </p>
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
           <a
