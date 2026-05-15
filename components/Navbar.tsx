@@ -421,11 +421,11 @@ export default function Navbar() {
               )}
             </div>
 
-            <Link href="/terminal"  className="nav-link">Terminal</Link>
-            <Link href="/pricing"   className="nav-link">Pricing</Link>
-            <Link href="/affiliate" className="nav-link">Affiliate</Link>
+            <Link href="/terminal"  className="nav-link" prefetch={true}>Terminal</Link>
+            <Link href="/pricing"   className="nav-link" prefetch={true}>Pricing</Link>
+            <Link href="/affiliate" className="nav-link" prefetch={true}>Affiliate</Link>
             <Link href="/about"     className="nav-link">About</Link>
-            <Link href="/contact"   className="nav-link">Contact</Link>
+            <Link href="/contact"   className="nav-link" prefetch={true}>Contact</Link>
           </div>
 
           {/* Right: LIVE badge + auth buttons */}
@@ -495,9 +495,9 @@ export default function Navbar() {
                 </span>
               </Link>
             ) : (
-              <Link href="/sign-in" className="btn-signin">Sign In</Link>
+              <Link href="/sign-in" className="btn-signin" prefetch={true}>Sign In</Link>
             )}
-            <Link href="/pricing" className="btn-access">
+            <Link href="/pricing" className="btn-access" prefetch={true}>
               Get Access
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
                 <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -522,11 +522,11 @@ export default function Navbar() {
           padding: '8px 20px 32px',
           overflowY: 'auto',
         }}>
-          <Link href="/terminal"  className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Terminal</Link>
-          <Link href="/pricing"   className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Pricing</Link>
-          <Link href="/affiliate" className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Affiliate</Link>
+          <Link href="/terminal"  className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Terminal</Link>
+          <Link href="/pricing"   className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Pricing</Link>
+          <Link href="/affiliate" className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Affiliate</Link>
           <Link href="/about"     className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
-          <Link href="/contact"   className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>Contact</Link>
+          <Link href="/contact"   className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Contact</Link>
 
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '16px 0' }} />
 

@@ -716,14 +716,16 @@ function extractMarketListItemsFromHistory(history: ClarkRequestBody["history"])
   const items: MarketListItem[] = [];
   for (let i = lines.length - 1; i >= 0; i--) {
     const msg = lines[i] ?? "";
-    if (!/Base Market|Moving now:/i.test(msg)) continue;
+    if (!/Base Market|Moving now:|BASE MOMENTUM READ|BASE PUMP MAP|BASE RADAR|Strongest movers:/i.test(msg)) continue;
     const rows = msg.split("\n");
     for (let r = 0; r < rows.length; r++) {
       const row = rows[r] ?? "";
       const rankMatch = row.match(/^\s*(\d{1,3})\.\s+/);
       if (!rankMatch) continue;
       const rank = Number(rankMatch[1]);
-      const symbolMatch = row.match(/^\s*\d{1,3}\.\s*([A-Z0-9$._-]{2,12})\b/);
+      // Match symbol with or without **bold** markdown wrapper
+      const symbolMatch = row.match(/^\s*\d{1,3}\.\s*\*{0,2}([A-Z0-9$._-]{2,12})\*{0,2}\b/);
+      const sym = symbolMatch?.[1] ?? "?";
       const fullAddress = row.match(/0x[a-fA-F0-9]{40}/)?.[0]
         ?? rows[r + 1]?.match(/0x[a-fA-F0-9]{40}/)?.[0]
         ?? null;
@@ -733,11 +735,19 @@ function extractMarketListItemsFromHistory(history: ClarkRequestBody["history"])
       if (!fullAddress && shortAddress) {
         const maybeFull = msg.match(new RegExp(`${shortAddress.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}[^\\n]*(0x[a-fA-F0-9]{40})`, "i"))?.[1];
         if (maybeFull) {
-          items.push({ rank, symbol: symbolMatch?.[1] ?? "?", address: maybeFull, line: row });
+          items.push({ rank, symbol: sym, address: maybeFull, line: row });
+        } else if (sym !== "?") {
+          // No address found — store symbol so rank selection still resolves via token_resolve
+          items.push({ rank, symbol: sym, address: "", line: row });
         }
         continue;
       }
-      if (fullAddress) items.push({ rank, symbol: symbolMatch?.[1] ?? "?", address: fullAddress, line: row });
+      if (fullAddress) {
+        items.push({ rank, symbol: sym, address: fullAddress, line: row });
+      } else if (sym !== "?") {
+        // BASE MOMENTUM READ rows have no address — store symbol for token_resolve fallback
+        items.push({ rank, symbol: sym, address: "", line: row });
+      }
     }
     if (items.length > 0) break;
   }
@@ -1022,8 +1032,15 @@ function buildClarkToolPlan(input: {
       return { intent: "liquidity_safety", tools: [{ name: "token_resolve", args: { query: _fq }, required: true }, { name: "liquidity_analyze", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
     }
   }
+  const _selectedMarketItem = selectedOptionIndex
+    ? marketItems.find((m) => m.rank === selectedOptionIndex)
+    : null;
   const selectedAddress = selectedOptionIndex
-    ? (marketItems.find((m) => m.rank === selectedOptionIndex)?.address ?? pickAddressBySelection(historyLines, selectedOptionIndex))
+    ? (_selectedMarketItem?.address || pickAddressBySelection(historyLines, selectedOptionIndex) || null)
+    : null;
+  // Symbol-only item from BASE MOMENTUM READ (no address) — use for token_resolve lookup
+  const selectedSymbolLookup = (!selectedAddress && selectedOptionIndex && _selectedMarketItem?.symbol && _selectedMarketItem.symbol !== "?")
+    ? _selectedMarketItem.symbol
     : null;
   const tokenContext = extractLastTokenContext(historyLines);
   const followupResolution = resolveMarketTokenFromFollowup(trimmed, input.structuredMarketList ?? [], input.clarkContext?.lastSelectedRank);
@@ -1040,6 +1057,13 @@ function buildClarkToolPlan(input: {
     plannerIntent = classifyPlannerIntent(message, inferredAddress);
   }
   if (selectedAddress && (plannerIntent === "unknown" || plannerIntent === "feature_context")) {
+    const historyText = historyLines.join("\n").toLowerCase();
+    plannerIntent = /full report|run the full report|token_full_report_request|report the next one|next report/.test(`${historyText}\n${trimmed}`)
+      ? "token_full_report_request"
+      : "token_analysis";
+  }
+  // selectedSymbolLookup: rank hit a symbol-only history item (BASE MOMENTUM READ with no address)
+  if (!selectedAddress && selectedSymbolLookup && (plannerIntent === "unknown" || plannerIntent === "feature_context" || plannerIntent === "market" || plannerIntent === "strategy")) {
     const historyText = historyLines.join("\n").toLowerCase();
     plannerIntent = /full report|run the full report|token_full_report_request|report the next one|next report/.test(`${historyText}\n${trimmed}`)
       ? "token_full_report_request"
@@ -1108,7 +1132,8 @@ function buildClarkToolPlan(input: {
   const fallbackQuery = !fallbackAddress && resolvedMarketItem
     ? (resolvedMarketItem.symbol || resolvedMarketItem.name || "").toString()
     : "";
-  const effectiveTokenLookup = tokenLookup || fallbackQuery || null;
+  // selectedSymbolLookup: rank-selection hit a history item with no address (BASE MOMENTUM READ)
+  const effectiveTokenLookup = tokenLookup || fallbackQuery || selectedSymbolLookup || null;
   const looksWallet = /\b(wallet|balance|portfolio|copy[\s-]?trade|smart money)\b/i.test(message);
 
   switch (plannerIntent) {
@@ -1310,8 +1335,10 @@ function isPumpFeedPrompt(prompt: string): boolean {
 
 function isBaseMomentumPrompt(prompt: string): boolean {
   // Broad "what's pumping / running / moving on Base" → live Base market data, not pump-alerts feed
-  const t = prompt.toLowerCase()
-  return /\b(what'?s pumping on base|what tokens are pumping|what'?s running on base|what'?s moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read|new deployments on base|new base deployments|what'?s hot on base right now|top base tokens|base runners|base gainers|what tokens are moving|what'?s moving|what'?s happening on base)\b/i.test(t);
+  // Normalize apostrophes/smart-quotes so what's / what's both match
+  const t = prompt.toLowerCase().replace(/[‘’ʼ`´]/g, "'");
+  return /(?:^|\s|[^a-z])(what's pumping on base|what tokens are pumping|what's running on base|what's moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read|new deployments on base|new base deployments|what's hot on base right now|top base tokens|base runners|base gainers|what tokens are moving|what's moving|what's happening on base)/i.test(t)
+    || /\b(pumping on base|base momentum|momentum on base)\b/i.test(t);
 }
 
 function isPumpSourceFollowupPrompt(prompt: string): boolean {
@@ -1514,11 +1541,13 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   }
 
   if (!merged.length) {
-    return "BASE PUMP MAP\nBase market feed is delayed right now. Try again or scan a specific token directly.";
+    return "**BASE MOMENTUM READ**\n\nLive Base pool data is incomplete right now. I can still show the available momentum signals, but verify liquidity before acting.\n\nTry again in a moment, or paste a contract address for a direct token scan.";
   }
 
-  // Rank: 24h change desc, then volume, then liquidity
-  const ranked = [...merged].sort((a, b) => {
+  // Rank: 24h change desc, then volume, then liquidity — filter zero-liquidity noise
+  const withLiq = merged.filter(t => Number(t.liquidity ?? 0) > 0 || Number(t.volume ?? 0) > 0);
+  const rankSource = withLiq.length >= 3 ? withLiq : merged;
+  const ranked = [...rankSource].sort((a, b) => {
     const chDiff = Number(b.change24h ?? 0) - Number(a.change24h ?? 0);
     if (Math.abs(chDiff) > 0.1) return chDiff;
     const volDiff = Number(b.volume ?? 0) - Number(a.volume ?? 0);
@@ -1538,51 +1567,63 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     ? "Momentum is active but mixed — a few liquid names leading, others are thinner pumps."
     : "Moves are mostly thin-liquidity right now. Treat this as a watchlist, not conviction.";
 
+  const breadthNote = broadCount >= 4
+    ? "Participation is broad — multiple tokens posting strong 24h moves."
+    : "Participation is selective — not all Base tickers are joining the move.";
+
   const rows = top.map((t, i) => {
     const sym = String(t.symbol ?? '?').toUpperCase();
     const name = String(t.name ?? '').trim();
     const label = name && name.toUpperCase() !== sym ? `${sym} (${name})` : sym;
     const ch = Number(t.change24h ?? 0);
-    const chStr = `${ch >= 0 ? '+' : ''}${ch.toFixed(1)}% 24h`;
+    const chStr = `${ch >= 0 ? '+' : ''}${ch.toFixed(1)}%`;
     const vol = formatUsdShort(Number(t.volume ?? 0) || null);
     const liq = formatUsdShort(Number(t.liquidity ?? 0) || null);
     const liqNum = Number(t.liquidity ?? 0) || null;
     const volNum = Number(t.volume ?? 0) || null;
     const fdvNum = t.fdv != null ? Number(t.fdv) : null;
     const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, sym);
+    // Map internal labels to quality tags
+    const qualityTag = cls === "liquid mover" ? "tradable depth"
+      : cls === "volume-led" ? "volume-led"
+      : cls === "thin pump" ? "thin liquidity"
+      : cls === "microcap noise" ? "microcap noise"
+      : cls === "base asset" ? "base asset"
+      : "watchlist only";
     const reason = buildReasonLine(cls);
-    return `${i + 1}. ${label} — ${chStr} | Vol ${vol} | Liq ${liq} | ${cls}\n   Read: ${reason}`;
+    return `${i + 1}. **${label}** — ${chStr} | Vol ${vol} | Liq ${liq} | [${qualityTag}]\n   Read: ${reason}`;
   });
 
   const thinCount = top.filter(t => Number(t.liquidity ?? 0) < 50_000).length;
   const qualityLine = thinCount >= 3
-    ? `Quality filter: ${thinCount} of top ${top.length} are thin (<$50K liq) — verify slippage before trusting the move.`
+    ? `${thinCount} of top ${top.length} have thin liquidity (<$50K) — slippage risk is elevated. Verify depth before sizing.`
     : liquidCount >= 3
-    ? "Quality filter: several leaders show tradable liquidity depth — stronger base for follow-through than a pure thin pump."
-    : "Quality filter: mixed depth. Verify LP and holders before conviction on any single mover.";
+    ? "Several leaders show tradable liquidity depth — stronger base for follow-through than a pure thin pump."
+    : "Mixed depth across the list. Verify LP and holders before conviction on any single mover.";
 
   const pumpNote = pumpAlerts.length > 0
-    ? `Pump-alert filter also flags additional momentum candidates — ask "show pump alerts" for the dedicated high-momentum filtered feed.`
+    ? `Pump-alert filter also flags additional momentum candidates — say "show pump alerts" for the dedicated high-momentum filtered feed.`
     : null;
 
-  const title = broadCount >= 5 ? "BASE MOMENTUM READ" : "BASE PUMP MAP";
-
-  return [
-    title,
-    `Market read: ${marketRead}`,
-    broadCount >= 4
-      ? "Participation is broad — multiple tokens posting strong 24h moves."
-      : "Participation is selective — not all Base tickers are joining the move.",
+  const lines: string[] = [
+    "**BASE MOMENTUM READ**",
     "",
-    "Strongest movers:",
+    `**Market read:**`,
+    `${marketRead} ${breadthNote}`,
+    "",
+    "**Strongest movers:**",
     ...rows,
     "",
+    `**Quality filter:**`,
     qualityLine,
     "Watchouts: liquidity, slippage, holder concentration, and dev wallet checks are not yet verified for any of the above.",
     "",
     pumpNote,
-    "Next: reply with a rank number or symbol (e.g. \"scan 1\" or \"scan BRETT\") to run a full Token Scanner + Dev Wallet + Liquidity check.",
-  ].filter(Boolean).join("\n");
+    "**Next action:**",
+    "Pick a number and say \"scan 1\" to run a deeper token scan.",
+  ].filter((l): l is string => l !== null && l !== undefined);
+
+  return lines.join("\n");
 }
 
 async function handleBaseRadarSnapshot(origin: string, prompt = "") {

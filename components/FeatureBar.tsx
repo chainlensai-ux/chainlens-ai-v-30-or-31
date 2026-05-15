@@ -2,7 +2,6 @@
 
 import Image from 'next/image'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
@@ -286,7 +285,7 @@ function NavItem({ item, active, onSelect, locked = false }: { item: Item; activ
 
   if (item.href) {
     return (
-      <Link href={item.href} style={sharedStyle} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
+      <Link href={item.href} prefetch={true} style={sharedStyle} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
         {itemContent}
       </Link>
     )
@@ -321,7 +320,6 @@ interface Props {
 
 
 export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, onWalletOpen, onClose }: Props) {
-  const router = useRouter()
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
   const [plan, setPlan] = useState<UserPlan>('free')
   const [betaElite, setBetaElite] = useState(false)
@@ -465,9 +463,9 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         <ConnectWallet className="w-full active:scale-[0.98]" onBeforeOpen={onWalletOpen} />
 
         {accountEmail ? (
-          <button
-            className="w-full"
-            onClick={() => router.push('/terminal/settings')}
+          <Link
+            href="/terminal/settings"
+            prefetch={true}
             style={{
               height: '34px',
               borderRadius: '8px',
@@ -483,14 +481,16 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '0 8px',
+              textDecoration: 'none',
+              width: '100%',
             }}
             onMouseEnter={e => {
-              const el = e.currentTarget as HTMLButtonElement
+              const el = e.currentTarget as HTMLAnchorElement
               el.style.borderColor = 'rgba(45,212,191,0.48)'
               el.style.boxShadow = '0 0 18px rgba(45,212,191,0.20)'
             }}
             onMouseLeave={e => {
-              const el = e.currentTarget as HTMLButtonElement
+              const el = e.currentTarget as HTMLAnchorElement
               el.style.borderColor = 'rgba(45,212,191,0.30)'
               el.style.boxShadow = 'none'
             }}
@@ -519,12 +519,13 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
             }}>
               {betaElite ? 'BETA' : plan.toUpperCase()}
             </span>
-          </button>
+          </Link>
         ) : (
           <div className="flex" style={{ gap: '6px' }}>
-            <button
+            <Link
+              href="/sign-in"
+              prefetch={true}
               className="flex-1"
-              onClick={() => router.push('/sign-in')}
               style={{
                 height: '30px',
                 borderRadius: '8px',
@@ -536,13 +537,18 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
                 cursor: 'pointer',
                 fontFamily: 'var(--font-inter)',
                 transition: 'color 0.12s, border-color 0.12s, background 0.12s',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                textDecoration: 'none',
               }}
             >
               Sign In
-            </button>
-            <button
+            </Link>
+            <Link
+              href="/sign-in"
+              prefetch={true}
               className="flex-1 active:scale-[0.98]"
-              onClick={() => router.push('/sign-in')}
               style={{
                 height: '30px',
                 borderRadius: '8px',
@@ -553,10 +559,14 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
                 fontWeight: 600,
                 cursor: 'pointer',
                 fontFamily: 'var(--font-inter)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                textDecoration: 'none',
               }}
             >
               Sign Up
-            </button>
+            </Link>
           </div>
         )}
             </div>

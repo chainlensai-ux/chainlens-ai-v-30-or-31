@@ -39,7 +39,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
   const [error, setError] = useState<string | null>(null)
   const [betaEliteActive, setBetaEliteActive] = useState(false)
   useEffect(() => {
-    const hardStop = window.setTimeout(() => setLoading(false), 3500)
+    const hardStop = window.setTimeout(() => setLoading(false), 3000)
     async function load(token: string | undefined) {
       if (!token) { setPlan('free'); setBetaEliteActive(false); setError(null); setLoading(false); return }
       try {
