@@ -413,7 +413,7 @@ export default function ClarkChat({
               }}>
                 Ask Clark anything.<br />
                 <span style={{ color: 'rgba(78,242,197,0.35)' }}>
-                  scan token 0x… · scan wallet 0x… · base radar · clark ai: …
+                  scan BRETT · scan wallet 0x… · liquidity check AERO · who deployed VIRTUAL · show Base whales
                 </span>
               </div>
             )}
@@ -508,7 +508,7 @@ export default function ClarkChat({
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
                   disabled={loading}
-                  placeholder="Ask Clark anything…"
+                  placeholder="Ask Clark to scan a token, wallet, whale flow, liquidity, dev wallet, or Base movers."
                   style={{
                     flex: 1,
                     background: 'transparent',

@@ -321,6 +321,11 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/\b(trade for me|execute.*trade|place.*order|snipe.*token|buy.*for me|sell.*for me|hide[\s\w]*transactions?|obfuscat[\s\w]*transactions?|launder|move.*my funds|send.*eth.*for me|transfer.*eth.*for me|private key|seed phrase|mnemonic|recover.*wallet|bypass.*kyc)\b/i.test(t)) {
     return { intent: "trading_boundary", address };
   }
+  // Wallet scan patterns — explicit wallet scan/analyze/report prompts
+  const WALLET_SCAN_PATTERNS_RE = /\b(scan\s+wallet|analyze\s+wallet|analyse\s+wallet|wallet\s+report|wallet\s+scan|is\s+this\s+wallet\s+worth|should\s+i\s+copy|copy\s+this\s+wallet|worth\s+monitoring\s+wallet|wallet\s+analysis|scan\s+(?:[a-z0-9][a-z0-9-]*\.(?:base\.eth|cb\.id|eth))\b)\b/i;
+  if (WALLET_SCAN_PATTERNS_RE.test(t) || (address && /\bscan\s+wallet\b/i.test(t))) {
+    return { intent: "wallet_analysis", address };
+  }
   // Wallet balance/holdings takes priority when address is present
   if (address && WALLET_INTENT_RE.test(t)) {
     return { intent: "wallet_analysis", address };
@@ -331,8 +336,11 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/whale|smart money/i.test(t)) {
     return { intent: "whale_alert", address };
   }
-  if (/dev wallet|deployer|who deployed/i.test(t)) {
+  if (/\b(dev\s+wallet|deployer|who\s+deployed|who\s+made\s+this|who\s+built|who\s+created|check\s+creator|origin\s+wallet|is\s+the\s+dev|check\s+dev|deployer\s+of)\b/i.test(t)) {
     return { intent: "dev_wallet", address };
+  }
+  if (/\b(liquidity\s+check|lp\s+status|is\s+liquidity\s+locked|is\s+lp\s+locked|check\s+pool\s+safety|liquidity\s+safety|is\s+this\s+pool\s+safe|check\s+liquidity\s+control|is\s+liquidity\s+burnt|lp\s+locked|check\s+lp)\b/i.test(t)) {
+    return { intent: "liquidity_safety", address };
   }
   if (/liquidity|lp safe|liquidity risk/i.test(t)) {
     return { intent: "liquidity_safety", address };
@@ -1954,28 +1962,58 @@ function normalizeWalletSnapshotEvidence(rawWallet: Record<string, unknown>, add
 }
 
 function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>): string {
-  const top = snapshot.holdingsTop10.slice(0, 8).map((h) => `- ${h.symbol}: ${formatUsdShort(h.value)}`);
-  const notes = [
-    `- Dust/unpriced holdings hidden: ${snapshot.hiddenHoldingsCount}`,
-    "- Wallet balances may be partial for unsupported assets.",
-  ];
-  if (snapshot.holdingsTop10.length < 3) notes.push("- Fewer than 3 priced holdings were available in this scan.");
+  const top = snapshot.holdingsTop10.slice(0, 8);
+  const topLines = top.length > 0 ? top.map((h) => `- ${h.symbol}: ${formatUsdShort(h.value)}`) : ["- No priced holdings above $1 found"];
+  const largestHolding = top[0];
+  const largestHoldingPct = largestHolding && snapshot.totalValue > 0 ? ((largestHolding.value / snapshot.totalValue) * 100).toFixed(1) : null;
+  // Portfolio read
+  const portfolioRead = [
+    `Total portfolio value: ${formatUsdShort(snapshot.totalValue)}.`,
+    largestHolding ? `Largest holding: ${largestHolding.symbol} at ${formatUsdShort(largestHolding.value)}${largestHoldingPct ? ` (${largestHoldingPct}% of visible portfolio)` : ""}.` : "No large single holding identified.",
+    `Token count: ${snapshot.tokenCount != null ? formatInt(snapshot.tokenCount) : "n/a"} assets tracked.`,
+  ].join(" ");
+  // Activity read
+  const activityRead = (snapshot.txCount != null || snapshot.walletAgeDays != null)
+    ? [
+        snapshot.txCount != null ? `${formatInt(snapshot.txCount)} recent transactions.` : null,
+        snapshot.walletAgeDays != null ? `Wallet age: ${formatInt(snapshot.walletAgeDays)} days.` : null,
+      ].filter(Boolean).join(" ")
+    : "Recent activity is incomplete from this scan.";
+  // Concentration
+  const concentration = largestHoldingPct != null
+    ? (Number(largestHoldingPct) >= 70 ? "High concentration — single asset dominates." : Number(largestHoldingPct) >= 40 ? "Moderate concentration." : "Distributed across multiple assets.")
+    : "Concentration data incomplete.";
+  // Verdict line
+  const verdictLine = snapshot.totalValue >= 25_000 && snapshot.tokenCount != null && snapshot.tokenCount >= 8
+    ? "WORTH MONITORING"
+    : snapshot.totalValue >= 5_000
+      ? "ACTIVE WALLET"
+      : snapshot.totalValue > 0
+        ? "WATCH"
+        : "INCOMPLETE READ";
 
   return [
-    "WALLET READ",
-    shortAddress(snapshot.address),
+    "**WALLET READ**",
     "",
-    "Summary:",
-    `- Portfolio value: ${formatUsdShort(snapshot.totalValue)}`,
-    `- Wallet age: ${snapshot.walletAgeDays != null ? `${formatInt(snapshot.walletAgeDays)} days` : "n/a"}`,
-    `- Tx count: ${formatInt(snapshot.txCount)}`,
-    `- Token count: ${formatInt(snapshot.tokenCount)}`,
+    `**Verdict:** ${verdictLine}`,
     "",
-    "Top holdings:",
-    ...(top.length > 0 ? top : ["- No priced holdings above $1 found"]),
+    "**Portfolio read:**",
+    portfolioRead,
+    ...topLines,
     "",
-    "Data note:",
-    ...notes,
+    "**Activity read:**",
+    activityRead,
+    "",
+    "**Risk / concentration:**",
+    concentration,
+    `Unknown/unpriced assets hidden: ${snapshot.hiddenHoldingsCount}.`,
+    "",
+    "**Missing checks:**",
+    "- PnL, win rate, and intent are not verified from this scan.",
+    "- Smart-money status is not confirmed.",
+    "",
+    "**Next action:**",
+    "Monitor entries/exits before trusting this wallet. Run token scans on major holdings. No trade call.",
   ].join("\n");
 }
 
@@ -3906,21 +3944,44 @@ function renderDevWalletFocusedRead(
   tokenAddress: string,
   devWallet: NonNullable<ClarkToolEvidence["devWallet"]>
 ): string {
-  const meaning =
-    devWallet.verdict === "AVOID"
-      ? "The deployer footprint raises a high-risk insider signal."
-      : devWallet.verdict === "WATCH"
-        ? "This is usable watch evidence, but not proof of malicious intent."
-        : "This read is incomplete; treat as early warning only.";
+  const originRead = devWallet.deployerAddress
+    ? `Deployer identified: ${shortAddress(devWallet.deployerAddress)} (${devWallet.confidence} confidence from CORTEX data).`
+    : "Origin wallet could not be verified from available CORTEX data.";
+  const linkedRead = devWallet.linkedWallets > 0
+    ? `${devWallet.linkedWallets} linked wallet${devWallet.linkedWallets > 1 ? "s" : ""} found in deployer cluster.`
+    : "Linked wallet signals are incomplete.";
+  const priorActivity = devWallet.warnings.length > 0
+    ? devWallet.warnings.slice(0, 2).filter(w => /deploy|prior|previous|history|created|launch/i.test(w)).join("; ") || "Prior activity data is incomplete."
+    : "Prior activity data is incomplete.";
+  const riskFlags = devWallet.warnings.filter(w => /suspicious|overlap|concentration|admin|control|funding|linked/i.test(w)).slice(0, 3);
+  const missingChecks: string[] = [];
+  if (!devWallet.deployerAddress) missingChecks.push("Deployer identity is unverified from current CORTEX scan.");
+  if (devWallet.linkedWallets === 0) missingChecks.push("Linked wallet cluster is unconfirmed.");
+  missingChecks.push("PnL, win rate, and deployer history are not verified from this scan.");
+  missingChecks.push("Smart-money status is not confirmed.");
   return [
-    "DEV WALLET READ",
-    `- Asset: ${tokenName} (${tokenSymbol})`,
-    `- Contract: ${tokenAddress}`,
-    `- Likely deployer: ${devWallet.deployerAddress ? shortAddress(devWallet.deployerAddress) : "Unverified"}`,
-    `- Linked wallets: ${devWallet.linkedWallets}`,
-    `- Suspicious patterns: ${devWallet.warnings.length ? devWallet.warnings.slice(0, 3).join("; ") : "None confirmed from available scan"}`,
-    `- Confidence: ${devWallet.confidence}`,
-    `- What it means: ${meaning}`,
+    "**DEV WALLET READ**",
+    "",
+    `**Token:** ${tokenName} (${tokenSymbol})`,
+    `**Contract:** ${tokenAddress}`,
+    "",
+    "**Origin read:**",
+    originRead,
+    "",
+    "**Linked wallet signals:**",
+    linkedRead,
+    "",
+    "**Prior activity:**",
+    priorActivity,
+    "",
+    "**Risk flags:**",
+    riskFlags.length > 0 ? riskFlags.map(f => `- ${f}`).join("\n") : "- No confirmed risk flags from this CORTEX scan.",
+    "",
+    "**Missing checks:**",
+    missingChecks.map(m => `- ${m}`).join("\n"),
+    "",
+    "**Next action:**",
+    "Compare origin wallet activity with holder concentration and liquidity control. No trade call.",
   ].join("\n");
 }
 
@@ -3930,20 +3991,47 @@ function renderLiquidityFocusedRead(
   tokenAddress: string,
   liquidity: NonNullable<ClarkToolEvidence["liquidity"]>
 ): string {
-  const exitRisk = liquidity.riskTier === "low"
-    ? "LP control not confirmed — provider-backed verification required."
+  const liqDepth = liquidity.liquidityUsd != null
+    ? (liquidity.liquidityUsd >= 1_000_000 ? "strong depth" : liquidity.liquidityUsd >= 100_000 ? "moderate depth" : "thin depth")
+    : "unverified";
+  const liqDepthLine = liquidity.liquidityUsd != null
+    ? `${liqDepth} (${formatUsdShort(liquidity.liquidityUsd)})`
+    : "unverified";
+  const lpControlLine = liquidity.riskTier === "low"
+    ? "LP lock/control is unverified. NEVER say locked unless data proves it."
     : liquidity.riskTier === "extreme"
-      ? "Liquidity structure is fragile. LP control not confirmed from provider."
-      : "LP control not confirmed — limited visibility from available data.";
+      ? "LP structure appears fragile. LP control is unverified from current CORTEX data."
+      : "LP lock/control is unverified.";
+  const riskFlags: string[] = [];
+  if (liquidity.liquidityUsd != null && liquidity.liquidityUsd < 50_000) riskFlags.push("Thin liquidity — exit slippage elevated.");
+  if (!liquidity.riskTier || liquidity.riskTier === "extreme") riskFlags.push("Unverified LP lock/control — removal risk unknown.");
+  if (liquidity.warnings.length > 0) riskFlags.push(...liquidity.warnings.slice(0, 2));
+  const missingChecks: string[] = [];
+  missingChecks.push("LP lock/control confirmation not available from this scan.");
+  missingChecks.push("Volume/liquidity turnover not verified in this pass.");
   return [
-    "LIQUIDITY READ",
-    `- Asset: ${tokenName} (${tokenSymbol})`,
-    `- Contract: ${tokenAddress}`,
-    `- Pool depth: ${formatUsdShort(liquidity.liquidityUsd)}`,
-    `- LP control: ${liquidity.riskTier ?? "Unverified"}`,
-    `- Concentration: ${liquidity.stabilityScore != null ? `${liquidity.stabilityScore}` : "Unverified"}`,
-    "- Volume/liquidity: based on available pool turnover and depth signals.",
-    `- Exit risk: ${exitRisk}`,
+    "**LIQUIDITY READ**",
+    "",
+    `**Token:** ${tokenName} (${tokenSymbol})`,
+    `**Contract:** ${tokenAddress}`,
+    "",
+    "**Primary pool:**",
+    liqDepth !== "unverified" ? `Pool data available. Liquidity: ${formatUsdShort(liquidity.liquidityUsd)}.` : "Primary pool data incomplete.",
+    "",
+    "**Liquidity depth:**",
+    liqDepthLine,
+    "",
+    "**LP control / lock read:**",
+    lpControlLine,
+    "",
+    "**Risk flags:**",
+    riskFlags.length > 0 ? riskFlags.map(f => `- ${f}`).join("\n") : "- No confirmed risk flags from this scan.",
+    "",
+    "**Missing checks:**",
+    missingChecks.map(m => `- ${m}`).join("\n"),
+    "",
+    "**Next action:**",
+    "Do not rely on market cap alone. Verify LP + holders before conviction. No trade call.",
   ].join("\n");
 }
 
@@ -4952,6 +5040,39 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const analysis = await handleBaseRadarSnapshot(origin, prompt);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_radar_feed"], analysis };
   }
+
+  // "should I copy this wallet" — always redirect, never give copy-trade advice
+  if (/\bshould\s+i\s+copy[\s-]?(?:this\s+)?(?:trade\s+it|wallet|trade\b|it)\b/i.test(prompt)) {
+    return {
+      feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [],
+      analysis: "I can't tell you to copy-trade it. I can tell you whether it is worth monitoring.\n\nSend the wallet address and I'll run a WALLET READ — holdings, activity, concentration, and what's missing. No copy-trade call.",
+    };
+  }
+
+  // "this" contextual resolution — liquidity check this / dev wallet this / scan this / who deployed this
+  const THIS_RE = /\b(liquidity\s+check\s+this|check\s+liquidity\s+(?:for\s+)?this|lp\s+(?:check\s+)?this|who\s+deployed\s+this|dev\s+wallet\s+(?:for\s+)?this|check\s+(?:dev\s+wallet|deployer)\s+(?:for\s+)?this|scan\s+this|check\s+this)\b/i;
+  if (THIS_RE.test(prompt) && !extractAddress(prompt)) {
+    const histLinesForThis = getHistoryMessages(body.history);
+    const lastTokenCtx = extractLastTokenContext(histLinesForThis);
+    const lastScanCtx = extractLastTokenScanFromHistory(body.history);
+    const thisAddress = lastTokenCtx.address ?? lastScanCtx?.contractAddress ?? null;
+    const thisSymbol = lastTokenCtx.symbol ?? null;
+    if (!thisAddress && !thisSymbol) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "unknown", toolsUsed: [], analysis: "Which token should I check? Send a symbol or contract." };
+    }
+    const thisTarget = thisAddress ?? thisSymbol ?? "";
+    const isLiqThis = /liquidity|lp/i.test(prompt);
+    const isDevThis = /dev\s+wallet|deployer|who\s+deployed/i.test(prompt);
+    // Reroute by injecting the resolved address/symbol into the prompt
+    const rerouted = isLiqThis
+      ? `liquidity check ${thisTarget}`
+      : isDevThis
+        ? `who deployed ${thisTarget}`
+        : `scan ${thisTarget}`;
+    // Mutate prompt for plan execution below
+    return await handleClarkAI({ ...body, prompt: rerouted }, origin, authHeader, verifiedPlan);
+  }
+
   if (isFeedSafestFollowup(prompt)) {
     if (wasLastFeedEmpty(body.history)) {
       return {
@@ -5812,7 +5933,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(normalized, { status: 200 });
   } catch (err: unknown) {
     console.error("[Clark]", err instanceof Error ? err.message : err);
-    const safeMsg = "Clark could not fetch that data right now. Try again in a moment or open the matching scanner.";
+    const safeMsg = [
+      "CORTEX could not complete that read from live data right now. The available signals are incomplete.",
+      "",
+      "Try:",
+      "- run token scan: scan SYMBOL",
+      "- run liquidity check: liquidity check SYMBOL",
+      "- paste a contract address",
+      "- paste a wallet address",
+    ].join("\n");
     return NextResponse.json({
       ok: true,
       feature: "clark-ai",

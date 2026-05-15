@@ -70,24 +70,26 @@ const MODES: Mode[] = [
 ]
 
 const SUGGESTED_PROMPTS = [
-  'Analyze this Base token',
-  'Check wallet behavior',
-  'Explain liquidity risk',
-  'Summarize Base Radar signal',
+  'What\'s pumping on Base?',
+  'Scan BRETT',
+  'Show Base whales',
+  'Liquidity check AERO',
+  'Who deployed VIRTUAL?',
+  'Scan wallet 0x...',
 ]
 
 const EMPTY_STATE_CHIPS = [
   {
-    label: 'Analyze a Base token',
-    prompt: 'Analyze this Base token and give me a clear verdict: WATCH, AVOID, or SCAN DEEPER. Contract: ',
+    label: 'What\'s pumping on Base?',
+    prompt: 'What\'s pumping on Base?',
   },
   {
-    label: 'Check wallet behavior',
-    prompt: 'Analyze this Base wallet behavior, holdings, flows, and risk profile. Wallet: ',
+    label: 'Scan BRETT',
+    prompt: 'Scan BRETT',
   },
   {
-    label: 'Explain liquidity risk',
-    prompt: 'Explain the liquidity risk for this Base token and what signals I should check before entering. Token: ',
+    label: 'Liquidity check AERO',
+    prompt: 'Liquidity check AERO',
   },
 ]
 const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
@@ -418,9 +420,9 @@ function ClarkAiContent() {
                   {messages.length === 0 ? (
                     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: '#94a3b8' }}>
                       <div style={{ marginBottom: '10px' }}><ClarkOrb size={58} /></div>
-                      <p style={{ margin: 0, fontSize: '14px', color: '#cbd5e1' }}>Import a token, paste a wallet, or ask Clark what’s moving on Base.</p>
+                      <p style={{ margin: 0, fontSize: '14px', color: '#cbd5e1' }}>Scan a token, wallet, liquidity, dev wallet, or ask what's pumping on Base.</p>
                       <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#94a3b8' }}>
-                        Clark can explain token quality, wallet behavior, contract risk, and Base Radar signals.
+                        Clark reads token risk, wallet behavior, LP depth, deployer signals, and whale flow on Base.
                       </p>
                       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center', marginTop: '12px' }}>
                         {EMPTY_STATE_CHIPS.map((chip) => (
@@ -458,7 +460,7 @@ function ClarkAiContent() {
                       if (e.key === 'Enter' && !loading) handleSend()
                     }}
                     disabled={loading}
-                    placeholder='Ask Clark about a token, wallet, contract, or Base move…'
+                    placeholder='Ask Clark to scan a token, wallet, whale flow, liquidity, dev wallet, or Base movers.'
                     style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e2e8f0', fontSize: '14px' }}
                   />
                   <button
