@@ -54,6 +54,8 @@ type ClarkSessionMemory = {
   lastIntentTs: number;
   lastActionableIntent: string | null;
   lastActionableIntentTs: number;
+  allowedRankScanUntil: number;
+  allowedRankScanUsed: boolean;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -64,7 +66,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0 };
+    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -73,10 +75,23 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   if (existing.lastMomentumList.length && now - existing.lastMomentumTs > MOMENTUM_MEMORY_TTL_MS) {
     existing.lastMomentumList = [];
     existing.lastMomentumTs = 0;
+    existing.allowedRankScanUntil = 0;
+    existing.allowedRankScanUsed = false;
   }
   if (existing.lastIntent && now - existing.lastIntentTs > INTENT_MEMORY_TTL_MS) existing.lastIntent = null;
   if (existing.lastActionableIntent && now - existing.lastActionableIntentTs > INTENT_MEMORY_TTL_MS) existing.lastActionableIntent = null;
   return existing;
+}
+
+function parseRankFollowup(prompt: string): number | null {
+  const rankPrompt = prompt.trim().toLowerCase();
+  const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
+  const ordinalRankMatch = rankPrompt.match(/\b(?:scan|check|full\s+report\s+on|why\s+is)\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s+one)?\b/i);
+  const numericRankMatch = rankPrompt.match(/\b(?:scan(?:\s+number)?|check|full\s+report\s+on|why\s+is(?:\s+token)?(?:\s+number)?)\s+([1-9]\d{0,2})\b/i);
+  const directRankMatch = rankPrompt.match(/^([1-9]\d{0,2})$/);
+  return ordinalRankMatch
+    ? ordinalMap[ordinalRankMatch[1].toLowerCase()]
+    : (numericRankMatch ? Number(numericRankMatch[1]) : (directRankMatch ? Number(directRankMatch[1]) : null));
 }
 
 function makeSessionKey(req: NextRequest, authenticated: boolean): string {
@@ -5326,7 +5341,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0 };
+  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -5455,7 +5470,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }
       // Find tokens not yet shown (or just show next batch if can't determine)
       const shownMax = lastShownRanks.size > 0 ? Math.max(...lastShownRanks) : 0;
-      const nextTokens = memList.filter(m => m.rank > shownMax).slice(0, 4);
+      const nextTokens = (shownMax > 0 ? memList.filter(m => m.rank > shownMax) : memList.filter(m => m.rank >= 8)).slice(0, 4);
 
       if (nextTokens.length > 0) {
         const rows = nextTokens.map(m => {
@@ -5793,6 +5808,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         change24h: c.change24h ?? null,
         tag: c.reasonTags?.[0] ?? null,
       })));
+      sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+      sessionMem.allowedRankScanUsed = false;
       updateMemIntent(sessionMem, "market");
       return {
         feature: "clark-ai",
@@ -5852,14 +5869,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
   // Rank follow-up reads lastMomentumList directly so education/fallback turns do not break numeric scans.
-  const rankPrompt = prompt.trim().toLowerCase();
-  const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
-  const ordinalRankMatch = rankPrompt.match(/\b(?:scan|check|full\s+report\s+on|why\s+is)\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s+one)?\b/i);
-  const numericRankMatch = rankPrompt.match(/\b(?:scan(?:\s+number)?|check|full\s+report\s+on|why\s+is(?:\s+token)?(?:\s+number)?)\s+([1-9]\d{0,2})\b/i);
-  const directRankMatch = rankPrompt.match(/^([1-9]\d{0,2})$/);
-  const askedRank = ordinalRankMatch
-    ? ordinalMap[ordinalRankMatch[1].toLowerCase()]
-    : (numericRankMatch ? Number(numericRankMatch[1]) : (directRankMatch ? Number(directRankMatch[1]) : null));
+  const askedRank = parseRankFollowup(prompt);
   if (askedRank && sessionMem.lastMomentumList.length === 0) {
     return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "Ask 'what's pumping on Base?' first, or send a token symbol/contract." };
   }
@@ -6105,6 +6115,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         change24h: c.change24h ?? null,
         tag: c.reasonTags?.[0] ?? null,
       })));
+      sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+      sessionMem.allowedRankScanUsed = false;
       updateMemIntent(sessionMem, "market");
       return {
         feature: "clark-ai",
@@ -6523,7 +6535,11 @@ export async function POST(req: NextRequest) {
   const sessionKey = makeSessionKey(req, authenticated)
   const sessionMem = getSessionMemory(sessionKey)
   const earlyPrompt = (body.prompt ?? '').trim()
-  const promptIsLowCost = earlyPrompt ? isLowCostPrompt(earlyPrompt, sessionMem) : false
+  const isMoreFollowup = earlyPrompt ? (MORE_CONTEXT_RE.test(earlyPrompt) && (sessionMem.lastMomentumList.length > 0 || Boolean(sessionMem.lastToken))) : false
+  const earlyRank = earlyPrompt ? parseRankFollowup(earlyPrompt) : null
+  const rankFromMemory = Boolean(earlyRank && sessionMem.lastMomentumList.length > 0)
+  const rankAllowanceActive = rankFromMemory && !sessionMem.allowedRankScanUsed && Date.now() < sessionMem.allowedRankScanUntil
+  const promptIsLowCost = earlyPrompt ? (isLowCostPrompt(earlyPrompt, sessionMem) || isMoreFollowup) : false
 
   // Check cache before rate limiting — cached responses bypass expensive tool quota
   const earlyCacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: earlyPrompt, chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" });
@@ -6532,7 +6548,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(earlyCached.payload);
   }
 
-  const rateResult = promptIsLowCost
+  const rateResult = (promptIsLowCost || rankAllowanceActive)
     ? checkClarkLowCostRate(actor, planKey)
     : checkClarkRate(actor, planKey)
   if (!rateResult.allowed) {
@@ -6541,6 +6557,9 @@ export async function POST(req: NextRequest) {
       : rateResult.window === 'minute'
         ? "Clark is protecting live CORTEX reads from spam. Try a follow-up question or wait a moment."
         : "Daily Clark limit reached for your plan."
+    if (rankFromMemory) {
+      return NextResponse.json({ error: "I have the mover list ready. Live token scan is cooling down for a moment — try 'scan 1' again shortly, or ask what volume-led/tradable depth means." }, { status: 429 })
+    }
     const debugInfo = process.env.NODE_ENV !== 'production'
       ? { effectivePlan, betaAllElite, betaEliteActive, limitWindow: rateResult.window, promptIsLowCost }
       : undefined
@@ -6590,6 +6609,9 @@ export async function POST(req: NextRequest) {
         result = await handleBaseRadar(body, origin);
         break;
       case "clark-ai":
+        if (rankAllowanceActive) {
+          sessionMem.allowedRankScanUsed = true;
+        }
         result = await handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem);
         break;
       default:
