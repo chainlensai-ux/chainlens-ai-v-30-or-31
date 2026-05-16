@@ -146,13 +146,13 @@ function updateMemIntent(mem: ClarkSessionMemory, intent: string) {
   }
 }
 // Lightweight prompt cost classifier — determines whether a prompt needs expensive tool calls
-const LOW_COST_RE = /^(hi|hey|yo|gm|sup|hello|ok|okay|sure|thanks|thank you|got it|cool|nice|great)\b|^(more|continue|expand|go on|keep going|next|show more|give me more|other tokens)\s*$|^(what does that mean|explain that|can you explain|what is that|what does .{1,40} mean|explain .{1,40})\??$|^(what\s+(?:does|is|are)\s+(?:volume|liquidity|lp|fdv|market\s+cap|holder|concentration|turnover|slippage|honeypot|dev\s+wallet|deployer|whale).{0,60})\??$|what\s+(?:is|are)\s+(?:red\s+flags?|risk\s+flags?|the\s+risks?)|how\s+do\s+(?:i|you)\s+(?:find|track|use|read)/i;
+const LOW_COST_RE = /^(hi|hey|yo|gm|sup|hello|ok|okay|sure|thanks|thank you|got it|cool|nice|great)\b|^(more|continue|expand|go on|keep going|next|show more|give me more|other tokens|more tokens|more tokens from pool|show more movers|more pumping tokens)\s*$|^(what does that mean|explain that|can you explain|what is that|what does .{1,40} mean|explain .{1,40})\??$|^(what\s+(?:does|is|are)\s+(?:volume|liquidity|lp|fdv|market\s+cap|holder|concentration|turnover|slippage|honeypot|dev\s+wallet|deployer|whale).{0,60})\??$|what\s+(?:is|are)\s+(?:red\s+flags?|risk\s+flags?|the\s+risks?)|how\s+do\s+(?:i|you)\s+(?:find|track|use|read)/i;
 
 const WATCH_VERDICT_LOW_COST_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+token|that\s+token)?|is\s+it\s+worth\s+watching|worth\s+watching|final\s+verdict|what'?s\s+the\s+play|should\s+i\s+monitor\s+(?:it|this)|watch\s+verdict)\b/i;
 
 const WALLET_FOLLOWUP_LOW_COST_RE = /\b(is\s+it\s+worth|worth\s+monitoring|is\s+this\s+wallet|should\s+i\s+watch|should\s+i\s+copy|what\s+are\s+its|any\s+risk|main\s+holdings?|scan\s+its|top\s+holding)\b/i;
 
-const MORE_CONTEXT_RE = /^(more|continue|expand|go on|keep going|give me more|show more)\s*$/i;
+const MORE_CONTEXT_RE = /^(more|continue|expand|go on|keep going|give me more|show more|more tokens|more tokens from pool|show more movers|more pumping tokens)\s*$/i;
 const THIS_DEV_RE = /\b(who\s+deployed\s+this|who\s+made\s+this|dev\s+wallet\s+this|origin\s+wallet\s+this|deployer\s+this|creator\s+wallet)\b/i;
 const THIS_LIQ_RE = /\b(liquidity\s+check\s+this|lp\s+check\s+this|is\s+lp\s+locked|is\s+liquidity\s+safe|pool\s+safety\s+this)\b/i;
 
@@ -5536,17 +5536,46 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   if (isBaseMomentumPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
-    const pumpResult = await handleBasePumpMap(prompt, origin);
-    if (pumpResult.items.length > 0) {
-      updateMemMomentum(sessionMem, pumpResult.items);
-      updateMemIntent(sessionMem, "market");
+    const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+    const stored = (universe?.candidates ?? [])
+      .filter((c) => !isMajorOrStableLike(c.symbol ?? "?", c.name ?? null))
+      .slice(0, 30);
+    const top = stored.slice(0, 7);
+    if (stored.length > 0) {
+      updateMemMomentum(sessionMem, stored.map((c, i) => ({
+        rank: i + 1,
+        symbol: c.symbol ?? "?",
+        name: c.name ?? null,
+        address: c.tokenAddress ?? c.poolAddress ?? null,
+        liquidity: c.liquidityUsd ?? null,
+        volume24h: c.volume24h ?? null,
+        change24h: c.change24h ?? null,
+        tag: c.reasonTags?.[0] ?? null,
+      })));
+      sessionMem.lastMomentumShownCount = top.length;
+      sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+      sessionMem.allowedRankScanUsed = false;
+      sessionMem.lastIntent = "base_momentum";
+      sessionMem.lastIntentTs = Date.now();
+      sessionMem.lastActionableIntent = "base_momentum";
+      sessionMem.lastActionableIntentTs = Date.now();
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "market",
+        toolsUsed: ["base_market_feed"],
+        analysis: formatBaseMarketReply(top, universe?.candidates.length ?? top.length, 0, universe?.cappedMessage ?? null),
+        marketContext: {
+          items: stored.map((c, i) => ({
+            rank: i + 1, symbol: c.symbol ?? "?", name: c.name ?? null, tokenAddress: c.tokenAddress ?? null, poolAddress: c.poolAddress ?? null,
+            reasonTag: c.reasonTags[0] ?? null, price: c.priceUsd ?? null, liquidity: c.liquidityUsd ?? null, volume24h: c.volume24h ?? null, change24h: c.change24h ?? null,
+          })),
+        },
+      };
     }
-    return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "market",
-      toolsUsed: ["base_market_feed", "pump_alerts_feed"],
-      analysis: pumpResult.analysis,
-      marketContext: { items: pumpResult.items },
-    };
+    const analysis = await handleBasePumpMap(prompt, origin);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"], analysis };
   }
   if (isPumpFeedPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "pump_alerts", rendererUsed: "pump_alerts", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
@@ -5675,13 +5704,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         `Token: ${token?.symbol ?? "Unknown"}`,
         `Contract: ${target}`, "",
         "Origin read:",
-        "- Likely deployer/origin was queried from live Base data.",
+        "- Origin wallet verified only when a concrete deployer/origin address is returned.",
+        "- Origin wallet could not be verified from this pass if no deployer is returned.",
         "",
         "Linked wallet signals:",
-        "- See linked wallet flags in this read where available.",
+        "- No linked wallet signals returned unless explicitly shown.",
         "",
         "Prior activity:",
-        "- Prior origin-wallet history is partial unless explicitly returned.",
+        "- Prior activity incomplete unless explicitly shown.",
         "",
         "Risk flags:",
         "- Treat unverified origin links as unresolved risk.",
@@ -5716,8 +5746,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const summary = sessionMem.lastToken?.scanSummary ?? body.clientContext?.lastToken?.scanSummary ?? "";
     const liqRaw = summary.match(/Liquidity:\s*([^\n]+)/i)?.[1] ?? null;
     const volRaw = summary.match(/Volume:\s*([^\n]+)/i)?.[1] ?? null;
-    const liqNum = parseAbbrevUsdToNumber(liqRaw);
-    const volNum = parseAbbrevUsdToNumber(volRaw);
+    const memMover = sessionMem.lastMomentumList.find((m) => m.address?.toLowerCase() === target.toLowerCase()) ?? null;
+    const liqNum = parseAbbrevUsdToNumber(liqRaw) ?? memMover?.liquidity ?? null;
+    const volNum = parseAbbrevUsdToNumber(volRaw) ?? memMover?.volume24h ?? null;
     return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, { ok: false, token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target }, riskTier: "high", stabilityScore: null, primaryPool: null, liquidityUsd: liqNum, volume24h: volNum, warnings: ["LP lock/control unverified."], errorSafeMessage: "Pool-age history unavailable in this pass." }) };
   }
 
@@ -6081,9 +6112,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
               token: { name: String(td.name ?? memItem.name ?? "Token"), symbol: String(td.symbol ?? memItem.symbol ?? "?"), address: String(td.contract ?? memItem.address) },
               market: {
                 price: typeof td.price === "number" ? td.price : null,
-                change24h: typeof td.priceChange24h === "number" ? td.priceChange24h : null,
-                volume24h: typeof td.volume24h === "number" ? td.volume24h : null,
-                liquidity: typeof td.liquidity === "number" ? td.liquidity : null,
+                change24h: typeof td.priceChange24h === "number" ? td.priceChange24h : (memItem.change24h ?? null),
+                volume24h: typeof td.volume24h === "number" ? td.volume24h : (memItem.volume24h ?? null),
+                liquidity: typeof td.liquidity === "number" ? td.liquidity : (memItem.liquidity ?? null),
                 marketCap: typeof td.marketCapUsd === "number" ? td.marketCapUsd : null,
                 fdv: typeof td.fdvUsd === "number" ? td.fdvUsd : null,
                 displayMarketValue: typeof td.displayMarketValue === "number" ? td.displayMarketValue : null,
@@ -6116,7 +6147,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           };
           const fullEvidence = buildFullReportEvidence(reportEvidence, memItem.address);
           const scanText = renderQuickTokenScan(fullEvidence);
-          updateMemToken(sessionMem, memItem.address, String(td.symbol ?? memItem.symbol ?? "?"), String(td.name ?? memItem.name ?? "Token"), scanText);
+          const safeSym = String(td.symbol ?? memItem.symbol ?? "TOKEN");
+          const safeName = String(td.name ?? memItem.name ?? safeSym);
+          updateMemToken(sessionMem, memItem.address, safeSym, safeName, scanText);
           return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: scanText };
         }
         return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `I couldn't pull live data for ${memItem.symbol ?? `token #${_memRank}`} right now. Try pasting the contract directly.` };
