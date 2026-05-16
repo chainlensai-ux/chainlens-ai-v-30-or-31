@@ -167,6 +167,14 @@ export default function ContactPage() {
         @media (max-width: 900px) {
           .contact-grid-3 { grid-template-columns: 1fr 1fr !important; }
         }
+        .contact-footer-link {
+          font-size: 12px; color: rgba(255,255,255,0.30);
+          text-decoration: none; letter-spacing: 0.06em;
+          font-family: var(--font-plex-mono, IBM Plex Mono, monospace);
+          transition: color 0.15s;
+        }
+        .contact-footer-link:hover { color: rgba(255,255,255,0.60); }
+
         @media (max-width: 600px) {
           .contact-grid-3 { grid-template-columns: 1fr !important; }
           .bug-grid { grid-template-columns: 1fr !important; }
@@ -454,21 +462,13 @@ export default function ContactPage() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             gap: '24px', flexWrap: 'wrap',
           }}>
-            {[
+            {([
               { href: '/', label: 'Home' },
               { href: '/pricing', label: 'Pricing' },
               { href: '/terminal', label: 'Terminal' },
               { href: '/affiliate', label: 'Affiliate' },
-            ].map(l => (
-              <Link key={l.href} href={l.href} style={{
-                fontSize: '12px', color: 'rgba(255,255,255,0.30)',
-                textDecoration: 'none', letterSpacing: '0.06em',
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                transition: 'color 0.15s',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.60)')}
-              onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.30)')}
-              >
+            ] as const).map(l => (
+              <Link key={l.href} href={l.href} className="contact-footer-link">
                 {l.label}
               </Link>
             ))}
