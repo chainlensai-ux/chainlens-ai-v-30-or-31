@@ -62,7 +62,7 @@ function extractTokenQuery(text: string): string | null {
 
 function getOrCreateSessionId(): string {
   if (typeof window === 'undefined') return 'ssr'
-  const key = 'clark_session_id'
+  const key = 'chainlens:clark-session-id'
   let id = sessionStorage.getItem(key)
   if (!id) {
     id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`

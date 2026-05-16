@@ -10,7 +10,7 @@ const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a m
 
 function getOrCreateSessionId(): string {
   if (typeof window === 'undefined') return 'ssr'
-  const key = 'clark_session_id'
+  const key = 'chainlens:clark-session-id'
   let id = sessionStorage.getItem(key)
   if (!id) {
     id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -66,7 +66,10 @@ export default function MobileClarkDrawer() {
         body: JSON.stringify({ feature: 'clark-ai', prompt: text }),
       })
       const json = await res.json().catch(() => ({}))
-      const reply = typeof json?.reply === 'string' && json.reply.trim() ? json.reply : FALLBACK_ERROR_MESSAGE
+      const payload = (json?.data && typeof json.data === 'object') ? json.data : json
+      const reply = typeof payload?.reply === 'string' && payload.reply.trim()
+        ? payload.reply
+        : (typeof payload?.analysis === 'string' && payload.analysis.trim() ? payload.analysis : FALLBACK_ERROR_MESSAGE)
       setMessages((prev) => [...prev.slice(0, -1), { role: 'clark', text: reply }])
       setLastAction('send-success')
     } catch {

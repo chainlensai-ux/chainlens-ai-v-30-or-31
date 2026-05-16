@@ -101,6 +101,13 @@ function makeSessionKey(req: NextRequest, authenticated: boolean): string {
   if (sessionId) return `s:${sessionId}`;
   return `ip:${clarkIp(req)}`;
 }
+function getSessionKeySource(req: NextRequest, authenticated: boolean): "user" | "session" | "ip" {
+  const userId = req.headers.get('x-user-id')?.trim();
+  const sessionId = req.headers.get('x-clark-session')?.trim();
+  if (authenticated && userId) return "user";
+  if (sessionId) return "session";
+  return "ip";
+}
 
 function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string | null, name: string | null, scanSummary: string | null) {
   mem.lastToken = { address, symbol, name, scanSummary, ts: Date.now() };
@@ -6530,9 +6537,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
   }
   if (body.message && !body.prompt) body.prompt = body.message
+  const debugMemory = Boolean((body as { debugMemory?: boolean }).debugMemory) || req.nextUrl.searchParams.get('debug') === 'true'
 
   // Classify prompt cost for two-tier rate limiting
   const sessionKey = makeSessionKey(req, authenticated)
+  const memoryKeySource = getSessionKeySource(req, authenticated)
   const sessionMem = getSessionMemory(sessionKey)
   const earlyPrompt = (body.prompt ?? '').trim()
   const isMoreFollowup = earlyPrompt ? (MORE_CONTEXT_RE.test(earlyPrompt) && (sessionMem.lastMomentumList.length > 0 || Boolean(sessionMem.lastToken))) : false
@@ -6546,6 +6555,36 @@ export async function POST(req: NextRequest) {
   const earlyCached = clarkCache.get(earlyCacheKey);
   if (earlyCached && earlyCached.exp > Date.now()) {
     return NextResponse.json(earlyCached.payload);
+  }
+  if (debugMemory || process.env.NODE_ENV !== 'production') {
+    console.log('[clark-memory]', {
+      key: `${sessionKey.slice(0, 16)}...`,
+      source: memoryKeySource,
+      hasLastMomentumList: sessionMem.lastMomentumList.length > 0,
+      lastMomentumListLength: sessionMem.lastMomentumList.length,
+      hasLastToken: Boolean(sessionMem.lastToken),
+      lastActionableIntent: sessionMem.lastActionableIntent,
+      rankParsed: earlyRank,
+      prompt: earlyPrompt.slice(0, 80),
+    })
+  }
+
+  // Memory-only continuation must execute before expensive rate limiting.
+  if (body.feature === 'clark-ai' && isMoreFollowup) {
+    const origin = req.nextUrl.origin;
+    const moreResult = await handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem);
+    const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(moreResult, body) } as Record<string, unknown>
+    if (debugMemory) normalized.debugMemory = {
+      memoryKeySource,
+      hasLastMomentumList: sessionMem.lastMomentumList.length > 0,
+      lastMomentumListLength: sessionMem.lastMomentumList.length,
+      hasLastToken: Boolean(sessionMem.lastToken),
+      lastActionableIntent: sessionMem.lastActionableIntent,
+      rankParsed: earlyRank,
+      allowedRankScanActive: (!sessionMem.allowedRankScanUsed && Date.now() < sessionMem.allowedRankScanUntil),
+      cooldownBucketUsed: 'lowcost',
+    }
+    return NextResponse.json(normalized, { status: 200 })
   }
 
   const rateResult = (promptIsLowCost || rankAllowanceActive)
@@ -6621,7 +6660,17 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) }
+    const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) } as Record<string, unknown>
+    if (debugMemory) normalized.debugMemory = {
+      memoryKeySource,
+      hasLastMomentumList: sessionMem.lastMomentumList.length > 0,
+      lastMomentumListLength: sessionMem.lastMomentumList.length,
+      hasLastToken: Boolean(sessionMem.lastToken),
+      lastActionableIntent: sessionMem.lastActionableIntent,
+      rankParsed: earlyRank,
+      allowedRankScanActive: (!sessionMem.allowedRankScanUsed && Date.now() < sessionMem.allowedRankScanUntil),
+      cooldownBucketUsed: (promptIsLowCost || rankAllowanceActive) ? 'lowcost' : 'tool',
+    }
     const resultAnalysis = typeof (result as Record<string, unknown>)?.analysis === 'string' ? (result as Record<string, unknown>).analysis as string : ''
     if (!isValidationOnlyAnalysis(resultAnalysis)) rateResult.commitDaily()
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
