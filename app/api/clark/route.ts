@@ -606,6 +606,8 @@ function classifyClarkQuestionType(
   if (/who\s+(?:deployed|built|created|made)|deployer\s+of|creator\s+wallet(?:\s+(?:for|of))?|dev\s+wallet\s+(?:for|of)\b/.test(normalized) && ctx.explicitSymbol) return "token_dev_followup";
   // "liquidity safe for X?" / "lp safe X?" with a named token — route before generic token_scan
   if (/(?:liquidity|lp)\s+safe(?:ty)?(?:\s+(?:for|of|on|check))?|is\s+(?:liquidity|lp)\s+safe(?:ty)?/.test(normalized) && ctx.explicitSymbol) return "token_liquidity_followup";
+  // Wallet address present and prompt contains wallet keyword — route wallet before token_scan
+  if (ctx.explicitAddress && /\bwallet\b/i.test(normalized)) return "wallet_quality";
   if (/scan|check|token scan|contract/.test(normalized) || ctx.explicitAddress || ctx.explicitSymbol) return "token_scan";
   return "unknown_general";
 }
@@ -3156,6 +3158,8 @@ type ClarkToolEvidence = {
     liquidityUsd: number | null;
     riskTier: string | null;
     stabilityScore: number | null;
+    volume24h: number | null;
+    primaryPool: string | null;
     warnings: string[];
     errorSafeMessage?: string;
   };
@@ -3395,19 +3399,27 @@ async function executeClarkToolPlan(input: {
 
       if (tool.name === "liquidity_analyze") {
         if (input.verifiedPlan === "free") {
-          evidence.liquidity = { ok: false, token: null, liquidityUsd: null, riskTier: null, stabilityScore: null, warnings: ["This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports."], errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
+          evidence.liquidity = { ok: false, token: null, liquidityUsd: null, riskTier: null, stabilityScore: null, volume24h: null, primaryPool: null, warnings: ["This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports."], errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
           continue
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
         const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, input.authHeader ?? undefined, input.verifiedPlan);
         const l = (((liqRes.json as Record<string, unknown>)?.data ?? {}) as Record<string, unknown>);
+        const poolBreakdown = Array.isArray(l.pool_breakdown) ? l.pool_breakdown as Array<Record<string, unknown>> : [];
+        const topPool = poolBreakdown[0] ?? null;
+        const topPoolVolume = typeof topPool?.volume24h === "number" ? topPool.volume24h as number : null;
+        const topPoolPair = typeof topPool?.pair === "string" ? topPool.pair as string : null;
+        const topPoolDex = typeof topPool?.dex === "string" ? topPool.dex as string : null;
+        const primaryPoolLabel = (topPoolDex && topPoolPair) ? `${topPoolDex} / ${topPoolPair}` : topPoolPair ?? topPoolDex ?? null;
         evidence.liquidity = {
           ok: liqRes.ok && Boolean((liqRes.json as Record<string, unknown>)?.ok),
           token: liqRes.ok ? { name: String(l.name ?? "Unknown"), symbol: String(l.symbol ?? "?"), address: String(l.contract ?? address) } : null,
           liquidityUsd: typeof l.lp_total_liquidity_usd === "number" ? l.lp_total_liquidity_usd : null,
           riskTier: typeof l.lp_risk_tier === "string" ? l.lp_risk_tier : null,
           stabilityScore: typeof l.lp_stability_score === "number" ? l.lp_stability_score : null,
+          volume24h: topPoolVolume,
+          primaryPool: primaryPoolLabel,
           warnings: liqRes.ok ? [] : ["Liquidity data is currently limited."],
           errorSafeMessage: liqRes.ok ? undefined : "Liquidity check has no signal in the checked window.",
         };
@@ -3960,27 +3972,27 @@ function renderDevWalletFocusedRead(
   missingChecks.push("PnL, win rate, and deployer history are not verified from this scan.");
   missingChecks.push("Smart-money status is not confirmed.");
   return [
-    "**DEV WALLET READ**",
+    "DEV WALLET READ",
     "",
-    `**Token:** ${tokenName} (${tokenSymbol})`,
-    `**Contract:** ${tokenAddress}`,
+    `Token: ${tokenName} (${tokenSymbol})`,
+    `Contract: ${tokenAddress}`,
     "",
-    "**Origin read:**",
+    "Origin read:",
     originRead,
     "",
-    "**Linked wallet signals:**",
+    "Linked wallet signals:",
     linkedRead,
     "",
-    "**Prior activity:**",
+    "Prior activity:",
     priorActivity,
     "",
-    "**Risk flags:**",
+    "Risk flags:",
     riskFlags.length > 0 ? riskFlags.map(f => `- ${f}`).join("\n") : "- No confirmed risk flags from this CORTEX scan.",
     "",
-    "**Missing checks:**",
+    "Missing checks:",
     missingChecks.map(m => `- ${m}`).join("\n"),
     "",
-    "**Next action:**",
+    "Next action:",
     "Compare origin wallet activity with holder concentration and liquidity control. No trade call.",
   ].join("\n");
 }
@@ -3991,47 +4003,99 @@ function renderLiquidityFocusedRead(
   tokenAddress: string,
   liquidity: NonNullable<ClarkToolEvidence["liquidity"]>
 ): string {
-  const liqDepth = liquidity.liquidityUsd != null
-    ? (liquidity.liquidityUsd >= 1_000_000 ? "strong depth" : liquidity.liquidityUsd >= 100_000 ? "moderate depth" : "thin depth")
-    : "unverified";
-  const liqDepthLine = liquidity.liquidityUsd != null
-    ? `${liqDepth} (${formatUsdShort(liquidity.liquidityUsd)})`
-    : "unverified";
-  const lpControlLine = liquidity.riskTier === "low"
-    ? "LP lock/control is unverified. NEVER say locked unless data proves it."
-    : liquidity.riskTier === "extreme"
-      ? "LP structure appears fragile. LP control is unverified from current CORTEX data."
-      : "LP lock/control is unverified.";
+  const liq = liquidity.liquidityUsd;
+  const vol = liquidity.volume24h;
+  const short = `${tokenAddress.slice(0, 6)}...${tokenAddress.slice(-4)}`;
+
+  // Verdict
+  const verdict =
+    liq == null ? "INCOMPLETE READ" :
+    liq >= 1_000_000 ? "STRONG DEPTH" :
+    liq >= 300_000 ? "MODERATE DEPTH" :
+    liq >= 50_000 ? "THIN DEPTH" :
+    "THIN DEPTH";
+
+  // LP control line — never claim locked without data
+  const lpControlLine =
+    liquidity.riskTier === "low"
+      ? "LP lock/control is unverified. Treat liquidity as usable depth, not guaranteed safety."
+      : liquidity.riskTier === "extreme"
+        ? "LP structure appears fragile. LP control is unverified from current CORTEX data."
+        : "LP lock/control is unverified. Treat liquidity as usable depth, not guaranteed safety.";
+
+  // Depth interpretation
+  const depthInterpretation =
+    liq == null ? "Liquidity data incomplete — pool depth unverified."
+    : liq >= 1_000_000 ? `${formatUsdShort(liq)} — strong depth for normal lowcap trading.`
+    : liq >= 300_000 ? `${formatUsdShort(liq)} — moderate depth; slippage can matter on larger entries.`
+    : liq >= 50_000 ? `${formatUsdShort(liq)} — thin depth; move can reverse fast on exits.`
+    : `${formatUsdShort(liq)} — microcap depth; treat signals as noisy.`;
+
+  // Turnover / flow
+  const turnoverLines: string[] = [];
+  if (vol != null && liq != null && liq > 0) {
+    const ratio = vol / liq;
+    const ratioStr = ratio.toFixed(1);
+    const quality =
+      ratio < 0.5 ? `Volume is ${ratioStr}x liquidity — calm/low turnover.` :
+      ratio < 2 ? `Volume is ${ratioStr}x liquidity — active trading flow.` :
+      ratio < 8 ? `Volume is ${ratioStr}x liquidity — high turnover; slippage risk elevated.` :
+      `Volume is ${ratioStr}x liquidity — extreme churn; pool is turning over fast.`;
+    turnoverLines.push(quality);
+    turnoverLines.push(`24h vol ${formatUsdShort(vol)} vs liquidity ${formatUsdShort(liq)}.`);
+  } else {
+    turnoverLines.push("Volume/liquidity ratio not available in this pass.");
+  }
+
+  // Primary pool
+  const primaryPoolLine = liquidity.primaryPool
+    ? liquidity.primaryPool
+    : "Primary pool selected from live Base pool data.";
+
+  // Risk flags
   const riskFlags: string[] = [];
-  if (liquidity.liquidityUsd != null && liquidity.liquidityUsd < 50_000) riskFlags.push("Thin liquidity — exit slippage elevated.");
-  if (!liquidity.riskTier || liquidity.riskTier === "extreme") riskFlags.push("Unverified LP lock/control — removal risk unknown.");
+  if (liq != null && liq < 50_000) riskFlags.push("Thin liquidity — exit slippage elevated.");
+  if (vol != null && liq != null && liq > 0 && (vol / liq) > 8) riskFlags.push("Extreme volume/liquidity ratio — high churn and slippage risk.");
+  riskFlags.push("LP lock/control unverified.");
+  if (liquidity.riskTier === "extreme") riskFlags.push("LP structure flagged as fragile by CORTEX data.");
   if (liquidity.warnings.length > 0) riskFlags.push(...liquidity.warnings.slice(0, 2));
-  const missingChecks: string[] = [];
-  missingChecks.push("LP lock/control confirmation not available from this scan.");
-  missingChecks.push("Volume/liquidity turnover not verified in this pass.");
+  if (liq == null) riskFlags.push("Liquidity data incomplete — pool depth unverified.");
+
+  // Missing checks
+  const missingChecks = [
+    "LP lock/control confirmation not available from this scan.",
+    "Holder distribution and concentration not included in this pass.",
+    "Dev wallet and deployer behavior not verified.",
+  ];
+
   return [
-    "**LIQUIDITY READ**",
+    "LIQUIDITY READ",
     "",
-    `**Token:** ${tokenName} (${tokenSymbol})`,
-    `**Contract:** ${tokenAddress}`,
+    `Token: ${tokenName} (${tokenSymbol})`,
+    `Contract: ${short}`,
     "",
-    "**Primary pool:**",
-    liqDepth !== "unverified" ? `Pool data available. Liquidity: ${formatUsdShort(liquidity.liquidityUsd)}.` : "Primary pool data incomplete.",
+    `Verdict: ${verdict}`,
     "",
-    "**Liquidity depth:**",
-    liqDepthLine,
+    "Primary pool:",
+    primaryPoolLine,
     "",
-    "**LP control / lock read:**",
+    "Liquidity depth:",
+    depthInterpretation,
+    "",
+    "Turnover / flow:",
+    ...turnoverLines,
+    "",
+    "LP control / lock:",
     lpControlLine,
     "",
-    "**Risk flags:**",
-    riskFlags.length > 0 ? riskFlags.map(f => `- ${f}`).join("\n") : "- No confirmed risk flags from this scan.",
+    "Risk flags:",
+    ...riskFlags.map(f => `- ${f}`),
     "",
-    "**Missing checks:**",
-    missingChecks.map(m => `- ${m}`).join("\n"),
+    "Missing checks:",
+    ...missingChecks.map(m => `- ${m}`),
     "",
-    "**Next action:**",
-    "Do not rely on market cap alone. Verify LP + holders before conviction. No trade call.",
+    "Next action:",
+    "Verify LP control, holders, and dev wallet before conviction. No trade call.",
   ].join("\n");
 }
 
@@ -4222,6 +4286,90 @@ function buildCasualContextualReply(prompt: string, lastScanText: string | null,
     return "Clark here. What are we looking at?";
   }
   return "What do you want me to look at? Paste a contract, wallet, or ask about something specific.";
+}
+
+function buildWatchVerdictFromScan(scanText: string, contractAddress: string): string {
+  const ex = (label: string) => {
+    const m = scanText.match(new RegExp(`(?:^|\\n)[-\\s]*${label}:\\s*([^\\n]+)`, "i"));
+    return m?.[1]?.trim() ?? null;
+  };
+  const nameRaw = ex("Asset") ?? "";
+  const tokenName = nameRaw.split("(")[0].trim() || "Unknown";
+  const symbol = nameRaw.match(/\(([^)]+)\)/)?.[1] ?? "?";
+  const verdict = ex("Verdict") ?? "UNKNOWN";
+  const liquidity = ex("Liquidity") ?? ex("Pool depth") ?? null;
+  const volume = ex("Volume") ?? ex("24h volume") ?? null;
+  const topHolder = ex("Top holder") ?? null;
+  const top10 = ex("Top 10") ?? null;
+  const lpControl = ex("LP control") ?? null;
+  const honeypot = ex("Honeypot") ?? null;
+  const sellTax = ex("Sell tax") ?? null;
+  const buyTax = ex("Buy tax") ?? null;
+  const short = `${contractAddress.slice(0, 6)}...${contractAddress.slice(-4)}`;
+
+  // Choose watch decision based on verdict
+  const decision =
+    verdict === "AVOID" ? "AVOID FOR NOW" :
+    verdict === "WATCH" ? "WATCH" :
+    verdict === "TRUSTWORTHY" ? "WATCH" :
+    verdict === "SCAN DEEPER" ? "SCAN DEEPER" :
+    "LOW SIGNAL";
+
+  // Intro line varies by decision
+  const intro =
+    decision === "WATCH" ? "Worth watching, not enough for conviction." :
+    decision === "AVOID FOR NOW" ? "Risk flags present. Monitor only — no entry without clean checks." :
+    decision === "SCAN DEEPER" ? "Signal exists but coverage is too thin. Deeper checks needed before watchlist." :
+    "Not enough signal yet. This read is too incomplete for confidence.";
+
+  // Build why bullets from available data
+  const why: string[] = [];
+  if (liquidity) why.push(`Liquidity: ${liquidity}`);
+  if (volume) why.push(`Volume: ${volume}`);
+  if (topHolder) why.push(`Top holder: ${topHolder}`);
+  if (top10) why.push(`Top 10 holders: ${top10}`);
+  if (lpControl) why.push(`LP control: ${lpControl}`);
+  else why.push("LP lock/control: unverified");
+  if (honeypot && !/unverified/i.test(honeypot)) why.push(`Honeypot: ${honeypot}`);
+  if (sellTax && !/unverified/i.test(sellTax)) why.push(`Sell tax: ${sellTax}`);
+  if (buyTax && !/unverified/i.test(buyTax)) why.push(`Buy tax: ${buyTax}`);
+
+  // Main risk
+  const riskMatch = scanText.match(/Bear case:\n([\s\S]*?)(?:\n\n|\nMissing|$)/i);
+  const bearLines = riskMatch?.[1]?.split("\n").filter(l => l.trim().startsWith("-")).slice(0, 2).map(l => l.trim().replace(/^-\s*/, "")) ?? [];
+  const mainRisk = bearLines.length
+    ? bearLines.join(". ")
+    : "LP control and deployer behavior are not fully verified — treat as incomplete until confirmed.";
+
+  // What would change my mind
+  const changeMyMind = [
+    "Verified LP lock or confirmed LP control status",
+    "Holder concentration below 30% for top 10",
+    "Volume sustaining after initial momentum",
+  ];
+
+  return [
+    "WATCH VERDICT",
+    "",
+    `Token: ${tokenName} (${symbol})`,
+    `Contract: ${short}`,
+    "",
+    `Decision: ${decision}`,
+    "",
+    intro,
+    "",
+    "Why:",
+    ...why.slice(0, 5).map(b => `- ${b}`),
+    "",
+    "Main risk:",
+    mainRisk,
+    "",
+    "What would change my read:",
+    ...changeMyMind.map(c => `- ${c}`),
+    "",
+    "Next action:",
+    "Run liquidity + holder + dev wallet checks before conviction. No trade call.",
+  ].join("\n");
 }
 
 // ---------- Feature handlers ----------
@@ -5127,6 +5275,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet (or a .base.eth / .eth name) and I'll analyze the available data." };
   }
+  // Wallet analysis with address — route to wallet before plan execution
+  if (directIntent.intent === "wallet_analysis" && directIntent.address) {
+    const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, authHeader ?? undefined);
+    const w = (walletRes.json ?? {}) as Record<string, unknown>;
+    if (walletRes.ok && Object.keys(w).length > 0) {
+      const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
+      const isBalanceQ = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(prompt);
+      const analysis = isBalanceQ ? formatWalletBalanceSummary(snapshot) : buildWalletQualityVerdict(snapshot, directIntent.address, prompt);
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: "I couldn't pull wallet data for that address right now. Try pasting again or use Wallet Scanner directly." };
+  }
   if (directIntent.intent === "whale_alert" && !directIntent.address) {
     return await handleWhaleAlertFeed(prompt, body, origin, authHeader);
   }
@@ -5168,6 +5328,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis: buildTokenFollowupReply(tokenFollowup.type, tokenFollowup.contractAddress, tokenFollowup.scanText),
     };
   }
+  // Watch verdict follow-up — after a token scan, user asks whether to watch
+  const WATCH_VERDICT_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+token|that\s+token)?|is\s+it\s+worth\s+watching|worth\s+watching|final\s+verdict|what'?s\s+the\s+play|should\s+i\s+monitor\s+(?:it|this)|watch\s+verdict)\b/i;
+  if (WATCH_VERDICT_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
+    const lastScan = extractLastTokenScanFromHistory(body.history);
+    if (lastScan) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+        analysis: buildWatchVerdictFromScan(lastScan.scanText, lastScan.contractAddress),
+      };
+    }
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "casual", toolsUsed: [],
+      analysis: "I need a token first. Send a symbol/contract or say 'scan BRETT'.",
+    };
+  }
+
   if (isHolderQuestion(prompt) && !extractTokenLookupQuery(prompt) && !extractAddress(prompt)) {
     const lastScan = extractLastTokenScanFromHistory(body.history);
     if (!lastScan) {
