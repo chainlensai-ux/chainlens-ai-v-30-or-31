@@ -422,6 +422,12 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/\b(should i buy this|should i ape|should i buy)\b/i.test(t)) {
     return { intent: "financial_advice", address };
   }
+  if (/what\s+(?:does|is|are)\s+(?:volume[-\s]led|tradable\s+depth|microcap\s+noise|liquidity\s+depth|lp\s+control|liquidity\s+control|turnover|market\s+cap\s+unverified|unverified\s+market\s+cap|holder\s+concentration|token\s+safety|fdv|market\s+cap|slippage|dev\s+wallet|honeypot|whale\s+alert|pump\s+alert|base\s+radar)/.test(t)) {
+    return { intent: "educational", address };
+  }
+  if (/what\s+does\s+.{1,40}\s+mean\??$|explain\s+.{1,60}$/.test(t) && !extractAddress(t)) {
+    return { intent: "educational", address };
+  }
   if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|what does holder concentration mean|why is lp lock important|what is holder concentration|what is lp lock|what is slippage|explain slippage|what is market cap|what is fdv|what is a honeypot|how do whale alerts work|how do pump alerts work|what is base radar|explain whale alerts?|explain pump alerts?/i.test(t)) {
     return { intent: "educational", address };
   }
@@ -699,6 +705,8 @@ function classifyClarkQuestionType(
 ): ClarkQuestionType {
   if (/^(hi|hey|hello|yo|gm|sup)\b/.test(normalized)) return "casual";
   if (/what can you do|help|who are you|how do i find whale wallets|what are red flags in a token|how do i find early wallets/.test(normalized)) return "unknown_general";
+  if (/what\s+(?:does|is|are)\s+(?:volume[-\s]led|tradable\s+depth|microcap\s+noise|liquidity\s+depth|lp\s+control|liquidity\s+control|turnover|market\s+cap\s+unverified|unverified\s+market\s+cap|holder\s+concentration|token\s+safety|fdv|market\s+cap|slippage|dev\s+wallet|honeypot|whale\s+alert|pump\s+alert|base\s+radar)/.test(normalized)) return "education";
+  if (/what\s+does\s+.{1,40}\s+mean\??$|explain\s+.{1,60}$/.test(normalized) && !ctx.explicitAddress) return "education";
   if (/what is liquidity risk|what is a dev wallet|lp lock|slippage/.test(normalized)) return "education";
   if (/holder concentration/.test(normalized) && !ctx.explicitSymbol && !ctx.explicitAddress) return "education";
   if (/what should i watch|why are base memes moving|strategy|framework/.test(normalized)) return "market_overview";
@@ -1092,6 +1100,8 @@ function classifyPlannerIntent(prompt: string, address: string | null): ClarkPla
   const t = prompt.trim().toLowerCase();
   if (/^(hi|hey|hello|yo|gm|sup)\b/.test(t)) return "casual";
   if (/what can you do|help|who are you/.test(t)) return "help";
+  if (/what\s+(?:does|is|are)\s+(?:volume[-\s]led|tradable\s+depth|microcap\s+noise|liquidity\s+depth|lp\s+control|liquidity\s+control|turnover|market\s+cap\s+unverified|unverified\s+market\s+cap|holder\s+concentration|token\s+safety|fdv|market\s+cap|slippage|dev\s+wallet|honeypot|whale\s+alert|pump\s+alert|base\s+radar)/i.test(t)) return "educational";
+  if (/what\s+does\s+.{1,40}\s+mean\??$|explain\s+.{1,60}$/i.test(t)) return "educational";
   if (/what is liquidity risk|explain liquidity risk|what is a dev wallet|holder concentration|lp lock|what is slippage|explain slippage/i.test(t)) return "educational";
   if (/what should i watch|watch today|framework|strategy/i.test(t)) return "strategy";
   if (/full report|complete report|deep scan|full analysis|run all checks|scan this properly|is this token safe|give me the full report/.test(t)) return "token_full_report_request";
@@ -1375,6 +1385,104 @@ function buildEducationalReply(prompt: string): string {
   if (/whale alert/.test(t)) return "Whale Alerts track large on-chain moves from monitored wallets. HIGH SIGNAL means the move is large, repeated, or from a tracked active wallet. WATCH means it's noteworthy but unconfirmed direction.";
   if (/pump alert/.test(t)) return "Pump Alerts filter momentum tokens by volume expansion, price change, and liquidity quality. HIGH MOMENTUM means the move is broad and volume-backed; THIN MOONSHOT means big % move but thin liquidity.";
   if (/base radar/.test(t)) return "Base Radar aggregates live Base chain pool data to surface the top movers by volume, price change, and liquidity depth. It's a discovery feed — not a trade signal.";
+  if (/volume.led/i.test(t)) return [
+    "TERM EXPLAINER",
+    "",
+    "Meaning:",
+    "The move is backed by real trading volume, not only a tiny-liquidity price spike.",
+    "",
+    "Why it matters:",
+    "Volume support can make a move more worth watching, but it still does not prove safety.",
+    "",
+    "How Clark uses it:",
+    "CORTEX compares volume against liquidity depth. High volume with usable liquidity is a stronger signal than high price change with no depth.",
+    "",
+    "No trade call.",
+  ].join("\n");
+  if (/tradable.*depth|depth.*tradable/i.test(t)) return [
+    "TERM EXPLAINER",
+    "",
+    "Meaning:",
+    "Tradable depth is the real liquidity available to buy or sell without causing major price impact.",
+    "",
+    "Why it matters:",
+    "Thin depth means a large trade can move price significantly — making exits harder and slippage worse.",
+    "",
+    "How Clark uses it:",
+    "CORTEX flags tokens where depth is too thin for clean execution. This is separate from just showing a high price change.",
+    "",
+    "No trade call.",
+  ].join("\n");
+  if (/microcap.*noise|noise.*microcap/i.test(t)) return [
+    "TERM EXPLAINER",
+    "",
+    "Meaning:",
+    "A token with very small market cap or liquidity where price moves easily on low volume.",
+    "",
+    "Why it matters:",
+    "Microcap noise tokens can show big % moves on tiny trades — the signal is unreliable.",
+    "",
+    "How Clark uses it:",
+    "CORTEX labels tokens as microcap noise when liquidity or market cap is too small to trust the price action.",
+    "",
+    "No trade call.",
+  ].join("\n");
+  if (/turnover/i.test(t)) return [
+    "TERM EXPLAINER",
+    "",
+    "Meaning:",
+    "Turnover is the ratio of 24h trading volume to liquidity. High turnover means the pool is cycling through its full depth many times per day.",
+    "",
+    "Why it matters:",
+    "Very high turnover can indicate heavy attention but also increases slippage and churn risk.",
+    "",
+    "How Clark uses it:",
+    "CORTEX computes volume/liquidity ratio. Ratio above 8x is flagged as extreme turnover.",
+    "",
+    "No trade call.",
+  ].join("\n");
+  if (/liquidity\s+depth|depth.*liquidity/i.test(t)) return [
+    "TERM EXPLAINER",
+    "",
+    "Meaning:",
+    "Liquidity depth is the total value locked in the trading pool, available for buys and sells.",
+    "",
+    "Why it matters:",
+    "Deep liquidity means less slippage and more resilient price action. Thin liquidity means small trades can move price a lot.",
+    "",
+    "How Clark uses it:",
+    "CORTEX classifies depth as strong (>$1M), moderate ($300K–$1M), or thin (<$300K). Thin depth is a risk flag.",
+    "",
+    "No trade call.",
+  ].join("\n");
+  if (/market.?cap.*unverified|unverified.*market.?cap/i.test(t)) return [
+    "TERM EXPLAINER",
+    "",
+    "Meaning:",
+    "Market cap unverified means CORTEX could not confirm the circulating supply from available data, so the shown value is an estimate.",
+    "",
+    "Why it matters:",
+    "An unverified market cap may over- or understate the real value. FDV is shown as a fallback when circulating supply is unavailable.",
+    "",
+    "How Clark uses it:",
+    "CORTEX labels market cap clearly: confirmed, estimated, or FDV fallback. Treat unverified readings as approximate only.",
+    "",
+    "No trade call.",
+  ].join("\n");
+  if (/lp\s+control|liquidity\s+control|control.*lp/i.test(t)) return [
+    "TERM EXPLAINER",
+    "",
+    "Meaning:",
+    "LP control refers to who can remove or modify the liquidity pool — the deployer, a multisig, or no one if locked.",
+    "",
+    "Why it matters:",
+    "If LP control is not locked, the owner can pull liquidity at any time, collapsing the price.",
+    "",
+    "How Clark uses it:",
+    "CORTEX checks LP lock/control status. If unverified, Clark will never say it is locked.",
+    "",
+    "No trade call.",
+  ].join("\n");
   return "Great question. Share the exact risk concept and I'll break it down quickly.";
 }
 
@@ -5313,25 +5421,65 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  // "more" / "continue" — lightweight continuation using session memory
+  // "more" / "continue" / "give me more" — use session memory momentum list
   if (MORE_CONTEXT_RE.test(prompt.trim())) {
     const memList = sessionMem.lastMomentumList;
     if (memList.length > 0) {
-      const topSymbols = memList.slice(0, 3).map(m => m.symbol).join(', ');
+      // Find what's already been shown by looking at history
+      const histLines = getHistoryMessages(body.history);
+      const lastShownRanks = new Set<number>();
+      for (const line of histLines) {
+        for (const m of line.matchAll(/^\s*(\d+)\.\s+/gm)) {
+          const r = Number(m[1]);
+          if (r >= 1 && r <= 20) lastShownRanks.add(r);
+        }
+      }
+      // Find tokens not yet shown (or just show next batch if can't determine)
+      const shownMax = lastShownRanks.size > 0 ? Math.max(...lastShownRanks) : 0;
+      const nextTokens = memList.filter(m => m.rank > shownMax).slice(0, 4);
+
+      if (nextTokens.length > 0) {
+        const rows = nextTokens.map(m => {
+          const vol = m.volume24h != null ? formatUsdShort(m.volume24h) : "n/a";
+          const liq = m.liquidity != null ? formatUsdShort(m.liquidity) : "n/a";
+          const change = m.change24h != null ? `${m.change24h >= 0 ? "+" : ""}${m.change24h.toFixed(1)}%` : "n/a";
+          const tag = m.tag ?? "watch";
+          return `${m.rank}. ${m.symbol ?? "?"} — ${change} | Vol ${vol} | Liq ${liq} | ${tag}`;
+        });
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
+          analysis: [
+            "MORE BASE MOVERS",
+            "",
+            "Additional candidates from the latest CORTEX momentum read:",
+            "",
+            ...rows,
+            "",
+            "Quality note:",
+            "These are discovery candidates. Verify liquidity, holders, and dev wallet before conviction.",
+            "",
+            "Next:",
+            `Say "scan ${nextTokens[0]?.rank ?? "1"}" or paste a symbol/contract.`,
+          ].join("\n"),
+        };
+      }
+      // No more tokens beyond what's shown
+      const firstRank = memList[0]?.rank ?? 1;
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
         analysis: [
           "MORE CONTEXT",
           "",
-          `The strongest movers from this read include ${topSymbols}.`,
+          "The current movers list is already showing the strongest candidates from the latest CORTEX read.",
           "",
-          "Before acting on any mover:",
-          "- Run a token scan to check security and holders",
-          "- Verify LP control and liquidity depth",
-          "- Check dev wallet and deployer behavior",
-          "- Watch volume sustaining, not just initial pump",
+          "What matters now:",
+          "1. Pick a rank and scan it.",
+          "2. Check liquidity and LP control.",
+          "3. Check holder concentration.",
+          "4. Check dev and origin wallet.",
           "",
-          'Say "scan 1" to start with the top mover, or name a token.',
+          "Next:",
+          `Say "scan ${firstRank}" to start with the strongest mover.`,
         ].join("\n"),
       };
     }
@@ -5343,8 +5491,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           `MORE CONTEXT — ${t.symbol ?? "Last token"}`,
           "",
           "To go deeper on this token, try:",
-          `- "liquidity check ${t.symbol ?? 'this'}" — LP depth and control`,
-          `- "who deployed ${t.symbol ?? 'this'}" — deployer and origin wallet`,
+          `- "liquidity check ${t.symbol ?? "this"}" — LP depth and control`,
+          `- "who deployed ${t.symbol ?? "this"}" — deployer and origin wallet`,
           `- "should I watch it?" — watch verdict from current context`,
           "- Holder concentration is the next key check.",
         ].join("\n"),
@@ -5352,7 +5500,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     return {
       feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [],
-      analysis: "I can continue if you share a token, wallet, or ask something specific. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
+      analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
     };
   }
 
@@ -6272,7 +6420,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       feature: "clark-ai",
       chain,
       mode: "analysis",
-      analysis: "Paste a Base contract, wallet, or scan result and I'll analyze it.",
+      analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
       intent: plan.intent,
       toolsUsed,
     };
@@ -6305,16 +6453,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       mode: "casual_help",
       intent: plan.intent,
       toolsUsed,
-      analysis: [
-        "I can help with on-chain intelligence on Base. Try one of these:",
-        "- \"scan BRETT\" — token risk, security, holders, and LP check",
-        "- \"show Base whales\" — current whale activity feed",
-        "- \"what's pumping on Base?\" — live Base market movers",
-        "- \"scan wallet 0x...\" — wallet holdings and behavior read",
-        "- \"liquidity check AERO\" — LP depth and control status",
-        "- \"show pump alerts\" — high-momentum pump alert feed",
-        "- \"who deployed BRETT\" — dev wallet and deployer check",
-      ].join("\n"),
+      analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
     };
   }
   const memoryPrompt = historyContext
@@ -6354,6 +6493,13 @@ export async function POST(req: NextRequest) {
   const sessionMem = getSessionMemory(sessionKey)
   const earlyPrompt = (body.prompt ?? '').trim()
   const promptIsLowCost = earlyPrompt ? isLowCostPrompt(earlyPrompt, sessionMem) : false
+
+  // Check cache before rate limiting — cached responses bypass expensive tool quota
+  const earlyCacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: earlyPrompt, chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" });
+  const earlyCached = clarkCache.get(earlyCacheKey);
+  if (earlyCached && earlyCached.exp > Date.now()) {
+    return NextResponse.json(earlyCached.payload);
+  }
 
   const rateResult = promptIsLowCost
     ? checkClarkLowCostRate(actor, planKey)
