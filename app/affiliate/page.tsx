@@ -224,10 +224,10 @@ export default function AffiliatePage() {
                 </span>
               </div>
 
-              {/* 30% hero number */}
+              {/* 20% hero number */}
               <div style={{ padding:'28px 22px 20px', borderBottom:'1px solid rgba(255,255,255,.05)', textAlign:'center' }}>
                 <p style={{ margin:'0 0 2px', fontFamily:'var(--font-plex-mono,monospace)', fontSize:'10px', letterSpacing:'.18em', color:'#475569' }}>RECURRING COMMISSION RATE</p>
-                <div style={{ fontSize:'72px', fontWeight:800, lineHeight:1, letterSpacing:'-.04em', background:'linear-gradient(135deg,#2DD4BF 0%,#8b5cf6 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>30%</div>
+                <div style={{ fontSize:'72px', fontWeight:800, lineHeight:1, letterSpacing:'-.04em', background:'linear-gradient(135deg,#2DD4BF 0%,#8b5cf6 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>20%</div>
                 <p style={{ margin:'6px 0 0', fontSize:'12px', color:'#475569' }}>per referred subscription · every month</p>
               </div>
 
@@ -259,7 +259,7 @@ export default function AffiliatePage() {
           {/* ══ VALUE STRIP ═════════════════════════════════════════════════════ */}
           <div className="aff-stats-grid" style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'12px', marginBottom:'80px' }}>
             {([
-              { accent:'#2DD4BF', rgb:'45,212,191',  value:'30%',         label:'Recurring commission',   sub:'Earn while users stay subscribed' },
+              { accent:'#2DD4BF', rgb:'45,212,191',  value:'20%',         label:'Recurring commission',   sub:'Earn while users stay subscribed' },
               { accent:'#8b5cf6', rgb:'139,92,246',  value:'Monthly',     label:'Manual payouts',         sub:'Manual monthly payouts in crypto' },
               { accent:'#f59e0b', rgb:'245,158,11',  value:'Quality',     label:'First program',          sub:'Partners reviewed manually' },
               { accent:'#67e8f9', rgb:'103,232,249', value:'Creator',     label:'Native program',         sub:'Built for X, Telegram, and Base' },
@@ -282,7 +282,7 @@ export default function AffiliatePage() {
             </div>
             <div className="aff-benefits-grid" style={{ display:'grid', gridTemplateColumns:'repeat(3,minmax(0,1fr))', gap:'14px' }}>
               {([
-                { accent:'#2DD4BF', rgb:'45,212,191',  svg:<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round"/></svg>, title:'30% Recurring Commission',  body:'Earn monthly on every referred subscription — not just first sale. Genuine recurring income.' },
+                { accent:'#2DD4BF', rgb:'45,212,191',  svg:<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round"/></svg>, title:'20% Recurring Commission',  body:'Earn monthly on every referred subscription — not just first sale. Genuine recurring income.' },
                 { accent:'#8b5cf6', rgb:'139,92,246',  svg:<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" stroke="#8b5cf6" strokeWidth="2"/><path d="M16 2v4M8 2v4M3 10h18" stroke="#8b5cf6" strokeWidth="2" strokeLinecap="round"/></svg>, title:'Monthly Manual Payouts',     body:'Commissions paid each month in crypto. Full payout structure shared after you are approved.' },
                 { accent:'#f59e0b', rgb:'245,158,11',  svg:<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>, title:'Founding Partner Access',    body:'Early program = founding status. Top founding partners get first access to campaigns and new features.' },
                 { accent:'#ec4899', rgb:'236,72,153',  svg:<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="#ec4899" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>, title:'Premium Product to Promote',  body:'Clark AI, CORTEX scoring, whale tracking, token scanner. Real onchain utility that genuinely converts.' },
