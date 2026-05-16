@@ -18,6 +18,8 @@ const clarkRateDaily = new Map<string, { count: number; resetAt: number }>()
 const clarkRateMinute = new Map<string, { count: number; resetAt: number }>()
 const CLARK_DAILY_BY_PLAN: Record<string, number> = { free: 5, pro: 50, elite: 300, unauth: 3 }
 const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5, unauth: 1 }
+const CLARK_LOW_COST_MINUTE_BY_PLAN: Record<string, number> = { free: 15, pro: 20, elite: 20, unauth: 8 }
+const clarkRateLowCostMinute = new Map<string, { count: number; resetAt: number }>()
 let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite' } = {}
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 function clarkActor(req: NextRequest, authenticated: boolean): string { return authenticated ? (req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}`) : `ip:${clarkIp(req)}` }
@@ -99,6 +101,27 @@ function updateMemIntent(mem: ClarkSessionMemory, intent: string) {
   mem.lastIntent = intent;
   mem.lastIntentTs = Date.now();
 }
+// Lightweight prompt cost classifier — determines whether a prompt needs expensive tool calls
+const LOW_COST_RE = /^(hi|hey|yo|gm|sup|hello|ok|okay|sure|thanks|thank you|got it|cool|nice|great)\b|^(more|continue|expand|go on|keep going|next|show more|give me more|other tokens)\s*$|^(what does that mean|explain that|can you explain|what is that|what does .{1,40} mean|explain .{1,40})\??$|^(what\s+(?:does|is|are)\s+(?:volume|liquidity|lp|fdv|market\s+cap|holder|concentration|turnover|slippage|honeypot|dev\s+wallet|deployer|whale).{0,60})\??$|what\s+(?:is|are)\s+(?:red\s+flags?|risk\s+flags?|the\s+risks?)|how\s+do\s+(?:i|you)\s+(?:find|track|use|read)/i;
+
+const WATCH_VERDICT_LOW_COST_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+token|that\s+token)?|is\s+it\s+worth\s+watching|worth\s+watching|final\s+verdict|what'?s\s+the\s+play|should\s+i\s+monitor\s+(?:it|this)|watch\s+verdict)\b/i;
+
+const WALLET_FOLLOWUP_LOW_COST_RE = /\b(is\s+it\s+worth|worth\s+monitoring|is\s+this\s+wallet|should\s+i\s+watch|should\s+i\s+copy|what\s+are\s+its|any\s+risk|main\s+holdings?|scan\s+its|top\s+holding)\b/i;
+
+const MORE_CONTEXT_RE = /^(more|continue|expand|go on|keep going|give me more|show more)\s*$/i;
+
+function isLowCostPrompt(prompt: string, sessionMem?: ClarkSessionMemory): boolean {
+  const t = prompt.trim();
+  if (LOW_COST_RE.test(t)) return true;
+  // Watch verdict is low-cost if we have token memory to draw from
+  if (WATCH_VERDICT_LOW_COST_RE.test(t) && sessionMem?.lastToken) return true;
+  // Wallet follow-up is low-cost if we have wallet memory
+  if (WALLET_FOLLOWUP_LOW_COST_RE.test(t) && sessionMem?.lastWallet) return true;
+  // "more"/"continue" after a previous answer
+  if (MORE_CONTEXT_RE.test(t)) return true;
+  return false;
+}
+
 type ClarkRateResult = { allowed: true; commitDaily: () => void } | { allowed: false; window: 'minute' | 'daily' }
 function checkClarkRate(actor: string, planKey: string): ClarkRateResult {
   const now = Date.now()
@@ -118,6 +141,19 @@ function checkClarkRate(actor: string, planKey: string): ClarkRateResult {
     const active = Boolean(cur && cur.resetAt > Date.now())
     if (!active) { clarkRateDaily.set(dailyKey, { count: 1, resetAt: Date.now() + 24 * 60 * 60 * 1000 }) } else { cur!.count += 1 }
   }
+  return { allowed: true, commitDaily }
+}
+
+function checkClarkLowCostRate(actor: string, planKey: string): ClarkRateResult {
+  const now = Date.now()
+  const minuteKey = `clark:${actor}:${planKey}:lowcost:minute`
+  const minuteLim = CLARK_LOW_COST_MINUTE_BY_PLAN[planKey] ?? 8
+  const curMinute = clarkRateLowCostMinute.get(minuteKey)
+  const minuteActive = Boolean(curMinute && curMinute.resetAt > now)
+  if (minuteActive && curMinute!.count >= minuteLim) return { allowed: false, window: 'minute' }
+  if (!minuteActive) { clarkRateLowCostMinute.set(minuteKey, { count: 1, resetAt: now + 60_000 }) } else { curMinute!.count += 1 }
+  // Low-cost messages don't count against daily tool quota
+  const commitDaily = () => {}
   return { allowed: true, commitDaily }
 }
 
@@ -5277,6 +5313,49 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
+  // "more" / "continue" — lightweight continuation using session memory
+  if (MORE_CONTEXT_RE.test(prompt.trim())) {
+    const memList = sessionMem.lastMomentumList;
+    if (memList.length > 0) {
+      const topSymbols = memList.slice(0, 3).map(m => m.symbol).join(', ');
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
+        analysis: [
+          "MORE CONTEXT",
+          "",
+          `The strongest movers from this read include ${topSymbols}.`,
+          "",
+          "Before acting on any mover:",
+          "- Run a token scan to check security and holders",
+          "- Verify LP control and liquidity depth",
+          "- Check dev wallet and deployer behavior",
+          "- Watch volume sustaining, not just initial pump",
+          "",
+          'Say "scan 1" to start with the top mover, or name a token.',
+        ].join("\n"),
+      };
+    }
+    if (sessionMem.lastToken) {
+      const t = sessionMem.lastToken;
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+        analysis: [
+          `MORE CONTEXT — ${t.symbol ?? "Last token"}`,
+          "",
+          "To go deeper on this token, try:",
+          `- "liquidity check ${t.symbol ?? 'this'}" — LP depth and control`,
+          `- "who deployed ${t.symbol ?? 'this'}" — deployer and origin wallet`,
+          `- "should I watch it?" — watch verdict from current context`,
+          "- Holder concentration is the next key check.",
+        ].join("\n"),
+      };
+    }
+    return {
+      feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [],
+      analysis: "I can continue if you share a token, wallet, or ask something specific. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
+    };
+  }
+
   // "this" contextual resolution — liquidity check this / dev wallet this / scan this / who deployed this
   const THIS_RE = /\b(liquidity\s+check\s+this|check\s+liquidity\s+(?:for\s+)?this|lp\s+(?:check\s+)?this|who\s+deployed\s+this|dev\s+wallet\s+(?:for\s+)?this|check\s+(?:dev\s+wallet|deployer)\s+(?:for\s+)?this|scan\s+this|check\s+this)\b/i;
   if (THIS_RE.test(prompt) && !extractAddress(prompt)) {
@@ -6259,26 +6338,43 @@ export async function POST(req: NextRequest) {
   const betaEliteActive = betaAllElite && authenticated
   const effectivePlan: 'free' | 'pro' | 'elite' = betaEliteActive ? 'elite' : rawPlan
   const actor = clarkActor(req, authenticated)
+  const planKey = authenticated ? effectivePlan : 'unauth'
+
+  // Parse body early so we can classify prompt cost for two-tier rate limiting
+  let body: ClarkRequestBody
+  try {
+    body = (await req.json()) as ClarkRequestBody
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
+  }
+  if (body.message && !body.prompt) body.prompt = body.message
+
+  // Classify prompt cost for two-tier rate limiting
   const sessionKey = makeSessionKey(req, authenticated)
   const sessionMem = getSessionMemory(sessionKey)
-  const planKey = authenticated ? effectivePlan : 'unauth'
-  const rateResult = checkClarkRate(actor, planKey)
+  const earlyPrompt = (body.prompt ?? '').trim()
+  const promptIsLowCost = earlyPrompt ? isLowCostPrompt(earlyPrompt, sessionMem) : false
+
+  const rateResult = promptIsLowCost
+    ? checkClarkLowCostRate(actor, planKey)
+    : checkClarkRate(actor, planKey)
   if (!rateResult.allowed) {
-    const errMsg = rateResult.window === 'minute'
-      ? "Clark is cooling down for a moment. Try again shortly."
-      : "Daily Clark limit reached for your plan."
+    const errMsg = promptIsLowCost
+      ? "Slow down for a moment — Clark can continue after a short pause."
+      : rateResult.window === 'minute'
+        ? "Clark is protecting live CORTEX reads from spam. Try a follow-up question or wait a moment."
+        : "Daily Clark limit reached for your plan."
     const debugInfo = process.env.NODE_ENV !== 'production'
-      ? { effectivePlan, betaAllElite, betaEliteActive, limitWindow: rateResult.window }
+      ? { effectivePlan, betaAllElite, betaEliteActive, limitWindow: rateResult.window, promptIsLowCost }
       : undefined
     return NextResponse.json({ error: errMsg, ...debugInfo }, { status: 429 })
   }
   try {
     clarkInternalCtx = { authToken: token || undefined, verifiedPlan: effectivePlan }
-    const body = (await req.json()) as ClarkRequestBody;
+    // body already parsed before rate check — do NOT call req.json() again
     const cacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = clarkCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
-    if (body.message && !body.prompt) body.prompt = body.message;
     // Derive origin from the incoming request — always correct for any deployment
     const origin = req.nextUrl.origin;
 
