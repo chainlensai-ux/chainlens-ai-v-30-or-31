@@ -419,6 +419,26 @@ function deriveHolderFallbackEvidence(result: ScanResult): HolderFallbackEvidenc
   }
 }
 
+function buildHolderFallbackRead(fallback: HolderFallbackEvidence): { read: string; next: string } {
+  const signals: string[] = []
+  if (fallback.liquidityDepth != null && fallback.liquidityDepth > 0) {
+    if (fallback.liquidityDepth > 1_000_000) signals.push(`Deep liquidity confirmed ($${(fallback.liquidityDepth / 1e6).toFixed(1)}M depth).`)
+    else if (fallback.liquidityDepth > 200_000) signals.push(`Moderate liquidity confirmed ($${Math.round(fallback.liquidityDepth / 1000)}K depth).`)
+    else signals.push('Liquidity is thin.')
+  }
+  if (fallback.poolCount > 5) signals.push(`Multi-pool coverage (${fallback.poolCount} pools) — real market activity visible.`)
+  else if (fallback.poolCount > 1) signals.push(`${fallback.poolCount} active pools detected.`)
+  if (fallback.marketCapToFdvPct != null) {
+    if (fallback.marketCapToFdvPct >= 95) signals.push('MC/FDV near 100% — low unlock pressure visible.')
+    else if (fallback.marketCapToFdvPct < 70) signals.push('FDV significantly exceeds MC — potential unlock pressure.')
+  }
+  if (fallback.ownerStatus === 'Renounced') signals.push('Contract owner renounced.')
+  else if (fallback.ownerStatus === 'Held') signals.push('Contract owner is still active.')
+  const intro = 'Holder rows were not returned in this pass, so concentration is the missing risk layer.'
+  const read = signals.length ? `${intro} ${signals.join(' ')}` : `${intro} No additional on-chain context resolved.`
+  return { read, next: 'Verify top holders before forming conviction on this token.' }
+}
+
 function dedupeSecurityChips(chips: SecurityChip[]): SecurityChip[] {
   const map = new Map<string, SecurityChip>()
   for (const chip of chips) {
@@ -1176,7 +1196,10 @@ export default function TerminalTokenScanner() {
                   return (
                     <div className="holders-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
                       <div className="glass-card" style={{padding:'18px'}}>
-                        <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',marginBottom:'12px',fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                        <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px'}}>
+                          <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                          <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:`1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.5)' : 'rgba(251,191,36,.4)'}`,color:holderState.kind === 'rowsWithPercent' ? '#2dd4bf' : '#fbbf24',background:holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)'}}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
+                        </div>
                         {result.holderDistribution?.holderCount != null && <div style={{margin:'0 0 12px',fontSize:'13px',color:'#67e8f9',border:'1px solid rgba(45,212,191,.3)',background:'rgba(6,78,59,.16)',padding:'8px 10px',borderRadius:'10px',display:'inline-flex',gap:'8px'}}><span style={{color:'#99f6e4'}}>Holder count</span><strong style={{fontFamily:'var(--font-plex-mono)',color:'#e6fffa'}}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
                         {holderState.kind === 'rowsWithoutPercent' && (
                           <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets found, but supply percentages were not available for this scan.</p>
@@ -1206,28 +1229,38 @@ export default function TerminalTokenScanner() {
                     </div>
                   )
                 }
-                return (
-                  <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px',padding:'16px'}}>
-                    <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>Holder Intelligence</p>
-                    <p style={{margin:'0 0 8px',fontSize:'12px',color:'#cbd5e1',fontWeight:700}}>State: {holderSafeReason(normalizeHolderProviderStatus(result.holderDistributionStatus), false)}</p>
-                    <div className="intel-grid" style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
-                      {[
-                        ['Owner status', fallback.ownerStatus],
-                        ['Pool count', String(fallback.poolCount)],
-                        ['Liquidity depth', fmtLarge(fallback.liquidityDepth)],
-                        ['Market cap vs FDV', fallback.marketCapToFdvLabel],
-                        ['Holder concentration', fallback.holderConcentration],
-                        ['Supply spread', fallback.supplySpread],
-                      ].map(([label,val]) => (
-                        <div key={String(label)} style={{padding:'8px 10px',borderRadius:'10px',background:'rgba(15,23,42,0.42)',border:'1px solid rgba(148,163,184,.18)'}}>
-                          <div style={{fontSize:'9px',color:'#64748b',fontFamily:'var(--font-plex-mono)'}}>{label}</div>
-                          <div style={{fontSize:'11px',color:'#cbd5e1',marginTop:'4px'}}>{val}</div>
-                        </div>
-                      ))}
+                {(() => {
+                  const fb = buildHolderFallbackRead(fallback)
+                  return (
+                    <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(20,14,8,.45)',border:'1px solid rgba(251,191,36,.22)',borderRadius:'12px',padding:'16px'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px'}}>
+                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER INTELLIGENCE</p>
+                        <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(251,191,36,.4)',color:'#fbbf24',background:'rgba(251,191,36,.08)'}}>CORTEX FALLBACK</span>
+                      </div>
+                      <p style={{margin:'0 0 10px',fontSize:'12px',color:'#fde68a'}}>Exact holder concentration was not confirmed from this pass.</p>
+                      <div className="intel-grid" style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'12px'}}>
+                        {[
+                          ['Owner status', fallback.ownerStatus],
+                          ['Pool count', String(fallback.poolCount)],
+                          ['Liquidity depth', fmtLarge(fallback.liquidityDepth)],
+                          ['MC vs FDV', fallback.marketCapToFdvLabel],
+                          ['Holder concentration', 'Not confirmed'],
+                          ['Supply spread', 'Not confirmed'],
+                        ].map(([label,val]) => (
+                          <div key={String(label)} style={{padding:'8px 10px',borderRadius:'10px',background:'rgba(15,23,42,0.42)',border:`1px solid ${val === 'Not confirmed' ? 'rgba(251,191,36,.25)' : 'rgba(148,163,184,.18)'}`}}>
+                            <div style={{fontSize:'9px',color:'#64748b',fontFamily:'var(--font-plex-mono)'}}>{label}</div>
+                            <div style={{fontSize:'11px',color:val === 'Not confirmed' ? '#fbbf24' : '#cbd5e1',marginTop:'4px'}}>{val}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{padding:'10px 12px',borderRadius:'10px',background:'rgba(15,23,42,.5)',border:'1px solid rgba(125,211,252,.15)',marginBottom:'8px'}}>
+                        <div style={{fontSize:'9px',letterSpacing:'.1em',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)',marginBottom:'5px'}}>CORTEX READ</div>
+                        <p style={{margin:0,fontSize:'11px',color:'#b7c9da',lineHeight:1.6}}>{fb.read}</p>
+                      </div>
+                      <p style={{margin:0,fontSize:'11px',color:'#94a3b8'}}>{fb.next}</p>
                     </div>
-                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8'}}>Holder data was unavailable for this token. This usually happens on new, thin, or low-coverage microcaps, so concentration should be treated as unverified.</p>
-                  </div>
-                )
+                  )
+                })()}
               })()}
 
               {/* Pools */}
@@ -1376,7 +1409,7 @@ export default function TerminalTokenScanner() {
               holderRows.length > 0 ? 'Holder rows were returned.' : '',
             ].filter(Boolean).slice(0, 3)
             const bear = [
-              d.holderState.kind === 'noRowsFallback' ? 'Holder data unavailable.' : '',
+              d.holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed from this pass.' : '',
               taxesHigh ? 'Taxes are elevated.' : '',
               liq > 0 && liq < 50000 ? 'Liquidity is thin.' : '',
               result.marketCapUsd == null ? 'Market cap unavailable.' : '',
@@ -1399,7 +1432,7 @@ export default function TerminalTokenScanner() {
                 </div>
                 <div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',fontSize:'12px',lineHeight:1.65,color:'#b7c9da',background:'rgba(15,23,42,.5)'}}>Market Read: <strong style={{color:'#e2e8f0'}}>Price {fmtPrice(result.price)}</strong>, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Market cap unverified'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}, {result.marketCapUsd == null && result.fdvUsd != null ? 'Market cap is unverified; FDV is shown as separate valuation context.' : `MC/FDV ${mcFdv}`}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Security Read: Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'}, Sell Tax {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}, Transfer Risk {transferTax != null ? `${transferTax.toFixed(1)}%` : 'N/A'}, Simulation {hp?.simulationSuccess ? 'Verified' : 'Unverified'}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Holder/Supply Read: {result.holderDistribution?.holderCount != null ? `holders ${result.holderDistribution.holderCount.toLocaleString()}, ` : ''}{top10 != null ? `top10 ${top10.toFixed(1)}%, ` : 'holder concentration unverified, '}{top20 != null ? `top20 ${top20.toFixed(1)}%` : 'top20 unavailable'}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Holder/Supply Read: {result.holderDistribution?.holderCount != null ? `holders ${result.holderDistribution.holderCount.toLocaleString()}, ` : ''}{top10 != null ? `top10 ${top10.toFixed(1)}%, ` : 'holder concentration not confirmed, '}{top20 != null ? `top20 ${top20.toFixed(1)}%` : d.holderState.kind === 'noRowsFallback' ? 'concentration needs confirmation' : 'top20 unavailable'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Liquidity/Pools Read: pools {poolCount}, primary pool {result.pools?.[0]?.name ?? 'Unverified'}, liquidity depth {fmtLarge(result.pools?.[0]?.liquidity ?? result.liquidity)}, {(liq > 0 && liq < 50000) ? 'liquidity thin.' : liq === 0 ? 'liquidity unverified.' : 'liquidity present.'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(45,212,191,.2)',borderRadius:'10px',fontSize:'11px',color:'#99f6e4'}}>Bull Case: {bull.length ? bull.join(' ') : 'No strong positive cluster yet.'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(248,113,113,.2)',borderRadius:'10px',fontSize:'11px',color:'#fca5a5'}}>Bear Case: {bear.length ? bear.join(' ') : 'No major bear signal surfaced yet.'}</div>

@@ -1140,23 +1140,25 @@ export async function POST(req: Request) {
     console.log('[holders] items length', holderItems.length)
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? null
+    const holderPctFromProvider: boolean[] = []
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
       const address = h.address || h.holder_address || h.wallet_address || h.owner_address || h.contract_address || ''
-      // Prefer raw string balances for BigInt math; also accept numeric fields
       const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
       const amount = toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null
-      // Prefer explicit percent fields; fall back to BigInt division of balance/total_supply
       const pctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage)
       const supplyRaw = h.total_supply ?? h.circulating_supply ?? goldrush?.data?.items?.[0]?.total_supply ?? gtToken?.total_supply ?? gtToken?.circulating_supply ?? null
       const percent = pctRaw != null
         ? pctRaw
         : bigIntPct(balanceRaw, supplyRaw)
           ?? (amount != null && toNum(supplyRaw) != null ? (amount / toNum(supplyRaw)!) * 100 : null)
+      holderPctFromProvider.push(pctRaw != null)
       return { rank: i + 1, address, amount, percent }
     }).filter((h: any) => h.address)
 
     const hasPct = topHolders.some((h: any) => h.percent != null)
-    console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct)
+    const anyProviderPct = holderPctFromProvider.some(Boolean)
+    const percentSource: 'provider' | 'calculated' | 'unavailable' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'unavailable'
+    console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct, '[holders] pct source', percentSource)
     const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
     const top1 = hasPct ? sum(1) : null
     const top5 = hasPct ? sum(5) : null
@@ -1166,11 +1168,11 @@ export async function POST(req: Request) {
     const holderDistribution: HolderDistribution | null = normalizedTop.length ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop } : null
     const holderDistributionStatus = holderDistribution
       ? (hasPct
-          ? { source: 'goldrush', status: 'ok', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
-          : { source: 'goldrush', status: 'empty', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
+          ? { source: 'goldrush', status: 'ok', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource }
+          : { source: 'goldrush', status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource: 'unavailable' as const })
       : (holderItems.length
-          ? { source: 'goldrush', status: 'empty', reason: 'no_rows', itemCount: holderItems.length, normalizedCount: 0 }
-          : { source: 'unavailable', status: (holdersRaw?.__status ?? 'empty'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: 0, normalizedCount: 0 })
+          ? { source: 'goldrush', status: 'empty', reason: 'no_rows', itemCount: holderItems.length, normalizedCount: 0, percentSource: 'unavailable' as const }
+          : { source: 'unavailable', status: (holdersRaw?.__status ?? 'empty'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: 0, normalizedCount: 0, percentSource: 'unavailable' as const })
 
     const poolAttr = mainPool?.attributes ?? {}
     // True market cap priority:
