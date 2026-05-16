@@ -4374,10 +4374,10 @@ function renderLiquidityFocusedRead(
   // LP control line — never claim locked without data
   const lpControlLine =
     liquidity.riskTier === "low"
-      ? "LP lock/control is unverified. Treat liquidity as usable depth, not guaranteed safety."
+      ? "LP lock/control is not confirmed. Treat liquidity as usable depth, not guaranteed safety."
       : liquidity.riskTier === "extreme"
-        ? "LP structure appears fragile. LP control is unverified from current CORTEX data."
-        : "LP lock/control is unverified. Treat liquidity as usable depth, not guaranteed safety.";
+        ? "LP structure appears fragile. LP control is not confirmed from current CORTEX data."
+        : "LP lock/control is not confirmed. Treat liquidity as usable depth, not guaranteed safety.";
 
   // Depth interpretation
   const depthInterpretation =
@@ -4412,7 +4412,7 @@ function renderLiquidityFocusedRead(
   const riskFlags: string[] = [];
   if (!isNearZeroLiquidity(liq) && liq! < 50_000) riskFlags.push("Thin liquidity — exit slippage elevated.");
   if (vol != null && liq != null && liq > 0 && (vol / liq) > 8) riskFlags.push("Extreme volume/liquidity ratio — high churn and slippage risk.");
-  riskFlags.push("LP lock/control unverified.");
+  riskFlags.push("LP lock/control not confirmed.");
   if (liquidity.riskTier === "extreme") riskFlags.push("LP structure flagged as fragile by CORTEX data.");
   if (liquidity.warnings.length > 0) riskFlags.push(...liquidity.warnings.slice(0, 2));
   if (isNearZeroLiquidity(liq)) riskFlags.push("Liquidity is near-zero/unverified.");
@@ -4463,6 +4463,25 @@ function parseAbbrevUsdToNumber(raw: string | null): number | null {
   if (!Number.isFinite(base)) return null;
   const mult = !m[2] ? 1 : m[2].toUpperCase() === "K" ? 1_000 : m[2].toUpperCase() === "M" ? 1_000_000 : 1_000_000_000;
   return base * mult;
+}
+
+function buildCortexEvidenceContext(args: {
+  address?: string | null;
+  evidence?: ClarkToolEvidence;
+  sessionMem?: ClarkSessionMemory;
+  clientContext?: ClarkRequestBody["clientContext"];
+}) {
+  const addr = (args.address ?? args.evidence?.tokenScan?.token?.address ?? args.sessionMem?.lastToken?.address ?? args.clientContext?.lastToken?.address ?? null)?.toLowerCase() ?? null;
+  const memMover = addr ? (args.sessionMem?.lastMomentumList.find((m) => m.address?.toLowerCase() === addr) ?? null) : null;
+  const clientMover = addr ? (args.clientContext?.lastMomentumList?.find((m) => m.address?.toLowerCase() === addr) ?? null) : null;
+  return {
+    name: args.evidence?.tokenScan?.token?.name ?? args.sessionMem?.lastToken?.name ?? args.clientContext?.lastToken?.name ?? memMover?.name ?? clientMover?.name ?? "Token",
+    symbol: args.evidence?.tokenScan?.token?.symbol ?? args.sessionMem?.lastToken?.symbol ?? args.clientContext?.lastToken?.symbol ?? memMover?.symbol ?? clientMover?.symbol ?? "?",
+    address: args.evidence?.tokenScan?.token?.address ?? args.sessionMem?.lastToken?.address ?? args.clientContext?.lastToken?.address ?? memMover?.address ?? clientMover?.address ?? null,
+    liquidity: args.evidence?.tokenScan?.market.liquidity ?? memMover?.liquidity ?? clientMover?.liquidity ?? null,
+    volume24h: args.evidence?.tokenScan?.market.volume24h ?? memMover?.volume24h ?? clientMover?.volume24h ?? null,
+    change24h: args.evidence?.tokenScan?.market.change24h ?? memMover?.change24h ?? clientMover?.change24h ?? null,
+  };
 }
 
 // ---------- Follow-up and casual chat routing ----------
@@ -5696,25 +5715,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!devRes.ok || !devRes.json) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     }
-    const token = sessionMem.lastToken ?? body.clientContext?.lastToken ?? null;
+    const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"],
       analysis: [
         "DEV WALLET READ", "",
-        `Token: ${token?.symbol ?? "Unknown"}`,
+        `Token: ${cx.name} (${cx.symbol})`,
         `Contract: ${target}`, "",
         "Origin read:",
-        "- Origin wallet verified only when a concrete deployer/origin address is returned.",
-        "- Origin wallet could not be verified from this pass if no deployer is returned.",
+        "- Likely origin wallet is shown only when returned by this CORTEX read.",
+        "- Origin wallet could not be verified from this pass.",
         "",
         "Linked wallet signals:",
         "- No linked wallet signals returned unless explicitly shown.",
         "",
         "Prior activity:",
-        "- Prior activity incomplete unless explicitly shown.",
+        "- Prior deployer activity incomplete unless explicitly shown.",
         "",
         "Risk flags:",
-        "- Treat unverified origin links as unresolved risk.",
+        "- Dev/origin data is still a missing confidence layer unless origin is returned.",
         "",
         "Missing checks:",
         "- Full origin wallet history may be incomplete in this pass.",
@@ -5729,27 +5748,27 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: missingAddressReply("liquidity_safety") };
     const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { tokenAddress: target }, authHeader ?? undefined);
+    const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
     if (liqRes.ok && liqRes.json) {
       const raw = liqRes.json as Record<string, unknown>;
       const liq = {
         ok: true,
-        token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target },
+        token: { name: cx.name, symbol: cx.symbol, address: target },
         riskTier: typeof raw.riskTier === "string" ? raw.riskTier : "high",
         stabilityScore: typeof raw.stabilityScore === "number" ? raw.stabilityScore : null,
         primaryPool: typeof raw.primaryPool === "string" ? raw.primaryPool : null,
-        liquidityUsd: typeof raw.liquidityUsd === "number" ? raw.liquidityUsd : null,
-        volume24h: typeof raw.volume24hUsd === "number" ? raw.volume24hUsd : (typeof raw.volume24h === "number" ? raw.volume24h : null),
+        liquidityUsd: typeof raw.liquidityUsd === "number" ? raw.liquidityUsd : (cx.liquidity ?? null),
+        volume24h: typeof raw.volume24hUsd === "number" ? raw.volume24hUsd : (typeof raw.volume24h === "number" ? raw.volume24h : (cx.volume24h ?? null)),
         warnings: Array.isArray(raw.warnings) ? raw.warnings.filter((x): x is string => typeof x === "string") : [],
       };
-      return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: ["liquidity_analyze"], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, liq) };
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: ["liquidity_analyze"], analysis: renderLiquidityFocusedRead(cx.name, cx.symbol, target, liq) };
     }
     const summary = sessionMem.lastToken?.scanSummary ?? body.clientContext?.lastToken?.scanSummary ?? "";
     const liqRaw = summary.match(/Liquidity:\s*([^\n]+)/i)?.[1] ?? null;
     const volRaw = summary.match(/Volume:\s*([^\n]+)/i)?.[1] ?? null;
-    const memMover = sessionMem.lastMomentumList.find((m) => m.address?.toLowerCase() === target.toLowerCase()) ?? null;
-    const liqNum = parseAbbrevUsdToNumber(liqRaw) ?? memMover?.liquidity ?? null;
-    const volNum = parseAbbrevUsdToNumber(volRaw) ?? memMover?.volume24h ?? null;
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, { ok: false, token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target }, riskTier: "high", stabilityScore: null, primaryPool: null, liquidityUsd: liqNum, volume24h: volNum, warnings: ["LP lock/control unverified."], errorSafeMessage: "Pool-age history unavailable in this pass." }) };
+    const liqNum = parseAbbrevUsdToNumber(liqRaw) ?? cx.liquidity ?? null;
+    const volNum = parseAbbrevUsdToNumber(volRaw) ?? cx.volume24h ?? null;
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: renderLiquidityFocusedRead(cx.name, cx.symbol, target, { ok: false, token: { name: cx.name, symbol: cx.symbol, address: target }, riskTier: "high", stabilityScore: null, primaryPool: null, liquidityUsd: liqNum, volume24h: volNum, warnings: ["LP lock/control not confirmed."], errorSafeMessage: "Pool-age history unavailable in this pass." }) };
   }
 
   // "this" contextual resolution — liquidity check this / dev wallet this / scan this / who deployed this
