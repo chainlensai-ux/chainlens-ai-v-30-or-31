@@ -153,6 +153,8 @@ const WATCH_VERDICT_LOW_COST_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+toke
 const WALLET_FOLLOWUP_LOW_COST_RE = /\b(is\s+it\s+worth|worth\s+monitoring|is\s+this\s+wallet|should\s+i\s+watch|should\s+i\s+copy|what\s+are\s+its|any\s+risk|main\s+holdings?|scan\s+its|top\s+holding)\b/i;
 
 const MORE_CONTEXT_RE = /^(more|continue|expand|go on|keep going|give me more|show more)\s*$/i;
+const THIS_DEV_RE = /\b(who\s+deployed\s+this|who\s+made\s+this|dev\s+wallet\s+this|origin\s+wallet\s+this|deployer\s+this|creator\s+wallet)\b/i;
+const THIS_LIQ_RE = /\b(liquidity\s+check\s+this|lp\s+check\s+this|is\s+lp\s+locked|is\s+liquidity\s+safe|pool\s+safety\s+this)\b/i;
 
 function isLowCostPrompt(prompt: string, sessionMem?: ClarkSessionMemory): boolean {
   const t = prompt.trim();
@@ -163,6 +165,16 @@ function isLowCostPrompt(prompt: string, sessionMem?: ClarkSessionMemory): boole
   if (WALLET_FOLLOWUP_LOW_COST_RE.test(t) && sessionMem?.lastWallet) return true;
   // "more"/"continue" after a previous answer
   if (MORE_CONTEXT_RE.test(t)) return true;
+  return false;
+}
+
+function isMajorOrStableLike(symbol: string, name?: string | null): boolean {
+  const s = symbol.toUpperCase();
+  const n = (name ?? "").toUpperCase();
+  const hard = new Set(["USDC", "USDT", "DAI", "USDBC", "WETH", "CBBTC", "CBETH", "WSTETH", "EURC"]);
+  if (hard.has(s)) return true;
+  if (/^USD|USD$|USDP|BASEUSDP/.test(s)) return true;
+  if (/STABLE|PEG|USD/.test(n)) return true;
   return false;
 }
 
@@ -1139,6 +1151,7 @@ function formatBaseMarketReply(candidates: BaseMarketCandidate[], total: number,
     "",
     "Short read:",
     read,
+    "Ranked by CORTEX momentum quality, not just raw percentage.",
     "Use market momentum as discovery only, then run single-token analysis before conviction.",
     "",
     "Next:",
@@ -5440,7 +5453,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (isBaseMomentumPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
     const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
-    const stored = universe?.candidates?.slice(0, 30) ?? [];
+    const stored = (universe?.candidates ?? [])
+      .filter((c) => !isMajorOrStableLike(c.symbol ?? "?", c.name ?? null))
+      .slice(0, 30);
     const top = stored.slice(0, 7);
     if (stored.length > 0) {
       updateMemMomentum(sessionMem, stored.map((c, i) => ({
@@ -5579,6 +5594,62 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [],
       analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
     };
+  }
+
+  if (THIS_DEV_RE.test(prompt) && !extractAddress(prompt)) {
+    const target = sessionMem.lastToken?.address;
+    if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: [], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
+    const devRes = await callInternalApi(origin, "/api/dev-wallet", { tokenAddress: target }, authHeader ?? undefined);
+    if (!devRes.ok || !devRes.json) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
+    }
+    const token = sessionMem.lastToken;
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"],
+      analysis: [
+        "DEV WALLET READ", "",
+        `Token: ${token?.symbol ?? "Unknown"}`,
+        `Contract: ${target}`, "",
+        "Origin read:",
+        "- Likely deployer/origin was queried from live Base data.",
+        "",
+        "Linked wallet signals:",
+        "- See linked wallet flags in this read where available.",
+        "",
+        "Prior activity:",
+        "- Prior origin-wallet history is partial unless explicitly returned.",
+        "",
+        "Risk flags:",
+        "- Treat unverified origin links as unresolved risk.",
+        "",
+        "Missing checks:",
+        "- Full origin wallet history may be incomplete in this pass.",
+        "",
+        "Next action:",
+        "Compare origin wallet activity with holder concentration and liquidity control. No trade call.",
+      ].join("\n"),
+    };
+  }
+
+  if (THIS_LIQ_RE.test(prompt) && !extractAddress(prompt)) {
+    const target = sessionMem.lastToken?.address;
+    if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: missingAddressReply("liquidity_safety") };
+    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { tokenAddress: target }, authHeader ?? undefined);
+    if (liqRes.ok && liqRes.json) {
+      const raw = liqRes.json as Record<string, unknown>;
+      const liq = {
+        ok: true,
+        token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target },
+        riskTier: typeof raw.riskTier === "string" ? raw.riskTier : "high",
+        stabilityScore: typeof raw.stabilityScore === "number" ? raw.stabilityScore : null,
+        primaryPool: typeof raw.primaryPool === "string" ? raw.primaryPool : null,
+        liquidityUsd: typeof raw.liquidityUsd === "number" ? raw.liquidityUsd : null,
+        volume24h: typeof raw.volume24hUsd === "number" ? raw.volume24hUsd : (typeof raw.volume24h === "number" ? raw.volume24h : null),
+        warnings: Array.isArray(raw.warnings) ? raw.warnings.filter((x): x is string => typeof x === "string") : [],
+      };
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: ["liquidity_analyze"], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, liq) };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, { ok: false, token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target }, riskTier: "high", stabilityScore: null, primaryPool: null, liquidityUsd: null, volume24h: null, warnings: ["LP lock/control is unverified."], errorSafeMessage: "Pool-age history unavailable in this pass." }) };
   }
 
   // "this" contextual resolution — liquidity check this / dev wallet this / scan this / who deployed this
