@@ -21,6 +21,47 @@ const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5
 const CLARK_LOW_COST_MINUTE_BY_PLAN: Record<string, number> = { free: 15, pro: 20, elite: 20, unauth: 8 }
 const clarkRateLowCostMinute = new Map<string, { count: number; resetAt: number }>()
 let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite' } = {}
+
+// Plan feature access matrix
+function planAllows(plan: string | undefined, feature: 'token_full_report' | 'wallet_scan' | 'liquidity_check' | 'dev_wallet' | 'whale_alerts' | 'pump_alerts' | 'base_radar_full' | 'base_market_preview'): boolean {
+  const p = plan ?? 'free';
+  if (p === 'elite' || p === 'pro') return true; // pro/elite get everything
+  // free plan
+  switch (feature) {
+    case 'base_market_preview': return true; // limited preview allowed
+    case 'token_full_report': return false;
+    case 'wallet_scan': return false;
+    case 'liquidity_check': return false;
+    case 'dev_wallet': return false;
+    case 'whale_alerts': return false;
+    case 'pump_alerts': return false;
+    case 'base_radar_full': return false;
+    default: return false;
+  }
+}
+
+function buildLockedResponse(feature: string, freeAlternative: string): string {
+  const featureMap: Record<string, string> = {
+    'liquidity_check': 'Liquidity Safety',
+    'dev_wallet': 'Dev Wallet Detector',
+    'wallet_scan': 'Wallet Scanner',
+    'whale_alerts': 'Whale Alerts',
+    'pump_alerts': 'Pump Alerts',
+    'base_radar_full': 'Base Radar',
+    'token_full_report': 'Full Token Scanner',
+  };
+  const featureName = featureMap[feature] ?? feature;
+  return [
+    `${featureName.toUpperCase()} LOCKED`,
+    '',
+    `${featureName} is included in Pro and Elite.`,
+    '',
+    `Free can still: ${freeAlternative}`,
+    '',
+    'Upgrade to unlock full CORTEX reads.',
+  ].join('\n');
+}
+
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 function clarkActor(req: NextRequest, authenticated: boolean): string { return authenticated ? (req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}`) : `ip:${clarkIp(req)}` }
 
@@ -5588,6 +5629,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     body.context &&
     typeof body.context === "object"
   ) {
+    if (!planAllows(verifiedPlan, 'wallet_scan')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [],
+        analysis: buildLockedResponse('wallet_scan', 'ask what makes a wallet worth monitoring.') };
+    }
     const ctx = body.context as Record<string, unknown>;
     const walletAddr = String(body.walletAddress);
     const topRaw = Array.isArray(ctx.topHoldings) ? (ctx.topHoldings as Array<Record<string, unknown>>) : [];
@@ -5653,9 +5698,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (isWhaleFlowPrompt(prompt, body.history)) {
+    if (!planAllows(verifiedPlan, 'whale_alerts')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: [],
+        analysis: buildLockedResponse('whale_alerts', 'ask how whale alerts work or what whale activity means.') };
+    }
     return await handleStoredWhaleFlow(prompt, body, origin, authHeader);
   }
   if (isBaseMomentumPrompt(prompt)) {
+    // Free users get a limited 3-mover preview; gate is applied in the response below
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
     const pumpResult = await handleBasePumpMap(prompt, origin);
     if (pumpResult.items.length > 0) {
@@ -5670,6 +5720,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
   if (isPumpFeedPrompt(prompt)) {
+    if (!planAllows(verifiedPlan, 'pump_alerts')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
+        analysis: buildLockedResponse('pump_alerts', 'ask what pump alerts are or how momentum works.') };
+    }
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "pump_alerts", rendererUsed: "pump_alerts", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
     const analysis = await handlePumpFeedSnapshot(origin);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["pump_alerts_feed"], analysis };
@@ -5685,6 +5739,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
   if (isBaseRadarPrompt(prompt)) {
+    if (!planAllows(verifiedPlan, 'base_radar_full')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
+        analysis: buildLockedResponse('base_radar_full', 'ask what Base Radar tracks or use the Base market preview.') };
+    }
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_market", rendererUsed: pickBaseRadarTitle(prompt).toLowerCase().replace(/\s+/g, "_"), featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
     const radarResult = await handleBaseRadarSnapshot(origin, prompt);
     if (radarResult.items.length > 0) {
@@ -5904,6 +5962,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return { feature: "clark-ai", chain, mode: "casual_help", intent: "strategy", toolsUsed: [], analysis: buildFinancialAdviceReply(prompt) };
   }
   if (directIntent.intent === "wallet_analysis" && !directIntent.address) {
+    if (!planAllows(verifiedPlan, 'wallet_scan')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [],
+        analysis: buildLockedResponse('wallet_scan', 'ask what makes a wallet worth monitoring.') };
+    }
     const ensName = extractEnsName(prompt)
     if (ensName) {
       const resolved = await resolveEnsOrBasename(ensName)
@@ -5941,6 +6003,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   // Wallet analysis with address — route to wallet before plan execution
   if (directIntent.intent === "wallet_analysis" && directIntent.address) {
+    if (!planAllows(verifiedPlan, 'wallet_scan')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [],
+        analysis: buildLockedResponse('wallet_scan', 'ask what makes a wallet worth monitoring.') };
+    }
     const walletRes = await callInternalApi(origin, "/api/wallet", { address: directIntent.address }, authHeader ?? undefined);
     const w = (walletRes.json ?? {}) as Record<string, unknown>;
     if (walletRes.ok && Object.keys(w).length > 0) {
@@ -6102,7 +6168,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false });
       const top = universe.candidates.slice(0, 10);
       if (!top.length) return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "No fresh signal in the checked window. Try another token or check again shortly." };
-      updateMemMomentum(sessionMem, top.map((c, i) => ({
+      // Free plan: limit Base market preview to 3 movers
+      const topDisplay = planAllows(verifiedPlan, 'base_radar_full') ? top : top.slice(0, 3);
+      const isPreviewLimited = !planAllows(verifiedPlan, 'base_radar_full') && top.length > 3;
+      updateMemMomentum(sessionMem, topDisplay.map((c, i) => ({
         rank: i + 1,
         symbol: c.symbol ?? "?",
         name: c.name ?? null,
@@ -6115,15 +6184,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       sessionMem.allowedRankScanUntil = Date.now() + 60_000;
       sessionMem.allowedRankScanUsed = false;
       updateMemIntent(sessionMem, "market");
+      const baseMarketAnalysis = formatBaseMarketReply(topDisplay, universe.candidates.length, 0, universe.cappedMessage ?? null)
+        + (isPreviewLimited ? "\n\nBase market preview shown (top 3). Upgrade to Pro or Elite for full access and follow-up scans." : "");
       return {
         feature: "clark-ai",
         chain,
         mode: "general_market",
         intent: "market",
         toolsUsed: ["market_get_base_movers"],
-        analysis: formatBaseMarketReply(top, universe.candidates.length, 0, universe.cappedMessage ?? null),
+        analysis: baseMarketAnalysis,
         marketContext: {
-          items: top.map((c, i) => ({
+          items: topDisplay.map((c, i) => ({
             rank: i + 1,
             symbol: c.symbol ?? "?",
             name: c.name ?? null,
@@ -6143,6 +6214,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (liveIntent === "WHALE_FEED") {
+    if (!planAllows(verifiedPlan, 'whale_alerts')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: [],
+        analysis: buildLockedResponse('whale_alerts', 'ask how whale alerts work or what whale activity means.') };
+    }
     return await handleWhaleAlertFeed(prompt, body, origin, authHeader);
   }
 
@@ -6316,6 +6391,33 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (plan.intent === "token_full_report_request") {
+    if (!planAllows(verifiedPlan, 'token_full_report')) {
+      // Free users get a basic token preview instead of full report
+      if (resolvedAddress || evidence.tokenScan?.token?.address) {
+        const reportEvidence = buildFullReportEvidence(evidence, resolvedAddress);
+        const t = reportEvidence.token;
+        const m = reportEvidence.market;
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_full_report_request", toolsUsed,
+          analysis: [
+            "TOKEN PREVIEW",
+            '',
+            `Asset: ${t.name ?? "Unknown"} (${t.symbol ?? "?"})`,
+            `Contract: ${t.address ?? resolvedAddress ?? "Unresolved"}`,
+            '',
+            `Price: ${m.price != null ? `$${m.price}` : "No signal in checked window"}`,
+            `Liquidity: ${formatUsdShort(m.liquidity)}`,
+            `24h volume: ${formatUsdShort(m.volume24h)}`,
+            '',
+            'Full token scan report — security simulation, holder distribution, LP control, and dev wallet check — is included in Pro and Elite.',
+            '',
+            'Upgrade to unlock full CORTEX token reports.',
+          ].join('\n'),
+        };
+      }
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "token_full_report_request", toolsUsed: [],
+        analysis: buildLockedResponse('token_full_report', 'ask about token concepts or request a basic preview.') };
+    }
     if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1 && !evidence.tokenResolve.selected) {
       const options = evidence.tokenResolve.matches.slice(0, 4).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
       return {
@@ -6402,14 +6504,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const cappedRemainingMessage = req.wantsMore && marketRows.length < take
       ? `I can only see ${marketRows.length} more usable Base candidates from the current feed.`
       : null;
-    if (marketRows.length > 0) {
+    // Free plan: limit Base market preview to 3 movers
+    const marketPreviewLimit = planAllows(verifiedPlan, 'base_radar_full') ? marketRows.length : Math.min(marketRows.length, 3);
+    const displayRows = marketRows.slice(0, marketPreviewLimit);
+    const isPreviewLimitedMarket = !planAllows(verifiedPlan, 'base_radar_full') && marketRows.length > 3;
+    if (displayRows.length > 0) {
       const headerLine = strictDifferent
         ? "Clark is showing a fresh set of different Base candidates from the current pool feed."
         : `Clark is seeing ${universe.candidates.length} usable Base candidates from current pool data.`;
       const readLine = strictDifferent && req.wantsMore
         ? "These are further down the feed, so treat them as watchlist names — not stronger than the first batch."
         : "This list is led by tokens with real liquidity, but there are still noisy runners mixed in.";
-      updateMemMomentum(sessionMem, marketRows.map((c, i) => ({
+      updateMemMomentum(sessionMem, displayRows.map((c, i) => ({
         rank: offsetBase + i + 1,
         symbol: c.symbol ?? "?",
         name: c.name ?? null,
@@ -6422,24 +6528,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       sessionMem.allowedRankScanUntil = Date.now() + 60_000;
       sessionMem.allowedRankScanUsed = false;
       updateMemIntent(sessionMem, "market");
+      const marketAnalysis = formatBaseMarketReply(displayRows, universe.candidates.length, offsetBase, cappedRemainingMessage ?? universe.cappedMessage, extended)
+        .replace(`Clark is seeing ${universe.candidates.length} usable Base candidates from current pool data.`, headerLine)
+        .replace("This list is led by tokens with real liquidity, but there are still noisy runners mixed in.", readLine)
+        + (isPreviewLimitedMarket ? "\n\nBase Radar preview shown. Upgrade to Pro or Elite for full access and follow-up scans." : "");
       return {
         feature: "clark-ai",
         chain,
         mode: "general_market",
-        analysis: formatBaseMarketReply(marketRows, universe.candidates.length, offsetBase, cappedRemainingMessage ?? universe.cappedMessage, extended)
-          .replace(`Clark is seeing ${universe.candidates.length} usable Base candidates from current pool data.`, headerLine)
-          .replace("This list is led by tokens with real liquidity, but there are still noisy runners mixed in.", readLine),
+        analysis: marketAnalysis,
         marketContext: {
           type: "base_market_list",
           mode: req.mode,
           createdAt: new Date().toISOString(),
           cursor: {
             offset: consumed,
-            returnedCount: marketRows.length,
+            returnedCount: displayRows.length,
             requestedCount: take,
             totalCandidates: universe.candidates.length,
           },
-          items: marketRows.map((c, i) => ({
+          items: displayRows.map((c, i) => ({
             rank: offsetBase + i + 1,
             symbol: c.symbol ?? "?",
             name: c.name ?? null,
@@ -6471,6 +6579,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (plan.intent === "wallet_balance") {
+    if (!planAllows(verifiedPlan, 'wallet_scan')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_balance", toolsUsed: [],
+        analysis: buildLockedResponse('wallet_scan', 'ask what makes a wallet worth monitoring.') };
+    }
     const w = evidence.walletSnapshot;
     if (!w?.ok) {
       return { feature: "clark-ai", chain, mode: "analysis", analysis: "I couldn't pull this wallet snapshot right now. Paste the wallet again and I'll retry.", intent: plan.intent, toolsUsed };
@@ -6482,6 +6594,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (plan.intent === "wallet_quality") {
+    if (!planAllows(verifiedPlan, 'wallet_scan')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_quality", toolsUsed: [],
+        analysis: buildLockedResponse('wallet_scan', 'ask what makes a wallet worth monitoring.') };
+    }
     if (!resolvedAddress) {
       return { feature: "clark-ai", chain, mode: "analysis", analysis: "Share the wallet address and I'll evaluate quality with available evidence.", intent: plan.intent, toolsUsed };
     }
@@ -6504,6 +6620,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (plan.intent === "dev_wallet") {
+    if (!planAllows(verifiedPlan, 'dev_wallet')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: [],
+        analysis: buildLockedResponse('dev_wallet', 'ask how dev-wallet checks work.') };
+    }
     if (!resolvedAddress) return { feature: "clark-ai", chain, mode: "analysis", analysis: missingAddressReply("dev_wallet"), intent: plan.intent, toolsUsed };
     const resolvedSymbol = evidence.tokenResolve?.selected?.symbol ?? null;
     const aliasForSymbol = resolvedSymbol ? BASE_TOKEN_ALIAS_MAP[resolvedSymbol.toLowerCase()] : null;
@@ -6541,6 +6661,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (plan.intent === "liquidity_safety") {
+    if (!planAllows(verifiedPlan, 'liquidity_check')) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [],
+        analysis: buildLockedResponse('liquidity_check', 'ask what LP control means or run a basic token preview.') };
+    }
     if (!resolvedAddress) return { feature: "clark-ai", chain, mode: "analysis", analysis: missingAddressReply("liquidity_safety"), intent: plan.intent, toolsUsed };
     const resolvedSymbolLiq = evidence.tokenResolve?.selected?.symbol ?? null;
     const aliasForSymbolLiq = resolvedSymbolLiq ? BASE_TOKEN_ALIAS_MAP[resolvedSymbolLiq.toLowerCase()] : null;
@@ -6736,6 +6860,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const report = buildFullReportEvidence(evidence, token.address);
     const pack = buildClarkEvidencePack(report);
     const lower = prompt.toLowerCase();
+    // For free plan, show basic token preview without security/holder/LP details
+    if (!planAllows(verifiedPlan, 'token_full_report')) {
+      const m = report.market;
+      const freeAnalysis = [
+        "TOKEN PREVIEW",
+        `Asset: ${token.name ?? "Unknown"} (${token.symbol ?? "?"})`,
+        `Contract: ${token.address}`,
+        '',
+        `Price: ${m.price != null ? `$${m.price}` : "No signal"}`,
+        `Liquidity: ${formatUsdShort(m.liquidity)}`,
+        `24h volume: ${formatUsdShort(m.volume24h)}`,
+        `24h change: ${m.change24h != null ? `${m.change24h >= 0 ? '+' : ''}${m.change24h.toFixed(1)}%` : "No signal"}`,
+        '',
+        'Full report — security simulation, holder distribution, LP control, dev wallet — is included in Pro and Elite.',
+        'Upgrade to unlock full CORTEX reads.',
+      ].join('\n');
+      updateMemToken(sessionMem, token.address, token.symbol ?? null, token.name ?? null, freeAnalysis);
+      updateMemIntent(sessionMem, "token_analysis");
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: freeAnalysis, intent: plan.intent, toolsUsed };
+    }
     const isHolderFocusedQuery = /\b(?:holder(?:s|\s+concentration|\s+distribution|\s+count)?|top\s+holders?|supply\s+concentration)\b/i.test(lower);
     const analysis =
       isHolderFocusedQuery
