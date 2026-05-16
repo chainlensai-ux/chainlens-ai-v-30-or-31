@@ -4,10 +4,10 @@ import { useState } from 'react'
 import ClarkOrb from '@/components/ClarkOrb'
 
 const CHIPS = [
-  'Scan a Base token',
-  'Check wallet behavior',
+  "What's pumping on Base?",
+  'Scan BRETT',
+  'What does wallet scanning show?',
   'Explain liquidity risk',
-  'What can Clark do?',
 ]
 
 

@@ -4,6 +4,17 @@ import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { useSearchParams } from 'next/navigation'
 
 type Message = { role: 'user' | 'clark'; text: string }
+
+function getOrCreateSessionId(): string {
+  if (typeof window === 'undefined') return 'ssr'
+  const key = 'clark_session_id'
+  let id = sessionStorage.getItem(key)
+  if (!id) {
+    id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    sessionStorage.setItem(key, id)
+  }
+  return id
+}
 type ClarkContextState = {
   lastMarketList?: Array<{
     rank: number
@@ -189,7 +200,7 @@ function ClarkAiContent() {
       }
       const res = await fetch('/api/clark', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
         body: JSON.stringify({
           feature: 'clark-ai',
           message: text,

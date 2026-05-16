@@ -1629,7 +1629,7 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   }
 
   if (!merged.length) {
-    return "**BASE MOMENTUM READ**\n\nLive Base pool data is incomplete right now. I can still show the available momentum signals, but verify liquidity before acting.\n\nTry again in a moment, or paste a contract address for a direct token scan.";
+    return "BASE MOMENTUM READ\n\nLive Base pool data is incomplete right now. I can still show the available momentum signals, but verify liquidity before acting.\n\nTry again in a moment, or paste a contract address for a direct token scan.";
   }
 
   // Rank: 24h change desc, then volume, then liquidity — filter zero-liquidity noise
@@ -1679,7 +1679,7 @@ async function handleBasePumpMap(prompt: string, origin: string) {
       : cls === "base asset" ? "base asset"
       : "watchlist only";
     const reason = buildReasonLine(cls);
-    return `${i + 1}. **${label}** — ${chStr} | Vol ${vol} | Liq ${liq} | [${qualityTag}]\n   Read: ${reason}`;
+    return `${i + 1}. ${label} — ${chStr} | Vol ${vol} | Liq ${liq} | [${qualityTag}]\n   Read: ${reason}`;
   });
 
   const thinCount = top.filter(t => Number(t.liquidity ?? 0) < 50_000).length;
@@ -1694,20 +1694,20 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     : null;
 
   const lines: string[] = [
-    "**BASE MOMENTUM READ**",
+    "BASE MOMENTUM READ",
     "",
-    `**Market read:**`,
+    `Market read:`,
     `${marketRead} ${breadthNote}`,
     "",
-    "**Strongest movers:**",
+    "Strongest movers:",
     ...rows,
     "",
-    `**Quality filter:**`,
+    `Quality filter:`,
     qualityLine,
     "Watchouts: liquidity, slippage, holder concentration, and dev wallet checks are not yet verified for any of the above.",
     "",
     pumpNote,
-    "**Next action:**",
+    "Next action:",
     "Pick a number and say \"scan 1\" to run a deeper token scan.",
   ].filter((l): l is string => l !== null && l !== undefined);
 
@@ -2073,26 +2073,26 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
         : "INCOMPLETE READ";
 
   return [
-    "**WALLET READ**",
+    "WALLET READ",
     "",
-    `**Verdict:** ${verdictLine}`,
+    `Verdict: ${verdictLine}`,
     "",
-    "**Portfolio read:**",
+    "Portfolio read:",
     portfolioRead,
     ...topLines,
     "",
-    "**Activity read:**",
+    "Activity read:",
     activityRead,
     "",
-    "**Risk / concentration:**",
+    "Risk / concentration:",
     concentration,
     `Unknown/unpriced assets hidden: ${snapshot.hiddenHoldingsCount}.`,
     "",
-    "**Missing checks:**",
+    "Missing checks:",
     "- PnL, win rate, and intent are not verified from this scan.",
     "- Smart-money status is not confirmed.",
     "",
-    "**Next action:**",
+    "Next action:",
     "Monitor entries/exits before trusting this wallet. Run token scans on major holdings. No trade call.",
   ].join("\n");
 }
@@ -5345,14 +5345,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       if (resolved) {
         const walletRes = await callInternalApi(origin, "/api/wallet", { address: resolved }, authHeader ?? undefined)
         const w = (walletRes.json ?? {}) as Record<string, unknown>
-        const resolvedNote = `Resolved wallet: **${ensName}** → \`${resolved}\`\n\n`
+        const resolvedNote = `Resolved wallet: ${ensName} → \`${resolved}\`\n\n`
         if (walletRes.ok && Object.keys(w).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, resolved)
           return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: resolvedNote + formatWalletBalanceSummary(snapshot) }
         }
         return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: resolvedNote + "I couldn't pull wallet data for that address right now. Try pasting the 0x address directly or use Wallet Scanner." }
       }
-      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: `I couldn't resolve **${ensName}** to a wallet address. Try pasting the 0x address directly, or check the name spelling.` }
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: `I couldn't resolve ${ensName} to a wallet address. Try pasting the 0x address directly, or check the name spelling.` }
     }
     // Try session memory last wallet before asking for an address
     if (sessionMem.lastWallet && (Date.now() - sessionMem.lastWallet.ts) < SESSION_MEMORY_TTL_MS) {
