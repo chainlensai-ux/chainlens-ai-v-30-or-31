@@ -7,13 +7,24 @@ type Message = { role: 'user' | 'clark'; text: string }
 
 function getOrCreateSessionId(): string {
   if (typeof window === 'undefined') return 'ssr'
-  const key = 'clark_session_id'
+  const key = 'chainlens:clark-session-id'
   let id = sessionStorage.getItem(key)
   if (!id) {
     id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     sessionStorage.setItem(key, id)
   }
   return id
+}
+function getClientClarkContext() {
+  if (typeof window === 'undefined') return {}
+  try {
+    return {
+      lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
+      lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
+      lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
+      lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
+    }
+  } catch { return {} }
 }
 type ClarkContextState = {
   lastMarketList?: Array<{
@@ -213,6 +224,7 @@ function ClarkAiContent() {
           recentMovers: clarkContextRef.current.lastMarketList ?? [],
           moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
           marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
+          clientContext: getClientClarkContext(),
         }),
       })
       const json = await res.json()
@@ -222,6 +234,8 @@ function ClarkAiContent() {
         : null
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
       if (nextItems && nextItems.length > 0) {
+        sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(nextItems))
+        sessionStorage.setItem('chainlens:clark:last-momentum-shown-count', String(Math.min(7, nextItems.length)))
         clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
         const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
         const symSet = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
