@@ -25,6 +25,7 @@ function getClientClarkContext() {
       lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
       lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
       lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
+      lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
     }
   } catch { return {} }
 }
@@ -80,7 +81,10 @@ export default function MobileClarkDrawer() {
       const marketItems = payload?.marketContext && typeof payload.marketContext === 'object' && Array.isArray((payload.marketContext as { items?: unknown[] }).items)
         ? (payload.marketContext as { items?: unknown[] }).items
         : null
-      if (marketItems && marketItems.length > 0) sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(marketItems))
+      if (marketItems && marketItems.length > 0) {
+        sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(marketItems))
+        sessionStorage.setItem('chainlens:clark:last-momentum-shown-count', String(Math.min(7, marketItems.length)))
+      }
       const reply = typeof payload?.reply === 'string' && payload.reply.trim()
         ? payload.reply
         : (typeof payload?.analysis === 'string' && payload.analysis.trim() ? payload.analysis : FALLBACK_ERROR_MESSAGE)

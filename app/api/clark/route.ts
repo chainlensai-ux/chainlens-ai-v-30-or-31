@@ -56,6 +56,7 @@ type ClarkSessionMemory = {
   lastActionableIntentTs: number;
   allowedRankScanUntil: number;
   allowedRankScanUsed: boolean;
+  lastMomentumShownCount: number;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -66,7 +67,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false };
+    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0 };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -77,6 +78,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
     existing.lastMomentumTs = 0;
     existing.allowedRankScanUntil = 0;
     existing.allowedRankScanUsed = false;
+    existing.lastMomentumShownCount = 0;
   }
   if (existing.lastIntent && now - existing.lastIntentTs > INTENT_MEMORY_TTL_MS) existing.lastIntent = null;
   if (existing.lastActionableIntent && now - existing.lastActionableIntentTs > INTENT_MEMORY_TTL_MS) existing.lastActionableIntent = null;
@@ -120,6 +122,7 @@ function updateMemWallet(mem: ClarkSessionMemory, address: string, ensName: stri
 function updateMemMomentum(mem: ClarkSessionMemory, items: ClarkSessionMemory['lastMomentumList']) {
   mem.lastMomentumList = items;
   mem.lastMomentumTs = Date.now();
+  mem.lastMomentumShownCount = 0;
 }
 
 function updateMemIntent(mem: ClarkSessionMemory, intent: string) {
@@ -243,6 +246,7 @@ interface ClarkRequestBody {
   moversContext?: unknown;
   clientContext?: {
     lastMomentumList?: ClarkSessionMemory["lastMomentumList"];
+    lastMomentumShownCount?: number;
     lastToken?: ClarkSessionMemory["lastToken"];
     lastWallet?: ClarkSessionMemory["lastWallet"];
   };
@@ -5353,7 +5357,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false };
+  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0 };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -5435,10 +5439,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   if (isBaseMomentumPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
-    const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
-    const top = universe?.candidates?.slice(0, 10) ?? [];
-    if (top.length > 0) {
-      updateMemMomentum(sessionMem, top.map((c, i) => ({
+    const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+    const stored = universe?.candidates?.slice(0, 30) ?? [];
+    const top = stored.slice(0, 7);
+    if (stored.length > 0) {
+      updateMemMomentum(sessionMem, stored.map((c, i) => ({
         rank: i + 1,
         symbol: c.symbol ?? "?",
         name: c.name ?? null,
@@ -5448,6 +5453,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         change24h: c.change24h ?? null,
         tag: c.reasonTags?.[0] ?? null,
       })));
+      sessionMem.lastMomentumShownCount = top.length;
       sessionMem.allowedRankScanUntil = Date.now() + 60_000;
       sessionMem.allowedRankScanUsed = false;
       sessionMem.lastIntent = "base_momentum";
@@ -5462,7 +5468,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         toolsUsed: ["base_market_feed"],
         analysis: formatBaseMarketReply(top, universe?.candidates.length ?? top.length, 0, universe?.cappedMessage ?? null),
         marketContext: {
-          items: top.map((c, i) => ({
+          items: stored.map((c, i) => ({
             rank: i + 1, symbol: c.symbol ?? "?", name: c.name ?? null, tokenAddress: c.tokenAddress ?? null, poolAddress: c.poolAddress ?? null,
             reasonTag: c.reasonTags[0] ?? null, price: c.priceUsd ?? null, liquidity: c.liquidityUsd ?? null, volume24h: c.volume24h ?? null, change24h: c.change24h ?? null,
           })),
@@ -5505,20 +5511,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (MORE_CONTEXT_RE.test(prompt.trim())) {
     const memList = sessionMem.lastMomentumList;
     if (memList.length > 0) {
-      // Find what's already been shown by looking at history
-      const histLines = getHistoryMessages(body.history);
-      const lastShownRanks = new Set<number>();
-      for (const line of histLines) {
-        for (const m of line.matchAll(/^\s*(\d+)\.\s+/gm)) {
-          const r = Number(m[1]);
-          if (r >= 1 && r <= 20) lastShownRanks.add(r);
-        }
-      }
-      // Find tokens not yet shown (or just show next batch if can't determine)
-      const shownMax = lastShownRanks.size > 0 ? Math.max(...lastShownRanks) : 0;
-      const nextTokens = (shownMax > 0 ? memList.filter(m => m.rank > shownMax) : memList.filter(m => m.rank >= 8)).slice(0, 4);
+      const shownCount = Math.max(0, Math.min(sessionMem.lastMomentumShownCount || 0, memList.length));
+      const nextTokens = memList.slice(shownCount, shownCount + 8);
 
       if (nextTokens.length > 0) {
+        sessionMem.lastMomentumShownCount = shownCount + nextTokens.length;
         const rows = nextTokens.map(m => {
           const vol = m.volume24h != null ? formatUsdShort(m.volume24h) : "n/a";
           const liq = m.liquidity != null ? formatUsdShort(m.liquidity) : "n/a";
@@ -5531,7 +5528,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           analysis: [
             "MORE BASE MOVERS",
             "",
-            "Additional candidates from the latest CORTEX momentum read:",
+            "Additional candidates from the latest CORTEX pool read:",
             "",
             ...rows,
             "",
@@ -5550,7 +5547,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: [
           "MORE CONTEXT",
           "",
-          "The latest CORTEX momentum list is already showing the strongest candidates.",
+          `The latest CORTEX pool read only returned ${memList.length} usable momentum candidates after filtering.`,
           "",
           "What matters now:",
           "1. Pick a rank and scan it.",
@@ -6584,6 +6581,9 @@ export async function POST(req: NextRequest) {
   const sessionMem = getSessionMemory(sessionKey)
   if (sessionMem.lastMomentumList.length === 0 && Array.isArray(body.clientContext?.lastMomentumList) && body.clientContext!.lastMomentumList!.length > 0) {
     updateMemMomentum(sessionMem, body.clientContext!.lastMomentumList!.slice(0, 20));
+  }
+  if (typeof body.clientContext?.lastMomentumShownCount === "number" && body.clientContext.lastMomentumShownCount >= 0) {
+    sessionMem.lastMomentumShownCount = Math.min(body.clientContext.lastMomentumShownCount, sessionMem.lastMomentumList.length);
   }
   if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;

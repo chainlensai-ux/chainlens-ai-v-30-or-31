@@ -77,6 +77,7 @@ function getClientClarkContext() {
       lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
       lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
       lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
+      lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
     }
   } catch { return {} }
 }
@@ -200,6 +201,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
       if (nextItems && nextItems.length > 0) {
         sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(nextItems))
+        sessionStorage.setItem('chainlens:clark:last-momentum-shown-count', String(Math.min(7, nextItems.length)))
         clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
         const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
         const symSet = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
