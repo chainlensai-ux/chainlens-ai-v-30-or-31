@@ -5354,6 +5354,24 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: `I couldn't resolve **${ensName}** to a wallet address. Try pasting the 0x address directly, or check the name spelling.` }
     }
+    // Try session memory last wallet before asking for an address
+    if (sessionMem.lastWallet && (Date.now() - sessionMem.lastWallet.ts) < SESSION_MEMORY_TTL_MS) {
+      const isMonitorQ = /\b(is\s+it\s+worth|worth\s+monitoring|is\s+this\s+wallet|should\s+i\s+watch|should\s+i\s+copy|what\s+are\s+its|any\s+risk|main\s+holdings?|scan\s+its|top\s+holding)\b/i.test(prompt);
+      if (isMonitorQ) {
+        if (/\bshould\s+i\s+copy\b/i.test(prompt)) {
+          return { feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [], analysis: "I can't tell you to copy-trade it. I can tell you whether it is worth monitoring.\n\nSend the wallet address and I'll run a WALLET READ — holdings, activity, concentration, and what's missing. No copy-trade call." };
+        }
+        const walletRes = await callInternalApi(origin, "/api/wallet", { address: sessionMem.lastWallet.address }, authHeader ?? undefined);
+        const w = (walletRes.json ?? {}) as Record<string, unknown>;
+        if (walletRes.ok && Object.keys(w).length > 0) {
+          const snapshot = normalizeWalletSnapshotEvidence(w, sessionMem.lastWallet.address);
+          const analysis = buildWalletQualityVerdict(snapshot, sessionMem.lastWallet.address, prompt);
+          updateMemWallet(sessionMem, sessionMem.lastWallet.address, sessionMem.lastWallet.ensName, analysis);
+          updateMemIntent(sessionMem, "wallet_analysis");
+          return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis };
+        }
+      }
+    }
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], analysis: "I can run that, but I need a wallet address first. Paste a full 0x wallet (or a .base.eth / .eth name) and I'll analyze the available data." };
   }
   // Wallet analysis with address — route to wallet before plan execution
@@ -5364,6 +5382,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
       const isBalanceQ = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(prompt);
       const analysis = isBalanceQ ? formatWalletBalanceSummary(snapshot) : buildWalletQualityVerdict(snapshot, directIntent.address, prompt);
+      updateMemWallet(sessionMem, directIntent.address, null, analysis);
+      updateMemIntent(sessionMem, "wallet_analysis");
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis };
     }
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: "I couldn't pull wallet data for that address right now. Try pasting again or use Wallet Scanner directly." };
@@ -5517,6 +5537,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false });
       const top = universe.candidates.slice(0, 10);
       if (!top.length) return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["market_get_base_movers"], analysis: "No fresh signal in the checked window. Try another token or check again shortly." };
+      updateMemMomentum(sessionMem, top.map((c, i) => ({
+        rank: i + 1,
+        symbol: c.symbol ?? "?",
+        name: c.name ?? null,
+        address: c.tokenAddress ?? c.poolAddress ?? null,
+        liquidity: c.liquidityUsd ?? null,
+        volume24h: c.volume24h ?? null,
+        change24h: c.change24h ?? null,
+        tag: c.reasonTags?.[0] ?? null,
+      })));
+      updateMemIntent(sessionMem, "market");
       return {
         feature: "clark-ai",
         chain,
@@ -5574,6 +5605,77 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ].join("\n"),
     };
   }
+  // Rank follow-up: "scan 1", "2", "full report on 3" → resolve from session memory momentum list
+  // Only trigger when prompt is primarily a rank reference and the client has no structured list to use
+  if (sessionMem.lastMomentumList.length > 0 && !marketFollowupResolution.item && !marketFollowupResolution.ambiguous.length) {
+    const _memRankMatch = prompt.trim().match(/^(?:scan|check|full\s+report\s+on?|why\s+is(?:\s+token)?\s+)?([1-9]\d{0,2})(?:\s+(?:of\s+(?:them|those|the\s+list)))?$/i);
+    const _memRank = _memRankMatch ? Number(_memRankMatch[1]) : null;
+    if (_memRank) {
+      const memItem = sessionMem.lastMomentumList.find(m => m.rank === _memRank);
+      if (memItem) {
+        if (!memItem.address) {
+          // Symbol known but no address — re-route as symbol scan
+          return await handleClarkAI({ ...body, prompt: `scan ${memItem.symbol}` }, origin, authHeader, verifiedPlan, sessionMem);
+        }
+        // Has address — run token scan directly
+        updateMemIntent(sessionMem, "token_analysis");
+        const tokenRes = await callInternalApi(origin, "/api/token", { contract: memItem.address }, authHeader ?? undefined);
+        const tokenData = tokenRes.ok ? tokenRes.json : null;
+        const securitySim = await fetchHoneypotSecurity(memItem.address, "base");
+        if (tokenData) {
+          const td = tokenData as Record<string, unknown>;
+          const reportEvidence: ClarkToolEvidence = {
+            tokenScan: {
+              ok: true,
+              token: { name: String(td.name ?? memItem.name ?? "Token"), symbol: String(td.symbol ?? memItem.symbol ?? "?"), address: String(td.contract ?? memItem.address) },
+              market: {
+                price: typeof td.price === "number" ? td.price : null,
+                change24h: typeof td.priceChange24h === "number" ? td.priceChange24h : null,
+                volume24h: typeof td.volume24h === "number" ? td.volume24h : null,
+                liquidity: typeof td.liquidity === "number" ? td.liquidity : null,
+                marketCap: typeof td.marketCapUsd === "number" ? td.marketCapUsd : null,
+                fdv: typeof td.fdvUsd === "number" ? td.fdvUsd : null,
+                displayMarketValue: typeof td.displayMarketValue === "number" ? td.displayMarketValue : null,
+                displayMarketValueLabel: typeof td.displayMarketValueLabel === "string" ? String(td.displayMarketValueLabel) : "Market Cap",
+                displayMarketValueConfidence: typeof td.displayMarketValueConfidence === "string" ? String(td.displayMarketValueConfidence) : "low",
+              },
+              holders: {
+                top1: typeof (td.holderDistribution as Record<string,unknown>|undefined)?.top1 === "number" ? (td.holderDistribution as Record<string,unknown>).top1 as number : null,
+                top10: typeof (td.holderDistribution as Record<string,unknown>|undefined)?.top10 === "number" ? (td.holderDistribution as Record<string,unknown>).top10 as number : null,
+                holderCount: typeof (td.holderDistribution as Record<string,unknown>|undefined)?.holderCount === "number" ? (td.holderDistribution as Record<string,unknown>).holderCount as number : null,
+                status: typeof (td.holderDistributionStatus as Record<string,unknown>|undefined)?.status === "string" ? String((td.holderDistributionStatus as Record<string,unknown>).status) : "unavailable",
+              },
+              security: {
+                honeypot: securitySim.honeypot,
+                buyTax: securitySim.buyTax,
+                sellTax: securitySim.sellTax,
+                transferTax: securitySim.transferTax,
+                simulationSuccess: securitySim.simulationSuccess,
+                securityStatus: securitySim.securityStatus,
+                riskLevel: securitySim.riskLevel,
+                missing: securitySim.missing,
+                proxy: null,
+                mintable: null,
+                ownerRenounced: null,
+              },
+              liquidity: { pools: Array.isArray(td.pools) ? (td.pools as unknown[]).length : 0, topPoolLiquidity: typeof td.liquidity === "number" ? td.liquidity : null },
+              poolDetails: [],
+              warnings: [...securitySim.warnings],
+            },
+          };
+          const fullEvidence = buildFullReportEvidence(reportEvidence, memItem.address);
+          const scanText = renderQuickTokenScan(fullEvidence);
+          updateMemToken(sessionMem, memItem.address, String(td.symbol ?? memItem.symbol ?? "?"), String(td.name ?? memItem.name ?? "Token"), scanText);
+          return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: scanText };
+        }
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `I couldn't pull live data for ${memItem.symbol ?? `token #${_memRank}`} right now. Try pasting the contract directly.` };
+      }
+      if (_memRank > sessionMem.lastMomentumList.length) {
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `Token #${_memRank} is outside the available movers list. Pick 1–${sessionMem.lastMomentumList.length}.` };
+      }
+    }
+  }
+
   const plan = buildClarkToolPlan({
     message: prompt,
     mode: body.mode,
@@ -5666,6 +5768,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     const reportEvidence = buildFullReportEvidence(evidence, resolvedAddress);
     const analysis = renderFullTokenReport(reportEvidence);
+    const _reportToken = reportEvidence.token;
+    if (_reportToken?.address) {
+      updateMemToken(sessionMem, _reportToken.address, _reportToken.symbol ?? null, _reportToken.name ?? null, analysis);
+      updateMemIntent(sessionMem, "token_analysis");
+    }
     return {
       feature: "clark-ai",
       chain,
@@ -5730,6 +5837,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const readLine = strictDifferent && req.wantsMore
         ? "These are further down the feed, so treat them as watchlist names — not stronger than the first batch."
         : "This list is led by tokens with real liquidity, but there are still noisy runners mixed in.";
+      updateMemMomentum(sessionMem, marketRows.map((c, i) => ({
+        rank: offsetBase + i + 1,
+        symbol: c.symbol ?? "?",
+        name: c.name ?? null,
+        address: c.tokenAddress ?? c.poolAddress ?? null,
+        liquidity: c.liquidityUsd ?? null,
+        volume24h: c.volume24h ?? null,
+        change24h: c.change24h ?? null,
+        tag: c.reasonTags?.[0] ?? null,
+      })));
+      updateMemIntent(sessionMem, "market");
       return {
         feature: "clark-ai",
         chain,
@@ -5784,6 +5902,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return { feature: "clark-ai", chain, mode: "analysis", analysis: "I couldn't pull this wallet snapshot right now. Paste the wallet again and I'll retry.", intent: plan.intent, toolsUsed };
     }
     const summary = formatWalletBalanceSummary(w);
+    if (w.address) updateMemWallet(sessionMem, String(w.address), null, summary);
+    updateMemIntent(sessionMem, "wallet_balance");
     return { feature: "clark-ai", chain, mode: "analysis", analysis: summary, intent: plan.intent, toolsUsed };
   }
 
@@ -5793,10 +5913,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     if (evidence.walletSnapshot?.ok) {
       const quality = buildWalletQualityVerdict(evidence.walletSnapshot, resolvedAddress, prompt);
+      updateMemWallet(sessionMem, resolvedAddress, null, quality);
+      updateMemIntent(sessionMem, "wallet_analysis");
       return { feature: "clark-ai", chain, mode: "analysis", analysis: quality, intent: plan.intent, toolsUsed };
     }
     if (evidence.walletQuality?.analysis) {
-      return { feature: "clark-ai", chain, mode: "analysis", analysis: enforceWalletAssetLabel(evidence.walletQuality.analysis, resolvedAddress), intent: plan.intent, toolsUsed };
+      const qualityAnalysis = enforceWalletAssetLabel(evidence.walletQuality.analysis, resolvedAddress);
+      updateMemWallet(sessionMem, resolvedAddress, null, qualityAnalysis);
+      updateMemIntent(sessionMem, "wallet_analysis");
+      return { feature: "clark-ai", chain, mode: "analysis", analysis: qualityAnalysis, intent: plan.intent, toolsUsed };
     }
     const fallback = evidence.walletSnapshot
       ? enforceWalletAssetLabel(buildWalletAnalysisFallback(evidence.walletSnapshot, resolvedAddress), resolvedAddress)
@@ -5986,7 +6111,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         const w = (walletRes.json ?? {}) as Record<string, unknown>;
         if (walletRes.ok && Array.isArray(w.holdings) && (w.holdings as unknown[]).length > 0) {
           const snapshot = normalizeWalletSnapshotEvidence(w, resolvedAddress);
-          return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [...toolsUsed, "wallet_get_snapshot"], analysis: buildWalletQualityVerdict(snapshot, resolvedAddress, prompt) };
+          const walletAnalysis = buildWalletQualityVerdict(snapshot, resolvedAddress, prompt);
+          updateMemWallet(sessionMem, resolvedAddress, null, walletAnalysis);
+          updateMemIntent(sessionMem, "wallet_analysis");
+          return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [...toolsUsed, "wallet_get_snapshot"], analysis: walletAnalysis };
         }
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: plan.intent, toolsUsed,
@@ -6014,11 +6142,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             toolsUsed,
           };
         }
+        const fbScanText = renderQuickTokenScan(fallbackReport);
+        updateMemToken(sessionMem, resolvedAddress, fallbackReport.token.symbol ?? null, fallbackReport.token.name ?? null, fbScanText);
+        updateMemIntent(sessionMem, "token_analysis");
         return {
           feature: "clark-ai",
           chain,
           mode: "analysis",
-          analysis: renderQuickTokenScan(fallbackReport),
+          analysis: fbScanText,
           intent: plan.intent,
           toolsUsed,
         };
@@ -6052,6 +6183,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
               `- Missing context: ${pack.missing.length ? pack.missing.join(", ") : "limited missing fields"}`
             ].join("\n")
           : renderQuickTokenScan(report);
+    updateMemToken(sessionMem, token.address, token.symbol ?? null, token.name ?? null, analysis);
+    updateMemIntent(sessionMem, "token_analysis");
     return { feature: "clark-ai", chain, mode: "analysis", analysis, intent: plan.intent, toolsUsed };
   }
 

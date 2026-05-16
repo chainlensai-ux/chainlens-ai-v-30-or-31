@@ -87,6 +87,17 @@ function isMobileClient() {
   return typeof window !== 'undefined' && (window.innerWidth < 768 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))
 }
 
+function getOrCreateSessionId(): string {
+  if (typeof window === 'undefined') return 'ssr';
+  const key = 'clark_session_id';
+  let id = sessionStorage.getItem(key);
+  if (!id) {
+    id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    sessionStorage.setItem(key, id);
+  }
+  return id;
+}
+
 function ClarkOrb({ size = 20, thinking = false }: { size?: number; thinking?: boolean }) {
   return <span className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}><span className='clark-orb-ring' /><span className='clark-orb-dot clark-orb-dot-a' /><span className='clark-orb-dot clark-orb-dot-b' /></span>
 }
@@ -148,6 +159,7 @@ export default function ClarkChat({
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          'x-clark-session': getOrCreateSessionId(),
         },
         body: JSON.stringify({
           ...body,
