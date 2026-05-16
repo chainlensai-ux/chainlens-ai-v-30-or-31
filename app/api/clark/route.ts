@@ -2025,6 +2025,13 @@ function formatUsdShort(value: number | null | undefined): string {
   if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
   return `$${value.toFixed(0)}`;
 }
+function isNearZeroLiquidity(value: number | null | undefined): boolean {
+  return typeof value !== "number" || !Number.isFinite(value) || value <= 100;
+}
+function formatLiquiditySafe(value: number | null | undefined): string {
+  if (isNearZeroLiquidity(value)) return "near-zero / unverified";
+  return formatUsdShort(value);
+}
 
 function buildGTMarketBriefing(pools: unknown[]): string {
   type GTPool = {
@@ -3966,7 +3973,8 @@ function evaluateFullReportVerdict(report: ClarkFullReportEvidence): {
   const signals: string[] = [];
   const risks: string[] = [];
 
-  if (report.market.liquidity != null) signals.push(`Liquidity observed around ${formatUsdShort(report.market.liquidity)}.`);
+  if (!isNearZeroLiquidity(report.market.liquidity)) signals.push(`Liquidity observed around ${formatUsdShort(report.market.liquidity)}.`);
+  else if (report.market.volume24h != null && report.market.volume24h > 0) signals.push("24h volume exists, but liquidity quality is weak.");
   if (report.market.volume24h != null) signals.push(`24h volume observed around ${formatUsdShort(report.market.volume24h)}.`);
   if (report.contract.honeypot === false) signals.push("No honeypot flag detected in current checks.");
   if (report.contract.simulationSuccess === true) signals.push("Security simulation passed.");
@@ -4172,7 +4180,7 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
           : "Usable signals are present, but missing risk checks prevent a conviction rating.";
 
   const bullCase = dedupeLines([
-    report.market.liquidity != null ? `Liquidity visible at ${formatUsdShort(report.market.liquidity)}.` : "",
+    !isNearZeroLiquidity(report.market.liquidity) ? `Liquidity visible at ${formatUsdShort(report.market.liquidity)}.` : "",
     report.market.volume24h != null ? `24h volume active around ${formatUsdShort(report.market.volume24h)}.` : "",
     report.contract.honeypot === false ? "No honeypot flag detected in current checks." : "",
     report.contract.buyTax != null && report.contract.sellTax != null && report.contract.buyTax <= 5 && report.contract.sellTax <= 5
@@ -4251,14 +4259,14 @@ function renderDevWalletFocusedRead(
   devWallet: NonNullable<ClarkToolEvidence["devWallet"]>
 ): string {
   const originRead = devWallet.deployerAddress
-    ? `Deployer identified: ${shortAddress(devWallet.deployerAddress)} (${devWallet.confidence} confidence from CORTEX data).`
-    : "Origin wallet could not be verified from available CORTEX data.";
+    ? `Deployer identified: ${shortAddress(devWallet.deployerAddress)} (${devWallet.confidence} confidence).`
+    : "Origin wallet could not be verified from this pass.";
   const linkedRead = devWallet.linkedWallets > 0
     ? `${devWallet.linkedWallets} linked wallet${devWallet.linkedWallets > 1 ? "s" : ""} found in deployer cluster.`
-    : "Linked wallet signals are incomplete.";
+    : "No linked wallet signals returned.";
   const priorActivity = devWallet.warnings.length > 0
     ? devWallet.warnings.slice(0, 2).filter(w => /deploy|prior|previous|history|created|launch/i.test(w)).join("; ") || "Prior activity data is incomplete."
-    : "Prior activity data is incomplete.";
+    : "Prior activity incomplete.";
   const riskFlags = devWallet.warnings.filter(w => /suspicious|overlap|concentration|admin|control|funding|linked/i.test(w)).slice(0, 3);
   const missingChecks: string[] = [];
   if (!devWallet.deployerAddress) missingChecks.push("Deployer identity is unverified from current CORTEX scan.");
@@ -4319,15 +4327,15 @@ function renderLiquidityFocusedRead(
 
   // Depth interpretation
   const depthInterpretation =
-    liq == null ? "Liquidity data incomplete — pool depth unverified."
-    : liq >= 1_000_000 ? `${formatUsdShort(liq)} — strong depth for normal lowcap trading.`
-    : liq >= 300_000 ? `${formatUsdShort(liq)} — moderate depth; slippage can matter on larger entries.`
-    : liq >= 50_000 ? `${formatUsdShort(liq)} — thin depth; move can reverse fast on exits.`
+    isNearZeroLiquidity(liq) ? "Liquidity data is near-zero/unverified — pool depth quality is weak."
+    : liq! >= 1_000_000 ? `${formatUsdShort(liq)} — strong depth for normal lowcap trading.`
+    : liq! >= 300_000 ? `${formatUsdShort(liq)} — moderate depth; slippage can matter on larger entries.`
+    : liq! >= 50_000 ? `${formatUsdShort(liq)} — thin depth; move can reverse fast on exits.`
     : `${formatUsdShort(liq)} — microcap depth; treat signals as noisy.`;
 
   // Turnover / flow
   const turnoverLines: string[] = [];
-  if (vol != null && liq != null && liq > 0) {
+  if (vol != null && liq != null && liq > 100) {
     const ratio = vol / liq;
     const ratioStr = ratio.toFixed(1);
     const quality =
@@ -4338,7 +4346,7 @@ function renderLiquidityFocusedRead(
     turnoverLines.push(quality);
     turnoverLines.push(`24h vol ${formatUsdShort(vol)} vs liquidity ${formatUsdShort(liq)}.`);
   } else {
-    turnoverLines.push("Volume/liquidity ratio not available in this pass.");
+    turnoverLines.push("Turnover ratio is not reliable because liquidity is near-zero/unverified.");
   }
 
   // Primary pool
@@ -4348,12 +4356,12 @@ function renderLiquidityFocusedRead(
 
   // Risk flags
   const riskFlags: string[] = [];
-  if (liq != null && liq < 50_000) riskFlags.push("Thin liquidity — exit slippage elevated.");
+  if (!isNearZeroLiquidity(liq) && liq! < 50_000) riskFlags.push("Thin liquidity — exit slippage elevated.");
   if (vol != null && liq != null && liq > 0 && (vol / liq) > 8) riskFlags.push("Extreme volume/liquidity ratio — high churn and slippage risk.");
   riskFlags.push("LP lock/control unverified.");
   if (liquidity.riskTier === "extreme") riskFlags.push("LP structure flagged as fragile by CORTEX data.");
   if (liquidity.warnings.length > 0) riskFlags.push(...liquidity.warnings.slice(0, 2));
-  if (liq == null) riskFlags.push("Liquidity data incomplete — pool depth unverified.");
+  if (isNearZeroLiquidity(liq)) riskFlags.push("Liquidity is near-zero/unverified.");
 
   // Missing checks
   const missingChecks = [
@@ -4383,10 +4391,10 @@ function renderLiquidityFocusedRead(
     lpControlLine,
     "",
     "Risk flags:",
-    ...riskFlags.map(f => `- ${f}`),
+    ...dedupeLines(riskFlags).map(f => `- ${f}`),
     "",
     "Missing checks:",
-    ...missingChecks.map(m => `- ${m}`),
+    ...dedupeLines(missingChecks).map(m => `- ${m}`),
     "",
     "Next action:",
     "Verify LP control, holders, and dev wallet before conviction. No trade call.",
@@ -4628,7 +4636,10 @@ function buildWatchVerdictFromScan(scanText: string, contractAddress: string): s
 
   // Build why bullets from available data
   const why: string[] = [];
-  if (liquidity) why.push(`Liquidity: ${liquidity}`);
+  if (liquidity) {
+    const nearZero = /\$-?0(?:\.0+)?\b|\$0\b/i.test(liquidity);
+    why.push(`Liquidity: ${nearZero ? "near-zero / unverified" : liquidity}`);
+  }
   if (volume) why.push(`Volume: ${volume}`);
   if (topHolder) why.push(`Top holder: ${topHolder}`);
   if (top10) why.push(`Top 10 holders: ${top10}`);
