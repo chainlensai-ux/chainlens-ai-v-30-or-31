@@ -1773,7 +1773,7 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   }
 
   if (!merged.length) {
-    return "BASE MOMENTUM READ\n\nLive Base pool data is incomplete right now. I can still show the available momentum signals, but verify liquidity before acting.\n\nTry again in a moment, or paste a contract address for a direct token scan.";
+    return { analysis: "BASE MOMENTUM READ\n\nLive Base pool data is incomplete right now. I can still show the available momentum signals, but verify liquidity before acting.\n\nTry again in a moment, or paste a contract address for a direct token scan.", items: [] };
   }
 
   // Rank: 24h change desc, then volume, then liquidity — filter zero-liquidity noise
@@ -1855,7 +1855,30 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     "Pick a number and say \"scan 1\" to run a deeper token scan.",
   ].filter((l): l is string => l !== null && l !== undefined);
 
-  return lines.join("\n");
+  const items = top.map((t, i) => ({
+    rank: i + 1,
+    symbol: String(t.symbol ?? '?').toUpperCase(),
+    name: String(t.name ?? '').trim() || null,
+    address: typeof t.address === 'string' ? t.address : null,
+    liquidity: Number(t.liquidity ?? 0) || null,
+    volume24h: Number(t.volume ?? 0) || null,
+    change24h: Number(t.change24h ?? 0),
+    tag: (() => {
+      const liqNum = Number(t.liquidity ?? 0) || null;
+      const volNum = Number(t.volume ?? 0) || null;
+      const fdvNum = t.fdv != null ? Number(t.fdv) : null;
+      const sym = String(t.symbol ?? '?').toUpperCase();
+      const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, sym);
+      return cls === "liquid mover" ? "tradable depth"
+        : cls === "volume-led" ? "volume-led"
+        : cls === "thin pump" ? "thin liquidity"
+        : cls === "microcap noise" ? "microcap noise"
+        : cls === "base asset" ? "base asset"
+        : "watchlist only";
+    })(),
+  }));
+
+  return { analysis: lines.join("\n"), items };
 }
 
 async function handleBaseRadarSnapshot(origin: string, prompt = "") {
@@ -1883,7 +1906,7 @@ async function handleBaseRadarSnapshot(origin: string, prompt = "") {
   });
 
   if (!baseFeed.length) {
-    return `${pickBaseRadarTitle(prompt)}\nNo fresh Base Radar data loaded right now. Refresh Base Radar or try again in a moment.`;
+    return { analysis: `${pickBaseRadarTitle(prompt)}\nNo fresh Base Radar data loaded right now. Refresh Base Radar or try again in a moment.`, items: [] };
   }
 
   const sorted = [...baseFeed].sort((a, b) => Number(b.change24h ?? 0) - Number(a.change24h ?? 0));
@@ -5389,8 +5412,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   if (isBaseMomentumPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
-    const analysis = await handleBasePumpMap(prompt, origin);
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"], analysis };
+    const pumpResult = await handleBasePumpMap(prompt, origin);
+    if (pumpResult.items.length > 0) {
+      updateMemMomentum(sessionMem, pumpResult.items);
+      updateMemIntent(sessionMem, "market");
+    }
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "market",
+      toolsUsed: ["base_market_feed", "pump_alerts_feed"],
+      analysis: pumpResult.analysis,
+      marketContext: { items: pumpResult.items },
+    };
   }
   if (isPumpFeedPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "pump_alerts", rendererUsed: "pump_alerts", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
