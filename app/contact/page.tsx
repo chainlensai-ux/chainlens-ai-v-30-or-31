@@ -330,10 +330,10 @@ export default function ContactPage() {
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 letterSpacing: '0.04em',
               }}>
-                @chainlens_ai
+                @chainlens__ai
               </div>
               <a
-                href="https://x.com/chainlens_ai"
+                href="https://x.com/chainlens__ai"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="contact-cta cta-x"
@@ -342,7 +342,7 @@ export default function ContactPage() {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
                   <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L2.127 2.25H8.08l4.261 5.632 5.903-5.632Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" fill="currentColor"/>
                 </svg>
-                Follow @chainlens_ai
+                Follow @chainlens__ai
               </a>
             </div>
           </div>
