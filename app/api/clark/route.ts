@@ -165,6 +165,10 @@ function isLowCostPrompt(prompt: string, sessionMem?: ClarkSessionMemory): boole
   if (WALLET_FOLLOWUP_LOW_COST_RE.test(t) && sessionMem?.lastWallet) return true;
   // "more"/"continue" after a previous answer
   if (MORE_CONTEXT_RE.test(t)) return true;
+  // Education and known-token background questions — no API call needed
+  const EDUCATION_GENERAL_RE = /^what\s+(?:is|are|does)\s+(?:a\s+|an\s+)?(?:base|memecoin|ai\s+agent|brett|aero|aerodrome|virtual|virtuals|weth|usdc|toshi|degen|amm|automated\s+market\s+maker|impermanent\s+loss|rug\s+pull|honeypot|fdv|fully\s+diluted|market\s+cap|dev\s+wallet|holder\s+concentration|lowcap|low\s+cap|slippage|whale|pump|liquidity|lp|lp\s+lock|lp\s+control|chainlens|cortex|clark)/i;
+  if (EDUCATION_GENERAL_RE.test(t)) return true;
+  if (/^how\s+do\s+(?:pumps?|price\s+pumps?)\s+(?:happen|work)|^how\s+to\s+avoid\s+rugs?|^how\s+do\s+whales?\s+(?:affect|move|impact)|^what\s+(?:makes|should)\s+(?:a\s+wallet|i\s+check)/i.test(t)) return true;
   return false;
 }
 
@@ -536,6 +540,11 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   if (/liquidity|lp safe|liquidity risk/i.test(t)) {
     return { intent: "liquidity_safety", address };
   }
+  // Known-token background question — high-level only, no live scan
+  const KNOWN_TOKEN_RE = /^what\s+is\s+(?:brett|\$brett|aero|aerodrome|virtual|virtuals?\s*protocol|toshi|degen|higher|normie|weth|wrapped\s+eth|usdc|usd\s+coin|cbeth|cbbtc|based)\b/i;
+  if (KNOWN_TOKEN_RE.test(t) && !extractAddress(t)) {
+    return { intent: "educational", address: null };
+  }
   if (/wallet/.test(t)) {
     return { intent: "wallet_analysis", address };
   }
@@ -779,6 +788,8 @@ function classifyClarkQuestionType(
   if (/what\s+(?:does|is|are)\s+(?:volume[-\s]led|tradable\s+depth|microcap\s+noise|liquidity\s+depth|lp\s+control|liquidity\s+control|turnover|market\s+cap\s+unverified|unverified\s+market\s+cap|holder\s+concentration|token\s+safety|fdv|market\s+cap|slippage|dev\s+wallet|honeypot|whale\s+alert|pump\s+alert|base\s+radar)/.test(normalized)) return "education";
   if (/what\s+does\s+.{1,40}\s+mean\??$|explain\s+.{1,60}$/.test(normalized) && !ctx.explicitAddress) return "education";
   if (/what is liquidity risk|what is a dev wallet|lp lock|slippage/.test(normalized)) return "education";
+  if (/^what\s+is\s+(?:brett|aero|aerodrome|virtual|virtuals|weth|usdc|toshi|degen|base\s+chain|base\b|an?\s+amm|impermanent\s+loss|a\s+rug|honeypot|fdv|market\s+cap|dev\s+wallet|holder\s+concentration|lowcap|low\s+cap|chainlens|cortex)\b/i.test(normalized)) return "education";
+  if (/^how\s+do\s+(?:pumps?|whales?)\s+|^how\s+to\s+avoid|^what\s+should\s+i\s+check\s+before|^what\s+makes\s+a\s+wallet/i.test(normalized)) return "education";
   if (/holder concentration/.test(normalized) && !ctx.explicitSymbol && !ctx.explicitAddress) return "education";
   if (/what should i watch|why are base memes moving|strategy|framework/.test(normalized)) return "market_overview";
   if (/what'?s pumping on base|moving on base|trending|movers|gainers|what'?s hot on base|hot on base|base market|trending on base|top base tokens|what'?s happening on base|base radar/.test(normalized)) return "market_overview";
@@ -1555,6 +1566,78 @@ function buildEducationalReply(prompt: string): string {
     "",
     "No trade call.",
   ].join("\n");
+  // Base ecosystem
+  if (/what\s+is\s+base\b|tell\s+me\s+about\s+base\s+chain|base\s+chain\s+explain/i.test(t)) return "Base is an Ethereum L2 built by Coinbase using the OP Stack. It is designed for low-cost, fast transactions and has become a major hub for DeFi, memecoins, and AI-agent token launches. Key properties: EVM compatible, low fees, Coinbase distribution. ChainLens is built specifically on Base.";
+  if (/what\s+is\s+a\s+memecoin|memecoin\s+explain|how\s+do\s+memecoins\s+work/i.test(t)) return "A memecoin is a token driven primarily by community narrative and social momentum rather than fundamental utility. Risk profile: thin liquidity, concentrated holders, and LP control are the key danger signals. Most memecoins launch fast and fade fast. CORTEX flags memecoin risk through liquidity depth, holder concentration, and LP control checks.";
+  if (/what\s+is\s+an?\s+(?:ai\s+agent|ai-agent|agent\s+token)|ai\s+agents?\s+in\s+crypto|what\s+are\s+ai\s+agents/i.test(t)) return "AI agent tokens are assets tied to autonomous AI systems that can hold wallets, take actions, and transact on-chain. Narratives around agents are strong on Base — Virtuals Protocol (VIRTUAL) is the leading framework. Risk: most agent tokens are early-stage and speculative. CORTEX can scan any agent token for liquidity, holders, and deployer behavior.";
+  if (/what\s+is\s+(?:brett|\$brett)\b/i.test(t)) return "BRETT is one of the leading Base memecoins, named after Matt Furie's character. It built significant community traction in 2024. For current liquidity, holders, and onchain risk — say 'scan BRETT' and I'll run a live CORTEX check.";
+  if (/what\s+is\s+(?:aero|aerodrome)\b/i.test(t)) return "Aerodrome (AERO) is the dominant DEX and liquidity layer on Base, built on Velodrome's ve(3,3) model. It handles a large share of Base DEX volume. Important for routing, liquidity depth, and LP. For current market data — say 'scan AERO' for a live CORTEX read.";
+  if (/what\s+is\s+(?:virtual|virtuals|virtuals\s+protocol)\b/i.test(t)) return "Virtuals Protocol (VIRTUAL) is AI-agent infrastructure on Base. It enables autonomous AI agents to hold assets and transact. Part of the broader AI-agent crypto narrative. For current risk data — say 'scan VIRTUAL' for a live CORTEX read.";
+  if (/what\s+is\s+(?:weth|wrapped\s+eth)\b/i.test(t)) return "WETH (Wrapped ETH) is ETH wrapped in an ERC-20 compatible format so it can be used in DeFi protocols and DEX pools. On Base it is one of the primary routing assets in liquidity pools.";
+  if (/what\s+is\s+(?:usdc|usd\s+coin)\b/i.test(t)) return "USDC is a fully backed USD-pegged stablecoin issued by Circle. On Base it is the primary stablecoin for DeFi liquidity, payments, and trading pairs. No meaningful onchain risk beyond de-peg tail risk.";
+  if (/what\s+is\s+(?:toshi)\b/i.test(t)) return "TOSHI is a Base memecoin named after Satoshi Nakamoto. One of the early Base community tokens. For current risk and market data — say 'scan TOSHI' for a live CORTEX read.";
+  if (/what\s+is\s+(?:degen)\b/i.test(t)) return "DEGEN is a token tied to the Farcaster social graph — originally airdropped to Farcaster users. One of the prominent Base cultural tokens. For current data — say 'scan DEGEN' for a live CORTEX read.";
+  // DeFi concepts
+  if (/what\s+is\s+(?:an?\s+)?amm\b|automated\s+market\s+maker/i.test(t)) return "An AMM (Automated Market Maker) is a DEX mechanism where prices are determined by a mathematical formula (usually x*y=k for Uniswap v2, concentrated liquidity for v3) rather than an order book. Liquidity providers supply both sides of a trading pair and earn fees.";
+  if (/what\s+is\s+impermanent\s+loss/i.test(t)) return "Impermanent loss is the value difference between holding assets in an LP pool vs holding them separately. Happens when the price ratio of the two assets changes. For volatile memecoins, IL can be significant for LPs.";
+  if (/what\s+is\s+(?:a\s+)?rug\s+pull|rug\s+pull\s+(?:explain|mean|work)/i.test(t)) return "A rug pull is when token deployers drain liquidity, dump tokens, or abandon a project — usually crashing the price to near zero. Main rug signals: unlocked LP, concentrated holder distribution, suspicious deployer wallets, hidden mint/admin functions, and high sell tax.";
+  if (/what\s+is\s+(?:a\s+)?honeypot/i.test(t)) return "A honeypot is a token contract that lets you buy but blocks selling through a hidden restriction. CORTEX simulates buy/sell transactions to detect honeypot flags before you enter.";
+  if (/how\s+do\s+(?:pumps?|price\s+pumps?)\s+(?:happen|usually\s+happen|work)|what\s+causes\s+a\s+pump/i.test(t)) return "Pumps usually start with: concentrated buying from a few wallets, thin liquidity amplifying price impact, social momentum driving FOMO, and sometimes coordinated deployer/insider activity. Key check: is volume/liquidity ratio exploding? Is LP thin? Are a few wallets driving most of the volume? CORTEX can surface these signals on any Base token.";
+  if (/how\s+do\s+i\s+(?:spot|identify|detect|avoid)\s+(?:a\s+)?rug|how\s+to\s+avoid\s+rugs?/i.test(t)) return [
+    "Rug-avoidance checklist:",
+    "1. LP control — is liquidity locked or burnable? Or does the deployer hold it?",
+    "2. Holder concentration — do top 10 wallets hold >50% of supply?",
+    "3. Dev wallet — did the deployer fund from a mixer or cluster of wallets?",
+    "4. Security simulation — does the sell simulation succeed? Are taxes abnormal?",
+    "5. Volume vs liquidity — is the volume/depth ratio extreme (>10x)?",
+    "6. Mint/admin functions — does the contract allow minting or pausing?",
+    "",
+    "CORTEX checks all of these on any Base token. Say 'scan [token]' to run the full check.",
+  ].join("\n");
+  if (/how\s+do\s+(?:i\s+know|you\s+know|we\s+know)\s+if\s+(?:a\s+)?pump\s+is\s+(?:real|fake|worth|legit)|is\s+(?:this|the)\s+pump\s+real/i.test(t)) return [
+    "Real pump vs noise checklist:",
+    "1. Volume vs liquidity — high volume with real depth is stronger than % move with thin liquidity",
+    "2. Holder activity — are new wallets buying or is it just one/two insider wallets?",
+    "3. LP control — is the pool stable or can it be pulled?",
+    "4. Momentum follow-through — did volume sustain after the initial spike?",
+    "5. Whale confirmation — are tracked wallets accumulating or just rotating?",
+    "6. Dev/origin wallet — is the deployer cluster clean or linked to prior rugs?",
+    "",
+    "CORTEX can run all of these signals. Send a token and I'll check it.",
+  ].join("\n");
+  if (/what\s+should\s+i\s+check\s+before\s+(?:buying|aping|entering|trading)\s+(?:a\s+)?(?:token|lowcap|coin|memecoin)/i.test(t)) return [
+    "Pre-entry checklist for any token:",
+    "1. Liquidity depth — is there enough to enter and exit without massive slippage?",
+    "2. Volume/liquidity ratio — is volume healthy relative to depth?",
+    "3. LP control — locked, burned, or still held by deployer?",
+    "4. Holder concentration — are top 10 wallets controlling most of supply?",
+    "5. Security simulation — buy and sell simulate cleanly? No hidden tax?",
+    "6. Dev wallet — origin wallet clean? No suspicious clusters or prior rugs?",
+    "7. Market cap vs FDV — is there a large unlocked supply overhang?",
+    "8. Whale behavior — are smart wallets buying or just rotating out?",
+    "",
+    "No trade call. Send a token and CORTEX will run the full check.",
+  ].join("\n");
+  if (/how\s+do\s+whales?\s+(?:affect|move|impact)\s+price|why\s+do\s+whales?\s+matter/i.test(t)) return "Whale wallets can move price significantly on thin-liquidity tokens. Key patterns to watch: accumulation before a pump, distribution into strength, coordinated multi-wallet entry or exit. CORTEX tracks whale flows and flags high-signal moves. Whale activity alone is not a buy signal — direction and LP context matter.";
+  if (/what\s+makes\s+a\s+wallet\s+worth\s+(?:monitoring|tracking|following|copying)/i.test(t)) return "A wallet worth monitoring typically shows: consistent entries before price moves, strong PnL without obvious insider advantage, diverse token holds rather than one-pump positions, and no copy-trade cluster patterns. CORTEX can check holdings, activity, and concentration. No copy-trade advice — monitoring is not the same as copying.";
+  if (/what\s+is\s+a\s+lowcap|what\s+is\s+(?:a\s+)?low\s+cap/i.test(t)) return "A lowcap is a token with small market cap — usually under $5–10M. Characteristics: thin liquidity, concentrated holders, high volatility, easier to pump and dump. Risk is higher, but so is potential upside. CORTEX checks liquidity depth, holder concentration, and security simulation on any lowcap.";
+  if (/what\s+is\s+(?:a\s+)?dev\s+wallet\b/i.test(t)) return "A dev wallet is the deployer-linked wallet that launched a token. It can reveal insider coordination (multiple wallets, cross-funding, prior rug history) or clean origin. CORTEX checks dev wallet clusters and origin patterns. An unverified dev wallet is an incomplete read — not automatically a red flag, but not a green flag either.";
+  if (/what\s+is\s+holder\s+concentration|what\s+does\s+holder\s+concentration\s+mean/i.test(t)) return "Holder concentration is the percentage of supply controlled by a small number of wallets. High concentration (top 10 wallets >50%) increases dump risk and manipulation potential. CORTEX checks both top-holder % and top-10 distribution.";
+  if (/how\s+do\s+(?:i\s+)?use\s+(?:chainlens|clark|cortex|whale\s+alerts|pump\s+alerts|base\s+radar|token\s+scanner|wallet\s+scanner)/i.test(t)) return [
+    "ChainLens has these tools:",
+    "- Base Radar: live Base movers by volume, liquidity, and momentum",
+    "- Token Scanner: full onchain risk read — security, holders, LP, dev wallet",
+    "- Wallet Scanner: wallet holdings, activity, and behavior read",
+    "- Liquidity Safety: LP depth, control, and pool structure",
+    "- Dev Wallet Detector: deployer cluster and origin wallet check",
+    "- Whale Alerts: high-signal whale moves on Base",
+    "- Pump Alerts: high-momentum tokens filtered by volume and liquidity quality",
+    "",
+    "Clark AI connects all of these through CORTEX. Just ask directly.",
+  ].join("\n");
+  // General pump/volume/liquidity concepts supplement
+  if (/what\s+is\s+fdv\b|what\s+does\s+fdv\s+(?:mean|stand\s+for)|fully\s+diluted/i.test(t)) return "FDV (Fully Diluted Valuation) is market cap calculated using the maximum possible token supply, not just circulating. High FDV vs actual market cap means a lot of future tokens can dilute value. CORTEX shows both when available — treat high FDV as an overhang risk signal.";
+  if (/what\s+is\s+market\s+cap|what\s+does\s+market\s+cap\s+mean/i.test(t)) return "Market cap is the total value of all circulating tokens at current price. For lowcaps, market cap can be hard to verify because circulating supply is often unverified. CORTEX labels market cap as confirmed, estimated, or FDV fallback when supply data is incomplete.";
   return "Great question. Share the exact risk concept and I'll break it down quickly.";
 }
 
@@ -2746,23 +2829,57 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
       model: "claude-sonnet-4-6",
       max_tokens: 1024,
       system:
-        "You are Clark, ChainLens AI's on-chain analyst for Base and EVM markets.\n\n" +
-        "VOICE:\n" +
-        "- Sharp, direct, crypto-native, professional.\n" +
-        "- Slightly punchy, never hypey, never childish.\n" +
-        "- Start with the verdict quickly.\n" +
-        "- Strongest reason first.\n" +
-        "- Short paragraphs and tight bullets.\n\n" +
-        "HARD RULES:\n" +
+        "You are Clark AI, the onchain intelligence analyst inside ChainLens — a Base-native crypto terminal powered by the CORTEX Engine.\n\n" +
+        "PERSONA:\n" +
+        "- Crypto-native. Sharp. Concise. Confident but honest.\n" +
+        "- Speak like a serious onchain analyst, not a generic chatbot.\n" +
+        "- No fake hype, no fake certainty, no 'as an AI language model.'\n" +
+        "- Say things like: 'Good signal, weak confirmation.' / 'Worth monitoring, not enough for conviction.' / 'Volume can show attention. It does not prove safety.'\n\n" +
+        "KNOWLEDGE:\n" +
+        "You know crypto deeply: DeFi, memecoins, AI agents, Base ecosystem, liquidity mechanics, holder dynamics, whale behavior, token launches, rug patterns, LP locks, deployer risk, market cap vs FDV, trading psychology.\n\n" +
+        "You know Base ecosystem tokens: ETH/WETH, USDC, BRETT (Base memecoin), AERO/Aerodrome (leading Base DEX), VIRTUAL/Virtuals Protocol (AI agent infrastructure), TOSHI, DEGEN, HIGHER, NORMIE, cbETH, and many others.\n\n" +
+        "You know DeFi concepts: Uniswap v3/v4, AMMs, LP mechanics, impermanent loss, liquidity depth, pool fragmentation, slippage, price impact.\n\n" +
+        "WHAT YOU CAN ANSWER FROM KNOWLEDGE (no live call needed):\n" +
+        "- General crypto concepts (FDV, market cap, liquidity, holder concentration, LP lock, slippage, honeypot, tax, dev wallet, whale alerts, pump alerts)\n" +
+        "- Base ecosystem background (what is Base, who built it, why it matters)\n" +
+        "- Known token background at HIGH LEVEL ONLY — never fake current prices, liquidity, or holders\n" +
+        "- DeFi mechanics and risk frameworks\n" +
+        "- Trading psychology and pattern recognition\n" +
+        "- How ChainLens and CORTEX work at a feature level\n" +
+        "- Checklists for evaluating tokens, wallets, and market signals\n\n" +
+        "WHAT NEEDS LIVE CORTEX DATA (never answer from memory):\n" +
+        "- Current price, liquidity, volume, market cap, FDV, holders for any specific token\n" +
+        "- Whether LP is locked for a specific token\n" +
+        "- Whether a deployer is clean for a specific token\n" +
+        "- Whether whales are buying/selling a specific token\n" +
+        "- Whether a wallet is profitable or trustworthy\n" +
+        "- Current Base market movers\n\n" +
+        "WHEN USER ASKS ABOUT A KNOWN TOKEN GENERALLY:\n" +
+        "Give high-level background (what it is, its narrative, why it matters). Then say:\n" +
+        "'For current liquidity, holders, and risk — say scan [SYMBOL] and I will run a live CORTEX check.'\n\n" +
+        "SAFETY RULES — NEVER VIOLATE:\n" +
+        "- Never say 'buy' or 'sell'\n" +
+        "- Never say 'this is safe' about any token\n" +
+        "- Never claim LP is locked without live verification\n" +
+        "- Never claim deployer is clean without live verification\n" +
+        "- Never claim whales are buying without live verification\n" +
+        "- Never give copy-trade advice\n" +
+        "- Never fake PnL, win rate, or smart-money labels\n" +
+        "- Never expose provider/API names (no Alchemy, GoldRush, Covalent, Zerion, GeckoTerminal, CoinGecko, GoPlus, Honeypot.is)\n" +
+        "- Never show raw errors\n\n" +
+        "USE THIS WORDING:\n" +
+        "- 'CORTEX' (not 'API' or provider names)\n" +
+        "- 'live Base data' (not 'real-time price feed from X')\n" +
+        "- 'not confirmed' / 'incomplete read' / 'needs live verification'\n\n" +
+        "HARD RULES FOR LIVE DATA:\n" +
         "- Use only provided fields from context blocks.\n" +
         "- Never invent numbers or certainty.\n" +
         "- Do not mention sources that are not present.\n" +
-        "- Do not mention internal provider names.\n" +
         "- Mention Honeypot.is only when Honeypot fields are present.\n" +
         "- Do not claim LP is unlocked unless LP lock data is explicitly present and false.\n" +
         "- Do not claim holder concentration unless holder data is explicitly present.\n" +
         "- If key data is missing, say: 'Not enough verified data to make a strong call.'\n\n" +
-        "DEFAULT OUTPUT FORMAT (unless user requests a different format):\n" +
+        "DEFAULT OUTPUT FORMAT FOR TOKEN/WALLET SCANS:\n" +
         "Verdict: WATCH / AVOID / SCAN DEEPER / TRUSTWORTHY / UNKNOWN\n" +
         "Confidence: Low / Medium / High\n\n" +
         "Read:\n" +
@@ -2773,11 +2890,15 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "- up to 3 bullets\n\n" +
         "Next action:\n" +
         "One clear sentence.\n\n" +
-        "LENGTH:\n" +
-        "- Normal: 80-140 words.\n" +
-        "- Deep report: up to 220 words.\n" +
-        "- If user asks for full detail, allow longer.\n\n" +
+        "RESPONSE STYLE:\n" +
+        "- Short and direct for most questions\n" +
+        "- Use section headers for structured reads (TOKEN SCAN READ, WATCH VERDICT, etc.)\n" +
+        "- Never write essays unless the user explicitly asks for depth\n" +
+        "- Trader-readable, not academic\n" +
+        "- Normal: 80-140 words. Deep report: up to 220 words. If user asks for full detail, allow longer.\n\n" +
         "STYLE PHRASES YOU MAY USE SPARINGLY:\n" +
+        "- 'Good signal, weak confirmation.'\n" +
+        "- 'Worth monitoring, not enough for conviction.'\n" +
         "- 'This is the main risk.'\n" +
         "- 'That's the signal.'\n" +
         "- 'Not enough data to call it clean.'\n" +
@@ -6731,7 +6852,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       mode: "casual_help",
       intent: plan.intent,
       toolsUsed,
-      analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
+      analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. I can also explain any crypto concept. Try 'scan BRETT', 'what\\'s pumping on Base?', or ask 'what is FDV?'.",
     };
   }
   const memoryPrompt = historyContext
