@@ -178,6 +178,15 @@ function isMajorOrStableLike(symbol: string, name?: string | null): boolean {
   return false;
 }
 
+function cleanClarkText(text: string): string {
+  return text
+    .replace(/Security sim:\s*Security sim:/gi, "Security sim:")
+    .replace(/unverified\.\./gi, "unverified.")
+    .replace(/\.\.+/g, ".")
+    .replace(/LP lock\/control unverified\.\n- LP lock\/control is unverified\./gi, "LP lock/control unverified.")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
 type ClarkRateResult = { allowed: true; commitDaily: () => void } | { allowed: false; window: 'minute' | 'daily' }
 function checkClarkRate(actor: string, planKey: string): ClarkRateResult {
   const now = Date.now()
@@ -4384,6 +4393,16 @@ function renderLiquidityFocusedRead(
   ].join("\n");
 }
 
+function parseAbbrevUsdToNumber(raw: string | null): number | null {
+  if (!raw) return null;
+  const m = raw.replace(/,/g, "").match(/\$?\s*([0-9]*\.?[0-9]+)\s*([KMB])?/i);
+  if (!m) return null;
+  const base = Number(m[1]);
+  if (!Number.isFinite(base)) return null;
+  const mult = !m[2] ? 1 : m[2].toUpperCase() === "K" ? 1_000 : m[2].toUpperCase() === "M" ? 1_000_000 : 1_000_000_000;
+  return base * mult;
+}
+
 // ---------- Follow-up and casual chat routing ----------
 
 type TokenFollowupType = "lp" | "deployer" | "holders" | "combined";
@@ -5597,13 +5616,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (THIS_DEV_RE.test(prompt) && !extractAddress(prompt)) {
-    const target = sessionMem.lastToken?.address;
+    const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: [], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
-    const devRes = await callInternalApi(origin, "/api/dev-wallet", { tokenAddress: target }, authHeader ?? undefined);
+    const devRes = await callInternalApi(origin, "/api/dev-wallet", { contractAddress: target }, authHeader ?? undefined);
     if (!devRes.ok || !devRes.json) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     }
-    const token = sessionMem.lastToken;
+    const token = sessionMem.lastToken ?? body.clientContext?.lastToken ?? null;
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"],
       analysis: [
@@ -5632,7 +5651,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (THIS_LIQ_RE.test(prompt) && !extractAddress(prompt)) {
-    const target = sessionMem.lastToken?.address;
+    const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: missingAddressReply("liquidity_safety") };
     const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { tokenAddress: target }, authHeader ?? undefined);
     if (liqRes.ok && liqRes.json) {
@@ -5649,7 +5668,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
       return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: ["liquidity_analyze"], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, liq) };
     }
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, { ok: false, token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target }, riskTier: "high", stabilityScore: null, primaryPool: null, liquidityUsd: null, volume24h: null, warnings: ["LP lock/control is unverified."], errorSafeMessage: "Pool-age history unavailable in this pass." }) };
+    const summary = sessionMem.lastToken?.scanSummary ?? body.clientContext?.lastToken?.scanSummary ?? "";
+    const liqRaw = summary.match(/Liquidity:\s*([^\n]+)/i)?.[1] ?? null;
+    const volRaw = summary.match(/Volume:\s*([^\n]+)/i)?.[1] ?? null;
+    const liqNum = parseAbbrevUsdToNumber(liqRaw);
+    const volNum = parseAbbrevUsdToNumber(volRaw);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, { ok: false, token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target }, riskTier: "high", stabilityScore: null, primaryPool: null, liquidityUsd: liqNum, volume24h: volNum, warnings: ["LP lock/control unverified."], errorSafeMessage: "Pool-age history unavailable in this pass." }) };
   }
 
   // "this" contextual resolution — liquidity check this / dev wallet this / scan this / who deployed this
@@ -6776,6 +6800,10 @@ export async function POST(req: NextRequest) {
     }
 
     const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(result, body) } as Record<string, unknown>
+    const normData = normalized.data as Record<string, unknown>
+    for (const k of ["reply", "response", "analysis", "verdict"] as const) {
+      if (typeof normData[k] === "string") normData[k] = cleanClarkText(normData[k] as string)
+    }
     if (debugMemory) normalized.debugMemory = {
       memoryKeySource,
       hasLastMomentumList: sessionMem.lastMomentumList.length > 0,
