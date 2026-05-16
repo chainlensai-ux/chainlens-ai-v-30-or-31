@@ -6,6 +6,7 @@ import './globals.css'
 import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
 import { Providers } from './providers'
 import MobileClarkDrawer from '@/components/MobileClarkDrawer'
+import AffiliateRefCapture from '@/components/AffiliateRefCapture'
 import { wagmiConfig } from '@/lib/wallet'
 
 const SITE_URL = 'https://www.chainlensai.app'
@@ -64,6 +65,7 @@ export default async function RootLayout({
         </Script>
         <Providers initialState={initialState}>
           <SupabaseProvider>
+            <AffiliateRefCapture />
             {children}
           </SupabaseProvider>
         </Providers>

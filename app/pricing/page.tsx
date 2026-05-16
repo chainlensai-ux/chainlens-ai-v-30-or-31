@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
+import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
 
 type PlanId = 'free' | 'pro' | 'elite'
@@ -135,13 +136,15 @@ export default function PricingPage() {
         setCheckoutError('Sign in to start checkout.')
         return
       }
+      const referralRaw = typeof window !== 'undefined' ? window.localStorage.getItem(AFFILIATE_REF_KEY) : null
+      const referralCode = referralRaw && isValidReferralCode(referralRaw) ? normalizeReferralCode(referralRaw) : null
       const res = await fetch('/api/checkout/crypto', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ plan: planId }),
+        body: JSON.stringify({ plan: planId, referralCode }),
       })
       const json = await res.json() as Record<string, unknown>
       if (!res.ok || !json.checkoutUrl) {
