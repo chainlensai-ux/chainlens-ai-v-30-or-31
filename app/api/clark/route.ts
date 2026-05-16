@@ -52,6 +52,8 @@ type ClarkSessionMemory = {
   lastMomentumTs: number;
   lastIntent: string | null;
   lastIntentTs: number;
+  lastActionableIntent: string | null;
+  lastActionableIntentTs: number;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -62,7 +64,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0 };
+    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0 };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -73,6 +75,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
     existing.lastMomentumTs = 0;
   }
   if (existing.lastIntent && now - existing.lastIntentTs > INTENT_MEMORY_TTL_MS) existing.lastIntent = null;
+  if (existing.lastActionableIntent && now - existing.lastActionableIntentTs > INTENT_MEMORY_TTL_MS) existing.lastActionableIntent = null;
   return existing;
 }
 
@@ -98,8 +101,24 @@ function updateMemMomentum(mem: ClarkSessionMemory, items: ClarkSessionMemory['l
 }
 
 function updateMemIntent(mem: ClarkSessionMemory, intent: string) {
+  const now = Date.now();
+  // Keep lastIntent for conversational context, but do not let educational/fallback turns
+  // overwrite actionable routing memory.
   mem.lastIntent = intent;
-  mem.lastIntentTs = Date.now();
+  mem.lastIntentTs = now;
+  const actionableIntents = new Set([
+    "base_momentum", "market",
+    "token_scan", "token_analysis",
+    "wallet", "wallet_balance", "wallet_analysis",
+    "liquidity", "liquidity_safety",
+    "dev_wallet",
+    "pump_alerts",
+    "whale_alerts", "whale_alert",
+  ]);
+  if (actionableIntents.has(intent)) {
+    mem.lastActionableIntent = intent;
+    mem.lastActionableIntentTs = now;
+  }
 }
 // Lightweight prompt cost classifier — determines whether a prompt needs expensive tool calls
 const LOW_COST_RE = /^(hi|hey|yo|gm|sup|hello|ok|okay|sure|thanks|thank you|got it|cool|nice|great)\b|^(more|continue|expand|go on|keep going|next|show more|give me more|other tokens)\s*$|^(what does that mean|explain that|can you explain|what is that|what does .{1,40} mean|explain .{1,40})\??$|^(what\s+(?:does|is|are)\s+(?:volume|liquidity|lp|fdv|market\s+cap|holder|concentration|turnover|slippage|honeypot|dev\s+wallet|deployer|whale).{0,60})\??$|what\s+(?:is|are)\s+(?:red\s+flags?|risk\s+flags?|the\s+risks?)|how\s+do\s+(?:i|you)\s+(?:find|track|use|read)/i;
@@ -5307,7 +5326,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0 };
+  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0 };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -5470,7 +5489,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: [
           "MORE CONTEXT",
           "",
-          "The current movers list is already showing the strongest candidates from the latest CORTEX read.",
+          "The latest CORTEX momentum list is already showing the strongest candidates.",
           "",
           "What matters now:",
           "1. Pick a rank and scan it.",
@@ -5832,11 +5851,23 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ].join("\n"),
     };
   }
+  // Rank follow-up reads lastMomentumList directly so education/fallback turns do not break numeric scans.
+  const rankPrompt = prompt.trim().toLowerCase();
+  const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
+  const ordinalRankMatch = rankPrompt.match(/\b(?:scan|check|full\s+report\s+on|why\s+is)\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s+one)?\b/i);
+  const numericRankMatch = rankPrompt.match(/\b(?:scan(?:\s+number)?|check|full\s+report\s+on|why\s+is(?:\s+token)?(?:\s+number)?)\s+([1-9]\d{0,2})\b/i);
+  const directRankMatch = rankPrompt.match(/^([1-9]\d{0,2})$/);
+  const askedRank = ordinalRankMatch
+    ? ordinalMap[ordinalRankMatch[1].toLowerCase()]
+    : (numericRankMatch ? Number(numericRankMatch[1]) : (directRankMatch ? Number(directRankMatch[1]) : null));
+  if (askedRank && sessionMem.lastMomentumList.length === 0) {
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "Ask 'what's pumping on Base?' first, or send a token symbol/contract." };
+  }
+
   // Rank follow-up: "scan 1", "2", "full report on 3" → resolve from session memory momentum list
   // Only trigger when prompt is primarily a rank reference and the client has no structured list to use
   if (sessionMem.lastMomentumList.length > 0 && !marketFollowupResolution.item && !marketFollowupResolution.ambiguous.length) {
-    const _memRankMatch = prompt.trim().match(/^(?:scan|check|full\s+report\s+on?|why\s+is(?:\s+token)?\s+)?([1-9]\d{0,2})(?:\s+(?:of\s+(?:them|those|the\s+list)))?$/i);
-    const _memRank = _memRankMatch ? Number(_memRankMatch[1]) : null;
+    const _memRank = askedRank;
     if (_memRank) {
       const memItem = sessionMem.lastMomentumList.find(m => m.rank === _memRank);
       if (memItem) {
@@ -5898,7 +5929,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `I couldn't pull live data for ${memItem.symbol ?? `token #${_memRank}`} right now. Try pasting the contract directly.` };
       }
       if (_memRank > sessionMem.lastMomentumList.length) {
-        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `Token #${_memRank} is outside the available movers list. Pick 1–${sessionMem.lastMomentumList.length}.` };
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `I have ${sessionMem.lastMomentumList.length} movers in memory. Pick 1–${sessionMem.lastMomentumList.length}.` };
       }
     }
   }
