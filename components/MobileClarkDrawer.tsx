@@ -10,13 +10,23 @@ const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a m
 
 function getOrCreateSessionId(): string {
   if (typeof window === 'undefined') return 'ssr'
-  const key = 'clark_session_id'
+  const key = 'chainlens:clark-session-id'
   let id = sessionStorage.getItem(key)
   if (!id) {
     id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     sessionStorage.setItem(key, id)
   }
   return id
+}
+function getClientClarkContext() {
+  if (typeof window === 'undefined') return {}
+  try {
+    return {
+      lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
+      lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
+      lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
+    }
+  } catch { return {} }
 }
 
 export default function MobileClarkDrawer() {
@@ -63,10 +73,17 @@ export default function MobileClarkDrawer() {
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
-        body: JSON.stringify({ feature: 'clark-ai', prompt: text }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt: text, clientContext: getClientClarkContext() }),
       })
       const json = await res.json().catch(() => ({}))
-      const reply = typeof json?.reply === 'string' && json.reply.trim() ? json.reply : FALLBACK_ERROR_MESSAGE
+      const payload = (json?.data && typeof json.data === 'object') ? json.data : json
+      const marketItems = payload?.marketContext && typeof payload.marketContext === 'object' && Array.isArray((payload.marketContext as { items?: unknown[] }).items)
+        ? (payload.marketContext as { items?: unknown[] }).items
+        : null
+      if (marketItems && marketItems.length > 0) sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(marketItems))
+      const reply = typeof payload?.reply === 'string' && payload.reply.trim()
+        ? payload.reply
+        : (typeof payload?.analysis === 'string' && payload.analysis.trim() ? payload.analysis : FALLBACK_ERROR_MESSAGE)
       setMessages((prev) => [...prev.slice(0, -1), { role: 'clark', text: reply }])
       setLastAction('send-success')
     } catch {
