@@ -6420,7 +6420,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       feature: "clark-ai",
       chain,
       mode: "analysis",
-      analysis: "Paste a Base contract, wallet, or scan result and I'll analyze it.",
+      analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
       intent: plan.intent,
       toolsUsed,
     };
@@ -6453,16 +6453,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       mode: "casual_help",
       intent: plan.intent,
       toolsUsed,
-      analysis: [
-        "I can help with on-chain intelligence on Base. Try one of these:",
-        "- \"scan BRETT\" — token risk, security, holders, and LP check",
-        "- \"show Base whales\" — current whale activity feed",
-        "- \"what's pumping on Base?\" — live Base market movers",
-        "- \"scan wallet 0x...\" — wallet holdings and behavior read",
-        "- \"liquidity check AERO\" — LP depth and control status",
-        "- \"show pump alerts\" — high-momentum pump alert feed",
-        "- \"who deployed BRETT\" — dev wallet and deployer check",
-      ].join("\n"),
+      analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. Try 'scan BRETT' or 'what\\'s pumping on Base?'.",
     };
   }
   const memoryPrompt = historyContext
