@@ -21,6 +21,84 @@ const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5
 let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite' } = {}
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
 function clarkActor(req: NextRequest, authenticated: boolean): string { return authenticated ? (req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}`) : `ip:${clarkIp(req)}` }
+
+// Session memory — lightweight short-term context per session/user
+type ClarkSessionMemory = {
+  lastToken: {
+    address: string;
+    symbol: string | null;
+    name: string | null;
+    scanSummary: string | null;
+    ts: number;
+  } | null;
+  lastWallet: {
+    address: string;
+    ensName: string | null;
+    walletSummary: string | null;
+    ts: number;
+  } | null;
+  lastMomentumList: Array<{
+    rank: number;
+    symbol: string;
+    name: string | null;
+    address: string | null;
+    liquidity: number | null;
+    volume24h: number | null;
+    change24h: number | null;
+    tag: string | null;
+  }>;
+  lastMomentumTs: number;
+  lastIntent: string | null;
+  lastIntentTs: number;
+};
+const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
+const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
+const MOMENTUM_MEMORY_TTL_MS = 20 * 60 * 1000; // 20 min
+const INTENT_MEMORY_TTL_MS = 15 * 60 * 1000; // 15 min
+
+function getSessionMemory(key: string): ClarkSessionMemory {
+  const now = Date.now();
+  const existing = SESSION_MEMORY.get(key);
+  if (!existing) {
+    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0 };
+    SESSION_MEMORY.set(key, fresh);
+    return fresh;
+  }
+  if (existing.lastToken && now - existing.lastToken.ts > SESSION_MEMORY_TTL_MS) existing.lastToken = null;
+  if (existing.lastWallet && now - existing.lastWallet.ts > SESSION_MEMORY_TTL_MS) existing.lastWallet = null;
+  if (existing.lastMomentumList.length && now - existing.lastMomentumTs > MOMENTUM_MEMORY_TTL_MS) {
+    existing.lastMomentumList = [];
+    existing.lastMomentumTs = 0;
+  }
+  if (existing.lastIntent && now - existing.lastIntentTs > INTENT_MEMORY_TTL_MS) existing.lastIntent = null;
+  return existing;
+}
+
+function makeSessionKey(req: NextRequest, authenticated: boolean): string {
+  const userId = req.headers.get('x-user-id')?.trim();
+  const sessionId = req.headers.get('x-clark-session')?.trim();
+  if (authenticated && userId) return `u:${userId}`;
+  if (sessionId) return `s:${sessionId}`;
+  return `ip:${clarkIp(req)}`;
+}
+
+function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string | null, name: string | null, scanSummary: string | null) {
+  mem.lastToken = { address, symbol, name, scanSummary, ts: Date.now() };
+}
+
+function updateMemWallet(mem: ClarkSessionMemory, address: string, ensName: string | null, walletSummary: string | null) {
+  mem.lastWallet = { address, ensName, walletSummary, ts: Date.now() };
+}
+
+function updateMemMomentum(mem: ClarkSessionMemory, items: ClarkSessionMemory['lastMomentumList']) {
+  mem.lastMomentumList = items;
+  mem.lastMomentumTs = Date.now();
+}
+
+function updateMemIntent(mem: ClarkSessionMemory, intent: string) {
+  mem.lastIntent = intent;
+  mem.lastIntentTs = Date.now();
+}
 type ClarkRateResult = { allowed: true; commitDaily: () => void } | { allowed: false; window: 'minute' | 'daily' }
 function checkClarkRate(actor: string, planKey: string): ClarkRateResult {
   const now = Date.now()
@@ -5083,7 +5161,9 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
   }
 }
 
-async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite') {
+async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
+  // Ensure we always have a session memory object even for recursive calls
+  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0 };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -5203,8 +5283,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const histLinesForThis = getHistoryMessages(body.history);
     const lastTokenCtx = extractLastTokenContext(histLinesForThis);
     const lastScanCtx = extractLastTokenScanFromHistory(body.history);
-    const thisAddress = lastTokenCtx.address ?? lastScanCtx?.contractAddress ?? null;
-    const thisSymbol = lastTokenCtx.symbol ?? null;
+    const memToken = sessionMem.lastToken;
+    const thisAddress = (memToken && (Date.now() - memToken.ts) < SESSION_MEMORY_TTL_MS ? memToken.address : null) ?? lastTokenCtx.address ?? lastScanCtx?.contractAddress ?? null;
+    const thisSymbol = (memToken && (Date.now() - memToken.ts) < SESSION_MEMORY_TTL_MS ? memToken.symbol : null) ?? lastTokenCtx.symbol ?? null;
     if (!thisAddress && !thisSymbol) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "unknown", toolsUsed: [], analysis: "Which token should I check? Send a symbol or contract." };
     }
@@ -5218,7 +5299,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         ? `who deployed ${thisTarget}`
         : `scan ${thisTarget}`;
     // Mutate prompt for plan execution below
-    return await handleClarkAI({ ...body, prompt: rerouted }, origin, authHeader, verifiedPlan);
+    return await handleClarkAI({ ...body, prompt: rerouted }, origin, authHeader, verifiedPlan, sessionMem);
   }
 
   if (isFeedSafestFollowup(prompt)) {
@@ -5332,10 +5413,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const WATCH_VERDICT_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+token|that\s+token)?|is\s+it\s+worth\s+watching|worth\s+watching|final\s+verdict|what'?s\s+the\s+play|should\s+i\s+monitor\s+(?:it|this)|watch\s+verdict)\b/i;
   if (WATCH_VERDICT_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
     const lastScan = extractLastTokenScanFromHistory(body.history);
+    const memTokenVerdict = sessionMem.lastToken;
     if (lastScan) {
+      updateMemIntent(sessionMem, "token_analysis");
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
         analysis: buildWatchVerdictFromScan(lastScan.scanText, lastScan.contractAddress),
+      };
+    }
+    if (memTokenVerdict?.scanSummary && (Date.now() - memTokenVerdict.ts) < SESSION_MEMORY_TTL_MS) {
+      updateMemIntent(sessionMem, "token_analysis");
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+        analysis: buildWatchVerdictFromScan(memTokenVerdict.scanSummary, memTokenVerdict.address),
       };
     }
     return {
@@ -6036,6 +6126,8 @@ export async function POST(req: NextRequest) {
   const betaEliteActive = betaAllElite && authenticated
   const effectivePlan: 'free' | 'pro' | 'elite' = betaEliteActive ? 'elite' : rawPlan
   const actor = clarkActor(req, authenticated)
+  const sessionKey = makeSessionKey(req, authenticated)
+  const sessionMem = getSessionMemory(sessionKey)
   const planKey = authenticated ? effectivePlan : 'unauth'
   const rateResult = checkClarkRate(actor, planKey)
   if (!rateResult.allowed) {
@@ -6092,7 +6184,7 @@ export async function POST(req: NextRequest) {
         result = await handleBaseRadar(body, origin);
         break;
       case "clark-ai":
-        result = await handleClarkAI(body, origin, authHeader, effectivePlan);
+        result = await handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem);
         break;
       default:
         return NextResponse.json(
