@@ -71,6 +71,9 @@ export default function MobileClarkDrawer() {
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: 'Clark is thinking...' }])
 
     try {
+      const history = messages
+        .slice(-10)
+        .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },

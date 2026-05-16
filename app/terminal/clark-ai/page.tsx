@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { supabase } from '@/lib/supabaseClient'
 
 type Message = { role: 'user' | 'clark'; text: string }
 
@@ -209,14 +210,20 @@ function ClarkAiContent() {
           lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
         })
       }
+      const { data: { session: authSession } } = await supabase.auth.getSession()
+      const accessToken = authSession?.access_token ?? null
       const res = await fetch('/api/clark', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-clark-session': getOrCreateSessionId(),
+          ...(accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({
           feature: 'clark-ai',
           message: text,
           prompt: text,
-          mode: 'unified',
+          mode: 'analyst',
           uiModeHint: activeMode,
           context: null,
           history,
@@ -257,7 +264,7 @@ function ClarkAiContent() {
       clarkContextRef.current.previousIntent = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
       clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
-      const reply = json.ok ? (payload?.reply ?? payload?.analysis ?? payload?.response ?? 'No response.') : (json.error ?? 'Something went wrong.')
+      const reply = json.ok ? (payload?.reply ?? payload?.analysis ?? payload?.response ?? json.reply ?? json.analysis ?? 'No response from Clark.') : (json.error ?? 'Something went wrong.')
       setMessages((prev) => {
         const next = [...prev]
         next[next.length - 1] = { role: 'clark', text: String(reply) }

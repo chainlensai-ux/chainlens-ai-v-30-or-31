@@ -1845,7 +1845,7 @@ async function handleBasePumpMap(prompt: string, origin: string) {
   }
 
   if (!merged.length) {
-    return "BASE MOMENTUM READ\n\nLive Base pool data is incomplete right now. I can still show the available momentum signals, but verify liquidity before acting.\n\nTry again in a moment, or paste a contract address for a direct token scan.";
+    return { analysis: "BASE MOMENTUM READ\n\nLive Base pool data is incomplete right now. I can still show the available momentum signals, but verify liquidity before acting.\n\nTry again in a moment, or paste a contract address for a direct token scan.", items: [] };
   }
 
   // Rank: 24h change desc, then volume, then liquidity — filter zero-liquidity noise
@@ -1927,7 +1927,30 @@ async function handleBasePumpMap(prompt: string, origin: string) {
     "Pick a number and say \"scan 1\" to run a deeper token scan.",
   ].filter((l): l is string => l !== null && l !== undefined);
 
-  return lines.join("\n");
+  const items = top.map((t, i) => ({
+    rank: i + 1,
+    symbol: String(t.symbol ?? '?').toUpperCase(),
+    name: String(t.name ?? '').trim() || null,
+    address: typeof t.address === 'string' ? t.address : null,
+    liquidity: Number(t.liquidity ?? 0) || null,
+    volume24h: Number(t.volume ?? 0) || null,
+    change24h: Number(t.change24h ?? 0),
+    tag: (() => {
+      const liqNum = Number(t.liquidity ?? 0) || null;
+      const volNum = Number(t.volume ?? 0) || null;
+      const fdvNum = t.fdv != null ? Number(t.fdv) : null;
+      const sym = String(t.symbol ?? '?').toUpperCase();
+      const cls = classifyMarketTokenLabel(liqNum, volNum, fdvNum, sym);
+      return cls === "liquid mover" ? "tradable depth"
+        : cls === "volume-led" ? "volume-led"
+        : cls === "thin pump" ? "thin liquidity"
+        : cls === "microcap noise" ? "microcap noise"
+        : cls === "base asset" ? "base asset"
+        : "watchlist only";
+    })(),
+  }));
+
+  return { analysis: lines.join("\n"), items };
 }
 
 async function handleBaseRadarSnapshot(origin: string, prompt = "") {
@@ -1955,7 +1978,7 @@ async function handleBaseRadarSnapshot(origin: string, prompt = "") {
   });
 
   if (!baseFeed.length) {
-    return `${pickBaseRadarTitle(prompt)}\nNo fresh Base Radar data loaded right now. Refresh Base Radar or try again in a moment.`;
+    return { analysis: `${pickBaseRadarTitle(prompt)}\nNo fresh Base Radar data loaded right now. Refresh Base Radar or try again in a moment.`, items: [] };
   }
 
   const sorted = [...baseFeed].sort((a, b) => Number(b.change24h ?? 0) - Number(a.change24h ?? 0));
@@ -1987,36 +2010,67 @@ async function handleBaseRadarSnapshot(origin: string, prompt = "") {
     const liq = t.liquidity != null ? Number(t.liquidity) : null;
     return liq != null && liq < 120_000;
   }) ? "Watchouts: several leaders are still thin, so treat this as a watchlist until token scans confirm structure." : "Watchouts: leaders show better depth, but still verify holders and LP before trusting momentum.";
+  const items = top.map((t, i) => ({
+    rank: i + 1,
+    symbol: String(t.symbol ?? '?').toUpperCase(),
+    name: String(t.name ?? '').trim() || null,
+    address: typeof t.address === 'string' ? t.address : null,
+    liquidity: t.liquidity != null ? Number(t.liquidity) : null,
+    volume24h: t.volume != null ? Number(t.volume) : null,
+    change24h: t.change24h != null ? Number(t.change24h) : null,
+    tag: (() => {
+      const liqNum = t.liquidity != null ? Number(t.liquidity) : null;
+      const volNum = t.volume != null ? Number(t.volume) : null;
+      const sym = String(t.symbol ?? '?').toUpperCase();
+      const cls = classifyMarketTokenLabel(liqNum, volNum, null, sym);
+      return cls === "liquid mover" ? "tradable depth"
+        : cls === "volume-led" ? "volume-led"
+        : cls === "thin pump" ? "thin liquidity"
+        : cls === "microcap noise" ? "microcap noise"
+        : cls === "base asset" ? "base asset"
+        : "watchlist only";
+    })(),
+  }));
+
   if (title === "HOT ON BASE") {
-    return [
-      "HOT ON BASE",
-      `Main read: ${marketRead}`,
-      "Worth checking:",
-      ...rows.slice(0, 3),
-      `Noise / caution: ${watchout.replace("Watchouts: ", "")}`,
-      "Next: Best next step: scan the cleanest non-stable mover.",
-    ].join("\n");
+    return {
+      analysis: [
+        "HOT ON BASE",
+        `Main read: ${marketRead}`,
+        "Worth checking:",
+        ...rows.slice(0, 3),
+        `Noise / caution: ${watchout.replace("Watchouts: ", "")}`,
+        "Next: Best next step: scan the cleanest non-stable mover.",
+      ].join("\n"),
+      items,
+    };
   }
   if (title === "BASE MARKET PULSE") {
     const thinCount = top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) < 100_000).length;
-    return [
-      "BASE MARKET PULSE",
-      `Broad read: ${marketRead}`,
-      `Leading theme: ${thinCount >= 3 ? "thin pumps are leading" : "liquidity-backed movers are leading"}.`,
-      "What’s leading:",
-      ...rows.slice(0, 4),
-      `Watchouts: ${watchout.replace("Watchouts: ", "")}`,
-      "Next: Treat this as watchlist flow, not a trade call. Scan one clean mover deeply.",
-    ].join("\n");
+    return {
+      analysis: [
+        "BASE MARKET PULSE",
+        `Broad read: ${marketRead}`,
+        `Leading theme: ${thinCount >= 3 ? "thin pumps are leading" : "liquidity-backed movers are leading"}.`,
+        "What’s leading:",
+        ...rows.slice(0, 4),
+        `Watchouts: ${watchout.replace("Watchouts: ", "")}`,
+        "Next: Treat this as watchlist flow, not a trade call. Scan one clean mover deeply.",
+      ].join("\n"),
+      items,
+    };
   }
-  return [
-    "BASE RADAR SUMMARY",
-    "Top 5 movers:",
-    ...rows,
-    `Liquidity quality: ${top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) >= 100_000).length} liquid vs ${top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) < 100_000).length} thin.`,
-    `Rotation read: ${marketRead}`,
-    "Next: Run Token Scanner + Dev Wallet before trusting the move.",
-  ].join("\n");
+  return {
+    analysis: [
+      "BASE RADAR SUMMARY",
+      "Top 5 movers:",
+      ...rows,
+      `Liquidity quality: ${top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) >= 100_000).length} liquid vs ${top.filter(t => (t.liquidity != null ? Number(t.liquidity) : 0) < 100_000).length} thin.`,
+      `Rotation read: ${marketRead}`,
+      "Next: Run Token Scanner + Dev Wallet before trusting the move.",
+    ].join("\n"),
+    items,
+  };
 }
 
 function formatUsdShort(value: number | null | undefined): string {
@@ -5559,8 +5613,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   if (isBaseRadarPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_market", rendererUsed: pickBaseRadarTitle(prompt).toLowerCase().replace(/\s+/g, "_"), featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
-    const analysis = await handleBaseRadarSnapshot(origin, prompt);
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_radar_feed"], analysis };
+    const radarResult = await handleBaseRadarSnapshot(origin, prompt);
+    if (radarResult.items.length > 0) {
+      updateMemMomentum(sessionMem, radarResult.items);
+      updateMemIntent(sessionMem, "market");
+    }
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "market",
+      toolsUsed: ["base_radar_feed"],
+      analysis: radarResult.analysis,
+      marketContext: { items: radarResult.items },
+    };
   }
 
   // "should I copy this wallet" — always redirect, never give copy-trade advice
