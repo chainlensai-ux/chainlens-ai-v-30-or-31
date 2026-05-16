@@ -97,6 +97,16 @@ function getOrCreateSessionId(): string {
   }
   return id;
 }
+function getClientClarkContext() {
+  if (typeof window === 'undefined') return {}
+  try {
+    return {
+      lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
+      lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
+      lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
+    }
+  } catch { return {} }
+}
 
 function ClarkOrb({ size = 20, thinking = false }: { size?: number; thinking?: boolean }) {
   return <span className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}><span className='clark-orb-ring' /><span className='clark-orb-dot clark-orb-dot-a' /><span className='clark-orb-dot clark-orb-dot-b' /></span>
@@ -172,6 +182,7 @@ export default function ClarkChat({
           recentMovers: clarkContextRef.current.lastMarketList ?? [],
           moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
           marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
+          clientContext: getClientClarkContext(),
         }),
       })
       console.log('Response status:', res.status)
@@ -183,6 +194,7 @@ export default function ClarkChat({
         : null
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
       if (nextItems && nextItems.length > 0) {
+        sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(nextItems))
         clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
         const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
         const symSet = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))

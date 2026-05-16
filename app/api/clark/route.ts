@@ -241,6 +241,11 @@ interface ClarkRequestBody {
   marketContext?: unknown;
   recentMovers?: unknown;
   moversContext?: unknown;
+  clientContext?: {
+    lastMomentumList?: ClarkSessionMemory["lastMomentumList"];
+    lastToken?: ClarkSessionMemory["lastToken"];
+    lastWallet?: ClarkSessionMemory["lastWallet"];
+  };
 }
 
 interface ClarkContext {
@@ -5430,6 +5435,40 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   if (isBaseMomentumPrompt(prompt)) {
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
+    const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 10, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+    const top = universe?.candidates?.slice(0, 10) ?? [];
+    if (top.length > 0) {
+      updateMemMomentum(sessionMem, top.map((c, i) => ({
+        rank: i + 1,
+        symbol: c.symbol ?? "?",
+        name: c.name ?? null,
+        address: c.tokenAddress ?? c.poolAddress ?? null,
+        liquidity: c.liquidityUsd ?? null,
+        volume24h: c.volume24h ?? null,
+        change24h: c.change24h ?? null,
+        tag: c.reasonTags?.[0] ?? null,
+      })));
+      sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+      sessionMem.allowedRankScanUsed = false;
+      sessionMem.lastIntent = "base_momentum";
+      sessionMem.lastIntentTs = Date.now();
+      sessionMem.lastActionableIntent = "base_momentum";
+      sessionMem.lastActionableIntentTs = Date.now();
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "market",
+        toolsUsed: ["base_market_feed"],
+        analysis: formatBaseMarketReply(top, universe?.candidates.length ?? top.length, 0, universe?.cappedMessage ?? null),
+        marketContext: {
+          items: top.map((c, i) => ({
+            rank: i + 1, symbol: c.symbol ?? "?", name: c.name ?? null, tokenAddress: c.tokenAddress ?? null, poolAddress: c.poolAddress ?? null,
+            reasonTag: c.reasonTags[0] ?? null, price: c.priceUsd ?? null, liquidity: c.liquidityUsd ?? null, volume24h: c.volume24h ?? null, change24h: c.change24h ?? null,
+          })),
+        },
+      };
+    }
     const analysis = await handleBasePumpMap(prompt, origin);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"], analysis };
   }
@@ -6543,6 +6582,11 @@ export async function POST(req: NextRequest) {
   const sessionKey = makeSessionKey(req, authenticated)
   const memoryKeySource = getSessionKeySource(req, authenticated)
   const sessionMem = getSessionMemory(sessionKey)
+  if (sessionMem.lastMomentumList.length === 0 && Array.isArray(body.clientContext?.lastMomentumList) && body.clientContext!.lastMomentumList!.length > 0) {
+    updateMemMomentum(sessionMem, body.clientContext!.lastMomentumList!.slice(0, 20));
+  }
+  if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
+  if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
   const earlyPrompt = (body.prompt ?? '').trim()
   const isMoreFollowup = earlyPrompt ? (MORE_CONTEXT_RE.test(earlyPrompt) && (sessionMem.lastMomentumList.length > 0 || Boolean(sessionMem.lastToken))) : false
   const earlyRank = earlyPrompt ? parseRankFollowup(earlyPrompt) : null
@@ -6558,7 +6602,7 @@ export async function POST(req: NextRequest) {
   }
   if (debugMemory || process.env.NODE_ENV !== 'production') {
     console.log('[clark-memory]', {
-      key: `${sessionKey.slice(0, 16)}...`,
+      key: `${sessionKey.slice(0, 8)}...`,
       source: memoryKeySource,
       hasLastMomentumList: sessionMem.lastMomentumList.length > 0,
       lastMomentumListLength: sessionMem.lastMomentumList.length,

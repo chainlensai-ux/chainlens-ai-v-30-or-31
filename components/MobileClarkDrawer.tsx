@@ -18,6 +18,16 @@ function getOrCreateSessionId(): string {
   }
   return id
 }
+function getClientClarkContext() {
+  if (typeof window === 'undefined') return {}
+  try {
+    return {
+      lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
+      lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
+      lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
+    }
+  } catch { return {} }
+}
 
 export default function MobileClarkDrawer() {
   const [expanded, setExpanded] = useState(false)
@@ -63,10 +73,14 @@ export default function MobileClarkDrawer() {
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
-        body: JSON.stringify({ feature: 'clark-ai', prompt: text }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt: text, clientContext: getClientClarkContext() }),
       })
       const json = await res.json().catch(() => ({}))
       const payload = (json?.data && typeof json.data === 'object') ? json.data : json
+      const marketItems = payload?.marketContext && typeof payload.marketContext === 'object' && Array.isArray((payload.marketContext as { items?: unknown[] }).items)
+        ? (payload.marketContext as { items?: unknown[] }).items
+        : null
+      if (marketItems && marketItems.length > 0) sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(marketItems))
       const reply = typeof payload?.reply === 'string' && payload.reply.trim()
         ? payload.reply
         : (typeof payload?.analysis === 'string' && payload.analysis.trim() ? payload.analysis : FALLBACK_ERROR_MESSAGE)
