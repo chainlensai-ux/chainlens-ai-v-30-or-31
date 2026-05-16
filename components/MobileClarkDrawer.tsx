@@ -8,6 +8,17 @@ type ClarkOpenDetail = { prompt?: string; autoSend?: boolean; source?: string }
 const INITIAL_ASSISTANT_MESSAGE = 'Ask me about Base tokens, wallets, whale alerts, or risk signals.'
 const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
 
+function getOrCreateSessionId(): string {
+  if (typeof window === 'undefined') return 'ssr'
+  const key = 'clark_session_id'
+  let id = sessionStorage.getItem(key)
+  if (!id) {
+    id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    sessionStorage.setItem(key, id)
+  }
+  return id
+}
+
 export default function MobileClarkDrawer() {
   const [expanded, setExpanded] = useState(false)
   const [showDock, setShowDock] = useState(false)
@@ -51,7 +62,7 @@ export default function MobileClarkDrawer() {
     try {
       const res = await fetch('/api/clark', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
         body: JSON.stringify({ feature: 'clark-ai', prompt: text }),
       })
       const json = await res.json().catch(() => ({}))

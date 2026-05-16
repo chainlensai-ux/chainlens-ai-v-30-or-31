@@ -6,9 +6,9 @@ import { supabase } from '@/lib/supabaseClient'
 
 const HINT_CHIPS = [
   "What's pumping on Base?",
-  'Scan a Base wallet',
-  'New Base deployments',
+  'Scan BRETT',
   'Show Base whales',
+  'Liquidity check AERO',
 ]
 
 interface Message {
@@ -58,6 +58,17 @@ function extractTokenQuery(text: string): string | null {
   if (afterIs && !STOP.has(afterIs[1])) return afterIs[1]
 
   return null
+}
+
+function getOrCreateSessionId(): string {
+  if (typeof window === 'undefined') return 'ssr'
+  const key = 'clark_session_id'
+  let id = sessionStorage.getItem(key)
+  if (!id) {
+    id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    sessionStorage.setItem(key, id)
+  }
+  return id
 }
 
 function isMobileClient() {
@@ -155,6 +166,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          'x-clark-session': getOrCreateSessionId(),
         },
         body: JSON.stringify({
           ...body,
