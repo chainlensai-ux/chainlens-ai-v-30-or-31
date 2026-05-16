@@ -54,6 +54,7 @@ const TIER_COLUMNS = [
 export default function Navbar() {
   const [open, setOpen] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false)
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
   const [plan, setPlan] = useState<UserPlan>('free')
   const pathname = usePathname()
@@ -108,12 +109,12 @@ export default function Navbar() {
           0%,100% { box-shadow: 0 0 0 1px rgba(45,212,191,0.20), 0 24px 80px rgba(0,0,0,0.62), 0 0 60px rgba(45,212,191,0.10), 0 0 80px rgba(139,92,246,0.08); }
           50%      { box-shadow: 0 0 0 1px rgba(139,92,246,0.28), 0 24px 80px rgba(0,0,0,0.62), 0 0 80px rgba(45,212,191,0.16), 0 0 110px rgba(139,92,246,0.14); }
         }
-        .nav-shell { animation: nav-shell-glow 5s ease-in-out infinite; }
+        .nav-shell { animation: nav-shell-glow 5s ease-in-out infinite; overflow: hidden; }
 
         .nav-link {
           color: rgba(255,255,255,0.72);
           text-decoration: none;
-          font-size: 16px;
+          font-size: 14px;
           font-weight: 500;
           letter-spacing: 0.01em;
           transition: color 0.15s, text-shadow 0.15s;
@@ -125,7 +126,7 @@ export default function Navbar() {
         .tools-btn {
           background: none; border: none;
           color: rgba(255,255,255,0.72);
-          cursor: pointer; font-size: 16px;
+          cursor: pointer; font-size: 14px;
           font-weight: 500; font-family: inherit;
           display: flex; align-items: center; gap: 4px;
           padding: 8px 0; transition: color 0.15s, text-shadow 0.15s;
@@ -166,17 +167,19 @@ export default function Navbar() {
         }
 
         .btn-signin {
-          padding: 11px 24px;
+          padding: 9px 18px;
           border: 1px solid rgba(255,255,255,0.20);
           border-radius: 999px;
           background: rgba(6,8,20,0.70);
           color: rgba(255,255,255,0.90);
-          font-size: 13px; font-weight: 700;
+          font-size: 12px; font-weight: 700;
           text-decoration: none;
-          letter-spacing: 0.10em;
+          letter-spacing: 0.08em;
           text-transform: uppercase;
           transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
           white-space: nowrap;
+          min-width: 0;
+          overflow: hidden;
         }
         .btn-signin:hover {
           border-color: rgba(255,255,255,0.42);
@@ -187,17 +190,18 @@ export default function Navbar() {
 
         .btn-access {
           display: inline-flex; align-items: center; gap: 6px;
-          padding: 12px 26px; border-radius: 999px;
+          padding: 10px 20px; border-radius: 999px;
           background: linear-gradient(115deg, rgba(45,212,191,0.20) 0%, rgba(56,189,248,0.28) 28%, rgba(124,58,237,0.40) 72%, rgba(168,85,247,0.62) 100%);
           border: 1px solid rgba(167,139,250,0.66);
           color: #fff;
-          font-size: 13px; font-weight: 800;
+          font-size: 12px; font-weight: 800;
           text-decoration: none;
           letter-spacing: 0.08em;
           text-transform: uppercase;
           box-shadow: 0 0 18px rgba(45,212,191,0.22), 0 0 30px rgba(139,92,246,0.22);
           transition: box-shadow 0.15s, border-color 0.15s, background 0.15s;
           white-space: nowrap;
+          flex-shrink: 0;
         }
         .btn-access:hover {
           border-color: rgba(196,181,253,0.92);
@@ -233,23 +237,39 @@ export default function Navbar() {
         }
         .mob-nav-menu-link:hover { color: #fff; }
 
-        .nav-live-badge-text { display: inline; }
+        .mob-tool-link {
+          display: flex; align-items: center; gap: 8px;
+          padding: 11px 12px; border-radius: 10px;
+          font-size: 14px; font-weight: 500;
+          color: rgba(255,255,255,0.65); text-decoration: none;
+          transition: background 0.15s, color 0.15s;
+          border: 1px solid transparent;
+        }
+        .mob-tool-link:hover { background: rgba(45,212,191,0.08); border-color: rgba(45,212,191,0.14); color: #fff; }
+
+        /* Account email — hide on narrow desktops/tablets */
+        .nav-account-email { display: inline; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        @media (max-width: 1280px) {
+          .nav-live-badge { display: none !important; }
+          .nav-account-email { display: none !important; }
+        }
 
         @media (max-width: 1023px) {
-          .nav-live-badge { display: none !important; }
           .mob-nav-links { display: none !important; }
           .mob-ham { display: flex !important; }
-          /* Hide Sign In from top bar — it lives in the mobile menu instead */
           .mob-auth-wrap .btn-signin { display: none !important; }
-          .nav-shell { gap: 16px !important; }
+          .nav-shell { gap: 12px !important; }
         }
+
+        .mob-nav-overlay { position: fixed; top: 74px; left: 0; right: 0; bottom: 0; }
         @media (max-width: 767px) {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 10px 12px !important; }
           .nav-shell { height: 58px !important; border-radius: 16px !important; gap: 0 !important; padding: 0 14px !important; }
-          /* Show Get Access, keep Sign In hidden (handled above) */
           .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: 8px !important; }
-          .btn-access { padding: 9px 14px !important; font-size: 11px !important; }
+          .btn-access { padding: 8px 12px !important; font-size: 11px !important; }
+          .mob-nav-overlay { top: 58px !important; }
         }
       `}</style>
 
@@ -277,11 +297,11 @@ export default function Navbar() {
             WebkitBackdropFilter: 'blur(28px)',
             border: '1px solid rgba(109,40,217,0.36)',
             borderRadius: '999px',
-            padding: '0 28px',
+            padding: '0 20px',
             height: '74px',
             display: 'flex',
             alignItems: 'center',
-            gap: '34px',
+            gap: '16px',
             pointerEvents: 'auto',
             position: 'relative',
             overflow: 'visible',
@@ -326,7 +346,7 @@ export default function Navbar() {
           </button>
 
           {/* Center nav links */}
-          <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '34px', flex: 1 }}>
+          <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '22px', flex: 1, minWidth: 0 }}>
             <div style={{ position: 'relative' }}>
               <button
                 className={`tools-btn${open ? ' open' : ''}`}
@@ -429,7 +449,7 @@ export default function Navbar() {
           </div>
 
           {/* Right: LIVE badge + auth buttons */}
-          <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, marginLeft: 'auto' }}>
             {/* LIVE | Powered by CORTEX */}
             <div
               className="nav-live-badge"
@@ -466,33 +486,29 @@ export default function Navbar() {
               <Link href="/terminal/settings" className="btn-signin" style={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '8px',
+                gap: '7px',
                 borderColor: 'rgba(45,212,191,0.30)',
                 background: 'linear-gradient(135deg, rgba(45,212,191,0.12) 0%, rgba(139,92,246,0.18) 100%)',
+                flexShrink: 0,
+                maxWidth: '240px',
+                overflow: 'hidden',
               }}>
                 <span style={{
-                  width: '20px',
-                  height: '20px',
-                  borderRadius: '50%',
+                  width: '22px', height: '22px', borderRadius: '50%',
                   background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
-                  color: '#04101a',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
+                  color: '#04101a', fontSize: '11px', fontWeight: 700,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  flexShrink: 0,
                 }}>{initials}</span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                  <span>{shortEmail}</span>
-                  <span style={{
-                    fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
-                    color: PLAN_COLOR[plan],
-                    border: `1px solid ${PLAN_COLOR[plan]}44`,
-                    borderRadius: '4px',
-                    padding: '1px 5px',
-                    background: `${PLAN_COLOR[plan]}18`,
-                  }}>{plan.toUpperCase()}</span>
-                </span>
+                <span className="nav-account-email">{shortEmail}</span>
+                <span style={{
+                  fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
+                  color: PLAN_COLOR[plan],
+                  border: `1px solid ${PLAN_COLOR[plan]}44`,
+                  borderRadius: '4px', padding: '1px 5px',
+                  background: `${PLAN_COLOR[plan]}18`,
+                  flexShrink: 0,
+                }}>{planLabel}</span>
               </Link>
             ) : (
               <Link href="/sign-in" className="btn-signin" prefetch={true}>Sign In</Link>
@@ -510,42 +526,126 @@ export default function Navbar() {
 
       {/* Mobile menu overlay */}
       {mobileOpen && (
-        <div style={{
-          position: 'fixed',
-          top: '74px', left: 0, right: 0, bottom: 0,
-          background: 'rgba(6,8,20,0.97)',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
+        <div className="mob-nav-overlay" style={{
+          background: 'rgba(5,7,18,0.98)',
+          backdropFilter: 'blur(22px)',
+          WebkitBackdropFilter: 'blur(22px)',
           zIndex: 99,
           display: 'flex',
           flexDirection: 'column',
-          padding: '8px 20px 32px',
+          padding: '0 20px 40px',
           overflowY: 'auto',
         }}>
-          <Link href="/terminal"  className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Terminal</Link>
+          <Link href="/terminal" className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Terminal</Link>
+
+          {/* Tools accordion */}
+          <button
+            type="button"
+            onClick={() => setMobileToolsOpen(o => !o)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '15px 4px', fontSize: '16px', fontWeight: 600,
+              color: 'rgba(255,255,255,0.65)', background: 'none', border: 'none',
+              borderBottom: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer',
+              width: '100%', textAlign: 'left', fontFamily: 'var(--font-inter, Inter, sans-serif)',
+            }}
+          >
+            Tools
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ transition: 'transform 0.2s', transform: mobileToolsOpen ? 'rotate(180deg)' : 'none', flexShrink: 0 }}>
+              <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+
+          {mobileToolsOpen && (
+            <div style={{ padding: '8px 0 4px 12px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+              {[
+                { icon: '🧪', name: 'Token Scanner',      href: '/terminal/token-scanner' },
+                { icon: '👛', name: 'Wallet Scanner',     href: '/terminal/wallet-scanner' },
+                { icon: '🧬', name: 'Dev Wallet Detector',href: '/terminal/dev-wallet' },
+                { icon: '💧', name: 'Liquidity Safety',   href: '/terminal/liquidity' },
+                { icon: '🐋', name: 'Whale Alerts',       href: '/terminal/whale-alerts' },
+                { icon: '🚨', name: 'Pump Alerts',        href: '/terminal/pump-alerts' },
+                { icon: '📡', name: 'Base Radar',         href: '/terminal/base-radar' },
+                { icon: '🤖', name: 'Clark AI',           href: '/terminal/clark-ai' },
+              ].map(t => (
+                <Link key={t.href} href={t.href} className="mob-tool-link" onClick={() => setMobileOpen(false)}>
+                  <span style={{ fontSize: '16px', lineHeight: 1 }}>{t.icon}</span>
+                  <span>{t.name}</span>
+                </Link>
+              ))}
+            </div>
+          )}
+
           <Link href="/pricing"   className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Pricing</Link>
           <Link href="/affiliate" className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Affiliate</Link>
           <Link href="/about"     className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
           <Link href="/contact"   className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Contact</Link>
 
-          <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '16px 0' }} />
+          <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '18px 0 14px' }} />
 
-          <Link href={accountEmail ? '/terminal/settings' : '/sign-in'} onClick={() => setMobileOpen(false)} style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: '13px 20px', borderRadius: '999px',
-            border: accountEmail ? '1px solid rgba(45,212,191,0.35)' : '1px solid rgba(255,255,255,0.14)',
-            color: accountEmail ? 'rgba(45,212,191,0.92)' : 'rgba(255,255,255,0.70)', fontSize: '14px', fontWeight: 600,
-            textDecoration: 'none', marginBottom: '8px',
-            background: accountEmail ? 'linear-gradient(135deg, rgba(45,212,191,0.08) 0%, rgba(139,92,246,0.14) 100%)' : 'transparent',
-          }}>{accountEmail ? 'Account (Signed In)' : 'Sign In'}</Link>
+          {accountEmail ? (
+            <>
+              {/* Signed-in account row */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '12px 14px', borderRadius: '14px', marginBottom: '10px',
+                background: 'linear-gradient(135deg, rgba(45,212,191,0.08) 0%, rgba(139,92,246,0.14) 100%)',
+                border: '1px solid rgba(45,212,191,0.25)',
+              }}>
+                <span style={{
+                  width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
+                  background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                  color: '#04101a', fontSize: '14px', fontWeight: 700,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                }}>{initials}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '13px', color: '#e2e8f0', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{accountEmail}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                    <span style={{
+                      fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
+                      color: PLAN_COLOR[plan], border: `1px solid ${PLAN_COLOR[plan]}44`,
+                      borderRadius: '4px', padding: '1px 5px', background: `${PLAN_COLOR[plan]}18`,
+                    }}>{planLabel}</span>
+                    <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)' }}>Signed in</span>
+                  </div>
+                </div>
+              </div>
+              <Link href="/terminal/settings" onClick={() => setMobileOpen(false)} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '13px 20px', borderRadius: '999px',
+                border: '1px solid rgba(255,255,255,0.14)',
+                color: 'rgba(255,255,255,0.70)', fontSize: '14px', fontWeight: 600,
+                textDecoration: 'none', marginBottom: '8px',
+              }}>Settings</Link>
+            </>
+          ) : (
+            <>
+              <Link href="/sign-in" onClick={() => setMobileOpen(false)} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '14px 20px', borderRadius: '999px',
+                border: '1px solid rgba(255,255,255,0.16)',
+                color: 'rgba(255,255,255,0.80)', fontSize: '15px', fontWeight: 600,
+                textDecoration: 'none', marginBottom: '10px',
+              }}>Sign In</Link>
+              <Link href="/sign-up" onClick={() => setMobileOpen(false)} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '14px 20px', borderRadius: '999px',
+                border: '1px solid rgba(45,212,191,0.25)',
+                color: 'rgba(45,212,191,0.90)', fontSize: '15px', fontWeight: 600,
+                textDecoration: 'none', marginBottom: '10px',
+                background: 'rgba(45,212,191,0.06)',
+              }}>Sign Up</Link>
+            </>
+          )}
 
           <Link href="/pricing" onClick={() => setMobileOpen(false)} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-            padding: '13px 20px', borderRadius: '999px',
-            background: 'linear-gradient(135deg, rgba(45,212,191,0.12) 0%, rgba(139,92,246,0.18) 100%)',
-            border: '1px solid rgba(45,212,191,0.35)',
-            color: '#fff', fontSize: '14px', fontWeight: 700,
+            padding: '14px 20px', borderRadius: '999px',
+            background: 'linear-gradient(115deg, rgba(45,212,191,0.20) 0%, rgba(56,189,248,0.28) 28%, rgba(124,58,237,0.40) 72%, rgba(168,85,247,0.62) 100%)',
+            border: '1px solid rgba(167,139,250,0.66)',
+            color: '#fff', fontSize: '15px', fontWeight: 800,
             textDecoration: 'none',
+            boxShadow: '0 0 18px rgba(45,212,191,0.18), 0 0 30px rgba(139,92,246,0.18)',
           }}>
             Get Access
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
