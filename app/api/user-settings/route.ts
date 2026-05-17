@@ -69,7 +69,8 @@ export async function GET(request: NextRequest) {
   const effectivePlan = betaEliteActive ? 'elite' : rawPlan;
   const plan = effectivePlan;
   const verifiedPlan = effectivePlan;
-  const diagnostics = process.env.NODE_ENV !== 'production'
+  const debugMode = process.env.NODE_ENV !== 'production' && request.nextUrl.searchParams.get('debug') === 'true';
+  const diagnostics = debugMode
     ? {
         authenticated: true,
         userIdPresent: Boolean(auth.userId),

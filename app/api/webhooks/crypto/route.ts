@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
   const parsed = parseOrderId(orderId)
   if (!parsed || (parsed.plan !== 'pro' && parsed.plan !== 'elite')) return NextResponse.json({ ok: true })
-  if (String(ipn.price_currency ?? '').toLowerCase() !== 'usd' || Number(ipn.price_amount ?? 0) !== PLAN_AMOUNTS[parsed.plan]) return NextResponse.json({ ok: true })
+  if (String(ipn.price_currency ?? '').toLowerCase() !== 'usd' || Math.abs(Number(ipn.price_amount ?? 0) - PLAN_AMOUNTS[parsed.plan]) > 1) return NextResponse.json({ ok: true })
 
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '', process.env.SUPABASE_SERVICE_ROLE_KEY ?? '')
   const { data: pay } = await supabase.from('crypto_payments').select('id,affiliate_id,referral_code,amount_usd').eq('order_id', orderId).maybeSingle()

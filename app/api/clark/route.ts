@@ -4924,12 +4924,29 @@ function buildWatchVerdictFromScan(scanText: string, contractAddress: string): s
 
 // ---------- Feature handlers ----------
 
-async function handleTokenScanner(body: ClarkRequestBody, origin: string) {
+async function handleTokenScanner(body: ClarkRequestBody, origin: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
   const network = gtNetwork(chain);
   const tokenAddress = body.tokenAddress ?? body.addressOrToken;
   if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
+
+  // Free plan: basic preview only — price, liquidity, volume, 24h change. No holder data.
+  if (!planAllows(verifiedPlan, 'token_full_report')) {
+    const [gtData, trending] = await Promise.all([
+      callGeckoTerminal(network, origin),
+      callTrending(origin),
+    ]);
+    return {
+      feature: "token-scanner",
+      chain,
+      tokenAddress,
+      freePreview: true,
+      tokenData: {},
+      gtPools: (gtData as { data?: unknown[] })?.data ?? [],
+      trending: trending ?? [],
+    };
+  }
 
   const [holders, gtData, trending] = await Promise.all([
     callGoldrush(`${chainName}/tokens/${tokenAddress}/token_holders_v2/`, { "page-size": "100" }),
@@ -4947,10 +4964,14 @@ async function handleTokenScanner(body: ClarkRequestBody, origin: string) {
   };
 }
 
-async function handleWalletScanner(body: ClarkRequestBody, origin: string, authHeader?: string | null) {
+async function handleWalletScanner(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
-  const walletAddress = body.walletAddress ?? body.addressOrToken;
-  if (!walletAddress) throw new Error("walletAddress or addressOrToken is required");
+  const walletAddress = body.walletAddress ?? body.addressOrToken ?? 'wallet';
+  if (!planAllows(verifiedPlan, 'wallet_scan')) {
+    return { feature: "wallet-scanner", chain, walletAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read." };
+  }
+  if (!walletAddress || walletAddress === 'wallet') throw new Error("walletAddress or addressOrToken is required");
 
   const userPrompt = (body.prompt ?? "").trim();
   const t = userPrompt.toLowerCase();
@@ -4992,11 +5013,15 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   return { feature: "wallet-scanner", chain, walletAddress, analysis };
 }
 
-async function handleDevWalletDetector(body: ClarkRequestBody) {
+async function handleDevWalletDetector(body: ClarkRequestBody, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
-  const tokenAddress = body.tokenAddress ?? body.addressOrToken;
-  if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
+  const tokenAddress = body.tokenAddress ?? body.addressOrToken ?? 'token';
+  if (!planAllows(verifiedPlan, 'dev_wallet')) {
+    return { feature: "dev-wallet-detector", chain, tokenAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read." };
+  }
+  if (!tokenAddress || tokenAddress === 'token') throw new Error("tokenAddress or addressOrToken is required");
 
   const results = await Promise.allSettled([
     callGoldrush(`${chainName}/tokens/${tokenAddress}/token_holders_v2/`, { "page-size": "200" }),
@@ -5018,12 +5043,17 @@ async function handleDevWalletDetector(body: ClarkRequestBody) {
   return { feature: "dev-wallet-detector", chain, tokenAddress, analysis };
 }
 
-async function handleLiquiditySafety(body: ClarkRequestBody, origin: string) {
+async function handleLiquiditySafety(body: ClarkRequestBody, origin: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
   const network = gtNetwork(chain);
-  const tokenAddress = body.tokenAddress ?? body.addressOrToken;
-  if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
+  const tokenAddress = body.tokenAddress ?? body.addressOrToken ?? 'token';
+  if (!planAllows(verifiedPlan, 'liquidity_check')) {
+    return { feature: "liquidity-safety", chain, tokenAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read.",
+      tokenData: {}, gtPools: [] };
+  }
+  if (!tokenAddress || tokenAddress === 'token') throw new Error("tokenAddress or addressOrToken is required");
 
   const [goldrushPools, gtData] = await Promise.all([
     callGoldrush(`${chainName}/xy=k/address/${tokenAddress}/pools/`),
@@ -5039,11 +5069,15 @@ async function handleLiquiditySafety(body: ClarkRequestBody, origin: string) {
   };
 }
 
-async function handleWhaleAlerts(body: ClarkRequestBody) {
+async function handleWhaleAlerts(body: ClarkRequestBody, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
-  const walletAddress = body.walletAddress ?? body.addressOrToken;
-  if (!walletAddress) throw new Error("walletAddress or addressOrToken is required");
+  const walletAddress = body.walletAddress ?? body.addressOrToken ?? 'wallet';
+  if (!planAllows(verifiedPlan, 'whale_alerts')) {
+    return { feature: "whale-alerts", chain, walletAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read." };
+  }
+  if (!walletAddress || walletAddress === 'wallet') throw new Error("walletAddress or addressOrToken is required");
 
   const results = await Promise.allSettled([
     callCovalent(`${chainName}/address/${walletAddress}/transactions_v3/`, { "page-size": "50" }),
@@ -5068,11 +5102,16 @@ async function handleWhaleAlerts(body: ClarkRequestBody) {
   return { feature: "whale-alerts", chain, walletAddress, analysis };
 }
 
-async function handlePumpAlerts(body: ClarkRequestBody, origin: string) {
+async function handlePumpAlerts(body: ClarkRequestBody, origin: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const network = gtNetwork(chain);
-  const tokenAddress = body.tokenAddress ?? body.addressOrToken;
-  if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
+  const tokenAddress = body.tokenAddress ?? body.addressOrToken ?? 'token';
+  if (!planAllows(verifiedPlan, 'pump_alerts')) {
+    return { feature: "pump-alerts", chain, tokenAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read.",
+      tokenData: {}, gtPools: [] };
+  }
+  if (!tokenAddress || tokenAddress === 'token') throw new Error("tokenAddress or addressOrToken is required");
 
   const [security, gtData] = await Promise.all([
     callGoPlus(tokenAddress, chain),
@@ -5172,7 +5211,11 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
   return { feature: "scan-token", data: scanData, analysis };
 }
 
-async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
+async function handleBaseRadar(_body: ClarkRequestBody, origin: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
+  if (!planAllows(verifiedPlan, 'base_radar_full')) {
+    return { feature: "base-radar", chain: "base",
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read." };
+  }
   const [trending, gtBase, gtEth] = await Promise.all([
     callTrending(origin),
     callGeckoTerminal("base", origin),
@@ -5730,7 +5773,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const stored = (universe?.candidates ?? [])
       .filter((c) => !isMajorOrStableLike(c.symbol ?? "?", c.name ?? null))
       .slice(0, 30);
-    const top = stored.slice(0, 7);
+    const fullTop = stored.slice(0, 7);
+    const isPlanFull = planAllows(verifiedPlan, 'base_radar_full');
+    const top = isPlanFull ? fullTop : fullTop.slice(0, 3);
+    const pumpPreviewNote = !isPlanFull && fullTop.length > 3
+      ? '\n\n— Showing top 3. Upgrade to Pro or Elite to unlock the full Base momentum map.'
+      : '';
     if (stored.length > 0) {
       updateMemMomentum(sessionMem, stored.map((c, i) => ({
         rank: i + 1,
@@ -5755,14 +5803,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         mode: "analysis",
         intent: "market",
         toolsUsed: ["base_market_feed"],
-        analysis: formatBaseMarketReply(top, universe?.candidates.length ?? top.length, 0, universe?.cappedMessage ?? null),
+        analysis: formatBaseMarketReply(top, universe?.candidates.length ?? fullTop.length, 0, universe?.cappedMessage ?? null) + pumpPreviewNote,
         marketContext: {
-          items: stored.map((c, i) => ({
+          items: top.map((c, i) => ({
             rank: i + 1, symbol: c.symbol ?? "?", name: c.name ?? null, tokenAddress: c.tokenAddress ?? null, poolAddress: c.poolAddress ?? null,
             reasonTag: c.reasonTags[0] ?? null, price: c.priceUsd ?? null, liquidity: c.liquidityUsd ?? null, volume24h: c.volume24h ?? null, change24h: c.change24h ?? null,
           })),
         },
       };
+    }
+    if (!isPlanFull) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
+        analysis: "BASE MOMENTUM READ\n\nMarket preview is loading. Upgrade to Pro or Elite for the full Base momentum map." };
     }
     const analysis = await handleBasePumpMap(prompt, origin);
     return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"], analysis };
@@ -7151,28 +7203,28 @@ export async function POST(req: NextRequest) {
 
     switch (body.feature) {
       case "token-scanner":
-        result = await handleTokenScanner(body, origin);
+        result = await handleTokenScanner(body, origin, effectivePlan);
         break;
       case "wallet-scanner":
-        result = await handleWalletScanner(body, origin, authHeader);
+        result = await handleWalletScanner(body, origin, authHeader, effectivePlan);
         break;
       case "dev-wallet-detector":
-        result = await handleDevWalletDetector(body);
+        result = await handleDevWalletDetector(body, effectivePlan);
         break;
       case "liquidity-safety":
-        result = await handleLiquiditySafety(body, origin);
+        result = await handleLiquiditySafety(body, origin, effectivePlan);
         break;
       case "whale-alerts":
-        result = await handleWhaleAlerts(body);
+        result = await handleWhaleAlerts(body, effectivePlan);
         break;
       case "pump-alerts":
-        result = await handlePumpAlerts(body, origin);
+        result = await handlePumpAlerts(body, origin, effectivePlan);
         break;
       case "scan-token":
         result = await handleScanToken(body, origin);
         break;
       case "base-radar":
-        result = await handleBaseRadar(body, origin);
+        result = await handleBaseRadar(body, origin, effectivePlan);
         break;
       case "clark-ai":
         if (rankAllowanceActive) {
