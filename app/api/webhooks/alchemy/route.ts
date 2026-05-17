@@ -232,6 +232,13 @@ export async function POST(request: Request) {
 
   const signingKey = process.env.ALCHEMY_WEBHOOK_SIGNING_KEY
 
+  if (!signingKey) {
+    if (process.env.NODE_ENV === 'production') {
+      return NextResponse.json({ ok: false, error: 'Webhook service unavailable' }, { status: 500 })
+    }
+    console.warn('[alchemy-webhook] ALCHEMY_WEBHOOK_SIGNING_KEY not set — skipping signature check (non-production only)')
+  }
+
   // Always read the raw body first so we can both verify and parse
   const rawBody = await request.text()
 
