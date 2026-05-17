@@ -7088,6 +7088,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(normalized, { status: 200 })
   }
 
+  // Plan gate for clark-ai: check intent against plan BEFORE rate limiting.
+  // Locked intents must return immediately — they must not consume expensive quota.
+  if (body.feature === 'clark-ai' && earlyPrompt) {
+    const { intent: earlyIntent } = detectIntent(earlyPrompt);
+    type PlanFeature = Parameters<typeof planAllows>[1];
+    const INTENT_FEATURE_MAP: Partial<Record<string, PlanFeature>> = {
+      wallet_analysis: 'wallet_scan',
+      whale_alert:     'whale_alerts',
+      dev_wallet:      'dev_wallet',
+      liquidity_safety:'liquidity_check',
+      pump_alert:      'pump_alerts',
+    };
+    const LOCKED_ALTERNATIVES: Partial<Record<string, string>> = {
+      wallet_scan:      'ask about token risk, liquidity signals, and CORTEX token reads',
+      whale_alerts:     'ask about trending tokens or Base market moves',
+      dev_wallet:       'ask about contract safety, holder concentration, or LP control',
+      liquidity_check:  'ask about token price, volume, and market cap',
+      pump_alerts:      'ask about new Base launches or trending pools',
+    };
+    const lockedFeature = INTENT_FEATURE_MAP[earlyIntent];
+    if (lockedFeature && !planAllows(effectivePlan, lockedFeature)) {
+      const lockedMsg = buildLockedResponse(lockedFeature, LOCKED_ALTERNATIVES[lockedFeature] ?? 'ask about token data and market moves');
+      return NextResponse.json({ ok: true, feature: 'clark-ai', data: { reply: lockedMsg } }, { status: 200 });
+    }
+  }
+
   const rateResult = (promptIsLowCost || rankAllowanceActive)
     ? checkClarkLowCostRate(actor, planKey)
     : checkClarkRate(actor, planKey)

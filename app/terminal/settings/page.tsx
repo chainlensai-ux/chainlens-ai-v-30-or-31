@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, type CSSProperties } from 'react'
+import { useState, useEffect, useRef, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import type { UserSettingsUpdate } from '@/lib/supabase/userSettings'
@@ -151,6 +151,7 @@ function StatusBadge({ connected }: { connected: boolean }) {
 export default function SettingsPage() {
   const router = useRouter()
   const LOCAL_SETTINGS_KEY = 'chainlens_local_settings'
+  const settingsLoadedRef = useRef(false)
   const [displayName, setDisplayName] = useState('')
   const [avatarUrl, setAvatarUrl] = useState('')
   const [avatarColor, setAvatarColor] = useState<'mint' | 'purple' | 'pink' | 'blue'>('mint')
@@ -274,6 +275,7 @@ export default function SettingsPage() {
           // Keep safe defaults when local settings are invalid.
         }
       }
+      settingsLoadedRef.current = true
       return
     }
 
@@ -296,6 +298,7 @@ export default function SettingsPage() {
           if (typeof data.settings.whaleTrackerEnabled !== 'boolean' && (data.betaEliteActive || data.effectivePlan === 'elite')) {
             setWhaleTrackerEnabled(true)
           }
+          settingsLoadedRef.current = true
           setSaveMessage(data.error ? 'Loaded defaults (settings fetch had an issue).' : 'Loaded saved account settings.')
         }
       } catch {
@@ -308,7 +311,10 @@ export default function SettingsPage() {
   }, [authChecked, isAuthed, accessToken])
 
   useEffect(() => {
-    if (!authChecked) return
+    // Guard: do not auto-save until initial settings have been loaded from remote/local.
+    // Without this, the auto-save fires on mount with default state values (e.g. avatarColor='mint')
+    // before loadRemote() completes, overwriting the user's saved color.
+    if (!authChecked || !settingsLoadedRef.current) return
     const timer = window.setTimeout(() => {
       void handleSaveSettings()
     }, 450)
