@@ -71,7 +71,8 @@ export default function AuthPage() {
           setAuthCheckLoading(false);
           return;
         }
-        router.replace('/terminal');
+        const nextParam = new URLSearchParams(window.location.search).get('next')
+        router.replace(nextParam?.startsWith('/') ? nextParam : '/terminal');
         return;
       }
 
@@ -88,7 +89,8 @@ export default function AuthPage() {
           Promise.resolve().then(() => supabase.auth.signOut());
           return;
         }
-        router.replace('/terminal');
+        const nextParam = new URLSearchParams(window.location.search).get('next')
+        router.replace(nextParam?.startsWith('/') ? nextParam : '/terminal');
       }
     });
 
@@ -100,8 +102,8 @@ export default function AuthPage() {
 
   async function handleGoogle() {
     setError(null);
-    // redirectTo must point back to this page so the Supabase client
-    // can pick up the PKCE code and fire onAuthStateChange → SIGNED_IN
+    const nextParam = new URLSearchParams(window.location.search).get('next')
+    if (nextParam?.startsWith('/')) sessionStorage.setItem('cl_auth_next', nextParam)
     const { error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: `${window.location.origin}/auth/callback` },

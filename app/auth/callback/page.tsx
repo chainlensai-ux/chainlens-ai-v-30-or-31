@@ -12,7 +12,9 @@ export default function AuthCallbackPage() {
 
     async function completeAuth() {
       const callbackUrl = new URL(window.location.href);
-      const nextPath = callbackUrl.searchParams.get('next') || '/terminal';
+      const storedNext = sessionStorage.getItem('cl_auth_next') ?? null
+      sessionStorage.removeItem('cl_auth_next')
+      const nextPath = callbackUrl.searchParams.get('next') || storedNext || '/terminal';
       const hasCode = Boolean(callbackUrl.searchParams.get('code'));
 
       if (process.env.NODE_ENV !== 'production') {

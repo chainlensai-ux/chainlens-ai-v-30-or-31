@@ -136,12 +136,15 @@ export default function PricingPage() {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
+      const urlRef = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('ref') : null
       if (!token) {
-        setCheckoutError('Sign in to start checkout.')
+        const returnPath = urlRef ? `/pricing?ref=${encodeURIComponent(urlRef)}` : '/pricing'
+        window.location.href = `/auth?next=${encodeURIComponent(returnPath)}`
         return
       }
-      const referralRaw = typeof window !== 'undefined' ? window.localStorage.getItem(AFFILIATE_REF_KEY) : null
-      const referralCode = referralRaw && isValidReferralCode(referralRaw) ? normalizeReferralCode(referralRaw) : null
+      const storedRef = typeof window !== 'undefined' ? window.localStorage.getItem(AFFILIATE_REF_KEY) : null
+      const rawRef = urlRef ?? storedRef
+      const referralCode = rawRef && isValidReferralCode(rawRef) ? normalizeReferralCode(rawRef) : null
       const res = await fetch('/api/checkout/crypto', {
         method: 'POST',
         headers: {
