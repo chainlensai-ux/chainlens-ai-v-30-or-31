@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next'
+import { Suspense } from 'react'
 import Script from 'next/script'
 import { headers } from 'next/headers'
 import { cookieToInitialState } from 'wagmi'
@@ -65,7 +66,7 @@ export default async function RootLayout({
         </Script>
         <Providers initialState={initialState}>
           <SupabaseProvider>
-            <AffiliateRefCapture />
+            <Suspense fallback={null}><AffiliateRefCapture /></Suspense>
             {children}
           </SupabaseProvider>
         </Providers>

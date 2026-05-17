@@ -137,17 +137,17 @@ export default function PricingPage() {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
       const urlRef = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('ref') : null
+      const storedRef = typeof window !== 'undefined' ? window.localStorage.getItem(AFFILIATE_REF_KEY) : null
+      const rawRef = urlRef ?? storedRef
+      const referralCode = rawRef && isValidReferralCode(rawRef) ? normalizeReferralCode(rawRef) : null
       if (!token) {
-        const returnPath = urlRef ? `/pricing?ref=${encodeURIComponent(urlRef)}` : '/pricing'
+        const returnPath = referralCode ? `/pricing?ref=${encodeURIComponent(referralCode)}` : '/pricing'
         try { sessionStorage.setItem('cl_auth_next', returnPath) } catch {}
         try { localStorage.setItem('cl_auth_next', returnPath) } catch {}
         document.cookie = `cl_auth_next=${encodeURIComponent(returnPath)}; Max-Age=3600; Path=/; SameSite=Lax`
         window.location.href = `/auth?next=${encodeURIComponent(returnPath)}`
         return
       }
-      const storedRef = typeof window !== 'undefined' ? window.localStorage.getItem(AFFILIATE_REF_KEY) : null
-      const rawRef = urlRef ?? storedRef
-      const referralCode = rawRef && isValidReferralCode(rawRef) ? normalizeReferralCode(rawRef) : null
       const res = await fetch('/api/checkout/crypto', {
         method: 'POST',
         headers: {
