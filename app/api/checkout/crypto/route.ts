@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     const json = (await res.json()) as { invoice_url?: string }
     if (!json.invoice_url) return NextResponse.json({ error: 'Checkout creation failed. Try again.' }, { status: 502 })
 
-    await supabase.from('crypto_payments').insert({ user_id: userId, order_id: orderId, payment_id: null, plan, amount_usd: PLAN_AMOUNTS[plan], status: 'created', referral_code: referralCode, affiliate_id: affiliateId })
+    await supabase.from('crypto_payments').insert({ user_id: userId, order_id: orderId, payment_id: null, user_email: userEmail || null, plan, amount_usd: PLAN_AMOUNTS[plan], status: 'created', referral_code: referralCode, affiliate_id: affiliateId })
     return NextResponse.json({ checkoutUrl: json.invoice_url })
   } catch {
     return NextResponse.json({ error: 'Checkout creation failed. Try again.' }, { status: 502 })

@@ -54,7 +54,7 @@ export async function POST(req: Request) {
     if (!supabaseUrl || !serviceRole) return unavailableResponse(503)
 
     const supabase = createClient(supabaseUrl, serviceRole)
-    const code = 'CL' + randomBytes(4).toString('hex').toUpperCase()
+    const code = 'cl' + randomBytes(4).toString('hex')
 
     const { error } = await supabase.from('affiliates').insert({
       name,

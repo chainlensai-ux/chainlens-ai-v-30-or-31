@@ -6,6 +6,7 @@ import { activateUserPlanServerSide } from '@/lib/supabase/userSettings'
 export const dynamic = 'force-dynamic'
 const PLAN_AMOUNTS: Record<string, number> = { pro: 30, elite: 60 }
 const ACTIVATION_STATUSES = new Set(['confirmed', 'finished'])
+const INACTIVE_STATUSES = new Set(['failed', 'expired', 'refunded', 'cancelled'])
 const processedPaymentIds = new Set<string>()
 
 function sortObjectKeys(obj: Record<string, unknown>): Record<string, unknown> { const sorted: Record<string, unknown> = {}; for (const k of Object.keys(obj).sort()) sorted[k] = obj[k]; return sorted }
@@ -23,6 +24,17 @@ export async function POST(req: NextRequest) {
   const paymentId = String(ipn.payment_id ?? '').trim()
   const paymentStatus = String(ipn.payment_status ?? '').trim()
   const orderId = String(ipn.order_id ?? '').trim()
+
+  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '', process.env.SUPABASE_SERVICE_ROLE_KEY ?? '')
+
+  if (INACTIVE_STATUSES.has(paymentStatus)) {
+    const { data: pay } = await supabase.from('crypto_payments').select('id').eq('order_id', orderId).maybeSingle()
+    if (pay?.id) {
+      await supabase.from('crypto_payments').update({ status: paymentStatus, raw_status: paymentStatus, updated_at: new Date().toISOString() }).eq('id', pay.id)
+    }
+    return NextResponse.json({ ok: true })
+  }
+
   if (!ACTIVATION_STATUSES.has(paymentStatus)) return NextResponse.json({ ok: true })
   if (paymentId && processedPaymentIds.has(paymentId)) return NextResponse.json({ ok: true })
 
@@ -30,23 +42,22 @@ export async function POST(req: NextRequest) {
   if (!parsed || (parsed.plan !== 'pro' && parsed.plan !== 'elite')) return NextResponse.json({ ok: true })
   if (String(ipn.price_currency ?? '').toLowerCase() !== 'usd' || Math.abs(Number(ipn.price_amount ?? 0) - PLAN_AMOUNTS[parsed.plan]) > 1) return NextResponse.json({ ok: true })
 
-  const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '', process.env.SUPABASE_SERVICE_ROLE_KEY ?? '')
-  const { data: pay } = await supabase.from('crypto_payments').select('id,affiliate_id,referral_code,amount_usd').eq('order_id', orderId).maybeSingle()
+  const { data: pay } = await supabase.from('crypto_payments').select('id,affiliate_id,referral_code,amount_usd,user_email').eq('order_id', orderId).maybeSingle()
 
   const { error } = await activateUserPlanServerSide(parsed.userId, parsed.plan as 'pro' | 'elite', paymentId || undefined)
   if (error) return NextResponse.json({ ok: false }, { status: 500 })
 
   if (pay?.id) {
-    await supabase.from('crypto_payments').update({ payment_id: paymentId || null, status: paymentStatus }).eq('id', pay.id)
+    await supabase.from('crypto_payments').update({ payment_id: paymentId || null, status: paymentStatus, raw_status: paymentStatus, updated_at: new Date().toISOString() }).eq('id', pay.id)
   }
 
   if (pay?.affiliate_id && paymentId) {
     const { data: exists } = await supabase.from('affiliate_commissions').select('id').eq('payment_id', paymentId).maybeSingle()
     if (!exists) {
       const { data: aff } = await supabase.from('affiliates').select('commission_rate').eq('id', pay.affiliate_id).maybeSingle()
-      const rate = Number(aff?.commission_rate ?? 0.3)
+      const rate = Number(aff?.commission_rate ?? 0.20)
       const amount = Number(pay.amount_usd ?? PLAN_AMOUNTS[parsed.plan])
-      await supabase.from('affiliate_commissions').insert({ affiliate_id: pay.affiliate_id, buyer_user_id: parsed.userId, payment_id: paymentId, referral_code: pay.referral_code, plan: parsed.plan, payment_amount: amount, commission_rate: rate, commission_amount: amount * rate, status: 'pending' })
+      await supabase.from('affiliate_commissions').insert({ affiliate_id: pay.affiliate_id, crypto_payment_id: pay.id ?? null, buyer_user_id: parsed.userId, buyer_email: (pay as Record<string, unknown>).user_email ?? null, payment_id: paymentId, referral_code: pay.referral_code, plan: parsed.plan, payment_amount_usd: amount, commission_rate: rate, commission_amount: amount * rate, status: 'pending' })
     }
   }
 
