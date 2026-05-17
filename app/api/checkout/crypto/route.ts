@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? ''
 
   try {
-    const res = await fetch('https://api.nowpayments.io/v1/invoice', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey }, body: JSON.stringify({ price_amount: PLAN_AMOUNTS[plan], price_currency: 'usd', order_id: orderId, order_description: `ChainLens AI ${PLAN_LABELS[plan]}`, ipn_callback_url: appUrl ? `${appUrl}/api/webhooks/crypto` : undefined, success_url: appUrl ? `${appUrl}/pricing?payment=success` : undefined, cancel_url: appUrl ? `${appUrl}/pricing?payment=cancelled` : undefined, is_fixed_rate: false, is_fee_paid_by_user: false }) })
+    const res = await fetch('https://api.nowpayments.io/v1/invoice', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey }, body: JSON.stringify({ price_amount: PLAN_AMOUNTS[plan], price_currency: 'usd', order_id: orderId, order_description: `ChainLens AI ${PLAN_LABELS[plan]}`, ipn_callback_url: appUrl ? `${appUrl}/api/webhooks/crypto` : undefined, success_url: appUrl ? `${appUrl}/pricing?payment=success` : undefined, cancel_url: appUrl ? `${appUrl}/pricing?payment=cancelled` : undefined, is_fixed_rate: false, is_fee_paid_by_user: false }), signal: AbortSignal.timeout(10_000) })
     if (!res.ok) return NextResponse.json({ error: 'Checkout creation failed. Try again.' }, { status: 502 })
     const json = (await res.json()) as { invoice_url?: string }
     if (!json.invoice_url) return NextResponse.json({ error: 'Checkout creation failed. Try again.' }, { status: 502 })
