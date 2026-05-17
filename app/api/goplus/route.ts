@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
+import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
 
 export const dynamic = "force-dynamic";
+
+const limiter = createRateLimiter({ windowMs: 60_000, max: 20 });
 
 const GOPLUS_BASE = "https://api.gopluslabs.io/api/v1";
 
@@ -24,6 +27,10 @@ async function getAccessToken(key: string, secret: string): Promise<string | nul
 }
 
 export async function GET(req: NextRequest) {
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ ok: false, error: "Too many requests" }, { status: 429 });
+  }
+
   const address = req.nextUrl.searchParams.get("address")?.trim();
   if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
     return NextResponse.json(

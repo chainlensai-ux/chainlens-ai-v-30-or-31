@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { isValidReferralCode, normalizeReferralCode } from '@/lib/affiliate/referral'
+import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
+
+const limiter = createRateLimiter({ windowMs: 3_600_000, max: 3 })
 
 type AffiliatePayload = {
   name?: string
@@ -24,26 +26,14 @@ function sanitize(value: unknown, max: number): string {
   return text.slice(0, max)
 }
 
-function isAllowed(req: NextRequest): boolean {
-  const key = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
-  const now = Date.now()
-  const cur = ipRate.get(key)
-  if (!cur || cur.resetAt <= now) {
-    ipRate.set(key, { count: 1, resetAt: now + WINDOW_MS })
-    return true
+function unavailableResponse(status: number) {
+  return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status })
+}
+
+export async function POST(req: Request) {
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ error: 'Too many requests. Please try again later.' }, { status: 429 })
   }
-  if (cur.count >= LIMIT_PER_IP) return false
-  cur.count += 1
-  return true
-}
-
-function referralBase(name: string, handle: string): string {
-  const base = normalizeReferralCode((handle || name).replace(/^@+/, '').replace(/\s+/g, '-').replace(/[^a-z0-9_-]+/gi, '-').replace(/-+/g, '-').replace(/^[-_]+|[-_]+$/g, ''))
-  return isValidReferralCode(base) ? base : `affiliate-${Math.random().toString(36).slice(2, 6)}`
-}
-
-export async function POST(req: NextRequest) {
-  if (!isAllowed(req)) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })
 
   try {
     const body = (await req.json()) as AffiliatePayload
@@ -65,12 +55,13 @@ export async function POST(req: NextRequest) {
     const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
     if (!supabaseUrl || !serviceRole) return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 503 })
 
-    const supabase = createClient(supabaseUrl, serviceRole)
-    let code = referralBase(name, xHandle)
-    for (let i = 0; i < 5; i += 1) {
-      const { data: existing } = await supabase.from('affiliates').select('id').eq('referral_code', code).maybeSingle()
-      if (!existing) break
-      code = `${code}-${Math.random().toString(36).slice(2, 6)}`
+    if (!supabaseUrl || !serviceRole) {
+      console.error('affiliate_apply_failed', {
+        code: 'missing_env',
+        message: 'Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY',
+        details: null,
+      })
+      return unavailableResponse(503)
     }
 
     const { error } = await supabase.from('affiliates').insert({
@@ -86,12 +77,45 @@ export async function POST(req: NextRequest) {
     })
 
     if (error) {
-      console.error('affiliate_apply_failed', { code: error.code })
-      return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 500 })
+      console.error('affiliate_apply_failed', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+      })
+      return unavailableResponse(500)
+    }
+
+    const resendApiKey = process.env.RESEND_API_KEY
+    if (resendApiKey) {
+      const notifyEmail = process.env.AFFILIATE_NOTIFY_EMAIL || 'chainlensai@gmail.com'
+      const submittedAt = new Date().toISOString()
+      const message = `New ChainLens Affiliate Application\n\nname: ${name}\nemail: ${email}\ntelegram: ${telegram || 'N/A'}\nX handle: ${xHandle}\naudience size: ${audienceSize}\naudience type: ${audienceType}\npromo plan: ${promoPlan}\npayout wallet: ${payoutWallet || 'N/A'}\nsubmitted at: ${submittedAt}`
+
+      const mailResp = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: process.env.AFFILIATE_FROM_EMAIL || 'ChainLens Affiliate <onboarding@resend.dev>',
+          to: [notifyEmail],
+          subject: 'New ChainLens Affiliate Application',
+          text: message,
+        }),
+      })
+
+      if (!mailResp.ok) {
+        console.error('affiliate_apply_failed', {
+          code: `resend_${mailResp.status}`,
+          message: 'Resend notification failed after successful DB insert',
+          details: null,
+        })
+      }
     }
 
     return NextResponse.json({ status: 'pending', referral_code: code })
   } catch {
-    return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 500 })
+    return unavailableResponse(500)
   }
 }

@@ -1,7 +1,10 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { getOrFetchCached } from "@/lib/coingeckoCache";
+import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
 
 export const dynamic = "force-dynamic";
+
+const limiter = createRateLimiter({ windowMs: 60_000, max: 20 });
 
 interface MergedToken {
   contract: string;
@@ -179,7 +182,11 @@ async function fetchCoinGecko(): Promise<{ tokens: MergedToken[]; warning?: stri
   }
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ data: [], error: "Too many requests" }, { status: 429 });
+  }
+
   try {
     const [gtResult, cgResult] = await Promise.all([
       fetchGT(),

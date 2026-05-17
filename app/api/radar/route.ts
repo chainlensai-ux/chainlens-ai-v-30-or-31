@@ -1,8 +1,10 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
+import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+const limiter = createRateLimiter({ windowMs: 60_000, max: 5 })
 
 const EXCLUDED = new Set([
   'USDC', 'USDT', 'DAI', 'WETH', 'WBTC', 'USDBC', 'ETH', 'BUSD', 'FRAX',
@@ -135,7 +137,11 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
 
 const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCommonRisk: 'SAFE', dangerCount: 0, cautionCount: 0, safeCount: 0 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  }
+
   // Fetch new Base pools (shared cache for beta traffic)
   let gtResult: Awaited<ReturnType<typeof getOrFetchCached<Record<string, unknown>>>>
   try {

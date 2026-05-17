@@ -1,7 +1,17 @@
 // app/api/proxy/goldrush/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
+
+const limiter = createRateLimiter({ windowMs: 60_000, max: 30 });
+
+// Only allow alphanumeric chars, slashes, dots, hyphens, underscores, and query strings
+const SAFE_PATH = /^[a-zA-Z0-9/_\-:.?=&%+]+$/;
 
 export async function GET(request: NextRequest) {
+  if (!limiter.check(getClientIp(request))) {
+    return NextResponse.json({ ok: false, error: "Too many requests" }, { status: 429 });
+  }
+
   try {
     const path = request.nextUrl.searchParams.get("path");
 
@@ -12,7 +22,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Build the full URL correctly
+    // Block path traversal and unsafe characters
+    if (!SAFE_PATH.test(path) || path.includes("..")) {
+      return NextResponse.json(
+        { ok: false, error: "Invalid path parameter" },
+        { status: 400 }
+      );
+    }
+
     const url = `https://api.covalenthq.com/${path}`;
 
     const response = await fetch(url, {
@@ -25,7 +42,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(
         {
           ok: false,
-          error: `Request failed with status ${response.status}`,
+          error: `Upstream request failed`,
         },
         { status: response.status }
       );
@@ -33,12 +50,9 @@ export async function GET(request: NextRequest) {
 
     const data = await response.json();
     return NextResponse.json({ ok: true, data });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
+      { ok: false, error: "Request failed" },
       { status: 500 }
     );
   }

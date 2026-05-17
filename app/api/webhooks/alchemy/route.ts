@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { createHmac, timingSafeEqual } from 'crypto'
 
 type AlchemyActivity = {
   fromAddress?: string | null
@@ -83,29 +84,12 @@ function severityFromUsd(usd: number | null): string | null {
   return null
 }
 
-export async function GET() {
-  return NextResponse.json({ ok: true, route: 'alchemy webhook alive' })
-}
-
-export async function POST(request: Request) {
-  const webhooksEnabled = (process.env.WEBHOOKS_ENABLED ?? 'true').toLowerCase() !== 'false'
-  if (!webhooksEnabled) {
-    return NextResponse.json({ ok: true, disabled: true })
-  }
-
+async function handleWebhook(payload: AlchemyPayload) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
 
   if (!supabaseUrl || !serviceRole) {
     return NextResponse.json({ ok: false, error: 'missing_supabase_env' }, { status: 503 })
-  }
-
-  let payload: AlchemyPayload = {}
-  try {
-    payload = (await request.json()) as AlchemyPayload
-  } catch {
-    console.log('[alchemy-webhook]', { received: 0, earlySkipped: 1, duplicateSkipped: 0, relevantForEnrichment: 0, enriched: 0, inserted: 0 })
-    return NextResponse.json({ ok: true, received: 0, inserted: 0 })
   }
 
   const rawActivity = payload?.event?.activity
@@ -234,4 +218,44 @@ export async function POST(request: Request) {
 
   console.log('[alchemy-webhook]', { received, earlySkipped, duplicateSkipped, relevantForEnrichment, enriched, inserted })
   return NextResponse.json({ ok: true, received, inserted })
+}
+
+export async function GET() {
+  return NextResponse.json({ ok: true, route: 'alchemy webhook alive' })
+}
+
+export async function POST(request: Request) {
+  const webhooksEnabled = (process.env.WEBHOOKS_ENABLED ?? 'true').toLowerCase() !== 'false'
+  if (!webhooksEnabled) {
+    return NextResponse.json({ ok: true, disabled: true })
+  }
+
+  const signingKey = process.env.ALCHEMY_WEBHOOK_SIGNING_KEY
+
+  // Always read the raw body first so we can both verify and parse
+  const rawBody = await request.text()
+
+  if (signingKey) {
+    const providedSig = request.headers.get('x-alchemy-signature') ?? ''
+    const expected = createHmac('sha256', signingKey).update(rawBody).digest('hex')
+    let sigValid = false
+    try {
+      sigValid = timingSafeEqual(Buffer.from(providedSig, 'hex'), Buffer.from(expected, 'hex'))
+    } catch {
+      sigValid = false
+    }
+    if (!sigValid) {
+      return NextResponse.json({ ok: false, error: 'Invalid signature' }, { status: 401 })
+    }
+  }
+
+  let payload: AlchemyPayload = {}
+  try {
+    payload = JSON.parse(rawBody) as AlchemyPayload
+  } catch {
+    console.log('[alchemy-webhook]', { received: 0, earlySkipped: 1, duplicateSkipped: 0, relevantForEnrichment: 0, enriched: 0, inserted: 0 })
+    return NextResponse.json({ ok: true, received: 0, inserted: 0 })
+  }
+
+  return handleWebhook(payload)
 }
