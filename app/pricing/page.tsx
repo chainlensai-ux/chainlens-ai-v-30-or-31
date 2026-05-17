@@ -139,6 +139,9 @@ export default function PricingPage() {
       const urlRef = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('ref') : null
       if (!token) {
         const returnPath = urlRef ? `/pricing?ref=${encodeURIComponent(urlRef)}` : '/pricing'
+        try { sessionStorage.setItem('cl_auth_next', returnPath) } catch {}
+        try { localStorage.setItem('cl_auth_next', returnPath) } catch {}
+        document.cookie = `cl_auth_next=${encodeURIComponent(returnPath)}; Max-Age=3600; Path=/; SameSite=Lax`
         window.location.href = `/auth?next=${encodeURIComponent(returnPath)}`
         return
       }

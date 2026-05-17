@@ -12,10 +12,32 @@ export default function AuthCallbackPage() {
 
     async function completeAuth() {
       const callbackUrl = new URL(window.location.href);
-      const storedNext = sessionStorage.getItem('cl_auth_next') ?? null
-      sessionStorage.removeItem('cl_auth_next')
-      const nextPath = callbackUrl.searchParams.get('next') || storedNext || '/terminal';
       const hasCode = Boolean(callbackUrl.searchParams.get('code'));
+
+      // Resolve return path: URL ?next= → sessionStorage → localStorage → cookie → ref-based pricing → /terminal
+      let nextPath = callbackUrl.searchParams.get('next') ?? ''
+      if (!nextPath.startsWith('/')) {
+        try { nextPath = sessionStorage.getItem('cl_auth_next') ?? '' } catch {}
+      }
+      if (!nextPath.startsWith('/')) {
+        try { nextPath = localStorage.getItem('cl_auth_next') ?? '' } catch {}
+      }
+      if (!nextPath.startsWith('/')) {
+        const m = document.cookie.match(/(?:^|; )cl_auth_next=([^;]+)/)
+        if (m) nextPath = decodeURIComponent(m[1])
+      }
+      if (!nextPath.startsWith('/')) {
+        try {
+          const storedRef = localStorage.getItem('chainlens_affiliate_ref')
+          if (storedRef) nextPath = `/pricing?ref=${encodeURIComponent(storedRef)}`
+        } catch {}
+      }
+      if (!nextPath.startsWith('/')) nextPath = '/terminal'
+
+      // Clear all navigation state regardless of which source was used
+      try { sessionStorage.removeItem('cl_auth_next') } catch {}
+      try { localStorage.removeItem('cl_auth_next') } catch {}
+      document.cookie = 'cl_auth_next=; Max-Age=0; Path=/'
 
       if (process.env.NODE_ENV !== 'production') {
         console.info('[auth-callback] reached', { hasCode, nextPath });

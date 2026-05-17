@@ -103,10 +103,18 @@ export default function AuthPage() {
   async function handleGoogle() {
     setError(null);
     const nextParam = new URLSearchParams(window.location.search).get('next')
-    if (nextParam?.startsWith('/')) sessionStorage.setItem('cl_auth_next', nextParam)
+    if (nextParam?.startsWith('/')) {
+      try { sessionStorage.setItem('cl_auth_next', nextParam) } catch {}
+      try { localStorage.setItem('cl_auth_next', nextParam) } catch {}
+      document.cookie = `cl_auth_next=${encodeURIComponent(nextParam)}; Max-Age=3600; Path=/; SameSite=Lax`
+    }
+    const callbackBase = `${window.location.origin}/auth/callback`
+    const redirectTo = nextParam?.startsWith('/')
+      ? `${callbackBase}?next=${encodeURIComponent(nextParam)}`
+      : callbackBase
     const { error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}/auth/callback` },
+      options: { redirectTo },
     });
     if (oauthError) setError(oauthError.message);
   }
