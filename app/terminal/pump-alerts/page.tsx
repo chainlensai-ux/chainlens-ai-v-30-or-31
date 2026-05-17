@@ -90,7 +90,9 @@ function fmtPrice(v: number | null): string {
   if (v == null) return '—'
   if (v >= 1) return `$${v.toFixed(4)}`
   if (v >= 0.0001) return `$${v.toFixed(6)}`
-  return `$${v.toExponential(3)}`
+  // Tiny prices: show 4 significant figures in plain decimal (never scientific notation)
+  const decimals = Math.min(-Math.floor(Math.log10(v)) + 3, 12)
+  return `$${v.toFixed(decimals)}`
 }
 
 function shortAddr(addr: string): string {
