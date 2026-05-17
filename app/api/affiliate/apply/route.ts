@@ -1,6 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
+import { randomBytes } from 'crypto'
 
 const limiter = createRateLimiter({ windowMs: 3_600_000, max: 3 })
 
@@ -15,9 +16,6 @@ type AffiliatePayload = {
   website?: string
 }
 
-const WINDOW_MS = 10 * 60 * 1000
-const LIMIT_PER_IP = 5
-const ipRate = new Map<string, { count: number; resetAt: number }>()
 const MAX = { name: 100, email: 200, telegram: 100, x_handle: 100, audience_size: 120, payout_wallet: 120, promotion_plan: 1200, website: 300 }
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -53,16 +51,10 @@ export async function POST(req: Request) {
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
-    if (!supabaseUrl || !serviceRole) return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 503 })
+    if (!supabaseUrl || !serviceRole) return unavailableResponse(503)
 
-    if (!supabaseUrl || !serviceRole) {
-      console.error('affiliate_apply_failed', {
-        code: 'missing_env',
-        message: 'Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY',
-        details: null,
-      })
-      return unavailableResponse(503)
-    }
+    const supabase = createClient(supabaseUrl, serviceRole)
+    const code = 'CL' + randomBytes(4).toString('hex').toUpperCase()
 
     const { error } = await supabase.from('affiliates').insert({
       name,
@@ -89,7 +81,7 @@ export async function POST(req: Request) {
     if (resendApiKey) {
       const notifyEmail = process.env.AFFILIATE_NOTIFY_EMAIL || 'chainlensai@gmail.com'
       const submittedAt = new Date().toISOString()
-      const message = `New ChainLens Affiliate Application\n\nname: ${name}\nemail: ${email}\ntelegram: ${telegram || 'N/A'}\nX handle: ${xHandle}\naudience size: ${audienceSize}\naudience type: ${audienceType}\npromo plan: ${promoPlan}\npayout wallet: ${payoutWallet || 'N/A'}\nsubmitted at: ${submittedAt}`
+      const message = `New ChainLens Affiliate Application\n\nname: ${name}\nemail: ${email}\ntelegram: ${telegram || 'N/A'}\nX handle: ${xHandle}\naudience size: ${audienceSize}\npromo plan: ${promotionPlan}\npayout wallet: ${payoutWallet || 'N/A'}\nreferral code: ${code}\nsubmitted at: ${submittedAt}`
 
       const mailResp = await fetch('https://api.resend.com/emails', {
         method: 'POST',
