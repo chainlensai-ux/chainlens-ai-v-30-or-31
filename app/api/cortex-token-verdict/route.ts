@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
+
+const limiter = createRateLimiter({ windowMs: 60_000, max: 10 });
 
 export interface CortexVerdict {
   risk_score: number;
@@ -77,6 +80,10 @@ function isValidVerdict(obj: unknown): obj is CortexVerdict {
 }
 
 export async function POST(req: NextRequest) {
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ ok: false, error: "Too many requests" }, { status: 429 });
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
@@ -127,9 +134,8 @@ Return ONLY the JSON object. No other text.`;
       );
     }
     raw = block.text.trim();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Claude API error";
-    return NextResponse.json({ ok: false, error: msg }, { status: 502 });
+  } catch {
+    return NextResponse.json({ ok: false, error: "Analysis service unavailable" }, { status: 502 });
   }
 
   // Strip optional markdown code fences
@@ -140,14 +146,14 @@ Return ONLY the JSON object. No other text.`;
     verdict = JSON.parse(stripped);
   } catch {
     return NextResponse.json(
-      { ok: false, error: "Claude returned non-JSON output", raw },
+      { ok: false, error: "Analysis service returned invalid output" },
       { status: 502 }
     );
   }
 
   if (!isValidVerdict(verdict)) {
     return NextResponse.json(
-      { ok: false, error: "Claude response failed schema validation", raw },
+      { ok: false, error: "Analysis service returned unexpected structure" },
       { status: 502 }
     );
   }

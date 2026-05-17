@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit';
+
+const limiter = createRateLimiter({ windowMs: 60_000, max: 60 });
 
 function isValidAvatarUrl(url: unknown): boolean {
   if (!url || typeof url !== 'string' || url.trim() === '') return true
@@ -50,6 +53,10 @@ async function getAuthenticatedUser(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  if (!limiter.check(getClientIp(request))) {
+    return NextResponse.json({ error: 'Too many requests.' }, { status: 429 });
+  }
+
   const auth = await getAuthenticatedUser(request);
   if (auth.error || !auth.userId || !auth.supabase) {
     return NextResponse.json({ error: auth.error ?? 'Unauthorized.' }, { status: 401 });
@@ -62,16 +69,13 @@ export async function GET(request: NextRequest) {
   const effectivePlan = betaEliteActive ? 'elite' : rawPlan;
   const plan = effectivePlan;
   const verifiedPlan = effectivePlan;
-  const debugMode = request.nextUrl.searchParams.get('debug') === 'true';
-
-  const diagnostics = (process.env.NODE_ENV !== 'production' || debugMode)
+  const diagnostics = process.env.NODE_ENV !== 'production'
     ? {
         authenticated: true,
         userIdPresent: Boolean(auth.userId),
         hasSettingsRow: !result.error,
         plan,
         fallback: Boolean(result.error),
-        ...(debugMode && { rawPlan, betaAllElite, settingsRowFound: !result.error }),
       }
     : undefined;
 
@@ -110,6 +114,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
+  if (!limiter.check(getClientIp(request))) {
+    return NextResponse.json({ error: 'Too many requests.' }, { status: 429 });
+  }
+
   const auth = await getAuthenticatedUser(request);
   if (auth.error || !auth.userId || !auth.supabase) {
     return NextResponse.json({ error: auth.error ?? 'Unauthorized.' }, { status: 401 });

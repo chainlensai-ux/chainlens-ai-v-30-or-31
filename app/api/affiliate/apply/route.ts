@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
+
+const limiter = createRateLimiter({ windowMs: 3_600_000, max: 3 })
 
 type AffiliatePayload = {
   name?: string
@@ -32,15 +35,14 @@ function sanitize(value: unknown, max: number): string {
   return text.slice(0, max)
 }
 
-function unavailableResponse(status: number, debug = false, code?: string) {
-  if (debug) {
-    return NextResponse.json({ ok: false, reason: 'db_insert_failed', code: code ?? null }, { status })
-  }
+function unavailableResponse(status: number) {
   return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status })
 }
 
 export async function POST(req: Request) {
-  const debug = new URL(req.url).searchParams.get('debug') === 'true'
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ error: 'Too many requests. Please try again later.' }, { status: 429 })
+  }
 
   try {
     const body = (await req.json()) as AffiliatePayload
@@ -73,7 +75,7 @@ export async function POST(req: Request) {
         message: 'Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY',
         details: null,
       })
-      return unavailableResponse(503, debug, 'missing_env')
+      return unavailableResponse(503)
     }
 
     const supabase = createClient(supabaseUrl, serviceRole)
@@ -94,7 +96,7 @@ export async function POST(req: Request) {
         message: error.message,
         details: error.details,
       })
-      return unavailableResponse(500, debug, error.code)
+      return unavailableResponse(500)
     }
 
     const resendApiKey = process.env.RESEND_API_KEY
@@ -128,6 +130,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true })
   } catch {
-    return unavailableResponse(500, debug)
+    return unavailableResponse(500)
   }
 }

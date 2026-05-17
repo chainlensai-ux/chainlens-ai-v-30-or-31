@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
 
 export const dynamic = "force-dynamic";
+
+const limiter = createRateLimiter({ windowMs: 60_000, max: 15 });
 
 // ─── RPC ──────────────────────────────────────────────────────────────────────
 // Read-only eth_getCode call. No transactions, no wallet interaction.
@@ -176,6 +179,10 @@ function analyzeContract(bytecode: string) {
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ ok: false, error: "Too many requests" }, { status: 429 });
+  }
+
   const address = req.nextUrl.searchParams.get("address")?.trim();
 
   if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {

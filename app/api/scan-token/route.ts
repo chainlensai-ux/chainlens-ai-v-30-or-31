@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchGoPlus } from "@/lib/goplus";
 import { getOrFetchCached } from "@/lib/coingeckoCache";
+import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
 
 export const dynamic = "force-dynamic";
+
+const limiter = createRateLimiter({ windowMs: 60_000, max: 15 });
 
 const GT = "https://api.geckoterminal.com/api/v2";
 const GT_HEADERS = { accept: "application/json", origin: "https://chainlens.ai" };
@@ -149,6 +152,10 @@ function buildToken(contract: string, pools: GTPool[], included: GTToken[]) {
 // ---------- Handler ----------
 
 export async function GET(req: NextRequest) {
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   const { searchParams } = req.nextUrl;
   const query    = searchParams.get("query")?.trim();
   const contract = searchParams.get("contract")?.trim();

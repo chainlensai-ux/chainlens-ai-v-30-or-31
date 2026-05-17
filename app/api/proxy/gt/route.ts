@@ -1,7 +1,15 @@
+import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const limiter = createRateLimiter({ windowMs: 60_000, max: 30 });
+
 export async function GET(req: Request) {
+  if (!limiter.check(getClientIp(req))) {
+    return Response.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   const { searchParams } = new URL(req.url);
   const network = searchParams.get("network");
   const type = (searchParams.get("type") ?? "pools").toLowerCase();
