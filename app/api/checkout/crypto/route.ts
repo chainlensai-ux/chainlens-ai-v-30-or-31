@@ -37,12 +37,28 @@ export async function POST(req: NextRequest) {
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '', process.env.SUPABASE_SERVICE_ROLE_KEY ?? '')
   let affiliateId: string | null = null
   if (referralCode) {
-    const { data: aff } = await supabase.from('affiliates').select('id,email,status,referral_code').or(`referral_code.eq.${referralCode},referral_code.eq.${referralCode.toUpperCase()}`).maybeSingle()
+    // Two sequential exact-match queries: lowercase first (new codes), uppercase second (legacy codes pre-case-fix).
+    // Avoids .or() PostgREST edge cases with case-only value differences on UNIQUE text columns.
+    type AffRow = { id: string; email: string | null; status: string }
+    let aff: AffRow | null = null
+    for (const variant of [referralCode, referralCode.toUpperCase()]) {
+      const { data, error: lookupErr } = await supabase.from('affiliates').select('id,email,status').eq('referral_code', variant).maybeSingle()
+      if (data?.id) { aff = data as AffRow; break }
+      if (process.env.NODE_ENV !== 'production' && lookupErr) {
+        console.warn('[checkout] affiliate lookup error', { variant, code: lookupErr.code })
+      }
+    }
     const affEmail = String(aff?.email ?? '').toLowerCase()
-    if (aff?.id && aff?.status === 'approved' && (!userEmail || !affEmail || affEmail !== userEmail)) affiliateId = aff.id as string
+    const selfReferral = Boolean(userEmail && affEmail && affEmail === userEmail)
+    if (aff?.id && aff?.status === 'approved' && !selfReferral) affiliateId = aff.id
     if (process.env.NODE_ENV !== 'production') {
-      if (!aff) console.warn('[checkout] affiliate lookup miss', { referralCode })
-      else if (!affiliateId) console.warn('[checkout] affiliate not attached', { status: aff.status, selfReferral: affEmail === userEmail })
+      console.warn('[checkout] affiliate diagnostic', {
+        normalizedCode: referralCode,
+        found: Boolean(aff?.id),
+        status: aff?.status ?? null,
+        selfReferral,
+        affiliateAttached: Boolean(affiliateId),
+      })
     }
   }
 
