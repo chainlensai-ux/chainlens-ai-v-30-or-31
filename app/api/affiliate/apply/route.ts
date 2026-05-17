@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 
@@ -10,24 +10,15 @@ type AffiliatePayload = {
   telegram?: string
   x_handle?: string
   audience_size?: string
-  audience_type?: string
+  promotion_plan?: string
   payout_wallet?: string
-  promo_plan?: string
   website?: string
 }
 
-const MAX = {
-  name: 100,
-  email: 200,
-  telegram: 100,
-  x_handle: 100,
-  audience_size: 120,
-  audience_type: 160,
-  payout_wallet: 120,
-  promo_plan: 1200,
-  website: 300,
-}
-
+const WINDOW_MS = 10 * 60 * 1000
+const LIMIT_PER_IP = 5
+const ipRate = new Map<string, { count: number; resetAt: number }>()
+const MAX = { name: 100, email: 200, telegram: 100, x_handle: 100, audience_size: 120, payout_wallet: 120, promotion_plan: 1200, website: 300 }
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 function sanitize(value: unknown, max: number): string {
@@ -46,28 +37,23 @@ export async function POST(req: Request) {
 
   try {
     const body = (await req.json()) as AffiliatePayload
-
     const website = sanitize(body.website, MAX.website)
-    if (website) return NextResponse.json({ ok: true })
+    if (website) return NextResponse.json({ error: 'Invalid submission.' }, { status: 400 })
 
     const name = sanitize(body.name, MAX.name)
     const email = sanitize(body.email, MAX.email).toLowerCase()
     const telegram = sanitize(body.telegram, MAX.telegram)
     const xHandle = sanitize(body.x_handle, MAX.x_handle)
     const audienceSize = sanitize(body.audience_size, MAX.audience_size)
-    const audienceType = sanitize(body.audience_type, MAX.audience_type)
     const payoutWallet = sanitize(body.payout_wallet, MAX.payout_wallet)
-    const promoPlan = sanitize(body.promo_plan, MAX.promo_plan)
+    const promotionPlan = sanitize(body.promotion_plan, MAX.promotion_plan)
 
-    if (!name) return NextResponse.json({ error: 'Name is required.' }, { status: 400 })
-    if (!email || !emailRegex.test(email)) return NextResponse.json({ error: 'Please enter a valid email.' }, { status: 400 })
-    if (!xHandle) return NextResponse.json({ error: 'X handle is required.' }, { status: 400 })
-    if (!audienceSize) return NextResponse.json({ error: 'Audience size is required.' }, { status: 400 })
-    if (!audienceType) return NextResponse.json({ error: 'Audience type is required.' }, { status: 400 })
-    if (!promoPlan) return NextResponse.json({ error: 'Promotion plan is required.' }, { status: 400 })
+    if (!name || !email || !xHandle || !audienceSize || !promotionPlan) return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 })
+    if (!emailRegex.test(email)) return NextResponse.json({ error: 'Please enter a valid email.' }, { status: 400 })
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
+    if (!supabaseUrl || !serviceRole) return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status: 503 })
 
     if (!supabaseUrl || !serviceRole) {
       console.error('affiliate_apply_failed', {
@@ -78,16 +64,16 @@ export async function POST(req: Request) {
       return unavailableResponse(503)
     }
 
-    const supabase = createClient(supabaseUrl, serviceRole)
-    const { error } = await supabase.from('affiliate_applications').insert({
+    const { error } = await supabase.from('affiliates').insert({
       name,
       email,
       telegram: telegram || null,
       x_handle: xHandle,
       audience_size: audienceSize,
-      audience_type: audienceType,
+      promotion_plan: promotionPlan,
       payout_wallet: payoutWallet || null,
-      promo_plan: promoPlan,
+      referral_code: code,
+      status: 'pending',
     })
 
     if (error) {
@@ -128,7 +114,7 @@ export async function POST(req: Request) {
       }
     }
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ status: 'pending', referral_code: code })
   } catch {
     return unavailableResponse(500)
   }
