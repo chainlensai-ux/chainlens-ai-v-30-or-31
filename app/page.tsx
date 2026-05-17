@@ -166,7 +166,9 @@ const FEATURES = [
   },
 ]
 
-function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter }: { src: string; initials: string; grad: string; name: string; imgPos?: string; imgFilter?: string }) {
+function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter, imgZoom }: { src: string; initials: string; grad: string; name: string; imgPos?: string; imgFilter?: string; imgZoom?: number }) {
+  const zoom = imgZoom ?? 1
+  const excess = ((zoom - 1) / 2) * 100
   return (
     <div style={{ position: 'relative', width: '44px', height: '44px', borderRadius: '50%', flexShrink: 0, overflow: 'hidden', background: grad }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -174,7 +176,17 @@ function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter }: { sr
         src={src}
         alt=""
         aria-label={`${name} profile avatar`}
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: imgPos ?? 'center', display: 'block', filter: imgFilter }}
+        style={{
+          position: 'absolute',
+          width: `${zoom * 100}%`,
+          height: `${zoom * 100}%`,
+          top: `-${excess}%`,
+          left: `-${excess}%`,
+          objectFit: 'cover',
+          objectPosition: imgPos ?? 'center',
+          display: 'block',
+          filter: imgFilter,
+        }}
         onError={e => {
           const img = e.currentTarget;
           img.style.display = 'none';
@@ -1017,7 +1029,7 @@ export default function HomePage() {
               { handle: '@Veeekthorr', name: 'Victor xx',         initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', avatar: '/testimonials/victor.png',     date: 'May 7, 2026',  verified: true,  quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
               { handle: '@TyeSeen',    name: 'TYSON~OF~WEB3📊',  initials: 'T', grad: 'linear-gradient(135deg,#c0392b,#e74c3c)', avatar: '/testimonials/tyson.png',      date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
               { handle: '@Big_Wealthz', name: 'Big Wealth',       initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', avatar: '/testimonials/big-wealth.png', date: 'Apr 29, 2026', verified: true,  quote: 'know what whales are doing before Twitter even wakes up.' },
-              { handle: '@StardomJnr', name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#7f1d1d,#991b1b)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
+              { handle: '@StardomJnr', name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#7f1d1d,#991b1b)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', imgZoom: 1.32, imgFilter: 'brightness(1.1) saturate(1.05)', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
             ].map((t, i) => (
               <Reveal key={i} delayMs={i * 90}><div
                 className="mobile-static-card"
@@ -1041,7 +1053,7 @@ export default function HomePage() {
                 {/* Header row: avatar + name/handle */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   {/* Avatar — image when file present, gradient initials fallback */}
-                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} imgPos={(t as any).imgPos} imgFilter={(t as any).imgFilter} />
+                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} imgPos={(t as any).imgPos} imgFilter={(t as any).imgFilter} imgZoom={(t as any).imgZoom} />
                   {/* Name + handle */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
