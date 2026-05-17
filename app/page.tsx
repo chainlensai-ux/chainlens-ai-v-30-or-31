@@ -166,17 +166,15 @@ const FEATURES = [
   },
 ]
 
-function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter, imgScale }: { src: string; initials: string; grad: string; name: string; imgPos?: string; imgFilter?: string; imgScale?: string }) {
+function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter }: { src: string; initials: string; grad: string; name: string; imgPos?: string; imgFilter?: string }) {
   return (
-    <div style={{ width: '44px', height: '44px', borderRadius: '50%', flexShrink: 0, overflow: 'hidden', background: grad, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div style={{ position: 'relative', width: '44px', height: '44px', borderRadius: '50%', flexShrink: 0, overflow: 'hidden', background: grad }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}
         alt=""
         aria-label={`${name} profile avatar`}
-        width={44}
-        height={44}
-        style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: imgPos ?? 'center top', display: 'block', filter: imgFilter, transform: imgScale }}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: imgPos ?? 'center', display: 'block', filter: imgFilter }}
         onError={e => {
           const img = e.currentTarget;
           img.style.display = 'none';
@@ -186,6 +184,9 @@ function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter, imgSca
             parent.style.fontWeight = '800';
             parent.style.color = '#fff';
             parent.style.letterSpacing = '-0.02em';
+            parent.style.display = 'flex';
+            parent.style.alignItems = 'center';
+            parent.style.justifyContent = 'center';
             parent.textContent = initials;
           }
         }}
@@ -1016,7 +1017,7 @@ export default function HomePage() {
               { handle: '@Veeekthorr', name: 'Victor xx',         initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', avatar: '/testimonials/victor.png',     date: 'May 7, 2026',  verified: true,  quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
               { handle: '@TyeSeen',    name: 'TYSON~OF~WEB3📊',  initials: 'T', grad: 'linear-gradient(135deg,#c0392b,#e74c3c)', avatar: '/testimonials/tyson.png',      date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
               { handle: '@Big_Wealthz', name: 'Big Wealth',       initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', avatar: '/testimonials/big-wealth.png', date: 'Apr 29, 2026', verified: true,  quote: 'know what whales are doing before Twitter even wakes up.' },
-              { handle: '@StardomJnr', name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#7f1d1d,#991b1b)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', imgScale: 'scale(1.28)', imgFilter: 'brightness(1.4) contrast(1.1) saturate(1.15)', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
+              { handle: '@StardomJnr', name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#7f1d1d,#991b1b)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
             ].map((t, i) => (
               <Reveal key={i} delayMs={i * 90}><div
                 className="mobile-static-card"
@@ -1040,7 +1041,7 @@ export default function HomePage() {
                 {/* Header row: avatar + name/handle */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   {/* Avatar — image when file present, gradient initials fallback */}
-                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} imgPos={(t as any).imgPos} imgFilter={(t as any).imgFilter} imgScale={(t as any).imgScale} />
+                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} imgPos={(t as any).imgPos} imgFilter={(t as any).imgFilter} />
                   {/* Name + handle */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
