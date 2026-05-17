@@ -26,18 +26,21 @@ const plans: Plan[] = [
     id: 'free',
     label: 'FREE',
     price: '$0',
-    subtext: 'forever',
-    sectionTitle: 'CORE FEATURES',
-    note: 'Best for trying ChainLens.',
+    subtext: 'forever free · no card required',
+    sectionTitle: 'WHAT\'S INCLUDED',
+    note: '',
+    badge: 'CORTEX LITE',
     features: [
-      'Live Base market preview',
-      'Token Screener',
-      'Price, liquidity, volume, and 24h change',
-      'Basic token info',
-      'Limited Clark AI access',
-      'No Full Token Scanner reports',
+      'Price, liquidity, volume, 24h change',
+      'Basic token info only',
+      'Basic LP score only',
+      'Clark AI — 3 prompts per day',
+      'No AI token verdict',
+      'No full LP analysis',
       'No Wallet Scanner',
-      'No Whale / Pump Alerts',
+      'No Dev Wallet Detector',
+      'No Pump Alerts',
+      'No Whale Alerts',
       'No Base Radar',
     ],
     ctaClass: 'cta-free',
@@ -47,40 +50,41 @@ const plans: Plan[] = [
     label: 'PRO',
     price: '$30',
     subtext: 'per month',
-    sectionTitle: 'EVERYTHING IN FREE, PLUS',
-    note: 'Best for active Base traders.',
+    sectionTitle: 'FULL ACCESS',
+    note: 'Everything serious Base traders need.',
+    badge: 'CORTEX STANDARD',
     features: [
       'Full Token Scanner',
-      'Clark AI token reports',
-      'Holder distribution where available',
-      'Honeypot / tax / security checks',
-      'Liquidity Safety',
+      'Full Liquidity Safety',
       'Wallet Scanner',
       'Dev Wallet Detector',
-      'Whale Alerts',
       'Pump Alerts',
+      'Whale Alerts',
       'Base Radar',
-      'Portfolio + saved settings',
-      'Fair-use Clark AI limits',
+      'Clark AI — 50 prompts / day',
+      'Token security and tax simulation where available',
+      'Holder distribution where available',
+      'Portfolio and account tools',
     ],
     ctaClass: 'cta-pro',
-    badge: 'MOST POPULAR',
   },
   {
     id: 'elite',
     label: 'ELITE',
     price: '$60',
     subtext: 'per month',
-    sectionTitle: 'EVERYTHING IN PRO, PLUS',
-    note: 'Best for whale tracking and power users.',
+    sectionTitle: 'POWER TIER',
+    note: 'For traders who want more CORTEX power, higher limits, and faster reads.',
+    badge: 'CORTEX FULL INTELLIGENCE',
     features: [
-      'Higher Clark AI and report limits',
-      'More tracked wallet monitoring',
-      'Advanced Whale Alerts access',
-      'Smart wallet / watchlist tools where available',
-      'Auto Clark verdicts where available',
-      'Early access to new ChainLens features',
+      'Everything in Pro',
+      'Unlimited Clark AI prompts, subject to fair use',
+      'Auto Clark verdict on every supported scan',
+      'Higher CORTEX usage limits',
       'Priority CORTEX processing where available',
+      'More room for whale and wallet monitoring',
+      'Early access to new ChainLens features',
+      'Best plan for daily Base researchers and active traders',
     ],
     ctaClass: 'cta-elite',
   },
@@ -237,7 +241,7 @@ export default function PricingPage() {
           </div>
 
           {/* Pricing cards */}
-          <div className='plan-grid' style={{ display:'grid', gridTemplateColumns:'repeat(3,minmax(0,1fr))', gap:14 }}>
+          <div className='plan-grid' style={{ display:'grid', gridTemplateColumns:'repeat(3,minmax(0,1fr))', gap:14, paddingTop:14 }}>
             {plans.map((plan) => {
               const isCurrent = userPlan === plan.id
               const isPaid = plan.id === 'pro' || plan.id === 'elite'
@@ -270,7 +274,23 @@ export default function PricingPage() {
                   }}
                 >
                   {plan.badge && (
-                    <div style={{ position:'absolute', top:-11, left:'50%', transform:'translateX(-50%)', borderRadius:999, background:'linear-gradient(90deg,#a855f7,#ec4899)', color:'#fff', fontSize:10, letterSpacing:'.12em', fontWeight:800, padding:'4px 12px', boxShadow:'0 0 24px rgba(217,70,239,.6)', whiteSpace:'nowrap' }}>
+                    <div style={{
+                      position:'absolute', top:-11, left:'50%', transform:'translateX(-50%)',
+                      borderRadius:999,
+                      background: plan.id === 'elite'
+                        ? 'linear-gradient(90deg,#d97706,#fbbf24)'
+                        : plan.id === 'free'
+                          ? 'linear-gradient(90deg,#0891b2,#22d3ee)'
+                          : 'linear-gradient(90deg,#a855f7,#ec4899)',
+                      color: plan.id === 'elite' ? '#1c0e00' : plan.id === 'free' ? '#022c3a' : '#fff',
+                      fontSize:10, letterSpacing:'.12em', fontWeight:800, padding:'4px 12px',
+                      boxShadow: plan.id === 'elite'
+                        ? '0 0 24px rgba(251,191,36,.6)'
+                        : plan.id === 'free'
+                          ? '0 0 24px rgba(34,211,238,.5)'
+                          : '0 0 24px rgba(217,70,239,.6)',
+                      whiteSpace:'nowrap',
+                    }}>
                       {plan.badge}
                     </div>
                   )}
@@ -297,7 +317,7 @@ export default function PricingPage() {
 
                   {plan.id === 'elite' && (
                     <div style={{ border:'1px solid rgba(250,204,21,.4)', background:'rgba(250,204,21,.08)', color:'#fde68a', borderRadius:11, padding:10, fontSize:12, marginTop:12 }}>
-                      Everything in Pro — plus higher limits and CORTEX tools where available.
+                      Everything in Pro — plus maximum CORTEX access, higher limits, and early feature access.
                     </div>
                   )}
 
@@ -309,7 +329,7 @@ export default function PricingPage() {
                       </span>
                     ) : plan.id === 'free' ? (
                       <Link href='/terminal' className={`cta ${plan.ctaClass}`} style={{ display:'block' }}>
-                        Get Started
+                        GET STARTED
                       </Link>
                     ) : (
                       <button
@@ -318,7 +338,7 @@ export default function PricingPage() {
                         onClick={() => handleCryptoPay(plan.id as 'pro' | 'elite')}
                         style={{ opacity: isLoading ? 0.7 : 1 }}
                       >
-                        {isLoading ? 'Opening checkout…' : 'Pay with Crypto'}
+                        {isLoading ? 'Opening checkout…' : 'PAY WITH CRYPTO'}
                       </button>
                     )}
 
