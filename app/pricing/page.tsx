@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
-import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode } from '@/lib/affiliate/referral'
+import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
 
 type PlanId = 'free' | 'pro' | 'elite'
@@ -138,8 +138,12 @@ export default function PricingPage() {
       const token = session?.access_token
       const urlRef = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('ref') : null
       const storedRef = typeof window !== 'undefined' ? window.localStorage.getItem(AFFILIATE_REF_KEY) : null
-      const rawRef = urlRef ?? storedRef
+      const cookieRef = typeof window !== 'undefined' ? readReferralCodeFromCookie(document.cookie) : null
+      const rawRef = urlRef ?? storedRef ?? cookieRef
       const referralCode = rawRef && isValidReferralCode(rawRef) ? normalizeReferralCode(rawRef) : null
+      if (process.env.NODE_ENV !== 'production') {
+        console.info('[handleCryptoPay] ref sources', { urlRef, storedRef, cookieRef, referralCode })
+      }
       if (!token) {
         const returnPath = referralCode ? `/pricing?ref=${encodeURIComponent(referralCode)}` : '/pricing'
         try { sessionStorage.setItem('cl_auth_next', returnPath) } catch {}

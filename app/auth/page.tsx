@@ -109,12 +109,12 @@ export default function AuthPage() {
       document.cookie = `cl_auth_next=${encodeURIComponent(nextParam)}; Max-Age=3600; Path=/; SameSite=Lax`
     }
     const callbackBase = `${window.location.origin}/auth/callback`
-    const redirectTo = nextParam?.startsWith('/')
-      ? `${callbackBase}?next=${encodeURIComponent(nextParam)}`
-      : callbackBase
+    if (process.env.NODE_ENV !== 'production') {
+      console.info('[handleGoogle] redirectTo:', callbackBase, '| stored next:', nextParam ?? '(none)')
+    }
     const { error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo },
+      options: { redirectTo: callbackBase },
     });
     if (oauthError) setError(oauthError.message);
   }
