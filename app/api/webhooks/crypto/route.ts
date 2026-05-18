@@ -42,9 +42,16 @@ export async function POST(req: NextRequest) {
   if (!parsed || (parsed.plan !== 'pro' && parsed.plan !== 'elite')) return NextResponse.json({ ok: true })
   if (String(ipn.price_currency ?? '').toLowerCase() !== 'usd' || Math.abs(Number(ipn.price_amount ?? 0) - PLAN_AMOUNTS[parsed.plan]) > 1) return NextResponse.json({ ok: true })
 
-  const { data: pay } = await supabase.from('crypto_payments').select('id,affiliate_id,referral_code,amount_usd,user_email').eq('order_id', orderId).maybeSingle()
+  const { data: pay } = await supabase.from('crypto_payments').select('id,plan,affiliate_id,referral_code,amount_usd,user_email').eq('order_id', orderId).maybeSingle()
+  // Require a DB payment row. Activating without one would bypass our own checkout record.
+  if (!pay?.id) return NextResponse.json({ ok: true })
+  // Use the plan stored in our DB — never trust the encoded plan in the order_id alone.
+  const storedPlan = String(pay.plan ?? '')
+  if (storedPlan !== 'pro' && storedPlan !== 'elite') return NextResponse.json({ ok: true })
+  // Reject if the order_id plan and DB plan diverge (should never happen, but fail safe).
+  if (storedPlan !== parsed.plan) return NextResponse.json({ ok: true })
 
-  const { error } = await activateUserPlanServerSide(parsed.userId, parsed.plan as 'pro' | 'elite', paymentId || undefined)
+  const { error } = await activateUserPlanServerSide(parsed.userId, storedPlan as 'pro' | 'elite', paymentId || undefined)
   if (error) return NextResponse.json({ ok: false }, { status: 500 })
 
   if (pay?.id) {
