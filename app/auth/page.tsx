@@ -13,6 +13,10 @@ const BANNED_PASSWORDS = new Set([
   'qwerty','qwerty123','chainlens','chainlens123','letmein','admin123',
 ])
 
+// Use the configured app URL so OAuth callbacks always land on the canonical
+// production domain rather than whichever origin the page is served from.
+const CANONICAL_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://www.chainlensai.app'
+
 function checkPolicy(pw: string) {
   return {
     minLen: pw.length >= 10,
@@ -108,7 +112,7 @@ export default function AuthPage() {
       try { localStorage.setItem('cl_auth_next', nextParam) } catch {}
       document.cookie = `cl_auth_next=${encodeURIComponent(nextParam)}; Max-Age=3600; Path=/; SameSite=Lax`
     }
-    const callbackBase = `${window.location.origin}/auth/callback`
+    const callbackBase = `${CANONICAL_URL}/auth/callback`
     if (process.env.NODE_ENV !== 'production') {
       console.info('[handleGoogle] redirectTo:', callbackBase, '| stored next:', nextParam ?? '(none)')
     }
@@ -127,7 +131,7 @@ export default function AuthPage() {
     const cleanEmail = email.trim().toLowerCase();
     // Always show success to avoid leaking whether email exists
     await supabase.auth.resetPasswordForEmail(cleanEmail, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo: `${CANONICAL_URL}/reset-password`,
     });
     setSuccess('If this email has an account, a reset link has been sent. Check your inbox.');
     setLoading(false);
