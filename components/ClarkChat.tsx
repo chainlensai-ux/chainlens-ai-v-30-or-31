@@ -162,7 +162,7 @@ export default function ClarkChat({
   const lastSentInitialRef = useRef<string | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
   const [clarkUsed, setClarkUsed] = useState(0)
-  const [planLimit, setPlanLimit] = useState(CLARK_LIMIT_UNAUTH)
+  const [planLimit, setPlanLimit] = useState<number | null>(null)
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -181,13 +181,12 @@ export default function ClarkChat({
           const json = await res.json() as Record<string, unknown>
           const p = String(json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan ?? '')
           setPlanLimit(CLARK_DAILY_LIMITS[p] ?? CLARK_DAILY_LIMITS.free)
-        }
-      } catch { /* keep default */ }
+        } else { setPlanLimit(CLARK_DAILY_LIMITS.free) }
+      } catch { setPlanLimit(CLARK_DAILY_LIMITS.free) }
     })
   }, [])
 
   const executeSend = useCallback(async (text: string) => {
-    console.log('executeSend sending:', text)
     setMessages(prev => [...prev, { role: 'user', text }])
     setLoading(true)
     setMessages(prev => [...prev, { role: 'clark', text: THINKING_MESSAGE }])
@@ -203,7 +202,6 @@ export default function ClarkChat({
           lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
         })
       }
-      console.log('POST → /api/clark')
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData.session?.access_token
       const res = await fetch(`/api/clark`, {
@@ -227,10 +225,8 @@ export default function ClarkChat({
           clientContext: getClientClarkContext(),
         }),
       })
-      console.log('Response status:', res.status)
-
       const json = await res.json()
-      if (res.status !== 429) setClarkUsed(bumpClarkUsage())
+      if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown }
@@ -399,14 +395,14 @@ export default function ClarkChat({
               <div style={{ flex: 1 }} />
               <span style={{
                 fontSize: '9px',
-                color: clarkUsed >= planLimit ? 'rgba(239,68,68,0.85)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.80)' : 'rgba(45,212,191,0.70)',
+                color: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.85)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.80)' : 'rgba(45,212,191,0.70)',
                 fontFamily: 'var(--font-plex-mono)',
                 letterSpacing: '0.10em',
                 padding: '2px 7px',
-                border: `1px solid ${clarkUsed >= planLimit ? 'rgba(239,68,68,0.30)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.30)' : 'rgba(45,212,191,0.28)'}`,
+                border: `1px solid ${planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.30)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.30)' : 'rgba(45,212,191,0.28)'}`,
                 borderRadius: '999px',
               }}>
-                {clarkUsed}/{planLimit} today
+                {clarkUsed}/{planLimit ?? '...'} today
               </span>
               <span style={{
                 fontSize: '9px', color: 'rgba(123,92,255,0.55)',
@@ -602,7 +598,7 @@ export default function ClarkChat({
                 />
                 <span style={{
                   fontSize: '9px',
-                  color: clarkUsed >= planLimit ? 'rgba(239,68,68,0.80)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.75)' : 'rgba(45,212,191,0.55)',
+                  color: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.80)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.75)' : 'rgba(45,212,191,0.55)',
                   fontFamily: 'var(--font-plex-mono)',
                   letterSpacing: '0.06em',
                   whiteSpace: 'nowrap',
@@ -610,21 +606,21 @@ export default function ClarkChat({
                   userSelect: 'none',
                   paddingRight: '2px',
                 }}>
-                  {clarkUsed}/{planLimit}
+                  {clarkUsed}/{planLimit ?? '...'}
                 </span>
                 <button
                   onClick={handleSend}
-                  disabled={loading || !input.trim()}
+                  disabled={loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)}
                   style={{
                     width: '30px', height: '30px',
                     borderRadius: '50%',
                     border: 'none',
-                    background: loading || !input.trim()
+                    background: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)
                       ? 'rgba(45,212,191,0.12)'
                       : '#2DD4BF',
-                    color: loading || !input.trim() ? 'rgba(45,212,191,0.35)' : '#04101a',
+                    color: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'rgba(45,212,191,0.35)' : '#04101a',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+                    cursor: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'not-allowed' : 'pointer',
                     transition: 'background 0.15s, color 0.15s',
                     flexShrink: 0,
                     boxShadow: input.trim() ? '0 0 12px rgba(45,212,191,0.40)' : 'none',

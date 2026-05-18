@@ -171,7 +171,7 @@ function ClarkAiContent() {
   const [input, setInput] = useState(importedPrompt ?? '')
   const [loading, setLoading] = useState(false)
   const [clarkUsed, setClarkUsed] = useState(0)
-  const [planLimit, setPlanLimit] = useState(CLARK_LIMIT_UNAUTH)
+  const [planLimit, setPlanLimit] = useState<number | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
   const autoSentRef = useRef(false)
 
@@ -195,8 +195,8 @@ function ClarkAiContent() {
           const json = await res.json() as Record<string, unknown>
           const p = String(json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan ?? '')
           setPlanLimit(CLARK_DAILY_LIMITS[p] ?? CLARK_DAILY_LIMITS.free)
-        }
-      } catch { /* keep default */ }
+        } else { setPlanLimit(CLARK_DAILY_LIMITS.free) }
+      } catch { setPlanLimit(CLARK_DAILY_LIMITS.free) }
     })
   }, [])
 
@@ -276,7 +276,7 @@ function ClarkAiContent() {
         }),
       })
       const json = await res.json()
-      if (res.status !== 429) setClarkUsed(bumpClarkUsage())
+      if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown }
@@ -454,12 +454,12 @@ function ClarkAiContent() {
               letterSpacing: '0.08em',
               padding: '5px 10px',
               borderRadius: '999px',
-              border: `1px solid ${clarkUsed >= planLimit ? 'rgba(239,68,68,0.40)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.40)' : 'rgba(45,212,191,0.34)'}`,
-              background: clarkUsed >= planLimit ? 'rgba(239,68,68,0.08)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.08)' : 'rgba(45,212,191,0.10)',
-              color: clarkUsed >= planLimit ? 'rgba(239,68,68,0.90)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.90)' : '#99f6e4',
+              border: `1px solid ${planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.40)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.40)' : 'rgba(45,212,191,0.34)'}`,
+              background: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.08)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.08)' : 'rgba(45,212,191,0.10)',
+              color: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.90)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.90)' : '#99f6e4',
               whiteSpace: 'nowrap',
             }}>
-              {clarkUsed} / {planLimit} today
+              {clarkUsed} / {planLimit ?? '...'} today
             </span>
             <span style={liveBadgeStyle}>LIVE • Powered by CORTEX</span>
           </div>
@@ -554,21 +554,21 @@ function ClarkAiContent() {
                   />
                   <button
                     onClick={handleSend}
-                    disabled={loading || !input.trim()}
+                    disabled={loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)}
                     className='clark-send-button'
                     style={{
                       width: '44px',
                       height: '44px',
                       borderRadius: '999px',
                       border: 'none',
-                      background: loading || !input.trim() ? 'rgba(148,163,184,0.28)' : 'linear-gradient(135deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%)',
-                      color: loading || !input.trim() ? '#475569' : '#f8fafc',
+                      background: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'rgba(148,163,184,0.28)' : 'linear-gradient(135deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%)',
+                      color: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? '#475569' : '#f8fafc',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+                      cursor: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'not-allowed' : 'pointer',
                       fontSize: '17px',
-                      boxShadow: loading || !input.trim() ? 'inset 0 1px 1px rgba(255,255,255,0.08)' : '0 0 24px rgba(45,212,191,0.55), 0 0 32px rgba(236,72,153,0.44), 0 0 0 1px rgba(255,255,255,0.12)',
+                      boxShadow: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'inset 0 1px 1px rgba(255,255,255,0.08)' : '0 0 24px rgba(45,212,191,0.55), 0 0 32px rgba(236,72,153,0.44), 0 0 0 1px rgba(255,255,255,0.12)',
                       transition: 'transform .16s ease, box-shadow .16s ease, filter .16s ease',
                     }}
                     aria-label='Send prompt'

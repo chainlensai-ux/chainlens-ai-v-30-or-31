@@ -7137,6 +7137,7 @@ export async function POST(req: NextRequest) {
       allowedRankScanActive: (!sessionMem.allowedRankScanUsed && Date.now() < sessionMem.allowedRankScanUntil),
       cooldownBucketUsed: 'lowcost',
     }
+    normalized.quotaConsumed = false
     return NextResponse.json(normalized, { status: 200 })
   }
 
@@ -7162,7 +7163,7 @@ export async function POST(req: NextRequest) {
     const lockedFeature = INTENT_FEATURE_MAP[earlyIntent];
     if (lockedFeature && !planAllows(effectivePlan, lockedFeature)) {
       const lockedMsg = buildLockedResponse(lockedFeature, LOCKED_ALTERNATIVES[lockedFeature] ?? 'ask about token data and market moves');
-      return NextResponse.json({ ok: true, feature: 'clark-ai', data: { reply: lockedMsg } }, { status: 200 });
+      return NextResponse.json({ ok: true, feature: 'clark-ai', data: { reply: lockedMsg }, quotaConsumed: false }, { status: 200 });
     }
   }
 
@@ -7255,7 +7256,9 @@ export async function POST(req: NextRequest) {
       cooldownBucketUsed: (promptIsLowCost || rankAllowanceActive) ? 'lowcost' : 'tool',
     }
     const resultAnalysis = typeof (result as Record<string, unknown>)?.analysis === 'string' ? (result as Record<string, unknown>).analysis as string : ''
-    if (!isValidationOnlyAnalysis(resultAnalysis)) rateResult.commitDaily()
+    const quotaConsumed = !isValidationOnlyAnalysis(resultAnalysis)
+    if (quotaConsumed) rateResult.commitDaily()
+    normalized.quotaConsumed = quotaConsumed
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
     clarkCache.set(cacheKey, { exp: Date.now() + cacheTtl, payload: normalized })
     return NextResponse.json(normalized, { status: 200 });
