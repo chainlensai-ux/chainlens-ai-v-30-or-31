@@ -7,6 +7,13 @@ import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
 
+const AVATAR_COLORS: Record<string, string> = {
+  mint:   'linear-gradient(135deg, #2DD4BF 0%, #14b8a6 100%)',
+  purple: 'linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%)',
+  pink:   'linear-gradient(135deg, #ec4899 0%, #f43f5e 100%)',
+  blue:   'linear-gradient(135deg, #38bdf8 0%, #3b82f6 100%)',
+}
+
 const TIER_COLUMNS = [
   {
     tier: 'FREE',
@@ -16,7 +23,7 @@ const TIER_COLUMNS = [
     tools: [
       { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Basic' },
       { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity',      note: 'Basic score' },
-      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '3 prompts/day' },
+      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '5 prompts/day' },
     ],
   },
   {
@@ -57,6 +64,9 @@ export default function Navbar() {
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false)
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
   const [plan, setPlan] = useState<UserPlan>('free')
+  const [avatarColor, setAvatarColor] = useState<string>('mint')
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+  const [displayName, setDisplayName] = useState<string | null>(null)
   const pathname = usePathname()
 
   useEffect(() => {
@@ -67,9 +77,16 @@ export default function Navbar() {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (res.ok) {
-          const json = await res.json()
-          const p = (json?.settings as Record<string, unknown>)?.plan
+          const json = await res.json() as Record<string, unknown>
+          const settings = json?.settings as Record<string, unknown> | undefined
+          const p = json?.plan ?? json?.effectivePlan ?? settings?.plan
           setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+          const ac = String(settings?.avatar_color ?? json?.avatar_color ?? 'mint')
+          setAvatarColor(AVATAR_COLORS[ac] ? ac : 'mint')
+          const au = String(settings?.avatar_url ?? json?.avatar_url ?? '')
+          setAvatarUrl(au || null)
+          const dn = String(settings?.display_name ?? json?.display_name ?? '')
+          setDisplayName(dn || null)
         }
       } catch { setPlan('free') }
     }
@@ -95,7 +112,7 @@ export default function Navbar() {
       ? `${accountEmail.slice(0, 8)}…${accountEmail.slice(-8)}`
       : accountEmail
     : null
-  const initials = (shortEmail?.[0] ?? 'A').toUpperCase()
+  const initials = (displayName?.[0] ?? shortEmail?.[0] ?? 'A').toUpperCase()
   const planLabel = plan.toUpperCase()
 
   return (
@@ -495,11 +512,15 @@ export default function Navbar() {
               }}>
                 <span style={{
                   width: '22px', height: '22px', borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                  background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
                   color: '#04101a', fontSize: '11px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0,
-                }}>{initials}</span>
+                  flexShrink: 0, overflow: 'hidden',
+                }}>
+                  {avatarUrl
+                    ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                    : initials}
+                </span>
                 <span className="nav-account-email">{shortEmail}</span>
                 <span style={{
                   fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
@@ -594,10 +615,15 @@ export default function Navbar() {
               }}>
                 <span style={{
                   width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
-                  background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                  background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
                   color: '#04101a', fontSize: '14px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                }}>{initials}</span>
+                  overflow: 'hidden',
+                }}>
+                  {avatarUrl
+                    ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                    : initials}
+                </span>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: '13px', color: '#e2e8f0', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{accountEmail}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
