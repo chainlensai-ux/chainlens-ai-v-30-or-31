@@ -54,9 +54,13 @@ export async function POST(req: Request) {
     if (!supabaseUrl || !serviceRole) return unavailableResponse(503)
 
     const supabase = createClient(supabaseUrl, serviceRole)
-    const code = 'cl' + randomBytes(4).toString('hex')
 
-    const { error } = await supabase.from('affiliates').insert({
+    // Generate a code and retry once on unique-constraint collision (Postgres error 23505).
+    // Primary code: 'cl' + 8 hex chars (e.g. cl1a2b3c4d).
+    // On collision: append 4 more hex chars as suffix (e.g. cl1a2b3c4d-5e6f).
+    const primaryCode = 'cl' + randomBytes(4).toString('hex')
+    let code = primaryCode
+    let insertError = (await supabase.from('affiliates').insert({
       name,
       email,
       telegram: telegram || null,
@@ -66,13 +70,29 @@ export async function POST(req: Request) {
       payout_wallet: payoutWallet || null,
       referral_code: code,
       status: 'pending',
-    })
+    })).error
 
-    if (error) {
+    if (insertError?.code === '23505') {
+      // Unique collision — append random suffix and retry once.
+      code = primaryCode + '-' + randomBytes(2).toString('hex')
+      insertError = (await supabase.from('affiliates').insert({
+        name,
+        email,
+        telegram: telegram || null,
+        x_handle: xHandle,
+        audience_size: audienceSize,
+        promotion_plan: promotionPlan,
+        payout_wallet: payoutWallet || null,
+        referral_code: code,
+        status: 'pending',
+      })).error
+    }
+
+    if (insertError) {
       console.error('affiliate_apply_failed', {
-        code: error.code,
-        message: error.message,
-        details: error.details,
+        code: insertError.code,
+        message: insertError.message,
+        details: insertError.details,
       })
       return unavailableResponse(500)
     }
