@@ -450,7 +450,7 @@ async function resolveEnsOrBasename(name: string): Promise<string | null> {
   return null
 }
 function isValidationOnlyAnalysis(analysis: string): boolean {
-  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token/i.test(analysis)
+  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token|LOCKED\s*\n|Upgrade to unlock full CORTEX reads/i.test(analysis)
 }
 
 function idToAddress(id: string): string {
@@ -7152,6 +7152,7 @@ export async function POST(req: NextRequest) {
       dev_wallet:      'dev_wallet',
       liquidity_safety:'liquidity_check',
       pump_alert:      'pump_alerts',
+      base_radar:      'base_radar_full',
     };
     const LOCKED_ALTERNATIVES: Partial<Record<string, string>> = {
       wallet_scan:      'ask about token risk, liquidity signals, and CORTEX token reads',
@@ -7159,6 +7160,7 @@ export async function POST(req: NextRequest) {
       dev_wallet:       'ask about contract safety, holder concentration, or LP control',
       liquidity_check:  'ask about token price, volume, and market cap',
       pump_alerts:      'ask about new Base launches or trending pools',
+      base_radar_full:  'ask what Base Radar tracks or use the Base market preview',
     };
     const lockedFeature = INTENT_FEATURE_MAP[earlyIntent];
     if (lockedFeature && !planAllows(effectivePlan, lockedFeature)) {
