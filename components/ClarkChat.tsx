@@ -109,6 +109,29 @@ function getClientClarkContext() {
   } catch { return {} }
 }
 
+const CLARK_DAILY_LIMITS: Record<string, number> = { free: 5, pro: 50, elite: 300 }
+const CLARK_LIMIT_UNAUTH = 3
+
+function getTodayStr() { return new Date().toISOString().slice(0, 10) }
+
+function readClarkUsage(): number {
+  if (typeof window === 'undefined') return 0
+  try {
+    const raw = localStorage.getItem('chainlens:clark:daily-usage')
+    if (!raw) return 0
+    const { date, count } = JSON.parse(raw) as { date: string; count: number }
+    return date === getTodayStr() ? (count || 0) : 0
+  } catch { return 0 }
+}
+
+function bumpClarkUsage(): number {
+  try {
+    const next = readClarkUsage() + 1
+    localStorage.setItem('chainlens:clark:daily-usage', JSON.stringify({ date: getTodayStr(), count: next }))
+    return next
+  } catch { return 0 }
+}
+
 function ClarkOrb({ size = 20, thinking = false }: { size?: number; thinking?: boolean }) {
   return <span className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}><span className='clark-orb-ring' /><span className='clark-orb-dot clark-orb-dot-a' /><span className='clark-orb-dot clark-orb-dot-b' /></span>
 }
@@ -138,12 +161,30 @@ export default function ClarkChat({
   const inputRef = useRef<HTMLInputElement>(null)
   const lastSentInitialRef = useRef<string | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
+  const [clarkUsed, setClarkUsed] = useState(0)
+  const [planLimit, setPlanLimit] = useState(CLARK_LIMIT_UNAUTH)
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages])
+
+  useEffect(() => {
+    setClarkUsed(readClarkUsage())
+    supabase.auth.getSession().then(async ({ data }) => {
+      const token = data.session?.access_token
+      if (!token) { setPlanLimit(CLARK_LIMIT_UNAUTH); return }
+      try {
+        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
+        if (res.ok) {
+          const json = await res.json() as Record<string, unknown>
+          const p = String(json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan ?? '')
+          setPlanLimit(CLARK_DAILY_LIMITS[p] ?? CLARK_DAILY_LIMITS.free)
+        }
+      } catch { /* keep default */ }
+    })
+  }, [])
 
   const executeSend = useCallback(async (text: string) => {
     console.log('executeSend sending:', text)
@@ -189,6 +230,7 @@ export default function ClarkChat({
       console.log('Response status:', res.status)
 
       const json = await res.json()
+      if (res.status !== 429) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown }
@@ -355,6 +397,17 @@ export default function ClarkChat({
                 textShadow: '0 0 10px rgba(78,242,197,0.58), 0 0 4px rgba(139,92,246,0.22)',
               }}>CLARK AI</span>
               <div style={{ flex: 1 }} />
+              <span style={{
+                fontSize: '9px',
+                color: clarkUsed >= planLimit ? 'rgba(239,68,68,0.85)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.80)' : 'rgba(45,212,191,0.70)',
+                fontFamily: 'var(--font-plex-mono)',
+                letterSpacing: '0.10em',
+                padding: '2px 7px',
+                border: `1px solid ${clarkUsed >= planLimit ? 'rgba(239,68,68,0.30)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.30)' : 'rgba(45,212,191,0.28)'}`,
+                borderRadius: '999px',
+              }}>
+                {clarkUsed}/{planLimit} today
+              </span>
               <span style={{
                 fontSize: '9px', color: 'rgba(123,92,255,0.55)',
                 fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.14em',
@@ -547,6 +600,18 @@ export default function ClarkChat({
                     minWidth: 0,
                   }}
                 />
+                <span style={{
+                  fontSize: '9px',
+                  color: clarkUsed >= planLimit ? 'rgba(239,68,68,0.80)' : clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.75)' : 'rgba(45,212,191,0.55)',
+                  fontFamily: 'var(--font-plex-mono)',
+                  letterSpacing: '0.06em',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  userSelect: 'none',
+                  paddingRight: '2px',
+                }}>
+                  {clarkUsed}/{planLimit}
+                </span>
                 <button
                   onClick={handleSend}
                   disabled={loading || !input.trim()}
