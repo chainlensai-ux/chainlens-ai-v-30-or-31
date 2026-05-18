@@ -369,7 +369,7 @@ export default function WhaleAlertsPage() {
         let currentOffset = typeof offset === 'number' ? offset : 0
         let cumulativeInserted = isFullResume ? (syncState?.insertedTotal ?? 0) : 0
         while (true) {
-          const params = new URLSearchParams({ window: '7d', limit: '15', minUsd: '0', mode: 'full', offset: String(currentOffset) })
+          const params = new URLSearchParams({ window: '7d', limit: '20', minUsd: '0', mode: 'full', offset: String(currentOffset) })
           const { data: { session: syncSession } } = await supabase.auth.getSession()
           const syncToken = syncSession?.access_token
           const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
@@ -395,11 +395,11 @@ export default function WhaleAlertsPage() {
             break
           }
           currentOffset = json.nextOffset
-          await new Promise<void>(r => setTimeout(r, 300))
+          await new Promise<void>(r => setTimeout(r, 80))
         }
       } else {
         // Batch: single call
-        const params = new URLSearchParams({ window: '7d', limit: '15', minUsd: '0', mode: 'batch' })
+        const params = new URLSearchParams({ window: '7d', limit: '20', minUsd: '0', mode: 'batch' })
         if (typeof offset === 'number') params.set('offset', String(offset))
         const { data: { session: syncSession } } = await supabase.auth.getSession()
         const syncToken = syncSession?.access_token

@@ -30,12 +30,13 @@ type CovalentTx = {
 
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
 const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=100'
-const DEFAULT_LIMIT = 5
-const MAX_LIMIT = 15
+const DEFAULT_LIMIT = 10
+const MAX_LIMIT = 20
 const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
-const PER_WALLET_TIMEOUT_MS = 8_000
+const PER_WALLET_TIMEOUT_MS = 6_000
+const CONCURRENCY = 8
 const SYNC_COOLDOWN_MS = 10 * 60 * 1000
 const FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
@@ -461,146 +462,161 @@ export async function POST(request: Request) {
   const finalPipelineSummary = makeFinalPipelineSummary()
   const dbInsertErrorSamples: Array<Record<string, string | null>> = []
 
-  for (const wallet of walletBatch) {
+  // ── Phase 1: Parallel fetch — CONCURRENCY wallets at a time ─────────────────
+  type FetchResult =
+    | { wallet: TrackedWallet; txItems: CovalentTx[]; ok: true }
+    | { wallet: TrackedWallet; error: unknown; ok: false }
+
+  const fetchResults: FetchResult[] = []
+  const batchChunks: TrackedWallet[][] = []
+  for (let i = 0; i < walletBatch.length; i += CONCURRENCY) {
+    batchChunks.push(walletBatch.slice(i, i + CONCURRENCY))
+  }
+
+  for (const chunk of batchChunks) {
     if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) { earlyStopped = true; break }
 
+    const settled = await Promise.allSettled(
+      chunk.map(wallet =>
+        fetchWalletTransactions(wallet.address, providerKey)
+          .then(payload => ({
+            wallet,
+            txItems: (payload?.data?.items ?? []) as CovalentTx[],
+            ok: true as const,
+          }))
+          .catch(error => ({ wallet, error, ok: false as const }))
+      )
+    )
+
+    for (const r of settled) {
+      // Inner promise always resolves (error caught inside map); fulfilled === always
+      fetchResults.push(r.status === 'fulfilled' ? r.value : { wallet: chunk[0], error: r.reason, ok: false })
+    }
+  }
+
+  // ── Phase 2: Process results, collect filtered alerts ────────────────────────
+  const allFilteredAlerts: Array<Record<string, unknown>> = []
+
+  for (const result of fetchResults) {
     processed += 1
-    const short = shortAddress(wallet.address)
+    const walletShort = shortAddress(result.wallet.address)
 
-    try {
-      const payload = await fetchWalletTransactions(wallet.address, providerKey)
-      const txItems = (payload?.data?.items ?? []) as CovalentTx[]
-      fetchedTxCount += txItems.length
-
-      const extracted = extractAlerts(wallet, txItems, windowMs, selectedWindow)
-      parsedMovementCount += extracted.parsedMovementCount
-      alertCandidateCount += extracted.alerts.length
-
-      for (const [reason, value] of Object.entries(extracted.skipSummary) as Array<[SkipReason, number]>) {
-        skipSummary[reason] += value
-      }
-
-      finalPipelineSummary.candidatesSeen += extracted.alerts.length
-      const filteredAlerts: Array<Record<string, unknown>> = []
-      for (const alert of extracted.alerts) {
-        const usd = parseNumeric(alert.amount_usd)
-        const walletAddress = (alert.wallet_address as string | null) ?? null
-        const alertType = (alert.alert_type as string | null) ?? null
-        const occurredAt = (alert.occurred_at as string | null) ?? null
-
-        const tokenAddress = (alert.token_address as string | null) ?? null
-        if (!walletAddress || !alertType || !occurredAt || !tokenAddress) {
-          finalPipelineSummary.missingRequiredField += 1
-          skipSummary.missingTokenAddress += 1
-          pushSkipSample(skipSamples, {
-            wallet: short,
-            txHash: shortHash((alert.tx_hash as string | null) ?? null),
-            reason: 'missingTokenAddress',
-            tokenSymbol: (alert.token_symbol as string | null) ?? null,
-            tokenAddressShort: shortHash(tokenAddress),
-            amountUsd: usd,
-            alertType,
-            side: (alert.side as string | null) ?? null,
-            occurredAt,
-          })
-          continue
-        }
-
-        if (usd === null) {
-          skipSummary.missingUsdValue += 1
-        } else if (usd < selectedMinUsd) {
-          finalPipelineSummary.belowThresholdSkipped += 1
-          skipSummary.belowThreshold += 1
-          pushSkipSample(skipSamples, {
-            wallet: short,
-            txHash: shortHash((alert.tx_hash as string | null) ?? null),
-            reason: 'belowThreshold',
-            tokenSymbol: (alert.token_symbol as string | null) ?? null,
-            tokenAddressShort: shortHash((alert.token_address as string | null) ?? null),
-            amountUsd: usd,
-            alertType,
-            side: (alert.side as string | null) ?? null,
-            occurredAt,
-          })
-          continue
-        }
-
-        const severity = severityFromUsd(usd) ?? (selectedMinUsd < 1000 && usd !== null && usd >= selectedMinUsd ? 'watch' : null)
-        filteredAlerts.push({
-          ...alert,
-          amount_usd: usd,
-          severity,
-        })
-      }
-
-      let walletInserted = 0
-      if (filteredAlerts.length > 0) {
-        for (const alert of filteredAlerts) {
-          const sym = ((alert.token_symbol as string | null) ?? '').toUpperCase().trim()
-          if (sym) insertedSymbols.add(sym)
-          const ts = alert.occurred_at ? new Date(String(alert.occurred_at)).getTime() : 0
-          if (Number.isFinite(ts) && ts > newestAlertAtTs) newestAlertAtTs = ts
-        }
-        finalPipelineSummary.attemptedInsert += filteredAlerts.length
-        const { data, error } = await supabase
-          .from('whale_alerts')
-          .upsert(filteredAlerts, {
-            onConflict: 'tx_hash,wallet_address,token_address,alert_type',
-            ignoreDuplicates: true,
-          })
-          .select('id')
-
-        if (!error) {
-          walletInserted = data?.length ?? 0
-        } else {
-          finalPipelineSummary.dbInsertFailed += filteredAlerts.length
-          if (dbInsertErrorSamples.length < 3) {
-            dbInsertErrorSamples.push({
-              code: error.code ?? null,
-              message: error.message ?? null,
-              hint: error.hint ?? null,
-              details: error.details ?? null,
-            })
-          }
-        }
-      }
-
-      const walletSkipped = Math.max(filteredAlerts.length - walletInserted, 0)
-      inserted += walletInserted
-      skipped += walletSkipped
-      finalPipelineSummary.inserted += walletInserted
-      finalPipelineSummary.duplicateSkipped += walletSkipped
-      skipSummary.duplicate += walletSkipped
-      skipSummary.dbSkipped += walletSkipped
-      if (walletSkipped > 0 && skipSamples.length < 5) {
-        for (const alert of filteredAlerts.slice(0, Math.min(walletSkipped, 5 - skipSamples.length))) {
-          pushSkipSample(skipSamples, {
-            wallet: short,
-            txHash: shortHash((alert.tx_hash as string | null) ?? null),
-            reason: 'duplicate',
-            tokenSymbol: (alert.token_symbol as string | null) ?? null,
-            tokenAddressShort: shortHash((alert.token_address as string | null) ?? null),
-            amountUsd: parseNumeric(alert.amount_usd),
-            alertType: (alert.alert_type as string | null) ?? null,
-            side: (alert.side as string | null) ?? null,
-            occurredAt: (alert.occurred_at as string | null) ?? null,
-          })
-        }
-      }
-    } catch (error) {
+    if (!result.ok) {
+      const err = (result as { wallet: TrackedWallet; error: unknown; ok: false }).error
       providerErrors += 1
-      const statusCode = error instanceof ProviderRequestError ? error.statusCode : null
-      const reason = error instanceof ProviderRequestError ? error.message : 'provider_fetch_failed'
-      const responseKeys = error instanceof ProviderRequestError ? error.responseKeys : []
+      const statusCode = err instanceof ProviderRequestError ? err.statusCode : null
+      const reason     = err instanceof ProviderRequestError ? err.message : 'provider_fetch_failed'
+      const responseKeys = err instanceof ProviderRequestError ? err.responseKeys : []
       pushProviderErrorSample(providerErrorSamples, {
-        wallet: short,
+        wallet: walletShort,
         provider: 'goldrush',
         endpointPath: PROVIDER_ENDPOINT_PATH,
         statusCode,
         reason,
         responseKeys,
       })
+      continue
     }
+
+    const { txItems } = result as { wallet: TrackedWallet; txItems: CovalentTx[]; ok: true }
+    fetchedTxCount += txItems.length
+
+    const extracted = extractAlerts(result.wallet, txItems, windowMs, selectedWindow)
+    parsedMovementCount += extracted.parsedMovementCount
+    alertCandidateCount += extracted.alerts.length
+
+    for (const [reason, value] of Object.entries(extracted.skipSummary) as Array<[SkipReason, number]>) {
+      skipSummary[reason] += value
+    }
+
+    finalPipelineSummary.candidatesSeen += extracted.alerts.length
+
+    for (const alert of extracted.alerts) {
+      const usd = parseNumeric(alert.amount_usd)
+      const walletAddress = (alert.wallet_address as string | null) ?? null
+      const alertType     = (alert.alert_type as string | null) ?? null
+      const occurredAt    = (alert.occurred_at as string | null) ?? null
+      const tokenAddress  = (alert.token_address as string | null) ?? null
+
+      if (!walletAddress || !alertType || !occurredAt || !tokenAddress) {
+        finalPipelineSummary.missingRequiredField += 1
+        skipSummary.missingTokenAddress += 1
+        pushSkipSample(skipSamples, {
+          wallet: walletShort,
+          txHash: shortHash((alert.tx_hash as string | null) ?? null),
+          reason: 'missingTokenAddress',
+          tokenSymbol: (alert.token_symbol as string | null) ?? null,
+          tokenAddressShort: shortHash(tokenAddress),
+          amountUsd: usd,
+          alertType,
+          side: (alert.side as string | null) ?? null,
+          occurredAt,
+        })
+        continue
+      }
+
+      if (usd === null) {
+        skipSummary.missingUsdValue += 1
+      } else if (usd < selectedMinUsd) {
+        finalPipelineSummary.belowThresholdSkipped += 1
+        skipSummary.belowThreshold += 1
+        pushSkipSample(skipSamples, {
+          wallet: walletShort,
+          txHash: shortHash((alert.tx_hash as string | null) ?? null),
+          reason: 'belowThreshold',
+          tokenSymbol: (alert.token_symbol as string | null) ?? null,
+          tokenAddressShort: shortHash((alert.token_address as string | null) ?? null),
+          amountUsd: usd,
+          alertType,
+          side: (alert.side as string | null) ?? null,
+          occurredAt,
+        })
+        continue
+      }
+
+      const severity = severityFromUsd(usd) ?? (selectedMinUsd < 1000 && usd !== null && usd >= selectedMinUsd ? 'watch' : null)
+      allFilteredAlerts.push({ ...alert, amount_usd: usd, severity })
+    }
+  }
+
+  // ── Phase 3: Single bulk upsert for all alerts from this batch ───────────────
+  if (allFilteredAlerts.length > 0) {
+    for (const alert of allFilteredAlerts) {
+      const sym = ((alert.token_symbol as string | null) ?? '').toUpperCase().trim()
+      if (sym) insertedSymbols.add(sym)
+      const ts = alert.occurred_at ? new Date(String(alert.occurred_at)).getTime() : 0
+      if (Number.isFinite(ts) && ts > newestAlertAtTs) newestAlertAtTs = ts
+    }
+
+    finalPipelineSummary.attemptedInsert += allFilteredAlerts.length
+    const { data, error } = await supabase
+      .from('whale_alerts')
+      .upsert(allFilteredAlerts, {
+        onConflict: 'tx_hash,wallet_address,token_address,alert_type',
+        ignoreDuplicates: true,
+      })
+      .select('id')
+
+    if (!error) {
+      inserted = data?.length ?? 0
+      skipped  = Math.max(allFilteredAlerts.length - inserted, 0)
+    } else {
+      finalPipelineSummary.dbInsertFailed += allFilteredAlerts.length
+      skipped = allFilteredAlerts.length
+      if (dbInsertErrorSamples.length < 3) {
+        dbInsertErrorSamples.push({
+          code: error.code ?? null,
+          message: error.message ?? null,
+          hint: error.hint ?? null,
+          details: error.details ?? null,
+        })
+      }
+    }
+
+    finalPipelineSummary.inserted         = inserted
+    finalPipelineSummary.duplicateSkipped = skipped
+    skipSummary.duplicate = skipped
+    skipSummary.dbSkipped = skipped
   }
 
   // walletsChecked = actual wallets attempted; equals walletBatch.length unless safety timeout fired
