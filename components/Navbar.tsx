@@ -283,10 +283,15 @@ export default function Navbar() {
         @media (max-width: 767px) {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 10px 12px !important; }
-          .nav-shell { height: 58px !important; border-radius: 16px !important; gap: 0 !important; padding: 0 14px !important; }
+          .nav-shell { height: 58px !important; border-radius: 16px !important; gap: 0 !important; padding: 0 14px !important; animation: none !important; }
           .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: auto !important; }
           .btn-access { padding: 8px 12px !important; font-size: 11px !important; }
           .mob-nav-overlay { top: 58px !important; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .nav-shell, .tools-dropdown, .tools-dropdown-item { animation: none !important; }
+          .mob-ham span { transition: none !important; }
+          .nav-link, .tools-btn, .btn-signin, .btn-access, .tools-item { transition: none !important; }
         }
       `}</style>
 

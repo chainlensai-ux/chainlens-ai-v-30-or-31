@@ -194,8 +194,8 @@ const WATCH_VERDICT_LOW_COST_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+toke
 const WALLET_FOLLOWUP_LOW_COST_RE = /\b(is\s+it\s+worth|worth\s+monitoring|is\s+this\s+wallet|should\s+i\s+watch|should\s+i\s+copy|what\s+are\s+its|any\s+risk|main\s+holdings?|scan\s+its|top\s+holding)\b/i;
 
 const MORE_CONTEXT_RE = /^(more|continue|expand|go on|keep going|give me more|show more|more tokens|more tokens from pool|show more movers|more pumping tokens)\s*$/i;
-const THIS_DEV_RE = /\b(who\s+deployed\s+this|who\s+made\s+this|dev\s+wallet\s+this|origin\s+wallet\s+this|deployer\s+this|creator\s+wallet)\b/i;
-const THIS_LIQ_RE = /\b(liquidity\s+check\s+this|lp\s+check\s+this|is\s+lp\s+locked|is\s+liquidity\s+safe|pool\s+safety\s+this)\b/i;
+const THIS_DEV_RE = /\b(who\s+deployed\s+this|who\s+made\s+this|who\s+built\s+this|who\s+created\s+this|dev\s+wallet\s+this|origin\s+wallet\s+this|deployer\s+this|creator\s+wallet)\b/i;
+const THIS_LIQ_RE = /\b(liquidity\s+check\s+this|lp\s+check\s+this|is\s+(?:the\s+)?lp\s+locked|is\s+(?:the\s+)?liquidity\s+(?:safe|locked)|pool\s+safety\s+this|lp\s+safe\s+(?:for\s+)?this)\b/i;
 
 function isLowCostPrompt(prompt: string, sessionMem?: ClarkSessionMemory): boolean {
   const t = prompt.trim();
@@ -505,6 +505,17 @@ function extractTokenLookupQuery(prompt: string): string | null {
     /supply\s+concentration\s+(?:for\s+)?([a-z0-9._-]{2,32})\b/i,
     /([a-z0-9._-]{2,32})\s+(?:holder\s+concentration|holder\s+distribution|top\s+holders?|supply\s+concentration)\b/i,
     /holders?\s+([a-z0-9._-]{2,32})\b/i,
+    // Conversational natural-language patterns
+    /(?:give\s+me\s+(?:a\s+)?(?:read|look|scan|check|report)\s+on|(?:quick\s+)?read\s+on|your\s+(?:read|thoughts?|take)\s+on)\s+([a-z0-9._-]{2,32})/i,
+    /(?:thoughts?|take|opinion)\s+on\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /(?:look\s+(?:at|into)|take\s+a\s+look\s+at)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /(?:tell\s+me\s+(?:about|more\s+about))\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /what'?s\s+(?:the\s+deal|up\s+with|going\s+on\s+with)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /(?:any\s+red\s+flags?\s+(?:on|for)|red\s+flags?\s+(?:on|for))\s+([a-z0-9._-]{2,32})\b/i,
+    /is\s+([a-z0-9._-]{2,32})\s+(?:a\s+rug(?:pull)?|a\s+scam|legit|worth\s+(?:it|watching))\b/i,
+    /(?:run\s+(?:a\s+)?(?:scan|check|report)\s+on|run\s+the\s+numbers\s+on)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /([a-z0-9._-]{2,32})\s+(?:worth\s+(?:watching|scanning|a\s+scan)|looks\s+interesting|any\s+good\??)\b/i,
+    /(?:pull\s+(?:up|data\s+on)|research)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
   ];
   for (const p of patterns) {
     const m = t.match(p);
@@ -527,7 +538,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   const address = extractAddress(prompt);
 
   const WALLET_INTENT_RE = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|copy[\s-]?trad(?:e|ing)?|smart\s+money)\b/i;
-  const MARKET_INTENT_RE = /what'?s pumping on base|what'?s moving on base|new base tokens|show me hot tokens|what should i watch|what'?s trending|trending|\b(pump(?:ing)?|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?)\b/i;
+  const MARKET_INTENT_RE = /what'?s pumping on base|what'?s moving on base|what'?s hot on base|what'?s running on base|what'?s happening on base|new base tokens|show me hot tokens|what should i watch|what'?s trending|trending|base market|anything moving|anything pumping|any movers|any runners|\b(pump(?:ing)?|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?)\b/i;
 
   if (/(<token_data>|<wallet_scan>|<analysis>|feature context|ask clark)/i.test(prompt)) {
     return { intent: "feature_context", address };
@@ -6003,7 +6014,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   // "this" contextual resolution — liquidity check this / dev wallet this / scan this / who deployed this
-  const THIS_RE = /\b(liquidity\s+check\s+this|check\s+liquidity\s+(?:for\s+)?this|lp\s+(?:check\s+)?this|who\s+deployed\s+this|dev\s+wallet\s+(?:for\s+)?this|check\s+(?:dev\s+wallet|deployer)\s+(?:for\s+)?this|scan\s+this|check\s+this)\b/i;
+  const THIS_RE = /\b(liquidity\s+check\s+this|check\s+liquidity\s+(?:for\s+)?this|lp\s+(?:check\s+)?this|who\s+(?:deployed|made|built|created)\s+this|dev\s+wallet\s+(?:for\s+)?this|check\s+(?:dev\s+wallet|deployer)\s+(?:for\s+)?this|scan\s+(?:this|it)|check\s+(?:this|it)|is\s+(?:it|this)\s+safe)\b/i;
   if (THIS_RE.test(prompt) && !extractAddress(prompt)) {
     const histLinesForThis = getHistoryMessages(body.history);
     const lastTokenCtx = extractLastTokenContext(histLinesForThis);
