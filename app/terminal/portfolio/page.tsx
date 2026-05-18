@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAccount } from 'wagmi'
 import ConnectWallet from '@/components/ConnectWallet'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 type Holding = { symbol: string; name: string; chain: string; price: number; balance: number; value: number; change24h: number | null }
 type Range = '24H' | '7D' | '30D' | '90D' | 'ALL'
@@ -17,6 +18,7 @@ const spark = (seed: string, up: boolean) => { let x = seed.split('').reduce((s,
 const rangeToCount: Record<Range, number> = { '24H': 25, '7D': 8, '30D': 10, '90D': 14, ALL: 12 }
 
 export default function PortfolioPage() {
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const { address, isConnected } = useAccount()
   const [holdings, setHoldings] = useState<Holding[]>([])
   const [loading, setLoading] = useState(false)
@@ -112,6 +114,9 @@ export default function PortfolioPage() {
     }
     run()
   }, [isConnected, address])
+
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
+  if (!canAccessFeature(plan, 'portfolio')) return <LockedPanel feature="portfolio" />
 
   const empty = isConnected && !loading && !portfolioError && filtered.length === 0
 
