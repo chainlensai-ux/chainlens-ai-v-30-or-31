@@ -17,6 +17,7 @@ const AVATAR_COLORS: Record<string, string> = {
 const TIER_COLUMNS = [
   {
     tier: 'FREE',
+    label: 'FREE',
     color: '#ec4899',
     bg: 'rgba(236,72,153,0.10)',
     border: 'rgba(236,72,153,0.20)',
@@ -28,6 +29,7 @@ const TIER_COLUMNS = [
   },
   {
     tier: 'PRO',
+    label: 'PRO + ELITE',
     color: '#2DD4BF',
     bg: 'rgba(45,212,191,0.08)',
     border: 'rgba(45,212,191,0.20)',
@@ -44,6 +46,7 @@ const TIER_COLUMNS = [
   },
   {
     tier: 'ELITE',
+    label: 'ELITE ONLY',
     color: '#fbbf24',
     bg: 'rgba(251,191,36,0.08)',
     border: 'rgba(251,191,36,0.22)',
@@ -417,7 +420,7 @@ export default function Navbar() {
                         <span style={{
                           fontSize: '9px', fontWeight: 800, letterSpacing: '0.18em', color: col.color,
                           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                        }}>{col.tier}</span>
+                        }}>{col.label}</span>
                       </div>
                       {col.tools.map((t, ti) => (
                         <Link
