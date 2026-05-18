@@ -230,7 +230,7 @@ export default function Navbar() {
           display: none;
           width: 44px; height: 44px; border-radius: 8px;
           background: none; border: 1px solid rgba(255,255,255,0.10);
-          cursor: pointer; flex-shrink: 0; margin-left: auto;
+          cursor: pointer; flex-shrink: 0; margin-left: 12px;
           align-items: center; justify-content: center;
           flex-direction: column; gap: 5px; padding: 0;
         }
@@ -284,7 +284,7 @@ export default function Navbar() {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 10px 12px !important; }
           .nav-shell { height: 58px !important; border-radius: 16px !important; gap: 0 !important; padding: 0 14px !important; }
-          .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: 8px !important; }
+          .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: auto !important; }
           .btn-access { padding: 8px 12px !important; font-size: 11px !important; }
           .mob-nav-overlay { top: 58px !important; }
         }
@@ -351,16 +351,6 @@ export default function Navbar() {
               </div>
             </div>
           </Link>
-
-          {/* Mobile hamburger */}
-          <button
-            type="button"
-            className={`mob-ham${mobileOpen ? ' is-open' : ''}`}
-            onClick={() => setMobileOpen(o => !o)}
-            aria-label="Toggle navigation"
-          >
-            <span /><span /><span />
-          </button>
 
           {/* Center nav links */}
           <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '22px', flex: 1, minWidth: 0 }}>
@@ -541,6 +531,16 @@ export default function Navbar() {
               </svg>
             </Link>
           </div>
+
+          {/* Mobile hamburger — after auth wrap so it sits on far right */}
+          <button
+            type="button"
+            className={`mob-ham${mobileOpen ? ' is-open' : ''}`}
+            onClick={() => setMobileOpen(o => !o)}
+            aria-label="Toggle navigation"
+          >
+            <span /><span /><span />
+          </button>
 
         </div>
       </nav>
