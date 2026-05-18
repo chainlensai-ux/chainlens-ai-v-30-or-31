@@ -34,7 +34,7 @@ const plans: Plan[] = [
       'Price, liquidity, volume, 24h change',
       'Basic token info only',
       'Basic LP score only',
-      'Clark AI — 3 prompts per day',
+      'Clark AI — 5 prompts per day',
       'No AI token verdict',
       'No full LP analysis',
       'No Wallet Scanner',
@@ -108,6 +108,7 @@ const NAV_LINKS = [
 export default function PricingPage() {
   const [userPlan, setUserPlan] = useState<UserPlan>('free')
   const [sessionReady, setSessionReady] = useState(false)
+  const [planReady, setPlanReady] = useState(false)
   const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
 
@@ -115,18 +116,18 @@ export default function PricingPage() {
     supabase.auth.getSession().then(async ({ data }) => {
       setSessionReady(true)
       const token = data.session?.access_token
-      if (!token) return
+      if (!token) { setPlanReady(true); return }
       try {
         const res = await fetch('/api/user-settings', {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (res.ok) {
-          const json = await res.json()
-          const p = (json as Record<string, unknown>)?.plan ??
-            (json?.settings as Record<string, unknown>)?.plan
-          if (p === 'pro' || p === 'elite') setUserPlan(p)
+          const json = await res.json() as Record<string, unknown>
+          const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
+          if (p === 'pro' || p === 'elite') setUserPlan(p as UserPlan)
         }
       } catch { /* stay on free */ }
+      setPlanReady(true)
     })
   }, [])
 
@@ -333,8 +334,12 @@ export default function PricingPage() {
 
                   {/* CTA block */}
                   <div style={{ marginTop:14 }}>
-                    {isCurrent ? (
-                      <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.72, cursor:'default', pointerEvents:'none', display:'block' }}>
+                    {!planReady ? (
+                      <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.25, cursor:'default', pointerEvents:'none', display:'block' }}>
+                        &nbsp;
+                      </span>
+                    ) : isCurrent ? (
+                      <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.85, cursor:'default', pointerEvents:'none', display:'block' }}>
                         ✓ Current plan
                       </span>
                     ) : plan.id === 'free' ? (
@@ -352,7 +357,7 @@ export default function PricingPage() {
                       </button>
                     )}
 
-                    {isPaid && !isCurrent && (
+                    {planReady && isPaid && !isCurrent && (
                       <p style={{ margin:'8px 0 0', fontSize:10, color:'#334155', lineHeight:1.4, textAlign:'center' }}>
                         {plan.id === 'pro' ? 'Pay with crypto' : 'Crypto payments available'} · USDC or ETH on Base
                       </p>
@@ -384,7 +389,7 @@ export default function PricingPage() {
         )}
 
         {/* Crypto payment disclosure */}
-        {(!sessionReady || userPlan === 'free') && (
+        {(!planReady || userPlan === 'free') && (
           <p style={{ marginTop:18, textAlign:'center', fontSize:11, color:'#3a5268', letterSpacing:'.04em' }}>
             Pay with crypto. Recommended: USDC on Base, USDC on Ethereum, or ETH. Your plan activates automatically after payment confirmation.
           </p>
