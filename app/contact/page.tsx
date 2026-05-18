@@ -52,6 +52,29 @@ export default function ContactPage() {
           white-space: nowrap;
           font-family: var(--font-plex-mono, IBM Plex Mono, monospace);
         }
+        .back-home-link {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 9px 16px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.04);
+          color: rgba(255,255,255,0.82);
+          text-decoration: none;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          font-family: var(--font-plex-mono, IBM Plex Mono, monospace);
+          transition: border-color 0.15s, background 0.15s, color 0.15s;
+          margin-bottom: 28px;
+        }
+        .back-home-link:hover {
+          border-color: rgba(45,212,191,0.45);
+          background: rgba(45,212,191,0.10);
+          color: #2DD4BF;
+        }
         .cta-email {
           background: rgba(45,212,191,0.10);
           border: 1px solid rgba(45,212,191,0.28);
@@ -201,6 +224,9 @@ export default function ContactPage() {
         }} />
 
         <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '72px 24px 100px', position: 'relative' }}>
+          <Link href="/" className="back-home-link" aria-label="Back to main page">
+            ← Back to Main Page
+          </Link>
 
           {/* ── Hero ─────────────────────────────────────────── */}
           <div style={{ marginBottom: '60px', textAlign: 'center' }}>
