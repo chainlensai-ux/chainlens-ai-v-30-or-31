@@ -1601,7 +1601,7 @@ export default function HomePage() {
           <Reveal delayMs={20}><div style={{ position: 'relative' }}>
             {/* Logo + name */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', position: 'relative' }}>
-              <img src="/cl-logo.png" alt="ChainLens" style={{ width: '34px', height: '34px', objectFit: 'contain' }} />
+              <img src="/cl-logo.png" alt="ChainLens" width={34} height={34} loading="lazy" style={{ width: '34px', height: '34px', objectFit: 'contain' }} />
               <span style={{ fontSize: '19px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.02em' }}>ChainLens AI</span>
             </div>
             {/* Tagline */}

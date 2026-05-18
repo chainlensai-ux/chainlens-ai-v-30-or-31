@@ -590,7 +590,7 @@ export default function DevWalletPage() {
               flex: 1, background: 'rgba(255,255,255,0.04)',
               border: '1px solid rgba(255,255,255,0.10)',
               borderRadius: '12px', padding: '14px 16px',
-              color: '#e2e8f0', fontSize: '13px', outline: 'none',
+              color: '#e2e8f0', fontSize: '16px', outline: 'none',
               fontFamily: 'var(--font-plex-mono)',
               transition: 'border-color 0.15s, box-shadow 0.15s',
             }}

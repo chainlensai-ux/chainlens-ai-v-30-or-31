@@ -135,6 +135,7 @@ html, body {
   width: 100%;
   min-height: 100%;
   overflow-x: hidden !important;
+  overscroll-behavior-x: none;
 }
 
 /* ── Mobile layout helpers (≤ 767px) ─────────────────────────────────────── */
@@ -194,17 +195,18 @@ html, body {
     align-items: center;
     justify-content: center;
     position: fixed;
-    top: 12px;
-    left: 12px;
+    top: max(12px, env(safe-area-inset-top, 12px));
+    left: max(12px, env(safe-area-inset-left, 12px));
     z-index: 200;
-    width: 36px;
-    height: 36px;
-    border-radius: 8px;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
     background: rgba(6,6,10,0.92);
     border: 1px solid rgba(255,255,255,0.12);
     cursor: pointer;
     color: #2DD4BF;
     padding: 0;
+    touch-action: manipulation;
   }
 
   /* Sidebar X close button (mobile only) */
@@ -226,6 +228,7 @@ html, body {
     z-index: 1;
   }
   .mob-sidebar-close-btn:active { background: rgba(255,255,255,0.10); color: #e2e8f0; }
+  .mob-sidebar-close-btn { touch-action: manipulation; }
 
   /* Terminal content wrapper — enables full-page scroll on mobile */
   .mob-content-wrap { overflow-x: hidden !important; overflow-y: auto !important; height: 100% !important; -webkit-overflow-scrolling: touch; }
@@ -551,6 +554,23 @@ body.android-safe-mode div {
 /* ── Instant interaction feedback ─────────────────────────────────────────── */
 button, [role="button"], a {
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* Disable expensive backdrop-filter on all touch/mobile devices */
+@media (hover: none) and (pointer: coarse) {
+  .home-page .feat-card,
+  .home-page .pricing-card,
+  .home-page .mobile-static-card {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+/* ── iPhone SE (375px) and narrow phones ──────────────────────────────────── */
+@media (max-width: 390px) {
+  .mob-scan-main { padding: 62px 12px 80px !important; }
+  .nav-outer { padding: 8px 10px !important; }
 }
 
 /* Smooth transitions for interactive elements */

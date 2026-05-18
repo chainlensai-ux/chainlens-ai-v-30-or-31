@@ -594,7 +594,7 @@ export default function ClarkChat({
                     border: 'none',
                     outline: 'none',
                     color: '#e2e8f0',
-                    fontSize: '12px',
+                    fontSize: '16px',
                     fontFamily: 'var(--font-inter), Inter, sans-serif',
                     opacity: loading ? 0.5 : 1,
                     minWidth: 0,

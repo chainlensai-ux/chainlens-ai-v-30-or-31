@@ -132,7 +132,7 @@ export default function LiquiditySafetyPage() {
                   flex: 1, padding: '12px 16px',
                   background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: '10px', color: '#e2e8f0', fontSize: '13px',
+                  borderRadius: '10px', color: '#e2e8f0', fontSize: '16px',
                   fontFamily: 'var(--font-plex-mono)', outline: 'none',
                   opacity: loading ? 0.5 : 1, transition: 'border-color 0.15s',
                 }}

@@ -201,7 +201,7 @@ export default function AuthPage() {
     background: 'rgba(5,8,22,0.60)',
     border: '1px solid rgba(255,255,255,0.09)',
     color: '#e2e8f0',
-    fontSize: '13px',
+    fontSize: '16px',
     fontFamily: 'var(--font-inter), Inter, sans-serif',
     outline: 'none',
     boxSizing: 'border-box',

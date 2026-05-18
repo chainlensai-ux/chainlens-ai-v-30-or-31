@@ -839,7 +839,7 @@ export default function TerminalTokenScanner() {
                 background: 'rgba(255,255,255,0.04)',
                 border: '1px solid rgba(255,255,255,0.10)',
                 borderRadius: '10px',
-                color: '#e2e8f0', fontSize: '14px',
+                color: '#e2e8f0', fontSize: '16px',
                 fontFamily: 'var(--font-plex-mono)',
                 outline: 'none',
                 opacity: loading ? 0.6 : 1,

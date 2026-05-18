@@ -228,7 +228,7 @@ export default function Navbar() {
 
         .mob-ham {
           display: none;
-          width: 36px; height: 36px; border-radius: 8px;
+          width: 44px; height: 44px; border-radius: 8px;
           background: none; border: 1px solid rgba(255,255,255,0.10);
           cursor: pointer; flex-shrink: 0; margin-left: auto;
           align-items: center; justify-content: center;

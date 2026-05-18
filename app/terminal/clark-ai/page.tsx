@@ -550,7 +550,7 @@ function ClarkAiContent() {
                     }}
                     disabled={loading}
                     placeholder='Ask Clark to scan a token, wallet, whale flow, liquidity, dev wallet, or Base movers.'
-                    style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e2e8f0', fontSize: '14px' }}
+                    style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e2e8f0', fontSize: '16px' }}
                   />
                   <button
                     onClick={handleSend}

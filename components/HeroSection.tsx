@@ -362,7 +362,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                       border: 'none',
                       outline: 'none',
                       color: '#e2e8f0',
-                      fontSize: '13px',
+                      fontSize: '16px',
                       fontFamily: 'var(--font-inter)',
                       caretColor: '#a78bfa',
                     }}
