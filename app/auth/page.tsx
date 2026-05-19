@@ -106,6 +106,7 @@ export default function AuthPage() {
 
   async function handleGoogle() {
     setError(null);
+    setLoading(true); // immediate visual feedback — INP: state update before any async work
     const nextParam = new URLSearchParams(window.location.search).get('next')
     if (nextParam?.startsWith('/')) {
       try { sessionStorage.setItem('cl_auth_next', nextParam) } catch {}
@@ -120,7 +121,10 @@ export default function AuthPage() {
       provider: 'google',
       options: { redirectTo: callbackBase },
     });
-    if (oauthError) setError(oauthError.message);
+    if (oauthError) {
+      setError(oauthError.message);
+      setLoading(false); // restore on error; on success the browser navigates away
+    }
   }
 
   async function handleForgotPassword(e: React.FormEvent) {
@@ -213,6 +217,7 @@ export default function AuthPage() {
   };
 
   if (authCheckLoading) {
+    // Match the real card's exact dimensions and structure to prevent CLS
     return (
       <div style={{
         minHeight: '100vh',
@@ -227,15 +232,27 @@ export default function AuthPage() {
         <div style={{
           width: '100%',
           maxWidth: '400px',
-          background: '#080c14',
-          border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: '20px',
-          padding: '28px 24px',
-          color: 'rgba(255,255,255,0.60)',
-          textAlign: 'center',
-          fontSize: '13px',
+          background: 'linear-gradient(180deg, rgba(10,14,28,0.87) 0%, rgba(8,12,20,0.82) 100%)',
+          border: '1px solid rgba(148,163,184,0.22)',
+          borderRadius: '24px',
+          padding: '42px 34px 30px',
+          boxShadow: '0 0 0 1px rgba(255,255,255,0.05) inset, 0 35px 85px rgba(0,0,0,0.62)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: '340px',
         }}>
-          Checking authentication status...
+          <div style={{
+            width: '28px', height: '28px', borderRadius: '50%',
+            border: '2px solid rgba(45,212,191,0.30)',
+            borderTopColor: '#2DD4BF',
+            animation: 'auth-check-spin 0.7s linear infinite',
+          }} />
+          <style>{`@keyframes auth-check-spin { to { transform: rotate(360deg); } }`}</style>
+          <p style={{ marginTop: '14px', color: 'rgba(255,255,255,0.35)', fontSize: '12px', margin: '14px 0 0' }}>
+            Checking session…
+          </p>
         </div>
       </div>
     );
@@ -399,15 +416,22 @@ export default function AuthPage() {
         <div style={{ marginBottom: '20px' }}>
           <button
             onClick={handleGoogle}
+            disabled={loading}
+            aria-label="Continue with Google"
             style={{
               width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
               gap: '10px', padding: '11px 16px', borderRadius: '11px',
-              background: 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.06) 100%)', border: '1px solid rgba(248,250,252,0.26)',
+              background: loading
+                ? 'rgba(248,250,252,0.06)'
+                : 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.06) 100%)',
+              border: '1px solid rgba(248,250,252,0.26)',
               color: '#f8fafc', fontSize: '13px', fontWeight: 500,
-              cursor: 'pointer', fontFamily: 'inherit', transition: 'background 0.15s, border-color 0.15s',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              opacity: loading ? 0.65 : 1,
+              fontFamily: 'inherit', transition: 'background 0.15s, border-color 0.15s, opacity 0.15s',
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.08) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.36)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.08) 0%, rgba(248,250,252,0.05) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.20)'; }}
+            onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.08) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.36)'; } }}
+            onMouseLeave={e => { if (!loading) { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.08) 0%, rgba(248,250,252,0.05) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.20)'; } }}
           >
             <svg width="18" height="18" viewBox="0 0 48 48">
               <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -415,7 +439,7 @@ export default function AuthPage() {
               <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
               <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
             </svg>
-            Continue with Google
+            {loading ? 'Redirecting…' : 'Continue with Google'}
           </button>
         </div>
 

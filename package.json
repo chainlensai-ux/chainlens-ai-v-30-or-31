@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:perf": "node scripts/perf-test.js"
+    "test:perf": "node scripts/perf-test.js",
+    "test": "node --test --experimental-vm-modules tests/auth-flow.test.js",
+    "test:inp": "node scripts/inp-audit.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
