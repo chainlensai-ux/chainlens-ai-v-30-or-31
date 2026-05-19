@@ -6,8 +6,9 @@ import { cookieToInitialState } from 'wagmi'
 import './globals.css'
 import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
 import { Providers } from './providers'
-import MobileClarkDrawer from '@/components/MobileClarkDrawer'
 import AffiliateRefCapture from '@/components/AffiliateRefCapture'
+// Lazy client wrapper — defers the full chat drawer bundle from the initial page load
+import MobileClarkDrawerLazy from '@/components/MobileClarkDrawerLazy'
 import { wagmiConfig } from '@/lib/wallet'
 
 const SITE_URL = 'https://www.chainlensai.app'
@@ -70,7 +71,7 @@ export default async function RootLayout({
             {children}
           </SupabaseProvider>
         </Providers>
-        <MobileClarkDrawer />
+        <MobileClarkDrawerLazy />
       </body>
     </html>
   )

@@ -341,7 +341,7 @@ export default function Navbar() {
 
           {/* Logo */}
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '9px', textDecoration: 'none', flexShrink: 0 }}>
-            <Image src="/cl-logo.png" alt="ChainLens AI" width={40} height={40} />
+            <Image src="/cl-logo.png" alt="ChainLens AI" width={40} height={40} priority />
             <div>
               <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '20px', lineHeight: 1.15 }}>
                 <span style={{ color: '#f1f5f9' }}>Chain</span>

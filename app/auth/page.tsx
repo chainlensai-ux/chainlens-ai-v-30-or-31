@@ -381,7 +381,7 @@ export default function AuthPage() {
 
         {/* Logo */}
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }}>
-          <Image src="/cl-logo.png" alt="ChainLens" width={72} height={72} />
+          <Image src="/cl-logo.png" alt="ChainLens" width={72} height={72} priority />
         </div>
         <p style={{ textAlign: 'center', marginTop: 0, marginBottom: '22px', color: 'rgba(226,232,240,0.72)', fontSize: '12px', letterSpacing: '0.02em' }}>
           Access your ChainLens terminal.
