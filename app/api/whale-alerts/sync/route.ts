@@ -31,14 +31,15 @@ type CovalentTx = {
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
 const PROVIDER_ENDPOINT_PATH = '/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=100'
 const DEFAULT_LIMIT = 10
-const MAX_LIMIT = 20
+const MAX_LIMIT = 10
 const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
 const PER_WALLET_TIMEOUT_MS = 6_000
 const CONCURRENCY = 8
-const SYNC_COOLDOWN_MS = 10 * 60 * 1000
-const FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
+const PRO_SYNC_COOLDOWN_MS = 60 * 1000
+const ELITE_SYNC_COOLDOWN_MS = 30 * 1000
+const DEV_SYNC_COOLDOWN_MS = 10 * 1000
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
 const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
 function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
@@ -54,7 +55,11 @@ function syncAllowed(
   const now = Date.now()
   const cur = syncRate.get(key)
   const lim = SYNC_RATE_BY_PLAN[plan]
-  const cooldownMs = mode === 'full' ? FULL_SYNC_COOLDOWN_MS : SYNC_COOLDOWN_MS
+  const cooldownMs = process.env.NODE_ENV === 'development'
+    ? DEV_SYNC_COOLDOWN_MS
+    : plan === 'elite'
+      ? ELITE_SYNC_COOLDOWN_MS
+      : PRO_SYNC_COOLDOWN_MS
   if (cur && now - cur.lastRunAt < cooldownMs) {
     return { ok: false, cooldown: true, retryAfterMs: cooldownMs - (now - cur.lastRunAt) }
   }

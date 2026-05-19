@@ -111,8 +111,9 @@ const RANGE_OPTIONS: { label: string; value: ValueRange }[] = [
   { label: '$10k+',     value: '10000+' },
 ]
 const WINDOWS = ['1h', '6h', '24h', '7d'] as const
-const CLIENT_SYNC_COOLDOWN_MS = 10 * 60 * 1000
-const CLIENT_FULL_SYNC_COOLDOWN_MS = 45 * 60 * 1000
+const DEV_SYNC_COOLDOWN_MS = 10 * 1000
+const PRO_SYNC_COOLDOWN_MS = 60 * 1000
+const ELITE_SYNC_COOLDOWN_MS = 30 * 1000
 const CLIENT_SYNC_CACHE_KEY = 'whale_alerts_last_sync_at'
 const CLIENT_FULL_SYNC_CACHE_KEY = 'whale_alerts_last_full_sync_at'
 const CLIENT_SYNC_STATE_CACHE_KEY = 'whale_alerts_last_sync_state_v1'
@@ -300,6 +301,13 @@ export default function WhaleAlertsPage() {
   const [syncCooldownLeftMs, setSyncCooldownLeftMs] = useState(0)
   const [fullSyncCooldownLeftMs, setFullSyncCooldownLeftMs] = useState(0)
 
+  const isDevMode = process.env.NODE_ENV === 'development'
+  const normalizedPlan = String(plan ?? '').toLowerCase()
+  const baseCooldownMs = useMemo(() => {
+    if (isDevMode) return DEV_SYNC_COOLDOWN_MS
+    return normalizedPlan === 'elite' ? ELITE_SYNC_COOLDOWN_MS : PRO_SYNC_COOLDOWN_MS
+  }, [isDevMode, normalizedPlan])
+
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(CLIENT_SYNC_STATE_CACHE_KEY)
@@ -315,7 +323,7 @@ export default function WhaleAlertsPage() {
       }
       setSyncState(parsed)
     } catch {}
-  }, [])
+  }, [baseCooldownMs])
 
   const loadAlerts = useCallback(async () => {
     setLoading(true)
@@ -351,7 +359,7 @@ export default function WhaleAlertsPage() {
   const runSync = async (offset?: number, mode: 'batch' | 'full' = 'batch') => {
     const now = Date.now()
     const cacheKey = mode === 'full' ? CLIENT_FULL_SYNC_CACHE_KEY : CLIENT_SYNC_CACHE_KEY
-    const cooldownMs = mode === 'full' ? CLIENT_FULL_SYNC_COOLDOWN_MS : CLIENT_SYNC_COOLDOWN_MS
+    const cooldownMs = baseCooldownMs
     const isBatchContinuation = mode === 'batch' && typeof offset === 'number' && offset > 0
     const isFullResume = mode === 'full' && typeof offset === 'number' && offset > 0
     const isContinuation = isBatchContinuation || isFullResume
@@ -369,7 +377,7 @@ export default function WhaleAlertsPage() {
         let currentOffset = typeof offset === 'number' ? offset : 0
         let cumulativeInserted = isFullResume ? (syncState?.insertedTotal ?? 0) : 0
         while (true) {
-          const params = new URLSearchParams({ window: '7d', limit: '20', minUsd: '0', mode: 'full', offset: String(currentOffset) })
+          const params = new URLSearchParams({ window: '7d', limit: '10', minUsd: '0', mode: 'full', offset: String(currentOffset) })
           const { data: { session: syncSession } } = await supabase.auth.getSession()
           const syncToken = syncSession?.access_token
           const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
@@ -399,7 +407,7 @@ export default function WhaleAlertsPage() {
         }
       } else {
         // Batch: single call
-        const params = new URLSearchParams({ window: '7d', limit: '20', minUsd: '0', mode: 'batch' })
+        const params = new URLSearchParams({ window: '7d', limit: '10', minUsd: '0', mode: 'batch' })
         if (typeof offset === 'number') params.set('offset', String(offset))
         const { data: { session: syncSession } } = await supabase.auth.getSession()
         const syncToken = syncSession?.access_token
@@ -429,15 +437,15 @@ export default function WhaleAlertsPage() {
     const tick = () => {
       const lastSyncAt = Number(window.localStorage.getItem(CLIENT_SYNC_CACHE_KEY) ?? '0')
       const lastFullSyncAt = Number(window.localStorage.getItem(CLIENT_FULL_SYNC_CACHE_KEY) ?? '0')
-      const left = Math.max(0, CLIENT_SYNC_COOLDOWN_MS - (Date.now() - lastSyncAt))
-      const fullLeft = Math.max(0, CLIENT_FULL_SYNC_COOLDOWN_MS - (Date.now() - lastFullSyncAt))
+      const left = Math.max(0, baseCooldownMs - (Date.now() - lastSyncAt))
+      const fullLeft = Math.max(0, baseCooldownMs - (Date.now() - lastFullSyncAt))
       setSyncCooldownLeftMs(left)
       setFullSyncCooldownLeftMs(fullLeft)
     }
     tick()
     const id = window.setInterval(tick, 30_000)
     return () => window.clearInterval(id)
-  }, [])
+  }, [baseCooldownMs])
 
   const resetFilters = () => {
     setTypeFilter('all')
@@ -825,14 +833,14 @@ export default function WhaleAlertsPage() {
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                   </svg>
-                  {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? 'Refresh available shortly' : 'Refresh now'}
+                  {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? `Please wait ${Math.ceil(syncCooldownLeftMs / 1000)}s before syncing again.` : 'Sync wallets'}
                 </button>
                 <button onClick={() => { void runSync(syncState?.mode === 'full' && isFullInProgress ? computedFullNextOffset : 0, 'full') }} disabled={syncing || (fullSyncCooldownLeftMs > 0 && !isFullInProgress)}
                   className="flex items-center rounded-[12px]"
                   style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
                   {syncState?.mode === 'full' && isFullInProgress
-                    ? (fullSyncCooldownLeftMs > 0 ? 'Continue shortly' : 'Continue refresh')
-                    : (syncState?.mode === 'full' && syncState?.done === true && !syncState?.hasMore ? 'Full refresh complete' : 'Full refresh')}
+                    ? (fullSyncCooldownLeftMs > 0 ? `Please wait ${Math.ceil(fullSyncCooldownLeftMs / 1000)}s before syncing again.` : 'Continue refresh')
+                    : (syncState?.mode === 'full' && syncState?.done === true && !syncState?.hasMore ? `Sync complete. Checked ${scannedCount} wallets.` : 'Full refresh')}
                 </button>
                 <button onClick={resetFilters} disabled={syncing}
                   className="flex items-center rounded-[12px]"
