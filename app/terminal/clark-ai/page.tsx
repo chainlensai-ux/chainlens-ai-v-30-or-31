@@ -345,7 +345,7 @@ function ClarkAiContent() {
           z-index: 1;
           max-width: 860px;
           margin: 0 auto;
-          padding: 56px 24px 64px;
+          padding: 40px 24px 64px;
           display: flex;
           flex-direction: column;
           align-items: center;
@@ -359,7 +359,7 @@ function ClarkAiContent() {
           align-items: center;
           text-align: center;
           gap: 0;
-          margin-bottom: 40px;
+          margin-bottom: 28px;
           animation: clkFadeDown .7s ease-out both;
         }
         @keyframes clkFadeDown {
@@ -423,54 +423,72 @@ function ClarkAiContent() {
         /* ── Mode tabs ─────────────────────────────────────────── */
         .clk-tabs {
           display: flex;
-          gap: 12px;
-          background: rgba(5,10,24,.6);
+          gap: 6px;
+          background: rgba(5,10,24,.65);
           border: 1px solid rgba(148,163,184,.14);
           border-radius: 999px;
-          padding: 5px;
+          padding: 6px;
+          backdrop-filter: blur(8px);
         }
         .clk-tab {
           display: inline-flex;
           align-items: center;
-          gap: 8px;
+          gap: 9px;
           border-radius: 999px;
           border: 1px solid transparent;
           background: transparent;
           color: #64748b;
-          font-size: 15px;
+          font-size: 16px;
           font-weight: 600;
-          padding: 10px 26px;
+          letter-spacing: 0.01em;
+          padding: 12px 34px;
           cursor: pointer;
           transition: all .22s ease;
           white-space: nowrap;
+          min-height: 48px;
         }
         .clk-tab:hover:not(.clk-tab--analyst):not(.clk-tab--chat) {
           color: #cbd5e1;
           border-color: rgba(148,163,184,.22);
+          background: rgba(255,255,255,.04);
         }
         .clk-tab--analyst {
-          background: linear-gradient(135deg, rgba(45,212,191,.22) 0%, rgba(99,102,241,.18) 100%);
-          border-color: rgba(45,212,191,.55);
-          color: #99f6e4;
-          box-shadow: 0 0 18px rgba(45,212,191,.22), 0 0 0 1px rgba(45,212,191,.18) inset;
+          background: linear-gradient(135deg, rgba(45,212,191,.24) 0%, rgba(99,102,241,.20) 100%);
+          border-color: rgba(45,212,191,.60);
+          color: #5eead4;
+          box-shadow: 0 0 22px rgba(45,212,191,.26), 0 0 0 1px rgba(45,212,191,.20) inset;
+          text-shadow: 0 0 20px rgba(45,212,191,.40);
         }
         .clk-tab--chat {
-          background: linear-gradient(135deg, rgba(139,92,246,.20) 0%, rgba(236,72,153,.16) 100%);
-          border-color: rgba(139,92,246,.55);
+          background: linear-gradient(135deg, rgba(139,92,246,.24) 0%, rgba(236,72,153,.18) 100%);
+          border-color: rgba(139,92,246,.60);
           color: #c4b5fd;
-          box-shadow: 0 0 18px rgba(139,92,246,.22), 0 0 0 1px rgba(139,92,246,.16) inset;
+          box-shadow: 0 0 22px rgba(139,92,246,.26), 0 0 0 1px rgba(139,92,246,.18) inset;
+          text-shadow: 0 0 20px rgba(139,92,246,.40);
         }
         .clk-tab-icon { opacity: .85; flex-shrink: 0; }
+
+        /* ── Message thread wrap (visually connected to panel) ─── */
+        .clk-thread-wrap {
+          width: 100%;
+          border: 1px solid rgba(45,212,191,.22);
+          border-bottom: none;
+          border-radius: 24px 24px 0 0;
+          background: linear-gradient(180deg, rgba(6,12,26,.82) 0%, rgba(4,9,22,.90) 100%);
+          padding: 14px 18px 4px;
+          box-shadow:
+            0 0 0 1px rgba(139,92,246,.08),
+            0 -4px 24px rgba(45,212,191,.06);
+        }
 
         /* ── Message thread ────────────────────────────────────── */
         .clk-thread {
           width: 100%;
-          max-height: 420px;
+          max-height: 400px;
           overflow-y: auto;
           display: flex;
           flex-direction: column;
           gap: 10px;
-          margin-bottom: 16px;
           padding-right: 4px;
           scrollbar-width: thin;
           scrollbar-color: rgba(148,163,184,.2) transparent;
@@ -481,7 +499,7 @@ function ClarkAiContent() {
         .clk-thread-header {
           display: flex;
           justify-content: flex-end;
-          margin-bottom: 4px;
+          margin-bottom: 8px;
         }
         .clk-clear-btn {
           font-size: 11px;
@@ -542,16 +560,25 @@ function ClarkAiContent() {
         .clk-panel {
           width: 100%;
           border-radius: 24px;
-          border: 1px solid rgba(45,212,191,.28);
-          background: linear-gradient(165deg, rgba(8,16,34,.88) 0%, rgba(4,9,22,.92) 100%);
+          border: 1px solid rgba(45,212,191,.30);
+          background: linear-gradient(165deg, rgba(8,16,34,.90) 0%, rgba(4,9,22,.94) 100%);
           box-shadow:
-            0 0 0 1px rgba(139,92,246,.12),
-            0 0 40px rgba(45,212,191,.10),
-            0 24px 60px rgba(0,0,0,.40),
-            inset 0 1px 0 rgba(255,255,255,.04);
-          padding: 18px 18px 14px;
+            0 0 0 1px rgba(139,92,246,.14),
+            0 0 48px rgba(45,212,191,.12),
+            0 28px 64px rgba(0,0,0,.44),
+            inset 0 1px 0 rgba(255,255,255,.05);
+          padding: 22px 22px 18px;
           animation: clkFadeUp .8s ease-out .15s both;
           margin-bottom: 24px;
+        }
+        .clk-panel--connected {
+          border-top: 1px solid rgba(45,212,191,.18);
+          border-radius: 0 0 24px 24px;
+          box-shadow:
+            0 0 0 1px rgba(139,92,246,.10),
+            0 0 40px rgba(45,212,191,.10),
+            0 28px 64px rgba(0,0,0,.44),
+            inset 0 1px 0 rgba(255,255,255,.03);
         }
         @keyframes clkFadeUp {
           from { opacity: 0; transform: translateY(28px); }
@@ -562,7 +589,9 @@ function ClarkAiContent() {
           display: flex;
           align-items: center;
           gap: 14px;
-          margin-bottom: 16px;
+          min-height: 56px;
+          padding: 4px 0;
+          margin-bottom: 20px;
         }
         .clk-panel-input {
           flex: 1;
@@ -570,12 +599,12 @@ function ClarkAiContent() {
           border: none;
           outline: none;
           color: #e2e8f0;
-          font-size: 15px;
-          line-height: 1.4;
+          font-size: 16px;
+          line-height: 1.5;
           caret-color: #2dd4bf;
           min-width: 0;
         }
-        .clk-panel-input::placeholder { color: #475569; }
+        .clk-panel-input::placeholder { color: #3d526a; }
 
         .clk-send-btn {
           width: 48px; height: 48px;
@@ -613,61 +642,97 @@ function ClarkAiContent() {
           margin-bottom: 14px;
         }
 
+        /* ── Upgrade notice ────────────────────────────────────── */
+        .clk-upgrade-note {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin-bottom: 16px;
+          padding: 11px 16px;
+          border-radius: 14px;
+          border: 1px solid rgba(139,92,246,.32);
+          background: rgba(139,92,246,.08);
+          font-size: 12.5px;
+          color: #a78bfa;
+          line-height: 1.5;
+        }
+        .clk-upgrade-link {
+          color: #c4b5fd;
+          font-size: 12px;
+          font-weight: 700;
+          text-decoration: none;
+          white-space: nowrap;
+          border: 1px solid rgba(196,181,253,.30);
+          border-radius: 999px;
+          padding: 4px 12px;
+          transition: background .16s, color .16s;
+        }
+        .clk-upgrade-link:hover {
+          background: rgba(139,92,246,.18);
+          color: #e9d5ff;
+        }
+
         /* ── Suggestion chips ──────────────────────────────────── */
         .clk-chips {
           display: flex;
           flex-wrap: wrap;
           gap: 8px;
-          margin-bottom: 14px;
+          margin-bottom: 16px;
         }
         .clk-chip {
           border-radius: 999px;
-          border: 1px solid rgba(148,163,184,.24);
-          background: rgba(15,23,42,.60);
+          border: 1px solid rgba(148,163,184,.22);
+          background: rgba(12,20,38,.65);
           color: #94a3b8;
-          font-size: 12px;
-          padding: 7px 14px;
+          font-size: 12.5px;
+          padding: 7px 15px;
           cursor: pointer;
-          transition: border-color .16s, color .16s, box-shadow .16s;
+          transition: border-color .16s, color .16s, box-shadow .16s, background .16s;
           white-space: nowrap;
+          max-width: 100%;
         }
         .clk-chip:hover {
-          border-color: rgba(45,212,191,.45);
+          border-color: rgba(45,212,191,.48);
           color: #99f6e4;
-          box-shadow: 0 0 10px rgba(45,212,191,.14);
+          background: rgba(45,212,191,.06);
+          box-shadow: 0 0 12px rgba(45,212,191,.14);
         }
 
         /* ── Usage row ─────────────────────────────────────────── */
         .clk-usage {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 12px;
+          padding-top: 2px;
         }
         .clk-usage-label {
-          font-size: 11px;
-          color: #475569;
+          font-size: 11.5px;
+          color: #64748b;
           font-family: var(--font-plex-mono, monospace);
           white-space: nowrap;
         }
         .clk-usage-track {
           flex: 1;
-          height: 4px;
+          height: 5px;
           border-radius: 999px;
-          background: rgba(148,163,184,.14);
+          background: rgba(148,163,184,.12);
           overflow: hidden;
+          min-width: 60px;
         }
         .clk-usage-fill {
           height: 100%;
           border-radius: 999px;
-          background: linear-gradient(90deg, #2dd4bf, #8b5cf6);
           transition: width .6s ease;
           min-width: 0;
         }
         .clk-usage-count {
-          font-size: 11px;
-          color: #475569;
+          font-size: 11.5px;
           font-family: var(--font-plex-mono, monospace);
           white-space: nowrap;
+          min-width: 44px;
+          text-align: right;
         }
 
         /* ── Footer note ───────────────────────────────────────── */
@@ -715,20 +780,26 @@ function ClarkAiContent() {
 
         /* ── Responsive ────────────────────────────────────────── */
         @media (max-width: 680px) {
-          .clk-content { padding: 36px 16px 80px; }
+          .clk-content { padding: 28px 14px 80px; }
           .clk-title { font-size: 44px; }
-          .clk-tabs { gap: 8px; padding: 4px; }
-          .clk-tab { font-size: 14px; padding: 9px 20px; }
-          .clk-panel { border-radius: 18px; padding: 14px 14px 12px; }
+          .clk-hero { margin-bottom: 22px; }
+          .clk-tabs { gap: 4px; padding: 5px; }
+          .clk-tab { font-size: 15px; padding: 10px 22px; min-height: 44px; }
+          .clk-thread-wrap { border-radius: 18px 18px 0 0; padding: 12px 14px 4px; }
+          .clk-panel { border-radius: 18px; padding: 16px 14px 14px; }
+          .clk-panel--connected { border-radius: 0 0 18px 18px; }
+          .clk-panel-input-row { gap: 10px; min-height: 48px; margin-bottom: 16px; }
+          .clk-panel-input { font-size: 16px; }
           .clk-chips { gap: 6px; }
-          .clk-chip { font-size: 11px; padding: 6px 12px; }
-          .clk-panel-input-row { gap: 10px; }
+          .clk-chip { font-size: 12px; padding: 7px 13px; }
           .clk-send-btn { width: 44px; height: 44px; }
-          .clk-thread { max-height: 320px; }
+          .clk-thread { max-height: 300px; }
+          .clk-upgrade-note { font-size: 12px; padding: 10px 13px; }
         }
         @media (max-width: 420px) {
-          .clk-tabs { flex-direction: column; border-radius: 18px; }
-          .clk-tab { justify-content: center; }
+          .clk-tabs { border-radius: 18px; }
+          .clk-tab { padding: 10px 18px; }
+          .clk-chip { white-space: normal; text-align: center; }
         }
       `}</style>
 
@@ -790,7 +861,7 @@ function ClarkAiContent() {
               className={`clk-tab${uiTab === 'analyst' ? ' clk-tab--analyst' : ''}`}
               onClick={() => setUiTab('analyst')}
             >
-              <svg className='clk-tab-icon' width='15' height='15' viewBox='0 0 15 15' fill='none' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
+              <svg className='clk-tab-icon' width='17' height='17' viewBox='0 0 15 15' fill='none' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
                 <path d='M7.5 1L9.18 5.31L14 5.69L10.55 8.67L11.63 13.38L7.5 11L3.37 13.38L4.45 8.67L1 5.69L5.82 5.31L7.5 1Z' stroke='currentColor' strokeWidth='1.3' strokeLinejoin='round' fill='none'/>
               </svg>
               Analyst
@@ -799,7 +870,7 @@ function ClarkAiContent() {
               className={`clk-tab${uiTab === 'chat' ? ' clk-tab--chat' : ''}`}
               onClick={() => setUiTab('chat')}
             >
-              <svg className='clk-tab-icon' width='15' height='15' viewBox='0 0 15 15' fill='none' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
+              <svg className='clk-tab-icon' width='17' height='17' viewBox='0 0 15 15' fill='none' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
                 <path d='M13 2H2C1.45 2 1 2.45 1 3V10C1 10.55 1.45 11 2 11H4V13.5L7.5 11H13C13.55 11 14 10.55 14 10V3C14 2.45 13.55 2 13 2Z' stroke='currentColor' strokeWidth='1.3' strokeLinejoin='round' strokeLinecap='round' fill='none'/>
               </svg>
               Chat
@@ -807,33 +878,35 @@ function ClarkAiContent() {
           </div>
         </section>
 
-        {/* Message thread (only when messages exist) */}
+        {/* Message thread — wrapped to visually connect with panel below */}
         {hasMessages && (
-          <div className='clk-thread' ref={threadRef}>
-            <div className='clk-thread-header'>
-              <button onClick={handleClear} className='clk-clear-btn'>Clear</button>
+          <div className='clk-thread-wrap'>
+            <div className='clk-thread' ref={threadRef}>
+              <div className='clk-thread-header'>
+                <button onClick={handleClear} className='clk-clear-btn'>Clear</button>
+              </div>
+              {messages.map((msg, idx) => {
+                const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
+                return (
+                  <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
+                    <span className='clk-msg-role'>{msg.role === 'user' ? 'YOU' : 'CLARK'}</span>
+                    {isThinking ? (
+                      <div className='clk-thinking'>
+                        <ClarkOrb size={22} thinking />
+                        <span className='clk-thinking-text'>Clark is thinking…</span>
+                      </div>
+                    ) : (
+                      <p className='clk-msg-text'>{msg.text}</p>
+                    )}
+                  </div>
+                )
+              })}
             </div>
-            {messages.map((msg, idx) => {
-              const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
-              return (
-                <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
-                  <span className='clk-msg-role'>{msg.role === 'user' ? 'YOU' : 'CLARK'}</span>
-                  {isThinking ? (
-                    <div className='clk-thinking'>
-                      <ClarkOrb size={22} thinking />
-                      <span className='clk-thinking-text'>Clark is thinking…</span>
-                    </div>
-                  ) : (
-                    <p className='clk-msg-text'>{msg.text}</p>
-                  )}
-                </div>
-              )
-            })}
           </div>
         )}
 
-        {/* Glass input panel */}
-        <div className='clk-panel'>
+        {/* Glass input panel — top corners flatten when thread is above */}
+        <div className={`clk-panel${hasMessages ? ' clk-panel--connected' : ''}`}>
           <div className='clk-panel-input-row'>
             <ClarkOrb size={40} thinking={loading && hasMessages} />
             <input
@@ -859,6 +932,14 @@ function ClarkAiContent() {
 
           <div className='clk-panel-divider' />
 
+          {/* Upgrade notice — shown only when daily limit reached */}
+          {isLimited && (
+            <div className='clk-upgrade-note'>
+              <span>Base momentum preview is available on Pro and Elite. Upgrade to unlock the full market read.</span>
+              <a href='/pricing' className='clk-upgrade-link'>Upgrade →</a>
+            </div>
+          )}
+
           {/* Suggestion chips */}
           <div className='clk-chips'>
             {chips.map((chip) => (
@@ -872,9 +953,30 @@ function ClarkAiContent() {
           <div className='clk-usage'>
             <span className='clk-usage-label'>Usage today</span>
             <div className='clk-usage-track'>
-              <div className='clk-usage-fill' style={{ width: `${usagePct}%` }} />
+              <div
+                className='clk-usage-fill'
+                style={{
+                  width: `${usagePct}%`,
+                  background: isLimited
+                    ? 'linear-gradient(90deg,#ef4444,#f43f5e)'
+                    : planLimit !== null && clarkUsed / planLimit >= 0.8
+                      ? 'linear-gradient(90deg,#f59e0b,#ef4444)'
+                      : 'linear-gradient(90deg,#2dd4bf,#8b5cf6)',
+                }}
+              />
             </div>
-            <span className='clk-usage-count'>{clarkUsed} / {planLimit ?? '...'}</span>
+            <span
+              className='clk-usage-count'
+              style={{
+                color: isLimited
+                  ? '#fb7185'
+                  : planLimit !== null && clarkUsed / planLimit >= 0.8
+                    ? '#fbbf24'
+                    : '#64748b',
+              }}
+            >
+              {clarkUsed} / {planLimit ?? '...'}
+            </span>
           </div>
         </div>
 
