@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAccount } from 'wagmi'
 import ConnectWallet from '@/components/ConnectWallet'
+import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 type Holding = { symbol: string; name: string; chain: string; price: number; balance: number; value: number; change24h: number | null }
 type Range = '24H' | '7D' | '30D' | '90D' | 'ALL'
@@ -17,11 +18,12 @@ const spark = (seed: string, up: boolean) => { let x = seed.split('').reduce((s,
 const rangeToCount: Record<Range, number> = { '24H': 25, '7D': 8, '30D': 10, '90D': 14, ALL: 12 }
 
 export default function PortfolioPage() {
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const { address, isConnected } = useAccount()
   const [holdings, setHoldings] = useState<Holding[]>([])
   const [loading, setLoading] = useState(false)
   const [portfolioError, setPortfolioError] = useState<string | null>(null)
-  const [clarkLoading, setClarkLoading] = useState(false)
+  const [hasScanned, setHasScanned] = useState(false)
   const [search, setSearch] = useState('')
   const [range, setRange] = useState<Range>('24H')
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
@@ -93,27 +95,25 @@ export default function PortfolioPage() {
   }, [series, range])
 
   useEffect(() => {
-    const run = async () => {
-      if (!isConnected || !address) { setHoldings([]); setPortfolioError(null); return }
-      setLoading(true); setPortfolioError(null)
-      try {
-        const res = await fetch('/api/portfolio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
-        const json = await res.json(); if (!res.ok) throw new Error()
-        const baseHoldings = (json?.holdings ?? []).filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base')).map((h: Holding) => ({ symbol: h.symbol ?? '?', name: h.name ?? 'Unknown', chain: h.chain ?? 'base', price: Number(h.price ?? 0), balance: Number(h.balance ?? 0), value: Number(h.value ?? 0), change24h: typeof h.change24h === 'number' ? h.change24h : null }))
-        setHoldings(baseHoldings)
-        if (baseHoldings.length > 0) {
-          setClarkLoading(true)
-          const prompt = `Analyze this Base wallet portfolio in concise portfolio language only. Avoid token-resolution chatter.\n${baseHoldings.map((t: Holding) => `${t.symbol}: ${fmtUSD(t.value)}${typeof t.change24h === 'number' ? ` (${t.change24h.toFixed(2)}% 24h)` : ''}`).join('\n')}`
-          const c = await fetch('/api/clark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'portfolio', context: { holdings: baseHoldings } }) })
-          await c.json()
-          setClarkLoading(false)
-        }
-      } catch { setPortfolioError('Portfolio data is currently unavailable. Please try again shortly.'); setHoldings([]) } finally { setLoading(false) }
-    }
-    run()
-  }, [isConnected, address])
+    if (!isConnected) { setHoldings([]); setPortfolioError(null); setHasScanned(false) }
+  }, [isConnected])
 
-  const empty = isConnected && !loading && !portfolioError && filtered.length === 0
+  const handleScan = async () => {
+    if (!isConnected || !address) return
+    setLoading(true); setPortfolioError(null); setHasScanned(true)
+    try {
+      const res = await fetch('/api/portfolio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
+      const json = await res.json(); if (!res.ok) throw new Error()
+      const baseHoldings = (json?.holdings ?? []).filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base')).map((h: Holding) => ({ symbol: h.symbol ?? '?', name: h.name ?? 'Unknown', chain: h.chain ?? 'base', price: Number(h.price ?? 0), balance: Number(h.balance ?? 0), value: Number(h.value ?? 0), change24h: typeof h.change24h === 'number' ? h.change24h : null }))
+      setHoldings(baseHoldings)
+    } catch { setPortfolioError('Portfolio data is currently unavailable. Please try again shortly.'); setHoldings([]) } finally { setLoading(false) }
+  }
+
+  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
+  if (!canAccessFeature(plan, 'portfolio')) return <LockedPanel feature="portfolio" />
+
+  const showScanPrompt = isConnected && !loading && !hasScanned
+  const empty = isConnected && hasScanned && !loading && !portfolioError && filtered.length === 0
 
   return <div style={{ height: '100%', overflow: 'auto', background: 'radial-gradient(circle at 18% -10%, rgba(34,211,238,.12), transparent 34%), radial-gradient(circle at 86% 2%, rgba(217,70,239,.13), transparent 34%), #05070d', color: '#e2e8f0', padding: 18 }}>
     <style>{`.glass{background:linear-gradient(165deg,rgba(8,16,32,.9),rgba(5,10,20,.84));border:1px solid rgba(125,211,252,.14);border-radius:18px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.02)}.sk{background:linear-gradient(90deg,rgba(148,163,184,.12),rgba(148,163,184,.22),rgba(148,163,184,.12));background-size:180% 100%;animation:sh 1.45s infinite}@keyframes sh{from{background-position:180% 0}to{background-position:-180% 0}}@media (max-width: 768px){.pf-main-grid{grid-template-columns:1fr!important}.pf-row4{grid-template-columns:repeat(2,minmax(0,1fr))!important}.pf-search-row{flex-direction:column;align-items:stretch!important;gap:8px}.pf-search-row input{width:100%}.pf-holdings-wrap{overflow-x:auto}.pf-holdings-wrap table{min-width:760px}.pf-side{grid-template-columns:1fr!important}}`}</style>
@@ -121,6 +121,8 @@ export default function PortfolioPage() {
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginBottom: 12 }}>
       {[['PORTFOLIO VALUE', isConnected ? fmtUSD(totalValue) : '—', totalValue > 0 ? `≈ ${(totalValue / 2600).toFixed(4)} ETH` : ''], ['24H PNL', isConnected ? (hasPnl ? `${totalPnL >= 0 ? '+' : ''}${fmtUSD(totalPnL)}` : 'PnL unavailable') : '—', hasPnl ? `${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}%` : ''], ['TOKENS', isConnected ? `${sorted.length}` : '—', 'Base assets'], ['WALLET', isConnected && address ? formatShortAddress(address) : 'Not connected', isConnected && explorerUrl ? 'View on Explorer ↗' : ''], ['NETWORK', 'Base', 'Healthy']].map(([k, v, s], i) => <div key={String(k)} className='glass' style={{ padding: 14, minHeight: 96 }}>{loading ? <div className='sk' style={{ height: 54, borderRadius: 12 }} /> : <><div style={{ fontSize: 10, letterSpacing: '.15em', color: '#94a3b8' }}>{k}</div><div style={{ fontSize: i === 3 ? 24 : 34, fontWeight: 800, marginTop: 4, color: i === 1 && hasPnl ? ((pnlPct ?? 0) >= 0 ? '#2dd4bf' : '#fb7185') : '#f8fafc' }}>{v}</div>{i === 3 && explorerUrl ? <a href={explorerUrl} target='_blank' rel='noopener noreferrer' style={{ fontSize: 12, color: '#67e8f9', textDecoration: 'none' }}>{s}</a> : <div style={{ fontSize: 12, color: '#67e8f9' }}>{s}</div>}</>}</div>)}
     </div>
+
+    {portfolioError && <div className='glass' style={{ marginBottom: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderColor: 'rgba(251,113,133,.3)' }}><span style={{ color: '#fb7185', fontSize: 13 }}>{portfolioError}</span><button onClick={handleScan} style={{ borderRadius: 8, border: '1px solid rgba(251,113,133,.4)', background: 'transparent', color: '#fb7185', padding: '6px 14px', cursor: 'pointer', fontSize: 12 }}>Retry</button></div>}
 
     <div className='pf-main-grid' style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2.1fr) minmax(320px,1fr)', gap: 12 }}>
       <div style={{ display: 'grid', gap: 12 }}>
@@ -138,17 +140,18 @@ export default function PortfolioPage() {
         </section>
 
         <section className='glass' style={{ padding: 14 }}>
-          <div className='pf-search-row' style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}><h3 style={{ margin: 0 }}>Your Holdings</h3><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Search tokens...' style={{ borderRadius: 10, border: '1px solid rgba(125,211,252,.24)', background: 'rgba(10,14,26,.75)', color: '#e2e8f0', padding: '8px 10px' }} /></div>
-          {loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : empty ? <div style={{ border: '1px dashed rgba(125,211,252,.24)', borderRadius: 12, padding: 28, textAlign: 'center' }}><div style={{ fontWeight: 700 }}>No supported Base token balances found</div><div style={{ color: '#94a3b8', marginTop: 6 }}>Connect or scan a wallet with supported Base assets to populate your portfolio.</div></div> : <div className='pf-holdings-wrap' style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr style={{ color: '#94a3b8', fontSize: 12 }}><th align='left'>Asset</th><th align='right'>Balance</th><th align='right'>Price</th><th align='right'>Value</th><th align='right'>24H %</th><th align='center'>Trend</th><th align='right'>Allocation</th></tr></thead><tbody>{filtered.map((h) => {const up=(h.change24h??0)>=0; const alloc=totalValue>0?(h.value/totalValue)*100:0; return <tr key={`${h.symbol}-${h.name}`} style={{ borderTop: '1px solid rgba(148,163,184,.12)' }}><td style={{ padding: '11px 0' }}><div style={{ fontWeight: 700 }}>{h.symbol}</div><div style={{ color: '#94a3b8', fontSize: 12 }}>{h.name}</div></td><td align='right'>{fmtBalance(h.balance)}</td><td align='right'>{fmtPrice(h.price)}</td><td align='right'>{fmtUSD(h.value)}</td><td align='right' style={{ color: typeof h.change24h === 'number' ? (up ? '#2dd4bf' : '#fb7185') : '#94a3b8' }}>{typeof h.change24h === 'number' ? `${up ? '+' : ''}${h.change24h.toFixed(2)}%` : '—'}</td><td align='center'><svg width='76' height='24' viewBox='0 0 100 40'><polyline fill='none' stroke={up ? '#2dd4bf' : '#f43f5e'} strokeWidth='3' points={spark(h.symbol, up)} /></svg></td><td align='right'><div>{alloc.toFixed(1)}%</div><div style={{ height: 6, borderRadius: 999, background: 'rgba(100,116,139,.25)', marginTop: 4 }}><div style={{ height: '100%', width: `${alloc}%`, borderRadius: 999, background: 'linear-gradient(90deg,#22d3ee,#a855f7)' }} /></div></td></tr>})}</tbody></table></div>}
+          <div className='pf-search-row' style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}><h3 style={{ margin: 0 }}>Your Holdings</h3><div style={{ display: 'flex', gap: 8 }}>{hasScanned && !loading && <button onClick={handleScan} style={{ borderRadius: 10, border: '1px solid rgba(34,211,238,.28)', background: 'transparent', color: '#67e8f9', padding: '8px 14px', cursor: 'pointer', fontSize: 12 }}>Rescan</button>}<input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Search tokens...' style={{ borderRadius: 10, border: '1px solid rgba(125,211,252,.24)', background: 'rgba(10,14,26,.75)', color: '#e2e8f0', padding: '8px 10px' }} /></div></div>
+          {loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : empty ? <div style={{ border: '1px dashed rgba(125,211,252,.24)', borderRadius: 12, padding: 28, textAlign: 'center' }}><div style={{ fontWeight: 700 }}>No supported Base token balances found</div><div style={{ color: '#94a3b8', marginTop: 6 }}>No Base assets detected for this wallet.</div><button onClick={handleScan} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(34,211,238,.3)', background: 'transparent', color: '#67e8f9', padding: '8px 18px', cursor: 'pointer' }}>Rescan</button></div> : <div className='pf-holdings-wrap' style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr style={{ color: '#94a3b8', fontSize: 12 }}><th align='left'>Asset</th><th align='right'>Balance</th><th align='right'>Price</th><th align='right'>Value</th><th align='right'>24H %</th><th align='center'>Trend</th><th align='right'>Allocation</th></tr></thead><tbody>{filtered.map((h) => {const up=(h.change24h??0)>=0; const alloc=totalValue>0?(h.value/totalValue)*100:0; return <tr key={`${h.symbol}-${h.name}`} style={{ borderTop: '1px solid rgba(148,163,184,.12)' }}><td style={{ padding: '11px 0' }}><div style={{ fontWeight: 700 }}>{h.symbol}</div><div style={{ color: '#94a3b8', fontSize: 12 }}>{h.name}</div></td><td align='right'>{fmtBalance(h.balance)}</td><td align='right'>{fmtPrice(h.price)}</td><td align='right'>{fmtUSD(h.value)}</td><td align='right' style={{ color: typeof h.change24h === 'number' ? (up ? '#2dd4bf' : '#fb7185') : '#94a3b8' }}>{typeof h.change24h === 'number' ? `${up ? '+' : ''}${h.change24h.toFixed(2)}%` : '—'}</td><td align='center'><svg width='76' height='24' viewBox='0 0 100 40'><polyline fill='none' stroke={up ? '#2dd4bf' : '#f43f5e'} strokeWidth='3' points={spark(h.symbol, up)} /></svg></td><td align='right'><div>{alloc.toFixed(1)}%</div><div style={{ height: 6, borderRadius: 999, background: 'rgba(100,116,139,.25)', marginTop: 4 }}><div style={{ height: '100%', width: `${alloc}%`, borderRadius: 999, background: 'linear-gradient(90deg,#22d3ee,#a855f7)' }} /></div></td></tr>})}</tbody></table></div>}
         </section>
       </div>
 
       <aside className='pf-side' style={{ display: 'grid', gap: 12, alignContent: 'start' }}>
-        <section className='glass' style={{ padding: 16, position: 'relative', overflow: 'hidden' }}><div style={{position:'absolute',right:-30,top:-30,width:150,height:150,borderRadius:'50%',background:'radial-gradient(circle,rgba(103,232,249,.22),rgba(168,85,247,.14),transparent 68%)'}} /><h3 style={{ marginTop: 0, marginBottom: 10, position:'relative' }}>Clark AI Insights</h3>{clarkLoading || loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : <><div style={{ fontSize: 12, color: '#94a3b8' }}>Portfolio Verdict</div><div style={{ fontSize: 38, fontWeight: 900, color: verdict === 'BULLISH' ? '#2dd4bf' : verdict === 'NEUTRAL' ? '#67e8f9' : verdict === 'CAUTIOUS' ? '#f59e0b' : '#94a3b8' }}>{verdict}</div><p style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.6, marginTop: 6, marginBottom: 10 }}>{portfolioSummary}</p><div style={{height:1,background:'rgba(148,163,184,.18)',margin:'8px 0 10px'}} />{[['Profitability', profitability], ['Safety', safety], ['Momentum', momentum], ['Diversification', diversification]].map(([n, sc]) => <div key={String(n)} style={{ marginTop: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span style={{color:'#cbd5e1'}}>{n}</span><span style={{color:'#94a3b8'}}>{Math.round(sc as number)}/100</span></div><div style={{ height: 7, borderRadius: 999, background: 'rgba(100,116,139,.22)', marginTop: 3 }}><div style={{ height: '100%', width: `${Math.round(sc as number)}%`, borderRadius: 999, background: 'linear-gradient(90deg,#22d3ee,#60a5fa,#a855f7)' }} /></div></div>)}<div className='glass' style={{ marginTop: 12, padding: 10, borderRadius: 12 }}><div style={{ color: '#67e8f9', fontSize: 11 }}>Top Opportunity</div><div>{bestPerformer ? `${bestPerformer.symbol} leads short-term momentum.` : 'No clear opportunity yet.'}</div><div style={{ color: '#67e8f9', marginTop: 6 }}>Analyze holdings →</div></div></>}</section>
+        <section className='glass' style={{ padding: 16, position: 'relative', overflow: 'hidden' }}><div style={{position:'absolute',right:-30,top:-30,width:150,height:150,borderRadius:'50%',background:'radial-gradient(circle,rgba(103,232,249,.22),rgba(168,85,247,.14),transparent 68%)'}} /><h3 style={{ marginTop: 0, marginBottom: 10, position:'relative' }}>Clark AI Insights</h3>{loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : <><div style={{ fontSize: 12, color: '#94a3b8' }}>Portfolio Verdict</div><div style={{ fontSize: 38, fontWeight: 900, color: verdict === 'BULLISH' ? '#2dd4bf' : verdict === 'NEUTRAL' ? '#67e8f9' : verdict === 'CAUTIOUS' ? '#f59e0b' : '#94a3b8' }}>{verdict}</div><p style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.6, marginTop: 6, marginBottom: 10 }}>{portfolioSummary}</p><div style={{height:1,background:'rgba(148,163,184,.18)',margin:'8px 0 10px'}} />{[['Profitability', profitability], ['Safety', safety], ['Momentum', momentum], ['Diversification', diversification]].map(([n, sc]) => <div key={String(n)} style={{ marginTop: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span style={{color:'#cbd5e1'}}>{n}</span><span style={{color:'#94a3b8'}}>{Math.round(sc as number)}/100</span></div><div style={{ height: 7, borderRadius: 999, background: 'rgba(100,116,139,.22)', marginTop: 3 }}><div style={{ height: '100%', width: `${Math.round(sc as number)}%`, borderRadius: 999, background: 'linear-gradient(90deg,#22d3ee,#60a5fa,#a855f7)' }} /></div></div>)}<div className='glass' style={{ marginTop: 12, padding: 10, borderRadius: 12 }}><div style={{ color: '#67e8f9', fontSize: 11 }}>Top Opportunity</div><div>{bestPerformer ? `${bestPerformer.symbol} leads short-term momentum.` : 'No clear opportunity yet.'}</div><div style={{ color: '#67e8f9', marginTop: 6 }}>Analyze holdings →</div></div></>}</section>
         <section className='glass' style={{ padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><h3 style={{ marginTop: 0 }}>Recent Activity</h3><span style={{ color: '#67e8f9' }}>View All</span></div>{loading ? <div className='sk' style={{ height: 170, borderRadius: 12 }} /> : <div style={{ border: '1px dashed rgba(125,211,252,.2)', borderRadius: 12, padding: 18, color: '#94a3b8', textAlign: 'center' }}>Recent wallet activity will appear here once transactions are detected.</div>}</section>
       </aside>
     </div>
 
+    {showScanPrompt && <div className='glass' style={{ marginTop: 12, padding: 18, textAlign: 'center' }}><div style={{ fontWeight: 700, fontSize: 18 }}>Wallet connected — ready to scan.</div><div style={{ color: '#94a3b8', marginTop: 6 }}>Click below to load your Base portfolio. Data is only fetched when you request it.</div><div style={{ marginTop: 10, display: 'flex', justifyContent: 'center' }}><button onClick={handleScan} style={{ borderRadius: 12, border: '1px solid rgba(34,211,238,.4)', background: 'linear-gradient(135deg,rgba(34,211,238,.18),rgba(168,85,247,.18))', color: '#67e8f9', fontWeight: 700, fontSize: 15, padding: '12px 28px', cursor: 'pointer' }}>Load Portfolio</button></div></div>}
     {!isConnected && <div className='glass' style={{ marginTop: 12, padding: 18, textAlign: 'center' }}><div style={{ fontWeight: 700, fontSize: 18 }}>Connect your wallet to unlock your portfolio cockpit.</div><div style={{ color: '#94a3b8', marginTop: 6 }}>No wallet connected yet. Connect a wallet to load portfolio data.</div><div style={{ marginTop: 10, display: 'flex', justifyContent: 'center' }}><ConnectWallet className='active:scale-[0.98]' /></div></div>}
   </div>
 }
