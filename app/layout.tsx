@@ -22,12 +22,13 @@ export const metadata: Metadata = {
   description: DESCRIPTION,
   icons: {
     icon: [
-      { url: '/favicon-32.png', sizes: '32x32', type: 'image/png' },
-      { url: '/icon.png',       sizes: '512x512', type: 'image/png' },
-      { url: '/favicon.svg',    type: 'image/svg+xml' },
+      { url: '/favicon.ico',     sizes: 'any' },
+      { url: '/favicon-32.png',  sizes: '32x32',   type: 'image/png' },
+      { url: '/icon.png',        sizes: '512x512',  type: 'image/png' },
+      { url: '/favicon.svg',     type: 'image/svg+xml' },
     ],
     apple: { url: '/apple-icon.png', sizes: '180x180', type: 'image/png' },
-    shortcut: '/icon.png',
+    shortcut: '/favicon.ico',
   },
   openGraph: {
     type: 'website',
@@ -35,11 +36,13 @@ export const metadata: Metadata = {
     siteName: 'ChainLens AI',
     title: TITLE,
     description: DESCRIPTION,
+    images: [{ url: '/icon.png', width: 512, height: 512, alt: 'ChainLens AI' }],
   },
   twitter: {
     card: 'summary_large_image',
     title: TITLE,
     description: DESCRIPTION,
+    images: ['/icon.png'],
   },
 }
 
