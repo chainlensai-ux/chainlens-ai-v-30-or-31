@@ -64,8 +64,18 @@ export async function POST(req: NextRequest) {
       const { data: aff } = await supabase.from('affiliates').select('commission_rate').eq('id', pay.affiliate_id).maybeSingle()
       const rate = Number(aff?.commission_rate ?? 0.20)
       const amount = Number(pay.amount_usd ?? PLAN_AMOUNTS[parsed.plan])
-      await supabase.from('affiliate_commissions').insert({ affiliate_id: pay.affiliate_id, crypto_payment_id: pay.id ?? null, buyer_user_id: parsed.userId, buyer_email: (pay as Record<string, unknown>).user_email ?? null, payment_id: paymentId, referral_code: pay.referral_code, plan: parsed.plan, payment_amount_usd: amount, commission_rate: rate, commission_amount: amount * rate, status: 'pending' })
+      // referral_code may be null for recurring payments with no active referral link
+      const referralCode = (pay as Record<string, unknown>).referral_code ?? null
+      await supabase.from('affiliate_commissions').insert({ affiliate_id: pay.affiliate_id, crypto_payment_id: pay.id ?? null, buyer_user_id: parsed.userId, buyer_email: (pay as Record<string, unknown>).user_email ?? null, payment_id: paymentId, referral_code: referralCode, plan: parsed.plan, payment_amount_usd: amount, commission_rate: rate, commission_amount: amount * rate, status: 'pending' })
     }
+    // Safety net: persist original affiliate to buyer account.
+    // activateUserPlanServerSide (called above) guarantees user_settings row exists.
+    // IS NULL guard enforces first-referral-wins even on repeated webhook deliveries.
+    await supabase
+      .from('user_settings')
+      .update({ referred_by_affiliate_id: pay.affiliate_id })
+      .eq('user_id', parsed.userId)
+      .is('referred_by_affiliate_id', null)
   }
 
   if (paymentId) processedPaymentIds.add(paymentId)

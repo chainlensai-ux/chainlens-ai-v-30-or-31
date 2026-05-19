@@ -36,7 +36,30 @@ export async function POST(req: NextRequest) {
 
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '', process.env.SUPABASE_SERVICE_ROLE_KEY ?? '')
   let affiliateId: string | null = null
-  if (referralCode) {
+
+  // ── Affiliate resolution (first-referral-wins) ──────────────
+  // Step 1: check whether the buyer already has a stored original affiliate.
+  // If yes, use that and ignore the referral code in this request so that
+  // the original affiliate always earns on future recurring payments.
+  const { data: settingsRow } = await supabase
+    .from('user_settings')
+    .select('referred_by_affiliate_id')
+    .eq('user_id', userId)
+    .maybeSingle()
+  const storedAffId = String((settingsRow as Record<string, unknown> | null)?.referred_by_affiliate_id ?? '').trim() || null
+
+  if (storedAffId) {
+    // Previously referred buyer — verify the affiliate is still active.
+    const { data: storedAff } = await supabase
+      .from('affiliates')
+      .select('id,status')
+      .eq('id', storedAffId)
+      .maybeSingle()
+    if ((storedAff as Record<string, unknown> | null)?.status === 'approved') {
+      affiliateId = storedAffId
+    }
+  } else if (referralCode) {
+    // No stored affiliate — resolve from the referral code in this request.
     // Two sequential exact-match queries: lowercase first (new codes), uppercase second (legacy codes pre-case-fix).
     // Avoids .or() PostgREST edge cases with case-only value differences on UNIQUE text columns.
     type AffRow = { id: string; email: string | null; status: string }
@@ -59,6 +82,17 @@ export async function POST(req: NextRequest) {
         selfReferral,
         affiliateAttached: Boolean(affiliateId),
       })
+    }
+
+    // Persist as original affiliate on the buyer's account (first-referral-wins).
+    // Uses IS NULL guard so an existing attribution is never overwritten.
+    // No-op if user_settings row doesn't exist yet; webhook confirms it on payment.
+    if (affiliateId) {
+      await supabase
+        .from('user_settings')
+        .update({ referred_by_affiliate_id: affiliateId })
+        .eq('user_id', userId)
+        .is('referred_by_affiliate_id', null)
     }
   }
 

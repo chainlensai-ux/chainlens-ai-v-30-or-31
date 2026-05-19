@@ -167,3 +167,28 @@ create policy "Users can select own payments"
 create policy "crypto_payments_service_role_all"
   on public.crypto_payments for all to service_role
   using (true) with check (true);
+
+-- ────────────────────────────────────────────────────────────
+-- Recurring affiliate attribution — v3
+-- Adds referred_by_affiliate_id to user_settings so future
+-- payments from the same buyer carry the original affiliate.
+-- Also makes affiliate_commissions.referral_code nullable so
+-- recurring payments without a referral code can still create
+-- a commission row.
+-- ────────────────────────────────────────────────────────────
+
+-- Store the original referring affiliate on the buyer's account.
+-- Written at first checkout (if user_settings row exists) and
+-- confirmed by the webhook on payment confirmation.
+alter table public.user_settings
+  add column if not exists referred_by_affiliate_id uuid
+  references public.affiliates(id) on delete set null;
+
+-- Sparse index: only rows with a referring affiliate are indexed.
+create index if not exists user_settings_referred_by_affiliate_idx
+  on public.user_settings(referred_by_affiliate_id)
+  where referred_by_affiliate_id is not null;
+
+-- Recurring payments carry no referral code — allow null.
+alter table public.affiliate_commissions
+  alter column referral_code drop not null;
