@@ -11,7 +11,10 @@
     "test:perf": "node scripts/perf-test.js",
     "test": "node --test --experimental-vm-modules tests/auth-flow.test.js",
     "test:inp": "node scripts/inp-audit.js",
-    "test:lighthouse": "node scripts/lighthouse-sim.js"
+    "test:lighthouse": "node scripts/lighthouse-sim.js",
+    "test:desktop": "node scripts/desktop-perf-sim.js",
+    "test:security": "node scripts/security-audit.js",
+    "env:check": "node scripts/env-check.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",

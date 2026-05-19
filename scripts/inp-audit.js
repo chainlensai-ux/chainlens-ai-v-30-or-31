@@ -35,7 +35,7 @@ function measureSignInFlow(n) {
     // In React 18, all setX calls inside an event handler are batched — one render.
     // The "INP-relevant" synchronous work is everything before the first await.
     const email    = `user${i}@chainlens.app`
-    const password = 'Chainlens@2026!'
+    const password = process.env.AUDIT_TEST_PASSWORD ?? 'Test@Placeholder!'
     const mode     = i % 2 === 0 ? 'signin' : 'signup'
 
     // State updates (synchronous; triggers batched render in React)
