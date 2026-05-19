@@ -36,6 +36,7 @@ export async function GET(request: NextRequest) {
       headers: {
         Authorization: `Bearer ${process.env.GOLDRUSH_API_KEY}`,
       },
+      signal: AbortSignal.timeout(8000),
     });
 
     if (!response.ok) {

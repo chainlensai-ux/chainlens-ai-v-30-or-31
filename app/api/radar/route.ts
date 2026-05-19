@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
+import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const limiter = createRateLimiter({ windowMs: 60_000, max: 5 })
@@ -141,6 +142,13 @@ export async function GET(req: NextRequest) {
   if (!limiter.check(getClientIp(req))) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   }
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  let plan: 'free' | 'pro' | 'elite' = 'free'
+  if (token) {
+    try { plan = (await getCurrentUserPlanFromBearerToken(token)).plan } catch { plan = 'free' }
+  }
+  if (plan === 'free') return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
 
   // Fetch new Base pools (shared cache for beta traffic)
   let gtResult: Awaited<ReturnType<typeof getOrFetchCached<Record<string, unknown>>>>

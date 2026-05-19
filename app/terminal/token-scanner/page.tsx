@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
+import { supabase } from '@/lib/supabaseClient'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -672,6 +674,9 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function TerminalTokenScanner() {
+  const { plan } = usePlanWithLoading()
+  const isFullAccess = canAccessFeature(plan, 'token-scanner-full')
+
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
@@ -706,9 +711,11 @@ export default function TerminalTokenScanner() {
     try {
       const debugHolder = typeof window !== 'undefined'
         && new URLSearchParams(window.location.search).get('debugHolder') === 'true'
+      const { data: _sd } = await supabase.auth.getSession()
+      const _tok = _sd.session?.access_token
       const res  = await fetch('/api/token', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
         body: JSON.stringify({ contract: q, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       const json = await res.json()
@@ -823,7 +830,7 @@ export default function TerminalTokenScanner() {
               }} />
               TOKEN SCANNER
             </div>
-            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>Full scan access.</p>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{isFullAccess ? 'Full scan access.' : 'Basic preview · Pro and Elite unlock full security reports.'}</p>
           </div>
 
           {/* Input row */}
@@ -839,7 +846,7 @@ export default function TerminalTokenScanner() {
                 background: 'rgba(255,255,255,0.04)',
                 border: '1px solid rgba(255,255,255,0.10)',
                 borderRadius: '10px',
-                color: '#e2e8f0', fontSize: '14px',
+                color: '#e2e8f0', fontSize: '16px',
                 fontFamily: 'var(--font-plex-mono)',
                 outline: 'none',
                 opacity: loading ? 0.6 : 1,
@@ -1065,7 +1072,15 @@ export default function TerminalTokenScanner() {
                     ))}
                 </div>
               )}
-              {result.lpControl && (() => {
+              {!isFullAccess && (
+                <div style={{marginTop:'24px',padding:'28px 24px',border:'1px solid rgba(139,92,246,0.28)',borderRadius:'16px',background:'rgba(139,92,246,0.06)',textAlign:'center'}}>
+                  <div style={{fontSize:'26px',marginBottom:'12px'}}>🔒</div>
+                  <p style={{fontWeight:700,color:'#f8fafc',margin:'0 0 8px',fontSize:'15px',fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Full Security Report</p>
+                  <p style={{color:'#94a3b8',fontSize:'13px',margin:'0 0 20px',lineHeight:1.5,fontFamily:'var(--font-inter,Inter,sans-serif)'}}>LP control, security simulation, and holder distribution are included in Pro and Elite plans.</p>
+                  <a href="/pricing" style={{display:'inline-block',padding:'10px 28px',borderRadius:'999px',background:'linear-gradient(135deg,#7c3aed,#a855f7)',color:'#fff',fontWeight:700,fontSize:'13px',textDecoration:'none',fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Get Access</a>
+                </div>
+              )}
+              {isFullAccess && result.lpControl && (() => {
                 const lp = result.lpControl
                 const read = result.lpControlRead
                 const statusColor: Record<string, string> = {
@@ -1137,16 +1152,16 @@ export default function TerminalTokenScanner() {
               })()}
 
               {/* Security Simulation */}
-              <ContractRiskSection
+              {isFullAccess && <ContractRiskSection
                 gp={result.goplus && result.contract
                   ? (result.goplus[result.contract.toLowerCase()] ?? null)
                   : null}
                 hp={result.honeypot ?? null}
-              />
+              />}
 
 
               {/* Holder debug card — only rendered when API returns debugHolderStatus */}
-              {result.debugHolderStatus && (() => {
+              {isFullAccess && result.debugHolderStatus && (() => {
                 const d = result.debugHolderStatus!
                 const rows: [string, string][] = [
                   ['providerCalled',  String(d.providerCalled ?? '?')],
@@ -1189,7 +1204,7 @@ export default function TerminalTokenScanner() {
               })()}
 
               {/* Holder analytics */}
-              {(() => {
+              {isFullAccess && (() => {
                 const holderState = deriveHolderState(result)
                 const fallback = deriveHolderFallbackEvidence(result)
                 if (holderState.kind !== 'noRowsFallback') {
@@ -1347,8 +1362,18 @@ export default function TerminalTokenScanner() {
             </p>
           </div>
 
+          {/* Free-tier locked state */}
+          {!isFullAccess && (
+            <div style={{textAlign:'center',padding:'8px 0'}}>
+              <div style={{fontSize:'22px',marginBottom:'10px'}}>🔒</div>
+              <p style={{fontWeight:700,color:'#f8fafc',margin:'0 0 6px',fontSize:'13px',fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Full CORTEX Verdict</p>
+              <p style={{color:'#94a3b8',fontSize:'11px',margin:'0 0 16px',lineHeight:1.5,fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Security analysis and CORTEX verdicts are included in Pro and Elite.</p>
+              <a href="/pricing" style={{display:'inline-block',padding:'8px 20px',borderRadius:'999px',background:'linear-gradient(135deg,#7c3aed,#a855f7)',color:'#fff',fontWeight:700,fontSize:'12px',textDecoration:'none'}}>Get Access</a>
+            </div>
+          )}
+
           {/* Idle */}
-          {!clarkLoading && !clarkVerdict && !clarkError && (
+          {isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
             <p style={{
               fontSize: '11px', color: '#1e3a44',
               fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
@@ -1358,7 +1383,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Loading dots */}
-          {clarkLoading && (
+          {isFullAccess && clarkLoading && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 0' }}>
               {[0, 1, 2].map(i => (
                 <span key={i} style={{
@@ -1371,7 +1396,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Error */}
-          {clarkError && (
+          {isFullAccess && clarkError && (
             <p style={{
               fontSize: '12px', color: '#fca5a5',
               fontFamily: 'var(--font-plex-mono)', margin: 0, lineHeight: 1.6,
@@ -1381,7 +1406,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Verdict */}
-          {result && (() => {
+          {isFullAccess && result && (() => {
             const d = deriveVerdictInput(result)
             const hp = result.honeypot
             const buyTax = hp?.buyTax ?? null

@@ -2,9 +2,15 @@
 
 import { Suspense, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import ClarkRadar from '@/components/ClarkRadar'
 import HeroSection from '@/components/HeroSection'
-import HomeTokenScreener from '@/components/HomeTokenScreener'
+
+// Below the fold on mobile — defer parse + execution until after first paint
+const HomeTokenScreener = dynamic(() => import('@/components/HomeTokenScreener'), {
+  ssr: false,
+  loading: () => <div style={{ flex: 1, background: 'linear-gradient(160deg, #080d1c 0%, #060a14 100%)', minHeight: '120px' }} />,
+})
 
 function TerminalPageContent() {
   const [isTyping, setIsTyping] = useState(false)

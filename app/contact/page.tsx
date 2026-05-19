@@ -52,6 +52,29 @@ export default function ContactPage() {
           white-space: nowrap;
           font-family: var(--font-plex-mono, IBM Plex Mono, monospace);
         }
+        .back-home-link {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 9px 16px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.04);
+          color: rgba(255,255,255,0.82);
+          text-decoration: none;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          font-family: var(--font-plex-mono, IBM Plex Mono, monospace);
+          transition: border-color 0.15s, background 0.15s, color 0.15s;
+          margin-bottom: 28px;
+        }
+        .back-home-link:hover {
+          border-color: rgba(45,212,191,0.45);
+          background: rgba(45,212,191,0.10);
+          color: #2DD4BF;
+        }
         .cta-email {
           background: rgba(45,212,191,0.10);
           border: 1px solid rgba(45,212,191,0.28);
@@ -201,6 +224,9 @@ export default function ContactPage() {
         }} />
 
         <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '72px 24px 100px', position: 'relative' }}>
+          <Link href="/" className="back-home-link" aria-label="Back to main page">
+            ← Back to Main Page
+          </Link>
 
           {/* ── Hero ─────────────────────────────────────────── */}
           <div style={{ marginBottom: '60px', textAlign: 'center' }}>
@@ -267,7 +293,7 @@ export default function ContactPage() {
               }}>
                 chainlensai@gmail.com
               </div>
-              <a href="mailto:chainlensai@gmail.com" className="contact-cta cta-email" style={{ alignSelf: 'flex-start' }}>
+              <a href="mailto:chainlensai@gmail.com?subject=ChainLens%20Support" className="contact-cta cta-email" style={{ alignSelf: 'flex-start' }}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
                   <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                   <path d="M22 6l-10 7L2 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -330,10 +356,10 @@ export default function ContactPage() {
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 letterSpacing: '0.04em',
               }}>
-                @chainlens__ai
+                @chainlens_ai
               </div>
               <a
-                href="https://x.com/chainlens__ai"
+                href="https://x.com/chainlens_ai"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="contact-cta cta-x"
@@ -342,7 +368,7 @@ export default function ContactPage() {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
                   <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L2.127 2.25H8.08l4.261 5.632 5.903-5.632Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" fill="currentColor"/>
                 </svg>
-                Follow @chainlens__ai
+                Follow @chainlens_ai
               </a>
             </div>
           </div>

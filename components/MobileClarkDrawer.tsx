@@ -77,17 +77,10 @@ export default function MobileClarkDrawer() {
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
-        body: JSON.stringify({
-          feature: 'clark-ai',
-          prompt: text,
-          message: text,
-          mode: 'chat',
-          history,
-          clarkContext: getClientClarkContext(),
-        }),
+        body: JSON.stringify({ feature: 'clark-ai', prompt: text, clientContext: getClientClarkContext() }),
       })
       const json = await res.json().catch(() => ({}))
-      const payload = (json?.data && typeof json.data === 'object') ? json.data as Record<string, unknown> : json as Record<string, unknown>
+      const payload = (json?.data && typeof json.data === 'object') ? json.data : json
       const marketItems = payload?.marketContext && typeof payload.marketContext === 'object' && Array.isArray((payload.marketContext as { items?: unknown[] }).items)
         ? (payload.marketContext as { items?: unknown[] }).items
         : null
@@ -95,10 +88,10 @@ export default function MobileClarkDrawer() {
         sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(marketItems))
         sessionStorage.setItem('chainlens:clark:last-momentum-shown-count', String(Math.min(7, marketItems.length)))
       }
-      const reply = (json.ok !== false
-        ? (payload?.reply ?? payload?.analysis ?? json.reply ?? json.analysis ?? null)
-        : (json.error ?? null)) ?? FALLBACK_ERROR_MESSAGE
-      setMessages((prev) => [...prev.slice(0, -1), { role: 'clark', text: String(reply) }])
+      const reply = typeof payload?.reply === 'string' && payload.reply.trim()
+        ? payload.reply
+        : (typeof payload?.analysis === 'string' && payload.analysis.trim() ? payload.analysis : FALLBACK_ERROR_MESSAGE)
+      setMessages((prev) => [...prev.slice(0, -1), { role: 'clark', text: reply }])
       setLastAction('send-success')
     } catch {
       setError(FALLBACK_ERROR_MESSAGE)

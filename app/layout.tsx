@@ -1,11 +1,14 @@
 import type { Metadata, Viewport } from 'next'
+import { Suspense } from 'react'
 import Script from 'next/script'
 import { headers } from 'next/headers'
 import { cookieToInitialState } from 'wagmi'
 import './globals.css'
 import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
 import { Providers } from './providers'
-import MobileClarkDrawer from '@/components/MobileClarkDrawer'
+import AffiliateRefCapture from '@/components/AffiliateRefCapture'
+// Lazy client wrapper — defers the full chat drawer bundle from the initial page load
+import MobileClarkDrawerLazy from '@/components/MobileClarkDrawerLazy'
 import { wagmiConfig } from '@/lib/wallet'
 
 const SITE_URL = 'https://www.chainlensai.app'
@@ -64,10 +67,11 @@ export default async function RootLayout({
         </Script>
         <Providers initialState={initialState}>
           <SupabaseProvider>
+            <Suspense fallback={null}><AffiliateRefCapture /></Suspense>
             {children}
           </SupabaseProvider>
         </Providers>
-        <MobileClarkDrawer />
+        <MobileClarkDrawerLazy />
       </body>
     </html>
   )

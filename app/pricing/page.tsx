@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
+import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
 
 type PlanId = 'free' | 'pro' | 'elite'
@@ -25,18 +26,21 @@ const plans: Plan[] = [
     id: 'free',
     label: 'FREE',
     price: '$0',
-    subtext: 'forever',
-    sectionTitle: 'CORE FEATURES',
-    note: 'Best for trying ChainLens.',
+    subtext: 'forever free · no card required',
+    sectionTitle: 'WHAT\'S INCLUDED',
+    note: '',
+    badge: 'CORTEX LITE',
     features: [
-      'Live Base market preview',
-      'Token Screener',
-      'Price, liquidity, volume, and 24h change',
-      'Basic token info',
-      'Limited Clark AI access',
-      'No Full Token Scanner reports',
+      'Price, liquidity, volume, 24h change',
+      'Basic token info only',
+      'Basic LP score only',
+      'Clark AI — 5 prompts per day',
+      'No AI token verdict',
+      'No full LP analysis',
       'No Wallet Scanner',
-      'No Whale / Pump Alerts',
+      'No Dev Wallet Detector',
+      'No Pump Alerts',
+      'No Whale Alerts',
       'No Base Radar',
     ],
     ctaClass: 'cta-free',
@@ -46,40 +50,41 @@ const plans: Plan[] = [
     label: 'PRO',
     price: '$30',
     subtext: 'per month',
-    sectionTitle: 'EVERYTHING IN FREE, PLUS',
-    note: 'Best for active Base traders.',
+    sectionTitle: 'FULL ACCESS',
+    note: 'Everything serious Base traders need.',
+    badge: 'CORTEX STANDARD',
     features: [
       'Full Token Scanner',
-      'Clark AI token reports',
-      'Holder distribution where available',
-      'Honeypot / tax / security checks',
-      'Liquidity Safety',
+      'Full Liquidity Safety',
       'Wallet Scanner',
       'Dev Wallet Detector',
-      'Whale Alerts',
       'Pump Alerts',
+      'Whale Alerts',
       'Base Radar',
-      'Portfolio + saved settings',
-      'Fair-use Clark AI limits',
+      'Clark AI — 50 prompts / day',
+      'Token security and tax simulation where available',
+      'Holder distribution where available',
+      'Portfolio and account tools',
     ],
     ctaClass: 'cta-pro',
-    badge: 'MOST POPULAR',
   },
   {
     id: 'elite',
     label: 'ELITE',
     price: '$60',
     subtext: 'per month',
-    sectionTitle: 'EVERYTHING IN PRO, PLUS',
-    note: 'Best for whale tracking and power users.',
+    sectionTitle: 'POWER TIER',
+    note: 'For traders who want more CORTEX power, higher limits, and faster reads.',
+    badge: 'CORTEX FULL INTELLIGENCE',
     features: [
-      'Higher Clark AI and report limits',
-      'More tracked wallet monitoring',
-      'Advanced Whale Alerts access',
-      'Smart wallet / watchlist tools where available',
-      'Auto Clark verdicts where available',
-      'Early access to new ChainLens features',
+      'Everything in Pro',
+      'Unlimited Clark AI prompts, subject to fair use',
+      'Auto Clark verdict on every supported scan',
+      'Higher CORTEX usage limits',
       'Priority CORTEX processing where available',
+      'More room for whale and wallet monitoring',
+      'Early access to new ChainLens features',
+      'Best plan for daily Base researchers and active traders',
     ],
     ctaClass: 'cta-elite',
   },
@@ -103,6 +108,7 @@ const NAV_LINKS = [
 export default function PricingPage() {
   const [userPlan, setUserPlan] = useState<UserPlan>('free')
   const [sessionReady, setSessionReady] = useState(false)
+  const [planReady, setPlanReady] = useState(false)
   const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
 
@@ -110,18 +116,18 @@ export default function PricingPage() {
     supabase.auth.getSession().then(async ({ data }) => {
       setSessionReady(true)
       const token = data.session?.access_token
-      if (!token) return
+      if (!token) { setPlanReady(true); return }
       try {
         const res = await fetch('/api/user-settings', {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (res.ok) {
-          const json = await res.json()
-          const p = (json as Record<string, unknown>)?.plan ??
-            (json?.settings as Record<string, unknown>)?.plan
-          if (p === 'pro' || p === 'elite') setUserPlan(p)
+          const json = await res.json() as Record<string, unknown>
+          const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
+          if (p === 'pro' || p === 'elite') setUserPlan(p as UserPlan)
         }
       } catch { /* stay on free */ }
+      setPlanReady(true)
     })
   }, [])
 
@@ -131,8 +137,20 @@ export default function PricingPage() {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
+      const urlRef = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('ref') : null
+      const storedRef = typeof window !== 'undefined' ? window.localStorage.getItem(AFFILIATE_REF_KEY) : null
+      const cookieRef = typeof window !== 'undefined' ? readReferralCodeFromCookie(document.cookie) : null
+      const rawRef = urlRef ?? storedRef ?? cookieRef
+      const referralCode = rawRef && isValidReferralCode(rawRef) ? normalizeReferralCode(rawRef) : null
+      if (process.env.NODE_ENV !== 'production') {
+        console.info('[handleCryptoPay] ref sources', { urlRef, storedRef, cookieRef, referralCode })
+      }
       if (!token) {
-        setCheckoutError('Sign in to start checkout.')
+        const returnPath = referralCode ? `/pricing?ref=${encodeURIComponent(referralCode)}` : '/pricing'
+        try { sessionStorage.setItem('cl_auth_next', returnPath) } catch {}
+        try { localStorage.setItem('cl_auth_next', returnPath) } catch {}
+        document.cookie = `cl_auth_next=${encodeURIComponent(returnPath)}; Max-Age=3600; Path=/; SameSite=Lax`
+        window.location.href = `/auth?next=${encodeURIComponent(returnPath)}`
         return
       }
       const res = await fetch('/api/checkout/crypto', {
@@ -141,7 +159,7 @@ export default function PricingPage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ plan: planId }),
+        body: JSON.stringify({ plan: planId, referralCode }),
       })
       const json = await res.json() as Record<string, unknown>
       if (!res.ok || !json.checkoutUrl) {
@@ -234,7 +252,7 @@ export default function PricingPage() {
           </div>
 
           {/* Pricing cards */}
-          <div className='plan-grid' style={{ display:'grid', gridTemplateColumns:'repeat(3,minmax(0,1fr))', gap:14 }}>
+          <div className='plan-grid' style={{ display:'grid', gridTemplateColumns:'repeat(3,minmax(0,1fr))', gap:14, paddingTop:14 }}>
             {plans.map((plan) => {
               const isCurrent = userPlan === plan.id
               const isPaid = plan.id === 'pro' || plan.id === 'elite'
@@ -267,7 +285,23 @@ export default function PricingPage() {
                   }}
                 >
                   {plan.badge && (
-                    <div style={{ position:'absolute', top:-11, left:'50%', transform:'translateX(-50%)', borderRadius:999, background:'linear-gradient(90deg,#a855f7,#ec4899)', color:'#fff', fontSize:10, letterSpacing:'.12em', fontWeight:800, padding:'4px 12px', boxShadow:'0 0 24px rgba(217,70,239,.6)', whiteSpace:'nowrap' }}>
+                    <div style={{
+                      position:'absolute', top:-11, left:'50%', transform:'translateX(-50%)',
+                      borderRadius:999,
+                      background: plan.id === 'elite'
+                        ? 'linear-gradient(90deg,#d97706,#fbbf24)'
+                        : plan.id === 'free'
+                          ? 'linear-gradient(90deg,#0891b2,#22d3ee)'
+                          : 'linear-gradient(90deg,#a855f7,#ec4899)',
+                      color: plan.id === 'elite' ? '#1c0e00' : plan.id === 'free' ? '#022c3a' : '#fff',
+                      fontSize:10, letterSpacing:'.12em', fontWeight:800, padding:'4px 12px',
+                      boxShadow: plan.id === 'elite'
+                        ? '0 0 24px rgba(251,191,36,.6)'
+                        : plan.id === 'free'
+                          ? '0 0 24px rgba(34,211,238,.5)'
+                          : '0 0 24px rgba(217,70,239,.6)',
+                      whiteSpace:'nowrap',
+                    }}>
                       {plan.badge}
                     </div>
                   )}
@@ -294,19 +328,23 @@ export default function PricingPage() {
 
                   {plan.id === 'elite' && (
                     <div style={{ border:'1px solid rgba(250,204,21,.4)', background:'rgba(250,204,21,.08)', color:'#fde68a', borderRadius:11, padding:10, fontSize:12, marginTop:12 }}>
-                      Everything in Pro — plus higher limits and CORTEX tools where available.
+                      Everything in Pro — plus maximum CORTEX access, higher limits, and early feature access.
                     </div>
                   )}
 
                   {/* CTA block */}
                   <div style={{ marginTop:14 }}>
-                    {isCurrent ? (
-                      <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.72, cursor:'default', pointerEvents:'none', display:'block' }}>
+                    {!planReady ? (
+                      <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.25, cursor:'default', pointerEvents:'none', display:'block' }}>
+                        &nbsp;
+                      </span>
+                    ) : isCurrent ? (
+                      <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.85, cursor:'default', pointerEvents:'none', display:'block' }}>
                         ✓ Current plan
                       </span>
                     ) : plan.id === 'free' ? (
                       <Link href='/terminal' className={`cta ${plan.ctaClass}`} style={{ display:'block' }}>
-                        Get Started
+                        GET STARTED
                       </Link>
                     ) : (
                       <button
@@ -315,11 +353,11 @@ export default function PricingPage() {
                         onClick={() => handleCryptoPay(plan.id as 'pro' | 'elite')}
                         style={{ opacity: isLoading ? 0.7 : 1 }}
                       >
-                        {isLoading ? 'Opening checkout…' : 'Pay with Crypto'}
+                        {isLoading ? 'Opening checkout…' : 'PAY WITH CRYPTO'}
                       </button>
                     )}
 
-                    {isPaid && !isCurrent && (
+                    {planReady && isPaid && !isCurrent && (
                       <p style={{ margin:'8px 0 0', fontSize:10, color:'#334155', lineHeight:1.4, textAlign:'center' }}>
                         {plan.id === 'pro' ? 'Pay with crypto' : 'Crypto payments available'} · USDC or ETH on Base
                       </p>
@@ -351,7 +389,7 @@ export default function PricingPage() {
         )}
 
         {/* Crypto payment disclosure */}
-        {(!sessionReady || userPlan === 'free') && (
+        {(!planReady || userPlan === 'free') && (
           <p style={{ marginTop:18, textAlign:'center', fontSize:11, color:'#3a5268', letterSpacing:'.04em' }}>
             Pay with crypto. Recommended: USDC on Base, USDC on Ethereum, or ETH. Your plan activates automatically after payment confirmation.
           </p>

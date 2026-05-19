@@ -58,7 +58,7 @@ const WHO = [
 export default function AffiliatePage() {
   const [form, setForm] = useState<FormState>(initialForm)
   const [loading, setLoading] = useState(false)
-  const [success, setSuccess] = useState<string | null>(null)
+  const [success, setSuccess] = useState<{ message: string; referralCode: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [openFaq, setOpenFaq] = useState<number | null>(null)
 
@@ -71,13 +71,14 @@ export default function AffiliatePage() {
       const res = await fetch('/api/affiliate/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, promotion_plan: form.promo_plan }),
       })
+      const data = await res.json().catch(() => null)
       if (!res.ok) {
-        const data = await res.json().catch(() => null)
         setError(typeof data?.error === 'string' ? data.error : 'Submission is temporarily unavailable. Please try again soon.')
       } else {
-        setSuccess('Application received. We review every submission manually and will reach out within 72 hours.')
+        const code = typeof data?.referral_code === 'string' ? data.referral_code : ''
+        setSuccess({ message: 'Application received. Your referral code is reserved pending approval.', referralCode: code })
         setForm(initialForm)
       }
     } catch {
@@ -424,7 +425,7 @@ export default function AffiliatePage() {
                 {success && (
                   <div style={{ marginBottom:'20px', padding:'16px 18px', borderRadius:'12px', background:'rgba(45,212,191,.06)', border:'1px solid rgba(45,212,191,.28)', display:'flex', gap:'12px', alignItems:'flex-start' }}>
                     <span style={{ fontSize:'16px', flexShrink:0 }}>✓</span>
-                    <p style={{ margin:0, color:'#2dd4bf', fontSize:'13px', lineHeight:1.65 }}>{success}</p>
+                    <div><p style={{ margin:'0 0 8px', color:'#2dd4bf', fontSize:'13px', lineHeight:1.65 }}>{success.message}</p>{success.referralCode && <p style={{ margin:'0 0 8px', color:'#a5f3fc', fontSize:'12px' }}>https://www.chainlensai.app/pricing?ref={success.referralCode}</p>}<p style={{ margin:0, color:'#94a3b8', fontSize:'12px' }}>Links start tracking commissions after approval.</p></div>
                   </div>
                 )}
                 {error && (

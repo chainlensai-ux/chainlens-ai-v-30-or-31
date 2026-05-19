@@ -7,20 +7,29 @@ import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
 
+const AVATAR_COLORS: Record<string, string> = {
+  mint:   'linear-gradient(135deg, #2DD4BF 0%, #14b8a6 100%)',
+  purple: 'linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%)',
+  pink:   'linear-gradient(135deg, #ec4899 0%, #f43f5e 100%)',
+  blue:   'linear-gradient(135deg, #38bdf8 0%, #3b82f6 100%)',
+}
+
 const TIER_COLUMNS = [
   {
     tier: 'FREE',
+    label: 'FREE',
     color: '#ec4899',
     bg: 'rgba(236,72,153,0.10)',
     border: 'rgba(236,72,153,0.20)',
     tools: [
       { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Basic' },
       { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity',      note: 'Basic score' },
-      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '3 prompts/day' },
+      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '5 prompts/day' },
     ],
   },
   {
     tier: 'PRO',
+    label: 'PRO + ELITE',
     color: '#2DD4BF',
     bg: 'rgba(45,212,191,0.08)',
     border: 'rgba(45,212,191,0.20)',
@@ -37,6 +46,7 @@ const TIER_COLUMNS = [
   },
   {
     tier: 'ELITE',
+    label: 'ELITE ONLY',
     color: '#fbbf24',
     bg: 'rgba(251,191,36,0.08)',
     border: 'rgba(251,191,36,0.22)',
@@ -57,6 +67,9 @@ export default function Navbar() {
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false)
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
   const [plan, setPlan] = useState<UserPlan>('free')
+  const [avatarColor, setAvatarColor] = useState<string>('mint')
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+  const [displayName, setDisplayName] = useState<string | null>(null)
   const pathname = usePathname()
 
   useEffect(() => {
@@ -67,9 +80,16 @@ export default function Navbar() {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (res.ok) {
-          const json = await res.json()
-          const p = (json?.settings as Record<string, unknown>)?.plan
+          const json = await res.json() as Record<string, unknown>
+          const settings = json?.settings as Record<string, unknown> | undefined
+          const p = json?.plan ?? json?.effectivePlan ?? settings?.plan
           setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+          const ac = String(settings?.avatar_color ?? json?.avatar_color ?? 'mint')
+          setAvatarColor(AVATAR_COLORS[ac] ? ac : 'mint')
+          const au = String(settings?.avatar_url ?? json?.avatar_url ?? '')
+          setAvatarUrl(au || null)
+          const dn = String(settings?.display_name ?? json?.display_name ?? '')
+          setDisplayName(dn || null)
         }
       } catch { setPlan('free') }
     }
@@ -95,7 +115,7 @@ export default function Navbar() {
       ? `${accountEmail.slice(0, 8)}…${accountEmail.slice(-8)}`
       : accountEmail
     : null
-  const initials = (shortEmail?.[0] ?? 'A').toUpperCase()
+  const initials = (displayName?.[0] ?? shortEmail?.[0] ?? 'A').toUpperCase()
   const planLabel = plan.toUpperCase()
 
   return (
@@ -211,9 +231,9 @@ export default function Navbar() {
 
         .mob-ham {
           display: none;
-          width: 36px; height: 36px; border-radius: 8px;
+          width: 44px; height: 44px; border-radius: 8px;
           background: none; border: 1px solid rgba(255,255,255,0.10);
-          cursor: pointer; flex-shrink: 0; margin-left: auto;
+          cursor: pointer; flex-shrink: 0; margin-left: 12px;
           align-items: center; justify-content: center;
           flex-direction: column; gap: 5px; padding: 0;
         }
@@ -266,10 +286,15 @@ export default function Navbar() {
         @media (max-width: 767px) {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 10px 12px !important; }
-          .nav-shell { height: 58px !important; border-radius: 16px !important; gap: 0 !important; padding: 0 14px !important; }
-          .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: 8px !important; }
+          .nav-shell { height: 58px !important; border-radius: 16px !important; gap: 0 !important; padding: 0 14px !important; animation: none !important; }
+          .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: auto !important; }
           .btn-access { padding: 8px 12px !important; font-size: 11px !important; }
           .mob-nav-overlay { top: 58px !important; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .nav-shell, .tools-dropdown, .tools-dropdown-item { animation: none !important; }
+          .mob-ham span { transition: none !important; }
+          .nav-link, .tools-btn, .btn-signin, .btn-access, .tools-item { transition: none !important; }
         }
       `}</style>
 
@@ -316,7 +341,7 @@ export default function Navbar() {
 
           {/* Logo */}
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '9px', textDecoration: 'none', flexShrink: 0 }}>
-            <Image src="/cl-logo.png" alt="ChainLens AI" width={40} height={40} />
+            <Image src="/cl-logo.png" alt="ChainLens AI" width={40} height={40} priority />
             <div>
               <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '20px', lineHeight: 1.15 }}>
                 <span style={{ color: '#f1f5f9' }}>Chain</span>
@@ -334,16 +359,6 @@ export default function Navbar() {
               </div>
             </div>
           </Link>
-
-          {/* Mobile hamburger */}
-          <button
-            type="button"
-            className={`mob-ham${mobileOpen ? ' is-open' : ''}`}
-            onClick={() => setMobileOpen(o => !o)}
-            aria-label="Toggle navigation"
-          >
-            <span /><span /><span />
-          </button>
 
           {/* Center nav links */}
           <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '22px', flex: 1, minWidth: 0 }}>
@@ -405,7 +420,7 @@ export default function Navbar() {
                         <span style={{
                           fontSize: '9px', fontWeight: 800, letterSpacing: '0.18em', color: col.color,
                           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                        }}>{col.tier}</span>
+                        }}>{col.label}</span>
                       </div>
                       {col.tools.map((t, ti) => (
                         <Link
@@ -495,11 +510,15 @@ export default function Navbar() {
               }}>
                 <span style={{
                   width: '22px', height: '22px', borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                  background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
                   color: '#04101a', fontSize: '11px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0,
-                }}>{initials}</span>
+                  flexShrink: 0, overflow: 'hidden',
+                }}>
+                  {avatarUrl
+                    ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                    : initials}
+                </span>
                 <span className="nav-account-email">{shortEmail}</span>
                 <span style={{
                   fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
@@ -520,6 +539,16 @@ export default function Navbar() {
               </svg>
             </Link>
           </div>
+
+          {/* Mobile hamburger — after auth wrap so it sits on far right */}
+          <button
+            type="button"
+            className={`mob-ham${mobileOpen ? ' is-open' : ''}`}
+            onClick={() => setMobileOpen(o => !o)}
+            aria-label="Toggle navigation"
+          >
+            <span /><span /><span />
+          </button>
 
         </div>
       </nav>
@@ -594,10 +623,15 @@ export default function Navbar() {
               }}>
                 <span style={{
                   width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
-                  background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
+                  background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
                   color: '#04101a', fontSize: '14px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                }}>{initials}</span>
+                  overflow: 'hidden',
+                }}>
+                  {avatarUrl
+                    ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                    : initials}
+                </span>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: '13px', color: '#e2e8f0', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{accountEmail}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>

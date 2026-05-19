@@ -127,6 +127,12 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           transform: translateY(-1px);
         }
         .clark-box-input::placeholder { color: rgba(255,255,255,0.40); }
+        /* Hide expensive GPU layers on mobile */
+        @media (max-width: 767px) {
+          .hero-blob { display: none !important; }
+          .hero-card-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+          .hero-input-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+        }
         @media (prefers-reduced-motion: reduce) {
           .clark-orb, .clark-send-btn, .clark-send-arrow { animation: none !important; }
         }
@@ -149,7 +155,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
         {/* ── Gradient mesh blobs ── */}
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
           {/* Mint blob — top-left */}
-          <div style={{
+          <div className="hero-blob" style={{
             position: 'absolute',
             top: '-40px',
             left: '-60px',
@@ -161,7 +167,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
             animation: 'heroBlobMint 26s ease-in-out infinite',
           }} />
           {/* Pink blob — bottom-right */}
-          <div style={{
+          <div className="hero-blob" style={{
             position: 'absolute',
             bottom: '-30px',
             right: '-50px',
@@ -173,7 +179,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
             animation: 'heroBlobPink 32s ease-in-out infinite',
           }} />
           {/* Purple blob — center */}
-          <div style={{
+          <div className="hero-blob" style={{
             position: 'absolute',
             top: '30%',
             left: '50%',
@@ -304,6 +310,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           >
             {/* Card */}
             <div
+              className="hero-card-blur"
               style={{
                 background: 'linear-gradient(160deg, #0c1828 0%, #080f1c 50%, #060b16 100%)',
                 borderRadius: '16px',
@@ -319,6 +326,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
               <div style={{ padding: '18px' }}>
                 {/* Input row */}
                 <div
+                  className="hero-input-blur"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -362,7 +370,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                       border: 'none',
                       outline: 'none',
                       color: '#e2e8f0',
-                      fontSize: '13px',
+                      fontSize: '16px',
                       fontFamily: 'var(--font-inter)',
                       caretColor: '#a78bfa',
                     }}

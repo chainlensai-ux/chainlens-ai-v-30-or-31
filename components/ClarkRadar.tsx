@@ -386,10 +386,16 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         @media (prefers-reduced-motion: reduce) {
           .clark-orb, .clark-orb::before, .radar-dot, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
         }
+        @media (max-width: 768px) {
+          .clark-panel-glow { animation: none !important; }
+          .clark-radar-hdr-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+          .clark-radar-panel-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+          .clark-radar-input-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+        }
       `}</style>
 
       <div
-        className="clark-panel-glow"
+        className="clark-panel-glow clark-radar-panel-blur"
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -410,6 +416,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
 
         {/* ── Header ──────────────────────────────────────── */}
         <div
+          className="clark-radar-hdr-blur"
           style={{
             position: 'sticky',
             top: 0,
@@ -621,6 +628,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           }}
         >
           <div
+            className="clark-radar-input-blur"
             style={{
               display: 'flex',
               alignItems: 'center',

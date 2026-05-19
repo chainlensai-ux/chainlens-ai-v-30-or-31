@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { supabase } from '@/lib/supabaseClient'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -684,7 +685,9 @@ export default function BaseRadarPage() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/radar', { cache: 'no-store' })
+      const { data: _sd } = await supabase.auth.getSession()
+      const _tok = _sd.session?.access_token
+      const res = await fetch('/api/radar', { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
       const json = await res.json()
       if (!res.ok || json.error) {
         setError('Base Radar current checks did not return a fresh signal. Try refresh.')
@@ -699,8 +702,8 @@ export default function BaseRadarPage() {
   }, [])
 
   useEffect(() => {
-    fetchData()
-  }, [fetchData])
+    if (!planLoading && canAccessFeature(plan, 'base-radar')) fetchData()
+  }, [fetchData, plan, planLoading])
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -716,11 +719,11 @@ export default function BaseRadarPage() {
   }, [])
 
   useEffect(() => {
-    if (refreshKey > 0) {
+    if (refreshKey > 0 && canAccessFeature(plan, 'base-radar')) {
       fetchData()
       setCountdown(60)
     }
-  }, [refreshKey, fetchData])
+  }, [refreshKey, fetchData, plan])
 
   function handleManualRefresh() {
     setCountdown(60)

@@ -109,6 +109,29 @@ function getClientClarkContext() {
   } catch { return {} }
 }
 
+const CLARK_DAILY_LIMITS: Record<string, number> = { free: 5, pro: 50, elite: 300 }
+const CLARK_LIMIT_UNAUTH = 3
+
+function getTodayStr() { return new Date().toISOString().slice(0, 10) }
+
+function readClarkUsage(): number {
+  if (typeof window === 'undefined') return 0
+  try {
+    const raw = localStorage.getItem('chainlens:clark:daily-usage')
+    if (!raw) return 0
+    const { date, count } = JSON.parse(raw) as { date: string; count: number }
+    return date === getTodayStr() ? (count || 0) : 0
+  } catch { return 0 }
+}
+
+function bumpClarkUsage(): number {
+  try {
+    const next = readClarkUsage() + 1
+    localStorage.setItem('chainlens:clark:daily-usage', JSON.stringify({ date: getTodayStr(), count: next }))
+    return next
+  } catch { return 0 }
+}
+
 function ClarkOrb({ size = 20, thinking = false }: { size?: number; thinking?: boolean }) {
   return <span className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}><span className='clark-orb-ring' /><span className='clark-orb-dot clark-orb-dot-a' /><span className='clark-orb-dot clark-orb-dot-b' /></span>
 }
@@ -138,6 +161,8 @@ export default function ClarkChat({
   const inputRef = useRef<HTMLInputElement>(null)
   const lastSentInitialRef = useRef<string | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
+  const [clarkUsed, setClarkUsed] = useState(0)
+  const [planLimit, setPlanLimit] = useState<number | null>(null)
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -145,8 +170,23 @@ export default function ClarkChat({
     }
   }, [messages])
 
+  useEffect(() => {
+    setClarkUsed(readClarkUsage())
+    supabase.auth.getSession().then(async ({ data }) => {
+      const token = data.session?.access_token
+      if (!token) { setPlanLimit(CLARK_LIMIT_UNAUTH); return }
+      try {
+        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
+        if (res.ok) {
+          const json = await res.json() as Record<string, unknown>
+          const p = String(json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan ?? '')
+          setPlanLimit(CLARK_DAILY_LIMITS[p] ?? CLARK_DAILY_LIMITS.free)
+        } else { setPlanLimit(CLARK_DAILY_LIMITS.free) }
+      } catch { setPlanLimit(CLARK_DAILY_LIMITS.free) }
+    })
+  }, [])
+
   const executeSend = useCallback(async (text: string) => {
-    console.log('executeSend sending:', text)
     setMessages(prev => [...prev, { role: 'user', text }])
     setLoading(true)
     setMessages(prev => [...prev, { role: 'clark', text: THINKING_MESSAGE }])
@@ -156,13 +196,6 @@ export default function ClarkChat({
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[clark] request context', {
-          moversCount: clarkContextRef.current.lastMarketList?.length ?? 0,
-          lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
-        })
-      }
-      console.log('POST → /api/clark')
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData.session?.access_token
       const res = await fetch(`/api/clark`, {
@@ -186,9 +219,8 @@ export default function ClarkChat({
           clientContext: getClientClarkContext(),
         }),
       })
-      console.log('Response status:', res.status)
-
       const json = await res.json()
+      if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown }
@@ -235,7 +267,7 @@ export default function ClarkChat({
       })
     } finally {
       setLoading(false)
-      inputRef.current?.focus()
+      if (!isMobileClient()) inputRef.current?.focus()
     }
   }, [messages, mode])
 
@@ -252,7 +284,6 @@ export default function ClarkChat({
   }, [initialMessage, executeSend, prefillOnlyInitial])
 
   function handleSend() {
-    console.log('handleSend fired with:', input)
     const text = input.trim()
     if (!text || loading) return
     if (isMobileClient()) {
@@ -315,6 +346,9 @@ export default function ClarkChat({
             z-index: 15 !important;
             background: linear-gradient(180deg, rgba(5,8,22,0.65), rgba(5,8,22,0.95)) !important;
           }
+          .chat-bg-orb { display: none !important; }
+          .chat-hdr-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+          .chat-input-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
         }
         @media (prefers-reduced-motion: reduce) { .clark-orb-dot, .clark-orb-shell.thinking::after { animation: none !important; } }
       `}</style>
@@ -329,7 +363,7 @@ export default function ClarkChat({
               background: 'linear-gradient(90deg, transparent 0%, #ff4b9a 25%, #7b5cff 55%, #4ef2c5 80%, transparent 100%)',
             }} />
             <div
-              className="terminal-header-bar"
+              className="terminal-header-bar chat-hdr-blur"
               style={{
                 display: 'flex', alignItems: 'center', gap: '10px',
                 padding: '0 24px', height: '44px',
@@ -355,6 +389,17 @@ export default function ClarkChat({
                 textShadow: '0 0 10px rgba(78,242,197,0.58), 0 0 4px rgba(139,92,246,0.22)',
               }}>CLARK AI</span>
               <div style={{ flex: 1 }} />
+              <span style={{
+                fontSize: '9px',
+                color: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.85)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.80)' : 'rgba(45,212,191,0.70)',
+                fontFamily: 'var(--font-plex-mono)',
+                letterSpacing: '0.10em',
+                padding: '2px 7px',
+                border: `1px solid ${planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.30)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.30)' : 'rgba(45,212,191,0.28)'}`,
+                borderRadius: '999px',
+              }}>
+                {clarkUsed}/{planLimit ?? '...'} today
+              </span>
               <span style={{
                 fontSize: '9px', color: 'rgba(123,92,255,0.55)',
                 fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.14em',
@@ -382,9 +427,9 @@ export default function ClarkChat({
           overflow: 'hidden',
         }}>
 
-          {/* Animated background orbs — chat-only panel */}
+          {/* Animated background orbs — chat-only panel, desktop-only */}
           {mode === 'chat-only' && <>
-            <div style={{
+            <div className="chat-bg-orb" style={{
               position: 'absolute', pointerEvents: 'none', zIndex: 0,
               width: '300px', height: '300px', borderRadius: '50%',
               top: '-60px', left: '-60px',
@@ -392,7 +437,7 @@ export default function ClarkChat({
               filter: 'blur(40px)',
               animation: 'chat-orb-teal 12s ease-in-out infinite',
             }} />
-            <div style={{
+            <div className="chat-bg-orb" style={{
               position: 'absolute', pointerEvents: 'none', zIndex: 0,
               width: '360px', height: '360px', borderRadius: '50%',
               bottom: '60px', right: '-80px',
@@ -458,8 +503,6 @@ export default function ClarkChat({
 
                   {isThinking ? (
                     <div style={{
-                      backdropFilter: 'blur(12px)',
-                      WebkitBackdropFilter: 'blur(12px)',
                       border: '1px solid rgba(255,255,255,0.10)',
                       borderRadius: '12px',
                       padding: '10px 16px',
@@ -514,7 +557,7 @@ export default function ClarkChat({
               position: 'relative', zIndex: 1,
               flexShrink: 0,
             }}>
-              <div style={{
+              <div className="chat-input-blur" style={{
                 display: 'flex', alignItems: 'center',
                 background: 'rgba(8,8,20,0.85)',
                 border: `1px solid ${input.trim() ? 'rgba(45,212,191,0.30)' : 'rgba(255,255,255,0.10)'}`,
@@ -541,25 +584,37 @@ export default function ClarkChat({
                     border: 'none',
                     outline: 'none',
                     color: '#e2e8f0',
-                    fontSize: '12px',
+                    fontSize: '16px',
                     fontFamily: 'var(--font-inter), Inter, sans-serif',
                     opacity: loading ? 0.5 : 1,
                     minWidth: 0,
                   }}
                 />
+                <span style={{
+                  fontSize: '9px',
+                  color: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.80)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.75)' : 'rgba(45,212,191,0.55)',
+                  fontFamily: 'var(--font-plex-mono)',
+                  letterSpacing: '0.06em',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  userSelect: 'none',
+                  paddingRight: '2px',
+                }}>
+                  {clarkUsed}/{planLimit ?? '...'}
+                </span>
                 <button
                   onClick={handleSend}
-                  disabled={loading || !input.trim()}
+                  disabled={loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)}
                   style={{
                     width: '30px', height: '30px',
                     borderRadius: '50%',
                     border: 'none',
-                    background: loading || !input.trim()
+                    background: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)
                       ? 'rgba(45,212,191,0.12)'
                       : '#2DD4BF',
-                    color: loading || !input.trim() ? 'rgba(45,212,191,0.35)' : '#04101a',
+                    color: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'rgba(45,212,191,0.35)' : '#04101a',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+                    cursor: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'not-allowed' : 'pointer',
                     transition: 'background 0.15s, color 0.15s',
                     flexShrink: 0,
                     boxShadow: input.trim() ? '0 0 12px rgba(45,212,191,0.40)' : 'none',

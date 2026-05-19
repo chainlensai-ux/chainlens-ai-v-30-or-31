@@ -187,15 +187,15 @@ function updateMemIntent(mem: ClarkSessionMemory, intent: string) {
   }
 }
 // Lightweight prompt cost classifier — determines whether a prompt needs expensive tool calls
-const LOW_COST_RE = /^(hi|hey|yo|gm|sup|hello|ok|okay|sure|thanks|thank you|got it|cool|nice|great)\b|^(more|continue|expand|go on|keep going|next|show more|give me more|other tokens)\s*$|^(what does that mean|explain that|can you explain|what is that|what does .{1,40} mean|explain .{1,40})\??$|^(what\s+(?:does|is|are)\s+(?:volume|liquidity|lp|fdv|market\s+cap|holder|concentration|turnover|slippage|honeypot|dev\s+wallet|deployer|whale).{0,60})\??$|what\s+(?:is|are)\s+(?:red\s+flags?|risk\s+flags?|the\s+risks?)|how\s+do\s+(?:i|you)\s+(?:find|track|use|read)/i;
+const LOW_COST_RE = /^(hi|hey|yo|gm|sup|hello|ok|okay|sure|thanks|thank you|got it|cool|nice|great)\b|^(more|continue|expand|go on|keep going|next|show more|give me more|other tokens|more tokens|more tokens from pool|show more movers|more pumping tokens)\s*$|^(what does that mean|explain that|can you explain|what is that|what does .{1,40} mean|explain .{1,40})\??$|^(what\s+(?:does|is|are)\s+(?:volume|liquidity|lp|fdv|market\s+cap|holder|concentration|turnover|slippage|honeypot|dev\s+wallet|deployer|whale).{0,60})\??$|what\s+(?:is|are)\s+(?:red\s+flags?|risk\s+flags?|the\s+risks?)|how\s+do\s+(?:i|you)\s+(?:find|track|use|read)/i;
 
 const WATCH_VERDICT_LOW_COST_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+token|that\s+token)?|is\s+it\s+worth\s+watching|worth\s+watching|final\s+verdict|what'?s\s+the\s+play|should\s+i\s+monitor\s+(?:it|this)|watch\s+verdict)\b/i;
 
 const WALLET_FOLLOWUP_LOW_COST_RE = /\b(is\s+it\s+worth|worth\s+monitoring|is\s+this\s+wallet|should\s+i\s+watch|should\s+i\s+copy|what\s+are\s+its|any\s+risk|main\s+holdings?|scan\s+its|top\s+holding)\b/i;
 
-const MORE_CONTEXT_RE = /^(more|continue|expand|go on|keep going|give me more|show more)\s*$/i;
-const THIS_DEV_RE = /\b(who\s+deployed\s+this|who\s+made\s+this|dev\s+wallet\s+this|origin\s+wallet\s+this|deployer\s+this|creator\s+wallet)\b/i;
-const THIS_LIQ_RE = /\b(liquidity\s+check\s+this|lp\s+check\s+this|is\s+lp\s+locked|is\s+liquidity\s+safe|pool\s+safety\s+this)\b/i;
+const MORE_CONTEXT_RE = /^(more|continue|expand|go on|keep going|give me more|show more|more tokens|more tokens from pool|show more movers|more pumping tokens)\s*$/i;
+const THIS_DEV_RE = /\b(who\s+deployed\s+this|who\s+made\s+this|who\s+built\s+this|who\s+created\s+this|dev\s+wallet\s+this|origin\s+wallet\s+this|deployer\s+this|creator\s+wallet)\b/i;
+const THIS_LIQ_RE = /\b(liquidity\s+check\s+this|lp\s+check\s+this|is\s+(?:the\s+)?lp\s+locked|is\s+(?:the\s+)?liquidity\s+(?:safe|locked)|pool\s+safety\s+this|lp\s+safe\s+(?:for\s+)?this)\b/i;
 
 function isLowCostPrompt(prompt: string, sessionMem?: ClarkSessionMemory): boolean {
   const t = prompt.trim();
@@ -450,7 +450,7 @@ async function resolveEnsOrBasename(name: string): Promise<string | null> {
   return null
 }
 function isValidationOnlyAnalysis(analysis: string): boolean {
-  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token/i.test(analysis)
+  return /I can run that, but I need a wallet address first|I can run that, but I need a token contract first|I couldn't resolve .+ to a wallet address|That doesn't look like a Base token|LOCKED\s*\n|Upgrade to unlock full CORTEX reads/i.test(analysis)
 }
 
 function idToAddress(id: string): string {
@@ -505,6 +505,17 @@ function extractTokenLookupQuery(prompt: string): string | null {
     /supply\s+concentration\s+(?:for\s+)?([a-z0-9._-]{2,32})\b/i,
     /([a-z0-9._-]{2,32})\s+(?:holder\s+concentration|holder\s+distribution|top\s+holders?|supply\s+concentration)\b/i,
     /holders?\s+([a-z0-9._-]{2,32})\b/i,
+    // Conversational natural-language patterns
+    /(?:give\s+me\s+(?:a\s+)?(?:read|look|scan|check|report)\s+on|(?:quick\s+)?read\s+on|your\s+(?:read|thoughts?|take)\s+on)\s+([a-z0-9._-]{2,32})/i,
+    /(?:thoughts?|take|opinion)\s+on\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /(?:look\s+(?:at|into)|take\s+a\s+look\s+at)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /(?:tell\s+me\s+(?:about|more\s+about))\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /what'?s\s+(?:the\s+deal|up\s+with|going\s+on\s+with)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /(?:any\s+red\s+flags?\s+(?:on|for)|red\s+flags?\s+(?:on|for))\s+([a-z0-9._-]{2,32})\b/i,
+    /is\s+([a-z0-9._-]{2,32})\s+(?:a\s+rug(?:pull)?|a\s+scam|legit|worth\s+(?:it|watching))\b/i,
+    /(?:run\s+(?:a\s+)?(?:scan|check|report)\s+on|run\s+the\s+numbers\s+on)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
+    /([a-z0-9._-]{2,32})\s+(?:worth\s+(?:watching|scanning|a\s+scan)|looks\s+interesting|any\s+good\??)\b/i,
+    /(?:pull\s+(?:up|data\s+on)|research)\s+([a-z0-9._-]{2,32})(?:\s+on\s+base)?\b/i,
   ];
   for (const p of patterns) {
     const m = t.match(p);
@@ -527,7 +538,7 @@ function detectIntent(prompt: string): { intent: ClarkIntent; address: string | 
   const address = extractAddress(prompt);
 
   const WALLET_INTENT_RE = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|copy[\s-]?trad(?:e|ing)?|smart\s+money)\b/i;
-  const MARKET_INTENT_RE = /what'?s pumping on base|what'?s moving on base|new base tokens|show me hot tokens|what should i watch|what'?s trending|trending|\b(pump(?:ing)?|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?)\b/i;
+  const MARKET_INTENT_RE = /what'?s pumping on base|what'?s moving on base|what'?s hot on base|what'?s running on base|what'?s happening on base|new base tokens|show me hot tokens|what should i watch|what'?s trending|trending|base market|anything moving|anything pumping|any movers|any runners|\b(pump(?:ing)?|movers?|gainers?|runners?|new\s+launches?|new\s+tokens?)\b/i;
 
   if (/(<token_data>|<wallet_scan>|<analysis>|feature context|ask clark)/i.test(prompt)) {
     return { intent: "feature_context", address };
@@ -4536,10 +4547,10 @@ function renderLiquidityFocusedRead(
   // LP control line — never claim locked without data
   const lpControlLine =
     liquidity.riskTier === "low"
-      ? "LP lock/control is unverified. Treat liquidity as usable depth, not guaranteed safety."
+      ? "LP lock/control is not confirmed. Treat liquidity as usable depth, not guaranteed safety."
       : liquidity.riskTier === "extreme"
-        ? "LP structure appears fragile. LP control is unverified from current CORTEX data."
-        : "LP lock/control is unverified. Treat liquidity as usable depth, not guaranteed safety.";
+        ? "LP structure appears fragile. LP control is not confirmed from current CORTEX data."
+        : "LP lock/control is not confirmed. Treat liquidity as usable depth, not guaranteed safety.";
 
   // Depth interpretation
   const depthInterpretation =
@@ -4574,7 +4585,7 @@ function renderLiquidityFocusedRead(
   const riskFlags: string[] = [];
   if (!isNearZeroLiquidity(liq) && liq! < 50_000) riskFlags.push("Thin liquidity — exit slippage elevated.");
   if (vol != null && liq != null && liq > 0 && (vol / liq) > 8) riskFlags.push("Extreme volume/liquidity ratio — high churn and slippage risk.");
-  riskFlags.push("LP lock/control unverified.");
+  riskFlags.push("LP lock/control not confirmed.");
   if (liquidity.riskTier === "extreme") riskFlags.push("LP structure flagged as fragile by CORTEX data.");
   if (liquidity.warnings.length > 0) riskFlags.push(...liquidity.warnings.slice(0, 2));
   if (isNearZeroLiquidity(liq)) riskFlags.push("Liquidity is near-zero/unverified.");
@@ -4625,6 +4636,25 @@ function parseAbbrevUsdToNumber(raw: string | null): number | null {
   if (!Number.isFinite(base)) return null;
   const mult = !m[2] ? 1 : m[2].toUpperCase() === "K" ? 1_000 : m[2].toUpperCase() === "M" ? 1_000_000 : 1_000_000_000;
   return base * mult;
+}
+
+function buildCortexEvidenceContext(args: {
+  address?: string | null;
+  evidence?: ClarkToolEvidence;
+  sessionMem?: ClarkSessionMemory;
+  clientContext?: ClarkRequestBody["clientContext"];
+}) {
+  const addr = (args.address ?? args.evidence?.tokenScan?.token?.address ?? args.sessionMem?.lastToken?.address ?? args.clientContext?.lastToken?.address ?? null)?.toLowerCase() ?? null;
+  const memMover = addr ? (args.sessionMem?.lastMomentumList.find((m) => m.address?.toLowerCase() === addr) ?? null) : null;
+  const clientMover = addr ? (args.clientContext?.lastMomentumList?.find((m) => m.address?.toLowerCase() === addr) ?? null) : null;
+  return {
+    name: args.evidence?.tokenScan?.token?.name ?? args.sessionMem?.lastToken?.name ?? args.clientContext?.lastToken?.name ?? memMover?.name ?? clientMover?.name ?? "Token",
+    symbol: args.evidence?.tokenScan?.token?.symbol ?? args.sessionMem?.lastToken?.symbol ?? args.clientContext?.lastToken?.symbol ?? memMover?.symbol ?? clientMover?.symbol ?? "?",
+    address: args.evidence?.tokenScan?.token?.address ?? args.sessionMem?.lastToken?.address ?? args.clientContext?.lastToken?.address ?? memMover?.address ?? clientMover?.address ?? null,
+    liquidity: args.evidence?.tokenScan?.market.liquidity ?? memMover?.liquidity ?? clientMover?.liquidity ?? null,
+    volume24h: args.evidence?.tokenScan?.market.volume24h ?? memMover?.volume24h ?? clientMover?.volume24h ?? null,
+    change24h: args.evidence?.tokenScan?.market.change24h ?? memMover?.change24h ?? clientMover?.change24h ?? null,
+  };
 }
 
 // ---------- Follow-up and casual chat routing ----------
@@ -4905,12 +4935,29 @@ function buildWatchVerdictFromScan(scanText: string, contractAddress: string): s
 
 // ---------- Feature handlers ----------
 
-async function handleTokenScanner(body: ClarkRequestBody, origin: string) {
+async function handleTokenScanner(body: ClarkRequestBody, origin: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
   const network = gtNetwork(chain);
   const tokenAddress = body.tokenAddress ?? body.addressOrToken;
   if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
+
+  // Free plan: basic preview only — price, liquidity, volume, 24h change. No holder data.
+  if (!planAllows(verifiedPlan, 'token_full_report')) {
+    const [gtData, trending] = await Promise.all([
+      callGeckoTerminal(network, origin),
+      callTrending(origin),
+    ]);
+    return {
+      feature: "token-scanner",
+      chain,
+      tokenAddress,
+      freePreview: true,
+      tokenData: {},
+      gtPools: (gtData as { data?: unknown[] })?.data ?? [],
+      trending: trending ?? [],
+    };
+  }
 
   const [holders, gtData, trending] = await Promise.all([
     callGoldrush(`${chainName}/tokens/${tokenAddress}/token_holders_v2/`, { "page-size": "100" }),
@@ -4928,10 +4975,14 @@ async function handleTokenScanner(body: ClarkRequestBody, origin: string) {
   };
 }
 
-async function handleWalletScanner(body: ClarkRequestBody, origin: string, authHeader?: string | null) {
+async function handleWalletScanner(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
-  const walletAddress = body.walletAddress ?? body.addressOrToken;
-  if (!walletAddress) throw new Error("walletAddress or addressOrToken is required");
+  const walletAddress = body.walletAddress ?? body.addressOrToken ?? 'wallet';
+  if (!planAllows(verifiedPlan, 'wallet_scan')) {
+    return { feature: "wallet-scanner", chain, walletAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read." };
+  }
+  if (!walletAddress || walletAddress === 'wallet') throw new Error("walletAddress or addressOrToken is required");
 
   const userPrompt = (body.prompt ?? "").trim();
   const t = userPrompt.toLowerCase();
@@ -4973,11 +5024,15 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   return { feature: "wallet-scanner", chain, walletAddress, analysis };
 }
 
-async function handleDevWalletDetector(body: ClarkRequestBody) {
+async function handleDevWalletDetector(body: ClarkRequestBody, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
-  const tokenAddress = body.tokenAddress ?? body.addressOrToken;
-  if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
+  const tokenAddress = body.tokenAddress ?? body.addressOrToken ?? 'token';
+  if (!planAllows(verifiedPlan, 'dev_wallet')) {
+    return { feature: "dev-wallet-detector", chain, tokenAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read." };
+  }
+  if (!tokenAddress || tokenAddress === 'token') throw new Error("tokenAddress or addressOrToken is required");
 
   const results = await Promise.allSettled([
     callGoldrush(`${chainName}/tokens/${tokenAddress}/token_holders_v2/`, { "page-size": "200" }),
@@ -4999,12 +5054,17 @@ async function handleDevWalletDetector(body: ClarkRequestBody) {
   return { feature: "dev-wallet-detector", chain, tokenAddress, analysis };
 }
 
-async function handleLiquiditySafety(body: ClarkRequestBody, origin: string) {
+async function handleLiquiditySafety(body: ClarkRequestBody, origin: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
   const network = gtNetwork(chain);
-  const tokenAddress = body.tokenAddress ?? body.addressOrToken;
-  if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
+  const tokenAddress = body.tokenAddress ?? body.addressOrToken ?? 'token';
+  if (!planAllows(verifiedPlan, 'liquidity_check')) {
+    return { feature: "liquidity-safety", chain, tokenAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read.",
+      tokenData: {}, gtPools: [] };
+  }
+  if (!tokenAddress || tokenAddress === 'token') throw new Error("tokenAddress or addressOrToken is required");
 
   const [goldrushPools, gtData] = await Promise.all([
     callGoldrush(`${chainName}/xy=k/address/${tokenAddress}/pools/`),
@@ -5020,11 +5080,15 @@ async function handleLiquiditySafety(body: ClarkRequestBody, origin: string) {
   };
 }
 
-async function handleWhaleAlerts(body: ClarkRequestBody) {
+async function handleWhaleAlerts(body: ClarkRequestBody, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const chainName = GOLDRUSH_CHAIN[chain];
-  const walletAddress = body.walletAddress ?? body.addressOrToken;
-  if (!walletAddress) throw new Error("walletAddress or addressOrToken is required");
+  const walletAddress = body.walletAddress ?? body.addressOrToken ?? 'wallet';
+  if (!planAllows(verifiedPlan, 'whale_alerts')) {
+    return { feature: "whale-alerts", chain, walletAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read." };
+  }
+  if (!walletAddress || walletAddress === 'wallet') throw new Error("walletAddress or addressOrToken is required");
 
   const results = await Promise.allSettled([
     callCovalent(`${chainName}/address/${walletAddress}/transactions_v3/`, { "page-size": "50" }),
@@ -5049,11 +5113,16 @@ async function handleWhaleAlerts(body: ClarkRequestBody) {
   return { feature: "whale-alerts", chain, walletAddress, analysis };
 }
 
-async function handlePumpAlerts(body: ClarkRequestBody, origin: string) {
+async function handlePumpAlerts(body: ClarkRequestBody, origin: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
   const chain = body.chain ?? "base";
   const network = gtNetwork(chain);
-  const tokenAddress = body.tokenAddress ?? body.addressOrToken;
-  if (!tokenAddress) throw new Error("tokenAddress or addressOrToken is required");
+  const tokenAddress = body.tokenAddress ?? body.addressOrToken ?? 'token';
+  if (!planAllows(verifiedPlan, 'pump_alerts')) {
+    return { feature: "pump-alerts", chain, tokenAddress,
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read.",
+      tokenData: {}, gtPools: [] };
+  }
+  if (!tokenAddress || tokenAddress === 'token') throw new Error("tokenAddress or addressOrToken is required");
 
   const [security, gtData] = await Promise.all([
     callGoPlus(tokenAddress, chain),
@@ -5153,7 +5222,11 @@ async function handleScanToken(body: ClarkRequestBody, origin: string) {
   return { feature: "scan-token", data: scanData, analysis };
 }
 
-async function handleBaseRadar(_body: ClarkRequestBody, origin: string) {
+async function handleBaseRadar(_body: ClarkRequestBody, origin: string, verifiedPlan?: 'free' | 'pro' | 'elite') {
+  if (!planAllows(verifiedPlan, 'base_radar_full')) {
+    return { feature: "base-radar", chain: "base",
+      analysis: "FEATURE LOCKED\n\nIncluded in Pro and Elite.\n\nUpgrade to unlock full CORTEX read." };
+  }
   const [trending, gtBase, gtEth] = await Promise.all([
     callTrending(origin),
     callGeckoTerminal("base", origin),
@@ -5707,17 +5780,55 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (isBaseMomentumPrompt(prompt)) {
     // Free users get a limited 3-mover preview; gate is applied in the response below
     if (process.env.NODE_ENV === "development") console.log("[clark-render]", { matchedIntent: "base_pump_map", rendererUsed: "base_pump_map", featureFromClient: body.feature, normalizedPrompt: normalizePromptForIntent(prompt) });
-    const pumpResult = await handleBasePumpMap(prompt, origin);
-    if (pumpResult.items.length > 0) {
-      updateMemMomentum(sessionMem, pumpResult.items);
-      updateMemIntent(sessionMem, "market");
+    const universe = await getBaseMarketUniverse({ origin, mode: "pumping", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+    const stored = (universe?.candidates ?? [])
+      .filter((c) => !isMajorOrStableLike(c.symbol ?? "?", c.name ?? null))
+      .slice(0, 30);
+    const fullTop = stored.slice(0, 7);
+    const isPlanFull = planAllows(verifiedPlan, 'base_radar_full');
+    const top = isPlanFull ? fullTop : fullTop.slice(0, 3);
+    const pumpPreviewNote = !isPlanFull && fullTop.length > 3
+      ? '\n\n— Showing top 3. Upgrade to Pro or Elite to unlock the full Base momentum map.'
+      : '';
+    if (stored.length > 0) {
+      updateMemMomentum(sessionMem, stored.map((c, i) => ({
+        rank: i + 1,
+        symbol: c.symbol ?? "?",
+        name: c.name ?? null,
+        address: c.tokenAddress ?? c.poolAddress ?? null,
+        liquidity: c.liquidityUsd ?? null,
+        volume24h: c.volume24h ?? null,
+        change24h: c.change24h ?? null,
+        tag: c.reasonTags?.[0] ?? null,
+      })));
+      sessionMem.lastMomentumShownCount = top.length;
+      sessionMem.allowedRankScanUntil = Date.now() + 60_000;
+      sessionMem.allowedRankScanUsed = false;
+      sessionMem.lastIntent = "base_momentum";
+      sessionMem.lastIntentTs = Date.now();
+      sessionMem.lastActionableIntent = "base_momentum";
+      sessionMem.lastActionableIntentTs = Date.now();
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "market",
+        toolsUsed: ["base_market_feed"],
+        analysis: formatBaseMarketReply(top, universe?.candidates.length ?? fullTop.length, 0, universe?.cappedMessage ?? null) + pumpPreviewNote,
+        marketContext: {
+          items: top.map((c, i) => ({
+            rank: i + 1, symbol: c.symbol ?? "?", name: c.name ?? null, tokenAddress: c.tokenAddress ?? null, poolAddress: c.poolAddress ?? null,
+            reasonTag: c.reasonTags[0] ?? null, price: c.priceUsd ?? null, liquidity: c.liquidityUsd ?? null, volume24h: c.volume24h ?? null, change24h: c.change24h ?? null,
+          })),
+        },
+      };
     }
-    return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "market",
-      toolsUsed: ["base_market_feed", "pump_alerts_feed"],
-      analysis: pumpResult.analysis,
-      marketContext: { items: pumpResult.items },
-    };
+    if (!isPlanFull) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
+        analysis: "BASE MOMENTUM READ\n\nMarket preview is loading. Upgrade to Pro or Elite for the full Base momentum map." };
+    }
+    const analysis = await handleBasePumpMap(prompt, origin);
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["base_market_feed", "pump_alerts_feed"], analysis };
   }
   if (isPumpFeedPrompt(prompt)) {
     if (!planAllows(verifiedPlan, 'pump_alerts')) {
@@ -5846,24 +5957,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!devRes.ok || !devRes.json) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     }
-    const token = sessionMem.lastToken ?? body.clientContext?.lastToken ?? null;
+    const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"],
       analysis: [
         "DEV WALLET READ", "",
-        `Token: ${token?.symbol ?? "Unknown"}`,
+        `Token: ${cx.name} (${cx.symbol})`,
         `Contract: ${target}`, "",
         "Origin read:",
-        "- Likely deployer/origin was queried from live Base data.",
+        "- Likely origin wallet is shown only when returned by this CORTEX read.",
+        "- Origin wallet could not be verified from this pass.",
         "",
         "Linked wallet signals:",
-        "- See linked wallet flags in this read where available.",
+        "- No linked wallet signals returned unless explicitly shown.",
         "",
         "Prior activity:",
-        "- Prior origin-wallet history is partial unless explicitly returned.",
+        "- Prior deployer activity incomplete unless explicitly shown.",
         "",
         "Risk flags:",
-        "- Treat unverified origin links as unresolved risk.",
+        "- Dev/origin data is still a missing confidence layer unless origin is returned.",
         "",
         "Missing checks:",
         "- Full origin wallet history may be incomplete in this pass.",
@@ -5878,30 +5990,31 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: missingAddressReply("liquidity_safety") };
     const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { tokenAddress: target }, authHeader ?? undefined);
+    const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
     if (liqRes.ok && liqRes.json) {
       const raw = liqRes.json as Record<string, unknown>;
       const liq = {
         ok: true,
-        token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target },
+        token: { name: cx.name, symbol: cx.symbol, address: target },
         riskTier: typeof raw.riskTier === "string" ? raw.riskTier : "high",
         stabilityScore: typeof raw.stabilityScore === "number" ? raw.stabilityScore : null,
         primaryPool: typeof raw.primaryPool === "string" ? raw.primaryPool : null,
-        liquidityUsd: typeof raw.liquidityUsd === "number" ? raw.liquidityUsd : null,
-        volume24h: typeof raw.volume24hUsd === "number" ? raw.volume24hUsd : (typeof raw.volume24h === "number" ? raw.volume24h : null),
+        liquidityUsd: typeof raw.liquidityUsd === "number" ? raw.liquidityUsd : (cx.liquidity ?? null),
+        volume24h: typeof raw.volume24hUsd === "number" ? raw.volume24hUsd : (typeof raw.volume24h === "number" ? raw.volume24h : (cx.volume24h ?? null)),
         warnings: Array.isArray(raw.warnings) ? raw.warnings.filter((x): x is string => typeof x === "string") : [],
       };
-      return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: ["liquidity_analyze"], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, liq) };
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: ["liquidity_analyze"], analysis: renderLiquidityFocusedRead(cx.name, cx.symbol, target, liq) };
     }
     const summary = sessionMem.lastToken?.scanSummary ?? body.clientContext?.lastToken?.scanSummary ?? "";
     const liqRaw = summary.match(/Liquidity:\s*([^\n]+)/i)?.[1] ?? null;
     const volRaw = summary.match(/Volume:\s*([^\n]+)/i)?.[1] ?? null;
-    const liqNum = parseAbbrevUsdToNumber(liqRaw);
-    const volNum = parseAbbrevUsdToNumber(volRaw);
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: renderLiquidityFocusedRead(sessionMem.lastToken?.name ?? "Token", sessionMem.lastToken?.symbol ?? "?", target, { ok: false, token: { name: sessionMem.lastToken?.name ?? "Token", symbol: sessionMem.lastToken?.symbol ?? "?", address: target }, riskTier: "high", stabilityScore: null, primaryPool: null, liquidityUsd: liqNum, volume24h: volNum, warnings: ["LP lock/control unverified."], errorSafeMessage: "Pool-age history unavailable in this pass." }) };
+    const liqNum = parseAbbrevUsdToNumber(liqRaw) ?? cx.liquidity ?? null;
+    const volNum = parseAbbrevUsdToNumber(volRaw) ?? cx.volume24h ?? null;
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: renderLiquidityFocusedRead(cx.name, cx.symbol, target, { ok: false, token: { name: cx.name, symbol: cx.symbol, address: target }, riskTier: "high", stabilityScore: null, primaryPool: null, liquidityUsd: liqNum, volume24h: volNum, warnings: ["LP lock/control not confirmed."], errorSafeMessage: "Pool-age history unavailable in this pass." }) };
   }
 
   // "this" contextual resolution — liquidity check this / dev wallet this / scan this / who deployed this
-  const THIS_RE = /\b(liquidity\s+check\s+this|check\s+liquidity\s+(?:for\s+)?this|lp\s+(?:check\s+)?this|who\s+deployed\s+this|dev\s+wallet\s+(?:for\s+)?this|check\s+(?:dev\s+wallet|deployer)\s+(?:for\s+)?this|scan\s+this|check\s+this)\b/i;
+  const THIS_RE = /\b(liquidity\s+check\s+this|check\s+liquidity\s+(?:for\s+)?this|lp\s+(?:check\s+)?this|who\s+(?:deployed|made|built|created)\s+this|dev\s+wallet\s+(?:for\s+)?this|check\s+(?:dev\s+wallet|deployer)\s+(?:for\s+)?this|scan\s+(?:this|it)|check\s+(?:this|it)|is\s+(?:it|this)\s+safe)\b/i;
   if (THIS_RE.test(prompt) && !extractAddress(prompt)) {
     const histLinesForThis = getHistoryMessages(body.history);
     const lastTokenCtx = extractLastTokenContext(histLinesForThis);
@@ -6277,9 +6390,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
               token: { name: String(td.name ?? memItem.name ?? "Token"), symbol: String(td.symbol ?? memItem.symbol ?? "?"), address: String(td.contract ?? memItem.address) },
               market: {
                 price: typeof td.price === "number" ? td.price : null,
-                change24h: typeof td.priceChange24h === "number" ? td.priceChange24h : null,
-                volume24h: typeof td.volume24h === "number" ? td.volume24h : null,
-                liquidity: typeof td.liquidity === "number" ? td.liquidity : null,
+                change24h: typeof td.priceChange24h === "number" ? td.priceChange24h : (memItem.change24h ?? null),
+                volume24h: typeof td.volume24h === "number" ? td.volume24h : (memItem.volume24h ?? null),
+                liquidity: typeof td.liquidity === "number" ? td.liquidity : (memItem.liquidity ?? null),
                 marketCap: typeof td.marketCapUsd === "number" ? td.marketCapUsd : null,
                 fdv: typeof td.fdvUsd === "number" ? td.fdvUsd : null,
                 displayMarketValue: typeof td.displayMarketValue === "number" ? td.displayMarketValue : null,
@@ -6312,7 +6425,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           };
           const fullEvidence = buildFullReportEvidence(reportEvidence, memItem.address);
           const scanText = renderQuickTokenScan(fullEvidence);
-          updateMemToken(sessionMem, memItem.address, String(td.symbol ?? memItem.symbol ?? "?"), String(td.name ?? memItem.name ?? "Token"), scanText);
+          const safeSym = String(td.symbol ?? memItem.symbol ?? "TOKEN");
+          const safeName = String(td.name ?? memItem.name ?? safeSym);
+          updateMemToken(sessionMem, memItem.address, safeSym, safeName, scanText);
           return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["token_scan"], analysis: scanText };
         }
         return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `I couldn't pull live data for ${memItem.symbol ?? `token #${_memRank}`} right now. Try pasting the contract directly.` };
@@ -7033,7 +7148,38 @@ export async function POST(req: NextRequest) {
       allowedRankScanActive: (!sessionMem.allowedRankScanUsed && Date.now() < sessionMem.allowedRankScanUntil),
       cooldownBucketUsed: 'lowcost',
     }
+    normalized.quotaConsumed = false
     return NextResponse.json(normalized, { status: 200 })
+  }
+
+  // Plan gate for clark-ai: check intent against plan BEFORE rate limiting.
+  // Locked intents must return immediately — they must not consume expensive quota.
+  if (body.feature === 'clark-ai' && earlyPrompt) {
+    const { intent: earlyIntent } = detectIntent(earlyPrompt);
+    type PlanFeature = Parameters<typeof planAllows>[1];
+    const INTENT_FEATURE_MAP: Partial<Record<string, PlanFeature>> = {
+      wallet_analysis:        'wallet_scan',
+      whale_alert:            'whale_alerts',
+      dev_wallet:             'dev_wallet',
+      liquidity_safety:       'liquidity_check',
+      pump_alert:             'pump_alerts',
+      base_radar:             'base_radar_full',
+      token_full_report_request: 'token_full_report',
+    };
+    const LOCKED_ALTERNATIVES: Partial<Record<string, string>> = {
+      wallet_scan:      'ask about token risk, liquidity signals, and CORTEX token reads',
+      whale_alerts:     'ask about trending tokens or Base market moves',
+      dev_wallet:       'ask about contract safety, holder concentration, or LP control',
+      liquidity_check:  'ask about token price, volume, and market cap',
+      pump_alerts:      'ask about new Base launches or trending pools',
+      base_radar_full:  'ask what Base Radar tracks or use the Base market preview',
+      token_full_report:'scan a token for basic market data, price, and liquidity',
+    };
+    const lockedFeature = INTENT_FEATURE_MAP[earlyIntent];
+    if (lockedFeature && !planAllows(effectivePlan, lockedFeature)) {
+      const lockedMsg = buildLockedResponse(lockedFeature, LOCKED_ALTERNATIVES[lockedFeature] ?? 'ask about token data and market moves');
+      return NextResponse.json({ ok: true, feature: 'clark-ai', data: { reply: lockedMsg }, quotaConsumed: false }, { status: 200 });
+    }
   }
 
   const rateResult = (promptIsLowCost || rankAllowanceActive)
@@ -7073,28 +7219,28 @@ export async function POST(req: NextRequest) {
 
     switch (body.feature) {
       case "token-scanner":
-        result = await handleTokenScanner(body, origin);
+        result = await handleTokenScanner(body, origin, effectivePlan);
         break;
       case "wallet-scanner":
-        result = await handleWalletScanner(body, origin, authHeader);
+        result = await handleWalletScanner(body, origin, authHeader, effectivePlan);
         break;
       case "dev-wallet-detector":
-        result = await handleDevWalletDetector(body);
+        result = await handleDevWalletDetector(body, effectivePlan);
         break;
       case "liquidity-safety":
-        result = await handleLiquiditySafety(body, origin);
+        result = await handleLiquiditySafety(body, origin, effectivePlan);
         break;
       case "whale-alerts":
-        result = await handleWhaleAlerts(body);
+        result = await handleWhaleAlerts(body, effectivePlan);
         break;
       case "pump-alerts":
-        result = await handlePumpAlerts(body, origin);
+        result = await handlePumpAlerts(body, origin, effectivePlan);
         break;
       case "scan-token":
         result = await handleScanToken(body, origin);
         break;
       case "base-radar":
-        result = await handleBaseRadar(body, origin);
+        result = await handleBaseRadar(body, origin, effectivePlan);
         break;
       case "clark-ai":
         if (rankAllowanceActive) {
@@ -7125,7 +7271,9 @@ export async function POST(req: NextRequest) {
       cooldownBucketUsed: (promptIsLowCost || rankAllowanceActive) ? 'lowcost' : 'tool',
     }
     const resultAnalysis = typeof (result as Record<string, unknown>)?.analysis === 'string' ? (result as Record<string, unknown>).analysis as string : ''
-    if (!isValidationOnlyAnalysis(resultAnalysis)) rateResult.commitDaily()
+    const quotaConsumed = !isValidationOnlyAnalysis(resultAnalysis)
+    if (quotaConsumed) rateResult.commitDaily()
+    normalized.quotaConsumed = quotaConsumed
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
     clarkCache.set(cacheKey, { exp: Date.now() + cacheTtl, payload: normalized })
     return NextResponse.json(normalized, { status: 200 });

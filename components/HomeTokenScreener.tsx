@@ -1,17 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 
 const COLS = ['TOKEN', 'CHAIN', 'PRICE', '24H', 'VOLUME']
-
-interface DexPair {
-  pairAddress: string
-  baseToken?: { symbol?: string; name?: string }
-  chainId?: string
-  priceUsd?: string
-  priceChange?: { h24?: number }
-  volume?: { h24?: number }
-}
 
 interface MergedToken {
   contract: string
@@ -49,12 +40,28 @@ function formatUsd(value: unknown): string {
   return `$${numeric.toLocaleString(undefined, { maximumFractionDigits: 4 })}`
 }
 
-function TokenCard({ data }: { data: DexPair }) {
-  const change = parseNumeric(data.priceChange?.h24) ?? 0
+interface TokenCardProps {
+  pairAddress: string
+  symbol: string | undefined
+  chainId: string
+  priceUsd: string | undefined
+  priceChangeH24: number | undefined
+  volumeH24: number | undefined
+}
+
+const TokenCard = memo(function TokenCard({
+  pairAddress,
+  symbol,
+  chainId,
+  priceUsd,
+  priceChangeH24,
+  volumeH24,
+}: TokenCardProps) {
+  const change = parseNumeric(priceChangeH24) ?? 0
   const changeColor = change > 0 ? '#2DD4BF' : change < 0 ? '#f87171' : 'rgba(255,255,255,0.40)'
-  const priceNumeric = parseNumeric(data.priceUsd)
+  const priceNumeric = parseNumeric(priceUsd)
   const price = isFiniteNumber(priceNumeric) ? `$${priceNumeric.toFixed(6)}` : '—'
-  const vol = formatUsd(data.volume?.h24)
+  const vol = formatUsd(volumeH24)
 
   return (
     <div
@@ -68,10 +75,10 @@ function TokenCard({ data }: { data: DexPair }) {
       }}
     >
       <span style={{ fontSize: '12px', fontWeight: 600, color: '#f1f5f9', fontFamily: 'var(--font-inter)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {data.baseToken?.symbol ?? data.pairAddress?.slice(0, 8) ?? '—'}
+        {symbol ?? pairAddress.slice(0, 8)}
       </span>
       <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.06em' }}>
-        {data.chainId ?? 'base'}
+        {chainId}
       </span>
       <span style={{ fontSize: '11px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
         {price}
@@ -84,7 +91,7 @@ function TokenCard({ data }: { data: DexPair }) {
       </span>
     </div>
   )
-}
+})
 
 export default function HomeTokenScreener() {
   const [trending, setTrending] = useState<MergedToken[]>([])
@@ -109,6 +116,22 @@ export default function HomeTokenScreener() {
     const interval = setInterval(poll, 60000)
     return () => clearInterval(interval)
   }, [])
+
+  // Memoize the rendered list — only recomputes when trending data changes
+  const tokenRows = useMemo(() =>
+    trending.slice(0, 40).map(token => (
+      <TokenCard
+        key={token.contract}
+        pairAddress={token.contract}
+        symbol={token.symbol}
+        chainId="base"
+        priceUsd={token.price != null ? String(token.price) : undefined}
+        priceChangeH24={token.change24h ?? undefined}
+        volumeH24={token.volume ?? undefined}
+      />
+    )),
+    [trending],
+  )
 
   return (
     <>
@@ -224,19 +247,7 @@ export default function HomeTokenScreener() {
                 </span>
               </div>
             ) : (
-              trending.slice(0, 40).map(token => (
-                <TokenCard
-                  key={token.contract}
-                  data={{
-                    pairAddress: token.contract,
-                    baseToken: { symbol: token.symbol, name: token.name },
-                    chainId: 'base',
-                    priceUsd: token.price != null ? String(token.price) : undefined,
-                    priceChange: { h24: token.change24h ?? undefined },
-                    volume: { h24: token.volume ?? undefined },
-                  }}
-                />
-              ))
+              tokenRows
             )}
           </div>
 

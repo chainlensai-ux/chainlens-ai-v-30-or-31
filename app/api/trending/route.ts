@@ -71,7 +71,7 @@ type CGCoin = {
 // GoldRush trending (Base) — kept for future use
 const gr = await fetch(
   "https://api.goldrushhq.io/v1/tokens/search?query=base",
-  { headers: { "x-api-key": process.env.NEXT_PUBLIC_GOLDRUSH_API_KEY || "" } }
+  { headers: { "x-api-key": process.env.GOLDRUSH_API_KEY || "" } }
 );
 const grData = await gr.json();
 const goldrushTokens = (grData?.results || []).map((t: {

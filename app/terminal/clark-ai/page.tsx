@@ -118,6 +118,29 @@ const EMPTY_STATE_CHIPS = [
 const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
 const THINKING_MESSAGE = 'Clark is thinking...'
 
+const CLARK_DAILY_LIMITS: Record<string, number> = { free: 5, pro: 50, elite: 300 }
+const CLARK_LIMIT_UNAUTH = 3
+
+function getTodayStr() { return new Date().toISOString().slice(0, 10) }
+
+function readClarkUsage(): number {
+  if (typeof window === 'undefined') return 0
+  try {
+    const raw = localStorage.getItem('chainlens:clark:daily-usage')
+    if (!raw) return 0
+    const { date, count } = JSON.parse(raw) as { date: string; count: number }
+    return date === getTodayStr() ? (count || 0) : 0
+  } catch { return 0 }
+}
+
+function bumpClarkUsage(): number {
+  try {
+    const next = readClarkUsage() + 1
+    localStorage.setItem('chainlens:clark:daily-usage', JSON.stringify({ date: getTodayStr(), count: next }))
+    return next
+  } catch { return 0 }
+}
+
 function decodePrompt(value: string | null): string | null {
   if (!value) return null
   try {
@@ -147,6 +170,8 @@ function ClarkAiContent() {
   const [activeMode, setActiveMode] = useState<Mode['key']>(importedPrompt ? 'radar' : 'token')
   const [input, setInput] = useState(importedPrompt ?? '')
   const [loading, setLoading] = useState(false)
+  const [clarkUsed, setClarkUsed] = useState(0)
+  const [planLimit, setPlanLimit] = useState<number | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
   const autoSentRef = useRef(false)
 
@@ -158,6 +183,22 @@ function ClarkAiContent() {
       })
     }
   }, [importedPrompt])
+
+  useEffect(() => {
+    setClarkUsed(readClarkUsage())
+    supabase.auth.getSession().then(async ({ data }) => {
+      const token = data.session?.access_token
+      if (!token) { setPlanLimit(CLARK_LIMIT_UNAUTH); return }
+      try {
+        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
+        if (res.ok) {
+          const json = await res.json() as Record<string, unknown>
+          const p = String(json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan ?? '')
+          setPlanLimit(CLARK_DAILY_LIMITS[p] ?? CLARK_DAILY_LIMITS.free)
+        } else { setPlanLimit(CLARK_DAILY_LIMITS.free) }
+      } catch { setPlanLimit(CLARK_DAILY_LIMITS.free) }
+    })
+  }, [])
 
   const activeModeConfig = MODES.find((mode) => mode.key === activeMode) ?? MODES[0]
 
@@ -235,6 +276,7 @@ function ClarkAiContent() {
         }),
       })
       const json = await res.json()
+      if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown }
@@ -405,7 +447,22 @@ function ClarkAiContent() {
               <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#94a3b8' }}>Base-native AI analyst for tokens, wallets, and on-chain risk.</p>
             </div>
           </div>
-          <span style={liveBadgeStyle}>LIVE • Powered by CORTEX</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{
+              fontSize: '10px',
+              fontFamily: 'var(--font-plex-mono)',
+              letterSpacing: '0.08em',
+              padding: '5px 10px',
+              borderRadius: '999px',
+              border: `1px solid ${planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.40)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.40)' : 'rgba(45,212,191,0.34)'}`,
+              background: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.08)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.08)' : 'rgba(45,212,191,0.10)',
+              color: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.90)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.90)' : '#99f6e4',
+              whiteSpace: 'nowrap',
+            }}>
+              {clarkUsed} / {planLimit ?? '...'} today
+            </span>
+            <span style={liveBadgeStyle}>LIVE • Powered by CORTEX</span>
+          </div>
         </header>
 
         <div className='clark-main-grid'>
@@ -493,25 +550,25 @@ function ClarkAiContent() {
                     }}
                     disabled={loading}
                     placeholder='Ask Clark to scan a token, wallet, whale flow, liquidity, dev wallet, or Base movers.'
-                    style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e2e8f0', fontSize: '14px' }}
+                    style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e2e8f0', fontSize: '16px' }}
                   />
                   <button
                     onClick={handleSend}
-                    disabled={loading || !input.trim()}
+                    disabled={loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)}
                     className='clark-send-button'
                     style={{
                       width: '44px',
                       height: '44px',
                       borderRadius: '999px',
                       border: 'none',
-                      background: loading || !input.trim() ? 'rgba(148,163,184,0.28)' : 'linear-gradient(135deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%)',
-                      color: loading || !input.trim() ? '#475569' : '#f8fafc',
+                      background: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'rgba(148,163,184,0.28)' : 'linear-gradient(135deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%)',
+                      color: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? '#475569' : '#f8fafc',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+                      cursor: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'not-allowed' : 'pointer',
                       fontSize: '17px',
-                      boxShadow: loading || !input.trim() ? 'inset 0 1px 1px rgba(255,255,255,0.08)' : '0 0 24px rgba(45,212,191,0.55), 0 0 32px rgba(236,72,153,0.44), 0 0 0 1px rgba(255,255,255,0.12)',
+                      boxShadow: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'inset 0 1px 1px rgba(255,255,255,0.08)' : '0 0 24px rgba(45,212,191,0.55), 0 0 32px rgba(236,72,153,0.44), 0 0 0 1px rgba(255,255,255,0.12)',
                       transition: 'transform .16s ease, box-shadow .16s ease, filter .16s ease',
                     }}
                     aria-label='Send prompt'

@@ -390,7 +390,7 @@ export default function WalletScannerPage() {
                   background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.10)',
                   borderRadius: '11px', color: '#e2e8f0',
-                  fontSize: '13px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  fontSize: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                   outline: 'none', transition: 'border-color 0.15s', boxSizing: 'border-box',
                 }}
                 onFocus={e => (e.currentTarget.style.borderColor = 'rgba(45,212,191,0.45)')}
