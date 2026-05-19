@@ -28,6 +28,11 @@ export default function PortfolioPage() {
   const [range, setRange] = useState<Range>('24H')
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
   const [nowTs] = useState(() => Date.now())
+  const [scannedAddress, setScannedAddress] = useState<string | null>(null)
+  const [lastScanAt, setLastScanAt] = useState<number>(0)
+  const [cooldownLeftMs, setCooldownLeftMs] = useState(0)
+
+  const CLIENT_SCAN_COOLDOWN_MS = 12 * 1000
 
   const sorted = useMemo(() => [...holdings].sort((a, b) => b.value - a.value), [holdings])
   const filtered = useMemo(() => sorted.filter((h) => h.value > 0 && `${h.symbol} ${h.name}`.toLowerCase().includes(search.toLowerCase())), [sorted, search])
@@ -95,30 +100,75 @@ export default function PortfolioPage() {
   }, [series, range])
 
   useEffect(() => {
-    const run = async () => {
-      if (!isConnected || !address) { setHoldings([]); setPortfolioError(null); return }
-      setLoading(true); setPortfolioError(null)
-      try {
-        const res = await fetch('/api/portfolio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
-        const json = await res.json(); if (!res.ok) throw new Error()
-        const baseHoldings = (json?.holdings ?? []).filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base')).map((h: Holding) => ({ symbol: h.symbol ?? '?', name: h.name ?? 'Unknown', chain: h.chain ?? 'base', price: Number(h.price ?? 0), balance: Number(h.balance ?? 0), value: Number(h.value ?? 0), change24h: typeof h.change24h === 'number' ? h.change24h : null }))
-        setHoldings(baseHoldings)
-        if (baseHoldings.length > 0) {
-          setClarkLoading(true)
-          const prompt = `Analyze this Base wallet portfolio in concise portfolio language only. Avoid token-resolution chatter.\n${baseHoldings.map((t: Holding) => `${t.symbol}: ${fmtUSD(t.value)}${typeof t.change24h === 'number' ? ` (${t.change24h.toFixed(2)}% 24h)` : ''}`).join('\n')}`
-          const c = await fetch('/api/clark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'portfolio', context: { holdings: baseHoldings } }) })
-          await c.json()
-          setClarkLoading(false)
-        }
-      } catch { setPortfolioError('Portfolio data is currently unavailable. Please try again shortly.'); setHoldings([]) } finally { setLoading(false) }
+    if (!isConnected || !address) {
+      setHoldings([])
+      setPortfolioError(null)
+      setScannedAddress(null)
+      setSearch('')
+      setLoading(false)
+      setClarkLoading(false)
+      return
     }
-    run()
-  }, [isConnected, address])
+    if (scannedAddress && scannedAddress.toLowerCase() !== address.toLowerCase()) {
+      setHoldings([])
+      setPortfolioError(null)
+      setScannedAddress(null)
+      setSearch('')
+    }
+  }, [isConnected, address, scannedAddress])
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const left = Math.max(0, CLIENT_SCAN_COOLDOWN_MS - (Date.now() - lastScanAt))
+      setCooldownLeftMs(left)
+    }, 500)
+    return () => window.clearInterval(id)
+  }, [lastScanAt])
+
+  const runPortfolioScan = async () => {
+    if (!isConnected || !address || loading) return
+    const left = Math.max(0, CLIENT_SCAN_COOLDOWN_MS - (Date.now() - lastScanAt))
+    if (left > 0) {
+      setCooldownLeftMs(left)
+      return
+    }
+    setLoading(true)
+    setPortfolioError(null)
+    try {
+      const res = await fetch('/api/portfolio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
+      const json = await res.json()
+      if (!res.ok) throw new Error('scan_failed')
+      const baseHoldings = (json?.holdings ?? []).filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base')).map((h: Holding) => ({ symbol: h.symbol ?? '?', name: h.name ?? 'Unknown', chain: h.chain ?? 'base', price: Number(h.price ?? 0), balance: Number(h.balance ?? 0), value: Number(h.value ?? 0), change24h: typeof h.change24h === 'number' ? h.change24h : null }))
+      setHoldings(baseHoldings)
+      setScannedAddress(address)
+      setLastScanAt(Date.now())
+    } catch {
+      setPortfolioError('Portfolio data is currently unavailable. Please try again shortly.')
+      setHoldings([])
+      setScannedAddress(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const runClark = async () => {
+    if (clarkLoading || loading || holdings.length === 0) return
+    setClarkLoading(true)
+    try {
+      const prompt = `Analyze this Base wallet portfolio in concise portfolio language only. Avoid token-resolution chatter.\n${holdings.map((t: Holding) => `${t.symbol}: ${fmtUSD(t.value)}${typeof t.change24h === 'number' ? ` (${t.change24h.toFixed(2)}% 24h)` : ''}`).join('\n')}`
+      const c = await fetch('/api/clark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feature: 'clark-ai', prompt, message: prompt, mode: 'portfolio', context: { holdings } }) })
+      await c.json()
+    } finally {
+      setClarkLoading(false)
+    }
+  }
 
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'portfolio')) return <LockedPanel feature="portfolio" />
 
-  const empty = isConnected && !loading && !portfolioError && filtered.length === 0
+  const empty = isConnected && !loading && !portfolioError && scannedAddress === address && filtered.length === 0
+  const hasPortfolioData = scannedAddress === address && holdings.length > 0
+  const canScan = isConnected && !!address && !loading && cooldownLeftMs <= 0
 
   return <div style={{ height: '100%', overflow: 'auto', background: 'radial-gradient(circle at 18% -10%, rgba(34,211,238,.12), transparent 34%), radial-gradient(circle at 86% 2%, rgba(217,70,239,.13), transparent 34%), #05070d', color: '#e2e8f0', padding: 18 }}>
     <style>{`.glass{background:linear-gradient(165deg,rgba(8,16,32,.9),rgba(5,10,20,.84));border:1px solid rgba(125,211,252,.14);border-radius:18px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.02)}.sk{background:linear-gradient(90deg,rgba(148,163,184,.12),rgba(148,163,184,.22),rgba(148,163,184,.12));background-size:180% 100%;animation:sh 1.45s infinite}@keyframes sh{from{background-position:180% 0}to{background-position:-180% 0}}@media (max-width: 768px){.pf-main-grid{grid-template-columns:1fr!important}.pf-row4{grid-template-columns:repeat(2,minmax(0,1fr))!important}.pf-search-row{flex-direction:column;align-items:stretch!important;gap:8px}.pf-search-row input{width:100%}.pf-holdings-wrap{overflow-x:auto}.pf-holdings-wrap table{min-width:760px}.pf-side{grid-template-columns:1fr!important}}`}</style>
@@ -126,6 +176,32 @@ export default function PortfolioPage() {
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginBottom: 12 }}>
       {[['PORTFOLIO VALUE', isConnected ? fmtUSD(totalValue) : '—', totalValue > 0 ? `≈ ${(totalValue / 2600).toFixed(4)} ETH` : ''], ['24H PNL', isConnected ? (hasPnl ? `${totalPnL >= 0 ? '+' : ''}${fmtUSD(totalPnL)}` : 'PnL unavailable') : '—', hasPnl ? `${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}%` : ''], ['TOKENS', isConnected ? `${sorted.length}` : '—', 'Base assets'], ['WALLET', isConnected && address ? formatShortAddress(address) : 'Not connected', isConnected && explorerUrl ? 'View on Explorer ↗' : ''], ['NETWORK', 'Base', 'Healthy']].map(([k, v, s], i) => <div key={String(k)} className='glass' style={{ padding: 14, minHeight: 96 }}>{loading ? <div className='sk' style={{ height: 54, borderRadius: 12 }} /> : <><div style={{ fontSize: 10, letterSpacing: '.15em', color: '#94a3b8' }}>{k}</div><div style={{ fontSize: i === 3 ? 24 : 34, fontWeight: 800, marginTop: 4, color: i === 1 && hasPnl ? ((pnlPct ?? 0) >= 0 ? '#2dd4bf' : '#fb7185') : '#f8fafc' }}>{v}</div>{i === 3 && explorerUrl ? <a href={explorerUrl} target='_blank' rel='noopener noreferrer' style={{ fontSize: 12, color: '#67e8f9', textDecoration: 'none' }}>{s}</a> : <div style={{ fontSize: 12, color: '#67e8f9' }}>{s}</div>}</>}</div>)}
     </div>
+
+    {isConnected && (
+      <div className='glass' style={{ marginBottom: 12, padding: 12, display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+        <div style={{ color: '#94a3b8', fontSize: 12 }}>
+          {scannedAddress === address ? 'Portfolio scan loaded for current wallet.' : 'Portfolio not loaded yet. Click Load Portfolio to fetch data.'}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button onClick={() => { void runPortfolioScan() }} disabled={!canScan} style={{ borderRadius: 10, border: '1px solid rgba(125,211,252,.24)', padding: '8px 12px', background: canScan ? 'rgba(34,211,238,.2)' : 'rgba(100,116,139,.18)', color: canScan ? '#67e8f9' : '#94a3b8', fontWeight: 700 }}>
+            {loading ? 'Loading…' : scannedAddress === address ? 'Rescan' : 'Load Portfolio'}
+          </button>
+          {cooldownLeftMs > 0 && <span style={{ fontSize: 12, color: '#94a3b8' }}>Please wait {Math.ceil(cooldownLeftMs / 1000)}s.</span>}
+          {hasPortfolioData && (
+            <button onClick={() => { void runClark() }} disabled={clarkLoading || loading} style={{ borderRadius: 10, border: '1px solid rgba(168,85,247,.35)', padding: '8px 12px', background: 'rgba(168,85,247,.18)', color: '#c4b5fd', fontWeight: 700 }}>
+              {clarkLoading ? 'Analyzing…' : 'Ask Clark'}
+            </button>
+          )}
+        </div>
+      </div>
+    )}
+
+    {portfolioError && (
+      <div className='glass' style={{ marginBottom: 12, padding: 12, border: '1px solid rgba(251,113,133,.35)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ color: '#fecdd3', fontSize: 13 }}>{portfolioError}</div>
+        <button onClick={() => { void runPortfolioScan() }} disabled={!canScan} style={{ borderRadius: 8, border: '1px solid rgba(251,113,133,.35)', padding: '6px 10px', background: 'rgba(251,113,133,.12)', color: '#fecdd3', fontWeight: 700 }}>Retry</button>
+      </div>
+    )}
 
     <div className='pf-main-grid' style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2.1fr) minmax(320px,1fr)', gap: 12 }}>
       <div style={{ display: 'grid', gap: 12 }}>
