@@ -196,12 +196,6 @@ export default function ClarkChat({
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[clark] request context', {
-          moversCount: clarkContextRef.current.lastMarketList?.length ?? 0,
-          lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
-        })
-      }
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData.session?.access_token
       const res = await fetch(`/api/clark`, {
@@ -273,7 +267,7 @@ export default function ClarkChat({
       })
     } finally {
       setLoading(false)
-      inputRef.current?.focus()
+      if (!isMobileClient()) inputRef.current?.focus()
     }
   }, [messages, mode])
 
@@ -290,7 +284,6 @@ export default function ClarkChat({
   }, [initialMessage, executeSend, prefillOnlyInitial])
 
   function handleSend() {
-    console.log('handleSend fired with:', input)
     const text = input.trim()
     if (!text || loading) return
     if (isMobileClient()) {
@@ -353,6 +346,9 @@ export default function ClarkChat({
             z-index: 15 !important;
             background: linear-gradient(180deg, rgba(5,8,22,0.65), rgba(5,8,22,0.95)) !important;
           }
+          .chat-bg-orb { display: none !important; }
+          .chat-hdr-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+          .chat-input-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
         }
         @media (prefers-reduced-motion: reduce) { .clark-orb-dot, .clark-orb-shell.thinking::after { animation: none !important; } }
       `}</style>
@@ -367,7 +363,7 @@ export default function ClarkChat({
               background: 'linear-gradient(90deg, transparent 0%, #ff4b9a 25%, #7b5cff 55%, #4ef2c5 80%, transparent 100%)',
             }} />
             <div
-              className="terminal-header-bar"
+              className="terminal-header-bar chat-hdr-blur"
               style={{
                 display: 'flex', alignItems: 'center', gap: '10px',
                 padding: '0 24px', height: '44px',
@@ -431,9 +427,9 @@ export default function ClarkChat({
           overflow: 'hidden',
         }}>
 
-          {/* Animated background orbs — chat-only panel */}
+          {/* Animated background orbs — chat-only panel, desktop-only */}
           {mode === 'chat-only' && <>
-            <div style={{
+            <div className="chat-bg-orb" style={{
               position: 'absolute', pointerEvents: 'none', zIndex: 0,
               width: '300px', height: '300px', borderRadius: '50%',
               top: '-60px', left: '-60px',
@@ -441,7 +437,7 @@ export default function ClarkChat({
               filter: 'blur(40px)',
               animation: 'chat-orb-teal 12s ease-in-out infinite',
             }} />
-            <div style={{
+            <div className="chat-bg-orb" style={{
               position: 'absolute', pointerEvents: 'none', zIndex: 0,
               width: '360px', height: '360px', borderRadius: '50%',
               bottom: '60px', right: '-80px',
@@ -507,8 +503,6 @@ export default function ClarkChat({
 
                   {isThinking ? (
                     <div style={{
-                      backdropFilter: 'blur(12px)',
-                      WebkitBackdropFilter: 'blur(12px)',
                       border: '1px solid rgba(255,255,255,0.10)',
                       borderRadius: '12px',
                       padding: '10px 16px',
@@ -563,7 +557,7 @@ export default function ClarkChat({
               position: 'relative', zIndex: 1,
               flexShrink: 0,
             }}>
-              <div style={{
+              <div className="chat-input-blur" style={{
                 display: 'flex', alignItems: 'center',
                 background: 'rgba(8,8,20,0.85)',
                 border: `1px solid ${input.trim() ? 'rgba(45,212,191,0.30)' : 'rgba(255,255,255,0.10)'}`,
