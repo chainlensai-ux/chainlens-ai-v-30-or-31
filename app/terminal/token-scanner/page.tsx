@@ -463,8 +463,8 @@ function deriveVerdictInput(result: ScanResult): VerdictInput {
   const hp = result.honeypot
   const baseChips: SecurityChip[] = [
     { label: 'Honeypot', displayLabel: hp?.isHoneypot === null ? 'Unverified' : hp?.isHoneypot ? 'YES' : 'NO', style: hp?.isHoneypot ? pillDanger() : pillSafe(), source: 'honeypot' },
-    { label: 'Buy Tax', displayLabel: hp?.buyTax == null ? 'N/A' : `${hp.buyTax.toFixed(1)}%`, style: hp?.buyTax == null ? pillMuted() : taxPct(hp.buyTax), source: 'honeypot' },
-    { label: 'Sell Tax', displayLabel: hp?.sellTax == null ? 'N/A' : `${hp.sellTax.toFixed(1)}%`, style: hp?.sellTax == null ? pillMuted() : taxPct(hp.sellTax), source: 'honeypot' },
+    { label: 'Buy Tax', displayLabel: hp?.buyTax == null ? 'N/A' : (!hp.simulationSuccess && hp.buyTax === 0) ? 'Unverified' : `${hp.buyTax.toFixed(1)}%`, style: hp?.buyTax == null ? pillMuted() : (!hp.simulationSuccess && hp.buyTax === 0) ? pillMuted() : taxPct(hp.buyTax), source: 'honeypot' },
+    { label: 'Sell Tax', displayLabel: hp?.sellTax == null ? 'N/A' : (!hp.simulationSuccess && hp.sellTax === 0) ? 'Unverified' : `${hp.sellTax.toFixed(1)}%`, style: hp?.sellTax == null ? pillMuted() : (!hp.simulationSuccess && hp.sellTax === 0) ? pillMuted() : taxPct(hp.sellTax), source: 'honeypot' },
     { label: 'Honeypot', displayLabel: String(gp?.is_honeypot ?? 'N/A'), style: String(gp?.is_honeypot ?? '') === '1' ? pillDanger() : pillSafe(), source: 'contract' },
     { label: 'Buy Tax', displayLabel: gp?.buy_tax != null ? `${(Number(gp.buy_tax) * 100).toFixed(1)}%` : 'N/A', style: gp?.buy_tax != null ? taxPct(Number(gp.buy_tax) * 100) : pillMuted(), source: 'contract' },
     { label: 'Sell Tax', displayLabel: gp?.sell_tax != null ? `${(Number(gp.sell_tax) * 100).toFixed(1)}%` : 'N/A', style: gp?.sell_tax != null ? taxPct(Number(gp.sell_tax) * 100) : pillMuted(), source: 'contract' },
@@ -720,8 +720,9 @@ export default function TerminalTokenScanner() {
       })
       const json = await res.json()
       if (!res.ok || json.error) {
-        if (json?.status === 'ambiguous') setError('Multiple Base tokens match this. Paste the contract address or choose one.')
-        else setError("Couldn’t resolve that Base token. Paste the contract address or try a verified symbol.")
+        if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
+        else if (json?.status === 'ambiguous') setError('Multiple Base tokens match this. Paste the contract address or choose one.')
+        else setError("Couldn't resolve that Base token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
@@ -937,14 +938,24 @@ export default function TerminalTokenScanner() {
               {/* Stat cards — or no-pools message */}
               {result.noActivePools ? (
                 <div style={{
-                  padding: '14px 18px', marginBottom: '28px',
-                  background: 'rgba(255,255,255,0.02)',
-                  border: '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: '10px',
-                  fontSize: '12px', color: '#3a5268',
+                  padding: '20px 22px', marginBottom: '28px',
+                  background: 'rgba(245,158,11,0.04)',
+                  border: '1px solid rgba(245,158,11,0.2)',
+                  borderRadius: '12px',
                   fontFamily: 'var(--font-plex-mono)',
                 }}>
-                  No active Base pools found for this contract.
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
+                    <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: '#fbbf24', textTransform: 'uppercase' }}>No Active Pool Found</span>
+                  </div>
+                  <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>
+                    No liquidity pools were found for this contract on Base. Price, volume, and liquidity data are unavailable.
+                  </p>
+                  {(result.sections?.security?.status === 'ok' || result.sections?.security?.status === 'partial' || (result.honeypot || result.goplus)) && (
+                    <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#78716c' }}>
+                      Contract security data may still be available — review the security simulation below.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="metric-grid" style={{
@@ -1442,6 +1453,7 @@ export default function TerminalTokenScanner() {
               hp?.simulationSuccess === false ? 'Honeypot/sell simulation unverified.' : '',
             ].filter(Boolean).slice(0, 3)
             const missingChecks = [
+              result.noActivePools ? 'Active pool' : '',
               d.holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : '',
               'Supply spread',
               'LP lock',
@@ -1456,7 +1468,7 @@ export default function TerminalTokenScanner() {
                   <div style={{display:'inline-flex',marginTop:'8px',padding:'4px 10px',borderRadius:'999px',border:`1px solid ${verdictColor}66`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.08em'}}>{verdict}</div>
                 </div>
                 <div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',fontSize:'12px',lineHeight:1.65,color:'#b7c9da',background:'rgba(15,23,42,.5)'}}>Market Read: <strong style={{color:'#e2e8f0'}}>Price {fmtPrice(result.price)}</strong>, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Market cap unverified'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}, {result.marketCapUsd == null && result.fdvUsd != null ? 'Market cap is unverified; FDV is shown as separate valuation context.' : `MC/FDV ${mcFdv}`}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Security Read: Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy Tax {buyTax != null ? `${buyTax.toFixed(1)}%` : 'N/A'}, Sell Tax {sellTax != null ? `${sellTax.toFixed(1)}%` : 'N/A'}, Transfer Risk {transferTax != null ? `${transferTax.toFixed(1)}%` : 'N/A'}, Simulation {hp?.simulationSuccess ? 'Verified' : 'Unverified'}</div>
+                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Security Read: Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy Tax {buyTax != null ? ((!hp?.simulationSuccess && buyTax === 0) ? 'Unverified' : `${buyTax.toFixed(1)}%`) : 'N/A'}, Sell Tax {sellTax != null ? ((!hp?.simulationSuccess && sellTax === 0) ? 'Unverified' : `${sellTax.toFixed(1)}%`) : 'N/A'}, Transfer Risk {transferTax != null ? `${transferTax.toFixed(1)}%` : 'N/A'}, Simulation {hp?.simulationSuccess ? 'Verified' : 'Unverified'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Holder/Supply Read: {result.holderDistribution?.holderCount != null ? `holders ${result.holderDistribution.holderCount.toLocaleString()}, ` : ''}{top10 != null ? `top10 ${top10.toFixed(1)}%, ` : 'holder concentration not confirmed, '}{top20 != null ? `top20 ${top20.toFixed(1)}%` : d.holderState.kind === 'noRowsFallback' ? 'concentration needs confirmation' : 'top20 unavailable'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Liquidity/Pools Read: pools {poolCount}, primary pool {result.pools?.[0]?.name ?? 'Unverified'}, liquidity depth {fmtLarge(result.pools?.[0]?.liquidity ?? result.liquidity)}, {(liq > 0 && liq < 50000) ? 'liquidity thin.' : liq === 0 ? 'liquidity unverified.' : 'liquidity present.'}</div>
                 <div style={{padding:'10px',border:'1px solid rgba(45,212,191,.2)',borderRadius:'10px',fontSize:'11px',color:'#99f6e4'}}>Bull Case: {bull.length ? bull.join(' ') : 'No strong positive cluster yet.'}</div>
@@ -1464,8 +1476,10 @@ export default function TerminalTokenScanner() {
                 <div style={{padding:'10px',border:'1px solid rgba(125,211,252,.22)',borderRadius:'12px',fontSize:'11px',color:'#cfe8ff',background:'rgba(8,27,43,.45)'}}>
                   <div style={{fontSize:'10px',letterSpacing:'.1em',textTransform:'uppercase',color:'#7dd3fc',marginBottom:'6px'}}>Watch checks</div>
                   <div style={{display:'grid',gap:'6px'}}>
-                    <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Pool detected</div>
-                    <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Primary market selected</div>
+                    {result.noActivePools
+                      ? <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(245,158,11,.1)',border:'1px solid rgba(245,158,11,.28)',color:'#fde68a'}}>• No active pool found</div>
+                      : <><div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Pool detected</div>
+                      <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Primary market selected</div></>}
                     <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Liquidity scan completed</div>
                     {missingChecks.slice(0, 2).map((m) => <div key={m} style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(245,158,11,.12)',border:'1px solid rgba(245,158,11,.3)',color:'#fde68a'}}>• {m} unverified</div>)}
                   </div>

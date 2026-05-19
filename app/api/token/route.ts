@@ -757,10 +757,18 @@ export async function POST(req: Request) {
       return NextResponse.json(cached.payload)
     }
 
+    // Detect near-valid hex strings (0x prefix but wrong char count) and return a helpful error
+    if (!resolvedAddress && /^0x[a-fA-F0-9]+$/i.test(originalInput) && originalInput.length !== 42) {
+      return NextResponse.json({
+        status: 'invalid_address',
+        error: `Invalid Base address: expected 0x + 40 hex chars, got ${originalInput.length - 2}. Check for typos.`,
+      }, { status: 400 })
+    }
+
     if (!resolvedAddress) {
       return NextResponse.json({
         status: 'not_found',
-        error: "Couldn’t resolve that Base token. Paste the contract address or try a verified symbol.",
+        error: "Couldn't resolve that Base token. Paste the contract address or try a verified symbol.",
         ...(debugMode === true ? { _diagnostics: { resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map' } } : {}),
       }, { status: 404 })
     }
@@ -1403,6 +1411,10 @@ export async function POST(req: Request) {
     const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
     const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
 
+    // Upgrade name/symbol with RPC fallback when all API sources returned nothing
+    const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
+    const finalResolvedSymbol = (resolvedSymbol && resolvedSymbol !== '?') ? resolvedSymbol : (rpcSymbol ?? '?')
+
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'unavailable'
     const ownerStatus = ownerAddr ? 'ok' : 'unavailable'
     const mintStatus = gpToken?.is_mintable != null ? 'ok' : 'unavailable'
@@ -1420,8 +1432,8 @@ export async function POST(req: Request) {
       resolvedInput,
 
       // Core token fields
-      name: resolvedName,
-      symbol: resolvedSymbol,
+      name: finalResolvedName,
+      symbol: finalResolvedSymbol,
       decimals: resolvedDecimals,
 
       // Pool state
@@ -1713,8 +1725,8 @@ export async function POST(req: Request) {
 
       // Token info object for frontend panels
       tokenInfo: {
-        name: resolvedName,
-        symbol: resolvedSymbol,
+        name: finalResolvedName,
+        symbol: finalResolvedSymbol,
         decimals: resolvedDecimals,
       },
       sections: {
