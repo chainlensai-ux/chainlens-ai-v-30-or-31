@@ -22,6 +22,7 @@ export default function PortfolioPage() {
   const { address, isConnected } = useAccount()
   const [holdings, setHoldings] = useState<Holding[]>([])
   const [loading, setLoading] = useState(false)
+  const [clarkLoading, setClarkLoading] = useState(false)
   const [portfolioError, setPortfolioError] = useState<string | null>(null)
   const [hasScanned, setHasScanned] = useState(false)
   const [search, setSearch] = useState('')
@@ -103,6 +104,7 @@ export default function PortfolioPage() {
     if (!isConnected || !address) {
       setHoldings([])
       setPortfolioError(null)
+      setHasScanned(false)
       setScannedAddress(null)
       setSearch('')
       setLoading(false)
@@ -112,6 +114,7 @@ export default function PortfolioPage() {
     if (scannedAddress && scannedAddress.toLowerCase() !== address.toLowerCase()) {
       setHoldings([])
       setPortfolioError(null)
+      setHasScanned(false)
       setScannedAddress(null)
       setSearch('')
     }
@@ -140,9 +143,11 @@ export default function PortfolioPage() {
       if (!res.ok) throw new Error('scan_failed')
       const baseHoldings = (json?.holdings ?? []).filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base')).map((h: Holding) => ({ symbol: h.symbol ?? '?', name: h.name ?? 'Unknown', chain: h.chain ?? 'base', price: Number(h.price ?? 0), balance: Number(h.balance ?? 0), value: Number(h.value ?? 0), change24h: typeof h.change24h === 'number' ? h.change24h : null }))
       setHoldings(baseHoldings)
+      setHasScanned(true)
       setScannedAddress(address)
       setLastScanAt(Date.now())
     } catch {
+      setHasScanned(true)
       setPortfolioError('Portfolio data is currently unavailable. Please try again shortly.')
       setHoldings([])
       setScannedAddress(null)
@@ -166,9 +171,11 @@ export default function PortfolioPage() {
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'portfolio')) return <LockedPanel feature="portfolio" />
 
+  const handleScan = () => { void runPortfolioScan() }
   const empty = isConnected && !loading && !portfolioError && scannedAddress === address && filtered.length === 0
   const hasPortfolioData = scannedAddress === address && holdings.length > 0
   const canScan = isConnected && !!address && !loading && cooldownLeftMs <= 0
+  const showScanPrompt = isConnected && !!address && scannedAddress !== address && !loading && !portfolioError
 
   return <div style={{ height: '100%', overflow: 'auto', background: 'radial-gradient(circle at 18% -10%, rgba(34,211,238,.12), transparent 34%), radial-gradient(circle at 86% 2%, rgba(217,70,239,.13), transparent 34%), #05070d', color: '#e2e8f0', padding: 18 }}>
     <style>{`.glass{background:linear-gradient(165deg,rgba(8,16,32,.9),rgba(5,10,20,.84));border:1px solid rgba(125,211,252,.14);border-radius:18px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.02)}.sk{background:linear-gradient(90deg,rgba(148,163,184,.12),rgba(148,163,184,.22),rgba(148,163,184,.12));background-size:180% 100%;animation:sh 1.45s infinite}@keyframes sh{from{background-position:180% 0}to{background-position:-180% 0}}@media (max-width: 768px){.pf-main-grid{grid-template-columns:1fr!important}.pf-row4{grid-template-columns:repeat(2,minmax(0,1fr))!important}.pf-search-row{flex-direction:column;align-items:stretch!important;gap:8px}.pf-search-row input{width:100%}.pf-holdings-wrap{overflow-x:auto}.pf-holdings-wrap table{min-width:760px}.pf-side{grid-template-columns:1fr!important}}`}</style>
