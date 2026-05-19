@@ -13,7 +13,8 @@
     "test:inp": "node scripts/inp-audit.js",
     "test:lighthouse": "node scripts/lighthouse-sim.js",
     "test:desktop": "node scripts/desktop-perf-sim.js",
-    "test:security": "node scripts/security-audit.js"
+    "test:security": "node scripts/security-audit.js",
+    "env:check": "node scripts/env-check.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
