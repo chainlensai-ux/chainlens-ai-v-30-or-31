@@ -4,8 +4,11 @@ import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
+// ── Types ─────────────────────────────────────────────────────────────────────
 type Message = { role: 'user' | 'clark'; text: string }
+type UiTab   = 'analyst' | 'chat'
 
+// ── Session / context helpers (unchanged) ────────────────────────────────────
 function getOrCreateSessionId(): string {
   if (typeof window === 'undefined') return 'ssr'
   const key = 'chainlens:clark-session-id'
@@ -21,108 +24,53 @@ function getClientClarkContext() {
   try {
     return {
       lastMomentumList: JSON.parse(sessionStorage.getItem('chainlens:clark:last-momentum-list') ?? 'null') ?? undefined,
-      lastToken: JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
-      lastWallet: JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
+      lastToken:        JSON.parse(sessionStorage.getItem('chainlens:clark:last-token') ?? 'null') ?? undefined,
+      lastWallet:       JSON.parse(sessionStorage.getItem('chainlens:clark:last-wallet') ?? 'null') ?? undefined,
       lastMomentumShownCount: Number(sessionStorage.getItem('chainlens:clark:last-momentum-shown-count') ?? '0') || 0,
     }
   } catch { return {} }
 }
 type ClarkContextState = {
   lastMarketList?: Array<{
-    rank: number
-    symbol: string
-    name?: string | null
-    tokenAddress?: string | null
-    poolAddress?: string | null
-    reasonTag?: string | null
-    price?: number | null
-    liquidity?: number | null
-    volume24h?: number | null
-    change24h?: number | null
+    rank: number; symbol: string; name?: string | null; tokenAddress?: string | null
+    poolAddress?: string | null; reasonTag?: string | null; price?: number | null
+    liquidity?: number | null; volume24h?: number | null; change24h?: number | null
   }>
-  lastIntent?: string | null
-  previousIntent?: string | null
+  lastIntent?: string | null; previousIntent?: string | null
   lastSelectedRank?: number | null
-  marketCursor?: {
-    offset: number
-    returnedCount: number
-    requestedCount: number
-    totalCandidates: number
-  } | null
-  seenMarketAddresses?: string[]
-  seenMarketSymbols?: string[]
+  marketCursor?: { offset: number; returnedCount: number; requestedCount: number; totalCandidates: number } | null
+  seenMarketAddresses?: string[]; seenMarketSymbols?: string[]
 }
 
-type Mode = {
-  key: 'token' | 'wallet' | 'contract' | 'radar'
-  label: string
-  helper: string
-  prompt: string
-  icon: string
-}
-
+// ── Mode config (unchanged — used internally for API uiModeHint) ──────────────
+type Mode = { key: 'token' | 'wallet' | 'contract' | 'radar'; label: string; helper: string; prompt: string; icon: string }
 const MODES: Mode[] = [
-  {
-    key: 'token',
-    label: 'Token Analysis',
-    helper: 'Evaluate token quality, momentum, and risk on Base.',
-    prompt: 'Analyze this Base token and give me WATCH, AVOID, or SCAN DEEPER with key reasons.',
-    icon: '◈',
-  },
-  {
-    key: 'wallet',
-    label: 'Wallet Analysis',
-    helper: 'Break down holdings, behavior, concentration, and recent activity.',
-    prompt: 'Analyze this Base wallet. Focus on behavior, concentration risk, and recent activity.',
-    icon: '◎',
-  },
-  {
-    key: 'contract',
-    label: 'Contract Risk',
-    helper: 'Review privilege flags, liquidity traps, and suspicious mechanics.',
-    prompt: 'Run a contract risk analysis on this Base token contract. Highlight red flags clearly.',
-    icon: '⚠',
-  },
-  {
-    key: 'radar',
-    label: 'Base Radar',
-    helper: 'Use imported Base Radar signal context for a concise verdict.',
-    prompt: 'Use my imported Base Radar context and give a concise WATCH / AVOID / SCAN DEEPER verdict.',
-    icon: '⟲',
-  },
+  { key: 'token',    label: 'Token Analysis', helper: 'Evaluate token quality, momentum, and risk on Base.',          prompt: 'Analyze this Base token and give me WATCH, AVOID, or SCAN DEEPER with key reasons.', icon: '◈' },
+  { key: 'wallet',   label: 'Wallet Analysis', helper: 'Break down holdings, behavior, concentration, and recent activity.', prompt: 'Analyze this Base wallet. Focus on behavior, concentration risk, and recent activity.', icon: '◎' },
+  { key: 'contract', label: 'Contract Risk',   helper: 'Review privilege flags, liquidity traps, and suspicious mechanics.', prompt: 'Run a contract risk analysis on this Base token contract. Highlight red flags clearly.', icon: '⚠' },
+  { key: 'radar',    label: 'Base Radar',       helper: 'Use imported Base Radar signal context for a concise verdict.',       prompt: 'Use my imported Base Radar context and give a concise WATCH / AVOID / SCAN DEEPER verdict.', icon: '⟲' },
 ]
 
-const SUGGESTED_PROMPTS = [
-  'What\'s pumping on Base?',
-  'Scan BRETT',
-  'Show Base whales',
-  'Liquidity check AERO',
-  'Who deployed VIRTUAL?',
-  'Scan wallet 0x...',
+// ── UI chips per tab ─────────────────────────────────────────────────────────
+const ANALYST_CHIPS = [
+  { label: "What's pumping on Base?", prompt: "What's pumping on Base?" },
+  { label: 'Scan wallet',             prompt: 'Scan wallet '             },
+  { label: 'Check liquidity',         prompt: 'Check liquidity '         },
+  { label: 'Analyze token',           prompt: 'Analyze token '           },
+]
+const CHAT_CHIPS = [
+  { label: 'Who deployed VIRTUAL?',  prompt: 'Who deployed VIRTUAL?'         },
+  { label: 'Show Base whales',        prompt: 'Show Base whales'              },
+  { label: 'Top movers today',        prompt: 'Top movers on Base today'       },
+  { label: 'Base activity',           prompt: 'Latest activity on Base?'      },
 ]
 
-const EMPTY_STATE_CHIPS = [
-  {
-    label: 'What\'s pumping on Base?',
-    prompt: 'What\'s pumping on Base?',
-  },
-  {
-    label: 'Scan BRETT',
-    prompt: 'Scan BRETT',
-  },
-  {
-    label: 'Liquidity check AERO',
-    prompt: 'Liquidity check AERO',
-  },
-]
+// ── Usage helpers (unchanged) ────────────────────────────────────────────────
 const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
-const THINKING_MESSAGE = 'Clark is thinking...'
-
+const THINKING_MESSAGE       = 'Clark is thinking...'
 const CLARK_DAILY_LIMITS: Record<string, number> = { free: 5, pro: 50, elite: 300 }
 const CLARK_LIMIT_UNAUTH = 3
-
 function getTodayStr() { return new Date().toISOString().slice(0, 10) }
-
 function readClarkUsage(): number {
   if (typeof window === 'undefined') return 0
   try {
@@ -132,7 +80,6 @@ function readClarkUsage(): number {
     return date === getTodayStr() ? (count || 0) : 0
   } catch { return 0 }
 }
-
 function bumpClarkUsage(): number {
   try {
     const next = readClarkUsage() + 1
@@ -140,16 +87,12 @@ function bumpClarkUsage(): number {
     return next
   } catch { return 0 }
 }
-
 function decodePrompt(value: string | null): string | null {
   if (!value) return null
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return value
-  }
+  try { return decodeURIComponent(value) } catch { return value }
 }
 
+// ── Clark Orb (unchanged visual) ─────────────────────────────────────────────
 function ClarkOrb({ size = 44, thinking = false }: { size?: number; thinking?: boolean }) {
   return (
     <div className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}>
@@ -162,18 +105,22 @@ function ClarkOrb({ size = 44, thinking = false }: { size?: number; thinking?: b
   )
 }
 
+// ── Main content ─────────────────────────────────────────────────────────────
 function ClarkAiContent() {
-  const searchParams = useSearchParams()
-  const importedPrompt = useMemo(() => decodePrompt(searchParams.get('prompt')), [searchParams])
+  const searchParams      = useSearchParams()
+  const importedPrompt    = useMemo(() => decodePrompt(searchParams.get('prompt')), [searchParams])
   const autoSendRequested = searchParams.get('autoSend') === '1' || searchParams.get('autosend') === '1'
-  const [messages, setMessages] = useState<Message[]>([])
+
+  const [messages,  setMessages]  = useState<Message[]>([])
+  const [uiTab,     setUiTab]     = useState<UiTab>('analyst')
   const [activeMode, setActiveMode] = useState<Mode['key']>(importedPrompt ? 'radar' : 'token')
-  const [input, setInput] = useState(importedPrompt ?? '')
-  const [loading, setLoading] = useState(false)
+  const [input,     setInput]     = useState(importedPrompt ?? '')
+  const [loading,   setLoading]   = useState(false)
   const [clarkUsed, setClarkUsed] = useState(0)
   const [planLimit, setPlanLimit] = useState<number | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
-  const autoSentRef = useRef(false)
+  const autoSentRef     = useRef(false)
+  const threadRef       = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (importedPrompt) {
@@ -200,57 +147,42 @@ function ClarkAiContent() {
     })
   }, [])
 
-  const activeModeConfig = MODES.find((mode) => mode.key === activeMode) ?? MODES[0]
+  // Auto-scroll thread to latest message
+  useEffect(() => {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
+  }, [messages])
+
+  const activeModeConfig = MODES.find((m) => m.key === activeMode) ?? MODES[0]
 
   function applyMode(mode: Mode) {
     setActiveMode(mode.key)
     setInput((prev) => (prev.trim() ? prev : mode.prompt))
   }
-
   function handleImportFromRadar() {
-    if (importedPrompt) {
-      setInput(importedPrompt)
-      setActiveMode('radar')
-      return
-    }
-    const fallback = 'Import the most recent Base Radar context and provide a concise risk-aware verdict.'
-    setInput(fallback)
+    if (importedPrompt) { setInput(importedPrompt); setActiveMode('radar'); return }
+    setInput('Import the most recent Base Radar context and provide a concise risk-aware verdict.')
     setActiveMode('radar')
   }
-
   function handlePasteContract() {
     setInput('I want a contract risk analysis on Base. Contract: 0x... (paste contract)')
     setActiveMode('contract')
   }
-
   function handlePasteWallet() {
     setInput('I want a wallet analysis on Base. Wallet: 0x... (paste wallet)')
     setActiveMode('wallet')
   }
-
-  function handleClear() {
-    setMessages([])
-    setInput('')
-  }
+  function handleClear() { setMessages([]); setInput('') }
 
   async function handleSendText(raw: string) {
     const text = raw.trim()
     if (!text || loading) return
-
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
     setInput('')
     setLoading(true)
-
     try {
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[clark] request context', {
-          moversCount: clarkContextRef.current.lastMarketList?.length ?? 0,
-          lastSelectedRank: clarkContextRef.current.lastSelectedRank ?? null,
-        })
-      }
       const { data: { session: authSession } } = await supabase.auth.getSession()
       const accessToken = authSession?.access_token ?? null
       const res = await fetch('/api/clark', {
@@ -261,13 +193,9 @@ function ClarkAiContent() {
           ...(accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {}),
         },
         body: JSON.stringify({
-          feature: 'clark-ai',
-          message: text,
-          prompt: text,
-          mode: 'analyst',
-          uiModeHint: activeMode,
-          context: null,
-          history,
+          feature: 'clark-ai', message: text, prompt: text,
+          mode: 'analyst', uiModeHint: activeMode,
+          context: null, history,
           clarkContext: clarkContextRef.current,
           recentMovers: clarkContextRef.current.lastMarketList ?? [],
           moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
@@ -279,460 +207,693 @@ function ClarkAiContent() {
       if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
-        ? payload.marketContext as { items?: unknown }
-        : null
+        ? payload.marketContext as { items?: unknown } : null
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
       if (nextItems && nextItems.length > 0) {
         sessionStorage.setItem('chainlens:clark:last-momentum-list', JSON.stringify(nextItems))
         sessionStorage.setItem('chainlens:clark:last-momentum-shown-count', String(Math.min(7, nextItems.length)))
         clarkContextRef.current.lastMarketList = nextItems as ClarkContextState['lastMarketList']
         const addrSet = new Set((clarkContextRef.current.seenMarketAddresses ?? []).map((x) => x.toLowerCase()))
-        const symSet = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
+        const symSet  = new Set((clarkContextRef.current.seenMarketSymbols ?? []).map((x) => x.toUpperCase()))
         for (const item of nextItems as Array<Record<string, unknown>>) {
           const token = typeof item.tokenAddress === 'string' ? item.tokenAddress.toLowerCase() : null
-          const pool = typeof item.poolAddress === 'string' ? item.poolAddress.toLowerCase() : null
-          const sym = typeof item.symbol === 'string' ? item.symbol.toUpperCase() : null
-          if (token) addrSet.add(token)
-          if (pool) addrSet.add(pool)
-          if (sym) symSet.add(sym)
+          const pool  = typeof item.poolAddress  === 'string' ? item.poolAddress.toLowerCase()  : null
+          const sym   = typeof item.symbol       === 'string' ? item.symbol.toUpperCase()       : null
+          if (token) addrSet.add(token); if (pool) addrSet.add(pool); if (sym) symSet.add(sym)
         }
         clarkContextRef.current.seenMarketAddresses = [...addrSet]
-        clarkContextRef.current.seenMarketSymbols = [...symSet]
+        clarkContextRef.current.seenMarketSymbols   = [...symSet]
       }
       const cursor = (marketContext && typeof marketContext === 'object' && (marketContext as Record<string, unknown>).cursor && typeof (marketContext as Record<string, unknown>).cursor === 'object')
-        ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor']
-        : null
+        ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor'] : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
-      clarkContextRef.current.previousIntent = clarkContextRef.current.lastIntent ?? null
-      clarkContextRef.current.lastIntent = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
+      clarkContextRef.current.previousIntent  = clarkContextRef.current.lastIntent ?? null
+      clarkContextRef.current.lastIntent      = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
       clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
-      const reply = json.ok ? (payload?.reply ?? payload?.analysis ?? payload?.response ?? json.reply ?? json.analysis ?? 'No response from Clark.') : (json.error ?? 'Something went wrong.')
-      setMessages((prev) => {
-        const next = [...prev]
-        next[next.length - 1] = { role: 'clark', text: String(reply) }
-        return next
-      })
+      const reply = json.ok
+        ? (payload?.reply ?? payload?.analysis ?? payload?.response ?? json.reply ?? json.analysis ?? 'No response from Clark.')
+        : (json.error ?? 'Something went wrong.')
+      setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: String(reply) }; return next })
     } catch {
-      setMessages((prev) => {
-        const next = [...prev]
-        next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }
-        return next
-      })
-    } finally {
-      setLoading(false)
-    }
+      setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }; return next })
+    } finally { setLoading(false) }
   }
 
-  async function handleSend() {
-    await handleSendText(input)
-  }
+  async function handleSend() { await handleSendText(input) }
 
   useEffect(() => {
     if (!autoSendRequested || !importedPrompt || loading || autoSentRef.current) return
     autoSentRef.current = true
     setInput(importedPrompt)
-    queueMicrotask(() => {
-      void handleSendText(importedPrompt)
-    })
+    queueMicrotask(() => { void handleSendText(importedPrompt) })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSendRequested, importedPrompt, loading])
 
+  // ── Derived UI values ─────────────────────────────────────────────────────
+  const isLimited   = planLimit !== null && clarkUsed >= planLimit
+  const usagePct    = planLimit ? Math.min(100, (clarkUsed / planLimit) * 100) : 0
+  const chips       = uiTab === 'analyst' ? ANALYST_CHIPS : CHAT_CHIPS
+  const placeholder = uiTab === 'analyst'
+    ? 'Ask Clark anything about tokens, wallets, liquidity, dev wallets, or Base movers...'
+    : 'Chat with Clark about Base, wallets, tokens, or risk...'
+  const hasMessages = messages.length > 0
+  void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div style={pageStyle}>
+    <div className='clk-page'>
       <style>{`
-        .clark-shell {
-          max-width: 1280px;
-          margin: 0 auto;
-          padding: 30px 20px 24px;
-        }
-        .clark-grid-bg {
-          background-image:
-            linear-gradient(rgba(148,163,184,0.05) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(148,163,184,0.05) 1px, transparent 1px);
-          background-size: 32px 32px;
-          background-position: center;
-        }
-        .clark-main-grid {
-          display: grid;
-          grid-template-columns: minmax(0, 1.8fr) minmax(320px, 1fr);
-          gap: 18px;
-          align-items: start;
-        }
-        .clark-panel {
-          border: 1px solid rgba(148,163,184,0.18);
-          border-radius: 18px;
-          background: linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.86));
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 20px 50px rgba(0,0,0,0.28);
-        }
-        .clark-mode-grid {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 10px;
-          margin-bottom: 12px;
-        }
-        .clark-mode {
-          border-radius: 14px;
-          border: 1px solid rgba(148,163,184,0.2);
-          background: linear-gradient(180deg, rgba(15,23,42,0.65), rgba(15,23,42,0.35));
-          text-align: left;
-          padding: 11px 12px;
-          cursor: pointer;
-          transition: all .2s ease;
-        }
-        .clark-mode:hover {
-          border-color: rgba(45,212,191,0.52);
-          transform: translateY(-1px) scale(1.01);
-          box-shadow: 0 8px 20px rgba(3,7,18,0.45), 0 0 20px rgba(45,212,191,0.14);
-        }
-        .clark-mode.active {
-          border-color: rgba(45,212,191,0.74);
-          box-shadow: 0 0 0 1px rgba(45,212,191,0.26), 0 0 24px rgba(45,212,191,0.2), 0 0 30px rgba(139,92,246,0.14);
-          background: linear-gradient(180deg, rgba(45,212,191,0.22), rgba(139,92,246,0.18));
-        }
-        .clark-send-button:hover:not(:disabled) {
-          transform: scale(1.06);
-          filter: saturate(1.1) brightness(1.06);
-          box-shadow: 0 0 28px rgba(45,212,191,0.62), 0 0 36px rgba(236,72,153,0.5), 0 0 0 1px rgba(255,255,255,0.14) !important;
-        }
-        .clark-send-button:active:not(:disabled) {
-          transform: scale(1.02);
-        }
-        .clark-orb-shell {
-          border-radius: 999px;
+        /* ── Page shell ────────────────────────────────────────── */
+        .clk-page {
           position: relative;
+          min-height: 100%;
+          overflow-x: hidden;
+          color: #e2e8f0;
+          background:
+            radial-gradient(ellipse 55% 40% at 8% 60%, rgba(45,212,191,.13) 0%, transparent 100%),
+            radial-gradient(ellipse 50% 40% at 92% 55%, rgba(139,92,246,.15) 0%, transparent 100%),
+            radial-gradient(ellipse 60% 30% at 50% 0%,  rgba(139,92,246,.10) 0%, transparent 100%),
+            linear-gradient(180deg, #030712 0%, #050a18 50%, #030610 100%);
+        }
+
+        /* ── Animated background blobs ─────────────────────────── */
+        .clk-blob {
+          position: absolute;
+          border-radius: 50%;
+          pointer-events: none;
+          filter: blur(80px);
+          will-change: transform;
+        }
+        .clk-blob-teal {
+          width: 520px; height: 420px;
+          left: -120px; top: 20%;
+          background: radial-gradient(circle, rgba(45,212,191,.22) 0%, transparent 70%);
+          animation: clkBlobT 14s ease-in-out infinite;
+        }
+        .clk-blob-purple {
+          width: 480px; height: 400px;
+          right: -100px; top: 28%;
+          background: radial-gradient(circle, rgba(139,92,246,.20) 0%, transparent 70%);
+          animation: clkBlobP 18s ease-in-out infinite;
+        }
+        @keyframes clkBlobT {
+          0%,100% { transform: translateY(0px) scale(1); }
+          40%     { transform: translateY(-30px) scale(1.06); }
+          70%     { transform: translateY(16px) scale(0.96); }
+        }
+        @keyframes clkBlobP {
+          0%,100% { transform: translateY(0px) scale(1); }
+          35%     { transform: translateY(24px) scale(1.05); }
+          65%     { transform: translateY(-18px) scale(0.97); }
+        }
+
+        /* ── Wave SVG ──────────────────────────────────────────── */
+        .clk-waves {
+          position: absolute;
+          left: 0; top: 0;
+          width: 100%; height: 600px;
+          pointer-events: none;
+          overflow: visible;
+        }
+        .clk-wave-l {
+          animation: clkWaveFloat 12s ease-in-out infinite;
+          transform-origin: center;
+        }
+        .clk-wave-r {
+          animation: clkWaveFloat 16s ease-in-out infinite reverse;
+          transform-origin: center;
+        }
+        @keyframes clkWaveFloat {
+          0%,100% { transform: translateY(0px); }
+          40%     { transform: translateY(-18px); }
+          70%     { transform: translateY(12px); }
+        }
+
+        /* ── Subtle dot grid overlay ───────────────────────────── */
+        .clk-grid {
+          position: absolute;
+          inset: 0; pointer-events: none;
+          background-image:
+            radial-gradient(circle, rgba(148,163,184,.07) 1px, transparent 1px);
+          background-size: 36px 36px;
+          mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 20%, transparent 80%);
+        }
+
+        /* ── Content column ────────────────────────────────────── */
+        .clk-content {
+          position: relative;
+          z-index: 1;
+          max-width: 860px;
+          margin: 0 auto;
+          padding: 56px 24px 64px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 0;
+        }
+
+        /* ── Hero ──────────────────────────────────────────────── */
+        .clk-hero {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          gap: 0;
+          margin-bottom: 40px;
+          animation: clkFadeDown .7s ease-out both;
+        }
+        @keyframes clkFadeDown {
+          from { opacity: 0; transform: translateY(-20px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .clk-orb-wrap { margin-bottom: 22px; }
+
+        .clk-title {
+          margin: 0 0 14px;
+          font-size: clamp(48px, 7vw, 72px);
+          font-weight: 900;
+          letter-spacing: -0.03em;
+          line-height: 1;
+          color: #f8fafc;
+        }
+        .clk-title-ai {
+          background: linear-gradient(120deg, #67e8f9 0%, #818cf8 45%, #c084fc 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+        }
+
+        .clk-subtitle {
+          margin: 0 0 18px;
+          font-size: clamp(14px, 2vw, 16px);
+          color: #94a3b8;
+          max-width: 480px;
+          line-height: 1.55;
+        }
+
+        /* ── LIVE badge row ────────────────────────────────────── */
+        .clk-live-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 11px;
+          font-family: var(--font-plex-mono, monospace);
+          letter-spacing: .14em;
+          color: #64748b;
+          margin-bottom: 32px;
+          text-transform: uppercase;
+        }
+        .clk-live-dot {
+          width: 8px; height: 8px;
+          border-radius: 50%;
+          background: #2dd4bf;
+          box-shadow: 0 0 6px rgba(45,212,191,.8), 0 0 12px rgba(45,212,191,.5);
+          animation: clkLivePulse 2.2s ease-in-out infinite;
+          flex-shrink: 0;
+        }
+        @keyframes clkLivePulse {
+          0%,100% { box-shadow: 0 0 4px rgba(45,212,191,.8), 0 0 8px rgba(45,212,191,.4); }
+          50%     { box-shadow: 0 0 8px rgba(45,212,191,1),  0 0 18px rgba(45,212,191,.6), 0 0 28px rgba(45,212,191,.25); }
+        }
+        .clk-live-label { color: #2dd4bf; font-weight: 700; letter-spacing: .1em; }
+        .clk-live-sep   { color: #1e293b; }
+        .clk-live-cortex { color: #64748b; }
+
+        /* ── Mode tabs ─────────────────────────────────────────── */
+        .clk-tabs {
+          display: flex;
+          gap: 12px;
+          background: rgba(5,10,24,.6);
+          border: 1px solid rgba(148,163,184,.14);
+          border-radius: 999px;
+          padding: 5px;
+        }
+        .clk-tab {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border-radius: 999px;
+          border: 1px solid transparent;
+          background: transparent;
+          color: #64748b;
+          font-size: 15px;
+          font-weight: 600;
+          padding: 10px 26px;
+          cursor: pointer;
+          transition: all .22s ease;
+          white-space: nowrap;
+        }
+        .clk-tab:hover:not(.clk-tab--analyst):not(.clk-tab--chat) {
+          color: #cbd5e1;
+          border-color: rgba(148,163,184,.22);
+        }
+        .clk-tab--analyst {
+          background: linear-gradient(135deg, rgba(45,212,191,.22) 0%, rgba(99,102,241,.18) 100%);
+          border-color: rgba(45,212,191,.55);
+          color: #99f6e4;
+          box-shadow: 0 0 18px rgba(45,212,191,.22), 0 0 0 1px rgba(45,212,191,.18) inset;
+        }
+        .clk-tab--chat {
+          background: linear-gradient(135deg, rgba(139,92,246,.20) 0%, rgba(236,72,153,.16) 100%);
+          border-color: rgba(139,92,246,.55);
+          color: #c4b5fd;
+          box-shadow: 0 0 18px rgba(139,92,246,.22), 0 0 0 1px rgba(139,92,246,.16) inset;
+        }
+        .clk-tab-icon { opacity: .85; flex-shrink: 0; }
+
+        /* ── Message thread ────────────────────────────────────── */
+        .clk-thread {
+          width: 100%;
+          max-height: 420px;
+          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          margin-bottom: 16px;
+          padding-right: 4px;
+          scrollbar-width: thin;
+          scrollbar-color: rgba(148,163,184,.2) transparent;
+        }
+        .clk-thread::-webkit-scrollbar { width: 4px; }
+        .clk-thread::-webkit-scrollbar-track { background: transparent; }
+        .clk-thread::-webkit-scrollbar-thumb { background: rgba(148,163,184,.2); border-radius: 999px; }
+        .clk-thread-header {
+          display: flex;
+          justify-content: flex-end;
+          margin-bottom: 4px;
+        }
+        .clk-clear-btn {
+          font-size: 11px;
+          color: #475569;
+          background: transparent;
+          border: 1px solid rgba(148,163,184,.18);
+          border-radius: 999px;
+          padding: 4px 12px;
+          cursor: pointer;
+          font-family: var(--font-plex-mono, monospace);
+          letter-spacing: .08em;
+          transition: color .16s, border-color .16s;
+        }
+        .clk-clear-btn:hover { color: #94a3b8; border-color: rgba(148,163,184,.38); }
+
+        .clk-msg {
+          max-width: 86%;
+          padding: 10px 13px;
+          border-radius: 14px;
+          border: 1px solid;
+        }
+        .clk-msg--user {
+          align-self: flex-end;
+          border-color: rgba(45,212,191,.32);
+          background: rgba(45,212,191,.10);
+        }
+        .clk-msg--clark {
+          align-self: flex-start;
+          border-color: rgba(148,163,184,.18);
+          background: linear-gradient(180deg, rgba(15,23,42,.75), rgba(5,10,24,.85));
+        }
+        .clk-msg-role {
+          display: block;
+          font-size: 9px;
+          letter-spacing: .14em;
+          font-family: var(--font-plex-mono, monospace);
+          margin-bottom: 5px;
+        }
+        .clk-msg--user .clk-msg-role { color: #5eead4; }
+        .clk-msg--clark .clk-msg-role { color: #64748b; }
+        .clk-msg-text {
+          margin: 0;
+          font-size: 13.5px;
+          line-height: 1.55;
+          color: #e2e8f0;
+          white-space: pre-wrap;
+          word-break: break-word;
+          overflow-wrap: anywhere;
+        }
+        .clk-thinking {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .clk-thinking-text { font-size: 13px; color: #64748b; }
+
+        /* ── Glass input panel ─────────────────────────────────── */
+        .clk-panel {
+          width: 100%;
+          border-radius: 24px;
+          border: 1px solid rgba(45,212,191,.28);
+          background: linear-gradient(165deg, rgba(8,16,34,.88) 0%, rgba(4,9,22,.92) 100%);
+          box-shadow:
+            0 0 0 1px rgba(139,92,246,.12),
+            0 0 40px rgba(45,212,191,.10),
+            0 24px 60px rgba(0,0,0,.40),
+            inset 0 1px 0 rgba(255,255,255,.04);
+          padding: 18px 18px 14px;
+          animation: clkFadeUp .8s ease-out .15s both;
+          margin-bottom: 24px;
+        }
+        @keyframes clkFadeUp {
+          from { opacity: 0; transform: translateY(28px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .clk-panel-input-row {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          margin-bottom: 16px;
+        }
+        .clk-panel-input {
+          flex: 1;
+          background: transparent;
+          border: none;
+          outline: none;
+          color: #e2e8f0;
+          font-size: 15px;
+          line-height: 1.4;
+          caret-color: #2dd4bf;
+          min-width: 0;
+        }
+        .clk-panel-input::placeholder { color: #475569; }
+
+        .clk-send-btn {
+          width: 48px; height: 48px;
+          flex-shrink: 0;
+          border-radius: 50%;
+          border: none;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          background: radial-gradient(circle at 30% 25%, rgba(148,163,184,0.24), rgba(2,6,23,0.96) 62%);
-          border: 1px solid rgba(148,163,184,0.34);
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 20px rgba(45,212,191,0.22), 0 0 28px rgba(139,92,246,0.2);
+          cursor: pointer;
+          transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
+        }
+        .clk-send-btn:not(:disabled) {
+          background: linear-gradient(135deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%);
+          color: #fff;
+          box-shadow: 0 0 22px rgba(45,212,191,.55), 0 0 30px rgba(236,72,153,.40), 0 0 0 1px rgba(255,255,255,.12);
+        }
+        .clk-send-btn:not(:disabled):hover {
+          transform: scale(1.08);
+          filter: brightness(1.08) saturate(1.1);
+          box-shadow: 0 0 30px rgba(45,212,191,.70), 0 0 40px rgba(236,72,153,.55), 0 0 0 1px rgba(255,255,255,.16);
+        }
+        .clk-send-btn:not(:disabled):active { transform: scale(1.02); }
+        .clk-send-btn:disabled {
+          background: rgba(148,163,184,.18);
+          color: #334155;
+          cursor: not-allowed;
+          box-shadow: none;
+        }
+
+        /* ── Divider inside panel ──────────────────────────────── */
+        .clk-panel-divider {
+          height: 1px;
+          background: rgba(148,163,184,.10);
+          margin-bottom: 14px;
+        }
+
+        /* ── Suggestion chips ──────────────────────────────────── */
+        .clk-chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-bottom: 14px;
+        }
+        .clk-chip {
+          border-radius: 999px;
+          border: 1px solid rgba(148,163,184,.24);
+          background: rgba(15,23,42,.60);
+          color: #94a3b8;
+          font-size: 12px;
+          padding: 7px 14px;
+          cursor: pointer;
+          transition: border-color .16s, color .16s, box-shadow .16s;
+          white-space: nowrap;
+        }
+        .clk-chip:hover {
+          border-color: rgba(45,212,191,.45);
+          color: #99f6e4;
+          box-shadow: 0 0 10px rgba(45,212,191,.14);
+        }
+
+        /* ── Usage row ─────────────────────────────────────────── */
+        .clk-usage {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .clk-usage-label {
+          font-size: 11px;
+          color: #475569;
+          font-family: var(--font-plex-mono, monospace);
+          white-space: nowrap;
+        }
+        .clk-usage-track {
+          flex: 1;
+          height: 4px;
+          border-radius: 999px;
+          background: rgba(148,163,184,.14);
           overflow: hidden;
+        }
+        .clk-usage-fill {
+          height: 100%;
+          border-radius: 999px;
+          background: linear-gradient(90deg, #2dd4bf, #8b5cf6);
+          transition: width .6s ease;
+          min-width: 0;
+        }
+        .clk-usage-count {
+          font-size: 11px;
+          color: #475569;
+          font-family: var(--font-plex-mono, monospace);
+          white-space: nowrap;
+        }
+
+        /* ── Footer note ───────────────────────────────────────── */
+        .clk-footer {
+          font-size: 12px;
+          color: #334155;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin: 0;
+        }
+
+        /* ── Orb (unchanged) ───────────────────────────────────── */
+        .clark-orb-shell {
+          border-radius: 999px; position: relative;
+          display: inline-flex; align-items: center; justify-content: center;
+          background: radial-gradient(circle at 30% 25%, rgba(148,163,184,.24), rgba(2,6,23,.96) 62%);
+          border: 1px solid rgba(148,163,184,.34);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 0 20px rgba(45,212,191,.22), 0 0 28px rgba(139,92,246,.20);
+          overflow: hidden; flex-shrink: 0;
         }
         .clark-orb-ring {
           position: absolute; inset: 3px; border-radius: 999px;
-          border: 1px solid rgba(45,212,191,0.25);
-          opacity: .9;
+          border: 1px solid rgba(45,212,191,.25); opacity: .9;
         }
         .clark-orb-core { position: relative; width: 100%; height: 100%; border-radius: 999px; }
         .clark-orb-dot { position: absolute; width: 7px; height: 7px; border-radius: 999px; filter: blur(.1px); }
         .clark-orb-dot-a { left: 34%; top: 44%; background: #67e8f9; box-shadow: 0 0 16px rgba(103,232,249,.95); animation: clarkDotA 2.4s ease-in-out infinite; }
-        .clark-orb-dot-b { right: 30%; top: 44%; background: #c4b5fd; box-shadow: 0 0 16px rgba(196,181,253,.9); animation: clarkDotB 2.1s ease-in-out infinite; }
+        .clark-orb-dot-b { right: 30%; top: 44%; background: #c4b5fd; box-shadow: 0 0 16px rgba(196,181,253,.9);  animation: clarkDotB 2.1s ease-in-out infinite; }
         .clark-orb-shell.thinking::after {
           content: ''; position: absolute; inset: -6px; border-radius: 999px;
-          border: 1px solid rgba(45,212,191,0.22); animation: clarkPulse 1.6s ease-out infinite;
+          border: 1px solid rgba(45,212,191,.22); animation: clarkPulse 1.6s ease-out infinite;
         }
-        @keyframes clarkDotA { 0%,100%{ transform: translate(0,0) scale(1);} 50% { transform: translate(2px,-2px) scale(1.18);} }
-        @keyframes clarkDotB { 0%,100%{ transform: translate(0,0) scale(1);} 50% { transform: translate(-2px,2px) scale(1.16);} }
-        @keyframes clarkPulse { 0%{ transform: scale(.94); opacity:.7;} 100%{ transform: scale(1.08); opacity:0;} }
+        @keyframes clarkDotA { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(2px,-2px) scale(1.18);} }
+        @keyframes clarkDotB { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(-2px,2px) scale(1.16);} }
+        @keyframes clarkPulse { 0%{ transform:scale(.94); opacity:.7;} 100%{ transform:scale(1.08); opacity:0;} }
+
+        /* ── Reduced motion ────────────────────────────────────── */
         @media (prefers-reduced-motion: reduce) {
-          .clark-orb-dot, .clark-orb-shell.thinking::after { animation: none !important; }
+          .clark-orb-dot, .clark-orb-shell.thinking::after,
+          .clk-blob-teal, .clk-blob-purple,
+          .clk-wave-l, .clk-wave-r, .clk-live-dot { animation: none !important; }
+          .clk-hero, .clk-panel { animation: none !important; opacity: 1 !important; transform: none !important; }
         }
-        @media (max-width: 1080px) {
-          .clark-main-grid { grid-template-columns: 1fr; }
-          .clark-mode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        }
+
+        /* ── Responsive ────────────────────────────────────────── */
         @media (max-width: 680px) {
-          .clark-shell { padding-inline: 14px; padding-bottom: 96px; }
-          .clark-mode-grid { grid-template-columns: 1fr; }
-          .clark-input-wrap { height: auto !important; border-radius: 14px !important; flex-direction: column; align-items: stretch !important; padding: 10px !important; }
-          .clark-send-button { width: 100%; }
+          .clk-content { padding: 36px 16px 80px; }
+          .clk-title { font-size: 44px; }
+          .clk-tabs { gap: 8px; padding: 4px; }
+          .clk-tab { font-size: 14px; padding: 9px 20px; }
+          .clk-panel { border-radius: 18px; padding: 14px 14px 12px; }
+          .clk-chips { gap: 6px; }
+          .clk-chip { font-size: 11px; padding: 6px 12px; }
+          .clk-panel-input-row { gap: 10px; }
+          .clk-send-btn { width: 44px; height: 44px; }
+          .clk-thread { max-height: 320px; }
+        }
+        @media (max-width: 420px) {
+          .clk-tabs { flex-direction: column; border-radius: 18px; }
+          .clk-tab { justify-content: center; }
         }
       `}</style>
 
-      <div className='clark-shell clark-grid-bg'>
-        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', marginBottom: '14px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <ClarkOrb />
-            <div>
-              <h1 style={{ margin: 0, fontSize: '26px', letterSpacing: '-0.02em', color: '#e2e8f0' }}>Clark AI</h1>
-              <p style={{ margin: '2px 0 0', fontSize: '13px', color: '#94a3b8' }}>Base-native AI analyst for tokens, wallets, and on-chain risk.</p>
-            </div>
+      {/* ── Cinematic background ─────────────────────────────────── */}
+      <div aria-hidden='true'>
+        <div className='clk-blob clk-blob-teal' />
+        <div className='clk-blob clk-blob-purple' />
+        <div className='clk-grid' />
+        <svg className='clk-waves' viewBox='0 0 1440 600' preserveAspectRatio='xMidYMid slice' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
+          <defs>
+            <linearGradient id='clwg1' x1='0%' y1='0%' x2='100%' y2='0%'>
+              <stop offset='0%'   stopColor='#2DD4BF' stopOpacity='.55'/>
+              <stop offset='60%'  stopColor='#8B5CF6' stopOpacity='.28'/>
+              <stop offset='100%' stopColor='#8B5CF6' stopOpacity='.06'/>
+            </linearGradient>
+            <linearGradient id='clwg2' x1='0%' y1='0%' x2='100%' y2='0%'>
+              <stop offset='0%'   stopColor='#2DD4BF' stopOpacity='.10'/>
+              <stop offset='45%'  stopColor='#8B5CF6' stopOpacity='.38'/>
+              <stop offset='100%' stopColor='#EC4899' stopOpacity='.28'/>
+            </linearGradient>
+            <linearGradient id='clwg3' x1='0%' y1='0%' x2='100%' y2='0%'>
+              <stop offset='0%'   stopColor='#2DD4BF' stopOpacity='.16'/>
+              <stop offset='100%' stopColor='#2DD4BF' stopOpacity='.04'/>
+            </linearGradient>
+          </defs>
+          {/* Left / teal wave cluster */}
+          <g className='clk-wave-l'>
+            <path d='M-240 370 C60 300 240 440 520 330 S820 290 1100 370 S1380 320 1680 370' stroke='url(#clwg1)' strokeWidth='2.2' fill='none' strokeLinecap='round' opacity='.8'/>
+            <path d='M-240 395 C60 325 240 460 520 355 S820 315 1100 395 S1380 345 1680 395' stroke='#2DD4BF'       strokeWidth='1'   fill='none' strokeLinecap='round' opacity='.28'/>
+            <path d='M-240 350 C80 285 260 415 540 310 S840 270 1120 350 S1400 300 1700 350' stroke='url(#clwg3)'    strokeWidth='.8'  fill='none' strokeLinecap='round' opacity='.35'/>
+          </g>
+          {/* Right / purple wave cluster */}
+          <g className='clk-wave-r'>
+            <path d='M-240 250 C80 318 340 192 620 268 S940 330 1220 240 S1500 298 1780 250' stroke='url(#clwg2)' strokeWidth='2.2' fill='none' strokeLinecap='round' opacity='.70'/>
+            <path d='M-240 272 C80 340 340 212 620 290 S940 352 1220 262 S1500 320 1780 272' stroke='#8B5CF6'       strokeWidth='1'   fill='none' strokeLinecap='round' opacity='.28'/>
+            <path d='M-240 228 C80 296 340 170 620 246 S940 308 1220 218 S1500 276 1780 228' stroke='#EC4899'       strokeWidth='.8'  fill='none' strokeLinecap='round' opacity='.18'/>
+          </g>
+        </svg>
+      </div>
+
+      {/* ── Content ──────────────────────────────────────────────── */}
+      <div className='clk-content'>
+
+        {/* Hero */}
+        <section className='clk-hero'>
+          <div className='clk-orb-wrap'><ClarkOrb size={72} thinking={loading && !hasMessages} /></div>
+          <h1 className='clk-title'>Clark <span className='clk-title-ai'>AI</span></h1>
+          <p className='clk-subtitle'>Base-native AI analyst for tokens, wallets, and onchain risk.</p>
+          <div className='clk-live-row'>
+            <span className='clk-live-dot' />
+            <span className='clk-live-label'>LIVE</span>
+            <span className='clk-live-sep'>·</span>
+            <span className='clk-live-cortex'>POWERED BY CORTEX ENGINE</span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{
-              fontSize: '10px',
-              fontFamily: 'var(--font-plex-mono)',
-              letterSpacing: '0.08em',
-              padding: '5px 10px',
-              borderRadius: '999px',
-              border: `1px solid ${planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.40)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.40)' : 'rgba(45,212,191,0.34)'}`,
-              background: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.08)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.08)' : 'rgba(45,212,191,0.10)',
-              color: planLimit !== null && clarkUsed >= planLimit ? 'rgba(239,68,68,0.90)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'rgba(245,158,11,0.90)' : '#99f6e4',
-              whiteSpace: 'nowrap',
-            }}>
-              {clarkUsed} / {planLimit ?? '...'} today
-            </span>
-            <span style={liveBadgeStyle}>LIVE • Powered by CORTEX</span>
+
+          {/* Analyst / Chat tabs */}
+          <div className='clk-tabs'>
+            <button
+              className={`clk-tab${uiTab === 'analyst' ? ' clk-tab--analyst' : ''}`}
+              onClick={() => setUiTab('analyst')}
+            >
+              <svg className='clk-tab-icon' width='15' height='15' viewBox='0 0 15 15' fill='none' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
+                <path d='M7.5 1L9.18 5.31L14 5.69L10.55 8.67L11.63 13.38L7.5 11L3.37 13.38L4.45 8.67L1 5.69L5.82 5.31L7.5 1Z' stroke='currentColor' strokeWidth='1.3' strokeLinejoin='round' fill='none'/>
+              </svg>
+              Analyst
+            </button>
+            <button
+              className={`clk-tab${uiTab === 'chat' ? ' clk-tab--chat' : ''}`}
+              onClick={() => setUiTab('chat')}
+            >
+              <svg className='clk-tab-icon' width='15' height='15' viewBox='0 0 15 15' fill='none' xmlns='http://www.w3.org/2000/svg' aria-hidden='true'>
+                <path d='M13 2H2C1.45 2 1 2.45 1 3V10C1 10.55 1.45 11 2 11H4V13.5L7.5 11H13C13.55 11 14 10.55 14 10V3C14 2.45 13.55 2 13 2Z' stroke='currentColor' strokeWidth='1.3' strokeLinejoin='round' strokeLinecap='round' fill='none'/>
+              </svg>
+              Chat
+            </button>
           </div>
-        </header>
+        </section>
 
-        <div className='clark-main-grid'>
-          <section>
-            <div className='clark-mode-grid'>
-              {MODES.map((mode) => (
-                <button
-                  key={mode.key}
-                  className={`clark-mode${activeMode === mode.key ? ' active' : ''}`}
-                  onClick={() => applyMode(mode)}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ width: '30px', height: '30px', borderRadius: '10px', border: `1px solid ${activeMode === mode.key ? 'rgba(45,212,191,0.62)' : 'rgba(148,163,184,0.32)'}`, background: activeMode === mode.key ? 'linear-gradient(180deg, rgba(45,212,191,0.22), rgba(139,92,246,0.14))' : 'rgba(15,23,42,0.5)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: activeMode === mode.key ? '#99f6e4' : '#cbd5e1', boxShadow: activeMode === mode.key ? '0 0 14px rgba(45,212,191,0.28)' : 'none' }}>
-                      {mode.icon}
-                    </span>
-                    <span style={{ fontSize: '13px', color: activeMode === mode.key ? '#99f6e4' : '#94a3b8', fontWeight: 700 }}>↗</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                    <p style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{mode.label}</p>
-                    {activeMode === mode.key && (
-                      <span style={{ fontSize: '9px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.45)', borderRadius: '999px', padding: '1px 6px', letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>ACTIVE</span>
-                    )}
-                  </div>
-                  <p style={{ margin: '4px 0 0', fontSize: '11px', lineHeight: 1.35, color: '#94a3b8' }}>{mode.helper}</p>
-                </button>
-              ))}
+        {/* Message thread (only when messages exist) */}
+        {hasMessages && (
+          <div className='clk-thread' ref={threadRef}>
+            <div className='clk-thread-header'>
+              <button onClick={handleClear} className='clk-clear-btn'>Clear</button>
             </div>
-
-            <div className='clark-panel' style={{ borderColor: 'rgba(45,212,191,0.38)', boxShadow: '0 0 0 1px rgba(236,72,153,0.16), 0 0 48px rgba(45,212,191,0.12), 0 22px 56px rgba(0,0,0,0.35)' }}>
-              <div style={{ padding: '14px 14px 0' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' }}>
-                  <h2 style={{ margin: 0, fontSize: '15px', color: '#e2e8f0' }}>Ask Clark</h2>
-                  <span style={{ fontSize: '10px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>{activeModeConfig.label}</span>
-                </div>
-
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
-                  <button onClick={handleImportFromRadar} style={chipButtonStyle}>Import from Base Radar</button>
-                  <button onClick={handlePasteContract} style={chipButtonStyle}>Paste Contract</button>
-                  <button onClick={handlePasteWallet} style={chipButtonStyle}>Paste Wallet</button>
-                  <button onClick={handleClear} style={chipButtonStyle}>Clear</button>
-                </div>
-
-                <div style={{ height: '360px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.10)', background: 'linear-gradient(180deg, rgba(2,6,23,0.58), rgba(2,6,23,0.80))', padding: '12px', overflowY: 'auto' }}>
-                  {messages.length === 0 ? (
-                    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: '#94a3b8' }}>
-                      <div style={{ marginBottom: '10px' }}><ClarkOrb size={58} /></div>
-                      <p style={{ margin: 0, fontSize: '14px', color: '#cbd5e1' }}>Scan a token, wallet, liquidity, dev wallet, or ask what's pumping on Base.</p>
-                      <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#94a3b8' }}>
-                        Clark reads token risk, wallet behavior, LP depth, deployer signals, and whale flow on Base.
-                      </p>
-                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center', marginTop: '12px' }}>
-                        {EMPTY_STATE_CHIPS.map((chip) => (
-                          <button key={chip.label} onClick={() => setInput(chip.prompt)} style={emptyStateChipStyle}>
-                            {chip.label}
-                          </button>
-                        ))}
-                      </div>
+            {messages.map((msg, idx) => {
+              const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
+              return (
+                <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
+                  <span className='clk-msg-role'>{msg.role === 'user' ? 'YOU' : 'CLARK'}</span>
+                  {isThinking ? (
+                    <div className='clk-thinking'>
+                      <ClarkOrb size={22} thinking />
+                      <span className='clk-thinking-text'>Clark is thinking…</span>
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      {messages.map((msg, idx) => {
-                        const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
-                        return (<div key={idx} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '88%', padding: '10px 11px', borderRadius: '12px', border: '1px solid', borderColor: msg.role === 'user' ? 'rgba(45,212,191,0.35)' : 'rgba(148,163,184,0.20)', background: msg.role === 'user' ? 'rgba(45,212,191,0.14)' : 'rgba(15,23,42,0.72)' }}>
-                          <p style={{ margin: '0 0 4px', fontSize: '10px', color: msg.role === 'user' ? '#99f6e4' : '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>
-                            {msg.role === 'user' ? 'YOU' : 'CLARK'}
-                          </p>
-                          {isThinking && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
-                              <ClarkOrb size={24} thinking />
-                              <span style={{ fontSize: '12px', color: '#94a3b8' }}>Clark is thinking…</span>
-                            </div>
-                          )}
-                          <p style={{ margin: 0, fontSize: '13px', lineHeight: 1.45, color: '#e2e8f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{msg.text}</p>
-                        </div>)})}
-                    </div>
+                    <p className='clk-msg-text'>{msg.text}</p>
                   )}
                 </div>
+              )
+            })}
+          </div>
+        )}
 
-                <div className="clark-input-wrap" style={{ marginTop: '12px', height: '58px', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(2,6,23,0.72)', display: 'flex', alignItems: 'center', padding: '8px 8px 8px 14px', gap: '8px', marginBottom: '14px' }}>
-                  <input
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !loading) handleSend()
-                    }}
-                    disabled={loading}
-                    placeholder='Ask Clark to scan a token, wallet, whale flow, liquidity, dev wallet, or Base movers.'
-                    style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: '#e2e8f0', fontSize: '16px' }}
-                  />
-                  <button
-                    onClick={handleSend}
-                    disabled={loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)}
-                    className='clark-send-button'
-                    style={{
-                      width: '44px',
-                      height: '44px',
-                      borderRadius: '999px',
-                      border: 'none',
-                      background: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'rgba(148,163,184,0.28)' : 'linear-gradient(135deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%)',
-                      color: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? '#475569' : '#f8fafc',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'not-allowed' : 'pointer',
-                      fontSize: '17px',
-                      boxShadow: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit) ? 'inset 0 1px 1px rgba(255,255,255,0.08)' : '0 0 24px rgba(45,212,191,0.55), 0 0 32px rgba(236,72,153,0.44), 0 0 0 1px rgba(255,255,255,0.12)',
-                      transition: 'transform .16s ease, box-shadow .16s ease, filter .16s ease',
-                    }}
-                    aria-label='Send prompt'
-                  >
-                    ↗
-                  </button>
-                </div>
-              </div>
-            </div>
-          </section>
+        {/* Glass input panel */}
+        <div className='clk-panel'>
+          <div className='clk-panel-input-row'>
+            <ClarkOrb size={40} thinking={loading && hasMessages} />
+            <input
+              className='clk-panel-input'
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !loading) { e.preventDefault(); void handleSend() } }}
+              disabled={loading}
+              placeholder={placeholder}
+            />
+            <button
+              className='clk-send-btn'
+              onClick={() => void handleSend()}
+              disabled={loading || !input.trim() || isLimited}
+              aria-label='Send'
+            >
+              <svg width='17' height='17' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.4' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'>
+                <line x1='22' y1='2' x2='11' y2='13'/>
+                <polygon points='22 2 15 22 11 13 2 9 22 2'/>
+              </svg>
+            </button>
+          </div>
 
-          <aside style={{ display: 'grid', gap: '10px' }}>
-            <div className='clark-panel' style={{ padding: '12px' }}>
-              <p style={asideTitleStyle}>Context</p>
-              {importedPrompt ? (
-                <>
-                  <p style={{ margin: '0 0 8px', fontSize: '12px', color: '#c4b5fd' }}>Imported from Base Radar</p>
-                  <div style={contextPreviewStyle}>{importedPrompt}</div>
-                </>
-              ) : (
-                <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8' }}>No context imported.</p>
-              )}
-            </div>
+          <div className='clk-panel-divider' />
 
-            <div className='clark-panel' style={{ padding: '12px' }}>
-              <p style={asideTitleStyle}>Analysis Modes</p>
-              <div style={{ display: 'grid', gap: '7px' }}>
-                {MODES.map((mode) => (
-                  <button
-                    key={`aside-${mode.key}`}
-                    onClick={() => applyMode(mode)}
-                    style={{
-                      ...asideButtonStyle,
-                      borderColor: activeMode === mode.key ? 'rgba(45,212,191,0.7)' : 'rgba(148,163,184,0.2)',
-                      background: activeMode === mode.key ? 'linear-gradient(180deg, rgba(45,212,191,0.18), rgba(139,92,246,0.14))' : 'rgba(15,23,42,0.5)',
-                      color: activeMode === mode.key ? '#99f6e4' : '#cbd5e1',
-                      boxShadow: activeMode === mode.key ? '0 0 0 1px rgba(45,212,191,0.18), 0 0 16px rgba(45,212,191,0.12)' : 'none',
-                    }}
-                  >
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
-                      {activeMode === mode.key && <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#2dd4bf', boxShadow: '0 0 10px rgba(45,212,191,0.75)' }} />}
-                      {mode.label}
-                      {activeMode === mode.key && (
-                        <span style={{ fontSize: '9px', color: '#99f6e4', border: '1px solid rgba(45,212,191,0.45)', borderRadius: '999px', padding: '1px 6px', letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>ACTIVE</span>
-                      )}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
+          {/* Suggestion chips */}
+          <div className='clk-chips'>
+            {chips.map((chip) => (
+              <button key={chip.label} className='clk-chip' onClick={() => setInput(chip.prompt)}>
+                {chip.label}
+              </button>
+            ))}
+          </div>
 
-            <div className='clark-panel' style={{ padding: '12px' }}>
-              <p style={asideTitleStyle}>CORTEX Status</p>
-              <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: '6px' }}>
-                {['Online', 'Base data enabled', 'CoinGecko Terminal active', 'Clark ready'].map((item) => (
-                  <li key={item} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#cbd5e1' }}>
-                    <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#2dd4bf', boxShadow: '0 0 10px rgba(45,212,191,0.8)' }} />
-                    {item}
-                  </li>
-                ))}
-              </ul>
+          {/* Usage bar */}
+          <div className='clk-usage'>
+            <span className='clk-usage-label'>Usage today</span>
+            <div className='clk-usage-track'>
+              <div className='clk-usage-fill' style={{ width: `${usagePct}%` }} />
             </div>
-
-            <div className='clark-panel' style={{ padding: '12px' }}>
-              <p style={asideTitleStyle}>Suggested Prompts</p>
-              <div style={{ display: 'grid', gap: '7px' }}>
-                {SUGGESTED_PROMPTS.map((prompt) => (
-                  <button key={prompt} onClick={() => setInput(prompt)} style={asideButtonStyle}>{prompt}</button>
-                ))}
-              </div>
-            </div>
-          </aside>
+            <span className='clk-usage-count'>{clarkUsed} / {planLimit ?? '...'}</span>
+          </div>
         </div>
+
+        {/* Footer note */}
+        <p className='clk-footer'>
+          <svg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'>
+            <rect x='3' y='11' width='18' height='11' rx='2' ry='2'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/>
+          </svg>
+          Your data is encrypted and never shared.
+        </p>
+
       </div>
     </div>
   )
 }
 
-const pageStyle: CSSProperties = {
-  height: '100%',
-  overflowY: 'auto',
-  overflowX: 'hidden',
-  color: '#e2e8f0',
-  background:
-    'radial-gradient(circle at 12% 12%, rgba(45,212,191,0.16), transparent 40%), radial-gradient(circle at 86% 10%, rgba(236,72,153,0.14), transparent 40%), radial-gradient(circle at 60% 0%, rgba(139,92,246,0.20), transparent 36%), linear-gradient(180deg, #030712 0%, #040815 45%, #030611 100%)',
-}
-
-
-const chipButtonStyle: CSSProperties = {
-  borderRadius: '999px',
-  border: '1px solid rgba(148,163,184,0.28)',
-  background: 'linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02))',
-  color: '#cbd5e1',
-  fontSize: '10px',
-  fontWeight: 700,
-  letterSpacing: '0.08em',
-  padding: '7px 12px',
-  textTransform: 'uppercase',
-  fontFamily: 'var(--font-plex-mono)',
-  cursor: 'pointer',
-}
-
-const emptyStateChipStyle: CSSProperties = {
-  borderRadius: '999px',
-  border: '1px solid rgba(148,163,184,0.28)',
-  background: 'rgba(15,23,42,0.65)',
-  color: '#cbd5e1',
-  fontSize: '11px',
-  padding: '6px 11px',
-  cursor: 'pointer',
-  transition: 'border-color .16s ease, box-shadow .16s ease',
-}
-
-const liveBadgeStyle: CSSProperties = {
-  borderRadius: '999px',
-  border: '1px solid rgba(45,212,191,0.34)',
-  background: 'rgba(45,212,191,0.10)',
-  color: '#99f6e4',
-  fontSize: '10px',
-  letterSpacing: '0.1em',
-  fontFamily: 'var(--font-plex-mono)',
-  padding: '5px 10px',
-  whiteSpace: 'nowrap',
-}
-
-const asideTitleStyle: CSSProperties = {
-  margin: '0 0 10px',
-  fontSize: '11px',
-  color: '#94a3b8',
-  letterSpacing: '0.08em',
-  fontFamily: 'var(--font-plex-mono)',
-  textTransform: 'uppercase',
-}
-
-const asideButtonStyle: CSSProperties = {
-  width: '100%',
-  borderRadius: '10px',
-  border: '1px solid rgba(148,163,184,0.2)',
-  background: 'rgba(15,23,42,0.5)',
-  color: '#cbd5e1',
-  fontSize: '12px',
-  textAlign: 'left',
-  padding: '8px 10px',
-  cursor: 'pointer',
-}
-
-const contextPreviewStyle: CSSProperties = {
-  borderRadius: '10px',
-  border: '1px solid rgba(196,181,253,0.34)',
-  background: 'rgba(196,181,253,0.08)',
-  color: '#ddd6fe',
-  fontSize: '12px',
-  lineHeight: 1.4,
-  padding: '8px 10px',
-  maxHeight: '84px',
-  display: '-webkit-box',
-  WebkitLineClamp: 4,
-  WebkitBoxOrient: 'vertical',
-  overflow: 'hidden',
-}
-
 export default function ClarkAiPage() {
   return (
-    <Suspense fallback={<div style={{ padding: 24, color: '#94a3b8' }}>Loading Clark AI...</div>}>
+    <Suspense fallback={<div style={{ padding: 32, color: '#94a3b8' }}>Loading Clark AI...</div>}>
       <ClarkAiContent />
     </Suspense>
   )
