@@ -873,6 +873,7 @@ export default function TerminalTokenScanner() {
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
   const [lpExpanded, setLpExpanded] = useState(true)
+  const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-control'|'risk-checks'|'watch-plan'>('cortex-read')
 
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
@@ -897,6 +898,7 @@ export default function TerminalTokenScanner() {
     setError(null)
     setResult(null)
     setLpExpanded(true)
+    setActiveSection('cortex-read')
     setClarkVerdict(null)
     setClarkError(null)
     try {
@@ -1101,511 +1103,578 @@ export default function TerminalTokenScanner() {
           {result && (
             <div style={{ maxWidth: 'none', width: '100%' }}>
 
-              {/* Token identity */}
-              <div style={{ marginBottom: '24px' }}>
+              {/* Token identity — always visible */}
+              <div style={{ marginBottom: '20px' }}>
                 <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#f8fafc', margin: '0 0 4px' }}>
                   {result.name ?? 'Unknown'}
-                  {result.symbol && (
-                    <span style={{
-                      marginLeft: '10px', fontSize: '14px',
-                      color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)',
-                    }}>
-                      {result.symbol}
-                    </span>
-                  )}
+                  {result.symbol && <span style={{ marginLeft: '10px', fontSize: '14px', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>{result.symbol}</span>}
                 </h2>
                 {result.contract && (
-                  <p style={{
-                    fontSize: '11px', color: '#3a5268',
-                    fontFamily: 'var(--font-plex-mono)', margin: 0,
-                  }}>
-                    {shorten(result.contract)}
-                    {` · ${String(result.chain ?? 'Base').toUpperCase()}`}
-                    <span style={{marginLeft:'8px',padding:'2px 8px',border:'1px solid rgba(59,130,246,.35)',borderRadius:'999px',color:'#93c5fd'}}>BASE</span>
+                  <p style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
+                    {shorten(result.contract)}{` · ${String(result.chain ?? 'Base').toUpperCase()}`}
+                    <span style={{ marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(59,130,246,.35)', borderRadius: '999px', color: '#93c5fd' }}>BASE</span>
                   </p>
                 )}
                 {result.resolvedInput && result.resolvedInput.type !== 'address' && (
-                  <p style={{ margin: '6px 0 0', color: '#94a3b8', fontSize: '11px' }}>
-                    Resolved from {result.resolvedInput.original.toUpperCase()}.
-                  </p>
+                  <p style={{ margin: '6px 0 0', color: '#94a3b8', fontSize: '11px' }}>Resolved from {result.resolvedInput.original.toUpperCase()}.</p>
                 )}
               </div>
 
-              {/* CORTEX scan summary */}
-              <div id="scan-section-overview" style={{scrollMarginTop:'24px'}} />
-              <CortexSummaryCard result={result} />
-
-              {/* Stat cards — or no-pools message */}
-              <div id="scan-section-market" style={{scrollMarginTop:'24px'}} />
-              {result.noActivePools ? (
-                <div style={{
-                  padding: '20px 22px', marginBottom: '28px',
-                  background: 'rgba(245,158,11,0.04)',
-                  border: '1px solid rgba(245,158,11,0.2)',
-                  borderRadius: '12px',
-                  fontFamily: 'var(--font-plex-mono)',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
-                    <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: '#fbbf24', textTransform: 'uppercase' }}>No Active Pool Found</span>
-                  </div>
-                  <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>
-                    No liquidity pools were found for this contract on Base. Price, volume, and liquidity data are unavailable.
-                  </p>
-                  {(result.sections?.security?.status === 'ok' || result.sections?.security?.status === 'partial' || (result.honeypot || result.goplus)) && (
-                    <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#78716c' }}>
-                      Contract security data may still be available — review the security simulation below.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <>
-                  {result.marketDataSource === 'fallback' && (
-                    <div style={{
-                      padding: '8px 14px', marginBottom: '12px',
-                      background: 'rgba(139,92,246,0.06)',
-                      border: '1px solid rgba(139,92,246,0.2)',
-                      borderRadius: '8px', fontFamily: 'var(--font-plex-mono)',
-                      display: 'flex', alignItems: 'center', gap: '8px',
-                    }}>
-                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', flexShrink: 0 }} />
-                      <span style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 700, letterSpacing: '0.08em' }}>
-                        CORTEX MARKET READ
-                      </span>
-                      <span style={{ fontSize: '10px', color: '#475569' }}>
-                        Primary pool data unavailable — showing fallback market data. FDV is not market cap.
-                      </span>
-                    </div>
-                  )}
-                <div className="metric-grid" style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                  gap: '10px', marginBottom: '28px',
-                }}>
-                  <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" helper={result.marketDataSource === 'fallback' ? 'Market read' : 'Primary pool'} />
-                  <StatCard label="Liquidity"  value={fmtLarge(result.liquidity)}    helper="Pool depth" />
-                  <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)}    helper="24h trading activity" />
-                  <StatCard
-                    label="24h Change"
-                    value={fmtPct(result.priceChange24h)}
-                    accent={pctColor(result.priceChange24h)}
-                    helper="Price movement"
-                  />
-                  {(() => {
-                    const valuation = result.valuationContext
-                    const showFdvContext = valuation?.primaryValuationStatus === 'fdv_only' && valuation?.primaryValuationUsd != null
-                    const mcValue = valuation?.primaryValuationStatus === 'verified_mc'
-                      ? fmtLarge(valuation.primaryValuationUsd)
-                      : showFdvContext ? `FDV ${fmtLarge(valuation.primaryValuationUsd)}` : 'Supply not confirmed'
-                    const mcHelper = valuation?.primaryValuationStatus === 'verified_mc'
-                      ? 'Verified live market data'
-                      : showFdvContext ? 'Market cap not verified live' : 'Live valuation not verified'
-                    return (
-                      <StatCard
-                        label={valuation?.primaryValuationStatus === 'fdv_only' ? 'Valuation' : 'Market Cap'}
-                        value={mcValue}
-                        helper={mcHelper}
-                        accent="#a78bfa"
-                      />
-                    )
-                  })()}
-                  <StatCard
-                    label='FDV'
-                    value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}
-                    helper='Fully Diluted Valuation'
-                    accent="#a78bfa"
-                  />
-                  <StatCard
-                    label='Pool Protocol'
-                    value={result.primaryDexName ?? 'Protocol not confirmed'}
-                    helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'}
-                    accent={result.primaryDexName ? '#67e8f9' : '#64748b'}
-                  />
-                </div>
-                </>
-              )}
-              {result.marketCapStatus !== 'verified' && (
-                <p style={{ marginTop: '-14px', marginBottom: '20px', color: '#94a3b8', fontSize: '12px' }}>
-                  Market cap unverified. FDV is shown separately.
-                </p>
-              )}
-
-              {/* Price Chart — chart ok */}
-              {result.chartStatus === 'ok' && result.priceChart && result.priceChart.points.length >= 2 && (
-                <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
-                    <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
-                  </div>
-                  <div style={{ display: 'inline-flex', marginBottom: '8px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
-                    {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : '7D'}
-                  </div>
-                  <MiniPriceChart points={result.priceChart.points} />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
-                    <span>{new Date(result.priceChart.points[0].timestamp).toLocaleTimeString()}</span>
-                    <span>Latest {fmtPrice(result.priceChart.points[result.priceChart.points.length - 1].priceUsd)}</span>
-                  </div>
-                </div>
-              )}
-              {/* Price Chart — candles unavailable but pool exists */}
-              {result.chartStatus === 'no_candles' && (
-                <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
-                    <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                  </div>
-                  <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not available for this pool. Current price and market data are still live.</p>
-                </div>
-              )}
-              {/* Price Chart — fallback snapshot only (no GT pool, market data from secondary source) */}
-              {result.chartStatus === 'fallback_snapshot_only' && (
-                <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '12px' }}>
-                    <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#2DD4BF', textTransform: 'uppercase' }}>Live Market Snapshot</p>
-                    <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)' }}>CORTEX MARKET READ</span>
-                  </div>
-                  <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical chart data is unavailable for this pool. Showing the latest live market snapshot instead.</p>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
-                    <StatCard label="Price" value={fmtPrice(result.price)} />
-                    <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} />
-                    <StatCard label="24H Volume" value={fmtLarge(result.volume24h)} />
-                    <StatCard
-                      label="24H Change"
-                      value={fmtPct(result.priceChange24h)}
-                      accent={result.priceChange24h != null ? (result.priceChange24h >= 0 ? '#34d399' : '#f87171') : undefined}
-                    />
-                    {result.poolActivity?.pairAgeLabel != null && (
-                      <StatCard label="Pair Age" value={result.poolActivity.pairAgeLabel} />
-                    )}
-                    {result.fdv != null && (
-                      <StatCard label="FDV" value={fmtLarge(result.fdv)} helper="Fully diluted valuation" />
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Pool Activity — only when primary GT pool data is available */}
-              {!result.noActivePools && result.marketDataSource !== 'fallback' && (
-                <div style={{ marginBottom: '28px' }}>
-                  <p style={{
-                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                    color: '#3a5268', textTransform: 'uppercase',
-                    marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
-                  }}>
-                    Pool Activity
-                  </p>
-                  <div className="activity-grid">
-                    <StatCard
-                      label="Transactions 24H"
-                      value={result.poolActivity?.transactions24h != null
-                        ? result.poolActivity.transactions24h.toLocaleString()
-                        : 'Activity unavailable'}
-                      helper="Primary pool activity"
-                    />
-                    <StatCard
-                      label="Buys / Sells"
-                      value={result.poolActivity?.buys24h != null && result.poolActivity?.sells24h != null
-                        ? `${result.poolActivity.buys24h.toLocaleString()} / ${result.poolActivity.sells24h.toLocaleString()}`
-                        : 'Buy/sell split unavailable'}
-                      helper="24h pool flow"
-                    />
-                    <StatCard
-                      label="Buy / Sell Vol"
-                      value={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null
-                        ? `${fmtLarge(result.poolActivity.buyVolume24hUsd)} / ${fmtLarge(result.poolActivity.sellVolume24hUsd)}`
-                        : result.poolActivity?.volume24hUsd != null ? `Total ${fmtLarge(result.poolActivity.volume24hUsd)}` : 'Volume unavailable'}
-                      helper={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null
-                        ? '24h buy/sell volume'
-                        : result.poolActivity?.volume24hUsd != null ? 'Buy/sell volume split not exposed' : '24h volume not exposed'}
-                    />
-                    <StatCard
-                      label="Pair Age"
-                      value={result.poolActivity?.pairAgeLabel ?? 'Pool age unavailable'}
-                      helper={result.poolActivity?.pairAgeLabel != null ? 'Primary pool created' : 'Creation time not exposed'}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {result.sections && (
-                <div style={{ marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
-                  {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]
-                    .filter((s): s is { status?: string; reason?: string; source?: string } => Boolean(s && s.status && s.status !== 'ok'))
-                    .map((s, i) => (
-                      <div key={i}>- {humanizeSectionLine(s.source, s.status, s.reason)}</div>
-                    ))}
-                </div>
-              )}
-              <div id="scan-section-security" style={{scrollMarginTop:'24px'}} />
-              {!isFullAccess && (
-                <div style={{marginTop:'24px',padding:'28px 24px',border:'1px solid rgba(139,92,246,0.28)',borderRadius:'16px',background:'rgba(139,92,246,0.06)',textAlign:'center'}}>
-                  <div style={{fontSize:'26px',marginBottom:'12px'}}>🔒</div>
-                  <p style={{fontWeight:700,color:'#f8fafc',margin:'0 0 8px',fontSize:'15px',fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Full Security Report</p>
-                  <p style={{color:'#94a3b8',fontSize:'13px',margin:'0 0 20px',lineHeight:1.5,fontFamily:'var(--font-inter,Inter,sans-serif)'}}>LP control, security simulation, and holder distribution are included in Pro and Elite plans.</p>
-                  <a href="/pricing" style={{display:'inline-block',padding:'10px 28px',borderRadius:'999px',background:'linear-gradient(135deg,#7c3aed,#a855f7)',color:'#fff',fontWeight:700,fontSize:'13px',textDecoration:'none',fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Get Access</a>
-                </div>
-              )}
-              {isFullAccess && result.lpControl && (() => {
-                const lp = result.lpControl
-                const read = result.lpControlRead
-                const statusColor: Record<string, string> = {
-                  burned: '#34d399', locked: '#34d399', team_controlled: '#f87171',
-                  unsupported: '#fbbf24', unverified: '#94a3b8', error: '#f87171',
-                }
-                const color = statusColor[lp.status ?? 'unverified'] ?? '#94a3b8'
-                const statusLabelMap: Record<string, string> = {
-                  burned: 'Burned',
-                  locked: 'Locked',
-                  team_controlled: 'Team controlled',
-                  unsupported: 'Protocol liquidity',
-                  unverified: 'Unverified',
-                  error: 'Unverified',
-                }
-                const evidence = Array.isArray(lp.evidence) ? lp.evidence : []
-                const verificationPool = evidenceValue(evidence, 'Verification pool') ?? read?.whatWasFound?.find((x) => /^Pair:/i.test(x))?.replace(/^Pair:\s*/i, '') ?? 'Unverified'
-                const evidenceText = evidence.join(' ').toLowerCase()
-                const fallbackChecked: string[] = []
-                if (lp.poolAddressPresent || evidenceText.includes('verification pool')) fallbackChecked.push('Pool detected')
-                if (verificationPool !== 'Unverified') fallbackChecked.push('Primary market selected')
-                fallbackChecked.push('Liquidity scan completed')
-                if (lp.status !== 'error' && lp.status !== 'unverified' ? true : lp.poolAddressPresent) fallbackChecked.push('Pool structure reviewed')
-                const checked = ((read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x)).length
-                  ? (read?.whatWasFound ?? []).filter((x) => !/^Pair:/i.test(x))
-                  : fallbackChecked).filter((v, i, arr) => arr.indexOf(v) === i)
-                const unresolved = (read?.couldNotVerify?.length ? read.couldNotVerify : [
-                  'Holder concentration unverified',
-                  'Contract ownership unverified',
-                  lp.status === 'unsupported' ? 'Protocol-specific LP proof' : 'LP lock or burn proof',
-                ])
-                const riskRead = read?.meaning ?? (
-                  lp.status === 'unsupported'
-                    ? 'Protocol liquidity detected — requires protocol-specific verification.'
-                    : lp.poolAddressPresent
-                      ? 'Liquidity exists, but LP lock/control could not be proven from current checks.'
-                      : 'No active liquidity pool found.'
-                )
-                const nextAction = read?.nextAction ?? 'Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.'
-                return (
-                  <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
-                    <button type="button" onClick={() => setLpExpanded((v) => !v)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '11px 14px', background: 'rgba(255,255,255,0.03)', border: 'none', borderBottom: lpExpanded ? '1px solid rgba(255,255,255,0.06)' : 'none', cursor: 'pointer', textAlign: 'left' }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0, boxShadow: `0 0 6px ${color}` }} />
-                      <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: '12px' }}>LP Control: {statusLabelMap[lp.status ?? 'unverified'] ?? 'Unverified'}</span>
-                      {read?.riskLevel && <span style={{ marginLeft: 'auto', fontSize: '10px', color: '#94a3b8', letterSpacing: '0.05em' }}>{read.riskLevel}</span>}
-                      <span style={{ fontSize: '10px', color: '#cbd5e1', letterSpacing: '0.06em' }}>Details {lpExpanded ? '▾' : '▸'}</span>
-                    </button>
-                    {lpExpanded && <div style={{ transition: 'all 160ms ease' }}>
-                      <div style={{ padding: '9px 14px', color: '#dbeafe', lineHeight: 1.55 }}><span style={{ color: '#f8fafc', fontWeight: 600 }}>Risk read:</span> {riskRead}</div>
-                      <div style={{ padding: '0 14px 8px' }}>
-                        <div style={{ fontSize: '10px', color: '#94a3b8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Verification pool</div>
-                        <div style={{ marginTop: '3px', color: '#f8fafc', fontWeight: 600 }}>{verificationPool}</div>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '8px', padding: '6px 12px 8px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                      <div style={{ padding: '8px 10px', border: '1px solid rgba(52,211,153,0.16)', borderRadius: '10px', background: 'rgba(15,23,42,0.36)' }}>
-                        <div style={{ fontSize: '10px', color: '#64748b', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>What was checked</div>
-                        {checked.map((f, i) => <div key={i} style={{ color: '#e2e8f0', display: 'flex', gap: '6px' }}><span style={{ color: '#34d399' }}>✓</span>{f}</div>)}
-                      </div>
-                      <div style={{ padding: '8px 10px', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '10px', background: 'rgba(245,158,11,0.08)' }}>
-                        <div style={{ fontSize: '10px', color: '#fbbf24', letterSpacing: '0.08em', marginBottom: '4px', textTransform: 'uppercase' }}>Unverified checks</div>
-                        <div style={{ fontSize: '11px', color: '#fde68a', marginBottom: '6px' }}>Some checks could not be confirmed from live CORTEX data. Treat this as incomplete, not safe.</div>
-                        {unresolved.map((f, i) => <div key={i} style={{ color: '#f8fafc', display: 'flex', gap: '6px' }}><span style={{ color: '#f59e0b' }}>✕</span>{f}</div>)}
-                      </div>
-                      </div>
-                      <div style={{ padding: '8px 14px 12px', borderTop: '1px solid rgba(255,255,255,0.05)', color: '#cbd5e1' }}><span style={{ color: '#94a3b8' }}>Next action:</span> {nextAction}</div>
-                    </div>}
-                  </div>
-                )
-              })()}
-
-              {/* Security Simulation */}
-              {isFullAccess && <ContractRiskSection
-                gp={result.goplus && result.contract
-                  ? (result.goplus[result.contract.toLowerCase()] ?? null)
-                  : null}
-                hp={result.honeypot ?? null}
-              />}
-
-
-              {/* Holder debug card — only rendered when API returns debugHolderStatus */}
-              {isFullAccess && result.debugHolderStatus && (() => {
-                const d = result.debugHolderStatus!
-                const rows: [string, string][] = [
-                  ['providerCalled',  String(d.providerCalled ?? '?')],
-                  ['chain',           d.chain ?? '?'],
-                  ['endpointPath',    d.endpointPath ?? '?'],
-                  ['authMode',        d.authMode ?? '?'],
-                  ['hasGoldrushKey',  String(d.hasGoldrushKey ?? '?')],
-                  ['hasCovalentKey',  String(d.hasCovalentKey ?? '?')],
-                  ['statusCode',      d.statusCode != null ? String(d.statusCode) : '—'],
-                  ['itemCount',       d.itemCount != null ? String(d.itemCount) : '—'],
-                  ['normalizedCount', d.normalizedCount != null ? String(d.normalizedCount) : '—'],
-                  ['reason',          d.reason ?? '—'],
-                  ['responseKeys',    d.responseKeys?.join(', ') ?? '—'],
-                  ['dataKeys',        d.dataKeys?.join(', ') ?? '—'],
-                  ['firstItemKeys',   d.firstItemKeys?.join(', ') ?? '—'],
+              {/* CORTEX Command Bar */}
+              {(() => {
+                const cmds: Array<{ id: typeof activeSection; label: string; dot: string }> = [
+                  { id: 'cortex-read',  label: 'CORTEX Read',  dot: '#2DD4BF' },
+                  { id: 'market-pulse', label: 'Market Pulse',  dot: '#67e8f9' },
+                  { id: 'holder-map',   label: 'Holder Map',    dot: '#a78bfa' },
+                  { id: 'lp-control',   label: 'LP Control',    dot: '#34d399' },
+                  { id: 'risk-checks',  label: 'Risk Checks',   dot: '#f87171' },
+                  { id: 'watch-plan',   label: 'Watch Plan',    dot: '#fbbf24' },
                 ]
                 return (
-                  <details style={{
-                    marginTop: '16px', marginBottom: '4px',
-                    background: 'rgba(251,191,36,0.04)',
-                    border: '1px solid rgba(251,191,36,0.18)',
-                    borderRadius: '8px', padding: '8px 12px',
-                    fontSize: '10px', fontFamily: 'var(--font-plex-mono)',
-                  }}>
-                    <summary style={{ cursor: 'pointer', color: '#fbbf24', letterSpacing: '0.10em', fontWeight: 700 }}>
-                      Holder Debug · HTTP {d.statusCode ?? '?'} · items:{d.itemCount ?? '?'} norm:{d.normalizedCount ?? '?'}
-                    </summary>
-                    <table style={{ marginTop: '8px', borderCollapse: 'collapse', width: '100%' }}>
-                      <tbody>
-                        {rows.map(([k, v]) => (
-                          <tr key={k}>
-                            <td style={{ paddingRight: '12px', color: '#78716c', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{k}</td>
-                            <td style={{ color: '#d97706', wordBreak: 'break-all' }}>{v}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </details>
+                  <div style={{ display: 'flex', gap: '3px', marginBottom: '22px', overflowX: 'auto', paddingBottom: '6px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    {cmds.map(s => {
+                      const active = activeSection === s.id
+                      return (
+                        <button key={s.id} onClick={() => setActiveSection(s.id)}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: '6px',
+                            padding: '6px 13px', borderRadius: '8px', cursor: 'pointer',
+                            whiteSpace: 'nowrap', flexShrink: 0,
+                            fontFamily: 'var(--font-plex-mono)', fontSize: '10px',
+                            fontWeight: active ? 800 : 600, letterSpacing: '0.11em',
+                            transition: 'all 0.14s',
+                            background: active ? `linear-gradient(135deg,${s.dot}16,rgba(139,92,246,0.10))` : 'transparent',
+                            border: active ? `1px solid ${s.dot}40` : '1px solid transparent',
+                            color: active ? s.dot : '#3a5268',
+                            boxShadow: active ? `0 0 14px ${s.dot}14` : 'none',
+                          }}
+                        >
+                          <span style={{ width: '5px', height: '5px', borderRadius: '50%', flexShrink: 0, background: active ? s.dot : '#1e3a44', boxShadow: active ? `0 0 6px ${s.dot}` : 'none' }} />
+                          {s.label}
+                        </button>
+                      )
+                    })}
+                  </div>
                 )
               })()}
 
-              <div id="scan-section-holders" style={{scrollMarginTop:'24px'}} />
-              {/* Holder analytics */}
-              {isFullAccess && (() => {
+              {/* ── CORTEX READ ───────────────────────────────────────── */}
+              {activeSection === 'cortex-read' && (() => {
+                const holderState = deriveHolderState(result)
+                const lpStatus = result.lpControl?.status
+                const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
+                const hpOk = result.honeypot?.simulationSuccess === true
+                const scoreChecks = [
+                  result.price != null || result.liquidity != null,
+                  (result.liquidity ?? 0) > 1000,
+                  hpOk,
+                  result.honeypot?.isHoneypot === false,
+                  holderState.kind === 'rowsWithPercent',
+                  result.marketCapUsd != null,
+                  lpVerified,
+                  !result.noActivePools,
+                ]
+                const score = Math.round((scoreChecks.filter(Boolean).length / scoreChecks.length) * 100)
+                const scoreColor = score >= 75 ? '#34d399' : score >= 50 ? '#fbbf24' : '#f87171'
+                return (
+                  <>
+                    <div style={{ marginBottom: '16px', padding: '12px 16px', background: 'linear-gradient(135deg,rgba(8,16,32,.88),rgba(4,8,18,.86))', border: `1px solid ${scoreColor}22`, borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                      <div style={{ flexShrink: 0 }}>
+                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>CORTEX VERIFICATION SCORE</div>
+                        <div style={{ fontSize: '24px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{score}<span style={{ fontSize: '13px', color: `${scoreColor}80`, marginLeft: '2px' }}>/100</span></div>
+                      </div>
+                      <div style={{ flex: 1, minWidth: '120px' }}>
+                        <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: '5px' }}>
+                          <div style={{ height: '100%', width: `${score}%`, borderRadius: '999px', background: `linear-gradient(90deg,${scoreColor},${scoreColor}88)`, transition: 'width 0.6s ease' }} />
+                        </div>
+                        <div style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{scoreChecks.filter(Boolean).length} of {scoreChecks.length} checks passed</div>
+                      </div>
+                    </div>
+                    <CortexSummaryCard result={result} />
+                    {result.sections && (
+                      <div style={{ marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
+                        {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]
+                          .filter((s): s is { status?: string; reason?: string; source?: string } => Boolean(s && s.status && s.status !== 'ok'))
+                          .map((s, i) => <div key={i}>- {humanizeSectionLine(s.source, s.status, s.reason)}</div>)}
+                      </div>
+                    )}
+                    {!isFullAccess && (
+                      <div style={{ marginTop: '24px', padding: '28px 24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '26px', marginBottom: '12px' }}>🔒</div>
+                        <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 8px', fontSize: '15px' }}>Full Security Report</p>
+                        <p style={{ color: '#94a3b8', fontSize: '13px', margin: '0 0 20px', lineHeight: 1.5 }}>LP control, security simulation, and holder distribution are included in Pro and Elite plans.</p>
+                        <a href="/pricing" style={{ display: 'inline-block', padding: '10px 28px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '13px', textDecoration: 'none' }}>Get Access</a>
+                      </div>
+                    )}
+                  </>
+                )
+              })()}
+
+              {/* ── MARKET PULSE ──────────────────────────────────────── */}
+              {activeSection === 'market-pulse' && (
+                <>
+                  <div style={{ marginBottom: '18px' }}>
+                    <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Live price, liquidity, volume and pool data for this token.</p>
+                  </div>
+                  {result.noActivePools ? (
+                    <div style={{ padding: '20px 22px', marginBottom: '28px', background: 'rgba(245,158,11,0.04)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '12px', fontFamily: 'var(--font-plex-mono)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
+                        <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: '#fbbf24', textTransform: 'uppercase' }}>No Active Pool Found</span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>No liquidity pools were found for this contract on Base. Price, volume, and liquidity data are unavailable.</p>
+                    </div>
+                  ) : (
+                    <>
+                      {result.marketDataSource === 'fallback' && (
+                        <div style={{ padding: '8px 14px', marginBottom: '12px', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.2)', borderRadius: '8px', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', flexShrink: 0 }} />
+                          <span style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 700, letterSpacing: '0.08em' }}>CORTEX MARKET READ</span>
+                          <span style={{ fontSize: '10px', color: '#475569' }}>Primary pool data unavailable — showing fallback market data. FDV is not market cap.</span>
+                        </div>
+                      )}
+                      <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px', marginBottom: '28px' }}>
+                        <StatCard label="Price" value={fmtPrice(result.price)} accent="#2DD4BF" helper={result.marketDataSource === 'fallback' ? 'Market read' : 'Primary pool'} />
+                        <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} helper="Pool depth" />
+                        <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} helper="24h trading activity" />
+                        <StatCard label="24h Change" value={fmtPct(result.priceChange24h)} accent={pctColor(result.priceChange24h)} helper="Price movement" />
+                        {(() => {
+                          const val = result.valuationContext
+                          const fdvOnly = val?.primaryValuationStatus === 'fdv_only' && val?.primaryValuationUsd != null
+                          return (
+                            <StatCard
+                              label={fdvOnly ? 'Valuation' : 'Market Cap'}
+                              value={val?.primaryValuationStatus === 'verified_mc' ? fmtLarge(val.primaryValuationUsd) : fdvOnly ? `FDV ${fmtLarge(val.primaryValuationUsd)}` : 'Supply not confirmed'}
+                              helper={val?.primaryValuationStatus === 'verified_mc' ? 'Verified live market data' : fdvOnly ? 'Market cap not verified live' : 'Live valuation not verified'}
+                              accent="#a78bfa"
+                            />
+                          )
+                        })()}
+                        <StatCard label="FDV" value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'} helper="Fully Diluted Valuation" accent="#a78bfa" />
+                        <StatCard label="Pool Protocol" value={result.primaryDexName ?? 'Protocol not confirmed'} helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'} accent={result.primaryDexName ? '#67e8f9' : '#64748b'} />
+                      </div>
+                    </>
+                  )}
+                  {result.marketCapStatus !== 'verified' && !result.noActivePools && (
+                    <p style={{ marginTop: '-14px', marginBottom: '16px', color: '#94a3b8', fontSize: '12px' }}>Market cap unverified. FDV is shown separately.</p>
+                  )}
+                  {result.fdvUsd != null && result.marketCapUsd != null && result.marketCapUsd !== result.fdvUsd && (
+                    <div style={{ marginBottom: '16px', padding: '10px 14px', background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)', borderRadius: '10px', fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
+                      <span style={{ color: '#a78bfa', fontWeight: 700 }}>MC vs FDV: </span>
+                      {`Market cap ${fmtLarge(result.marketCapUsd)} reflects circulating supply. FDV ${fmtLarge(result.fdvUsd)} covers all tokens including locked and unvested. ${result.marketCapUsd / result.fdvUsd < 0.7 ? 'Significant unlock pressure possible.' : 'Low unlock pressure from current ratio.'}`}
+                    </div>
+                  )}
+                  {result.chartStatus === 'ok' && result.priceChart && result.priceChart.points.length >= 2 && (
+                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
+                        <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
+                      </div>
+                      <div style={{ display: 'inline-flex', marginBottom: '8px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
+                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : '7D'}
+                      </div>
+                      <MiniPriceChart points={result.priceChart.points} />
+                    </div>
+                  )}
+                  {result.chartStatus === 'no_candles' && (
+                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                      <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not available for this pool. Current price and market data are still live.</p>
+                    </div>
+                  )}
+                  {result.chartStatus === 'fallback_snapshot_only' && (
+                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '12px' }}>
+                        <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#2DD4BF', textTransform: 'uppercase' }}>Live Market Snapshot</p>
+                        <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)' }}>CORTEX MARKET READ</span>
+                      </div>
+                      <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical chart data is unavailable for this pool. Showing the latest live market snapshot instead.</p>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '10px' }}>
+                        <StatCard label="Price" value={fmtPrice(result.price)} />
+                        <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} />
+                        <StatCard label="24H Volume" value={fmtLarge(result.volume24h)} />
+                        <StatCard label="24H Change" value={fmtPct(result.priceChange24h)} accent={result.priceChange24h != null ? (result.priceChange24h >= 0 ? '#34d399' : '#f87171') : undefined} />
+                        {result.poolActivity?.pairAgeLabel != null && <StatCard label="Pair Age" value={result.poolActivity.pairAgeLabel} />}
+                        {result.fdv != null && <StatCard label="FDV" value={fmtLarge(result.fdv)} helper="Fully diluted valuation" />}
+                      </div>
+                    </div>
+                  )}
+                  {!result.noActivePools && result.marketDataSource !== 'fallback' && (
+                    <div style={{ marginBottom: '28px' }}>
+                      <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>
+                      <div className="activity-grid">
+                        <StatCard label="Transactions 24H" value={result.poolActivity?.transactions24h != null ? result.poolActivity.transactions24h.toLocaleString() : 'Activity unavailable'} helper="Primary pool activity" />
+                        <StatCard label="Buys / Sells" value={result.poolActivity?.buys24h != null && result.poolActivity?.sells24h != null ? `${result.poolActivity.buys24h.toLocaleString()} / ${result.poolActivity.sells24h.toLocaleString()}` : 'Buy/sell split unavailable'} helper="24h pool flow" />
+                        <StatCard label="Buy / Sell Vol" value={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null ? `${fmtLarge(result.poolActivity.buyVolume24hUsd)} / ${fmtLarge(result.poolActivity.sellVolume24hUsd)}` : result.poolActivity?.volume24hUsd != null ? `Total ${fmtLarge(result.poolActivity.volume24hUsd)}` : 'Volume unavailable'} helper={result.poolActivity?.buyVolume24hUsd != null && result.poolActivity?.sellVolume24hUsd != null ? '24h buy/sell volume' : result.poolActivity?.volume24hUsd != null ? 'Buy/sell volume split not exposed' : '24h volume not exposed'} />
+                        <StatCard label="Pair Age" value={result.poolActivity?.pairAgeLabel ?? 'Pool age unavailable'} helper={result.poolActivity?.pairAgeLabel != null ? 'Primary pool created' : 'Creation time not exposed'} />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* ── HOLDER MAP ────────────────────────────────────────── */}
+              {activeSection === 'holder-map' && (() => {
                 const holderState = deriveHolderState(result)
                 const fallback = deriveHolderFallbackEvidence(result)
-
-                if (holderState.kind !== 'noRowsFallback') {
-                  const top10h = result.holderDistribution?.top10
-                  const concRisk = top10h != null ? (top10h > 50 ? 'HIGH' : top10h > 30 ? 'MEDIUM' : 'LOW') : null
-                  const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
-                  const concRead = holderState.kind === 'rowsWithPercent' && concRisk != null
-                    ? concRisk === 'HIGH' ? 'High concentration — top holders control majority supply.' : concRisk === 'MEDIUM' ? 'Moderate concentration — watch for coordinated movement.' : 'Spread looks reasonable — no extreme concentration flagged.'
-                    : null
-                  return (
-                    <div className="holders-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
-                      <div className="glass-card" style={{padding:'18px'}}>
-                        <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px',flexWrap:'wrap'}}>
-                          <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
-                          <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:`1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.5)' : 'rgba(251,191,36,.4)'}`,color:holderState.kind === 'rowsWithPercent' ? '#2dd4bf' : '#fbbf24',background:holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)'}}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
-                          {concRisk != null && <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:`1px solid ${concColor}44`,color:concColor,background:`${concColor}10`}}>{concRisk} CONC</span>}
-                        </div>
-                        {result.holderDistribution?.holderCount != null && <div style={{margin:'0 0 12px',fontSize:'13px',color:'#67e8f9',border:'1px solid rgba(45,212,191,.3)',background:'rgba(6,78,59,.16)',padding:'8px 10px',borderRadius:'10px',display:'inline-flex',gap:'8px'}}><span style={{color:'#99f6e4'}}>Holder count</span><strong style={{fontFamily:'var(--font-plex-mono)',color:'#e6fffa'}}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
-                        {holderState.kind === 'rowsWithoutPercent' && (
-                          <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets found, but supply percentages were not available for this scan.</p>
-                        )}
-                        <div style={{display:'grid',gap:'10px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'82px 1fr 64px',alignItems:'center',gap:'10px'}}><span style={{fontSize:'12px',color:'#d6e6f3',fontWeight:700}}>{l}</span><div style={{height:'12px',borderRadius:'999px',background:'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))',border:'1px solid rgba(148,163,184,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#2dd4bf,#a855f7)',boxShadow:'0 0 14px rgba(45,212,191,.28)'}} /></div><span style={{fontSize:'13px',fontWeight:800,color:'#eef6ff',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
-                        {concRead && <p style={{margin:'10px 0 0',fontSize:'11px',color:concColor,lineHeight:1.5}}>{concRead}</p>}
-                        <p style={{margin:'8px 0 0',fontSize:'11px',color:'#8aa3b8'}}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
+                return (
+                  <>
+                    <div style={{ marginBottom: '18px' }}>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Top holder distribution and supply concentration analysis.</p>
+                    </div>
+                    {!isFullAccess && (
+                      <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
+                        <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
+                        <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', fontSize: '14px' }}>Holder Distribution</p>
+                        <p style={{ color: '#94a3b8', fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>Holder analytics are included in Pro and Elite.</p>
+                        <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
                       </div>
-                      <div className="glass-card" style={{padding:'18px',minWidth:0,overflow:'hidden'}}>
-                        <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',marginBottom:'4px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
-                        <p style={{margin:'0 0 10px',fontSize:'11px',color:'#8aa3b8'}}>Top 10 holders</p>
-                        <div className="top-holder-head" style={{display:'grid',gridTemplateColumns:'36px minmax(0,1fr) 88px 62px',gap:'10px',fontSize:'10px',letterSpacing:'0.10em',color:'#6a8198',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>
-                          <span>#</span><span>WALLET</span><span style={{textAlign:'right'}}>AMOUNT</span><span style={{textAlign:'right'}}>%</span>
+                    )}
+                    {isFullAccess && result.debugHolderStatus && (() => {
+                      const d = result.debugHolderStatus!
+                      return (
+                        <details style={{ marginBottom: '12px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '8px', padding: '8px 12px', fontSize: '10px', fontFamily: 'var(--font-plex-mono)' }}>
+                          <summary style={{ cursor: 'pointer', color: '#fbbf24', letterSpacing: '0.10em', fontWeight: 700 }}>
+                            Holder Debug · HTTP {d.statusCode ?? '?'} · items:{d.itemCount ?? '?'} norm:{d.normalizedCount ?? '?'}
+                          </summary>
+                          <table style={{ marginTop: '8px', borderCollapse: 'collapse', width: '100%' }}><tbody>
+                            {([['providerCalled',String(d.providerCalled??'?')],['chain',d.chain??'?'],['statusCode',d.statusCode!=null?String(d.statusCode):'—'],['itemCount',d.itemCount!=null?String(d.itemCount):'—'],['normalizedCount',d.normalizedCount!=null?String(d.normalizedCount):'—'],['reason',d.reason??'—']] as [string,string][]).map(([k,v])=>(
+                              <tr key={k}><td style={{paddingRight:'12px',color:'#78716c',whiteSpace:'nowrap'}}>{k}</td><td style={{color:'#d97706',wordBreak:'break-all'}}>{v}</td></tr>
+                            ))}
+                          </tbody></table>
+                        </details>
+                      )
+                    })()}
+                    {isFullAccess && (() => {
+                      if (holderState.kind !== 'noRowsFallback') {
+                        const top10h = result.holderDistribution?.top10
+                        const concRisk = top10h != null ? (top10h > 50 ? 'HIGH' : top10h > 30 ? 'MEDIUM' : 'LOW') : null
+                        const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
+                        const concRead = holderState.kind === 'rowsWithPercent' && concRisk != null
+                          ? concRisk === 'HIGH' ? 'High concentration — top holders control majority supply.' : concRisk === 'MEDIUM' ? 'Moderate concentration — watch for coordinated movement.' : 'Spread looks reasonable — no extreme concentration flagged.'
+                          : null
+                        return (
+                          <div className="holders-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                            <div className="glass-card" style={{ padding: '18px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                                <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
+                                <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.5)' : 'rgba(251,191,36,.4)'}`, color: holderState.kind === 'rowsWithPercent' ? '#2dd4bf' : '#fbbf24', background: holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)' }}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
+                                {concRisk != null && <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${concColor}44`, color: concColor, background: `${concColor}10` }}>{concRisk} CONC</span>}
+                              </div>
+                              {result.holderDistribution?.holderCount != null && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
+                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>Top holder wallets found, but supply percentages were not available for this scan.</p>}
+                              <div style={{ display: 'grid', gap: '10px' }}>
+                                {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
+                                  <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 64px', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontSize: '12px', color: '#d6e6f3', fontWeight: 700 }}>{l}</span>
+                                    <div style={{ height: '12px', borderRadius: '999px', background: 'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))', border: '1px solid rgba(148,163,184,.25)' }}><div style={{ height: '100%', width: `${v==null?0:Math.max(0,Math.min(100,Number(v)))}%`, borderRadius: '999px', background: 'linear-gradient(90deg,#2dd4bf,#a855f7)', boxShadow: '0 0 14px rgba(45,212,191,.28)' }} /></div>
+                                    <span style={{ fontSize: '13px', fontWeight: 800, color: '#eef6ff', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{v==null?'N/A':`${Number(v).toFixed(1)}%`}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              {concRead && <p style={{ margin: '10px 0 0', fontSize: '11px', color: concColor, lineHeight: 1.5 }}>{concRead}</p>}
+                              <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#8aa3b8' }}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
+                            </div>
+                            <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden' }}>
+                              <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP HOLDERS</p>
+                              <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#8aa3b8' }}>Top 10 holders</p>
+                              <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#6a8198', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>WALLET</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span></div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto', paddingRight: '3px' }}>
+                                {holderState.rows.slice(0,20).map((h)=>(
+                                  <div className="top-holder-row" key={h.rank+h.address} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px', gap: '10px', alignItems: 'center', padding: '10px', border: '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: 'rgba(15,23,42,.45)' }}>
+                                    <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: h.rank<=3?'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))':'transparent', border: h.rank<=3?'1px solid rgba(167,139,250,.45)':'none' }}>{h.rank}</span>
+                                    <span className="top-holder-mobile-meta" style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shorten(h.address)}<span style={{ display: 'none', fontSize: '12px', fontWeight: 800, color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span></span>
+                                    <span className="top-holder-mobile-amt" style={{ fontSize: '12px', color: '#e5eef9', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{fmtTokenAmt(h.amount,result.decimals??18)}</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'right', fontFamily: 'var(--font-plex-mono)', color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      }
+                      const fb = buildHolderFallbackRead(fallback)
+                      const lpS = result.lpControl?.status
+                      const lpV = lpS === 'locked' || lpS === 'burned'
+                      const hpV = result.honeypot?.simulationSuccess === true
+                      const evItems: Array<{label:string;value:string;ok:boolean}> = [
+                        { label: 'Market data',         value: result.price!=null?'Available':'Unavailable',                   ok: result.price!=null },
+                        { label: 'Liquidity depth',     value: fallback.liquidityDepth!=null?fmtLarge(fallback.liquidityDepth):'Unverified', ok: fallback.liquidityDepth!=null },
+                        { label: 'Pool count',          value: fallback.poolCount>0?String(fallback.poolCount):'Unverified',    ok: fallback.poolCount>0 },
+                        { label: 'LP control',          value: lpV?'Verified':'Unverified',                                   ok: lpV },
+                        { label: 'Owner status',        value: fallback.ownerStatus,                                           ok: fallback.ownerStatus==='Renounced' },
+                        { label: 'Security simulation', value: hpV?'Verified':'Unverified',                                   ok: hpV },
+                      ]
+                      return (
+                        <div style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(12,10,4,.72),rgba(4,8,18,.88))', border: '1px solid rgba(251,191,36,.22)', borderRadius: '14px', padding: '18px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                            <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
+                            <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(251,191,36,.4)', color: '#fbbf24', background: 'rgba(251,191,36,.08)' }}>UNVERIFIED</span>
+                          </div>
+                          <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#fde68a', lineHeight: 1.5 }}>Holder distribution was not returned in this scan. Supply concentration remains an open risk check.</p>
+                          <div className="intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '8px', marginBottom: '14px' }}>
+                            {evItems.map(({label,value,ok})=>(
+                              <div key={label} style={{ padding: '9px 10px', borderRadius: '10px', background: 'rgba(15,23,42,0.42)', border: `1px solid ${ok?'rgba(52,211,153,.22)':value==='Unverified'?'rgba(251,191,36,.22)':'rgba(248,113,113,.22)'}` }}>
+                                <div style={{ fontSize: '9px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
+                                <div style={{ fontSize: '11px', fontWeight: 700, color: ok?'#34d399':value==='Unverified'?'#fbbf24':'#f87171', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(15,23,42,.5)', border: '1px solid rgba(125,211,252,.15)', marginBottom: '10px' }}>
+                            <div style={{ fontSize: '9px', letterSpacing: '.1em', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>CORTEX READ</div>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#b7c9da', lineHeight: 1.6 }}>{fb.read}</p>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Rescan later and monitor holder distribution before trusting supply spread.</p>
                         </div>
-                        <div style={{display:'flex',flexDirection:'column',gap:'8px',maxHeight:'320px',overflowY:'auto',paddingRight:'3px'}}>
-                          {holderState.rows.slice(0,20).map((h) => (
-                            <div className="top-holder-row" key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'36px minmax(0,1fr) 88px 62px',gap:'10px',alignItems:'center',padding:'10px 10px',border:'1px solid rgba(148,163,184,.18)',borderRadius:'10px',background:'rgba(15,23,42,.45)',transition:'all .16s'}}>
-                              <span style={{fontSize:'11px',color:'#dbeafe',fontFamily:'var(--font-plex-mono)',fontWeight:700,display:'inline-flex',justifyContent:'center',padding:'2px 0',borderRadius:'999px',background:h.rank<=3?'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))':'transparent',border:h.rank<=3?'1px solid rgba(167,139,250,.45)':'none'}}>{h.rank}</span>
-                              <span className="top-holder-mobile-meta" style={{fontSize:'12px',color:'#c5d8ea',fontFamily:'var(--font-plex-mono)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{shorten(h.address)}<span style={{display:'none',fontSize:'12px',fontWeight:800,color: h.percent != null && h.percent >= 10 ? '#fb7185' : h.percent != null && h.percent >= 5 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span></span>
-                              <span className="top-holder-mobile-amt" style={{fontSize:'12px',color:'#e5eef9',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{fmtTokenAmt(h.amount, result.decimals ?? 18)}</span>
-                              <span style={{fontSize:'12px',fontWeight:800,textAlign:'right',fontFamily:'var(--font-plex-mono)',color: h.percent != null && h.percent >= 10 ? '#fb7185' : h.percent != null && h.percent >= 5 ? '#fbbf24' : '#67e8f9'}}>{h.percent == null ? '—' : `${h.percent.toFixed(2)}%`}</span>
+                      )
+                    })()}
+                  </>
+                )
+              })()}
+
+              {/* ── LP CONTROL ────────────────────────────────────────── */}
+              {activeSection === 'lp-control' && (
+                <>
+                  <div style={{ marginBottom: '18px' }}>
+                    <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP CONTROL</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, primary pool, and pool board.</p>
+                  </div>
+                  {!isFullAccess && (
+                    <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center', marginBottom: '18px' }}>
+                      <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
+                      <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', fontSize: '14px' }}>LP Control Analysis</p>
+                      <p style={{ color: '#94a3b8', fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>LP control checks are included in Pro and Elite.</p>
+                      <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
+                    </div>
+                  )}
+                  {isFullAccess && result.lpControl && (() => {
+                    const lp = result.lpControl
+                    const read = result.lpControlRead
+                    const statusColor: Record<string,string> = { burned:'#34d399',locked:'#34d399',team_controlled:'#f87171',unsupported:'#fbbf24',unverified:'#94a3b8',error:'#f87171' }
+                    const color = statusColor[lp.status??'unverified']??'#94a3b8'
+                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',team_controlled:'Team controlled',unsupported:'Protocol liquidity',unverified:'Unverified',error:'Unverified' }
+                    const evidence = Array.isArray(lp.evidence)?lp.evidence:[]
+                    const verificationPool = evidenceValue(evidence,'Verification pool')??read?.whatWasFound?.find((x)=>/^Pair:/i.test(x))?.replace(/^Pair:\s*/i,'')??'Unverified'
+                    const evidenceText = evidence.join(' ').toLowerCase()
+                    const fallbackChecked: string[] = []
+                    if (lp.poolAddressPresent||evidenceText.includes('verification pool')) fallbackChecked.push('Pool detected')
+                    if (verificationPool!=='Unverified') fallbackChecked.push('Primary market selected')
+                    fallbackChecked.push('Liquidity scan completed')
+                    if (lp.status!=='error'&&lp.status!=='unverified'?true:lp.poolAddressPresent) fallbackChecked.push('Pool structure reviewed')
+                    const checked = ((read?.whatWasFound??[]).filter((x)=>!/^Pair:/i.test(x)).length?(read?.whatWasFound??[]).filter((x)=>!/^Pair:/i.test(x)):fallbackChecked).filter((v,i,arr)=>arr.indexOf(v)===i)
+                    const unresolved = read?.couldNotVerify?.length?read.couldNotVerify:['Holder concentration unverified','Contract ownership unverified',lp.status==='unsupported'?'Protocol-specific LP proof':'LP lock or burn proof']
+                    const riskRead = read?.meaning??(lp.status==='unsupported'?'Protocol liquidity detected — requires protocol-specific verification.':lp.poolAddressPresent?'Liquidity exists, but LP lock/control could not be proven from current checks.':'No active liquidity pool found.')
+                    const nextAction = read?.nextAction??'Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.'
+                    return (
+                      <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg,rgba(15,23,42,0.72),rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
+                        <button type="button" onClick={()=>setLpExpanded((v)=>!v)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '11px 14px', background: 'rgba(255,255,255,0.03)', border: 'none', borderBottom: lpExpanded?'1px solid rgba(255,255,255,0.06)':'none', cursor: 'pointer', textAlign: 'left' }}>
+                          <span style={{ width:7,height:7,borderRadius:'50%',background:color,flexShrink:0,boxShadow:`0 0 6px ${color}` }} />
+                          <span style={{ fontWeight:700,color:'#f8fafc',fontSize:'12px' }}>LP Control: {statusLabelMap[lp.status??'unverified']??'Unverified'}</span>
+                          {read?.riskLevel&&<span style={{ marginLeft:'auto',fontSize:'10px',color:'#94a3b8',letterSpacing:'0.05em' }}>{read.riskLevel}</span>}
+                          <span style={{ fontSize:'10px',color:'#cbd5e1',letterSpacing:'0.06em' }}>Details {lpExpanded?'▾':'▸'}</span>
+                        </button>
+                        {lpExpanded&&(
+                          <div style={{ transition:'all 160ms ease' }}>
+                            <div style={{ padding:'9px 14px',color:'#dbeafe',lineHeight:1.55 }}><span style={{ color:'#f8fafc',fontWeight:600 }}>Risk read:</span> {riskRead}</div>
+                            <div style={{ padding:'0 14px 8px' }}>
+                              <div style={{ fontSize:'10px',color:'#94a3b8',letterSpacing:'0.08em',textTransform:'uppercase' }}>Verification pool</div>
+                              <div style={{ marginTop:'3px',color:'#f8fafc',fontWeight:600 }}>{verificationPool}</div>
+                            </div>
+                            <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:'8px',padding:'6px 12px 8px',borderTop:'1px solid rgba(255,255,255,0.05)' }}>
+                              <div style={{ padding:'8px 10px',border:'1px solid rgba(52,211,153,0.16)',borderRadius:'10px',background:'rgba(15,23,42,0.36)' }}>
+                                <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>What was checked</div>
+                                {checked.map((f,i)=><div key={i} style={{ color:'#e2e8f0',display:'flex',gap:'6px' }}><span style={{ color:'#34d399' }}>✓</span>{f}</div>)}
+                              </div>
+                              <div style={{ padding:'8px 10px',border:'1px solid rgba(245,158,11,0.2)',borderRadius:'10px',background:'rgba(245,158,11,0.08)' }}>
+                                <div style={{ fontSize:'10px',color:'#fbbf24',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Unverified checks</div>
+                                <div style={{ fontSize:'11px',color:'#fde68a',marginBottom:'6px' }}>Treat as incomplete, not safe.</div>
+                                {unresolved.map((f,i)=><div key={i} style={{ color:'#f8fafc',display:'flex',gap:'6px' }}><span style={{ color:'#f59e0b' }}>✕</span>{f}</div>)}
+                              </div>
+                            </div>
+                            <div style={{ padding:'8px 14px 12px',borderTop:'1px solid rgba(255,255,255,0.05)',color:'#cbd5e1' }}><span style={{ color:'#94a3b8' }}>Next action:</span> {nextAction}</div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+                  {isFullAccess && !result.lpControl && (
+                    <div style={{ padding:'14px 18px',marginBottom:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>LP control data was not returned in this scan.</div>
+                  )}
+                  {result.pools && result.pools.length > 0 && (
+                    <>
+                      <div style={{ display:'flex',alignItems:'baseline',gap:'10px',marginBottom:'10px',flexWrap:'wrap' }}>
+                        <p style={{ fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',textTransform:'uppercase',margin:0,fontFamily:'var(--font-plex-mono)' }}>LIQUIDITY &amp; POOLS</p>
+                        <div style={{ display:'inline-flex',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)' }}>{result.pools.length} {result.pools.length===1?'POOL':'POOLS'}</div>
+                        <span style={{ fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Primary pool selected by liquidity.</span>
+                      </div>
+                      <div className="pools-scroll" style={{ overflowX:'auto',paddingBottom:'6px',maxWidth:'100%' }}>
+                        <div className="pools-inner" style={{ display:'flex',flexDirection:'column',gap:'6px',minWidth:'940px' }}>
+                          {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool,i)=>(
+                            <div key={i} style={{ display:'grid',gridTemplateColumns:'minmax(220px,1.2fr) repeat(6,minmax(82px,auto))',alignItems:'center',gap:'20px',padding:'12px 18px',background:i===0?'linear-gradient(90deg,rgba(45,212,191,0.06),rgba(167,139,250,0.04))':'rgba(255,255,255,0.025)',border:i===0?'1px solid rgba(45,212,191,0.22)':'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',fontFamily:'var(--font-plex-mono)' }}>
+                              <span style={{ color:i===0?'#2DD4BF':'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:'7px' }}>
+                                {i===0&&<span style={{ fontSize:'9px',fontWeight:700,letterSpacing:'.10em',padding:'1px 6px',borderRadius:'999px',border:'1px solid rgba(45,212,191,.35)',color:'#2DD4BF',background:'rgba(45,212,191,.08)',flexShrink:0 }}>PRIMARY</span>}
+                                {pool.name??shorten(pool.address??'')}
+                              </span>
+                              <span style={{ color:'#2DD4BF',whiteSpace:'nowrap' }}>{fmtPrice(pool.price)}</span>
+                              <span style={{ color:'#4a6272',whiteSpace:'nowrap' }}>Liq {fmtLarge(pool.liquidity)}</span>
+                              <span style={{ color:'#4a6272',whiteSpace:'nowrap' }}>Vol {fmtLarge(pool.volume24h)}</span>
+                              <span style={{ color:'#64748b',whiteSpace:'nowrap' }}>APR N/A</span>
+                              <span style={{ color:pctColor(pool.priceChange24h),whiteSpace:'nowrap' }}>{fmtPct(pool.priceChange24h)}</span>
+                              <span style={{ whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24' }}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
                             </div>
                           ))}
                         </div>
                       </div>
-                    </div>
-                  )
-                }
+                    </>
+                  )}
+                  {(!result.pools||result.pools.length===0)&&(
+                    <div style={{ padding:'14px 18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>No pools found for this token.</div>
+                  )}
+                </>
+              )}
 
-                // State 3: noRowsFallback — always renders (IIFE return bug fixed)
-                const fb = buildHolderFallbackRead(fallback)
-                const lpStatus = result.lpControl?.status
-                const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
-                const hpVerified = result.honeypot?.simulationSuccess === true
-                const evidenceItems: Array<{label:string;value:string;ok:boolean}> = [
-                  { label: 'Market data',         value: result.price != null ? 'Available' : 'Unavailable',              ok: result.price != null },
-                  { label: 'Liquidity depth',     value: fallback.liquidityDepth != null ? fmtLarge(fallback.liquidityDepth) : 'Unverified', ok: fallback.liquidityDepth != null },
-                  { label: 'Pool count',          value: fallback.poolCount > 0 ? String(fallback.poolCount) : 'Unverified', ok: fallback.poolCount > 0 },
-                  { label: 'LP control',          value: lpVerified ? 'Verified' : 'Unverified',                          ok: lpVerified },
-                  { label: 'Owner status',        value: fallback.ownerStatus,                                             ok: fallback.ownerStatus === 'Renounced' },
-                  { label: 'Security simulation', value: hpVerified ? 'Verified' : 'Unverified',                          ok: hpVerified },
-                ]
-                return (
-                  <div style={{marginTop:'24px',marginBottom:'20px',background:'linear-gradient(160deg,rgba(12,10,4,.72),rgba(4,8,18,.88))',border:'1px solid rgba(251,191,36,.22)',borderRadius:'14px',padding:'18px'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px',flexWrap:'wrap'}}>
-                      <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
-                      <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(251,191,36,.4)',color:'#fbbf24',background:'rgba(251,191,36,.08)'}}>UNVERIFIED</span>
-                    </div>
-                    <p style={{margin:'0 0 12px',fontSize:'12px',color:'#fde68a',lineHeight:1.5}}>Holder distribution was not returned in this scan. Supply concentration remains an open risk check.</p>
-                    <div className="intel-grid" style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'14px'}}>
-                      {evidenceItems.map(({label,value,ok}) => (
-                        <div key={label} style={{padding:'9px 10px',borderRadius:'10px',background:'rgba(15,23,42,0.42)',border:`1px solid ${ok ? 'rgba(52,211,153,.22)' : value === 'Unverified' ? 'rgba(251,191,36,.22)' : 'rgba(248,113,113,.22)'}`}}>
-                          <div style={{fontSize:'9px',color:'#64748b',fontFamily:'var(--font-plex-mono)',marginBottom:'3px'}}>{label}</div>
-                          <div style={{fontSize:'11px',fontWeight:700,color:ok ? '#34d399' : value === 'Unverified' ? '#fbbf24' : '#f87171',fontFamily:'var(--font-plex-mono)'}}>{value}</div>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{padding:'10px 12px',borderRadius:'10px',background:'rgba(15,23,42,.5)',border:'1px solid rgba(125,211,252,.15)',marginBottom:'10px'}}>
-                      <div style={{fontSize:'9px',letterSpacing:'.1em',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)',marginBottom:'5px'}}>CORTEX READ</div>
-                      <p style={{margin:0,fontSize:'11px',color:'#b7c9da',lineHeight:1.6}}>{fb.read}</p>
-                    </div>
-                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)'}}>Rescan later and monitor holder distribution before trusting supply spread.</p>
+              {/* ── RISK CHECKS ───────────────────────────────────────── */}
+              {activeSection === 'risk-checks' && (
+                <>
+                  <div style={{ marginBottom: '18px' }}>
+                    <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#f87171',fontFamily:'var(--font-plex-mono)' }}>RISK CHECKS</p>
+                    <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Security simulation, contract flags, and ownership checks.</p>
                   </div>
+                  {!isFullAccess && (
+                    <div style={{ padding:'24px',border:'1px solid rgba(139,92,246,0.28)',borderRadius:'16px',background:'rgba(139,92,246,0.06)',textAlign:'center' }}>
+                      <div style={{ fontSize:'22px',marginBottom:'10px' }}>🔒</div>
+                      <p style={{ fontWeight:700,color:'#f8fafc',margin:'0 0 6px',fontSize:'14px' }}>Full Risk Analysis</p>
+                      <p style={{ color:'#94a3b8',fontSize:'12px',margin:'0 0 16px',lineHeight:1.5 }}>Security checks are included in Pro and Elite.</p>
+                      <a href="/pricing" style={{ display:'inline-block',padding:'8px 20px',borderRadius:'999px',background:'linear-gradient(135deg,#7c3aed,#a855f7)',color:'#fff',fontWeight:700,fontSize:'12px',textDecoration:'none' }}>Get Access</a>
+                    </div>
+                  )}
+                  {isFullAccess && (() => {
+                    const gp = result.goplus&&result.contract?(result.goplus[result.contract.toLowerCase()]??null) as Record<string,unknown>|null:null
+                    const hp = result.honeypot
+                    const simVerified = hp?.simulationSuccess===true
+                    type RC = { label:string;value:string;style:PillStyle }
+                    const simGroup: RC[] = simVerified&&hp ? [
+                      { label:'Honeypot', value:hp.isHoneypot?'YES':'NO', style:hp.isHoneypot?pillDanger():pillSafe() },
+                      ...(hp.buyTax!=null?[{ label:'Buy Tax', value:`${hp.buyTax.toFixed(1)}%`, style:taxPct(hp.buyTax) }]:[]),
+                      ...(hp.sellTax!=null?[{ label:'Sell Tax', value:`${hp.sellTax.toFixed(1)}%`, style:taxPct(hp.sellTax) }]:[]),
+                      ...(hp.transferTax!=null&&hp.transferTax>0?[{ label:'Transfer Tax', value:`${hp.transferTax.toFixed(1)}%`, style:taxPct(hp.transferTax) }]:[]),
+                    ] : []
+                    function gpFlag(key:string,label:string,dangerOn='1'):RC|null{if(!gp)return null;const raw=gp[key];if(raw==null)return null;const v=String(raw);return{label,value:v==='1'?'YES':v==='0'?'NO':v,style:v===dangerOn?pillDanger():pillSafe()}}
+                    function gpTax(key:string,label:string):RC|null{if(!gp)return null;const raw=gp[key];if(raw==null)return null;const n=parseFloat(String(raw));if(isNaN(n))return null;return{label,value:`${(n*100).toFixed(1)}%`,style:taxPct(n*100)}}
+                    const contractGroup:RC[]=[gpFlag('is_mintable','Mint Function'),gpFlag('can_take_back_ownership','Ownership Revert'),gpFlag('is_blacklisted','Blacklist'),gpFlag('is_whitelisted','Whitelist','__never__'),gpFlag('is_proxy','Proxy','__never__'),gpTax('buy_tax','Buy Tax'),gpTax('sell_tax','Sell Tax')].filter((x):x is RC=>x!=null)
+                    const ownerAddr=gp?String(gp['owner_address']??''):''
+                    const isRenounced=!ownerAddr||ownerAddr==='0x0000000000000000000000000000000000000000'
+                    const ownerGroup:RC[]=gp?[{label:'Owner',value:isRenounced?'RENOUNCED':'HELD',style:isRenounced?pillSafe():pillAmber()}]:[]
+                    const hasAny=gp||(hp&&hp.simulationSuccess)
+                    if(!hasAny)return(
+                      <div style={{ padding:'16px 18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>No security simulation data surfaced for this scan. Status is unverified.</div>
+                    )
+                    const gs={marginBottom:'14px'}
+                    const gt={margin:'0 0 8px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#3a5268',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
+                    return(
+                      <div>
+                        <div style={gs}>
+                          <div style={{ padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px' }}>
+                            <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px',flexWrap:'wrap' }}>
+                              <p style={gt}>Trading Simulation</p>
+                              <span style={{ padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.1em',fontFamily:'var(--font-plex-mono)',border:simVerified?'1px solid rgba(52,211,153,.35)':'1px solid rgba(251,191,36,.35)',color:simVerified?'#34d399':'#fbbf24',background:simVerified?'rgba(52,211,153,.08)':'rgba(251,191,36,.08)' }}>{simVerified?'SIMULATION VERIFIED':'SIMULATION NOT RUN'}</span>
+                            </div>
+                            {simVerified&&simGroup.length>0?(
+                              <div style={{ display:'flex',flexWrap:'wrap',gap:'7px' }}>{simGroup.map(c=><RiskPill key={c.label} label={c.label} value={{...c.style,label:c.value}} />)}</div>
+                            ):(
+                              <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Sell simulation was not completed for this token in this pass. Tax and honeypot status unverified.</p>
+                            )}
+                          </div>
+                        </div>
+                        {contractGroup.length>0&&(
+                          <div style={gs}>
+                            <div style={{ padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px' }}>
+                              <p style={gt}>Contract Flags</p>
+                              <div style={{ display:'flex',flexWrap:'wrap',gap:'7px' }}>{contractGroup.map(c=><RiskPill key={c.label} label={c.label} value={{...c.style,label:c.value}} />)}</div>
+                            </div>
+                          </div>
+                        )}
+                        {ownerGroup.length>0&&(
+                          <div style={gs}>
+                            <div style={{ padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px' }}>
+                              <p style={gt}>Ownership</p>
+                              <div style={{ display:'flex',flexWrap:'wrap',gap:'7px',marginBottom:ownerAddr&&!isRenounced?'8px':0 }}>{ownerGroup.map(c=><RiskPill key={c.label} label={c.label} value={{...c.style,label:c.value}} />)}</div>
+                              {ownerAddr&&!isRenounced&&<p style={{ margin:0,fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Owner: {shorten(ownerAddr)}</p>}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </>
+              )}
+
+              {/* ── WATCH PLAN ────────────────────────────────────────── */}
+              {activeSection === 'watch-plan' && (() => {
+                const holderState = deriveHolderState(result)
+                const lpStatus = result.lpControl?.status
+                const lpVerified = lpStatus==='locked'||lpStatus==='burned'
+                const missing = getMissingChecks(result)
+                const next = getNextAction(result)
+                const monitorItems = [
+                  !lpVerified?{label:'LP Lock / Burn',detail:'Verify LP is locked or burned before assuming liquidity is safe.'}:null,
+                  holderState.kind!=='rowsWithPercent'?{label:'Holder Concentration',detail:'Rescan or check holder data when available. Top holders not confirmed.'}:null,
+                  result.marketCapUsd==null?{label:'Market Cap',detail:'Circulating supply not confirmed — FDV is not market cap.'}:null,
+                  (result.liquidity??0)>0&&(result.liquidity??0)<100000?{label:'Thin Liquidity',detail:`${fmtLarge(result.liquidity)} pool depth — monitor for exit risk and slippage.`}:null,
+                  result.honeypot?.isHoneypot!==false?{label:'Honeypot Status',detail:'Security simulation not completed or inconclusive.'}:null,
+                ].filter((x):x is{label:string;detail:string}=>x!=null)
+                const st={margin:'0 0 4px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
+                return(
+                  <>
+                    <div style={{ marginBottom:'18px' }}>
+                      <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>WATCH PLAN</p>
+                      <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>What to verify and monitor before acting on this scan.</p>
+                    </div>
+                    <div style={{ marginBottom:'16px',padding:'14px 16px',background:'rgba(45,212,191,0.06)',border:'1px solid rgba(45,212,191,0.22)',borderRadius:'12px' }}>
+                      <p style={{ ...st,color:'#2DD4BF' }}>Next Action</p>
+                      <p style={{ margin:0,fontSize:'12px',color:'#67e8f9',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{next}</p>
+                    </div>
+                    {missing.length>0&&(
+                      <div style={{ marginBottom:'16px' }}>
+                        <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>Open Checks</p>
+                        <div style={{ display:'flex',flexWrap:'wrap',gap:'6px' }}>
+                          {missing.map(m=>(
+                            <span key={m} style={{ padding:'4px 10px',borderRadius:'999px',fontSize:'10px',fontWeight:600,color:'#fbbf24',background:'rgba(251,191,36,0.07)',border:'1px solid rgba(251,191,36,0.25)',fontFamily:'var(--font-plex-mono)',whiteSpace:'nowrap' }}>{m}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {monitorItems.length>0&&(
+                      <div style={{ marginBottom:'18px' }}>
+                        <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>What to Monitor</p>
+                        <div style={{ display:'flex',flexDirection:'column',gap:'8px' }}>
+                          {monitorItems.map(item=>(
+                            <div key={item.label} style={{ padding:'10px 14px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(251,191,36,0.16)',borderRadius:'10px' }}>
+                              <p style={{ margin:'0 0 3px',fontSize:'10px',fontWeight:700,color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>{item.label}</p>
+                              <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{item.detail}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ marginBottom:'16px',padding:'12px 14px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(125,211,252,0.16)',borderRadius:'10px' }}>
+                      <p style={{ ...st,color:'#7dd3fc' }}>Rescan Guidance</p>
+                      <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.55,fontFamily:'var(--font-plex-mono)' }}>
+                        {holderState.kind==='noRowsFallback'
+                          ?'Holder data was unavailable this pass. Rescan in a few minutes — holder indexing may catch up. Monitor liquidity and price action in the meantime.'
+                          :'Rescan after significant market movement or before entering a position to verify current liquidity and pool health.'}
+                      </p>
+                    </div>
+                    <div style={{ padding:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'12px',textAlign:'center' }}>
+                      <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#1e3a44',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>CORTEX Scan History</p>
+                      <p style={{ margin:0,fontSize:'11px',color:'#1e3a44',fontFamily:'var(--font-plex-mono)' }}>CORTEX watch history will appear after repeated scans.</p>
+                    </div>
+                  </>
                 )
               })()}
 
-              <div id="scan-section-liquidity" style={{scrollMarginTop:'24px'}} />
-              {/* Pools */}
-              {result.pools && result.pools.length > 0 && (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                    <p style={{
-                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                      color: '#3a5268', textTransform: 'uppercase',
-                      margin: 0, fontFamily: 'var(--font-plex-mono)',
-                    }}>
-                      LIQUIDITY &amp; POOLS
-                    </p>
-                    <div style={{display:'inline-flex',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} {result.pools.length === 1 ? 'POOL' : 'POOLS'}</div>
-                    <span style={{fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)'}}>Primary pool selected by liquidity.</span>
-                  </div>
-                  <div className="pools-scroll" style={{ overflowX: 'auto', paddingBottom: '6px', maxWidth: '100%' }}><div className="pools-inner" style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '940px' }}>
-                    {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
-                      <div
-                        key={i}
-                        style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'minmax(220px,1.2fr) repeat(6, minmax(82px, auto))',
-                          alignItems: 'center', gap: '20px',
-                          padding: '12px 18px',
-                          background: i === 0 ? 'linear-gradient(90deg,rgba(45,212,191,0.06),rgba(167,139,250,0.04))' : 'rgba(255,255,255,0.025)',
-                          border: i === 0 ? '1px solid rgba(45,212,191,0.22)' : '1px solid rgba(255,255,255,0.06)',
-                          borderRadius: '10px',
-                          fontSize: '12px', fontFamily: 'var(--font-plex-mono)',
-                        }}
-                      >
-                        <span style={{
-                          color: i === 0 ? '#2DD4BF' : '#94a3b8', overflow: 'hidden',
-                          textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '7px',
-                        }}>
-                          {i === 0 && <span style={{fontSize:'9px',fontWeight:700,letterSpacing:'.10em',padding:'1px 6px',borderRadius:'999px',border:'1px solid rgba(45,212,191,.35)',color:'#2DD4BF',background:'rgba(45,212,191,.08)',flexShrink:0}}>PRIMARY</span>}
-                          {pool.name ?? shorten(pool.address ?? '')}
-                        </span>
-                        <span style={{ color: '#2DD4BF', whiteSpace: 'nowrap' }}>
-                          {fmtPrice(pool.price)}
-                        </span>
-                        <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
-                          Liq {fmtLarge(pool.liquidity)}
-                        </span>
-                        <span style={{ color: '#4a6272', whiteSpace: 'nowrap' }}>
-                          Vol {fmtLarge(pool.volume24h)}
-                        </span>
-                        <span style={{ color: '#64748b', whiteSpace: 'nowrap' }}>APR N/A</span><span style={{ color: pctColor(pool.priceChange24h), whiteSpace: 'nowrap' }}>{fmtPct(pool.priceChange24h)}</span><span style={{whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24'}}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
-                      </div>
-                    ))}
-                  </div></div>
-                </>
-              )}
             </div>
           )}
         </div>
