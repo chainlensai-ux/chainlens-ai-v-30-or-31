@@ -67,7 +67,7 @@ type ScanResult = {
   marketConfidence?: 'high' | 'medium' | 'low'
   decimals?: number
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
-  holderDistributionStatus?: { source?: string; status?: 'ok'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
+  holderDistributionStatus?: { source?: string; status?: 'ok'|'partial'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
   debugHolderStatus?: {
     providerCalled?: boolean; chain?: string; endpointPath?: string; authMode?: string;
     hasGoldrushKey?: boolean; hasCovalentKey?: boolean; statusCode?: number|null;
@@ -134,7 +134,7 @@ type ScanResult = {
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
 type HolderStateKind = 'rowsWithPercent' | 'rowsWithoutPercent' | 'noRowsFallback'
-type HolderProviderStatus = 'ok' | 'empty' | 'unavailable' | 'error' | 'unknown'
+type HolderProviderStatus = 'ok' | 'partial' | 'empty' | 'unavailable' | 'error' | 'unknown'
 type OwnerStatus = 'Renounced' | 'Held' | 'Unverified'
 type SecurityChip = { label: string; displayLabel: string; style: PillStyle; source: 'honeypot' | 'contract' }
 
@@ -364,7 +364,7 @@ function normalizeHolderProviderStatus(
   status: ScanResult['holderDistributionStatus']
 ): HolderProviderStatus {
   const s = status?.status
-  if (s === 'ok' || s === 'empty' || s === 'unavailable' || s === 'error') return s
+  if (s === 'ok' || s === 'partial' || s === 'empty' || s === 'unavailable' || s === 'error') return s
   return 'unknown'
 }
 
@@ -1912,8 +1912,8 @@ export default function TerminalTokenScanner() {
                                 {concRisk != null && <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${concColor}44`, color: concColor, background: `${concColor}10` }}>{concRisk} CONC</span>}
                               </div>
                               {result.holderDistribution?.holderCount != null && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
-                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>Top holder wallets found, but supply percentages were not available for this scan.</p>}
-                              <div style={{ display: 'grid', gap: '10px' }}>
+                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>Holder rows were returned, but concentration percentages were incomplete.</p>}
+                              {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
                                 {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
                                   <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 64px', alignItems: 'center', gap: '10px' }}>
                                     <span style={{ fontSize: '12px', color: '#d6e6f3', fontWeight: 700 }}>{l}</span>
@@ -1921,7 +1921,7 @@ export default function TerminalTokenScanner() {
                                     <span style={{ fontSize: '13px', fontWeight: 800, color: '#eef6ff', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{v==null?'N/A':`${Number(v).toFixed(1)}%`}</span>
                                   </div>
                                 ))}
-                              </div>
+                              </div>}
                               {(top10h != null && top10h > 50) && (
                                 <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#fca5a5', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.08)', borderRadius: '10px', padding: '8px 10px' }}>
                                   High concentration — top wallets control majority supply.
@@ -1932,7 +1932,7 @@ export default function TerminalTokenScanner() {
                                   Largest holder has meaningful supply control.
                                 </p>
                               )}
-                              {concRead && <p style={{ margin: '10px 0 0', fontSize: '11px', color: concColor, lineHeight: 1.5 }}>{concRead}</p>}
+                              {holderState.kind === 'rowsWithPercent' && top10h != null && <p style={{ margin: '10px 0 0', fontSize: '11px', color: concColor, lineHeight: 1.5 }}>{`Top 10 controls ${top10h.toFixed(1)}%. Monitor concentration before trusting supply distribution.`}</p>}
                               <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#8aa3b8' }}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
                             </div>
                             <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden' }}>
