@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
+const PLAN_CACHE_KEY = 'chainlens_cached_plan'
 
 const AVATAR_COLORS: Record<string, string> = {
   mint:   'linear-gradient(135deg, #2DD4BF 0%, #14b8a6 100%)',
@@ -66,24 +67,43 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false)
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
-  const [plan, setPlan] = useState<UserPlan>('free')
+  const [plan, setPlan] = useState<UserPlan | null>(null)
+  const [planLoading, setPlanLoading] = useState(true)
   const [avatarColor, setAvatarColor] = useState<string>('mint')
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [displayName, setDisplayName] = useState<string | null>(null)
   const pathname = usePathname()
 
   useEffect(() => {
-    async function loadSession(token?: string) {
-      if (!token) { setPlan('free'); return }
+    function readCachedPlan(userId?: string, email?: string | null): UserPlan | null {
+      try {
+        const raw = localStorage.getItem(PLAN_CACHE_KEY)
+        if (!raw) return null
+        const x = JSON.parse(raw) as { plan?: string; updatedAt?: number; userId?: string | null; email?: string | null }
+        if (Date.now() - Number(x.updatedAt ?? 0) > 1000 * 60 * 30) return null
+        if ((userId && x.userId && x.userId !== userId) || (email && x.email && x.email !== email)) return null
+        return x.plan === 'pro' || x.plan === 'elite' || x.plan === 'free' ? x.plan : null
+      } catch { return null }
+    }
+    function writeCachedPlan(nextPlan: UserPlan, userId?: string, email?: string | null) {
+      try { localStorage.setItem(PLAN_CACHE_KEY, JSON.stringify({ plan: nextPlan, updatedAt: Date.now(), userId: userId ?? null, email: email ?? null })) } catch {}
+    }
+    async function loadSession(token?: string, userId?: string, email?: string | null) {
+      if (!token) { try { localStorage.removeItem(PLAN_CACHE_KEY) } catch {}; setPlan('free'); setPlanLoading(false); return }
+      const cached = readCachedPlan(userId, email)
+      if (cached) setPlan(cached)
       try {
         const res = await fetch('/api/user-settings', {
           headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
         })
         if (res.ok) {
           const json = await res.json() as Record<string, unknown>
           const settings = json?.settings as Record<string, unknown> | undefined
           const p = json?.plan ?? json?.effectivePlan ?? settings?.plan
-          setPlan(p === 'pro' || p === 'elite' ? p : 'free')
+          const resolvedPlan: UserPlan = p === 'pro' || p === 'elite' ? p : 'free'
+          setPlan(resolvedPlan)
+          writeCachedPlan(resolvedPlan, userId, email)
           const ac = String(settings?.avatar_color ?? json?.avatar_color ?? 'mint')
           setAvatarColor(AVATAR_COLORS[ac] ? ac : 'mint')
           const au = String(settings?.avatar_url ?? json?.avatar_url ?? '')
@@ -91,18 +111,21 @@ export default function Navbar() {
           const dn = String(settings?.display_name ?? json?.display_name ?? '')
           setDisplayName(dn || null)
         }
-      } catch { setPlan('free') }
+      } catch {}
+      setPlanLoading(false)
     }
 
     supabase.auth.getSession().then(({ data }) => {
       const session = data.session
       setAccountEmail(session?.user?.email ?? null)
-      loadSession(session?.access_token)
+      setPlanLoading(true)
+      loadSession(session?.access_token, session?.user?.id, session?.user?.email ?? null)
     })
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setAccountEmail(session?.user?.email ?? null)
-      loadSession(session?.access_token)
+      setPlanLoading(true)
+      loadSession(session?.access_token, session?.user?.id, session?.user?.email ?? null)
     })
 
     return () => listener.subscription.unsubscribe()
@@ -116,7 +139,8 @@ export default function Navbar() {
       : accountEmail
     : null
   const initials = (displayName?.[0] ?? shortEmail?.[0] ?? 'A').toUpperCase()
-  const planLabel = plan.toUpperCase()
+  const displayPlan: UserPlan = plan ?? 'free'
+  const planLabel = !accountEmail ? '' : planLoading && !plan ? 'CHECKING PLAN…' : (plan ?? 'free').toUpperCase()
 
   return (
     <>
@@ -522,10 +546,10 @@ export default function Navbar() {
                 <span className="nav-account-email">{shortEmail}</span>
                 <span style={{
                   fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
-                  color: PLAN_COLOR[plan],
-                  border: `1px solid ${PLAN_COLOR[plan]}44`,
+                  color: PLAN_COLOR[displayPlan],
+                  border: `1px solid ${PLAN_COLOR[displayPlan]}44`,
                   borderRadius: '4px', padding: '1px 5px',
-                  background: `${PLAN_COLOR[plan]}18`,
+                  background: `${PLAN_COLOR[displayPlan]}18`,
                   flexShrink: 0,
                 }}>{planLabel}</span>
               </Link>
@@ -637,8 +661,8 @@ export default function Navbar() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
                     <span style={{
                       fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
-                      color: PLAN_COLOR[plan], border: `1px solid ${PLAN_COLOR[plan]}44`,
-                      borderRadius: '4px', padding: '1px 5px', background: `${PLAN_COLOR[plan]}18`,
+                      color: PLAN_COLOR[displayPlan], border: `1px solid ${PLAN_COLOR[displayPlan]}44`,
+                      borderRadius: '4px', padding: '1px 5px', background: `${PLAN_COLOR[displayPlan]}18`,
                     }}>{planLabel}</span>
                     <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)' }}>Signed in</span>
                   </div>

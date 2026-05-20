@@ -53,13 +53,14 @@ async function getAuthenticatedUser(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  const noStoreHeaders = { 'Cache-Control': 'no-store, max-age=0' }
   if (!limiter.check(getClientIp(request))) {
-    return NextResponse.json({ error: 'Too many requests.' }, { status: 429 });
+    return NextResponse.json({ error: 'Too many requests.' }, { status: 429, headers: noStoreHeaders });
   }
 
   const auth = await getAuthenticatedUser(request);
   if (auth.error || !auth.userId || !auth.supabase) {
-    return NextResponse.json({ error: auth.error ?? 'Unauthorized.' }, { status: 401 });
+    return NextResponse.json({ error: auth.error ?? 'Unauthorized.' }, { status: 401, headers: noStoreHeaders });
   }
 
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
@@ -90,12 +91,12 @@ export async function GET(request: NextRequest) {
         effectivePlan,
         verifiedPlan,
         subscription_status: result.settings.subscription_status ?? null,
-        error: result.error,
+        error: 'settings_unavailable',
         fallback: true,
         ...betaFields,
         diagnostics,
       },
-      { status: 200 }
+      { status: 200, headers: noStoreHeaders }
     );
   }
 
@@ -110,7 +111,7 @@ export async function GET(request: NextRequest) {
       ...betaFields,
       diagnostics,
     },
-    { status: 200 }
+    { status: 200, headers: noStoreHeaders }
   );
 }
 

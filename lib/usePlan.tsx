@@ -5,6 +5,9 @@ import { supabase } from '@/lib/supabaseClient'
 import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
 
 export { canAccessFeature }
+const PLAN_CACHE_KEY = 'chainlens_cached_plan'
+const PLAN_CACHE_MAX_AGE_MS = 1000 * 60 * 30
+type CachedPlan = { plan: UserPlan; updatedAt: number; userId?: string | null; email?: string | null }
 
 function resolvePlan(json: Record<string, unknown>): UserPlan {
   const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
@@ -34,33 +37,62 @@ export function usePlan(): UserPlan {
 /** Like usePlan but exposes loading state so pages can suppress the locked
  *  panel flash while the session/plan are still resolving. */
 export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null; betaEliteActive: boolean } {
-  const [plan, setPlan] = useState<UserPlan>('free')
+  const [plan, setPlan] = useState<UserPlan | null>(null)
   const [loading, setLoading] = useState(true)
+  const [resolved, setResolved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [betaEliteActive, setBetaEliteActive] = useState(false)
   useEffect(() => {
-    const hardStop = window.setTimeout(() => setLoading(false), 3000)
-    async function load(token: string | undefined) {
-      if (!token) { setPlan('free'); setBetaEliteActive(false); setError(null); setLoading(false); return }
+    function readCachedPlan(userId?: string | null, email?: string | null): UserPlan | null {
       try {
-        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
+        const raw = window.localStorage.getItem(PLAN_CACHE_KEY)
+        if (!raw) return null
+        const parsed = JSON.parse(raw) as CachedPlan
+        if (!parsed || (parsed.plan !== 'free' && parsed.plan !== 'pro' && parsed.plan !== 'elite')) return null
+        if (Date.now() - Number(parsed.updatedAt ?? 0) > PLAN_CACHE_MAX_AGE_MS) return null
+        if ((userId && parsed.userId && parsed.userId !== userId) || (email && parsed.email && parsed.email !== email)) return null
+        return parsed.plan
+      } catch { return null }
+    }
+    function writeCachedPlan(nextPlan: UserPlan, userId?: string | null, email?: string | null) {
+      try { window.localStorage.setItem(PLAN_CACHE_KEY, JSON.stringify({ plan: nextPlan, updatedAt: Date.now(), userId: userId ?? null, email: email ?? null } satisfies CachedPlan)) } catch {}
+    }
+    function clearCache() { try { window.localStorage.removeItem(PLAN_CACHE_KEY) } catch {} }
+    async function load(session: { access_token?: string; user?: { id?: string; email?: string | null } } | null | undefined) {
+      const token = session?.access_token
+      const userId = session?.user?.id
+      const email = session?.user?.email ?? null
+      if (!token) { clearCache(); setPlan('free'); setBetaEliteActive(false); setError(null); setLoading(false); setResolved(true); return }
+      const cached = readCachedPlan(userId, email)
+      if (cached) setPlan(cached)
+      try {
+        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
         if (res.ok) {
           const json = await res.json()
-          setPlan(resolvePlan(json))
+          const resolvedPlan = resolvePlan(json)
+          setPlan(resolvedPlan)
+          writeCachedPlan(resolvedPlan, userId, email)
           setBetaEliteActive(json?.betaEliteActive === true)
           setError(null)
+        } else if (!cached) {
+          setError('plan_fetch_failed')
         }
-      } catch { setPlan('free'); setBetaEliteActive(false); setError('plan_fetch_failed') }
+      } catch {
+        if (!cached) setError('plan_fetch_failed')
+      }
+      if (!cached && plan == null) setPlan(null)
+      setResolved(true)
       setLoading(false)
     }
-    supabase.auth.getSession().then(({ data }) => load(data.session?.access_token))
+    supabase.auth.getSession().then(({ data }) => load(data.session ? { access_token: data.session.access_token, user: { id: data.session.user.id, email: data.session.user.email } } : null))
     const { data: l } = supabase.auth.onAuthStateChange((_e, session) => {
       setLoading(true)
-      void load(session?.access_token)
+      setResolved(false)
+      void load(session ? { access_token: session.access_token, user: { id: session.user.id, email: session.user.email } } : null)
     })
-    return () => { l.subscription.unsubscribe(); window.clearTimeout(hardStop) }
+    return () => { l.subscription.unsubscribe() }
   }, [])
-  return { plan, loading, error, betaEliteActive }
+  return { plan: plan ?? 'free', loading: loading || !resolved, error, betaEliteActive }
 }
 
 const FEATURE_DISPLAY: Record<string, string> = {

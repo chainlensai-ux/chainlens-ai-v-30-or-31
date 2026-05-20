@@ -171,9 +171,10 @@ const sevStyle = (sev: string | null | undefined): React.CSSProperties => {
 }
 
 const signalStyle = (sig: string): React.CSSProperties => {
-  if (sig === 'HIGH')  return { background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.28)', color: '#2dd4bf' }
+  if (sig === 'HIGH SIGNAL') return { background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.28)', color: '#2dd4bf' }
   if (sig === 'WATCH') return { background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.28)', color: '#fcd34d' }
-  return { background: 'rgba(100,116,139,0.08)', border: '1px solid rgba(100,116,139,0.18)', color: '#64748b' }
+  if (sig === 'NOISE') return { background: 'rgba(100,116,139,0.05)', border: '1px solid rgba(100,116,139,0.14)', color: '#64748b' }
+  return { background: 'rgba(100,116,139,0.08)', border: '1px solid rgba(100,116,139,0.18)', color: '#94a3b8' }
 }
 
 const rowDesc = (sev: string | null | undefined) => {
@@ -285,7 +286,7 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 export default function WhaleAlertsPage() {
   const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
-  const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('all')
+  const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('interesting')
   const [valueRange, setValueRange]   = useState<ValueRange>('all')
   const [typeFilter, setTypeFilter]   = useState('all')
   const [sevFilter, setSevFilter]     = useState('all')
@@ -523,7 +524,7 @@ export default function WhaleAlertsPage() {
         const tok    = a.focus_token_symbol ?? a.token_symbol ?? a.token_name ?? 'Unknown token'
         const side   = a.side ?? 'move'
         const usd    = (a.amount_usd != null && a.amount_usd > 0) ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
-        const sig    = a.signal_score ?? 'LOW'
+        const sig    = a.signal_score ?? 'LOW SIGNAL'
         const sev    = a.severity ?? 'unknown'
         const age    = ageStr(a.occurred_at)
         const legs   = (a.legs ?? 1) > 1 ? ` ${a.legs}-leg swap` : ''
@@ -1035,7 +1036,7 @@ export default function WhaleAlertsPage() {
                   {syncState && insertedSoFar > 0 && <Pill color="purple">{insertedSoFar} qualifying alerts found</Pill>}
                   {syncState && <Pill color="amber">{syncState.skipped ?? 0} skipped</Pill>}
                   <Pill color={hasProviderErrors ? 'amber' : 'purple'}>
-                    {hasProviderErrors ? 'Source delay' : 'Provider healthy'}
+                    {hasProviderErrors ? 'Source delay' : 'Feed healthy'}
                   </Pill>
                 </div>
               </div>
@@ -1059,7 +1060,7 @@ export default function WhaleAlertsPage() {
             const amtUnverified = alert.amount_usd == null || alert.amount_usd === 0
             const amtU    = (!amtUnverified && alert.amount_usd != null) ? fmtUsd(alert.amount_usd) : null
             const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
-            const amtShow = amtU ?? (amtTNum ?? (amtUnverified ? 'Value unverified' : null))
+            const amtShow = amtU ?? (amtTNum ? `${amtTNum} ${primarySym}` : (amtUnverified ? 'value unverified' : null))
 
             // Verb and preposition split so amount fits between them for swaps
             const isSwap   = isMultiTok || (focusTok != null && s !== 'buy')
@@ -1068,7 +1069,12 @@ export default function WhaleAlertsPage() {
             const logoUrl = alert.token_image_url ?? alert.logo_url ?? alert.image ?? alert.token_logo ?? null
 
             const walletName = alert.wallet_label || 'Tracked Wallet'
-            const signal     = alert.signal_score ?? 'LOW'
+            const signal     = alert.signal_score ?? 'LOW SIGNAL'
+            const signalReason =
+              signal === 'HIGH SIGNAL' ? ((alert.token_symbol ?? '').toUpperCase().includes('USDC') ? 'Large stablecoin move' : 'High-value tracked-wallet movement')
+              : signal === 'WATCH' ? 'Repeated activity from tracked wallet'
+              : signal === 'NOISE' ? 'Value unverified'
+              : (amtUnverified ? 'Value unverified' : 'Low-value token movement')
 
             // Per-row Clark prompt — full structured context
             const alertAge = ageStr(alert.occurred_at)
@@ -1129,7 +1135,7 @@ export default function WhaleAlertsPage() {
                         {walletName}{' '}
                         <span style={{ color: '#64748b' }}>{baseVerb}</span>
                         {amtShow
-                          ? <>{' '}<span style={{ fontWeight: 700, color: amtShow === 'Value unverified' ? '#475569' : '#5eead4' }}>{amtShow}</span>{isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}</>
+                          ? <>{' '}<span style={{ fontWeight: 700, color: amtShow === 'value unverified' ? '#475569' : '#5eead4' }}>{amtShow}</span>{isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}</>
                           : isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}
                         {' '}<span style={{ fontWeight: 700, color: '#f8fafc' }}>{tok}</span>
                       </span>
@@ -1140,7 +1146,7 @@ export default function WhaleAlertsPage() {
                       Tracked wallet · Base
                       {(alert.legs ?? 1) > 1 ? ` · ${alert.legs} legs` : ''}
                       {(alert.repeats ?? 1) > 1 ? ` · ×${alert.repeats} in 5m` : ''}
-                      {' · '}{timeAgo(alert.occurred_at)}
+                      {' · '}{timeAgo(alert.occurred_at)}{' · '}{signalReason}
                     </p>
                     {/* Wallet behavior tags */}
                     {alert.walletContext && (() => {
@@ -1181,7 +1187,7 @@ export default function WhaleAlertsPage() {
                   <div className="shrink-0 flex flex-col items-end" style={{ marginTop: 2, gap: 6 }}>
                     <span className="rounded-full"
                       style={{ padding: '2px 10px', fontSize: 9, fontWeight: 800, letterSpacing: '0.1em', ...signalStyle(signal) }}>
-                      {signal === 'HIGH' ? 'HIGH SIGNAL' : signal}
+                      {signal}
                     </span>
                     <div className="flex items-center" style={{ gap: 6 }}>
                       {scanHref && (
