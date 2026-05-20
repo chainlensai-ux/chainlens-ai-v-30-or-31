@@ -595,6 +595,7 @@ type CortexScoreResult = {
   verdict:    'CLEAN LOOKING' | 'WATCH' | 'CAUTION' | 'AVOID' | 'UNKNOWN'
   confidence: 'HIGH' | 'MEDIUM' | 'LOW'
   scanQuality: 'FULL' | 'PARTIAL' | 'LIMITED'
+  capReason:  string | null
   breakdown: {
     market:    { status: string; score: number; reason: string }
     liquidity: { status: string; score: number; reason: string }
@@ -711,30 +712,104 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
     ? 'No open checks.'
     : `${missingItems.length} checks missing: ${missingItems.join(', ')}.`
 
+  // ── Score caps ───────────────────────────────────────────────────────────
+  // Applied after base calculation. Prevent incomplete scans from appearing
+  // fully verified. Each cap sets a maximum; the lowest applicable cap wins.
+  const lpVerified2   = lpStatus === 'locked' || lpStatus === 'burned'
+  const simVerified2  = hp?.simulationSuccess === true && hp?.isHoneypot === false
+  const holdersVerif2 = holderState.kind === 'rowsWithPercent'
+  const mcVerified2   = result.marketCapUsd != null
+  const mc            = result.marketCapUsd ?? null
+  const highHolderConc = top10 != null && top10 > 50
+  // allMajorVerified: every important check has a positive result
+  const allMajorVerified =
+    lpVerified2 && simVerified2 && holdersVerif2 && mcVerified2 &&
+    liq >= 25_000 && !highHolderConc && missingItems.length === 0
+
+  let cap = 100
+  let capReason: string | null = null
+
+  const setCapIfLower = (newCap: number, reason: string) => {
+    if (newCap < cap) { cap = newCap; capReason = reason }
+  }
+
+  // No data
+  if (!result.price && !result.liquidity && !hp) {
+    setCapIfLower(35, 'Insufficient data — score capped.')
+  }
+  // No active pool / no liquidity
+  if (result.noActivePools || liq === 0) {
+    setCapIfLower(40, 'No active pool detected — score capped.')
+  }
+  // Security simulation unavailable or tax sim not run
+  if (!hp?.simulationSuccess) {
+    setCapIfLower(80, 'Score capped by incomplete security/LP checks.')
+  }
+  // LP lock/burn proof unverified
+  if (!lpVerified2) {
+    setCapIfLower(80, 'Score capped by incomplete security/LP checks.')
+  }
+  // Both security AND LP unverified → tighter cap
+  if (!simVerified2 && !lpVerified2) {
+    setCapIfLower(76, 'Score capped by incomplete LP/security checks.')
+  }
+  // Holder concentration unavailable
+  if (holderState.kind === 'noRowsFallback') {
+    setCapIfLower(75, 'Score capped by unverified holder data.')
+  }
+  // High holder concentration
+  if (highHolderConc) {
+    setCapIfLower(72, 'Score capped by high holder concentration.')
+  }
+  // Elevated top20 concentration
+  if (top20 != null && top20 > 60 && !highHolderConc) {
+    setCapIfLower(78, 'Score capped by elevated holder concentration.')
+  }
+  // Market cap unverified (but some market data exists)
+  if (!mcVerified2 && (result.price != null || result.liquidity != null)) {
+    setCapIfLower(82, 'Score capped by unverified market cap.')
+  }
+  // Low market cap — microcap tokens need all checks verified to score high
+  if (mc != null && mc < 1_000_000 && !allMajorVerified) {
+    setCapIfLower(72, 'Score capped by low-cap / incomplete verification.')
+  } else if (mc != null && mc < 5_000_000 && !allMajorVerified) {
+    setCapIfLower(78, 'Score capped by low-cap / incomplete verification.')
+  }
+  // 2+ major checks missing
+  if (missingItems.length >= 3) {
+    setCapIfLower(68, 'Score capped by 3+ incomplete checks.')
+  } else if (missingItems.length >= 2) {
+    setCapIfLower(76, 'Score capped by incomplete checks.')
+  }
+  // 95–100 only if everything is genuinely verified
+  if (!allMajorVerified) {
+    setCapIfLower(94, capReason ?? 'Score capped by incomplete verification.')
+  }
+
   // ── Clamp ────────────────────────────────────────────────────────────────
-  const score = Math.min(100, Math.max(0, Math.round(pts)))
+  const score = Math.min(cap, Math.max(0, Math.round(pts)))
+  // Clear capReason if the raw score was already below the cap (cap didn't bite)
+  const effectiveCapReason = Math.round(pts) > cap ? capReason : null
 
   // ── Verdict ──────────────────────────────────────────────────────────────
   const noData = !result.price && !result.liquidity && !hp
-  const lpVerified2 = lpStatus === 'locked' || lpStatus === 'burned'
-  const highHolderConc = top10 != null && top10 > 50
   let verdict: CortexScoreResult['verdict']
   if (noData) {
     verdict = 'UNKNOWN'
-  } else if (hp?.isHoneypot === true || taxHigh || score < 35) {
+  } else if (hp?.isHoneypot === true || taxHigh || score < 40) {
     verdict = 'AVOID'
   } else if (
-    score >= 80 &&
+    score >= 82 &&
     liq >= 25_000 &&
-    holderState.kind === 'rowsWithPercent' &&
-    hp?.simulationSuccess === true &&
-    hp?.isHoneypot === false &&
+    holdersVerif2 &&
+    simVerified2 &&
     !taxHigh &&
     !highHolderConc &&
-    lpVerified2
+    lpVerified2 &&
+    missingItems.length === 0
   ) {
     verdict = 'CLEAN LOOKING'
-  } else if (score >= 65 && !highHolderConc && (lpVerified2 || hp?.simulationSuccess === true)) {
+  } else if (score >= 65 && !highHolderConc && (lpVerified2 || simVerified2)) {
     verdict = 'WATCH'
   } else {
     verdict = 'CAUTION'
@@ -765,6 +840,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
     verdict,
     confidence,
     scanQuality,
+    capReason: effectiveCapReason,
     breakdown: {
       market:    { status: marketStatus,  score: marketPts,    reason: marketReason },
       liquidity: { status: liqStatus,     score: liqPts,       reason: liqReason },
@@ -1470,6 +1546,11 @@ export default function TerminalTokenScanner() {
                             <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
                           </div>
                         ))}
+                        {cx.capReason && (
+                          <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'4px', padding:'7px 10px', borderRadius:'8px', background:'rgba(148,163,184,0.05)', border:'1px solid rgba(148,163,184,0.14)' }}>
+                            <span style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)', fontStyle:'italic' }}>⚑ {cx.capReason}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                     {/* 4-card CORTEX Read layout */}
