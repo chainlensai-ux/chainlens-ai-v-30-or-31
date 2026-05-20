@@ -1176,21 +1176,112 @@ export default function TerminalTokenScanner() {
                 ]
                 const score = Math.round((scoreChecks.filter(Boolean).length / scoreChecks.length) * 100)
                 const scoreColor = score >= 75 ? '#34d399' : score >= 50 ? '#fbbf24' : '#f87171'
+                const v = getSummaryVerdict(result)
+                const confidence = result.marketConfidence === 'high' ? 'HIGH' : result.marketConfidence === 'medium' ? 'MEDIUM' : 'LOW'
+                const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
+                const marketChipOk = (result.price != null || result.liquidity != null) && !result.noActivePools
+                const holdersChipOk = holderState.kind === 'rowsWithPercent'
+                const holdersChipPartial = holderState.kind === 'rowsWithoutPercent'
+                const riskChipOk = result.honeypot?.isHoneypot === false && result.honeypot?.simulationSuccess === true
+                const simUnavailable = !result.honeypot?.simulationSuccess
+                const hp2 = result.honeypot
+                const liq2 = result.liquidity ?? 0
+                const buyTax2 = hp2?.buyTax ?? null
+                const sellTax2 = hp2?.sellTax ?? null
+                const taxesHigh2 = (buyTax2 != null && buyTax2 > 8) || (sellTax2 != null && sellTax2 > 8)
+                const goodSigns: string[] = [
+                  (hp2?.isHoneypot === false && hp2?.simulationSuccess) ? 'Security simulation passed — no honeypot flagged.' : '',
+                  liq2 > 1_000_000 ? `Deep liquidity — ${fmtLarge(liq2)} pool depth.` : liq2 > 200_000 ? `Moderate liquidity — ${fmtLarge(liq2)} pool depth.` : '',
+                  holderState.kind === 'rowsWithPercent' ? 'Holder distribution confirmed with percentages.' : '',
+                  result.marketCapUsd != null ? `Market cap verified — ${fmtLarge(result.marketCapUsd)}.` : '',
+                  lpVerified ? `LP ${result.lpControl?.status} — exit liquidity confirmed.` : '',
+                  (result.pools?.length ?? 0) > 1 ? `${result.pools!.length} active pools detected.` : '',
+                ].filter(Boolean).slice(0, 4) as string[]
+                const riskSigns: string[] = [
+                  hp2?.isHoneypot === true ? 'HONEYPOT — sell simulation detected blocked transaction.' : '',
+                  taxesHigh2 ? `Elevated taxes — buy ${buyTax2?.toFixed(1)}% / sell ${sellTax2?.toFixed(1)}%.` : '',
+                  liq2 > 0 && liq2 < 10000 ? 'Very thin liquidity — extreme slippage and exit risk.' : liq2 > 0 && liq2 < 50000 ? `Thin liquidity — ${fmtLarge(liq2)} depth, slippage risk.` : '',
+                  holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed — open risk check.' : holderState.kind === 'rowsWithoutPercent' ? 'Holder wallets found but percentages not confirmed.' : '',
+                  result.marketCapUsd == null ? 'Market cap not verified — supply unconfirmed.' : '',
+                  !hp2?.simulationSuccess ? 'Tax simulation unavailable — status unverified.' : '',
+                  result.noActivePools ? 'No active liquidity pool detected on Base.' : '',
+                ].filter(Boolean).slice(0, 4) as string[]
+                const missing2 = getMissingChecks(result)
+                const next2 = getNextAction(result)
+                const statusChips = [
+                  { label: 'Market',      chipOk: marketChipOk,    chipPartial: false,              chipColor: marketChipOk ? '#34d399' : '#f87171' },
+                  { label: 'Holders',     chipOk: holdersChipOk,   chipPartial: holdersChipPartial, chipColor: holdersChipOk ? '#34d399' : holdersChipPartial ? '#fbbf24' : '#f87171' },
+                  { label: 'LP Control',  chipOk: lpVerified,      chipPartial: false,              chipColor: lpVerified ? '#34d399' : '#f87171' },
+                  { label: 'Risk Checks', chipOk: riskChipOk,      chipPartial: simUnavailable,     chipColor: riskChipOk ? '#34d399' : simUnavailable ? '#94a3b8' : '#f87171' },
+                ]
                 return (
                   <>
-                    <div style={{ marginBottom: '16px', padding: '12px 16px', background: 'linear-gradient(135deg,rgba(8,16,32,.88),rgba(4,8,18,.86))', border: `1px solid ${scoreColor}22`, borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-                      <div style={{ flexShrink: 0 }}>
-                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>CORTEX VERIFICATION SCORE</div>
-                        <div style={{ fontSize: '24px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{score}<span style={{ fontSize: '13px', color: `${scoreColor}80`, marginLeft: '2px' }}>/100</span></div>
-                      </div>
-                      <div style={{ flex: 1, minWidth: '120px' }}>
-                        <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: '5px' }}>
-                          <div style={{ height: '100%', width: `${score}%`, borderRadius: '999px', background: `linear-gradient(90deg,${scoreColor},${scoreColor}88)`, transition: 'width 0.6s ease' }} />
+                    {/* CORTEX Score Hero */}
+                    <div style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.97),rgba(4,8,18,.95))', border: `1px solid ${scoreColor}28`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 44px ${scoreColor}0c` }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                        <div style={{ flexShrink: 0 }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CORTEX SCORE</div>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
+                            <span style={{ fontSize: '52px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{score}</span>
+                            <span style={{ fontSize: '16px', color: `${scoreColor}50`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginTop: '5px' }}>{scoreChecks.filter(Boolean).length}/{scoreChecks.length} checks passed</div>
                         </div>
-                        <div style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{scoreChecks.filter(Boolean).length} of {scoreChecks.length} checks passed</div>
+                        <div style={{ flex: 1, minWidth: '140px', paddingTop: '6px' }}>
+                          <div style={{ display: 'flex', gap: '7px', flexWrap: 'wrap', marginBottom: '14px' }}>
+                            <span style={{ padding: '5px 16px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: v.color, background: v.bg, border: `1px solid ${v.border}`, fontFamily: 'var(--font-plex-mono)' }}>{v.label}</span>
+                            <span style={{ padding: '5px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: confColor, background: `${confColor}12`, border: `1px solid ${confColor}38`, fontFamily: 'var(--font-plex-mono)' }}>{confidence} CONFIDENCE</span>
+                          </div>
+                          <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', width: `${score}%`, borderRadius: '999px', background: `linear-gradient(90deg,${scoreColor},${scoreColor}80)`, transition: 'width 0.7s ease' }} />
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(102px,1fr))', gap: '8px' }}>
+                        {statusChips.map(({ label, chipOk, chipPartial, chipColor }) => (
+                          <div key={label} style={{ padding: '9px 11px', borderRadius: '10px', background: `${chipColor}08`, border: `1px solid ${chipColor}20`, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: chipColor, flexShrink: 0, boxShadow: `0 0 5px ${chipColor}` }} />
+                            <div>
+                              <div style={{ fontSize: '9px', letterSpacing: '.12em', color: chipColor, fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{label}</div>
+                              <div style={{ fontSize: '9px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Unverified'}</div>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                    <CortexSummaryCard result={result} />
+                    {/* 4-card CORTEX Read layout */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(228px,1fr))', gap: '12px', marginBottom: '20px' }}>
+                      <div style={{ padding: '16px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.18)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#34d399', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Good Signs</p>
+                        {goodSigns.length > 0 ? goodSigns.map((s, i) => (
+                          <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '6px' }}>
+                            <span style={{ color: '#34d399', flexShrink: 0, fontSize: '11px', lineHeight: '16px' }}>✓</span>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                          </div>
+                        )) : <p style={{ margin: 0, fontSize: '11px', color: '#1e3a44', fontFamily: 'var(--font-plex-mono)' }}>No positive signals confirmed yet.</p>}
+                      </div>
+                      <div style={{ padding: '16px', background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.18)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#f87171', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Risk Signs</p>
+                        {riskSigns.length > 0 ? riskSigns.map((s, i) => (
+                          <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '6px' }}>
+                            <span style={{ color: '#f87171', flexShrink: 0, fontSize: '11px', lineHeight: '16px' }}>!</span>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#fca5a5', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                          </div>
+                        )) : <p style={{ margin: 0, fontSize: '11px', color: '#1e3a44', fontFamily: 'var(--font-plex-mono)' }}>No major risk signals surfaced.</p>}
+                      </div>
+                      <div style={{ padding: '16px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#fbbf24', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Missing Checks</p>
+                        {missing2.length > 0 ? (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                            {missing2.map(m => <span key={m} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{m}</span>)}
+                          </div>
+                        ) : <p style={{ margin: 0, fontSize: '11px', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>All key checks passed.</p>}
+                      </div>
+                      <div style={{ padding: '16px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.22)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next Action</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{next2}</p>
+                      </div>
+                    </div>
                     {result.sections && (
                       <div style={{ marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
                         {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]
@@ -1217,6 +1308,48 @@ export default function TerminalTokenScanner() {
                     <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
                     <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Live price, liquidity, volume and pool data for this token.</p>
                   </div>
+                  {/* Market Insight Strip */}
+                  {!result.noActivePools && (result.price != null || result.liquidity != null) && (
+                    <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'linear-gradient(135deg,rgba(103,232,249,0.05),rgba(45,212,191,0.03))', border: '1px solid rgba(103,232,249,0.18)', borderRadius: '14px', display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'center' }}>
+                      <div style={{ flexShrink: 0 }}>
+                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>LIVE PRICE</div>
+                        <div style={{ fontSize: '22px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(result.price)}</div>
+                      </div>
+                      <div style={{ width: '1px', height: '32px', background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', flex: 1 }}>
+                        {result.priceChange24h != null && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>24H MOVE</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: result.priceChange24h >= 0 ? '#34d399' : '#f87171', fontFamily: 'var(--font-plex-mono)' }}>{fmtPct(result.priceChange24h)}</div>
+                          </div>
+                        )}
+                        {result.liquidity != null && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>LIQUIDITY</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(result.liquidity)}</div>
+                          </div>
+                        )}
+                        {result.volume24h != null && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>VOLUME 24H</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(result.volume24h)}</div>
+                          </div>
+                        )}
+                        {result.poolActivity?.pairAgeLabel != null && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>PAIR AGE</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{result.poolActivity.pairAgeLabel}</div>
+                          </div>
+                        )}
+                        {result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0 && result.marketCapUsd !== result.fdvUsd && (
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>MC / FDV</div>
+                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{`${((result.marketCapUsd / result.fdvUsd) * 100).toFixed(0)}%`}</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {result.noActivePools ? (
                     <div style={{ padding: '20px 22px', marginBottom: '28px', background: 'rgba(245,158,11,0.04)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '12px', fontFamily: 'var(--font-plex-mono)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
@@ -1569,10 +1702,20 @@ export default function TerminalTokenScanner() {
                     const ownerGroup:RC[]=gp?[{label:'Owner',value:isRenounced?'RENOUNCED':'HELD',style:isRenounced?pillSafe():pillAmber()}]:[]
                     const hasAny=gp||(hp&&hp.simulationSuccess)
                     if(!hasAny)return(
-                      <div style={{ padding:'16px 18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>No security simulation data surfaced for this scan. Status is unverified.</div>
+                      <div style={{ padding:'16px 18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>No security simulation data surfaced for this scan. Tax simulation unavailable — status is unverified.</div>
                     )
                     const gs={marginBottom:'14px'}
                     const gt={margin:'0 0 8px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#3a5268',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
+                    // Open risks: checks that could not be verified
+                    const riskHolderState = deriveHolderState(result)
+                    const riskLpStatus = result.lpControl?.status
+                    const riskLpVerified = riskLpStatus === 'locked' || riskLpStatus === 'burned'
+                    const openRisks: string[] = [
+                      !simVerified ? 'Tax simulation unavailable — buy/sell tax unverified.' : null,
+                      riskHolderState.kind!=='rowsWithPercent' ? 'Holder concentration not confirmed this scan.' : null,
+                      !riskLpVerified ? 'LP lock or burn proof not confirmed.' : null,
+                      result.marketCapUsd==null ? 'Circulating supply not confirmed — market cap unverified.' : null,
+                    ].filter((x):x is string=>x!=null)
                     return(
                       <div>
                         <div style={gs}>
@@ -1584,7 +1727,7 @@ export default function TerminalTokenScanner() {
                             {simVerified&&simGroup.length>0?(
                               <div style={{ display:'flex',flexWrap:'wrap',gap:'7px' }}>{simGroup.map(c=><RiskPill key={c.label} label={c.label} value={{...c.style,label:c.value}} />)}</div>
                             ):(
-                              <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Sell simulation was not completed for this token in this pass. Tax and honeypot status unverified.</p>
+                              <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Tax simulation unavailable — honeypot and tax status could not be verified this pass.</p>
                             )}
                           </div>
                         </div>
@@ -1602,6 +1745,22 @@ export default function TerminalTokenScanner() {
                               <p style={gt}>Ownership</p>
                               <div style={{ display:'flex',flexWrap:'wrap',gap:'7px',marginBottom:ownerAddr&&!isRenounced?'8px':0 }}>{ownerGroup.map(c=><RiskPill key={c.label} label={c.label} value={{...c.style,label:c.value}} />)}</div>
                               {ownerAddr&&!isRenounced&&<p style={{ margin:0,fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Owner: {shorten(ownerAddr)}</p>}
+                            </div>
+                          </div>
+                        )}
+                        {openRisks.length>0&&(
+                          <div style={gs}>
+                            <div style={{ padding:'14px 16px',background:'rgba(245,158,11,0.04)',border:'1px solid rgba(245,158,11,0.18)',borderRadius:'12px' }}>
+                              <p style={{...gt,color:'#fbbf24'}}>Open Risks</p>
+                              <p style={{ margin:'0 0 8px',fontSize:'10px',color:'#78716c',fontFamily:'var(--font-plex-mono)' }}>These checks could not be verified in this scan. Treat as incomplete, not safe.</p>
+                              <div style={{ display:'flex',flexDirection:'column',gap:'5px' }}>
+                                {openRisks.map((r,i)=>(
+                                  <div key={i} style={{ display:'flex',gap:'7px',alignItems:'flex-start' }}>
+                                    <span style={{ color:'#fbbf24',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>·</span>
+                                    <p style={{ margin:0,fontSize:'11px',color:'#fde68a',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{r}</p>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           </div>
                         )}
@@ -1626,48 +1785,86 @@ export default function TerminalTokenScanner() {
                   result.honeypot?.isHoneypot!==false?{label:'Honeypot Status',detail:'Security simulation not completed or inconclusive.'}:null,
                 ].filter((x):x is{label:string;detail:string}=>x!=null)
                 const st={margin:'0 0 4px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
+                // Build priority checklist
+                const priorityItems: Array<{num:number;label:string;detail:string;urgent:boolean}> = [
+                  ...(!lpVerified ? [{ num:1, label:'Verify LP Lock or Burn', detail:'Confirm liquidity is locked or burned before assuming exits are safe.', urgent:true }] : []),
+                  ...(holderState.kind!=='rowsWithPercent' ? [{ num:lpVerified?1:2, label:'Confirm Holder Concentration', detail:'Top holders not confirmed. Check supply spread before forming conviction.', urgent:holderState.kind==='noRowsFallback' }] : []),
+                  ...(result.marketCapUsd==null ? [{ num:(lpVerified?0:1)+(holderState.kind!=='rowsWithPercent'?1:0)+1, label:'Verify Market Cap', detail:'Circulating supply not confirmed — FDV is not equivalent to market cap.', urgent:false }] : []),
+                  ...(!result.honeypot?.simulationSuccess ? [{ num:(lpVerified?0:1)+(holderState.kind!=='rowsWithPercent'?1:0)+(result.marketCapUsd==null?1:0)+1, label:'Check Security Simulation', detail:'Tax and honeypot status were not fully simulated this scan. Verify independently.', urgent:false }] : []),
+                ].map((item,i)=>({...item,num:i+1}))
                 return(
                   <>
                     <div style={{ marginBottom:'18px' }}>
                       <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>WATCH PLAN</p>
-                      <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>What to verify and monitor before acting on this scan.</p>
+                      <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Priority actions and signals to monitor before acting on this scan.</p>
                     </div>
-                    <div style={{ marginBottom:'16px',padding:'14px 16px',background:'rgba(45,212,191,0.06)',border:'1px solid rgba(45,212,191,0.22)',borderRadius:'12px' }}>
+                    {/* Next Action */}
+                    <div style={{ marginBottom:'16px',padding:'16px 18px',background:'rgba(45,212,191,0.06)',border:'1px solid rgba(45,212,191,0.24)',borderRadius:'14px' }}>
                       <p style={{ ...st,color:'#2DD4BF' }}>Next Action</p>
-                      <p style={{ margin:0,fontSize:'12px',color:'#67e8f9',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{next}</p>
+                      <p style={{ margin:0,fontSize:'12px',color:'#67e8f9',lineHeight:1.65,fontFamily:'var(--font-plex-mono)' }}>{next}</p>
                     </div>
-                    {missing.length>0&&(
-                      <div style={{ marginBottom:'16px' }}>
-                        <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>Open Checks</p>
-                        <div style={{ display:'flex',flexWrap:'wrap',gap:'6px' }}>
-                          {missing.map(m=>(
-                            <span key={m} style={{ padding:'4px 10px',borderRadius:'999px',fontSize:'10px',fontWeight:600,color:'#fbbf24',background:'rgba(251,191,36,0.07)',border:'1px solid rgba(251,191,36,0.25)',fontFamily:'var(--font-plex-mono)',whiteSpace:'nowrap' }}>{m}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {monitorItems.length>0&&(
+                    {/* Priority checklist */}
+                    {priorityItems.length>0&&(
                       <div style={{ marginBottom:'18px' }}>
-                        <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>What to Monitor</p>
+                        <p style={{ ...st,color:'#3a5268',margin:'0 0 10px' }}>Priority Checklist</p>
                         <div style={{ display:'flex',flexDirection:'column',gap:'8px' }}>
-                          {monitorItems.map(item=>(
-                            <div key={item.label} style={{ padding:'10px 14px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(251,191,36,0.16)',borderRadius:'10px' }}>
-                              <p style={{ margin:'0 0 3px',fontSize:'10px',fontWeight:700,color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>{item.label}</p>
-                              <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{item.detail}</p>
+                          {priorityItems.map(item=>(
+                            <div key={item.label} style={{ display:'flex',gap:'12px',padding:'12px 14px',background:'rgba(8,14,28,.72)',border:`1px solid ${item.urgent?'rgba(248,113,113,0.20)':'rgba(251,191,36,0.16)'}`,borderRadius:'12px',alignItems:'flex-start' }}>
+                              <div style={{ width:'20px',height:'20px',borderRadius:'50%',background:item.urgent?'rgba(248,113,113,0.14)':'rgba(251,191,36,0.12)',border:`1px solid ${item.urgent?'rgba(248,113,113,0.35)':'rgba(251,191,36,0.30)'}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,marginTop:'1px' }}>
+                                <span style={{ fontSize:'9px',fontWeight:800,color:item.urgent?'#f87171':'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>{item.num}</span>
+                              </div>
+                              <div>
+                                <p style={{ margin:'0 0 3px',fontSize:'11px',fontWeight:700,color:item.urgent?'#fca5a5':'#fde68a',fontFamily:'var(--font-plex-mono)' }}>{item.label}</p>
+                                <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{item.detail}</p>
+                              </div>
                             </div>
                           ))}
                         </div>
                       </div>
                     )}
-                    <div style={{ marginBottom:'16px',padding:'12px 14px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(125,211,252,0.16)',borderRadius:'10px' }}>
-                      <p style={{ ...st,color:'#7dd3fc' }}>Rescan Guidance</p>
-                      <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.55,fontFamily:'var(--font-plex-mono)' }}>
-                        {holderState.kind==='noRowsFallback'
-                          ?'Holder data was unavailable this pass. Rescan in a few minutes — holder indexing may catch up. Monitor liquidity and price action in the meantime.'
-                          :'Rescan after significant market movement or before entering a position to verify current liquidity and pool health.'}
-                      </p>
+                    {/* Open checks */}
+                    {missing.length>0&&(
+                      <div style={{ marginBottom:'16px' }}>
+                        <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>Open Checks</p>
+                        <div style={{ display:'flex',flexWrap:'wrap',gap:'6px' }}>
+                          {missing.map(m=>(
+                            <span key={m} style={{ padding:'4px 11px',borderRadius:'999px',fontSize:'10px',fontWeight:600,color:'#fbbf24',background:'rgba(251,191,36,0.07)',border:'1px solid rgba(251,191,36,0.25)',fontFamily:'var(--font-plex-mono)',whiteSpace:'nowrap' }}>{m}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* What to monitor */}
+                    {monitorItems.length>0&&(
+                      <div style={{ marginBottom:'18px' }}>
+                        <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>What to Monitor Next</p>
+                        <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:'8px' }}>
+                          {monitorItems.map(item=>(
+                            <div key={item.label} style={{ padding:'11px 14px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(125,211,252,0.12)',borderRadius:'10px' }}>
+                              <p style={{ margin:'0 0 3px',fontSize:'10px',fontWeight:700,color:'#7dd3fc',fontFamily:'var(--font-plex-mono)' }}>{item.label}</p>
+                              <p style={{ margin:0,fontSize:'11px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{item.detail}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* Rescan triggers */}
+                    <div style={{ marginBottom:'16px',padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(125,211,252,0.16)',borderRadius:'12px' }}>
+                      <p style={{ ...st,color:'#7dd3fc' }}>Rescan Triggers</p>
+                      <div style={{ display:'flex',flexDirection:'column',gap:'5px',marginTop:'2px' }}>
+                        {[
+                          holderState.kind==='noRowsFallback'?'Holder indexing may catch up — rescan in a few minutes.':null,
+                          'Rescan after significant liquidity changes or pool movement.',
+                          'Rescan before entering a position to verify current market state.',
+                          'Rescan if new pool creation or holder movement is reported.',
+                        ].filter(Boolean).map((t,i)=>(
+                          <div key={i} style={{ display:'flex',gap:'7px',alignItems:'flex-start' }}>
+                            <span style={{ color:'#7dd3fc',fontSize:'11px',flexShrink:0,lineHeight:'16px' }}>·</span>
+                            <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{t}</p>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    <div style={{ padding:'20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'12px',textAlign:'center' }}>
+                    <div style={{ padding:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'12px',textAlign:'center' }}>
                       <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#1e3a44',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>CORTEX Scan History</p>
                       <p style={{ margin:0,fontSize:'11px',color:'#1e3a44',fontFamily:'var(--font-plex-mono)' }}>CORTEX watch history will appear after repeated scans.</p>
                     </div>
@@ -1795,79 +1992,94 @@ export default function TerminalTokenScanner() {
               d.fallbackEvidence.ownerStatus === 'Unverified' ? 'Owner status' : '',
               result.marketCapUsd == null ? 'Market cap' : '',
             ].filter(Boolean)
+            // Compute score for sidebar
+            const sidebarScoreChecks = [
+              result.price != null || result.liquidity != null,
+              (result.liquidity ?? 0) > 1000,
+              hp?.simulationSuccess === true,
+              hp?.isHoneypot === false,
+              d.holderState.kind === 'rowsWithPercent',
+              result.marketCapUsd != null,
+              (result.lpControl?.status === 'locked' || result.lpControl?.status === 'burned'),
+              !result.noActivePools,
+            ]
+            const sidebarScore = Math.round((sidebarScoreChecks.filter(Boolean).length / sidebarScoreChecks.length) * 100)
+            const sidebarScoreColor = sidebarScore >= 75 ? '#34d399' : sidebarScore >= 50 ? '#fbbf24' : '#f87171'
+            // Critical risks (top 3 actionable)
+            const criticalRisks: string[] = [
+              hp?.isHoneypot === true ? 'HONEYPOT detected — do not trade.' : null,
+              taxesHigh ? `High taxes — buy ${buyTax?.toFixed(1)}% / sell ${sellTax?.toFixed(1)}%.` : null,
+              result.noActivePools ? 'No active liquidity pool found.' : null,
+              liq > 0 && liq < 10000 ? `Very thin liquidity — ${fmtLarge(liq)}.` : liq > 0 && liq < 50000 ? `Thin liquidity — ${fmtLarge(liq)}.` : null,
+              d.holderState.kind === 'noRowsFallback' ? 'Holder concentration unverified.' : null,
+              !hp?.simulationSuccess ? 'Tax simulation unavailable.' : null,
+            ].filter((x):x is string=>x!=null).slice(0,3)
             const ss = {padding:'10px 12px',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'10px',background:'rgba(8,14,28,.65)'}
-            const stitle = {margin:'0 0 7px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#3a5268',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
+            const stitle = {margin:'0 0 6px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#3a5268',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
             const sbody = {margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.65 as const,fontFamily:'var(--font-plex-mono)'}
             return (
               <div style={{display:'flex',flexDirection:'column',gap:'9px'}}>
-                {/* Verdict header */}
-                <div style={{padding:'14px 16px',border:`1px solid ${verdictColor}30`,borderRadius:'14px',background:'linear-gradient(135deg, rgba(8,20,38,.88), rgba(14,12,38,.86))',boxShadow:`0 0 28px ${verdictColor}0e`}}>
-                  <div style={{fontSize:'9px',letterSpacing:'.16em',color:'#475569',fontFamily:'var(--font-plex-mono)',marginBottom:'10px'}}>CORTEX LIVE READ</div>
-                  <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'12px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)'}}>{verdict}</div>
+                {/* CORTEX Receipt header */}
+                <div style={{padding:'16px',border:`1px solid ${verdictColor}30`,borderRadius:'14px',background:'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))',boxShadow:`0 0 28px ${verdictColor}0e`}}>
+                  <div style={{fontSize:'9px',letterSpacing:'.16em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'10px'}}>CORTEX RECEIPT</div>
+                  <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
+                    <div style={{flexShrink:0}}>
+                      <div style={{fontSize:'9px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'2px'}}>SCORE</div>
+                      <div style={{fontSize:'28px',fontWeight:800,color:sidebarScoreColor,fontFamily:'var(--font-plex-mono)',lineHeight:1}}>{sidebarScore}<span style={{fontSize:'12px',color:`${sidebarScoreColor}55`}}>/100</span></div>
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{verdict}</div>
+                      <div style={{height:'4px',borderRadius:'999px',background:'rgba(255,255,255,0.06)',overflow:'hidden'}}>
+                        <div style={{height:'100%',width:`${sidebarScore}%`,borderRadius:'999px',background:`linear-gradient(90deg,${sidebarScoreColor},${sidebarScoreColor}70)`,transition:'width 0.6s ease'}} />
+                      </div>
+                    </div>
+                  </div>
                 </div>
+                {/* Critical Risks */}
+                {criticalRisks.length > 0 && (
+                  <div style={{padding:'10px 12px',border:'1px solid rgba(248,113,113,0.22)',borderRadius:'10px',background:'rgba(248,113,113,0.04)'}}>
+                    <p style={{...stitle,color:'#f87171'}}>Critical Risks</p>
+                    <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
+                      {criticalRisks.map((r,i)=>(
+                        <div key={i} style={{display:'flex',gap:'6px',alignItems:'flex-start'}}>
+                          <span style={{color:'#f87171',flexShrink:0,fontSize:'11px',lineHeight:'16px'}}>!</span>
+                          <p style={{...sbody,color:'#fca5a5',margin:0}}>{r}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {/* Market Read */}
                 <div style={ss}>
                   <p style={stitle}>Market Read</p>
                   <p style={sbody}>{getMarketRead(result)}</p>
                 </div>
-                {/* Security Read */}
-                <div style={ss}>
-                  <p style={stitle}>Security Read</p>
-                  <div style={{display:'flex',flexWrap:'wrap',gap:'5px',marginBottom:'7px'}}>
-                    {d.dedupedSecurityChips.map(c => (
-                      <RiskPill key={c.label} label={c.label} value={{...c.style,label:c.displayLabel}} />
-                    ))}
-                  </div>
-                  <p style={sbody}>{getSecurityRead(result)}</p>
-                </div>
                 {/* Holder / Supply */}
                 <div style={ss}>
-                  <p style={stitle}>Holder / Supply</p>
+                  <p style={stitle}>Holder Read</p>
                   {d.holderState.kind === 'noRowsFallback' && (
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION UNVERIFIED</div>
                   )}
                   {result.holderDistribution?.holderCount != null && (
-                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'3px 10px',border:'1px solid rgba(45,212,191,.28)',borderRadius:'999px',fontSize:'11px',color:'#2DD4BF',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.06)'}}>
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 9px',border:'1px solid rgba(45,212,191,.28)',borderRadius:'999px',fontSize:'11px',color:'#2DD4BF',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.06)'}}>
                       {result.holderDistribution.holderCount.toLocaleString()} holders
                     </div>
                   )}
                   {(top10 != null || top20 != null) && (
-                    <div style={{display:'flex',gap:'6px',flexWrap:'wrap',marginBottom:'7px'}}>
-                      {top10 != null && <span style={{padding:'2px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:top10>50?'#f87171':top10>30?'#fbbf24':'#34d399',background:top10>50?'rgba(248,113,113,.08)':top10>30?'rgba(251,191,36,.08)':'rgba(52,211,153,.08)',border:top10>50?'1px solid rgba(248,113,113,.28)':top10>30?'1px solid rgba(251,191,36,.28)':'1px solid rgba(52,211,153,.28)',fontFamily:'var(--font-plex-mono)'}}>Top 10: {top10.toFixed(1)}%</span>}
-                      {top20 != null && <span style={{padding:'2px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#94a3b8',border:'1px solid rgba(148,163,184,.22)',fontFamily:'var(--font-plex-mono)'}}>Top 20: {top20.toFixed(1)}%</span>}
+                    <div style={{display:'flex',gap:'5px',flexWrap:'wrap',marginBottom:'7px'}}>
+                      {top10 != null && <span style={{padding:'2px 8px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:top10>50?'#f87171':top10>30?'#fbbf24':'#34d399',background:top10>50?'rgba(248,113,113,.08)':top10>30?'rgba(251,191,36,.08)':'rgba(52,211,153,.08)',border:top10>50?'1px solid rgba(248,113,113,.28)':top10>30?'1px solid rgba(251,191,36,.28)':'1px solid rgba(52,211,153,.28)',fontFamily:'var(--font-plex-mono)'}}>Top 10: {top10.toFixed(1)}%</span>}
+                      {top20 != null && <span style={{padding:'2px 8px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#94a3b8',border:'1px solid rgba(148,163,184,.22)',fontFamily:'var(--font-plex-mono)'}}>Top 20: {top20.toFixed(1)}%</span>}
                     </div>
                   )}
                   <p style={sbody}>{getHolderRead(result)}</p>
                 </div>
-                {/* Liquidity / Pools */}
+                {/* LP Read */}
                 <div style={ss}>
-                  <p style={stitle}>Liquidity / Pools</p>
+                  <p style={stitle}>LP Read</p>
                   <p style={sbody}>{getLiquidityRead(result)}</p>
                 </div>
-                {/* Bull + Bear */}
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}}>
-                  <div style={{...ss,border:'1px solid rgba(52,211,153,.20)'}}>
-                    <p style={{...stitle,color:'#34d399'}}>Bull</p>
-                    {bull.length ? bull.map((b,i)=><p key={i} style={{...sbody,color:'#86efac',margin:'0 0 4px'}}>• {b}</p>) : <p style={{...sbody,color:'#1e3a44'}}>No strong signals yet.</p>}
-                  </div>
-                  <div style={{...ss,border:'1px solid rgba(248,113,113,.20)'}}>
-                    <p style={{...stitle,color:'#f87171'}}>Bear</p>
-                    {bear.length ? bear.map((b,i)=><p key={i} style={{...sbody,color:'#fca5a5',margin:'0 0 4px'}}>• {b}</p>) : <p style={{...sbody,color:'#1e3a44'}}>No major signals surfaced.</p>}
-                  </div>
-                </div>
-                {/* Watch Checks */}
-                <div style={{...ss,background:'rgba(6,18,36,.70)',border:'1px solid rgba(125,211,252,.18)'}}>
-                  <p style={{...stitle,color:'#7dd3fc'}}>Watch Checks</p>
-                  <div style={{display:'grid',gap:'5px'}}>
-                    {!result.noActivePools && <div style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(16,185,129,.10)',border:'1px solid rgba(16,185,129,.22)',color:'#86efac',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>✓ Pool detected</div>}
-                    {!result.noActivePools && <div style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(16,185,129,.10)',border:'1px solid rgba(16,185,129,.22)',color:'#86efac',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>✓ Liquidity scan completed</div>}
-                    {result.noActivePools && <div style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(245,158,11,.08)',border:'1px solid rgba(245,158,11,.26)',color:'#fde68a',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>✕ No active pool found</div>}
-                    {hp?.simulationSuccess && <div style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(16,185,129,.10)',border:'1px solid rgba(16,185,129,.22)',color:'#86efac',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>✓ Security simulation completed</div>}
-                    {missingChecks.slice(0,3).map(m=><div key={m} style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(245,158,11,.08)',border:'1px solid rgba(245,158,11,.24)',color:'#fde68a',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>• {m} not confirmed</div>)}
-                  </div>
-                </div>
                 {/* Next Action */}
-                <div style={{padding:'11px 14px',border:'1px solid rgba(45,212,191,.32)',borderRadius:'12px',background:'rgba(45,212,191,.06)'}}>
+                <div style={{padding:'11px 14px',border:'1px solid rgba(45,212,191,.32)',borderRadius:'12px',background:'rgba(45,212,191,.05)'}}>
                   <p style={{...stitle,color:'#2DD4BF',marginBottom:'5px'}}>Next Action</p>
                   <p style={{...sbody,color:'#67e8f9'}}>{getNextAction(result)}</p>
                 </div>
