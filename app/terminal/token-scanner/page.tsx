@@ -1214,6 +1214,20 @@ export default function TerminalTokenScanner() {
                   { label: 'LP Control',  chipOk: lpVerified,      chipPartial: false,              chipColor: lpVerified ? '#34d399' : '#f87171' },
                   { label: 'Risk Checks', chipOk: riskChipOk,      chipPartial: simUnavailable,     chipColor: riskChipOk ? '#34d399' : simUnavailable ? '#94a3b8' : '#f87171' },
                 ]
+                const marketStrengthLabel = result.noActivePools ? 'Unverified' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Unverified'
+                const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
+                const lpProofLabel = lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'unsupported' ? 'Protocol liquidity' : 'Unverified'
+                const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
+                const scoreBreakdown = [
+                  { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
+                  { label: 'Liquidity', ok: (result.liquidity ?? 0) > 1000, reason: (result.liquidity ?? 0) > 1000 ? `${fmtLarge(result.liquidity)} depth detected.` : 'Liquidity too thin or missing.' },
+                  { label: 'Holders', ok: holderState.kind === 'rowsWithPercent', reason: holderState.kind === 'rowsWithPercent' ? 'Top holder percentages verified.' : 'Holder percentages unverified.' },
+                  { label: 'Security', ok: riskChipOk, reason: riskChipOk ? 'Simulation passed with no honeypot flag.' : simUnavailable ? 'Simulation unavailable this pass.' : 'Security risk detected.' },
+                  { label: 'LP Proof', ok: lpVerified, reason: lpVerified ? `LP ${lpStatus}.` : 'No lock/burn proof confirmed.' },
+                  { label: 'Missing Checks', ok: missing2.length === 0, reason: missing2.length === 0 ? 'No open checks.' : `${missing2.length} open checks remain.` },
+                ]
+                const goodSignals = goodSigns.length >= 2 ? goodSigns : [...goodSigns, 'No additional positive signals confirmed this scan.']
+                const riskSignals = riskSigns.length >= 2 ? riskSigns : [...riskSigns, 'No additional risk signals surfaced beyond current checks.']
                 return (
                   <>
                     {/* CORTEX Score Hero */}
@@ -1237,7 +1251,7 @@ export default function TerminalTokenScanner() {
                           </div>
                         </div>
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(102px,1fr))', gap: '8px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(102px,1fr))', gap: '8px' }}>
                         {statusChips.map(({ label, chipOk, chipPartial, chipColor }) => (
                           <div key={label} style={{ padding: '9px 11px', borderRadius: '10px', background: `${chipColor}08`, border: `1px solid ${chipColor}20`, display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: chipColor, flexShrink: 0, boxShadow: `0 0 5px ${chipColor}` }} />
@@ -1249,11 +1263,31 @@ export default function TerminalTokenScanner() {
                         ))}
                       </div>
                     </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px', marginBottom: '12px' }}>
+                      {[{label:'Market Strength',value:marketStrengthLabel},{label:'Holder Risk',value:holderRiskLabel},{label:'LP Proof',value:lpProofLabel},{label:'Security Confidence',value:securityConfidenceLabel}].map((item)=>(
+                        <div key={item.label} style={{ padding:'11px 12px', borderRadius:'11px', border:'1px solid rgba(148,163,184,0.18)', background:'rgba(8,14,28,0.62)' }}>
+                          <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', fontFamily:'var(--font-plex-mono)', marginBottom:'5px' }}>{item.label}</div>
+                          <div style={{ fontSize:'13px', fontWeight:700, color:'#e2e8f0', fontFamily:'var(--font-plex-mono)' }}>{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginBottom:'20px', padding:'14px 16px', borderRadius:'12px', border:'1px solid rgba(125,211,252,0.18)', background:'rgba(8,14,28,0.65)' }}>
+                      <p style={{ margin:'0 0 10px', fontSize:'10px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
+                      <div style={{ display:'grid', gap:'7px' }}>
+                        {scoreBreakdown.map((b)=>(
+                          <div key={b.label} style={{ display:'grid', gridTemplateColumns:'120px 74px 1fr', gap:'10px', alignItems:'center' }}>
+                            <span style={{ fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)' }}>{b.label}</span>
+                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{b.ok ? 'PASS' : 'OPEN'}</span>
+                            <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                     {/* 4-card CORTEX Read layout */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(228px,1fr))', gap: '12px', marginBottom: '20px' }}>
                       <div style={{ padding: '16px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.18)', borderRadius: '12px' }}>
                         <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#34d399', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Good Signs</p>
-                        {goodSigns.length > 0 ? goodSigns.map((s, i) => (
+                        {goodSignals.length > 0 ? goodSignals.map((s, i) => (
                           <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '6px' }}>
                             <span style={{ color: '#34d399', flexShrink: 0, fontSize: '11px', lineHeight: '16px' }}>✓</span>
                             <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
@@ -1262,7 +1296,7 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ padding: '16px', background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.18)', borderRadius: '12px' }}>
                         <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#f87171', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Risk Signs</p>
-                        {riskSigns.length > 0 ? riskSigns.map((s, i) => (
+                        {riskSignals.length > 0 ? riskSignals.map((s, i) => (
                           <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '6px' }}>
                             <span style={{ color: '#f87171', flexShrink: 0, fontSize: '11px', lineHeight: '16px' }}>!</span>
                             <p style={{ margin: 0, fontSize: '11px', color: '#fca5a5', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
@@ -1307,6 +1341,27 @@ export default function TerminalTokenScanner() {
                   <div style={{ marginBottom: '18px' }}>
                     <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
                     <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Live price, liquidity, volume and pool data for this token.</p>
+                  </div>
+                  <div style={{ marginBottom: '16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: '9px' }}>
+                    {(() => {
+                      const marketStrength = result.noActivePools ? 'Unverified' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Unverified'
+                      const volRead = result.priceChange24h == null ? 'Unverified' : Math.abs(result.priceChange24h) > 20 ? 'High volatility' : Math.abs(result.priceChange24h) > 8 ? 'Moderate volatility' : 'Controlled volatility'
+                      const activityRead = result.volume24h != null && result.liquidity != null && result.liquidity > 0 ? `${((result.volume24h / result.liquidity) * 100).toFixed(0)}% vol/liquidity` : 'Activity unverified'
+                      const mcfdvRead = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0 ? `${((result.marketCapUsd / result.fdvUsd) * 100).toFixed(0)}% MC/FDV` : 'MC vs FDV unverified'
+                      const items = [
+                        ['Market strength', marketStrength],
+                        ['Liquidity depth', result.liquidity != null ? fmtLarge(result.liquidity) : 'Unverified'],
+                        ['24h activity', activityRead],
+                        ['Volatility read', volRead],
+                        ['MC vs FDV read', mcfdvRead],
+                      ] as Array<[string,string]>
+                      return items.map(([label, value]) => (
+                        <div key={label} style={{ padding:'11px 12px', borderRadius:'10px', border:'1px solid rgba(103,232,249,0.16)', background:'rgba(8,14,28,0.62)' }}>
+                          <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{label}</div>
+                          <div style={{ fontSize:'12px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
+                        </div>
+                      ))
+                    })()}
                   </div>
                   {/* Market Insight Strip */}
                   {!result.noActivePools && (result.price != null || result.liquidity != null) && (
@@ -1482,6 +1537,7 @@ export default function TerminalTokenScanner() {
                     })()}
                     {isFullAccess && (() => {
                       if (holderState.kind !== 'noRowsFallback') {
+                        const top1h = result.holderDistribution?.top1
                         const top10h = result.holderDistribution?.top10
                         const concRisk = top10h != null ? (top10h > 50 ? 'HIGH' : top10h > 30 ? 'MEDIUM' : 'LOW') : null
                         const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
@@ -1490,6 +1546,20 @@ export default function TerminalTokenScanner() {
                           : null
                         return (
                           <div className="holders-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                            <div style={{ gridColumn:'1 / -1', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:'8px' }}>
+                              {[
+                                ['Holder Risk', concRisk ?? 'Unverified'],
+                                ['Top 10 Control', top10h != null ? `${top10h.toFixed(1)}%` : 'Unverified'],
+                                ['Top 20 Control', result.holderDistribution?.top20 != null ? `${result.holderDistribution.top20.toFixed(1)}%` : 'Unverified'],
+                                ['Holder Count', result.holderDistribution?.holderCount != null ? result.holderDistribution.holderCount.toLocaleString() : 'Unverified'],
+                                ['Supply Spread', concRead ?? 'Supply spread unverified'],
+                              ].map(([label,val])=>(
+                                <div key={label} style={{ padding:'10px 11px', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.22)', background:'rgba(15,23,42,0.55)' }}>
+                                  <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'4px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
+                                  <div style={{ fontSize:'11px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{val}</div>
+                                </div>
+                              ))}
+                            </div>
                             <div className="glass-card" style={{ padding: '18px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
                                 <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
@@ -1507,6 +1577,16 @@ export default function TerminalTokenScanner() {
                                   </div>
                                 ))}
                               </div>
+                              {(top10h != null && top10h > 50) && (
+                                <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#fca5a5', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.08)', borderRadius: '10px', padding: '8px 10px' }}>
+                                  High concentration — top wallets control majority supply.
+                                </p>
+                              )}
+                              {(top1h != null && top1h > 20) && (
+                                <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#fecaca', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.22)', background: 'rgba(248,113,113,0.06)', borderRadius: '10px', padding: '8px 10px' }}>
+                                  Largest holder has meaningful supply control.
+                                </p>
+                              )}
                               {concRead && <p style={{ margin: '10px 0 0', fontSize: '11px', color: concColor, lineHeight: 1.5 }}>{concRead}</p>}
                               <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#8aa3b8' }}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
                             </div>
@@ -1571,7 +1651,7 @@ export default function TerminalTokenScanner() {
               {activeSection === 'lp-control' && (
                 <>
                   <div style={{ marginBottom: '18px' }}>
-                    <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP CONTROL</p>
+                    <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP CONTROL</p>
                     <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, primary pool, and pool board.</p>
                   </div>
                   {!isFullAccess && (
@@ -1585,6 +1665,7 @@ export default function TerminalTokenScanner() {
                   {isFullAccess && result.lpControl && (() => {
                     const lp = result.lpControl
                     const read = result.lpControlRead
+                    const lpIsVerified = lp.status === 'locked' || lp.status === 'burned'
                     const statusColor: Record<string,string> = { burned:'#34d399',locked:'#34d399',team_controlled:'#f87171',unsupported:'#fbbf24',unverified:'#94a3b8',error:'#f87171' }
                     const color = statusColor[lp.status??'unverified']??'#94a3b8'
                     const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',team_controlled:'Team controlled',unsupported:'Protocol liquidity',unverified:'Unverified',error:'Unverified' }
@@ -1602,9 +1683,23 @@ export default function TerminalTokenScanner() {
                     const nextAction = read?.nextAction??'Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.'
                     return (
                       <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg,rgba(15,23,42,0.72),rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
-                        <button type="button" onClick={()=>setLpExpanded((v)=>!v)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '11px 14px', background: 'rgba(255,255,255,0.03)', border: 'none', borderBottom: lpExpanded?'1px solid rgba(255,255,255,0.06)':'none', cursor: 'pointer', textAlign: 'left' }}>
+                        <div style={{ padding:'11px 12px', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px' }}>
+                          {[
+                            ['Pool detected', lp.poolAddressPresent ? 'Yes' : 'No'],
+                            ['Primary market selected', verificationPool !== 'Unverified' ? 'Yes' : 'No'],
+                            ['LP lock/burn proof', lpIsVerified ? 'Verified' : 'Unverified'],
+                            ['Protocol-specific proof', lp.status === 'unsupported' ? 'Required' : 'N/A'],
+                            ['Next action', nextAction],
+                          ].map(([k,v])=>(
+                            <div key={String(k)} style={{ padding:'8px 9px', border:'1px solid rgba(148,163,184,0.18)', borderRadius:'9px', background:'rgba(8,14,28,0.55)' }}>
+                              <div style={{ fontSize:'9px', color:'#64748b', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{k}</div>
+                              <div style={{ fontSize:'11px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)' }}>{v}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <button type="button" onClick={()=>setLpExpanded((v)=>!v)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '10px', padding: '14px 16px', background: 'rgba(255,255,255,0.03)', border: 'none', borderBottom: lpExpanded?'1px solid rgba(255,255,255,0.06)':'none', cursor: 'pointer', textAlign: 'left' }}>
                           <span style={{ width:7,height:7,borderRadius:'50%',background:color,flexShrink:0,boxShadow:`0 0 6px ${color}` }} />
-                          <span style={{ fontWeight:700,color:'#f8fafc',fontSize:'12px' }}>LP Control: {statusLabelMap[lp.status??'unverified']??'Unverified'}</span>
+                          <span style={{ fontWeight:700,color:'#f8fafc',fontSize:'13px' }}>LP Status: {statusLabelMap[lp.status??'unverified']??'Unverified'}</span>
                           {read?.riskLevel&&<span style={{ marginLeft:'auto',fontSize:'10px',color:'#94a3b8',letterSpacing:'0.05em' }}>{read.riskLevel}</span>}
                           <span style={{ fontSize:'10px',color:'#cbd5e1',letterSpacing:'0.06em' }}>Details {lpExpanded?'▾':'▸'}</span>
                         </button>
@@ -1612,21 +1707,21 @@ export default function TerminalTokenScanner() {
                           <div style={{ transition:'all 160ms ease' }}>
                             <div style={{ padding:'9px 14px',color:'#dbeafe',lineHeight:1.55 }}><span style={{ color:'#f8fafc',fontWeight:600 }}>Risk read:</span> {riskRead}</div>
                             <div style={{ padding:'0 14px 8px' }}>
-                              <div style={{ fontSize:'10px',color:'#94a3b8',letterSpacing:'0.08em',textTransform:'uppercase' }}>Verification pool</div>
-                              <div style={{ marginTop:'3px',color:'#f8fafc',fontWeight:600 }}>{verificationPool}</div>
+                              <div style={{ fontSize:'10px',color:'#94a3b8',letterSpacing:'0.08em',textTransform:'uppercase' }}>Verified checks</div>
+                              <div style={{ marginTop:'3px',color:'#f8fafc',fontWeight:600 }}>{checked.join(' · ') || 'No verified checks returned'}</div>
                             </div>
                             <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:'8px',padding:'6px 12px 8px',borderTop:'1px solid rgba(255,255,255,0.05)' }}>
                               <div style={{ padding:'8px 10px',border:'1px solid rgba(52,211,153,0.16)',borderRadius:'10px',background:'rgba(15,23,42,0.36)' }}>
-                                <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>What was checked</div>
-                                {checked.map((f,i)=><div key={i} style={{ color:'#e2e8f0',display:'flex',gap:'6px' }}><span style={{ color:'#34d399' }}>✓</span>{f}</div>)}
+                                <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>LP verification pool</div>
+                                <div style={{ color:'#e2e8f0' }}>{verificationPool}</div>
                               </div>
                               <div style={{ padding:'8px 10px',border:'1px solid rgba(245,158,11,0.2)',borderRadius:'10px',background:'rgba(245,158,11,0.08)' }}>
-                                <div style={{ fontSize:'10px',color:'#fbbf24',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Unverified checks</div>
+                                <div style={{ fontSize:'10px',color:'#fbbf24',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Open checks</div>
                                 <div style={{ fontSize:'11px',color:'#fde68a',marginBottom:'6px' }}>Treat as incomplete, not safe.</div>
                                 {unresolved.map((f,i)=><div key={i} style={{ color:'#f8fafc',display:'flex',gap:'6px' }}><span style={{ color:'#f59e0b' }}>✕</span>{f}</div>)}
                               </div>
                             </div>
-                            <div style={{ padding:'8px 14px 12px',borderTop:'1px solid rgba(255,255,255,0.05)',color:'#cbd5e1' }}><span style={{ color:'#94a3b8' }}>Next action:</span> {nextAction}</div>
+                            <div style={{ padding:'10px 14px 12px',borderTop:'1px solid rgba(255,255,255,0.05)',color:'#cbd5e1' }}><span style={{ color:'#94a3b8' }}>Next action:</span> {nextAction}</div>
                           </div>
                         )}
                       </div>
@@ -1718,6 +1813,20 @@ export default function TerminalTokenScanner() {
                     ].filter((x):x is string=>x!=null)
                     return(
                       <div>
+                        <div style={{ marginBottom:'12px', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))', gap:'8px' }}>
+                          {[
+                            ['Simulation status', simVerified ? 'Verified' : 'Unverified'],
+                            ['Tax verification', simVerified ? 'Verified from simulation' : 'Open check'],
+                            ['Owner status', ownerGroup[0]?.value ?? 'Unverified'],
+                            ['Contract flags', contractGroup.length > 0 ? `${contractGroup.length} checks surfaced` : 'Unverified'],
+                            ['Open risks', openRisks.length > 0 ? `${openRisks.length} open` : 'None'],
+                          ].map(([label,value])=>(
+                            <div key={String(label)} style={{ padding:'10px 11px', border:'1px solid rgba(248,113,113,0.16)', borderRadius:'10px', background:'rgba(8,14,28,0.6)' }}>
+                              <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'4px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
+                              <div style={{ fontSize:'11px', color:'#f1f5f9', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
+                            </div>
+                          ))}
+                        </div>
                         <div style={gs}>
                           <div style={{ padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px' }}>
                             <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px',flexWrap:'wrap' }}>
@@ -1806,7 +1915,7 @@ export default function TerminalTokenScanner() {
                     {/* Priority checklist */}
                     {priorityItems.length>0&&(
                       <div style={{ marginBottom:'18px' }}>
-                        <p style={{ ...st,color:'#3a5268',margin:'0 0 10px' }}>Priority Checklist</p>
+                        <p style={{ ...st,color:'#3a5268',margin:'0 0 10px' }}>Priority Track</p>
                         <div style={{ display:'flex',flexDirection:'column',gap:'8px' }}>
                           {priorityItems.map(item=>(
                             <div key={item.label} style={{ display:'flex',gap:'12px',padding:'12px 14px',background:'rgba(8,14,28,.72)',border:`1px solid ${item.urgent?'rgba(248,113,113,0.20)':'rgba(251,191,36,0.16)'}`,borderRadius:'12px',alignItems:'flex-start' }}>
@@ -1837,7 +1946,7 @@ export default function TerminalTokenScanner() {
                     {monitorItems.length>0&&(
                       <div style={{ marginBottom:'18px' }}>
                         <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>What to Monitor Next</p>
-                        <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:'8px' }}>
+                        <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:'8px' }}>
                           {monitorItems.map(item=>(
                             <div key={item.label} style={{ padding:'11px 14px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(125,211,252,0.12)',borderRadius:'10px' }}>
                               <p style={{ margin:'0 0 3px',fontSize:'10px',fontWeight:700,color:'#7dd3fc',fontFamily:'var(--font-plex-mono)' }}>{item.label}</p>
@@ -1867,6 +1976,13 @@ export default function TerminalTokenScanner() {
                     <div style={{ padding:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'12px',textAlign:'center' }}>
                       <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#1e3a44',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>CORTEX Scan History</p>
                       <p style={{ margin:0,fontSize:'11px',color:'#1e3a44',fontFamily:'var(--font-plex-mono)' }}>CORTEX watch history will appear after repeated scans.</p>
+                    </div>
+                    <div style={{ marginTop:'10px', padding:'14px 16px', border:'1px dashed rgba(148,163,184,0.32)', borderRadius:'12px', background:'rgba(8,14,28,0.48)', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+                      <div>
+                        <p style={{ margin:'0 0 3px', fontSize:'10px', color:'#94a3b8', letterSpacing:'.1em', fontFamily:'var(--font-plex-mono)' }}>COMING SOON</p>
+                        <p style={{ margin:0, fontSize:'12px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)' }}>Save to Watchlist</p>
+                      </div>
+                      <button type="button" disabled style={{ padding:'8px 14px', borderRadius:'999px', border:'1px solid rgba(148,163,184,0.35)', background:'rgba(148,163,184,0.15)', color:'#94a3b8', fontWeight:700, fontFamily:'var(--font-plex-mono)', cursor:'not-allowed' }}>Save</button>
                     </div>
                   </>
                 )
@@ -2035,10 +2151,10 @@ export default function TerminalTokenScanner() {
                     </div>
                   </div>
                 </div>
-                {/* Critical Risks */}
+                {/* Top 3 Risks */}
                 {criticalRisks.length > 0 && (
                   <div style={{padding:'10px 12px',border:'1px solid rgba(248,113,113,0.22)',borderRadius:'10px',background:'rgba(248,113,113,0.04)'}}>
-                    <p style={{...stitle,color:'#f87171'}}>Critical Risks</p>
+                    <p style={{...stitle,color:'#f87171'}}>Top 3 Risks</p>
                     <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
                       {criticalRisks.map((r,i)=>(
                         <div key={i} style={{display:'flex',gap:'6px',alignItems:'flex-start'}}>
@@ -2049,10 +2165,10 @@ export default function TerminalTokenScanner() {
                     </div>
                   </div>
                 )}
-                {/* Market Read */}
+                {/* Top 2 Positives */}
                 <div style={ss}>
-                  <p style={stitle}>Market Read</p>
-                  <p style={sbody}>{getMarketRead(result)}</p>
+                  <p style={stitle}>Top 2 Positives</p>
+                  <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>{bull.slice(0,2).map((b,i)=><p key={i} style={{...sbody,margin:0,color:'#86efac'}}>{b}</p>)}</div>
                 </div>
                 {/* Holder / Supply */}
                 <div style={ss}>
@@ -2072,11 +2188,6 @@ export default function TerminalTokenScanner() {
                     </div>
                   )}
                   <p style={sbody}>{getHolderRead(result)}</p>
-                </div>
-                {/* LP Read */}
-                <div style={ss}>
-                  <p style={stitle}>LP Read</p>
-                  <p style={sbody}>{getLiquidityRead(result)}</p>
                 </div>
                 {/* Next Action */}
                 <div style={{padding:'11px 14px',border:'1px solid rgba(45,212,191,.32)',borderRadius:'12px',background:'rgba(45,212,191,.05)'}}>
