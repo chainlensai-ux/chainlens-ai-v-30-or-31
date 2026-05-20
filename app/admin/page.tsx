@@ -244,30 +244,74 @@ function PaymentsTable({ rows }: { rows: Record<string, unknown>[] }) {
   )
 }
 
-function ApplicationsTable({ rows }: { rows: Record<string, unknown>[] }) {
+function ApplicationsTable({
+  rows, onAction, pendingId,
+}: {
+  rows: Record<string, unknown>[]
+  onAction: (action: string, id: string, confirmMsg: string) => void
+  pendingId: string | null
+}) {
   return (
     <div style={tableWrap}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            {['Time', 'Name', 'Email', 'X Handle', 'Audience Size', 'Status', 'Referral Code'].map((h) => (
+            {['Time', 'Name', 'Email', 'X Handle', 'Audience Size', 'Status', 'Referral Code', 'Actions'].map((h) => (
               <th key={h} style={th}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 && <EmptyRow cols={7} />}
-          {rows.map((a, i) => (
-            <tr key={i}>
-              <td style={{ ...td, color: '#64748b' }}>{fmtDate(a.created_at)}</td>
-              <td style={td}>{String(a.name ?? '—')}</td>
-              <td style={td}>{String(a.email ?? '—')}</td>
-              <td style={{ ...td, color: '#67e8f9' }}>{a.x_handle ? `@${a.x_handle}` : '—'}</td>
-              <td style={{ ...td, color: '#94a3b8' }}>{a.audience_size ? Number(a.audience_size).toLocaleString() : '—'}</td>
-              <td style={td}><StatusBadge status={a.status} /></td>
-              <td style={{ ...td, color: '#a78bfa' }}>{String(a.referral_code ?? '—')}</td>
-            </tr>
-          ))}
+          {rows.length === 0 && <EmptyRow cols={8} />}
+          {rows.map((a, i) => {
+            const id = String(a.id ?? '')
+            const busy = pendingId === id
+            return (
+              <tr key={i}>
+                <td style={{ ...td, color: '#64748b' }}>{fmtDate(a.created_at)}</td>
+                <td style={td}>{String(a.name ?? '—')}</td>
+                <td style={td}>{String(a.email ?? '—')}</td>
+                <td style={{ ...td, color: '#67e8f9' }}>{a.x_handle ? `@${a.x_handle}` : '—'}</td>
+                <td style={{ ...td, color: '#94a3b8' }}>{a.audience_size ? Number(a.audience_size).toLocaleString() : '—'}</td>
+                <td style={td}><StatusBadge status={a.status} /></td>
+                <td style={{ ...td, color: '#a78bfa' }}>{String(a.referral_code ?? '—')}</td>
+                <td style={td}>
+                  {a.status === 'pending' && id ? (
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        disabled={busy}
+                        onClick={() => onAction('approve_affiliate', id, `Approve affiliate ${String(a.email ?? id)}?`)}
+                        style={{
+                          padding: '3px 10px', borderRadius: '6px', border: '1px solid rgba(52,211,153,0.35)',
+                          background: busy ? 'rgba(52,211,153,0.04)' : 'rgba(52,211,153,0.10)',
+                          color: '#34d399', fontSize: '10px', fontWeight: 700,
+                          fontFamily: 'var(--font-plex-mono)', cursor: busy ? 'not-allowed' : 'pointer',
+                          opacity: busy ? 0.5 : 1, letterSpacing: '0.06em',
+                        }}
+                      >
+                        {busy ? '…' : 'APPROVE'}
+                      </button>
+                      <button
+                        disabled={busy}
+                        onClick={() => onAction('reject_affiliate', id, `Reject affiliate ${String(a.email ?? id)}?`)}
+                        style={{
+                          padding: '3px 10px', borderRadius: '6px', border: '1px solid rgba(248,113,113,0.35)',
+                          background: busy ? 'rgba(248,113,113,0.04)' : 'rgba(248,113,113,0.10)',
+                          color: '#f87171', fontSize: '10px', fontWeight: 700,
+                          fontFamily: 'var(--font-plex-mono)', cursor: busy ? 'not-allowed' : 'pointer',
+                          opacity: busy ? 0.5 : 1, letterSpacing: '0.06em',
+                        }}
+                      >
+                        {busy ? '…' : 'REJECT'}
+                      </button>
+                    </div>
+                  ) : (
+                    <span style={{ color: '#1e3a44', fontSize: '10px', fontFamily: 'var(--font-plex-mono)' }}>—</span>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -306,31 +350,77 @@ function ApprovedAffiliatesTable({ rows }: { rows: AffiliateWithStats[] }) {
   )
 }
 
-function CommissionsTable({ rows }: { rows: Record<string, unknown>[] }) {
+function CommissionsTable({
+  rows, onAction, pendingId,
+}: {
+  rows: Record<string, unknown>[]
+  onAction: (action: string, id: string, confirmMsg: string) => void
+  pendingId: string | null
+}) {
   return (
     <div style={tableWrap}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            {['Time', 'Affiliate ID', 'Buyer Email', 'Payment Amt', 'Rate', 'Commission', 'Status', 'Paid At'].map((h) => (
+            {['Time', 'Affiliate ID', 'Buyer Email', 'Payment Amt', 'Rate', 'Commission', 'Status', 'Paid At', 'Actions'].map((h) => (
               <th key={h} style={th}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 && <EmptyRow cols={8} />}
-          {rows.map((c, i) => (
-            <tr key={i}>
-              <td style={{ ...td, color: '#64748b' }}>{fmtDate(c.created_at)}</td>
-              <td style={{ ...td, color: '#94a3b8' }}>{shorten(c.affiliate_id, 14)}</td>
-              <td style={td}>{String(c.buyer_email ?? '—')}</td>
-              <td style={{ ...td, color: '#34d399' }}>{fmtUsd(c.payment_amount_usd)}</td>
-              <td style={{ ...td, color: '#2DD4BF' }}>{fmtPct(c.commission_rate)}</td>
-              <td style={{ ...td, color: '#fbbf24', fontWeight: 700 }}>{fmtUsd(c.commission_amount)}</td>
-              <td style={td}><StatusBadge status={c.status} /></td>
-              <td style={{ ...td, color: '#64748b' }}>{c.paid_at ? fmtDate(c.paid_at) : '—'}</td>
-            </tr>
-          ))}
+          {rows.length === 0 && <EmptyRow cols={9} />}
+          {rows.map((c, i) => {
+            const id = String(c.id ?? '')
+            const busy = pendingId === id
+            const status = String(c.status ?? '').toLowerCase()
+            return (
+              <tr key={i}>
+                <td style={{ ...td, color: '#64748b' }}>{fmtDate(c.created_at)}</td>
+                <td style={{ ...td, color: '#94a3b8' }}>{shorten(c.affiliate_id, 14)}</td>
+                <td style={td}>{String(c.buyer_email ?? '—')}</td>
+                <td style={{ ...td, color: '#34d399' }}>{fmtUsd(c.payment_amount_usd)}</td>
+                <td style={{ ...td, color: '#2DD4BF' }}>{fmtPct(c.commission_rate)}</td>
+                <td style={{ ...td, color: '#fbbf24', fontWeight: 700 }}>{fmtUsd(c.commission_amount)}</td>
+                <td style={td}><StatusBadge status={c.status} /></td>
+                <td style={{ ...td, color: '#64748b' }}>{c.paid_at ? fmtDate(c.paid_at) : '—'}</td>
+                <td style={td}>
+                  {id && status === 'pending' && (
+                    <button
+                      disabled={busy}
+                      onClick={() => onAction('mark_commission_paid', id, `Mark commission ${fmtUsd(c.commission_amount)} as paid?`)}
+                      style={{
+                        padding: '3px 10px', borderRadius: '6px', border: '1px solid rgba(103,232,249,0.35)',
+                        background: busy ? 'rgba(103,232,249,0.04)' : 'rgba(103,232,249,0.10)',
+                        color: '#67e8f9', fontSize: '10px', fontWeight: 700,
+                        fontFamily: 'var(--font-plex-mono)', cursor: busy ? 'not-allowed' : 'pointer',
+                        opacity: busy ? 0.5 : 1, letterSpacing: '0.06em',
+                      }}
+                    >
+                      {busy ? '…' : 'MARK PAID'}
+                    </button>
+                  )}
+                  {id && status === 'paid' && (
+                    <button
+                      disabled={busy}
+                      onClick={() => onAction('mark_commission_pending', id, `Revert commission ${fmtUsd(c.commission_amount)} to pending?`)}
+                      style={{
+                        padding: '3px 10px', borderRadius: '6px', border: '1px solid rgba(251,191,36,0.30)',
+                        background: busy ? 'rgba(251,191,36,0.04)' : 'rgba(251,191,36,0.08)',
+                        color: '#fbbf24', fontSize: '10px', fontWeight: 700,
+                        fontFamily: 'var(--font-plex-mono)', cursor: busy ? 'not-allowed' : 'pointer',
+                        opacity: busy ? 0.5 : 1, letterSpacing: '0.06em',
+                      }}
+                    >
+                      {busy ? '…' : 'REVERT'}
+                    </button>
+                  )}
+                  {(!id || (status !== 'pending' && status !== 'paid')) && (
+                    <span style={{ color: '#1e3a44', fontSize: '10px', fontFamily: 'var(--font-plex-mono)' }}>—</span>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -366,18 +456,77 @@ function ReferredUsersTable({ rows }: { rows: Record<string, unknown>[] }) {
   )
 }
 
+// ─── Toast ────────────────────────────────────────────────────────────────────
+
+function Toast({ msg, ok, onDismiss }: { msg: string; ok: boolean; onDismiss: () => void }) {
+  return (
+    <div style={{
+      position: 'fixed', bottom: '28px', right: '28px', zIndex: 9999,
+      padding: '12px 18px', borderRadius: '10px',
+      background: ok ? 'rgba(10,25,15,0.97)' : 'rgba(25,10,10,0.97)',
+      border: `1px solid ${ok ? 'rgba(52,211,153,0.4)' : 'rgba(248,113,113,0.4)'}`,
+      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', gap: '10px',
+      maxWidth: '340px',
+    }}>
+      <span style={{ fontSize: '13px', color: ok ? '#34d399' : '#f87171', fontFamily: 'var(--font-plex-mono)', fontWeight: 600 }}>
+        {ok ? 'OK' : 'ERR'}
+      </span>
+      <span style={{ fontSize: '12px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', flex: 1 }}>{msg}</span>
+      <button
+        onClick={onDismiss}
+        style={{
+          background: 'none', border: 'none', color: '#3a5268',
+          cursor: 'pointer', fontSize: '14px', padding: '0 4px', lineHeight: 1,
+        }}
+      >
+        x
+      </button>
+    </div>
+  )
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 function Dashboard({
-  data, adminEmail, onRefresh, lastRefresh, refreshing,
+  data, adminEmail, onRefresh, lastRefresh, refreshing, token,
 }: {
   data: AdminData
   adminEmail: string
   onRefresh: () => void
   lastRefresh: Date | null
   refreshing: boolean
+  token: string
 }) {
   const { metrics, payments, pendingApplications, approvedAffiliates, commissions, referredUsers } = data
+  const [pendingId, setPendingId] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+
+  const runAction = useCallback(async (action: string, id: string, confirmMsg: string) => {
+    if (!window.confirm(confirmMsg)) return
+    setPendingId(id)
+    try {
+      const res = await fetch('/api/admin/actions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action, id }),
+      })
+      const json = await res.json().catch(() => ({})) as { ok?: boolean; message?: string; error?: string }
+      if (res.ok && json.ok) {
+        setToast({ msg: json.message ?? 'Done', ok: true })
+        onRefresh()
+      } else {
+        setToast({ msg: json.error ?? `Error ${res.status}`, ok: false })
+      }
+    } catch {
+      setToast({ msg: 'Network error', ok: false })
+    } finally {
+      setPendingId(null)
+    }
+  }, [token, onRefresh])
 
   return (
     <div style={{
@@ -489,7 +638,7 @@ function Dashboard({
           {/* Pending Applications */}
           <div style={card}>
             <SectionHeader label="Affiliate Applications (Pending)" count={pendingApplications.length} />
-            <ApplicationsTable rows={pendingApplications} />
+            <ApplicationsTable rows={pendingApplications} onAction={runAction} pendingId={pendingId} />
           </div>
 
           {/* Approved Affiliates */}
@@ -501,7 +650,7 @@ function Dashboard({
           {/* Commissions */}
           <div style={card}>
             <SectionHeader label="Commissions" count={commissions.length} />
-            <CommissionsTable rows={commissions} />
+            <CommissionsTable rows={commissions} onAction={runAction} pendingId={pendingId} />
           </div>
 
           {/* Referred Users */}
@@ -516,6 +665,7 @@ function Dashboard({
           ChainLens Admin · Internal use only · Do not share this page
         </p>
       </div>
+      {toast && <Toast msg={toast.msg} ok={toast.ok} onDismiss={() => setToast(null)} />}
     </div>
   )
 }
@@ -625,6 +775,7 @@ export default function AdminPage() {
       onRefresh={() => token && fetchData(token, true)}
       lastRefresh={lastRefresh}
       refreshing={refreshing}
+      token={token ?? ''}
     />
   )
 }
