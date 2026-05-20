@@ -265,27 +265,26 @@ function collapseRapidRepeats(rows: RawRow[]): RawRow[] {
 // WATCH: moderate move or 2-leg swap.
 // LOW: everything else.
 function computeSignalScore(row: RawRow): string {
-  const sym  = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
-  const amt  = row.amount_token as number | null
+  const sym = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
+  const usd = row.amount_usd as number | null
+  const amt = row.amount_token as number | null
   const legs = (row.legs as number | null) ?? 1
-
-  if (legs >= 3) return 'HIGH'
-  if (legs >= 2) return 'WATCH'
-
-  if (sym === 'USDC' || sym === 'USDT') {
-    if (amt !== null && amt >= 1000) return 'HIGH'
-    if (amt !== null && amt >= 100)  return 'WATCH'
+  const side = ((row.side as string | null) ?? '').toLowerCase()
+  const repeats = (row.repeats as number | null) ?? 1
+  const stableOnly = isStablecoinOnly(sym)
+  if (usd != null) {
+    if (usd >= 100000) return 'HIGH SIGNAL'
+    if (usd >= 30000) return 'WATCH'
+    if (usd < 1000 && stableOnly && side === 'transfer') return 'NOISE'
+    if (usd < 1000) return 'LOW SIGNAL'
+    return 'WATCH'
   }
-  if (sym === 'WETH' || sym === 'ETH') {
-    if (amt !== null && amt >= 0.25) return 'HIGH'
-    if (amt !== null && amt >= 0.01) return 'WATCH'
-  }
-  if (sym === 'CBBTC' || sym === 'WBTC') {
-    if (amt !== null && amt >= 0.01) return 'HIGH'
-    if (amt !== null && amt > 0)     return 'WATCH'
-  }
-
-  return 'LOW'
+  if (legs >= 3) return 'WATCH'
+  if (repeats >= 3) return 'WATCH'
+  if (amt == null) return 'NOISE'
+  if (stableOnly && amt < 100) return 'NOISE'
+  if (amt < 50) return 'LOW SIGNAL'
+  return 'LOW SIGNAL'
 }
 
 // Returns true if a post-enrichment row meets the "All" quality floor.
