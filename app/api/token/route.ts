@@ -1590,6 +1590,7 @@ export async function POST(req: Request) {
       // Market source flags
       marketDataSource,
       marketConfidence,
+      marketStatus,
 
       // Extra data
       holders: goldrush?.holders || null,
@@ -1969,6 +1970,7 @@ export async function POST(req: Request) {
           effectiveFdv: _efdv,
           marketDataSource,
           marketConfidence,
+          marketStatus,
         } : null,
       }
     } else {
