@@ -58,7 +58,8 @@ export interface AdminData {
   metrics: {
     totalCheckoutAttempts: number
     confirmedPayments: number
-    totalRevenueUsd: number
+    unpaidCheckoutsCount: number
+    confirmedRevenueUsd: number
     pendingCommissionAmountUsd: number
     approvedAffiliatesCount: number
     pendingApplicationsCount: number
@@ -150,13 +151,15 @@ export async function GET(req: NextRequest) {
   const allAffiliatePayments = (allAffiliatePaymentsRes.data ?? []) as Array<{ referral_code: unknown; amount_usd: unknown; status: unknown }>
 
   // 3. Compute aggregate totals
-  const totalRevenueUsd = allConfirmedRevenue.reduce((s, r) => s + (Number(r.amount_usd) || 0), 0)
+  const confirmedRevenueUsd = allConfirmedRevenue.reduce((s, r) => s + (Number(r.amount_usd) || 0), 0)
   const pendingCommissionAmountUsd = allPendingComms.reduce((s, r) => s + (Number(r.commission_amount) || 0), 0)
 
   // 4. Count totals (use parallel count queries for accuracy)
-  const [totalCountRes, confirmedCountRes, approvedCountRes, pendingAppCountRes] = await Promise.all([
+  const [totalCountRes, confirmedCountRes, unpaidCountRes, approvedCountRes, pendingAppCountRes] = await Promise.all([
     sb.from('crypto_payments').select('order_id', { count: 'exact', head: true }),
     sb.from('crypto_payments').select('order_id', { count: 'exact', head: true }).in('status', ['confirmed', 'finished']),
+    // Unpaid = checkout opened but not yet confirmed or failed
+    sb.from('crypto_payments').select('order_id', { count: 'exact', head: true }).in('status', ['created', 'waiting', 'pending']),
     sb.from('affiliates').select('id', { count: 'exact', head: true }).eq('status', 'approved'),
     sb.from('affiliates').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
   ])
@@ -202,7 +205,8 @@ export async function GET(req: NextRequest) {
     metrics: {
       totalCheckoutAttempts: totalCountRes.count ?? 0,
       confirmedPayments: confirmedCountRes.count ?? 0,
-      totalRevenueUsd,
+      unpaidCheckoutsCount: unpaidCountRes.count ?? 0,
+      confirmedRevenueUsd,
       pendingCommissionAmountUsd,
       approvedAffiliatesCount: approvedCountRes.count ?? 0,
       pendingApplicationsCount: pendingAppCountRes.count ?? 0,

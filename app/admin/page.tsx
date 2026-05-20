@@ -68,6 +68,41 @@ function StatusBadge({ status }: { status: unknown }) {
   )
 }
 
+// Clearer payment-specific badges so test checkouts are not mistaken for sales
+const PAYMENT_BADGE: Record<string, { label: string; color: string; bg: string; border: string }> = {
+  created:   { label: 'UNPAID',     color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.32)'   },
+  waiting:   { label: 'WAITING',    color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.32)'   },
+  pending:   { label: 'PENDING',    color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'   },
+  confirmed: { label: 'CONFIRMED',  color: '#34d399', bg: 'rgba(52,211,153,0.14)',  border: 'rgba(52,211,153,0.40)'   },
+  finished:  { label: 'PAID',       color: '#34d399', bg: 'rgba(52,211,153,0.14)',  border: 'rgba(52,211,153,0.40)'   },
+  failed:    { label: 'FAILED',     color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.30)'  },
+  expired:   { label: 'EXPIRED',    color: '#64748b', bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.22)'  },
+  cancelled: { label: 'CANCELLED',  color: '#64748b', bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.22)'  },
+}
+
+function PaymentStatusBadge({ status }: { status: unknown }) {
+  const s = String(status ?? '').toLowerCase()
+  const c = PAYMENT_BADGE[s] ?? { label: s.toUpperCase() || 'UNKNOWN', color: '#94a3b8', bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.2)' }
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 10px', borderRadius: '999px',
+      fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em',
+      fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+      color: c.color, background: c.bg, border: `1px solid ${c.border}`,
+    }}>
+      {c.label}
+    </span>
+  )
+}
+
+// Amount color: green only for confirmed/paid, muted otherwise
+function paymentAmountColor(status: unknown): string {
+  const s = String(status ?? '').toLowerCase()
+  if (s === 'confirmed' || s === 'finished') return '#34d399'
+  if (s === 'failed' || s === 'expired' || s === 'cancelled') return '#475569'
+  return '#94a3b8'
+}
+
 // ─── Shared style helpers ─────────────────────────────────────────────────────
 
 const card: React.CSSProperties = {
@@ -195,8 +230,8 @@ function PaymentsTable({ rows }: { rows: Record<string, unknown>[] }) {
               <td style={{ ...td, color: '#64748b' }}>{fmtDate(p.created_at)}</td>
               <td style={td}>{String(p.user_email ?? '—')}</td>
               <td style={{ ...td, color: '#a78bfa', textTransform: 'uppercase' }}>{String(p.plan ?? '—')}</td>
-              <td style={{ ...td, color: '#34d399', fontWeight: 700 }}>{fmtUsd(p.amount_usd)}</td>
-              <td style={td}><StatusBadge status={p.status} /></td>
+              <td style={{ ...td, color: paymentAmountColor(p.status), fontWeight: 700 }}>{fmtUsd(p.amount_usd)}</td>
+              <td style={td}><PaymentStatusBadge status={p.status} /></td>
               <td style={{ ...td, color: '#67e8f9' }}>{p.referral_code ? String(p.referral_code) : <span style={{ color: '#1e3a44' }}>None</span>}</td>
               <td style={{ ...td, color: p.affiliate_id ? '#34d399' : '#1e3a44' }}>
                 {p.affiliate_id ? 'Yes' : 'No'}
@@ -394,21 +429,37 @@ function Dashboard({
         {/* Metric cards */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(176px, 1fr))',
           gap: '12px', marginBottom: '40px',
         }}>
-          <MetricCard label="Checkout Attempts" value={metrics.totalCheckoutAttempts.toLocaleString()} accent="#2DD4BF" />
-          <MetricCard label="Confirmed Payments" value={metrics.confirmedPayments.toLocaleString()} accent="#34d399" />
           <MetricCard
-            label="Total Revenue"
-            value={fmtUsd(metrics.totalRevenueUsd)}
+            label="All Checkout Attempts"
+            value={metrics.totalCheckoutAttempts.toLocaleString()}
+            sub="all statuses combined"
+            accent="#2DD4BF"
+          />
+          <MetricCard
+            label="Unpaid Checkouts"
+            value={metrics.unpaidCheckoutsCount.toLocaleString()}
+            sub="created / waiting / pending"
+            accent={metrics.unpaidCheckoutsCount > 0 ? '#f59e0b' : '#3a5268'}
+          />
+          <MetricCard
+            label="Confirmed Sales"
+            value={metrics.confirmedPayments.toLocaleString()}
             sub="confirmed + finished"
+            accent="#34d399"
+          />
+          <MetricCard
+            label="Confirmed Revenue"
+            value={fmtUsd(metrics.confirmedRevenueUsd)}
+            sub="confirmed + finished only"
             accent="#34d399"
           />
           <MetricCard
             label="Commission Owed"
             value={fmtUsd(metrics.pendingCommissionAmountUsd)}
-            sub="pending payouts"
+            sub="affiliate pending payouts"
             accent={metrics.pendingCommissionAmountUsd > 0 ? '#fbbf24' : '#3a5268'}
           />
           <MetricCard label="Approved Affiliates" value={metrics.approvedAffiliatesCount.toLocaleString()} accent="#8b5cf6" />
@@ -425,6 +476,13 @@ function Dashboard({
           {/* Recent Payments */}
           <div style={card}>
             <SectionHeader label="Recent Payments" count={payments.length} />
+            <p style={{
+              margin: '-4px 0 14px', fontSize: '11px',
+              color: '#475569', fontFamily: 'var(--font-plex-mono)',
+              borderLeft: '2px solid rgba(245,158,11,0.4)', paddingLeft: '10px',
+            }}>
+              UNPAID rows are checkout attempts, not completed sales. Only CONFIRMED and PAID rows represent real revenue.
+            </p>
             <PaymentsTable rows={payments} />
           </div>
 
