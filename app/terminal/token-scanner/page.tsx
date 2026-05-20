@@ -489,27 +489,210 @@ function deriveVerdictInput(result: ScanResult): VerdictInput {
 function StatCard({ label, value, accent, helper }: { label: string; value: string; accent?: string; helper?: string }) {
   return (
     <div style={{
-      background: 'rgba(255,255,255,0.03)',
-      border: '1px solid rgba(255,255,255,0.08)',
-      borderRadius: '12px',
-      padding: '16px 20px',
+      background: 'linear-gradient(160deg, rgba(10,18,34,.93), rgba(3,8,19,.90))',
+      border: `1px solid ${accent ? `${accent}1e` : 'rgba(255,255,255,0.07)'}`,
+      borderRadius: '14px',
+      padding: '18px 20px',
+      display: 'flex', flexDirection: 'column', gap: '6px',
     }}>
       <p style={{
-        fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-        color: '#3a5268', textTransform: 'uppercase',
-        marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
+        fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em',
+        color: '#3a5268', textTransform: 'uppercase', margin: 0,
+        fontFamily: 'var(--font-plex-mono)',
       }}>
         {label}
       </p>
       <p style={{
-        fontSize: '20px', fontWeight: 700,
+        fontSize: '22px', fontWeight: 800, lineHeight: 1,
         color: accent ?? '#e2e8f0',
-        fontFamily: 'var(--font-plex-mono)',
-        margin: 0,
+        fontFamily: 'var(--font-plex-mono)', margin: 0,
       }}>
         {value}
       </p>
-      {helper && <p style={{ margin: '8px 0 0', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{helper}</p>}
+      {helper && <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{helper}</p>}
+    </div>
+  )
+}
+
+// ─── Display-only helpers (pure — no fetching, no mutation) ───────────────
+
+function getSummaryVerdict(result: ScanResult): { label: string; color: string; bg: string; border: string } {
+  const hp = result.honeypot
+  const liq = result.liquidity ?? 0
+  const taxesHigh = (hp?.buyTax != null && hp.buyTax > 8) || (hp?.sellTax != null && hp.sellTax > 8)
+  const holderState = deriveHolderState(result)
+  if (hp?.isHoneypot === true || taxesHigh) return { label: 'AVOID',         color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.35)' }
+  if (!result.price && !hp)                 return { label: 'UNKNOWN',       color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.25)' }
+  if (hp?.isHoneypot === false && liq > 120000 && holderState.kind === 'rowsWithPercent')
+                                            return { label: 'CLEAN LOOKING', color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.35)'  }
+  if (holderState.kind === 'noRowsFallback' || liq < 40000)
+                                            return { label: 'WATCH',         color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
+  return                                           { label: 'CAUTION',       color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }
+}
+
+function getSummaryReasons(result: ScanResult): string[] {
+  const hp = result.honeypot
+  const liq = result.liquidity ?? 0
+  const holderState = deriveHolderState(result)
+  const reasons: string[] = []
+  if (result.price != null && liq > 0) {
+    const mcStr = result.marketCapUsd != null ? `MC ${fmtLarge(result.marketCapUsd)} verified` : 'market cap unverified'
+    reasons.push(`Market is live — price ${fmtPrice(result.price)}, liquidity ${fmtLarge(liq)}, ${mcStr}.`)
+  } else if (result.noActivePools) {
+    reasons.push('No active liquidity pool found for this token on Base.')
+  } else {
+    reasons.push('Market data is unavailable or limited.')
+  }
+  if (hp?.simulationSuccess && hp.isHoneypot === false) {
+    const tax = hp.buyTax != null && hp.sellTax != null ? ` Tax: buy ${hp.buyTax.toFixed(1)}% / sell ${hp.sellTax.toFixed(1)}%.` : ''
+    reasons.push(`Security simulation completed — no honeypot flagged.${tax}`)
+  } else if (hp?.isHoneypot === true) {
+    reasons.push('Honeypot flagged — blocked sells detected in simulation.')
+  } else {
+    reasons.push('Security simulation unavailable — treat status as unverified.')
+  }
+  if (holderState.kind === 'rowsWithPercent' && result.holderDistribution?.top10 != null) {
+    const t = result.holderDistribution.top10
+    const risk = t > 50 ? 'high concentration' : t > 30 ? 'moderate concentration' : 'reasonable spread'
+    reasons.push(`Holder distribution confirmed — top 10 hold ${t.toFixed(1)}% (${risk}).`)
+  } else if (holderState.kind === 'rowsWithoutPercent') {
+    reasons.push('Holder wallets found but supply percentages not confirmed.')
+  } else {
+    reasons.push('Holder concentration not confirmed — treat as an incomplete check.')
+  }
+  return reasons.slice(0, 3)
+}
+
+function getMissingChecks(result: ScanResult): string[] {
+  const holderState = deriveHolderState(result)
+  return [
+    result.noActivePools ? 'Active liquidity pool' : null,
+    holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : null,
+    'LP lock or burn proof',
+    result.marketCapUsd == null ? 'Verified market cap' : null,
+    'Supply spread',
+  ].filter((v): v is string => v != null)
+}
+
+function getNextAction(result: ScanResult): string {
+  const hp = result.honeypot
+  const liq = result.liquidity ?? 0
+  if (hp?.isHoneypot === true) return 'Do not trade — honeypot detected in simulation.'
+  if (result.noActivePools) return 'No active pool found. Verify the contract is live on Base.'
+  if (liq > 0 && liq < 10000) return 'Liquidity is very thin — high slippage and exit risk present.'
+  if (liq > 0 && liq < 50000) return 'Liquidity is limited. Verify LP lock or burn proof before entering.'
+  return 'Monitor liquidity and holder concentration before forming conviction. Treat incomplete checks as risk signals.'
+}
+
+function getMarketRead(result: ScanResult): string {
+  if (result.noActivePools) return 'No active pool found. Market data is unavailable.'
+  const parts = [
+    result.price != null    ? `price ${fmtPrice(result.price)}` : null,
+    result.liquidity != null ? `liquidity ${fmtLarge(result.liquidity)}` : null,
+    result.volume24h != null ? `volume ${fmtLarge(result.volume24h)} 24h` : null,
+    result.priceChange24h != null ? `${fmtPct(result.priceChange24h)} change` : null,
+  ].filter(Boolean)
+  const mc = result.marketCapUsd != null
+    ? `Market cap ${fmtLarge(result.marketCapUsd)} — verified live.`
+    : result.fdvUsd != null
+      ? `Market cap unverified — FDV ${fmtLarge(result.fdvUsd)} shown as context.`
+      : 'Market cap not verified.'
+  return parts.length ? `${parts.join(', ')}. ${mc}` : 'Market data unavailable.'
+}
+
+function getSecurityRead(result: ScanResult): string {
+  const hp = result.honeypot
+  if (hp?.isHoneypot === true) return 'Honeypot flagged — sell simulation detected blocked transaction.'
+  if (!hp?.simulationSuccess) return 'Security simulation did not complete — status is unverified in this pass.'
+  const parts = [
+    'Honeypot: not flagged',
+    hp.buyTax != null ? `buy tax ${hp.buyTax.toFixed(1)}%` : null,
+    hp.sellTax != null ? `sell tax ${hp.sellTax.toFixed(1)}%` : null,
+    hp.transferTax != null && hp.transferTax > 0 ? `transfer tax ${hp.transferTax.toFixed(1)}%` : null,
+  ].filter(Boolean)
+  return parts.join(', ') + '. Simulation verified.'
+}
+
+function getHolderRead(result: ScanResult): string {
+  const holderState = deriveHolderState(result)
+  if (holderState.kind === 'noRowsFallback') return 'Holder distribution was not returned in this pass. Concentration is the missing risk layer — verify before forming conviction.'
+  if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Treat concentration as partially unverified.'
+  const top10 = result.holderDistribution?.top10
+  const count = result.holderDistribution?.holderCount
+  const parts = [
+    count != null ? `${count.toLocaleString()} holders on record` : null,
+    top10 != null ? `top 10 hold ${top10.toFixed(1)}%` : null,
+    result.holderDistribution?.top20 != null ? `top 20 hold ${result.holderDistribution.top20.toFixed(1)}%` : null,
+  ].filter(Boolean)
+  return parts.length ? `Holder distribution confirmed. ${parts.join(', ')}.` : 'Holder distribution available but details sparse.'
+}
+
+function getLiquidityRead(result: ScanResult): string {
+  const liq = result.liquidity ?? 0
+  const poolCount = result.pools?.length ?? 0
+  if (result.noActivePools || poolCount === 0) return 'No active liquidity pool detected on Base.'
+  const depth = liq > 1_000_000 ? 'Deep' : liq > 200_000 ? 'Moderate' : liq > 50_000 ? 'Limited' : liq > 0 ? 'Thin' : 'Unverified'
+  const poolStr = poolCount > 1 ? `${poolCount} pools found.` : 'Primary pool found.'
+  const lpStatus = result.lpControl?.status
+  const lpStr = lpStatus === 'burned' || lpStatus === 'locked' ? 'LP locked or burned.' : lpStatus === 'team_controlled' ? 'LP appears team-controlled.' : 'LP lock not confirmed.'
+  return `${depth} liquidity (${fmtLarge(liq)}). ${poolStr} ${lpStr}`
+}
+
+// ─── CORTEX Summary Card ──────────────────────────────────────────────────
+
+function CortexSummaryCard({ result }: { result: ScanResult }) {
+  const v = getSummaryVerdict(result)
+  const reasons = getSummaryReasons(result)
+  const missing = getMissingChecks(result)
+  const next = getNextAction(result)
+  const confidence = result.marketConfidence === 'high' ? 'HIGH' : result.marketConfidence === 'medium' ? 'MEDIUM' : 'LOW'
+  const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
+  return (
+    <div style={{
+      marginBottom: '22px',
+      background: 'linear-gradient(160deg, rgba(8,16,32,.97), rgba(4,8,18,.95))',
+      border: `1px solid ${v.color}28`,
+      borderRadius: '16px',
+      padding: '20px 22px',
+      boxShadow: `0 0 36px ${v.color}0e, 0 0 0 1px rgba(255,255,255,0.04) inset`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
+          CORTEX SCAN SUMMARY
+        </span>
+        <span style={{ padding: '3px 12px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.10em', color: v.color, background: v.bg, border: `1px solid ${v.border}`, fontFamily: 'var(--font-plex-mono)' }}>
+          {v.label}
+        </span>
+        <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: confColor, background: `${confColor}12`, border: `1px solid ${confColor}38`, fontFamily: 'var(--font-plex-mono)' }}>
+          {confidence} CONFIDENCE
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '14px' }}>
+        {reasons.map((r, i) => (
+          <div key={i} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+            <span style={{ color: '#2DD4BF', fontSize: '11px', flexShrink: 0, fontFamily: 'var(--font-plex-mono)' }}>•</span>
+            <p style={{ margin: 0, fontSize: '12px', color: '#b7c9da', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{r}</p>
+          </div>
+        ))}
+      </div>
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'flex-start' }}>
+        {missing.length > 0 && (
+          <div style={{ flex: '1 1 180px' }}>
+            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#3a5268', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Missing checks</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+              {missing.slice(0, 4).map((m) => (
+                <span key={m} style={{ padding: '2px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#fbbf24', background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.25)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+                  {m}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        <div style={{ flex: '2 1 220px' }}>
+          <p style={{ margin: '0 0 4px', fontSize: '9px', color: '#3a5268', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next action</p>
+          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{next}</p>
+        </div>
+      </div>
     </div>
   )
 }
@@ -944,6 +1127,9 @@ export default function TerminalTokenScanner() {
                 )}
               </div>
 
+              {/* CORTEX scan summary */}
+              <CortexSummaryCard result={result} />
+
               {/* Stat cards — or no-pools message */}
               {result.noActivePools ? (
                 <div style={{
@@ -990,13 +1176,14 @@ export default function TerminalTokenScanner() {
                   gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
                   gap: '10px', marginBottom: '28px',
                 }}>
-                  <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" />
-                  <StatCard label="Liquidity"  value={fmtLarge(result.liquidity)} />
-                  <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} />
+                  <StatCard label="Price"      value={fmtPrice(result.price)}         accent="#2DD4BF" helper={result.marketDataSource === 'fallback' ? 'Market read' : 'Primary pool'} />
+                  <StatCard label="Liquidity"  value={fmtLarge(result.liquidity)}    helper="Pool depth" />
+                  <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)}    helper="24h trading activity" />
                   <StatCard
                     label="24h Change"
                     value={fmtPct(result.priceChange24h)}
                     accent={pctColor(result.priceChange24h)}
+                    helper="Price movement"
                   />
                   {(() => {
                     const valuation = result.valuationContext
@@ -1351,13 +1538,17 @@ export default function TerminalTokenScanner() {
               {/* Pools */}
               {result.pools && result.pools.length > 0 && (
                 <>
-                  <p style={{
-                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                    color: '#3a5268', textTransform: 'uppercase',
-                    marginBottom: '10px', fontFamily: 'var(--font-plex-mono)',
-                  }}>
-                    LIQUIDITY & POOLS
-                  </p><div style={{display:'inline-flex',marginBottom:'10px',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} POOLS</div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                    <p style={{
+                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                      color: '#3a5268', textTransform: 'uppercase',
+                      margin: 0, fontFamily: 'var(--font-plex-mono)',
+                    }}>
+                      LIQUIDITY &amp; POOLS
+                    </p>
+                    <div style={{display:'inline-flex',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)'}}>{result.pools.length} {result.pools.length === 1 ? 'POOL' : 'POOLS'}</div>
+                    <span style={{fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)'}}>Primary pool selected by liquidity.</span>
+                  </div>
                   <div className="pools-scroll" style={{ overflowX: 'auto', paddingBottom: '6px', maxWidth: '100%' }}><div className="pools-inner" style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '940px' }}>
                     {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool, i) => (
                       <div
@@ -1367,16 +1558,17 @@ export default function TerminalTokenScanner() {
                           gridTemplateColumns: 'minmax(220px,1.2fr) repeat(6, minmax(82px, auto))',
                           alignItems: 'center', gap: '20px',
                           padding: '12px 18px',
-                          background: 'rgba(255,255,255,0.025)',
-                          border: '1px solid rgba(255,255,255,0.06)',
+                          background: i === 0 ? 'linear-gradient(90deg,rgba(45,212,191,0.06),rgba(167,139,250,0.04))' : 'rgba(255,255,255,0.025)',
+                          border: i === 0 ? '1px solid rgba(45,212,191,0.22)' : '1px solid rgba(255,255,255,0.06)',
                           borderRadius: '10px',
                           fontSize: '12px', fontFamily: 'var(--font-plex-mono)',
                         }}
                       >
                         <span style={{
-                          color: '#94a3b8', overflow: 'hidden',
-                          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          color: i === 0 ? '#2DD4BF' : '#94a3b8', overflow: 'hidden',
+                          textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '7px',
                         }}>
+                          {i === 0 && <span style={{fontSize:'9px',fontWeight:700,letterSpacing:'.10em',padding:'1px 6px',borderRadius:'999px',border:'1px solid rgba(45,212,191,.35)',color:'#2DD4BF',background:'rgba(45,212,191,.08)',flexShrink:0}}>PRIMARY</span>}
                           {pool.name ?? shorten(pool.address ?? '')}
                         </span>
                         <span style={{ color: '#2DD4BF', whiteSpace: 'nowrap' }}>
@@ -1481,69 +1673,112 @@ export default function TerminalTokenScanner() {
             const hp = result.honeypot
             const buyTax = hp?.buyTax ?? null
             const sellTax = hp?.sellTax ?? null
-            const transferTax = hp?.transferTax ?? null
             const liq = result.liquidity ?? 0
             const poolCount = result.pools?.length ?? 0
-            const holderRows = result.holderDistribution?.topHolders ?? []
             const top10 = result.holderDistribution?.top10
             const top20 = result.holderDistribution?.top20
-            const mcFdv = d.fallbackEvidence.marketCapToFdvLabel
             const taxesHigh = (buyTax != null && buyTax > 8) || (sellTax != null && sellTax > 8)
             const hpBlocked = hp?.isHoneypot === true
             const verdict =
               hpBlocked || taxesHigh ? 'AVOID' :
-              !d.hasMarketData && !d.hasSecurityData && !d.hasLiquidityData ? 'UNVERIFIED' :
-              d.hasSecurityData && hp?.isHoneypot === false && liq > 120000 && d.holderState.kind === 'rowsWithPercent' ? 'CLEAN-LOOKING' :
+              !d.hasMarketData && !d.hasSecurityData && !d.hasLiquidityData ? 'UNKNOWN' :
+              d.hasSecurityData && hp?.isHoneypot === false && liq > 120000 && d.holderState.kind === 'rowsWithPercent' ? 'CLEAN LOOKING' :
               d.holderState.kind === 'noRowsFallback' || liq < 40000 ? 'WATCH' : 'CAUTION'
-            const verdictColor = verdict === 'AVOID' ? '#f87171' : verdict === 'CLEAN-LOOKING' ? '#2DD4BF' : verdict === 'WATCH' ? '#fbbf24' : verdict === 'CAUTION' ? '#f59e0b' : '#94a3b8'
+            const verdictColor = verdict === 'AVOID' ? '#f87171' : verdict === 'CLEAN LOOKING' ? '#2DD4BF' : verdict === 'WATCH' ? '#fbbf24' : verdict === 'CAUTION' ? '#f59e0b' : '#94a3b8'
             const bull = [
-              liq > 0 ? 'Liquidity exists.' : '',
-              d.hasMarketData ? 'Market data is available.' : '',
-              hp?.isHoneypot === false ? 'Honeypot simulation did not flag blocked sells.' : '',
-              poolCount > 1 ? 'Multiple pools found.' : '',
-              holderRows.length > 0 ? 'Holder rows were returned.' : '',
+              liq > 1_000_000 ? `Deep liquidity — ${fmtLarge(liq)} pool depth.` : liq > 200_000 ? `Moderate liquidity — ${fmtLarge(liq)} pool depth.` : liq > 0 ? 'Liquidity present.' : '',
+              d.hasMarketData ? 'Live market data confirmed.' : '',
+              hp?.isHoneypot === false && hp?.simulationSuccess ? 'No honeypot — sell simulation passed.' : '',
+              poolCount > 1 ? `${poolCount} active pools detected.` : poolCount === 1 ? 'Primary pool active.' : '',
+              d.holderState.kind !== 'noRowsFallback' ? 'Holder distribution data is available.' : '',
             ].filter(Boolean).slice(0, 3)
             const bear = [
-              d.holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed from this pass.' : '',
-              taxesHigh ? 'Taxes are elevated.' : '',
-              liq > 0 && liq < 50000 ? 'Liquidity is thin.' : '',
-              result.marketCapUsd == null ? 'Market cap unavailable.' : '',
-              result.marketCapUsd == null && result.fdvUsd != null ? 'FDV-only context.' : '',
-              hp?.simulationSuccess === false ? 'Honeypot/sell simulation unverified.' : '',
+              d.holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed — treat as incomplete risk check.' : '',
+              taxesHigh ? `Elevated taxes — buy ${buyTax?.toFixed(1)}% / sell ${sellTax?.toFixed(1)}%.` : '',
+              liq > 0 && liq < 50000 ? `Thin liquidity — ${fmtLarge(liq)}, high slippage risk.` : '',
+              result.marketCapUsd == null ? 'Market cap not verified — supply unconfirmed.' : '',
+              hp?.simulationSuccess === false ? 'Security simulation did not complete.' : '',
             ].filter(Boolean).slice(0, 3)
             const missingChecks = [
               result.noActivePools ? 'Active pool' : '',
               d.holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : '',
-              'Supply spread',
-              'LP lock',
+              'Supply spread', 'LP lock',
               d.fallbackEvidence.ownerStatus === 'Unverified' ? 'Owner status' : '',
               result.marketCapUsd == null ? 'Market cap' : '',
-              'Contract verification',
             ].filter(Boolean)
+            const ss = {padding:'10px 12px',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'10px',background:'rgba(8,14,28,.65)'}
+            const stitle = {margin:'0 0 7px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#3a5268',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
+            const sbody = {margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.65 as const,fontFamily:'var(--font-plex-mono)'}
             return (
-              <div style={{display:'grid',gap:'12px'}}>
-                <div style={{padding:'14px',border:'1px solid rgba(103,232,249,.25)',borderRadius:'14px',background:'linear-gradient(135deg, rgba(8,20,38,.82), rgba(16,14,42,.82))',boxShadow:'0 0 24px rgba(34,211,238,.12)'}}>
-                  <div style={{fontSize:'10px',letterSpacing:'.13em',color:'#93c5fd'}}>CORTEX LIVE READ</div>
-                  <div style={{display:'inline-flex',marginTop:'8px',padding:'4px 10px',borderRadius:'999px',border:`1px solid ${verdictColor}66`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.08em'}}>{verdict}</div>
+              <div style={{display:'flex',flexDirection:'column',gap:'9px'}}>
+                {/* Verdict header */}
+                <div style={{padding:'14px 16px',border:`1px solid ${verdictColor}30`,borderRadius:'14px',background:'linear-gradient(135deg, rgba(8,20,38,.88), rgba(14,12,38,.86))',boxShadow:`0 0 28px ${verdictColor}0e`}}>
+                  <div style={{fontSize:'9px',letterSpacing:'.16em',color:'#475569',fontFamily:'var(--font-plex-mono)',marginBottom:'10px'}}>CORTEX LIVE READ</div>
+                  <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'12px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)'}}>{verdict}</div>
                 </div>
-                <div style={{padding:'12px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px',fontSize:'12px',lineHeight:1.65,color:'#b7c9da',background:'rgba(15,23,42,.5)'}}>Market Read: <strong style={{color:'#e2e8f0'}}>Price {fmtPrice(result.price)}</strong>, 24H {fmtPct(result.priceChange24h)}, Volume {fmtLarge(result.volume24h)}, Liquidity {fmtLarge(result.liquidity)}, MC {result.marketCapUsd != null ? fmtLarge(result.marketCapUsd) : 'Market cap unverified'}, FDV {result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Unverified'}, {result.marketCapUsd == null && result.fdvUsd != null ? 'Market cap is unverified; FDV is shown as separate valuation context.' : `MC/FDV ${mcFdv}`}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Security Read: Honeypot {hp?.isHoneypot === false ? 'No' : hp?.isHoneypot === true ? 'Flagged' : 'Unverified'}, Buy Tax {buyTax != null ? ((!hp?.simulationSuccess && buyTax === 0) ? 'Unverified' : `${buyTax.toFixed(1)}%`) : 'N/A'}, Sell Tax {sellTax != null ? ((!hp?.simulationSuccess && sellTax === 0) ? 'Unverified' : `${sellTax.toFixed(1)}%`) : 'N/A'}, Transfer Risk {transferTax != null ? `${transferTax.toFixed(1)}%` : 'N/A'}, Simulation {hp?.simulationSuccess ? 'Verified' : 'Unverified'}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Holder/Supply Read: {result.holderDistribution?.holderCount != null ? `holders ${result.holderDistribution.holderCount.toLocaleString()}, ` : ''}{top10 != null ? `top10 ${top10.toFixed(1)}%, ` : 'holder concentration not confirmed, '}{top20 != null ? `top20 ${top20.toFixed(1)}%` : d.holderState.kind === 'noRowsFallback' ? 'concentration needs confirmation' : 'top20 unavailable'}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8'}}>Liquidity/Pools Read: pools {poolCount}, primary pool {result.pools?.[0]?.name ?? 'Unverified'}, liquidity depth {fmtLarge(result.pools?.[0]?.liquidity ?? result.liquidity)}, {(liq > 0 && liq < 50000) ? 'liquidity thin.' : liq === 0 ? 'liquidity unverified.' : 'liquidity present.'}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(45,212,191,.2)',borderRadius:'10px',fontSize:'11px',color:'#99f6e4'}}>Bull Case: {bull.length ? bull.join(' ') : 'No strong positive cluster yet.'}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(248,113,113,.2)',borderRadius:'10px',fontSize:'11px',color:'#fca5a5'}}>Bear Case: {bear.length ? bear.join(' ') : 'No major bear signal surfaced yet.'}</div>
-                <div style={{padding:'10px',border:'1px solid rgba(125,211,252,.22)',borderRadius:'12px',fontSize:'11px',color:'#cfe8ff',background:'rgba(8,27,43,.45)'}}>
-                  <div style={{fontSize:'10px',letterSpacing:'.1em',textTransform:'uppercase',color:'#7dd3fc',marginBottom:'6px'}}>Watch checks</div>
-                  <div style={{display:'grid',gap:'6px'}}>
-                    {result.noActivePools
-                      ? <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(245,158,11,.1)',border:'1px solid rgba(245,158,11,.28)',color:'#fde68a'}}>• No active pool found</div>
-                      : <><div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Pool detected</div>
-                      <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Primary market selected</div></>}
-                    <div style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(16,185,129,.12)',border:'1px solid rgba(16,185,129,.26)',color:'#99f6e4'}}>✓ Liquidity scan completed</div>
-                    {missingChecks.slice(0, 2).map((m) => <div key={m} style={{padding:'6px 8px',borderRadius:'8px',background:'rgba(245,158,11,.12)',border:'1px solid rgba(245,158,11,.3)',color:'#fde68a'}}>• {m} unverified</div>)}
+                {/* Market Read */}
+                <div style={ss}>
+                  <p style={stitle}>Market Read</p>
+                  <p style={sbody}>{getMarketRead(result)}</p>
+                </div>
+                {/* Security Read */}
+                <div style={ss}>
+                  <p style={stitle}>Security Read</p>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:'5px',marginBottom:'7px'}}>
+                    {d.dedupedSecurityChips.map(c => (
+                      <RiskPill key={c.label} label={c.label} value={{...c.style,label:c.displayLabel}} />
+                    ))}
+                  </div>
+                  <p style={sbody}>{getSecurityRead(result)}</p>
+                </div>
+                {/* Holder / Supply */}
+                <div style={ss}>
+                  <p style={stitle}>Holder / Supply</p>
+                  {result.holderDistribution?.holderCount != null && (
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'3px 10px',border:'1px solid rgba(45,212,191,.28)',borderRadius:'999px',fontSize:'11px',color:'#2DD4BF',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.06)'}}>
+                      {result.holderDistribution.holderCount.toLocaleString()} holders
+                    </div>
+                  )}
+                  {(top10 != null || top20 != null) && (
+                    <div style={{display:'flex',gap:'6px',flexWrap:'wrap',marginBottom:'7px'}}>
+                      {top10 != null && <span style={{padding:'2px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:top10>50?'#f87171':top10>30?'#fbbf24':'#34d399',background:top10>50?'rgba(248,113,113,.08)':top10>30?'rgba(251,191,36,.08)':'rgba(52,211,153,.08)',border:top10>50?'1px solid rgba(248,113,113,.28)':top10>30?'1px solid rgba(251,191,36,.28)':'1px solid rgba(52,211,153,.28)',fontFamily:'var(--font-plex-mono)'}}>Top 10: {top10.toFixed(1)}%</span>}
+                      {top20 != null && <span style={{padding:'2px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#94a3b8',border:'1px solid rgba(148,163,184,.22)',fontFamily:'var(--font-plex-mono)'}}>Top 20: {top20.toFixed(1)}%</span>}
+                    </div>
+                  )}
+                  <p style={sbody}>{getHolderRead(result)}</p>
+                </div>
+                {/* Liquidity / Pools */}
+                <div style={ss}>
+                  <p style={stitle}>Liquidity / Pools</p>
+                  <p style={sbody}>{getLiquidityRead(result)}</p>
+                </div>
+                {/* Bull + Bear */}
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}}>
+                  <div style={{...ss,border:'1px solid rgba(52,211,153,.20)'}}>
+                    <p style={{...stitle,color:'#34d399'}}>Bull</p>
+                    {bull.length ? bull.map((b,i)=><p key={i} style={{...sbody,color:'#86efac',margin:'0 0 4px'}}>• {b}</p>) : <p style={{...sbody,color:'#1e3a44'}}>No strong signals yet.</p>}
+                  </div>
+                  <div style={{...ss,border:'1px solid rgba(248,113,113,.20)'}}>
+                    <p style={{...stitle,color:'#f87171'}}>Bear</p>
+                    {bear.length ? bear.map((b,i)=><p key={i} style={{...sbody,color:'#fca5a5',margin:'0 0 4px'}}>• {b}</p>) : <p style={{...sbody,color:'#1e3a44'}}>No major signals surfaced.</p>}
                   </div>
                 </div>
-                <div style={{padding:'11px 12px',border:'1px solid rgba(45,212,191,.35)',borderRadius:'10px',background:'rgba(45,212,191,.07)',fontSize:'11px',color:'#67e8f9'}}>Next Action: Monitor liquidity and holder rows before trusting this. Check fresh scans after volume/liquidity changes. Do not treat this as copy-trade advice.</div>
+                {/* Watch Checks */}
+                <div style={{...ss,background:'rgba(6,18,36,.70)',border:'1px solid rgba(125,211,252,.18)'}}>
+                  <p style={{...stitle,color:'#7dd3fc'}}>Watch Checks</p>
+                  <div style={{display:'grid',gap:'5px'}}>
+                    {!result.noActivePools && <div style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(16,185,129,.10)',border:'1px solid rgba(16,185,129,.22)',color:'#86efac',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>✓ Pool detected</div>}
+                    {!result.noActivePools && <div style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(16,185,129,.10)',border:'1px solid rgba(16,185,129,.22)',color:'#86efac',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>✓ Liquidity scan completed</div>}
+                    {result.noActivePools && <div style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(245,158,11,.08)',border:'1px solid rgba(245,158,11,.26)',color:'#fde68a',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>✕ No active pool found</div>}
+                    {hp?.simulationSuccess && <div style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(16,185,129,.10)',border:'1px solid rgba(16,185,129,.22)',color:'#86efac',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>✓ Security simulation completed</div>}
+                    {missingChecks.slice(0,3).map(m=><div key={m} style={{padding:'5px 8px',borderRadius:'7px',background:'rgba(245,158,11,.08)',border:'1px solid rgba(245,158,11,.24)',color:'#fde68a',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>• {m} not confirmed</div>)}
+                  </div>
+                </div>
+                {/* Next Action */}
+                <div style={{padding:'11px 14px',border:'1px solid rgba(45,212,191,.32)',borderRadius:'12px',background:'rgba(45,212,191,.06)'}}>
+                  <p style={{...stitle,color:'#2DD4BF',marginBottom:'5px'}}>Next Action</p>
+                  <p style={{...sbody,color:'#67e8f9'}}>{getNextAction(result)}</p>
+                </div>
               </div>
             )
           })()}
