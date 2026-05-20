@@ -565,10 +565,12 @@ function getSummaryReasons(result: ScanResult): string[] {
 
 function getMissingChecks(result: ScanResult): string[] {
   const holderState = deriveHolderState(result)
+  const lpStatus = result.lpControl?.status
+  const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
   return [
     result.noActivePools ? 'Active liquidity pool' : null,
     holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : null,
-    'LP lock or burn proof',
+    !lpVerified ? 'LP lock or burn proof' : null,
     result.marketCapUsd == null ? 'Verified market cap' : null,
     'Supply spread',
   ].filter((v): v is string => v != null)
@@ -577,10 +579,12 @@ function getMissingChecks(result: ScanResult): string[] {
 function getNextAction(result: ScanResult): string {
   const hp = result.honeypot
   const liq = result.liquidity ?? 0
+  const holderState = deriveHolderState(result)
   if (hp?.isHoneypot === true) return 'Do not trade — honeypot detected in simulation.'
   if (result.noActivePools) return 'No active pool found. Verify the contract is live on Base.'
   if (liq > 0 && liq < 10000) return 'Liquidity is very thin — high slippage and exit risk present.'
   if (liq > 0 && liq < 50000) return 'Liquidity is limited. Verify LP lock or burn proof before entering.'
+  if (holderState.kind === 'noRowsFallback') return 'Holder concentration not confirmed. Verify top holders before forming conviction on this token.'
   return 'Monitor liquidity and holder concentration before forming conviction. Treat incomplete checks as risk signals.'
 }
 
@@ -1464,29 +1468,36 @@ export default function TerminalTokenScanner() {
               {isFullAccess && (() => {
                 const holderState = deriveHolderState(result)
                 const fallback = deriveHolderFallbackEvidence(result)
+
                 if (holderState.kind !== 'noRowsFallback') {
+                  const top10h = result.holderDistribution?.top10
+                  const concRisk = top10h != null ? (top10h > 50 ? 'HIGH' : top10h > 30 ? 'MEDIUM' : 'LOW') : null
+                  const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
+                  const concRead = holderState.kind === 'rowsWithPercent' && concRisk != null
+                    ? concRisk === 'HIGH' ? 'High concentration — top holders control majority supply.' : concRisk === 'MEDIUM' ? 'Moderate concentration — watch for coordinated movement.' : 'Spread looks reasonable — no extreme concentration flagged.'
+                    : null
                   return (
                     <div className="holders-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginTop:'24px',marginBottom:'20px'}}>
                       <div className="glass-card" style={{padding:'18px'}}>
-                        <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px',flexWrap:'wrap'}}>
                           <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
                           <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:`1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.5)' : 'rgba(251,191,36,.4)'}`,color:holderState.kind === 'rowsWithPercent' ? '#2dd4bf' : '#fbbf24',background:holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)'}}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
+                          {concRisk != null && <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:`1px solid ${concColor}44`,color:concColor,background:`${concColor}10`}}>{concRisk} CONC</span>}
                         </div>
                         {result.holderDistribution?.holderCount != null && <div style={{margin:'0 0 12px',fontSize:'13px',color:'#67e8f9',border:'1px solid rgba(45,212,191,.3)',background:'rgba(6,78,59,.16)',padding:'8px 10px',borderRadius:'10px',display:'inline-flex',gap:'8px'}}><span style={{color:'#99f6e4'}}>Holder count</span><strong style={{fontFamily:'var(--font-plex-mono)',color:'#e6fffa'}}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
                         {holderState.kind === 'rowsWithoutPercent' && (
                           <p style={{margin:'0 0 10px',fontSize:'11px',color:'#fbbf24'}}>Top holder wallets found, but supply percentages were not available for this scan.</p>
                         )}
                         <div style={{display:'grid',gap:'10px'}}>{[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v]) => <div key={String(l)} style={{display:'grid',gridTemplateColumns:'82px 1fr 64px',alignItems:'center',gap:'10px'}}><span style={{fontSize:'12px',color:'#d6e6f3',fontWeight:700}}>{l}</span><div style={{height:'12px',borderRadius:'999px',background:'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))',border:'1px solid rgba(148,163,184,.25)'}}><div style={{height:'100%',width:`${v == null ? 0 : Math.max(0,Math.min(100,Number(v)))}%`,borderRadius:'999px',background:'linear-gradient(90deg,#2dd4bf,#a855f7)',boxShadow:'0 0 14px rgba(45,212,191,.28)'}} /></div><span style={{fontSize:'13px',fontWeight:800,color:'#eef6ff',textAlign:'right',fontFamily:'var(--font-plex-mono)'}}>{v == null ? 'N/A' : `${Number(v).toFixed(1)}%`}</span></div>)}</div>
-                        <p style={{margin:'12px 0 0',fontSize:'11px',color:'#8aa3b8'}}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
+                        {concRead && <p style={{margin:'10px 0 0',fontSize:'11px',color:concColor,lineHeight:1.5}}>{concRead}</p>}
+                        <p style={{margin:'8px 0 0',fontSize:'11px',color:'#8aa3b8'}}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
                       </div>
                       <div className="glass-card" style={{padding:'18px',minWidth:0,overflow:'hidden'}}>
                         <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',marginBottom:'4px',fontFamily:'var(--font-plex-mono)'}}>TOP HOLDERS</p>
                         <p style={{margin:'0 0 10px',fontSize:'11px',color:'#8aa3b8'}}>Top 10 holders</p>
-                        {/* Header */}
                         <div className="top-holder-head" style={{display:'grid',gridTemplateColumns:'36px minmax(0,1fr) 88px 62px',gap:'10px',fontSize:'10px',letterSpacing:'0.10em',color:'#6a8198',marginBottom:'8px',fontFamily:'var(--font-plex-mono)'}}>
                           <span>#</span><span>WALLET</span><span style={{textAlign:'right'}}>AMOUNT</span><span style={{textAlign:'right'}}>%</span>
                         </div>
-                        {/* Rows */}
                         <div style={{display:'flex',flexDirection:'column',gap:'8px',maxHeight:'320px',overflowY:'auto',paddingRight:'3px'}}>
                           {holderState.rows.slice(0,20).map((h) => (
                             <div className="top-holder-row" key={h.rank+h.address} style={{display:'grid',gridTemplateColumns:'36px minmax(0,1fr) 88px 62px',gap:'10px',alignItems:'center',padding:'10px 10px',border:'1px solid rgba(148,163,184,.18)',borderRadius:'10px',background:'rgba(15,23,42,.45)',transition:'all .16s'}}>
@@ -1501,38 +1512,42 @@ export default function TerminalTokenScanner() {
                     </div>
                   )
                 }
-                {(() => {
-                  const fb = buildHolderFallbackRead(fallback)
-                  return (
-                    <div style={{marginTop:'24px',marginBottom:'20px',background:'rgba(20,14,8,.45)',border:'1px solid rgba(251,191,36,.22)',borderRadius:'12px',padding:'16px'}}>
-                      <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px'}}>
-                        <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER INTELLIGENCE</p>
-                        <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(251,191,36,.4)',color:'#fbbf24',background:'rgba(251,191,36,.08)'}}>CORTEX FALLBACK</span>
-                      </div>
-                      <p style={{margin:'0 0 10px',fontSize:'12px',color:'#fde68a'}}>Exact holder concentration was not confirmed from this pass.</p>
-                      <div className="intel-grid" style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'12px'}}>
-                        {[
-                          ['Owner status', fallback.ownerStatus],
-                          ['Pool count', String(fallback.poolCount)],
-                          ['Liquidity depth', fmtLarge(fallback.liquidityDepth)],
-                          ['MC vs FDV', fallback.marketCapToFdvLabel],
-                          ['Holder concentration', 'Not confirmed'],
-                          ['Supply spread', 'Not confirmed'],
-                        ].map(([label,val]) => (
-                          <div key={String(label)} style={{padding:'8px 10px',borderRadius:'10px',background:'rgba(15,23,42,0.42)',border:`1px solid ${val === 'Not confirmed' ? 'rgba(251,191,36,.25)' : 'rgba(148,163,184,.18)'}`}}>
-                            <div style={{fontSize:'9px',color:'#64748b',fontFamily:'var(--font-plex-mono)'}}>{label}</div>
-                            <div style={{fontSize:'11px',color:val === 'Not confirmed' ? '#fbbf24' : '#cbd5e1',marginTop:'4px'}}>{val}</div>
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{padding:'10px 12px',borderRadius:'10px',background:'rgba(15,23,42,.5)',border:'1px solid rgba(125,211,252,.15)',marginBottom:'8px'}}>
-                        <div style={{fontSize:'9px',letterSpacing:'.1em',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)',marginBottom:'5px'}}>CORTEX READ</div>
-                        <p style={{margin:0,fontSize:'11px',color:'#b7c9da',lineHeight:1.6}}>{fb.read}</p>
-                      </div>
-                      <p style={{margin:0,fontSize:'11px',color:'#94a3b8'}}>{fb.next}</p>
+
+                // State 3: noRowsFallback — always renders (IIFE return bug fixed)
+                const fb = buildHolderFallbackRead(fallback)
+                const lpStatus = result.lpControl?.status
+                const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
+                const hpVerified = result.honeypot?.simulationSuccess === true
+                const evidenceItems: Array<{label:string;value:string;ok:boolean}> = [
+                  { label: 'Market data',         value: result.price != null ? 'Available' : 'Unavailable',              ok: result.price != null },
+                  { label: 'Liquidity depth',     value: fallback.liquidityDepth != null ? fmtLarge(fallback.liquidityDepth) : 'Unverified', ok: fallback.liquidityDepth != null },
+                  { label: 'Pool count',          value: fallback.poolCount > 0 ? String(fallback.poolCount) : 'Unverified', ok: fallback.poolCount > 0 },
+                  { label: 'LP control',          value: lpVerified ? 'Verified' : 'Unverified',                          ok: lpVerified },
+                  { label: 'Owner status',        value: fallback.ownerStatus,                                             ok: fallback.ownerStatus === 'Renounced' },
+                  { label: 'Security simulation', value: hpVerified ? 'Verified' : 'Unverified',                          ok: hpVerified },
+                ]
+                return (
+                  <div style={{marginTop:'24px',marginBottom:'20px',background:'linear-gradient(160deg,rgba(12,10,4,.72),rgba(4,8,18,.88))',border:'1px solid rgba(251,191,36,.22)',borderRadius:'14px',padding:'18px'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px',flexWrap:'wrap'}}>
+                      <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER INTELLIGENCE</p>
+                      <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(251,191,36,.4)',color:'#fbbf24',background:'rgba(251,191,36,.08)'}}>CONCENTRATION UNVERIFIED</span>
                     </div>
-                  )
-                })()}
+                    <p style={{margin:'0 0 12px',fontSize:'12px',color:'#fde68a',lineHeight:1.5}}>Holder rows were not returned in this pass. Concentration is the missing risk layer — context below is from other on-chain signals.</p>
+                    <div className="intel-grid" style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'14px'}}>
+                      {evidenceItems.map(({label,value,ok}) => (
+                        <div key={label} style={{padding:'9px 10px',borderRadius:'10px',background:'rgba(15,23,42,0.42)',border:`1px solid ${ok ? 'rgba(52,211,153,.22)' : value === 'Unverified' ? 'rgba(251,191,36,.22)' : 'rgba(248,113,113,.22)'}`}}>
+                          <div style={{fontSize:'9px',color:'#64748b',fontFamily:'var(--font-plex-mono)',marginBottom:'3px'}}>{label}</div>
+                          <div style={{fontSize:'11px',fontWeight:700,color:ok ? '#34d399' : value === 'Unverified' ? '#fbbf24' : '#f87171',fontFamily:'var(--font-plex-mono)'}}>{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{padding:'10px 12px',borderRadius:'10px',background:'rgba(15,23,42,.5)',border:'1px solid rgba(125,211,252,.15)',marginBottom:'10px'}}>
+                      <div style={{fontSize:'9px',letterSpacing:'.1em',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)',marginBottom:'5px'}}>CORTEX READ</div>
+                      <p style={{margin:0,fontSize:'11px',color:'#b7c9da',lineHeight:1.6}}>{fb.read}</p>
+                    </div>
+                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)'}}>{fb.next}</p>
+                  </div>
+                )
               })()}
 
               {/* Pools */}
