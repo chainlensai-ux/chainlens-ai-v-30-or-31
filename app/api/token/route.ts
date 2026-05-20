@@ -81,6 +81,12 @@ type HolderDistribution = {
   holderCount: number | null
   topHolders: Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>
 }
+type HolderDistributionStatus = {
+  status: "ok" | "partial" | "empty" | "unavailable" | "error"
+  reason?: string
+  itemCount?: number
+  normalizedCount?: number
+}
 
 function toNum(v: unknown): number | null {
   const n = typeof v === "string" || typeof v === "number" ? Number(v) : NaN
@@ -93,6 +99,13 @@ function pickNum(...vals: unknown[]): number | null {
     if (n != null) return n
   }
   return null
+}
+
+function normalizeHolderPercent(v: unknown): number | null {
+  const n = toNum(v)
+  if (n == null || n < 0 || n > 100) return null
+  if (n > 0 && n <= 1) return n * 100
+  return n
 }
 
 // BigInt-safe percentage: avoids float precision loss on 18-decimal ERC-20 balances.
@@ -1256,34 +1269,30 @@ export async function POST(req: Request) {
       const address = h.address || h.holder_address || h.wallet_address || h.owner_address || h.contract_address || ''
       const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
       const amount = toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null
-      const pctRaw = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.percent_of_supply) ?? toNum(h.share) ?? toNum(h.supply_percentage)
-      const supplyRaw = h.total_supply ?? h.circulating_supply ?? goldrush?.data?.items?.[0]?.total_supply ?? gtToken?.total_supply ?? gtToken?.circulating_supply ?? null
-      const percent = pctRaw != null
-        ? pctRaw
-        : bigIntPct(balanceRaw, supplyRaw)
-          ?? (amount != null && toNum(supplyRaw) != null ? (amount / toNum(supplyRaw)!) * 100 : null)
-      holderPctFromProvider.push(pctRaw != null)
+      const pctRaw = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage)
+      const percent = pctRaw
+      holderPctFromProvider.push(percent != null)
       return { rank: i + 1, address, amount, percent }
     }).filter((h: any) => h.address)
 
-    const hasPct = topHolders.some((h: any) => h.percent != null)
+    const percentRows = topHolders.filter((h: any) => h.percent != null)
+    const hasPct = percentRows.length > 0
     const anyProviderPct = holderPctFromProvider.some(Boolean)
     const percentSource: 'provider' | 'calculated' | 'unavailable' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'unavailable'
     console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct, '[holders] pct source', percentSource)
     const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
+    const derivedTopBuckets = hasPct
     const top1 = hasPct ? sum(1) : null
     const top5 = hasPct ? sum(5) : null
     const top10 = hasPct ? sum(10) : null
     const top20 = hasPct ? sum(20) : null
     const normalizedTop = topHolders.slice(0, 200)
     const holderDistribution: HolderDistribution | null = normalizedTop.length ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop } : null
-    const holderDistributionStatus = holderDistribution
+    const holderDistributionStatus: HolderDistributionStatus = holderDistribution
       ? (hasPct
-          ? { source: 'goldrush', status: 'ok', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource }
-          : { source: 'goldrush', status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource: 'unavailable' as const })
-      : (holderItems.length
-          ? { source: 'goldrush', status: 'empty', reason: 'no_rows', itemCount: holderItems.length, normalizedCount: 0, percentSource: 'unavailable' as const }
-          : { source: 'unavailable', status: (holdersRaw?.__status ?? 'empty'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: 0, normalizedCount: 0, percentSource: 'unavailable' as const })
+          ? { status: 'ok', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
+          : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
+      : { status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: holderItems.length, normalizedCount: 0 }
 
     const poolAttr = mainPool?.attributes ?? {}
     // True market cap priority:
@@ -1554,9 +1563,10 @@ export async function POST(req: Request) {
       hpResult.ok ? "ok" : gpHasData ? "partial" : "unavailable";
     const securityReason = hpResult.ok ? null : (gpHasData ? "security_check_limited_signals_used" : "security_simulation_unavailable");
     const holdersStatus: "ok" | "partial" | "unavailable" | "error" =
-      holderDistribution && hasPct ? "ok" :
-      holderDistribution ? "partial" :
-      (holdersRaw?.__status === "error" ? "error" : "unavailable");
+      holderDistributionStatus.status === 'ok' ? 'ok' :
+      holderDistributionStatus.status === 'partial' ? 'partial' :
+      holderDistributionStatus.status === 'error' ? 'error' :
+      'unavailable';
     const holdersReason = holdersStatus === "ok" ? null : (holderDistributionStatus?.reason ?? "holder_data_unavailable");
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "unavailable"));
@@ -1983,6 +1993,21 @@ export async function POST(req: Request) {
           marketConfidence,
           marketStatus,
         } : null,
+        holderDiagnostics: {
+          status: holderDistributionStatus.status,
+          reason: holderDistributionStatus.reason ?? null,
+          rawItemCount: holderItems.length,
+          normalizedCount: normalizedTop.length,
+          percentRows: percentRows.length,
+          rowsWithAddress: topHolders.filter((h: any) => Boolean(h.address)).length,
+          rowsWithAmount: topHolders.filter((h: any) => h.amount != null).length,
+          rowsWithPercent: topHolders.filter((h: any) => h.percent != null).length,
+          derivedTopBuckets,
+          firstHolderKeys: holderItems[0] ? Object.keys(holderItems[0]) : null,
+          samplePercents: topHolders.slice(0, 5).map((h: any) => h.percent).filter((x: any) => x != null),
+          holderProviderCalled: holdersRaw?.__status !== 'unavailable',
+          failureStage: holderDistributionStatus.status === 'ok' ? null : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
+        },
       }
     } else {
       delete (responsePayload as any)._diagnostics
