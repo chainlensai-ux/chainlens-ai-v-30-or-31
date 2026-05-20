@@ -1545,6 +1545,9 @@ export default function TerminalTokenScanner() {
                             <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
                           </div>
                         ))}
+                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'4px', padding:'7px 10px', borderRadius:'8px', background: cx.capReason ? 'rgba(148,163,184,0.05)' : 'rgba(52,211,153,0.04)', border: cx.capReason ? '1px solid rgba(148,163,184,0.14)' : '1px solid rgba(52,211,153,0.14)' }}>
+                          <span style={{ fontSize:'10px', color: cx.capReason ? '#64748b' : '#34d399', fontFamily:'var(--font-plex-mono)', fontStyle:'italic' }}>⚑ {cx.capReason ?? 'No major score cap applied.'}</span>
+                        </div>
                       </div>
                     </div>
                     {/* 4-card CORTEX Read layout */}
@@ -1671,9 +1674,44 @@ export default function TerminalTokenScanner() {
                             <div style={{ fontSize: '14px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{`${((result.marketCapUsd / result.fdvUsd) * 100).toFixed(0)}%`}</div>
                           </div>
                         )}
+                        {(() => {
+                          const volLiqRatio = result.volume24h != null && result.liquidity != null && result.liquidity > 0
+                            ? result.volume24h / result.liquidity
+                            : null
+                          if (volLiqRatio == null) return null
+                          const ratioColor = volLiqRatio > 3 ? '#f87171' : volLiqRatio > 1 ? '#fbbf24' : '#34d399'
+                          return (
+                            <div>
+                              <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>VOL / LIQ</div>
+                              <div style={{ fontSize: '14px', fontWeight: 700, color: ratioColor, fontFamily: 'var(--font-plex-mono)' }}>{volLiqRatio.toFixed(2)}x</div>
+                            </div>
+                          )
+                        })()}
                       </div>
                     </div>
                   )}
+                  {(() => {
+                    const volLiqRatio = result.volume24h != null && result.liquidity != null && result.liquidity > 0
+                      ? result.volume24h / result.liquidity
+                      : null
+                    const volLiqRead = volLiqRatio == null
+                      ? 'Volume/liquidity ratio unavailable.'
+                      : volLiqRatio > 3
+                        ? 'Volume is very high relative to liquidity — expect significant volatility and slippage.'
+                        : volLiqRatio > 1
+                          ? 'Volume is high relative to liquidity — expect volatility.'
+                          : 'Healthy activity — volume is proportionate to liquidity depth.'
+                    if (!result.noActivePools && (result.volume24h != null || result.liquidity != null)) {
+                      return (
+                        <div style={{ marginBottom: '16px', padding: '11px 14px', borderRadius: '10px', background: 'rgba(103,232,249,0.04)', border: '1px solid rgba(103,232,249,0.14)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, flexShrink: 0 }}>VOL/LIQ READ</span>
+                          <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{volLiqRead}</span>
+                          {volLiqRatio != null && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 800, color: volLiqRatio > 3 ? '#f87171' : volLiqRatio > 1 ? '#fbbf24' : '#34d399', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>{volLiqRatio.toFixed(2)}x</span>}
+                        </div>
+                      )
+                    }
+                    return null
+                  })()}
                   {result.noActivePools ? (
                     <div style={{ padding: '20px 22px', marginBottom: '28px', background: 'rgba(245,158,11,0.04)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '12px', fontFamily: 'var(--font-plex-mono)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
@@ -1808,19 +1846,57 @@ export default function TerminalTokenScanner() {
                       if (holderState.kind !== 'noRowsFallback') {
                         const top1h = result.holderDistribution?.top1
                         const top10h = result.holderDistribution?.top10
+                        const top20h = result.holderDistribution?.top20
+                        const holderCount = result.holderDistribution?.holderCount
                         const concRisk = top10h != null ? (top10h > 50 ? 'HIGH' : top10h > 30 ? 'MEDIUM' : 'LOW') : null
                         const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
                         const concRead = holderState.kind === 'rowsWithPercent' && concRisk != null
                           ? concRisk === 'HIGH' ? 'High concentration — top holders control majority supply.' : concRisk === 'MEDIUM' ? 'Moderate concentration — watch for coordinated movement.' : 'Spread looks reasonable — no extreme concentration flagged.'
                           : null
+                        const whalePressure = holderState.kind !== 'rowsWithPercent' || top10h == null
+                          ? 'UNVERIFIED'
+                          : top10h >= 70 ? 'EXTREME' : top10h >= 50 ? 'HIGH' : top10h >= 20 ? 'MEDIUM' : 'LOW'
+                        const whalePressureColor = whalePressure === 'EXTREME' ? '#f87171' : whalePressure === 'HIGH' ? '#fb923c' : whalePressure === 'MEDIUM' ? '#fbbf24' : whalePressure === 'LOW' ? '#34d399' : '#94a3b8'
                         return (
                           <div className="holders-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                            {/* Whale Pressure Card */}
+                            <div style={{ gridColumn:'1 / -1', marginBottom:'4px', padding:'14px 16px', borderRadius:'12px', background:'rgba(167,139,250,0.05)', border:`1px solid ${whalePressureColor}28` }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'12px', flexWrap:'wrap' }}>
+                                <span style={{ fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>WHALE PRESSURE</span>
+                                <span style={{ padding:'3px 10px', borderRadius:'999px', fontSize:'9px', fontWeight:800, letterSpacing:'.12em', color:whalePressureColor, background:`${whalePressureColor}12`, border:`1px solid ${whalePressureColor}40`, fontFamily:'var(--font-plex-mono)' }}>{whalePressure}</span>
+                              </div>
+                              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:'8px', marginBottom: (top10h != null && top10h > 50) || (top20h != null && top20h > 50) ? '10px' : '0' }}>
+                                {[
+                                  ['Top 1', top1h != null ? `${top1h.toFixed(1)}%` : 'N/A'],
+                                  ['Top 10', top10h != null ? `${top10h.toFixed(1)}%` : 'N/A'],
+                                  ['Top 20', top20h != null ? `${top20h.toFixed(1)}%` : 'N/A'],
+                                  ['Holders', holderCount != null ? holderCount.toLocaleString() : 'N/A'],
+                                ].map(([label, val]) => (
+                                  <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,0.55)', border:'1px solid rgba(167,139,250,0.16)' }}>
+                                    <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'3px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
+                                    <div style={{ fontSize:'12px', color:'#e2e8f0', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{val}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              {top10h != null && top10h > 50 && (
+                                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', padding:'7px 10px', borderRadius:'8px', background:'rgba(248,113,113,0.06)', border:'1px solid rgba(248,113,113,0.18)' }}>
+                                  <span style={{ color:'#f87171', fontSize:'11px', flexShrink:0 }}>!</span>
+                                  <span style={{ fontSize:'11px', color:'#fca5a5', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Top wallets control majority supply.</span>
+                                </div>
+                              )}
+                              {top20h != null && top20h > 50 && !(top10h != null && top10h > 50) && (
+                                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', padding:'7px 10px', borderRadius:'8px', background:'rgba(251,191,36,0.06)', border:'1px solid rgba(251,191,36,0.18)' }}>
+                                  <span style={{ color:'#fbbf24', fontSize:'11px', flexShrink:0 }}>!</span>
+                                  <span style={{ fontSize:'11px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Watch for coordinated holder movement.</span>
+                                </div>
+                              )}
+                            </div>
                             <div style={{ gridColumn:'1 / -1', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:'8px' }}>
                               {[
                                 ['Holder Risk', concRisk ?? 'Unverified'],
                                 ['Top 10 Control', top10h != null ? `${top10h.toFixed(1)}%` : 'Unverified'],
-                                ['Top 20 Control', result.holderDistribution?.top20 != null ? `${result.holderDistribution.top20.toFixed(1)}%` : 'Unverified'],
-                                ['Holder Count', result.holderDistribution?.holderCount != null ? result.holderDistribution.holderCount.toLocaleString() : 'Unverified'],
+                                ['Top 20 Control', top20h != null ? `${top20h.toFixed(1)}%` : 'Unverified'],
+                                ['Holder Count', holderCount != null ? holderCount.toLocaleString() : 'Unverified'],
                                 ['Supply Spread', concRead ?? 'Supply spread unverified'],
                               ].map(([label,val])=>(
                                 <div key={label} style={{ padding:'10px 11px', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.22)', background:'rgba(15,23,42,0.55)' }}>
@@ -1923,6 +1999,50 @@ export default function TerminalTokenScanner() {
                     <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP CONTROL</p>
                     <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, primary pool, and pool board.</p>
                   </div>
+                  {/* Exit Risk Read card — always visible */}
+                  {(() => {
+                    const lpS = result.lpControl?.status
+                    const lpVerifiedExit = lpS === 'locked' || lpS === 'burned'
+                    const liqDepth = result.liquidity ?? null
+                    const primaryPool = result.pools?.[0]?.name ?? result.primaryDexName ?? null
+                    const exitRisk = result.noActivePools
+                      ? 'CRITICAL'
+                      : !lpVerifiedExit
+                        ? liqDepth != null && liqDepth < 50_000 ? 'HIGH' : 'ELEVATED'
+                        : liqDepth != null && liqDepth < 50_000 ? 'MEDIUM' : 'LOW'
+                    const exitRiskColor = exitRisk === 'CRITICAL' ? '#f87171' : exitRisk === 'HIGH' ? '#fb923c' : exitRisk === 'ELEVATED' ? '#fbbf24' : exitRisk === 'MEDIUM' ? '#a78bfa' : '#34d399'
+                    const exitRead = result.noActivePools
+                      ? 'No active liquidity pool detected — exit risk cannot be assessed.'
+                      : !lpVerifiedExit && lpS === 'unsupported'
+                        ? 'Protocol-managed liquidity detected. Lock/burn proof requires protocol-specific verification.'
+                        : !lpVerifiedExit
+                          ? 'Liquidity exists, but lock/burn proof is not confirmed. Treat exit liquidity as unprotected.'
+                          : lpS === 'burned'
+                            ? 'LP tokens burned — liquidity is permanently locked. Exit liquidity is protected.'
+                            : 'LP locked — exit liquidity is protected for the lock duration.'
+                    return (
+                      <div style={{ marginBottom: '18px', padding: '14px 16px', borderRadius: '12px', background: `${exitRiskColor}08`, border: `1px solid ${exitRiskColor}28` }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>EXIT RISK READ</span>
+                          <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: exitRiskColor, background: `${exitRiskColor}14`, border: `1px solid ${exitRiskColor}40`, fontFamily: 'var(--font-plex-mono)' }}>{exitRisk}</span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '8px', marginBottom: '10px' }}>
+                          {[
+                            ['LP Proof', lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : lpS === 'unsupported' ? 'Protocol LP' : 'Unverified'],
+                            ['Liquidity Depth', liqDepth != null ? fmtLarge(liqDepth) : 'Unverified'],
+                            ['Primary Pool', primaryPool ?? 'Unverified'],
+                            ['Exit Risk', exitRisk],
+                          ].map(([label, val]) => (
+                            <div key={label} style={{ padding: '8px 10px', borderRadius: '8px', background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(52,211,153,0.12)' }}>
+                              <div style={{ fontSize: '9px', letterSpacing: '.12em', color: '#64748b', marginBottom: '3px', fontFamily: 'var(--font-plex-mono)' }}>{label}</div>
+                              <div style={{ fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{val}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitRead}</p>
+                      </div>
+                    )
+                  })()}
                   {!planLoading && !isFullAccess && (
                     <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center', marginBottom: '18px' }}>
                       <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
@@ -2200,6 +2320,41 @@ export default function TerminalTokenScanner() {
                         </div>
                       </div>
                     )}
+                    {/* CORTEX Watch Triggers */}
+                    {(() => {
+                      const cx2 = calculateCortexScore(result)
+                      const lpVerifiedTrig = lpVerified
+                      const holderVerifiedTrig = holderState.kind === 'rowsWithPercent'
+                      const simVerifiedTrig = result.honeypot?.simulationSuccess === true && result.honeypot?.isHoneypot === false
+                      const mcVerifiedTrig = result.marketCapUsd != null
+                      const liq2 = result.liquidity ?? 0
+                      const top10Trig = result.holderDistribution?.top10 ?? null
+                      const triggers: Array<{label: string; detail: string; color: string}> = [
+                        !lpVerifiedTrig ? { label: 'Verify LP Lock / Burn', detail: 'LP lock or burn proof missing. Confirm before trusting exit liquidity.', color: '#f87171' } : null,
+                        !holderVerifiedTrig ? { label: 'Confirm Holder Distribution', detail: 'Rescan when holder data is indexed. Supply concentration is an open risk.', color: '#fbbf24' } : null,
+                        !simVerifiedTrig ? { label: 'Check Security Simulation', detail: 'Honeypot and tax simulation incomplete. Verify on an independent checker.', color: '#fbbf24' } : null,
+                        !mcVerifiedTrig ? { label: 'Confirm Market Cap', detail: 'Circulating supply not confirmed. FDV is not market cap — do not substitute.', color: '#a78bfa' } : null,
+                        liq2 > 0 && liq2 < 100_000 ? { label: 'Monitor Liquidity Depth', detail: `${fmtLarge(liq2)} pool depth is thin. Watch for removal or rug conditions.`, color: '#fb923c' } : null,
+                        top10Trig != null && top10Trig > 50 ? { label: 'Track Top Holder Movement', detail: `Top 10 hold ${top10Trig.toFixed(1)}% of supply. Large sells can collapse price rapidly.`, color: '#f87171' } : null,
+                      ].filter((x): x is {label: string; detail: string; color: string} => x != null).slice(0, 3)
+                      if (triggers.length === 0) return null
+                      return (
+                        <div style={{ marginBottom:'18px' }}>
+                          <p style={{ ...st, color:'#fbbf24', margin:'0 0 10px' }}>CORTEX Watch Triggers</p>
+                          <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                            {triggers.map((trig, i) => (
+                              <div key={i} style={{ display:'flex', gap:'12px', padding:'11px 14px', background:'rgba(8,14,28,.72)', border:`1px solid ${trig.color}22`, borderRadius:'10px', alignItems:'flex-start' }}>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background:trig.color, flexShrink:0, marginTop:'4px', boxShadow:`0 0 6px ${trig.color}` }} />
+                                <div>
+                                  <p style={{ margin:'0 0 2px', fontSize:'11px', fontWeight:700, color:trig.color, fontFamily:'var(--font-plex-mono)' }}>{trig.label}</p>
+                                  <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{trig.detail}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
                     {/* Open checks */}
                     {missing.length>0&&(
                       <div style={{ marginBottom:'16px' }}>
