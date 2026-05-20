@@ -212,6 +212,19 @@ function FullPageMessage({ title, sub, color = '#64748b' }: { title: string; sub
 
 // ─── Sections ──────────────────────────────────────────────────────────────────
 
+function TestBadge() {
+  return (
+    <span style={{
+      display: 'inline-block', marginLeft: '6px', padding: '1px 7px',
+      borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em',
+      fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', verticalAlign: 'middle',
+      color: '#f59e0b', background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.30)',
+    }}>
+      TEST
+    </span>
+  )
+}
+
 function PaymentsTable({ rows }: { rows: Record<string, unknown>[] }) {
   return (
     <div style={tableWrap}>
@@ -228,7 +241,10 @@ function PaymentsTable({ rows }: { rows: Record<string, unknown>[] }) {
           {rows.map((p, i) => (
             <tr key={i} style={{ transition: 'background 0.1s' }}>
               <td style={{ ...td, color: '#64748b' }}>{fmtDate(p.created_at)}</td>
-              <td style={td}>{String(p.user_email ?? '—')}</td>
+              <td style={td}>
+                {String(p.user_email ?? '—')}
+                {!!p._isInternal && <TestBadge />}
+              </td>
               <td style={{ ...td, color: '#a78bfa', textTransform: 'uppercase' }}>{String(p.plan ?? '—')}</td>
               <td style={{ ...td, color: paymentAmountColor(p.status), fontWeight: 700 }}>{fmtUsd(p.amount_usd)}</td>
               <td style={td}><PaymentStatusBadge status={p.status} /></td>
@@ -377,7 +393,10 @@ function CommissionsTable({
               <tr key={i}>
                 <td style={{ ...td, color: '#64748b' }}>{fmtDate(c.created_at)}</td>
                 <td style={{ ...td, color: '#94a3b8' }}>{shorten(c.affiliate_id, 14)}</td>
-                <td style={td}>{String(c.buyer_email ?? '—')}</td>
+                <td style={td}>
+                  {String(c.buyer_email ?? '—')}
+                  {!!c._isTestPayment && <TestBadge />}
+                </td>
                 <td style={{ ...td, color: '#34d399' }}>{fmtUsd(c.payment_amount_usd)}</td>
                 <td style={{ ...td, color: '#2DD4BF' }}>{fmtPct(c.commission_rate)}</td>
                 <td style={{ ...td, color: '#fbbf24', fontWeight: 700 }}>{fmtUsd(c.commission_amount)}</td>
@@ -501,6 +520,13 @@ function Dashboard({
   const { metrics, payments, pendingApplications, approvedAffiliates, commissions, referredUsers } = data
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+  const [payFilter, setPayFilter] = useState<'all' | 'real' | 'test'>('all')
+
+  const filteredPayments = payFilter === 'all'
+    ? payments
+    : payFilter === 'real'
+      ? payments.filter((p) => !p._isInternal)
+      : payments.filter((p) => p._isInternal)
 
   const runAction = useCallback(async (action: string, id: string, confirmMsg: string) => {
     if (!window.confirm(confirmMsg)) return
@@ -579,7 +605,7 @@ function Dashboard({
         <div style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fit, minmax(176px, 1fr))',
-          gap: '12px', marginBottom: '40px',
+          gap: '12px', marginBottom: '16px',
         }}>
           <MetricCard
             label="All Checkout Attempts"
@@ -594,16 +620,28 @@ function Dashboard({
             accent={metrics.unpaidCheckoutsCount > 0 ? '#f59e0b' : '#3a5268'}
           />
           <MetricCard
-            label="Confirmed Sales"
-            value={metrics.confirmedPayments.toLocaleString()}
-            sub="confirmed + finished"
+            label="Real Confirmed Sales"
+            value={metrics.realConfirmedSalesCount.toLocaleString()}
+            sub="real customers only"
             accent="#34d399"
           />
           <MetricCard
-            label="Confirmed Revenue"
-            value={fmtUsd(metrics.confirmedRevenueUsd)}
-            sub="confirmed + finished only"
+            label="Real Confirmed Revenue"
+            value={fmtUsd(metrics.realConfirmedRevenueUsd)}
+            sub="internal/test excluded"
             accent="#34d399"
+          />
+          <MetricCard
+            label="Internal/Test Payments"
+            value={metrics.testPaymentsCount.toLocaleString()}
+            sub="admin/test emails"
+            accent={metrics.testPaymentsCount > 0 ? '#f59e0b' : '#3a5268'}
+          />
+          <MetricCard
+            label="Test Revenue"
+            value={fmtUsd(metrics.testConfirmedRevenueUsd)}
+            sub="not counted as real"
+            accent={metrics.testConfirmedRevenueUsd > 0 ? '#f59e0b' : '#3a5268'}
           />
           <MetricCard
             label="Commission Owed"
@@ -619,20 +657,48 @@ function Dashboard({
           />
         </div>
 
+        <p style={{
+          marginBottom: '36px', fontSize: '11px',
+          color: '#475569', fontFamily: 'var(--font-plex-mono)',
+          borderLeft: '2px solid rgba(245,158,11,0.4)', paddingLeft: '10px',
+        }}>
+          Internal/test payments are excluded from real revenue totals. Rows marked TEST belong to admin/internal accounts.
+        </p>
+
         {/* Sections */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '36px' }}>
 
           {/* Recent Payments */}
           <div style={card}>
-            <SectionHeader label="Recent Payments" count={payments.length} />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', marginBottom: '14px' }}>
+              <SectionHeader label="Recent Payments" count={filteredPayments.length} />
+              <div style={{ display: 'flex', gap: '6px', marginBottom: '14px' }}>
+                {(['all', 'real', 'test'] as const).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => setPayFilter(f)}
+                    style={{
+                      padding: '4px 12px', borderRadius: '6px', fontSize: '10px', fontWeight: 700,
+                      letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+                      border: payFilter === f ? '1px solid rgba(45,212,191,0.5)' : '1px solid rgba(148,163,184,0.15)',
+                      background: payFilter === f ? 'rgba(45,212,191,0.10)' : 'transparent',
+                      color: payFilter === f ? '#2DD4BF' : '#475569',
+                      transition: 'all 0.1s',
+                    }}
+                  >
+                    {f === 'all' ? 'ALL' : f === 'real' ? 'REAL' : 'TEST'}
+                  </button>
+                ))}
+              </div>
+            </div>
             <p style={{
               margin: '-4px 0 14px', fontSize: '11px',
               color: '#475569', fontFamily: 'var(--font-plex-mono)',
               borderLeft: '2px solid rgba(245,158,11,0.4)', paddingLeft: '10px',
             }}>
-              UNPAID rows are checkout attempts, not completed sales. Only CONFIRMED and PAID rows represent real revenue.
+              UNPAID rows are checkout attempts, not completed sales. Only CONFIRMED and PAID rows represent real revenue. TEST rows are from internal accounts.
             </p>
-            <PaymentsTable rows={payments} />
+            <PaymentsTable rows={filteredPayments} />
           </div>
 
           {/* Pending Applications */}

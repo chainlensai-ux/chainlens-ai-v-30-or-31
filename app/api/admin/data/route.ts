@@ -8,6 +8,15 @@ const ADMIN_EMAILS = new Set([
   'anthonynoumeir@gmail.com',
 ])
 
+// ─── Internal / test emails ───────────────────────────────────────────────────
+// Payments from these addresses are excluded from real revenue totals.
+// Kept in sync with ADMIN_EMAILS — update both together.
+const INTERNAL_EMAILS = new Set([
+  'chainlensai@gmail.com',
+  'anthonynoumeir7@gmail.com',
+  'anthonynoumeir@gmail.com',
+])
+
 // ─── Client factories ────────────────────────────────────────────────────────
 function makeAnonClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -57,9 +66,11 @@ export interface AffiliateWithStats extends Record<string, unknown> {
 export interface AdminData {
   metrics: {
     totalCheckoutAttempts: number
-    confirmedPayments: number
     unpaidCheckoutsCount: number
-    confirmedRevenueUsd: number
+    realConfirmedSalesCount: number
+    realConfirmedRevenueUsd: number
+    testPaymentsCount: number
+    testConfirmedRevenueUsd: number
     pendingCommissionAmountUsd: number
     approvedAffiliatesCount: number
     pendingApplicationsCount: number
@@ -123,10 +134,10 @@ export async function GET(req: NextRequest) {
       .order('created_at', { ascending: false })
       .limit(50),
 
-    // Aggregate: total confirmed revenue (all-time)
+    // Aggregate: total confirmed revenue (all-time) — includes user_email to split real vs test
     sb
       .from('crypto_payments')
-      .select('amount_usd')
+      .select('amount_usd, user_email')
       .in('status', ['confirmed', 'finished']),
 
     // Aggregate: all pending commissions (for total owed + per-affiliate owed)
@@ -142,22 +153,43 @@ export async function GET(req: NextRequest) {
       .not('referral_code', 'is', null),
   ])
 
-  const payments = (paymentsRes.data ?? []) as Payment[]
+  // Flag payments rows with _isInternal so the UI can badge them
+  const payments = (paymentsRes.data ?? []).map((p) => {
+    const row = p as Record<string, unknown>
+    return { ...row, _isInternal: INTERNAL_EMAILS.has(String(row.user_email ?? '').toLowerCase()) }
+  }) as Payment[]
   const allAffiliates = (affiliatesRes.data ?? []) as Affiliate[]
-  const commissions = (commissionsRes.data ?? []) as Commission[]
+  // Flag commission rows with _isTestPayment based on buyer_email
+  const commissions = (commissionsRes.data ?? []).map((c) => {
+    const row = c as Record<string, unknown>
+    return { ...row, _isTestPayment: INTERNAL_EMAILS.has(String(row.buyer_email ?? '').toLowerCase()) }
+  }) as Commission[]
   const referredUsers = (referredUsersRes.data ?? []) as ReferredUser[]
-  const allConfirmedRevenue = (allConfirmedRevenueRes.data ?? []) as Array<{ amount_usd: unknown }>
+  const allConfirmedRevenue = (allConfirmedRevenueRes.data ?? []) as Array<{ amount_usd: unknown; user_email: unknown }>
   const allPendingComms = (allPendingCommsRes.data ?? []) as Array<{ affiliate_id: unknown; commission_amount: unknown }>
   const allAffiliatePayments = (allAffiliatePaymentsRes.data ?? []) as Array<{ referral_code: unknown; amount_usd: unknown; status: unknown }>
 
-  // 3. Compute aggregate totals
-  const confirmedRevenueUsd = allConfirmedRevenue.reduce((s, r) => s + (Number(r.amount_usd) || 0), 0)
+  // 3. Compute aggregate totals — split real customers vs internal/test emails
+  let realConfirmedRevenueUsd = 0
+  let testConfirmedRevenueUsd = 0
+  let realConfirmedSalesCount = 0
+  let testPaymentsCount = 0
+  for (const r of allConfirmedRevenue) {
+    const amt = Number(r.amount_usd) || 0
+    const email = String(r.user_email ?? '').toLowerCase()
+    if (INTERNAL_EMAILS.has(email)) {
+      testConfirmedRevenueUsd += amt
+      testPaymentsCount++
+    } else {
+      realConfirmedRevenueUsd += amt
+      realConfirmedSalesCount++
+    }
+  }
   const pendingCommissionAmountUsd = allPendingComms.reduce((s, r) => s + (Number(r.commission_amount) || 0), 0)
 
-  // 4. Count totals (use parallel count queries for accuracy)
-  const [totalCountRes, confirmedCountRes, unpaidCountRes, approvedCountRes, pendingAppCountRes] = await Promise.all([
+  // 4. Count totals — confirmed counts are derived from allConfirmedRevenue (already fetched above)
+  const [totalCountRes, unpaidCountRes, approvedCountRes, pendingAppCountRes] = await Promise.all([
     sb.from('crypto_payments').select('order_id', { count: 'exact', head: true }),
-    sb.from('crypto_payments').select('order_id', { count: 'exact', head: true }).in('status', ['confirmed', 'finished']),
     // Unpaid = checkout opened but not yet confirmed or failed
     sb.from('crypto_payments').select('order_id', { count: 'exact', head: true }).in('status', ['created', 'waiting', 'pending']),
     sb.from('affiliates').select('id', { count: 'exact', head: true }).eq('status', 'approved'),
@@ -204,9 +236,11 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     metrics: {
       totalCheckoutAttempts: totalCountRes.count ?? 0,
-      confirmedPayments: confirmedCountRes.count ?? 0,
       unpaidCheckoutsCount: unpaidCountRes.count ?? 0,
-      confirmedRevenueUsd,
+      realConfirmedSalesCount,
+      realConfirmedRevenueUsd,
+      testPaymentsCount,
+      testConfirmedRevenueUsd,
       pendingCommissionAmountUsd,
       approvedAffiliatesCount: approvedCountRes.count ?? 0,
       pendingApplicationsCount: pendingAppCountRes.count ?? 0,
