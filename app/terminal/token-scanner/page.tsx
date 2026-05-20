@@ -865,8 +865,8 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function TerminalTokenScanner() {
-  const { plan } = usePlanWithLoading()
-  const isFullAccess = canAccessFeature(plan, 'token-scanner-full')
+  const { plan, loading: planLoading } = usePlanWithLoading()
+  const isFullAccess = !planLoading && canAccessFeature(plan, 'token-scanner-full')
 
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
@@ -1029,7 +1029,7 @@ export default function TerminalTokenScanner() {
               }} />
               TOKEN SCANNER
             </div>
-            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{isFullAccess ? 'Full scan access.' : 'Basic preview · Pro and Elite unlock full security reports.'}</p>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : isFullAccess ? 'Full scan access.' : 'Basic preview · Pro and Elite unlock full security reports.'}</p>
           </div>
 
           {/* Input row */}
@@ -1323,7 +1323,7 @@ export default function TerminalTokenScanner() {
                           .map((s, i) => <div key={i}>- {humanizeSectionLine(s.source, s.status, s.reason)}</div>)}
                       </div>
                     )}
-                    {!isFullAccess && (
+                    {!planLoading && !isFullAccess && (
                       <div style={{ marginTop: '24px', padding: '28px 24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
                         <div style={{ fontSize: '26px', marginBottom: '12px' }}>🔒</div>
                         <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 8px', fontSize: '15px' }}>Full Security Report</p>
@@ -1512,7 +1512,7 @@ export default function TerminalTokenScanner() {
                       <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
                       <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Top holder distribution and supply concentration analysis.</p>
                     </div>
-                    {!isFullAccess && (
+                    {!planLoading && !isFullAccess && (
                       <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
                         <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
                         <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', fontSize: '14px' }}>Holder Distribution</p>
@@ -1520,7 +1520,7 @@ export default function TerminalTokenScanner() {
                         <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
                       </div>
                     )}
-                    {isFullAccess && result.debugHolderStatus && (() => {
+                    {!planLoading && isFullAccess && result.debugHolderStatus && (() => {
                       const d = result.debugHolderStatus!
                       return (
                         <details style={{ marginBottom: '12px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '8px', padding: '8px 12px', fontSize: '10px', fontFamily: 'var(--font-plex-mono)' }}>
@@ -1535,7 +1535,7 @@ export default function TerminalTokenScanner() {
                         </details>
                       )
                     })()}
-                    {isFullAccess && (() => {
+                    {!planLoading && isFullAccess && (() => {
                       if (holderState.kind !== 'noRowsFallback') {
                         const top1h = result.holderDistribution?.top1
                         const top10h = result.holderDistribution?.top10
@@ -1654,7 +1654,7 @@ export default function TerminalTokenScanner() {
                     <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP CONTROL</p>
                     <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, primary pool, and pool board.</p>
                   </div>
-                  {!isFullAccess && (
+                  {!planLoading && !isFullAccess && (
                     <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center', marginBottom: '18px' }}>
                       <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
                       <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', fontSize: '14px' }}>LP Control Analysis</p>
@@ -1662,7 +1662,7 @@ export default function TerminalTokenScanner() {
                       <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
                     </div>
                   )}
-                  {isFullAccess && result.lpControl && (() => {
+                  {!planLoading && isFullAccess && result.lpControl && (() => {
                     const lp = result.lpControl
                     const read = result.lpControlRead
                     const lpIsVerified = lp.status === 'locked' || lp.status === 'burned'
@@ -1727,7 +1727,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     )
                   })()}
-                  {isFullAccess && !result.lpControl && (
+                  {!planLoading && isFullAccess && !result.lpControl && (
                     <div style={{ padding:'14px 18px',marginBottom:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>LP control data was not returned in this scan.</div>
                   )}
                   {result.pools && result.pools.length > 0 && (
@@ -1770,7 +1770,7 @@ export default function TerminalTokenScanner() {
                     <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#f87171',fontFamily:'var(--font-plex-mono)' }}>RISK CHECKS</p>
                     <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Security simulation, contract flags, and ownership checks.</p>
                   </div>
-                  {!isFullAccess && (
+                  {!planLoading && !isFullAccess && (
                     <div style={{ padding:'24px',border:'1px solid rgba(139,92,246,0.28)',borderRadius:'16px',background:'rgba(139,92,246,0.06)',textAlign:'center' }}>
                       <div style={{ fontSize:'22px',marginBottom:'10px' }}>🔒</div>
                       <p style={{ fontWeight:700,color:'#f8fafc',margin:'0 0 6px',fontSize:'14px' }}>Full Risk Analysis</p>
@@ -1778,7 +1778,7 @@ export default function TerminalTokenScanner() {
                       <a href="/pricing" style={{ display:'inline-block',padding:'8px 20px',borderRadius:'999px',background:'linear-gradient(135deg,#7c3aed,#a855f7)',color:'#fff',fontWeight:700,fontSize:'12px',textDecoration:'none' }}>Get Access</a>
                     </div>
                   )}
-                  {isFullAccess && (() => {
+                  {!planLoading && isFullAccess && (() => {
                     const gp = result.goplus&&result.contract?(result.goplus[result.contract.toLowerCase()]??null) as Record<string,unknown>|null:null
                     const hp = result.honeypot
                     const simVerified = hp?.simulationSuccess===true
@@ -2027,7 +2027,7 @@ export default function TerminalTokenScanner() {
           </div>
 
           {/* Free-tier locked state */}
-          {!isFullAccess && (
+          {!planLoading && !isFullAccess && (
             <div style={{textAlign:'center',padding:'8px 0'}}>
               <div style={{fontSize:'22px',marginBottom:'10px'}}>🔒</div>
               <p style={{fontWeight:700,color:'#f8fafc',margin:'0 0 6px',fontSize:'13px',fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Full CORTEX Verdict</p>
@@ -2037,7 +2037,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Idle */}
-          {isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
+          {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
             <p style={{
               fontSize: '11px', color: '#1e3a44',
               fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
@@ -2047,7 +2047,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Loading dots */}
-          {isFullAccess && clarkLoading && (
+          {!planLoading && isFullAccess && clarkLoading && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 0' }}>
               {[0, 1, 2].map(i => (
                 <span key={i} style={{
@@ -2060,7 +2060,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Error */}
-          {isFullAccess && clarkError && (
+          {!planLoading && isFullAccess && clarkError && (
             <p style={{
               fontSize: '12px', color: '#fca5a5',
               fontFamily: 'var(--font-plex-mono)', margin: 0, lineHeight: 1.6,
@@ -2070,7 +2070,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Verdict */}
-          {isFullAccess && result && (() => {
+          {!planLoading && isFullAccess && result && (() => {
             const d = deriveVerdictInput(result)
             const hp = result.honeypot
             const buyTax = hp?.buyTax ?? null
