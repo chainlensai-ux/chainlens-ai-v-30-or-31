@@ -835,7 +835,8 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract: contractInput, debugHolder, debug: debugMode } = body;
+    const { contract: contractInput, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback } = body;
+    const forceDexFallback = debugMode === true && _forceDexFallback === true
     const originalInput = String(contractInput ?? '').trim()
     const normalizedInput = originalInput.toUpperCase()
     const isAddressInput = /^0x[a-fA-F0-9]{40}$/.test(originalInput)
@@ -1402,12 +1403,14 @@ export async function POST(req: Request) {
     const resolvedVolume24hUsd: number | null = totalPick.value ?? volume24hUsd
 
     // Secondary market read — fires once, server-side, when primary has no pool/price/liquidity.
-    // Any failure or non-Base result is treated as a silent no-op.
+    // In debug-only mode, forceDexFallback=true skips primary market values and calls the
+    // fallback directly so it can be verified from production without altering normal scans.
     const _primaryHasMarket = priceUsd != null || liquidityUsd != null
+    const _fallbackNeeded = !_primaryHasMarket || forceDexFallback
     let _dexFb: DexFallbackResult | null = null
-    let marketDataSource: 'primary' | 'fallback' | 'none' = _primaryHasMarket ? 'primary' : 'none'
-    let marketConfidence: 'high' | 'medium' | 'low' = _primaryHasMarket ? 'high' : 'low'
-    if (!_primaryHasMarket) {
+    let marketDataSource: 'primary' | 'fallback' | 'none' = (_primaryHasMarket && !forceDexFallback) ? 'primary' : 'none'
+    let marketConfidence: 'high' | 'medium' | 'low' = (_primaryHasMarket && !forceDexFallback) ? 'high' : 'low'
+    if (_fallbackNeeded) {
       _dexFb = await fetchDexScreenerFallback(contract)
       if (_dexFb != null) {
         marketDataSource = 'fallback'
@@ -1415,11 +1418,23 @@ export async function POST(req: Request) {
       }
     }
 
-    // Effective market values — primary wins, fallback fills when primary is null
-    const _ep  = priceUsd ?? _dexFb?.priceUsd ?? null
-    const _el  = liquidityUsd ?? _dexFb?.liquidityUsd ?? null
-    const _ev  = resolvedVolume24hUsd ?? _dexFb?.volume24h ?? null
-    const _efdv = fdv ?? _dexFb?.fdv ?? null
+    if (debugMode) {
+      console.log('[dex-fallback-debug]',
+        'primaryMarketAvailable:', _primaryHasMarket,
+        'forceDexFallback:', forceDexFallback,
+        'fallbackAttempted:', _fallbackNeeded,
+        'fallbackUsable:', _dexFb != null,
+        'contract:', contract,
+      )
+    }
+
+    // Effective market values:
+    // - Normal scan: primary wins, fallback fills only when primary is null
+    // - forceDexFallback (debug only): fallback values override primary
+    const _ep   = forceDexFallback ? (_dexFb?.priceUsd ?? null)      : (priceUsd ?? _dexFb?.priceUsd ?? null)
+    const _el   = forceDexFallback ? (_dexFb?.liquidityUsd ?? null)   : (liquidityUsd ?? _dexFb?.liquidityUsd ?? null)
+    const _ev   = forceDexFallback ? (_dexFb?.volume24h ?? null)      : (resolvedVolume24hUsd ?? _dexFb?.volume24h ?? null)
+    const _efdv = forceDexFallback ? (_dexFb?.fdv ?? null)            : (fdv ?? _dexFb?.fdv ?? null)
     // If fallback has FDV and primary displayMarketValue is null, show fallback FDV
     if (_dexFb?.fdv != null && displayMarketValue == null) {
       displayMarketValue = _dexFb.fdv
@@ -1941,6 +1956,20 @@ export async function POST(req: Request) {
         fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
         requestDurationMs: Date.now() - _t0,
         checks: rpcCheckDiagnostics,
+        dexFallbackTest: forceDexFallback ? {
+          forced: true,
+          primaryMarketAvailable: _primaryHasMarket,
+          fallbackAttempted: _fallbackNeeded,
+          fallbackUsable: _dexFb != null,
+          fallbackPairAddress: _dexFb?.pairAddress ?? null,
+          fallbackDexId: _dexFb?.dexId ?? null,
+          effectivePriceUsd: _ep,
+          effectiveLiquidityUsd: _el,
+          effectiveVolume24h: _ev,
+          effectiveFdv: _efdv,
+          marketDataSource,
+          marketConfidence,
+        } : null,
       }
     } else {
       delete (responsePayload as any)._diagnostics
