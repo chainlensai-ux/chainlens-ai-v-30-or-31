@@ -1139,8 +1139,8 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function TerminalTokenScanner() {
-  const { plan, loading: planLoading } = usePlanWithLoading()
-  const isFullAccess = !planLoading && canAccessFeature(plan, 'token-scanner-full')
+  const { loading: planLoading } = usePlanWithLoading()
+  const isFullAccess = true
 
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
@@ -1303,7 +1303,7 @@ export default function TerminalTokenScanner() {
               }} />
               TOKEN SCANNER
             </div>
-            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : isFullAccess ? 'Full scan access.' : 'Basic preview · Pro and Elite unlock full security reports.'}</p>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : 'Full scan access.'}</p>
           </div>
 
           {/* Input row */}
@@ -1482,14 +1482,13 @@ export default function TerminalTokenScanner() {
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
                 const lpProofLabel = lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'unsupported' ? 'Protocol liquidity' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
-                const bd = cx.breakdown
                 const scoreBreakdown = [
-                  { label: 'Market',        pts: bd.market.score,    reason: bd.market.reason },
-                  { label: 'Liquidity',     pts: bd.liquidity.score, reason: bd.liquidity.reason },
-                  { label: 'Holders',       pts: bd.holders.score,   reason: bd.holders.reason },
-                  { label: 'Security',      pts: bd.security.score,  reason: bd.security.reason },
-                  { label: 'LP Proof',      pts: bd.lp.score,        reason: bd.lp.reason },
-                  { label: 'Missing / -4ea',pts: bd.missing.penalty, reason: bd.missing.reason },
+                  { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
+                  { label: 'Liquidity', ok: (result.liquidity ?? 0) > 1000, reason: (result.liquidity ?? 0) > 1000 ? `${fmtLarge(result.liquidity)} depth detected.` : 'Liquidity too thin or missing.' },
+                  { label: 'Holders', ok: holderState.kind === 'rowsWithPercent', reason: holderState.kind === 'rowsWithPercent' ? 'Top holder percentages verified.' : 'Holder percentages unverified.' },
+                  { label: 'Security', ok: riskChipOk, reason: riskChipOk ? 'Simulation passed with no honeypot flag.' : simUnavailable ? 'Simulation unavailable this pass.' : 'Security risk detected.' },
+                  { label: 'LP Proof', ok: lpVerified, reason: lpVerified ? `LP ${lpStatus}.` : 'No lock/burn proof confirmed.' },
+                  { label: 'Missing Checks', ok: missing2.length === 0, reason: missing2.length === 0 ? 'No open checks.' : `${missing2.length} open checks remain.` },
                 ]
                 const goodSignals = goodSigns.length >= 2 ? goodSigns : [...goodSigns, 'No additional positive signals confirmed this scan.']
                 const riskSignals = riskSigns.length >= 2 ? riskSigns : [...riskSigns, 'No additional risk signals surfaced beyond current checks.']
@@ -1540,17 +1539,12 @@ export default function TerminalTokenScanner() {
                       <p style={{ margin:'0 0 10px', fontSize:'10px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
                       <div style={{ display:'grid', gap:'7px' }}>
                         {scoreBreakdown.map((b)=>(
-                          <div key={b.label} style={{ display:'grid', gridTemplateColumns:'120px 60px 1fr', gap:'10px', alignItems:'center' }}>
+                          <div key={b.label} style={{ display:'grid', gridTemplateColumns:'120px 74px 1fr', gap:'10px', alignItems:'center' }}>
                             <span style={{ fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)' }}>{b.label}</span>
-                            <span style={{ fontSize:'10px', color: b.pts > 0 ? '#34d399' : b.pts < 0 ? '#f87171' : '#94a3b8', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{b.pts > 0 ? `+${b.pts}` : b.pts}</span>
+                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{b.ok ? 'PASS' : 'OPEN'}</span>
                             <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
                           </div>
                         ))}
-                        {cx.capReason && (
-                          <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'4px', padding:'7px 10px', borderRadius:'8px', background:'rgba(148,163,184,0.05)', border:'1px solid rgba(148,163,184,0.14)' }}>
-                            <span style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)', fontStyle:'italic' }}>⚑ {cx.capReason}</span>
-                          </div>
-                        )}
                       </div>
                     </div>
                     {/* 4-card CORTEX Read layout */}
