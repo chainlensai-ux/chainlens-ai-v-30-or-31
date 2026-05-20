@@ -63,6 +63,8 @@ type ScanResult = {
   } | null
   noActivePools?: boolean
   primaryDexName?: string | null
+  marketDataSource?: 'primary' | 'fallback' | 'none'
+  marketConfidence?: 'high' | 'medium' | 'low'
   decimals?: number
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'empty'|'unavailable'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
@@ -735,12 +737,15 @@ export default function TerminalTokenScanner() {
           decimals:       typeof json.decimals === 'number' ? json.decimals : (json.tokenInfo?.decimals ?? 18),
           contract:       json.contract,
           chain:          json.chain ?? 'base',
-          noActivePools:  json.noActivePools ?? false,
-          primaryDexName: json.primaryDexName ?? null,
-          price:          mainPool ? num(attr(mainPool).base_token_price_usd) : null,
-          liquidity:      mainPool ? num(attr(mainPool).reserve_in_usd) : null,
-          volume24h:      mainPool ? num((attr(mainPool).volume_usd as Record<string, unknown> | undefined)?.h24) : null,
-          priceChange24h: mainPool ? num((attr(mainPool).price_change_percentage as Record<string, unknown> | undefined)?.h24) : null,
+          noActivePools:    json.noActivePools ?? false,
+          primaryDexName:   json.primaryDexName ?? null,
+          marketDataSource: json.marketDataSource ?? 'none',
+          marketConfidence: json.marketConfidence ?? 'low',
+          // Use effective values from server (include fallback market read when primary has no pool)
+          price:          num(json.priceUsd) ?? (mainPool ? num(attr(mainPool).base_token_price_usd) : null),
+          liquidity:      num(json.liquidityUsd) ?? (mainPool ? num(attr(mainPool).reserve_in_usd) : null),
+          volume24h:      num(json.volume24hUsd) ?? (mainPool ? num((attr(mainPool).volume_usd as Record<string, unknown> | undefined)?.h24) : null),
+          priceChange24h: num(json.sections?.market?.change24h) ?? (mainPool ? num((attr(mainPool).price_change_percentage as Record<string, unknown> | undefined)?.h24) : null),
           marketCap: num(json.marketCapUsd),
           marketCapUsd: num(json.marketCapUsd),
           marketCapStatus: json.marketCapStatus ?? 'unavailable',
@@ -958,6 +963,24 @@ export default function TerminalTokenScanner() {
                   )}
                 </div>
               ) : (
+                <>
+                  {result.marketDataSource === 'fallback' && (
+                    <div style={{
+                      padding: '8px 14px', marginBottom: '12px',
+                      background: 'rgba(139,92,246,0.06)',
+                      border: '1px solid rgba(139,92,246,0.2)',
+                      borderRadius: '8px', fontFamily: 'var(--font-plex-mono)',
+                      display: 'flex', alignItems: 'center', gap: '8px',
+                    }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', flexShrink: 0 }} />
+                      <span style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 700, letterSpacing: '0.08em' }}>
+                        CORTEX MARKET READ
+                      </span>
+                      <span style={{ fontSize: '10px', color: '#475569' }}>
+                        Primary pool data unavailable — showing fallback market data. FDV is not market cap.
+                      </span>
+                    </div>
+                  )}
                 <div className="metric-grid" style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
@@ -1002,6 +1025,7 @@ export default function TerminalTokenScanner() {
                     accent={result.primaryDexName ? '#67e8f9' : '#64748b'}
                   />
                 </div>
+                </>
               )}
               {result.marketCapStatus !== 'verified' && (
                 <p style={{ marginTop: '-14px', marginBottom: '20px', color: '#94a3b8', fontSize: '12px' }}>
@@ -1010,7 +1034,7 @@ export default function TerminalTokenScanner() {
               )}
 
               {/* Pool Activity */}
-              {!result.noActivePools && (
+              {!result.noActivePools && result.marketDataSource !== 'fallback' && (
                 <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
                     <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
@@ -1032,7 +1056,7 @@ export default function TerminalTokenScanner() {
                   )}
                 </div>
               )}
-              {!result.noActivePools && (
+              {!result.noActivePools && result.marketDataSource !== 'fallback' && (
                 <div style={{ marginBottom: '28px' }}>
                   <p style={{
                     fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',

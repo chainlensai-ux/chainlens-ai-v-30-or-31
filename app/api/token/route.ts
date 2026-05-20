@@ -289,6 +289,108 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
+// ─── Secondary market data fallback ──────────────────────────────────────────
+// Server-side only. Called once when the primary market source has no pool.
+// Any failure (non-200, non-JSON, timeout, wrong chain) silently returns null.
+
+interface DexFallbackResult {
+  priceUsd: number | null
+  liquidityUsd: number | null
+  volume24h: number | null
+  priceChange24h: number | null
+  fdv: number | null
+  pairAddress: string | null
+  dexId: string | null
+  pairUrl: string | null
+  baseToken: { address: string; symbol: string; name: string } | null
+  quoteToken: { address: string; symbol: string; name: string } | null
+  pairCreatedAt: string | null
+}
+
+const _dexFbCache = new Map<string, { data: DexFallbackResult | null; ts: number }>()
+const DEX_FB_TTL = 90_000
+
+async function fetchDexScreenerFallback(tokenAddress: string): Promise<DexFallbackResult | null> {
+  const key = tokenAddress.toLowerCase()
+  const hit = _dexFbCache.get(key)
+  if (hit && Date.now() - hit.ts < DEX_FB_TTL) return hit.data
+
+  const miss = (data: DexFallbackResult | null) => {
+    _dexFbCache.set(key, { data, ts: Date.now() })
+    return data
+  }
+
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 4000)
+    let res: Response
+    try {
+      res = await fetch(
+        `https://api.dexscreener.com/token-pairs/v1/base/${tokenAddress}`,
+        { signal: ctrl.signal, cache: 'no-store' }
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+
+    if (!res.ok) return miss(null)
+    const ct = res.headers.get('content-type') ?? ''
+    if (!ct.includes('json')) return miss(null)
+
+    const json: unknown = await res.json().catch(() => null)
+    if (!json) return miss(null)
+
+    const raw = json as Record<string, unknown>
+    const pairs: unknown[] = Array.isArray(json) ? json
+      : Array.isArray(raw.pairs) ? raw.pairs as unknown[]
+      : []
+
+    const addrLower = tokenAddress.toLowerCase()
+    const basePairs = pairs.filter((p) => {
+      const pair = p as Record<string, unknown>
+      const bt = pair.baseToken as Record<string, unknown> | null
+      const qt = pair.quoteToken as Record<string, unknown> | null
+      return (
+        pair.chainId === 'base' &&
+        (String(bt?.address ?? '').toLowerCase() === addrLower ||
+         String(qt?.address ?? '').toLowerCase() === addrLower)
+      )
+    })
+
+    if (basePairs.length === 0) return miss(null)
+
+    // Highest liquidity.usd among Base pairs that include this token
+    const best = basePairs.reduce<Record<string, unknown>>((acc, p) => {
+      const pair = p as Record<string, unknown>
+      const liqP = Number((pair.liquidity as Record<string, unknown> | null)?.usd ?? 0)
+      const liqA = Number((acc.liquidity as Record<string, unknown> | null)?.usd ?? 0)
+      return liqP > liqA ? pair : acc
+    }, basePairs[0] as Record<string, unknown>)
+
+    const liq = best.liquidity as Record<string, unknown> | null
+    const vol = best.volume as Record<string, unknown> | null
+    const pc = best.priceChange as Record<string, unknown> | null
+    const bt = best.baseToken as Record<string, unknown> | null
+    const qt = best.quoteToken as Record<string, unknown> | null
+
+    return miss({
+      priceUsd:     best.priceUsd != null ? Number(best.priceUsd) : null,
+      liquidityUsd: liq?.usd != null ? Number(liq.usd) : null,
+      volume24h:    vol?.h24 != null ? Number(vol.h24) : null,
+      priceChange24h: pc?.h24 != null ? Number(pc.h24) : null,
+      fdv:          best.fdv != null ? Number(best.fdv) : null,
+      pairAddress:  best.pairAddress != null ? String(best.pairAddress) : null,
+      dexId:        best.dexId != null ? String(best.dexId) : null,
+      pairUrl:      best.url != null ? String(best.url) : null,
+      baseToken:    bt != null ? { address: String(bt.address ?? ''), symbol: String(bt.symbol ?? ''), name: String(bt.name ?? '') } : null,
+      quoteToken:   qt != null ? { address: String(qt.address ?? ''), symbol: String(qt.symbol ?? ''), name: String(qt.name ?? '') } : null,
+      pairCreatedAt: best.pairCreatedAt != null ? String(best.pairCreatedAt) : null,
+    })
+  } catch {
+    return miss(null)
+  }
+}
+
 
 async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> {
   try {
@@ -1298,6 +1400,34 @@ export async function POST(req: Request) {
     const buyVolume24hUsd: number | null = buyPick.value
     const sellVolume24hUsd: number | null = sellPick.value
     const resolvedVolume24hUsd: number | null = totalPick.value ?? volume24hUsd
+
+    // Secondary market read — fires once, server-side, when primary has no pool/price/liquidity.
+    // Any failure or non-Base result is treated as a silent no-op.
+    const _primaryHasMarket = priceUsd != null || liquidityUsd != null
+    let _dexFb: DexFallbackResult | null = null
+    let marketDataSource: 'primary' | 'fallback' | 'none' = _primaryHasMarket ? 'primary' : 'none'
+    let marketConfidence: 'high' | 'medium' | 'low' = _primaryHasMarket ? 'high' : 'low'
+    if (!_primaryHasMarket) {
+      _dexFb = await fetchDexScreenerFallback(contract)
+      if (_dexFb != null) {
+        marketDataSource = 'fallback'
+        marketConfidence = 'medium'
+      }
+    }
+
+    // Effective market values — primary wins, fallback fills when primary is null
+    const _ep  = priceUsd ?? _dexFb?.priceUsd ?? null
+    const _el  = liquidityUsd ?? _dexFb?.liquidityUsd ?? null
+    const _ev  = resolvedVolume24hUsd ?? _dexFb?.volume24h ?? null
+    const _efdv = fdv ?? _dexFb?.fdv ?? null
+    // If fallback has FDV and primary displayMarketValue is null, show fallback FDV
+    if (_dexFb?.fdv != null && displayMarketValue == null) {
+      displayMarketValue = _dexFb.fdv
+      displayMarketValueLabel = 'FDV'
+      displayMarketValueConfidence = 'low'
+      displayMarketValueReason = 'Market cap unavailable; FDV from fallback market read. Not verified as circulating market cap.'
+    }
+
     const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
     const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
     let priceChart: { timeframe: '24h'|'48h'|'7d'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'unavailable'|'error'; reason?: string; fallbackUsed?: boolean } = {
@@ -1387,10 +1517,13 @@ export async function POST(req: Request) {
     } : null;
 
     // Final JSON response
-    const marketStatus: "ok" | "partial" | "unavailable" | "error" =
-      (priceUsd != null && liquidityUsd != null && volume24hUsd != null) ? "ok" :
-      (priceUsd != null || liquidityUsd != null || volume24hUsd != null || fdv != null) ? "partial" : "unavailable";
+    const marketStatus: "ok" | "fallback_ok" | "partial" | "no_pool_found" | "unavailable" | "error" =
+      (_ep != null && _el != null && _ev != null && marketDataSource === 'primary') ? "ok" :
+      (_ep != null && _el != null && marketDataSource === 'fallback') ? "fallback_ok" :
+      (_ep != null || _el != null || _ev != null || _efdv != null) ? "partial" :
+      (noActivePools ? "no_pool_found" : "unavailable");
     const marketReason = marketStatus === "ok" ? null
+      : marketStatus === "fallback_ok" ? "market_data_from_secondary_source"
       : marketCapFromGt == null ? "unavailable_circulating_supply_not_verified"
       : "partial_market_fields_from_provider";
     const securityStatus: "ok" | "partial" | "unavailable" | "error" =
@@ -1402,8 +1535,8 @@ export async function POST(req: Request) {
       (holdersRaw?.__status === "error" ? "error" : "unavailable");
     const holdersReason = holdersStatus === "ok" ? null : (holderDistributionStatus?.reason ?? "holder_data_unavailable");
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
-      mainPool ? "ok" : (matchingPools.length > 0 ? "partial" : "unavailable");
-    const liquidityReason = mainPool ? null : "no_active_liquidity_pool_found";
+      mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "unavailable"));
+    const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
     const ownerCall = await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
@@ -1436,8 +1569,12 @@ export async function POST(req: Request) {
       symbol: finalResolvedSymbol,
       decimals: resolvedDecimals,
 
-      // Pool state
-      noActivePools,
+      // Pool state — reflects both primary and fallback market reads
+      noActivePools: noActivePools && _dexFb == null,
+
+      // Market source flags
+      marketDataSource,
+      marketConfidence,
 
       // Extra data
       holders: goldrush?.holders || null,
@@ -1461,13 +1598,13 @@ export async function POST(req: Request) {
         }
       } : {}),
       // Normalized top-level market fields
-      priceUsd,
-      liquidityUsd,
-      volume24hUsd,
+      priceUsd: _ep,
+      liquidityUsd: _el,
+      volume24hUsd: _ev,
       poolCount,
       primaryDexName,
       // Legacy pool-level field kept for frontend pair display
-      liquidity: mainPool?.attributes?.reserve_in_usd ?? null,
+      liquidity: mainPool?.attributes?.reserve_in_usd ?? _dexFb?.liquidityUsd ?? null,
       market_cap: marketCapFromGt,
       marketCapUsd: marketCapFromGt,
       marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
@@ -1476,20 +1613,20 @@ export async function POST(req: Request) {
         ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
         : 'Circulating supply not verified by live market data',
       circulating_supply: circulatingSupply,
-      fdv,
-      fdvUsd: fdv,
-      fdvSource,
+      fdv: _efdv,
+      fdvUsd: _efdv,
+      fdvSource: _efdv != null ? (fdv != null ? fdvSource : 'fallback') : 'unavailable',
       displayMarketValue,
       displayMarketValueLabel,
       displayMarketValueConfidence,
       displayMarketValueReason,
       valuationContext: {
-        primaryValuationLabel: marketCapFromGt != null ? 'Market Cap' : (fdv != null ? 'FDV' : 'Market Cap'),
-        primaryValuationUsd: marketCapFromGt ?? fdv ?? null,
-        primaryValuationStatus: marketCapFromGt != null ? 'verified_mc' : (fdv != null ? 'fdv_only' : 'unavailable'),
+        primaryValuationLabel: marketCapFromGt != null ? 'Market Cap' : (_efdv != null ? 'FDV' : 'Market Cap'),
+        primaryValuationUsd: marketCapFromGt ?? _efdv ?? null,
+        primaryValuationStatus: marketCapFromGt != null ? 'verified_mc' : (_efdv != null ? 'fdv_only' : 'unavailable'),
         marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
-        fdvUsd: fdv ?? null,
-        reason: marketCapFromGt != null ? 'Verified live market data' : (fdv != null ? 'Market cap not verified live; FDV used as valuation context.' : 'No live valuation context was verified.'),
+        fdvUsd: _efdv ?? null,
+        reason: marketCapFromGt != null ? 'Verified live market data' : (_efdv != null ? 'Market cap not verified live; FDV used as valuation context.' : 'No live valuation context was verified.'),
       },
       estimatedMarketCap: null,
       estimatedMarketCapConfidence: null,
@@ -1499,10 +1636,10 @@ export async function POST(req: Request) {
         transactions24h,
         buys24h,
         sells24h,
-        volume24hUsd: resolvedVolume24hUsd,
+        volume24hUsd: _ev,
         buyVolume24hUsd,
         sellVolume24hUsd,
-        pairCreatedAt,
+        pairCreatedAt: pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
         pairAgeLabel,
       },
       priceChart,
@@ -1550,23 +1687,24 @@ export async function POST(req: Request) {
           rpcCallsFailed,
           contractChecksAttempted: true,
         },
-        providerUsed: { market: 'geckoterminal', holders: 'goldrush', security: hpResult.ok ? 'honeypot.is' : (gpHasData ? 'goplus_limited_fallback' : 'unavailable'), contractChecks: 'alchemy_rpc', liquidity: lpControl.source ?? 'geckoterminal' },
+        providerUsed: { market: marketDataSource === 'fallback' ? 'market_data' : 'geckoterminal', holders: 'goldrush', security: hpResult.ok ? 'honeypot.is' : (gpHasData ? 'goplus_limited_fallback' : 'unavailable'), contractChecks: 'alchemy_rpc', liquidity: lpControl.source ?? 'geckoterminal' },
+        marketFallback: { attempted: !_primaryHasMarket, found: _dexFb != null, pairAddress: _dexFb?.pairAddress ?? null, dexId: _dexFb?.dexId ?? null },
         tokenMarketFieldsPresent: {
-          priceUsd: priceUsd != null,
-          liquidityUsd: liquidityUsd != null,
-          volume24hUsd: volume24hUsd != null,
+          priceUsd: _ep != null,
+          liquidityUsd: _el != null,
+          volume24hUsd: _ev != null,
           marketCapUsd: marketCapFromGt != null,
           tokenEndpointMarketCapPresent: tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0,
           poolEndpointMarketCapPresent,
-          fdvUsd: fdv != null,
+          fdvUsd: _efdv != null,
           poolCount: poolCount > 0,
         },
         missingReasons: [
-          priceUsd == null ? 'priceUsd: no pool price' : '',
-          liquidityUsd == null ? 'liquidityUsd: no pool reserve' : '',
-          volume24hUsd == null ? 'volume24hUsd: no pool volume' : '',
+          _ep == null ? 'priceUsd: no pool price' : '',
+          _el == null ? 'liquidityUsd: no pool reserve' : '',
+          _ev == null ? 'volume24hUsd: no pool volume' : '',
           marketCapFromGt == null ? 'marketCapUsd: not in GT token response' : '',
-          fdv == null ? 'fdvUsd: not in GT token or pool response' : '',
+          _efdv == null ? 'fdvUsd: not in GT token or pool response' : '',
         ].filter(Boolean),
         ...((debugMode === true || debugHolder === true) ? { debug: (() => {
           const mp = mainPool as Record<string, unknown> | null
@@ -1733,13 +1871,13 @@ export async function POST(req: Request) {
         market: {
           status: marketStatus,
           reason: marketReason,
-          source: "geckoterminal",
-          price: priceUsd,
-          liquidity: liquidityUsd,
-          volume24h: volume24hUsd,
-          change24h: pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24),
+          source: marketDataSource === 'fallback' ? 'market_data' : 'geckoterminal',
+          price: _ep,
+          liquidity: _el,
+          volume24h: _ev,
+          change24h: _dexFb?.priceChange24h ?? pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24),
           marketCap: marketCapFromGt,
-          fdv,
+          fdv: _efdv,
         },
         security: {
           status: securityStatus,
