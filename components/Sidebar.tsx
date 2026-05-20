@@ -107,17 +107,23 @@ function IcConnectWallet() {
 
 // ─── Data ─────────────────────────────────────────────────────────────────
 
-type Item = { key: string; label: string; icon: React.ReactNode; href?: string }
+type Item = {
+  key: string
+  label: string
+  icon: React.ReactNode
+  href?: string
+  tier?: 'pro' | 'elite'
+}
 
 const FEATURES: Item[] = [
   { key: 'token-scanner',     label: 'Token Scanner',       icon: <IcTokenScanner />,  href: '/terminal/token-scanner'  },
-  { key: 'wallet-scanner',    label: 'Wallet Scanner',      icon: <IcWalletScanner />, href: '/terminal/wallet-scanner' },
-  { key: 'dev-wallet',        label: 'Dev Wallet Detector', icon: <IcDevWallet />,     href: '/terminal/dev-wallet'     },
-  { key: 'liquidity-scanner', label: 'Liquidity Safety',    icon: <IcLiquidity />,     href: '/terminal/liquidity'      },
-  { key: 'whale-alerts',      label: 'Whale Alerts',        icon: <IcWhaleAlerts />,   href: '/terminal/whale-alerts'   },
-  { key: 'pump-alerts',       label: 'Pump Alerts',         icon: <IcPumpAlerts />,    href: '/terminal/pump-alerts'    },
-  { key: 'base-radar',        label: 'Base Radar',          icon: <IcBaseRadar />,     href: '/terminal/base-radar'     },
-  { key: 'clark-ai',          label: 'Clark AI',            icon: <IcClarkAI />,       href: '/terminal/clark-ai'       },
+  { key: 'wallet-scanner',    label: 'Wallet Scanner',      icon: <IcWalletScanner />, href: '/terminal/wallet-scanner', tier: 'pro'   },
+  { key: 'dev-wallet',        label: 'Dev Wallet Detector', icon: <IcDevWallet />,     href: '/terminal/dev-wallet',     tier: 'pro'   },
+  { key: 'liquidity-scanner', label: 'Liquidity Safety',    icon: <IcLiquidity />,     href: '/terminal/liquidity',      tier: 'pro'   },
+  { key: 'whale-alerts',      label: 'Whale Alerts',        icon: <IcWhaleAlerts />,   href: '/terminal/whale-alerts',   tier: 'pro'   },
+  { key: 'pump-alerts',       label: 'Pump Alerts',         icon: <IcPumpAlerts />,    href: '/terminal/pump-alerts',    tier: 'pro'   },
+  { key: 'base-radar',        label: 'Base Radar',          icon: <IcBaseRadar />,     href: '/terminal/base-radar',     tier: 'pro'   },
+  { key: 'clark-ai',          label: 'Clark AI',            icon: <IcClarkAI />,       href: '/terminal/clark-ai',       tier: 'elite' },
 ]
 
 const SECONDARY: Item[] = [
@@ -164,7 +170,19 @@ function NavItem({ item, active, onSelect }: NavItemProps) {
       <span style={{ color: on ? '#2DD4BF' : '#556880', flexShrink: 0 }}>
         {item.icon}
       </span>
-      {item.label}
+      <span className="flex-1 truncate">{item.label}</span>
+      {item.tier && (
+        <span
+          className="ml-auto rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em]"
+          style={{
+            color: item.tier === 'elite' ? '#facc15' : '#a78bfa',
+            border: item.tier === 'elite' ? '1px solid rgba(250,204,21,0.5)' : '1px solid rgba(167,139,250,0.45)',
+            background: item.tier === 'elite' ? 'rgba(250,204,21,0.12)' : 'rgba(167,139,250,0.12)',
+          }}
+        >
+          {item.tier}
+        </span>
+      )}
     </>
   )
 
