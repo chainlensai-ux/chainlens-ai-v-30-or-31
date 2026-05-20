@@ -619,7 +619,7 @@ function getSecurityRead(result: ScanResult): string {
 
 function getHolderRead(result: ScanResult): string {
   const holderState = deriveHolderState(result)
-  if (holderState.kind === 'noRowsFallback') return 'Holder distribution was not returned in this pass. Concentration is the missing risk layer — verify before forming conviction.'
+  if (holderState.kind === 'noRowsFallback') return 'Holder distribution was not returned this scan. Treat supply spread as unverified.'
   if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Treat concentration as partially unverified.'
   const top10 = result.holderDistribution?.top10
   const count = result.holderDistribution?.holderCount
@@ -1132,9 +1132,11 @@ export default function TerminalTokenScanner() {
               </div>
 
               {/* CORTEX scan summary */}
+              <div id="scan-section-overview" style={{scrollMarginTop:'24px'}} />
               <CortexSummaryCard result={result} />
 
               {/* Stat cards — or no-pools message */}
+              <div id="scan-section-market" style={{scrollMarginTop:'24px'}} />
               {result.noActivePools ? (
                 <div style={{
                   padding: '20px 22px', marginBottom: '28px',
@@ -1333,6 +1335,7 @@ export default function TerminalTokenScanner() {
                     ))}
                 </div>
               )}
+              <div id="scan-section-security" style={{scrollMarginTop:'24px'}} />
               {!isFullAccess && (
                 <div style={{marginTop:'24px',padding:'28px 24px',border:'1px solid rgba(139,92,246,0.28)',borderRadius:'16px',background:'rgba(139,92,246,0.06)',textAlign:'center'}}>
                   <div style={{fontSize:'26px',marginBottom:'12px'}}>🔒</div>
@@ -1464,6 +1467,7 @@ export default function TerminalTokenScanner() {
                 )
               })()}
 
+              <div id="scan-section-holders" style={{scrollMarginTop:'24px'}} />
               {/* Holder analytics */}
               {isFullAccess && (() => {
                 const holderState = deriveHolderState(result)
@@ -1529,10 +1533,10 @@ export default function TerminalTokenScanner() {
                 return (
                   <div style={{marginTop:'24px',marginBottom:'20px',background:'linear-gradient(160deg,rgba(12,10,4,.72),rgba(4,8,18,.88))',border:'1px solid rgba(251,191,36,.22)',borderRadius:'14px',padding:'18px'}}>
                     <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px',flexWrap:'wrap'}}>
-                      <p style={{fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER INTELLIGENCE</p>
-                      <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(251,191,36,.4)',color:'#fbbf24',background:'rgba(251,191,36,.08)'}}>CONCENTRATION UNVERIFIED</span>
+                      <p style={{fontSize:'12px',fontWeight:800,letterSpacing:'0.12em',color:'#8fb3d0',margin:0,fontFamily:'var(--font-plex-mono)'}}>HOLDER CONCENTRATION</p>
+                      <span style={{padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:800,letterSpacing:'0.1em',fontFamily:'var(--font-plex-mono)',border:'1px solid rgba(251,191,36,.4)',color:'#fbbf24',background:'rgba(251,191,36,.08)'}}>UNVERIFIED</span>
                     </div>
-                    <p style={{margin:'0 0 12px',fontSize:'12px',color:'#fde68a',lineHeight:1.5}}>Holder rows were not returned in this pass. Concentration is the missing risk layer — context below is from other on-chain signals.</p>
+                    <p style={{margin:'0 0 12px',fontSize:'12px',color:'#fde68a',lineHeight:1.5}}>Holder distribution was not returned in this scan. Supply concentration remains an open risk check.</p>
                     <div className="intel-grid" style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'8px',marginBottom:'14px'}}>
                       {evidenceItems.map(({label,value,ok}) => (
                         <div key={label} style={{padding:'9px 10px',borderRadius:'10px',background:'rgba(15,23,42,0.42)',border:`1px solid ${ok ? 'rgba(52,211,153,.22)' : value === 'Unverified' ? 'rgba(251,191,36,.22)' : 'rgba(248,113,113,.22)'}`}}>
@@ -1545,11 +1549,12 @@ export default function TerminalTokenScanner() {
                       <div style={{fontSize:'9px',letterSpacing:'.1em',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)',marginBottom:'5px'}}>CORTEX READ</div>
                       <p style={{margin:0,fontSize:'11px',color:'#b7c9da',lineHeight:1.6}}>{fb.read}</p>
                     </div>
-                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)'}}>{fb.next}</p>
+                    <p style={{margin:0,fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)'}}>Rescan later and monitor holder distribution before trusting supply spread.</p>
                   </div>
                 )
               })()}
 
+              <div id="scan-section-liquidity" style={{scrollMarginTop:'24px'}} />
               {/* Pools */}
               {result.pools && result.pools.length > 0 && (
                 <>
@@ -1749,6 +1754,9 @@ export default function TerminalTokenScanner() {
                 {/* Holder / Supply */}
                 <div style={ss}>
                   <p style={stitle}>Holder / Supply</p>
+                  {d.holderState.kind === 'noRowsFallback' && (
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION UNVERIFIED</div>
+                  )}
                   {result.holderDistribution?.holderCount != null && (
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'3px 10px',border:'1px solid rgba(45,212,191,.28)',borderRadius:'999px',fontSize:'11px',color:'#2DD4BF',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.06)'}}>
                       {result.holderDistribution.holderCount.toLocaleString()} holders
