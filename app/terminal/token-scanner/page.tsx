@@ -121,6 +121,8 @@ type ScanResult = {
     reason?: string
     fallbackUsed?: boolean
   } | null
+  chartStatus?: 'ok' | 'no_candles' | 'fallback_snapshot_only' | 'unavailable' | null
+  chartDataSource?: 'primary' | 'fallback' | 'none' | null
   resolvedInput?: {
     original: string
     type: 'address' | 'alias' | 'live_search'
@@ -777,6 +779,8 @@ export default function TerminalTokenScanner() {
           lpControl: json.lpControl ?? null,
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
+          chartStatus: json.chartStatus ?? null,
+          chartDataSource: json.chartDataSource ?? null,
           resolvedInput: json.resolvedInput ?? null,
         }
         setResult(mapped)
@@ -1033,29 +1037,60 @@ export default function TerminalTokenScanner() {
                 </p>
               )}
 
-              {/* Pool Activity */}
-              {!result.noActivePools && result.marketDataSource !== 'fallback' && (
+              {/* Price Chart — chart ok */}
+              {result.chartStatus === 'ok' && result.priceChart && result.priceChart.points.length >= 2 && (
                 <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
                     <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart?.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
                   </div>
-                  {result.priceChart?.sourceStatus === 'ok' && result.priceChart.points.length >= 2 ? (
-                    <>
-                      <div style={{ display: 'inline-flex', marginBottom: '8px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
-                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : '7D'}
-                      </div>
-                      <MiniPriceChart points={result.priceChart.points} />
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
-                        <span>{new Date(result.priceChart.points[0].timestamp).toLocaleTimeString()}</span>
-                        <span>Latest {fmtPrice(result.priceChart.points[result.priceChart.points.length - 1].priceUsd)}</span>
-                      </div>
-                    </>
-                  ) : (
-                    <StatCard label="Chart not available" value="Chart not available" helper="Live pool price history was not exposed for this token. Pool data and current price are still live." />
-                  )}
+                  <div style={{ display: 'inline-flex', marginBottom: '8px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
+                    {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : '7D'}
+                  </div>
+                  <MiniPriceChart points={result.priceChart.points} />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
+                    <span>{new Date(result.priceChart.points[0].timestamp).toLocaleTimeString()}</span>
+                    <span>Latest {fmtPrice(result.priceChart.points[result.priceChart.points.length - 1].priceUsd)}</span>
+                  </div>
                 </div>
               )}
+              {/* Price Chart — candles unavailable but pool exists */}
+              {result.chartStatus === 'no_candles' && (
+                <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
+                    <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not available for this pool. Current price and market data are still live.</p>
+                </div>
+              )}
+              {/* Price Chart — fallback snapshot only (no GT pool, market data from secondary source) */}
+              {result.chartStatus === 'fallback_snapshot_only' && (
+                <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '12px' }}>
+                    <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#2DD4BF', textTransform: 'uppercase' }}>Live Market Snapshot</p>
+                    <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)' }}>CORTEX MARKET READ</span>
+                  </div>
+                  <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical chart data is unavailable for this pool. Showing the latest live market snapshot instead.</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
+                    <StatCard label="Price" value={fmtPrice(result.price)} />
+                    <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} />
+                    <StatCard label="24H Volume" value={fmtLarge(result.volume24h)} />
+                    <StatCard
+                      label="24H Change"
+                      value={fmtPct(result.priceChange24h)}
+                      accent={result.priceChange24h != null ? (result.priceChange24h >= 0 ? '#34d399' : '#f87171') : undefined}
+                    />
+                    {result.poolActivity?.pairAgeLabel != null && (
+                      <StatCard label="Pair Age" value={result.poolActivity.pairAgeLabel} />
+                    )}
+                    {result.fdv != null && (
+                      <StatCard label="FDV" value={fmtLarge(result.fdv)} helper="Fully diluted valuation" />
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Pool Activity — only when primary GT pool data is available */}
               {!result.noActivePools && result.marketDataSource !== 'fallback' && (
                 <div style={{ marginBottom: '28px' }}>
                   <p style={{

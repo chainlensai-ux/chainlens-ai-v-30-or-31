@@ -1512,6 +1512,15 @@ export async function POST(req: Request) {
     const chartAttempted = chartAttemptedPools.length > 0
     const chartFallbackUsed = chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
+    const chartStatus: 'ok' | 'no_candles' | 'fallback_snapshot_only' | 'unavailable' =
+      priceChart.sourceStatus === 'ok' ? 'ok' :
+      marketDataSource === 'fallback' ? 'fallback_snapshot_only' :
+      noActivePools ? 'unavailable' :
+      'no_candles'
+    const chartDataSource: 'primary' | 'fallback' | 'none' =
+      priceChart.sourceStatus === 'ok' ? (chartFallbackUsed ? 'fallback' : 'primary') :
+      marketDataSource === 'fallback' ? 'fallback' :
+      'none'
     const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
     const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
@@ -1659,6 +1668,8 @@ export async function POST(req: Request) {
         pairAgeLabel,
       },
       priceChart,
+      chartStatus,
+      chartDataSource,
 
       pairs: matchingPools,
       gtPools: matchingPools,
