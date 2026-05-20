@@ -588,6 +588,204 @@ function getNextAction(result: ScanResult): string {
   return 'Monitor liquidity and holder concentration before forming conviction. Treat incomplete checks as risk signals.'
 }
 
+// ─── CORTEX Score Engine ──────────────────────────────────────────────────
+
+type CortexScoreResult = {
+  score:      number
+  verdict:    'CLEAN LOOKING' | 'WATCH' | 'CAUTION' | 'AVOID' | 'UNKNOWN'
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW'
+  scanQuality: 'FULL' | 'PARTIAL' | 'LIMITED'
+  breakdown: {
+    market:    { status: string; score: number; reason: string }
+    liquidity: { status: string; score: number; reason: string }
+    holders:   { status: string; score: number; reason: string }
+    security:  { status: string; score: number; reason: string }
+    lp:        { status: string; score: number; reason: string }
+    missing:   { status: string; penalty: number; reason: string }
+  }
+}
+
+function calculateCortexScore(result: ScanResult): CortexScoreResult {
+  const hp         = result.honeypot
+  const liq        = result.liquidity ?? 0
+  const holderState = deriveHolderState(result)
+  const lpStatus   = result.lpControl?.status
+  const top1       = result.holderDistribution?.top1  ?? null
+  const top10      = result.holderDistribution?.top10 ?? null
+  const top20      = result.holderDistribution?.top20 ?? null
+  const buyTax     = hp?.buyTax  ?? 0
+  const sellTax    = hp?.sellTax ?? 0
+  const taxHigh    = buyTax > 8 || sellTax > 8
+
+  let pts = 50
+
+  // ── Market ──────────────────────────────────────────────────────────────
+  let marketPts = 0, marketStatus = 'unavailable', marketReason = 'No market data available.'
+  if (result.noActivePools) {
+    marketPts = -15; marketReason = 'No active pool — price and market data unavailable.'
+  } else {
+    if (result.price     != null) marketPts += 10
+    if (result.liquidity != null) marketPts += 8
+    if (result.volume24h != null) marketPts += 6
+    if (result.marketCapUsd != null) {
+      marketPts += 6; marketStatus = 'ok'; marketReason = 'Live price, liquidity, and verified market cap available.'
+    } else {
+      marketPts -= 8; marketStatus = 'partial'; marketReason = 'Market data present but market cap unverified.'
+    }
+    if (result.price == null && result.liquidity == null) {
+      marketStatus = 'unavailable'; marketReason = 'No price or liquidity data returned.'
+    }
+  }
+  pts += marketPts
+
+  // ── Liquidity ────────────────────────────────────────────────────────────
+  let liqPts = 0, liqStatus = 'unavailable', liqReason = 'Liquidity unavailable.'
+  if (liq >= 100_000)      { liqPts = 12;  liqStatus = 'ok';          liqReason = `Deep liquidity — ${fmtLarge(liq)}.` }
+  else if (liq >= 25_000)  { liqPts = 8;   liqStatus = 'ok';          liqReason = `Moderate liquidity — ${fmtLarge(liq)}.` }
+  else if (liq >= 5_000)   { liqPts = 4;   liqStatus = 'partial';     liqReason = `Thin liquidity — ${fmtLarge(liq)}.` }
+  else if (liq > 0)        { liqPts = -10; liqStatus = 'unavailable'; liqReason = `Very thin liquidity — ${fmtLarge(liq)}.` }
+  else                     { liqPts = -10; liqStatus = 'unavailable'; liqReason = 'No liquidity data available.' }
+  pts += liqPts
+
+  // ── Holders ──────────────────────────────────────────────────────────────
+  let holderPts = 0, holderStatus = 'unavailable', holderReason = 'Holder concentration not confirmed.'
+  if (holderState.kind === 'rowsWithPercent') {
+    holderPts = 10; holderStatus = 'ok'; holderReason = 'Holder percentages verified.'
+    if (top10 != null && top10 > 50) {
+      holderPts -= 15; holderReason = `Top 10 hold ${top10.toFixed(1)}% — high concentration.`
+    } else if (top20 != null && top20 > 60) {
+      holderPts -= 5; holderReason = `Top 20 hold ${top20.toFixed(1)}% — elevated concentration.`
+    }
+    if (top1 != null && top1 > 20) {
+      holderPts -= 8; holderReason += ` Single wallet holds ${top1.toFixed(1)}%.`
+    }
+  } else if (holderState.kind === 'rowsWithoutPercent') {
+    holderPts = 5; holderStatus = 'partial'; holderReason = 'Holder wallets found — percentages unconfirmed.'
+  } else {
+    holderPts = -12; holderReason = 'Holder concentration not confirmed — open risk.'
+  }
+  pts += holderPts
+
+  // ── Security ─────────────────────────────────────────────────────────────
+  let secPts = 0, secStatus = 'unavailable', secReason = 'Security simulation unavailable.'
+  if (hp?.isHoneypot === true) {
+    secPts = -20; secStatus = 'critical'; secReason = 'HONEYPOT — sell simulation detected blocked transaction.'
+  } else if (hp?.simulationSuccess === true && hp?.isHoneypot === false) {
+    if (taxHigh) {
+      secPts = -12; secStatus = 'risk'; secReason = `Simulation passed but taxes are high — buy ${buyTax.toFixed(1)}% / sell ${sellTax.toFixed(1)}%.`
+    } else {
+      secPts = 12; secStatus = 'ok'; secReason = 'Simulation passed — no honeypot, taxes within normal range.'
+    }
+  } else if (hp != null) {
+    secPts = 6; secStatus = 'partial'; secReason = 'Partial security data available — simulation incomplete.'
+  } else {
+    secPts = -12; secStatus = 'unavailable'; secReason = 'No security simulation data this scan.'
+  }
+  pts += secPts
+
+  // ── LP Control ───────────────────────────────────────────────────────────
+  let lpPts = 0, lpStatusLabel = 'unavailable', lpReason = 'No LP lock or burn proof confirmed.'
+  if (lpStatus === 'locked' || lpStatus === 'burned') {
+    lpPts = 10; lpStatusLabel = 'ok'; lpReason = `LP ${lpStatus} — exit liquidity confirmed.`
+  } else if (lpStatus === 'unsupported' || result.lpControl?.poolAddressPresent) {
+    lpPts = 4; lpStatusLabel = 'partial'; lpReason = 'Pool structure reviewed but LP proof not confirmed.'
+  } else if (lpStatus === 'risky') {
+    lpPts = -20; lpStatusLabel = 'critical'; lpReason = 'LP flagged risky.'
+  } else {
+    lpPts = -12; lpReason = 'LP lock or burn proof not confirmed.'
+  }
+  pts += lpPts
+
+  // ── Missing checks penalty ───────────────────────────────────────────────
+  const missingItems = [
+    holderState.kind !== 'rowsWithPercent'                              ? 'holder concentration'  : null,
+    lpStatus !== 'locked' && lpStatus !== 'burned'                      ? 'LP proof'              : null,
+    result.marketCapUsd == null                                         ? 'market cap'            : null,
+    !hp?.simulationSuccess                                              ? 'security simulation'   : null,
+    result.goplus == null                                               ? 'owner status'          : null,
+  ].filter((v): v is string => v != null)
+  const missingPenalty = Math.min(missingItems.length * 4, 18)
+  pts -= missingPenalty
+  const missingStatus = missingItems.length === 0 ? 'ok' : missingItems.length <= 2 ? 'partial' : 'unavailable'
+  const missingReason = missingItems.length === 0
+    ? 'No open checks.'
+    : `${missingItems.length} checks missing: ${missingItems.join(', ')}.`
+
+  // ── Clamp ────────────────────────────────────────────────────────────────
+  const score = Math.min(100, Math.max(0, Math.round(pts)))
+
+  // ── Verdict ──────────────────────────────────────────────────────────────
+  const noData = !result.price && !result.liquidity && !hp
+  const lpVerified2 = lpStatus === 'locked' || lpStatus === 'burned'
+  const highHolderConc = top10 != null && top10 > 50
+  let verdict: CortexScoreResult['verdict']
+  if (noData) {
+    verdict = 'UNKNOWN'
+  } else if (hp?.isHoneypot === true || taxHigh || score < 35) {
+    verdict = 'AVOID'
+  } else if (
+    score >= 80 &&
+    liq >= 25_000 &&
+    holderState.kind === 'rowsWithPercent' &&
+    hp?.simulationSuccess === true &&
+    hp?.isHoneypot === false &&
+    !taxHigh &&
+    !highHolderConc &&
+    lpVerified2
+  ) {
+    verdict = 'CLEAN LOOKING'
+  } else if (score >= 65 && !highHolderConc && (lpVerified2 || hp?.simulationSuccess === true)) {
+    verdict = 'WATCH'
+  } else {
+    verdict = 'CAUTION'
+  }
+
+  // ── Confidence ───────────────────────────────────────────────────────────
+  const hasMarket    = result.price != null || result.liquidity != null
+  const hasLiquidity = result.liquidity != null
+  const hasHolders   = holderState.kind === 'rowsWithPercent'
+  const hasHoldersPt = holderState.kind === 'rowsWithoutPercent'
+  const hasSecurity  = hp?.simulationSuccess === true
+
+  let confidence: CortexScoreResult['confidence']
+  if (hasMarket && hasLiquidity && hasHolders && hasSecurity) {
+    confidence = 'HIGH'
+  } else if (hasMarket && hasLiquidity && (hasHolders || hasHoldersPt || hasSecurity)) {
+    confidence = 'MEDIUM'
+  } else {
+    confidence = 'LOW'
+  }
+
+  // ── Scan quality ─────────────────────────────────────────────────────────
+  const dataCount = [hasMarket, hasHolders || hasHoldersPt, hasSecurity, hasLiquidity].filter(Boolean).length
+  const scanQuality: CortexScoreResult['scanQuality'] = dataCount >= 4 ? 'FULL' : dataCount >= 2 ? 'PARTIAL' : 'LIMITED'
+
+  return {
+    score,
+    verdict,
+    confidence,
+    scanQuality,
+    breakdown: {
+      market:    { status: marketStatus,  score: marketPts,    reason: marketReason },
+      liquidity: { status: liqStatus,     score: liqPts,       reason: liqReason },
+      holders:   { status: holderStatus,  score: holderPts,    reason: holderReason },
+      security:  { status: secStatus,     score: secPts,       reason: secReason },
+      lp:        { status: lpStatusLabel, score: lpPts,        reason: lpReason },
+      missing:   { status: missingStatus, penalty: -missingPenalty, reason: missingReason },
+    },
+  }
+}
+
+function getVerdictStyle(verdict: CortexScoreResult['verdict']): { label: string; color: string; bg: string; border: string } {
+  switch (verdict) {
+    case 'AVOID':        return { label: 'AVOID',         color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.35)' }
+    case 'CLEAN LOOKING':return { label: 'CLEAN LOOKING', color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.35)'  }
+    case 'WATCH':        return { label: 'WATCH',         color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
+    case 'CAUTION':      return { label: 'CAUTION',       color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }
+    default:             return { label: 'UNKNOWN',       color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.25)' }
+  }
+}
+
 function getMarketRead(result: ScanResult): string {
   if (result.noActivePools) return 'No active pool found. Market data is unavailable.'
   const parts = [
@@ -1160,25 +1358,15 @@ export default function TerminalTokenScanner() {
 
               {/* ── CORTEX READ ───────────────────────────────────────── */}
               {activeSection === 'cortex-read' && (() => {
+                const cx = calculateCortexScore(result)
+                const score = cx.score
+                const scoreColor = score >= 75 ? '#34d399' : score >= 50 ? '#fbbf24' : '#f87171'
+                const v = getVerdictStyle(cx.verdict)
+                const confidence = cx.confidence
+                const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
                 const holderState = deriveHolderState(result)
                 const lpStatus = result.lpControl?.status
                 const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
-                const hpOk = result.honeypot?.simulationSuccess === true
-                const scoreChecks = [
-                  result.price != null || result.liquidity != null,
-                  (result.liquidity ?? 0) > 1000,
-                  hpOk,
-                  result.honeypot?.isHoneypot === false,
-                  holderState.kind === 'rowsWithPercent',
-                  result.marketCapUsd != null,
-                  lpVerified,
-                  !result.noActivePools,
-                ]
-                const score = Math.round((scoreChecks.filter(Boolean).length / scoreChecks.length) * 100)
-                const scoreColor = score >= 75 ? '#34d399' : score >= 50 ? '#fbbf24' : '#f87171'
-                const v = getSummaryVerdict(result)
-                const confidence = result.marketConfidence === 'high' ? 'HIGH' : result.marketConfidence === 'medium' ? 'MEDIUM' : 'LOW'
-                const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
                 const marketChipOk = (result.price != null || result.liquidity != null) && !result.noActivePools
                 const holdersChipOk = holderState.kind === 'rowsWithPercent'
                 const holdersChipPartial = holderState.kind === 'rowsWithoutPercent'
@@ -1218,13 +1406,14 @@ export default function TerminalTokenScanner() {
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
                 const lpProofLabel = lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'unsupported' ? 'Protocol liquidity' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
+                const bd = cx.breakdown
                 const scoreBreakdown = [
-                  { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
-                  { label: 'Liquidity', ok: (result.liquidity ?? 0) > 1000, reason: (result.liquidity ?? 0) > 1000 ? `${fmtLarge(result.liquidity)} depth detected.` : 'Liquidity too thin or missing.' },
-                  { label: 'Holders', ok: holderState.kind === 'rowsWithPercent', reason: holderState.kind === 'rowsWithPercent' ? 'Top holder percentages verified.' : 'Holder percentages unverified.' },
-                  { label: 'Security', ok: riskChipOk, reason: riskChipOk ? 'Simulation passed with no honeypot flag.' : simUnavailable ? 'Simulation unavailable this pass.' : 'Security risk detected.' },
-                  { label: 'LP Proof', ok: lpVerified, reason: lpVerified ? `LP ${lpStatus}.` : 'No lock/burn proof confirmed.' },
-                  { label: 'Missing Checks', ok: missing2.length === 0, reason: missing2.length === 0 ? 'No open checks.' : `${missing2.length} open checks remain.` },
+                  { label: 'Market',        pts: bd.market.score,    reason: bd.market.reason },
+                  { label: 'Liquidity',     pts: bd.liquidity.score, reason: bd.liquidity.reason },
+                  { label: 'Holders',       pts: bd.holders.score,   reason: bd.holders.reason },
+                  { label: 'Security',      pts: bd.security.score,  reason: bd.security.reason },
+                  { label: 'LP Proof',      pts: bd.lp.score,        reason: bd.lp.reason },
+                  { label: 'Missing / -4ea',pts: bd.missing.penalty, reason: bd.missing.reason },
                 ]
                 const goodSignals = goodSigns.length >= 2 ? goodSigns : [...goodSigns, 'No additional positive signals confirmed this scan.']
                 const riskSignals = riskSigns.length >= 2 ? riskSigns : [...riskSigns, 'No additional risk signals surfaced beyond current checks.']
@@ -1239,7 +1428,7 @@ export default function TerminalTokenScanner() {
                             <span style={{ fontSize: '52px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{score}</span>
                             <span style={{ fontSize: '16px', color: `${scoreColor}50`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
                           </div>
-                          <div style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginTop: '5px' }}>{scoreChecks.filter(Boolean).length}/{scoreChecks.length} checks passed</div>
+                          <div style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginTop: '5px' }}>{cx.scanQuality} · {cx.confidence} CONF</div>
                         </div>
                         <div style={{ flex: 1, minWidth: '140px', paddingTop: '6px' }}>
                           <div style={{ display: 'flex', gap: '7px', flexWrap: 'wrap', marginBottom: '14px' }}>
@@ -1275,9 +1464,9 @@ export default function TerminalTokenScanner() {
                       <p style={{ margin:'0 0 10px', fontSize:'10px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
                       <div style={{ display:'grid', gap:'7px' }}>
                         {scoreBreakdown.map((b)=>(
-                          <div key={b.label} style={{ display:'grid', gridTemplateColumns:'120px 74px 1fr', gap:'10px', alignItems:'center' }}>
+                          <div key={b.label} style={{ display:'grid', gridTemplateColumns:'120px 60px 1fr', gap:'10px', alignItems:'center' }}>
                             <span style={{ fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)' }}>{b.label}</span>
-                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{b.ok ? 'PASS' : 'OPEN'}</span>
+                            <span style={{ fontSize:'10px', color: b.pts > 0 ? '#34d399' : b.pts < 0 ? '#f87171' : '#94a3b8', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{b.pts > 0 ? `+${b.pts}` : b.pts}</span>
                             <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
                           </div>
                         ))}
@@ -1316,6 +1505,11 @@ export default function TerminalTokenScanner() {
                         <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{next2}</p>
                       </div>
                     </div>
+                    {cx.confidence === 'LOW' && (
+                      <div style={{ marginBottom: '16px', padding: '11px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.22)', background: 'rgba(148,163,184,0.06)' }}>
+                        <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>⚠ Limited confidence — important checks are missing. Do not assume safety.</span>
+                      </div>
+                    )}
                     {result.sections && (
                       <div style={{ marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
                         {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]
@@ -2080,12 +2274,8 @@ export default function TerminalTokenScanner() {
             const top10 = result.holderDistribution?.top10
             const top20 = result.holderDistribution?.top20
             const taxesHigh = (buyTax != null && buyTax > 8) || (sellTax != null && sellTax > 8)
-            const hpBlocked = hp?.isHoneypot === true
-            const verdict =
-              hpBlocked || taxesHigh ? 'AVOID' :
-              !d.hasMarketData && !d.hasSecurityData && !d.hasLiquidityData ? 'UNKNOWN' :
-              d.hasSecurityData && hp?.isHoneypot === false && liq > 120000 && d.holderState.kind === 'rowsWithPercent' ? 'CLEAN LOOKING' :
-              d.holderState.kind === 'noRowsFallback' || liq < 40000 ? 'WATCH' : 'CAUTION'
+            const scx = calculateCortexScore(result)
+            const verdict = scx.verdict
             const verdictColor = verdict === 'AVOID' ? '#f87171' : verdict === 'CLEAN LOOKING' ? '#2DD4BF' : verdict === 'WATCH' ? '#fbbf24' : verdict === 'CAUTION' ? '#f59e0b' : '#94a3b8'
             const bull = [
               liq > 1_000_000 ? `Deep liquidity — ${fmtLarge(liq)} pool depth.` : liq > 200_000 ? `Moderate liquidity — ${fmtLarge(liq)} pool depth.` : liq > 0 ? 'Liquidity present.' : '',
@@ -2108,18 +2298,8 @@ export default function TerminalTokenScanner() {
               d.fallbackEvidence.ownerStatus === 'Unverified' ? 'Owner status' : '',
               result.marketCapUsd == null ? 'Market cap' : '',
             ].filter(Boolean)
-            // Compute score for sidebar
-            const sidebarScoreChecks = [
-              result.price != null || result.liquidity != null,
-              (result.liquidity ?? 0) > 1000,
-              hp?.simulationSuccess === true,
-              hp?.isHoneypot === false,
-              d.holderState.kind === 'rowsWithPercent',
-              result.marketCapUsd != null,
-              (result.lpControl?.status === 'locked' || result.lpControl?.status === 'burned'),
-              !result.noActivePools,
-            ]
-            const sidebarScore = Math.round((sidebarScoreChecks.filter(Boolean).length / sidebarScoreChecks.length) * 100)
+            // Score from data-driven engine
+            const sidebarScore = scx.score
             const sidebarScoreColor = sidebarScore >= 75 ? '#34d399' : sidebarScore >= 50 ? '#fbbf24' : '#f87171'
             // Critical risks (top 3 actionable)
             const criticalRisks: string[] = [
