@@ -94,6 +94,8 @@ export type WalletSnapshot = {
     }>
     reason: string
   }
+  dataFreshness?: 'live' | 'cached' | 'partial'
+  cacheAgeSeconds?: number | null
   _diagnostics?: {
     providers?: {
       zerion: { configured: boolean; attempted: boolean; succeeded: boolean }
@@ -124,6 +126,14 @@ export type WalletSnapshot = {
     }
     missingReasons: string[]
     goldrushTransferDiags?: GrTransferDiag[]
+    snapshotCache?: {
+      memoryHit: boolean
+      persistentHit: boolean
+      providerFetchNeeded: boolean
+      refreshBypassedCache: boolean
+      cacheAgeSeconds: number | null
+      cacheTtlSeconds: number
+    }
   }
 }
 
@@ -131,6 +141,13 @@ const ZERION_KEY       = process.env.ZERION_KEY ?? ''
 const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
+
+export type WalletSnapshotOptions = { refresh?: boolean }
+
+const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
+const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
+type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
+const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
 function zerionAuth(): string | null {
   if (!ZERION_KEY) return null
@@ -508,7 +525,34 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
   }
 }
 
-export async function fetchWalletSnapshot(address: string): Promise<WalletSnapshot> {
+export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
+  const { refresh = false } = options
+  const cacheKey = (address ?? '').trim().toLowerCase()
+
+  // Memory cache check — bypassed when refresh=true
+  if (!refresh && /^0x[0-9a-fA-F]{40}$/i.test(cacheKey)) {
+    const cached = snapshotMemCache.get(cacheKey)
+    if (cached) {
+      const ageMs = Date.now() - cached.cachedAt
+      if (ageMs <= cached.ttlMs) {
+        const cacheAgeSeconds = Math.floor(ageMs / 1000)
+        return {
+          ...cached.snapshot,
+          dataFreshness: 'cached',
+          cacheAgeSeconds,
+          _diagnostics: cached.snapshot._diagnostics ? {
+            ...cached.snapshot._diagnostics,
+            snapshotCache: {
+              memoryHit: true, persistentHit: false, providerFetchNeeded: false,
+              refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: cached.ttlMs / 1000,
+            },
+          } : undefined,
+        }
+      }
+      snapshotMemCache.delete(cacheKey)
+    }
+  }
+
   const startedAt = Date.now()
   const addr: string = (address ?? '').trim()
   if (!addr || !/^0x[0-9a-fA-F]{40}$/i.test(addr)) {
@@ -704,7 +748,9 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     console.log('[wallet-diag] route=/api/wallet goldrushConfigured=', goldrushConfigured, 'goldrushEventsReturned=', grEvents.length, 'valuedEventsReturned=', valuedGrEvents.length, 'alchemyBehaviorAttempted=', alchemyConfigured, 'totalMs=', Date.now() - startedAt)
   }
 
-  return {
+  const hasHistory = estimatedPnl.status !== 'unavailable'
+  const snapshotTtlMs = hasHistory ? SNAPSHOT_HISTORY_TTL_MS : SNAPSHOT_TTL_MS
+  const snapshot: WalletSnapshot = {
     address: addr,
     totalValue,
     holdings,
@@ -725,6 +771,8 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
     unpricedHoldingsCount,
     walletBehavior,
     estimatedPnl,
+    dataFreshness: 'live',
+    cacheAgeSeconds: null,
     _diagnostics: {
       providers: {
         zerion: { configured: Boolean(ZERION_KEY), attempted: true, succeeded: rawPos.length > 0 },
@@ -764,6 +812,12 @@ export async function fetchWalletSnapshot(address: string): Promise<WalletSnapsh
         walletAgeDays === null ? 'walletAgeDays: no first-tx on ETH or Base' : '',
       ].filter(Boolean),
       goldrushTransferDiags: [grEth.diag, grBase.diag],
+      snapshotCache: {
+        memoryHit: false, persistentHit: false, providerFetchNeeded: true,
+        refreshBypassedCache: refresh, cacheAgeSeconds: null, cacheTtlSeconds: snapshotTtlMs / 1000,
+      },
     },
   }
+  if (/^0x[0-9a-fA-F]{40}$/i.test(cacheKey)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
+  return snapshot
 }

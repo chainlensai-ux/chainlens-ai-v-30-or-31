@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
-import { fetchWalletSnapshot } from '@/lib/server/walletSnapshot'
+import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/walletSnapshot'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const WALLET_CACHE_TTL_MS = 3 * 60 * 1000
-const walletCache = new Map<string, { exp: number; payload: unknown }>()
+const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
 async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
@@ -25,6 +25,7 @@ export async function POST(req: Request) {
     const debug = requestUrl.searchParams.get('debug') === 'true'
     const body = await req.json()
     const address = body?.address
+    const refresh = body?.refresh === true
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
@@ -32,15 +33,17 @@ export async function POST(req: Request) {
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
       return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
     }
-    const cached = allowDebugFresh ? null : walletCache.get(key)
+    const cached = allowDebugFresh || refresh ? null : walletCache.get(key)
     if (cached && cached.exp > Date.now()) {
-      const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload
-      if (cp && typeof cp === 'object' && debug) cp._debug = { routeName: '/api/wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
+      const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
+      const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
+      if (cp && typeof cp === 'object' && debug) cp._debug = { routeName: '/api/wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt, walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_CACHE_TTL_MS / 1000 } }
       if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
-    const snapshot = await fetchWalletSnapshot(address ?? '')
+    const snapshot = await fetchWalletSnapshot(address ?? '', { refresh } satisfies WalletSnapshotOptions)
     const providers: any = (snapshot as any)._diagnostics?.providers ?? {}
+    const snapshotCacheDebug = (snapshot as any)._diagnostics?.snapshotCache ?? null
     if (debug) {
       ;(snapshot as any)._debug = {
         routeName: '/api/wallet',
@@ -53,10 +56,11 @@ export async function POST(req: Request) {
         skippedReason: providers.alchemy?.behaviorAttempted ? null : 'alchemy_not_configured',
         fallbackUsed: (snapshot as any).providerUsed !== 'goldrush',
         requestDurationMs: Date.now() - startedAt,
+        walletSnapshotCache: snapshotCacheDebug,
       }
     }
     delete (snapshot as any)._diagnostics
-    if (!allowDebugFresh) walletCache.set(key, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot })
+    if (!allowDebugFresh && !refresh) walletCache.set(key, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
     return NextResponse.json(snapshot)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'

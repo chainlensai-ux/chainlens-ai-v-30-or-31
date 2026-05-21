@@ -4989,7 +4989,8 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   const isBalanceQuestion = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(t);
   const isQualityQuestion = /\b(good wallet|worth following|smart money|copy trad|is this|analyze|review|verdict)\b/i.test(t);
 
-  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress }, authHeader ?? undefined);
+  const wantsRefresh = /\b(refresh|rescan|re.?scan|force|reload|update)\b/i.test(userPrompt)
+  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress, ...(wantsRefresh ? { refresh: true } : {}) }, authHeader ?? undefined);
 
   if (!ok || (walletData as Record<string, unknown>)?.error) {
     return {

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { fetchWalletSnapshot } from '@/lib/server/walletSnapshot'
+import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/walletSnapshot'
 
 const PORTFOLIO_CACHE_TTL_MS = 3 * 60 * 1000
 const portfolioCache = new Map<string, { exp: number; payload: unknown }>()
@@ -25,14 +25,15 @@ export async function POST(req: Request) {
       cur.count += 1
     }
 
-    const body = await req.json() as { address?: string }
+    const body = await req.json() as { address?: string; refresh?: boolean }
     const address = String(body.address ?? '').trim().toLowerCase()
     if (!address) return NextResponse.json({ error: 'Wallet address required.' }, { status: 400 })
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return NextResponse.json({ error: 'Invalid wallet address.' }, { status: 400 })
-    const cached = portfolioCache.get(address)
+    const refresh = body.refresh === true
+    const cached = refresh ? null : portfolioCache.get(address)
     if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
     const snapshot = await Promise.race([
-      fetchWalletSnapshot(address),
+      fetchWalletSnapshot(address, { refresh } satisfies WalletSnapshotOptions),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), SNAPSHOT_TIMEOUT_MS)),
     ])
     const payload = {
@@ -43,8 +44,10 @@ export async function POST(req: Request) {
       behaviorChain: snapshot.behaviorChain,
       walletBehavior: snapshot.walletBehavior,
       estimatedPnl: snapshot.estimatedPnl,
+      dataFreshness: snapshot.dataFreshness ?? 'live',
+      cacheAgeSeconds: snapshot.cacheAgeSeconds ?? null,
     }
-    portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload })
+    if (!refresh) portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload })
     return NextResponse.json(payload)
   } catch {
     return NextResponse.json({ error: 'Portfolio data is currently unavailable.' }, { status: 200 })
