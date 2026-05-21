@@ -488,7 +488,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 type LpControlResult = {
   status: "burned" | "locked" | "protocol" | "team_controlled" | "concentrated_liquidity" | "unverified" | "insufficient_data" | "error";
   confidence: "high" | "medium" | "low";
-  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
+  poolType: "v2" | "v3" | "aerodrome" | "alienbase" | "sushi" | "concentrated" | "unknown";
   source: string;
   reason: string;
   evidence: string[];
@@ -719,7 +719,7 @@ type NormalizedPool = {
   quoteTokenSymbol?: string | null;
   baseTokenAddress?: string | null;
   quoteTokenAddress?: string | null;
-  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
+  poolType: "v2" | "v3" | "aerodrome" | "alienbase" | "sushi" | "concentrated" | "unknown";
   hasDexMeta: boolean;
   isValidAddress: boolean;
   containsScannedToken?: boolean;
@@ -783,6 +783,8 @@ function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["
   const has = (re: RegExp) => re.test(text);
 
   if (has(/\baerodrome\b|\bslipstream\b/)) return "aerodrome";
+  if (has(/\balienbase\b/)) return "alienbase";
+  if (has(/\bsushi(?:swap)?\b/)) return "sushi";
   if (has(/\bconcentrated\b|\bcl pool\b|\balgebra\b/)) return "concentrated";
   if (has(/\buniswap(?:[_-]?v)?3\b|\bpancakeswap(?:[_-]?v)?3\b|\bv3\b/)) return "v3";
 
@@ -1297,8 +1299,12 @@ export async function POST(req: Request) {
     const holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
-          : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
-      : { status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: holderItems.length, normalizedCount: 0 }
+          : { status: 'partial', reason: 'rows_without_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
+      : (holdersRaw?.__status === 'error'
+          ? { status: 'error', reason: (holdersRaw?.__reason ?? 'provider_error'), itemCount: holderItems.length, normalizedCount: 0 }
+          : holdersRaw?.__status === 'unavailable'
+            ? { status: 'unavailable', reason: (holdersRaw?.__reason ?? 'provider_unavailable'), itemCount: holderItems.length, normalizedCount: 0 }
+            : { status: 'empty', reason: 'no_holder_rows', itemCount: holderItems.length, normalizedCount: 0 })
 
     const poolAttr = mainPool?.attributes ?? {}
     // True market cap priority:
@@ -2001,6 +2007,7 @@ export async function POST(req: Request) {
         } : null,
         holderDiagnostics: {
           attempted: holdersRaw?.__status !== 'unavailable',
+          chainUsed: chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet',
           statusCode: holdersRaw?.__statusCode ?? undefined,
           fetchFailed: holdersRaw?.__status === 'error',
           failureStage: holderDistributionStatus.status === 'ok' ? undefined : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
@@ -2010,26 +2017,14 @@ export async function POST(req: Request) {
           reason: holderDistributionStatus.reason,
         },
         lpDiagnostics: {
+          attempted: Boolean(lpPoolAddress || matchingPools.length > 0),
+          poolCount: matchingPools.length,
+          primaryPool: lpPoolAddress ?? null,
           poolType: lpControl.poolType,
+          lpTokenFound: Boolean(lpPoolAddress && lpControl.poolType === 'v2'),
           lpState: lpControl.status,
           confidence: lpControl.confidence,
-          protocolManaged: lpControl.status === 'protocol',
-          lockerDetected: (lpControl.evidence ?? []).some((e) => /locker_share=|known locker/i.test(e)),
-          burnDetected: (lpControl.evidence ?? []).some((e) => /burn_share=|burn\/dead/i.test(e)),
-          deadAddressDetected: (lpControl.evidence ?? []).some((e) => /dead/i.test(e)),
-          concentratedLiquidity: lpControl.status === 'concentrated_liquidity' || lpControl.poolType === 'v3' || lpControl.poolType === 'concentrated',
-          primaryPoolLiquidity: (responsePayload as any)?.liquidity ?? null,
-          totalLiquidity: (Array.isArray((responsePayload as any)?.pools) ? (responsePayload as any).pools : []).reduce((a: number, p: any) => a + (Number(p?.liquidity ?? 0) || 0), 0),
-          liquidityDominancePct: (() => {
-            const pools = Array.isArray((responsePayload as any).pools) ? (responsePayload as any).pools : []
-            const total = pools.reduce((a: number, p: any) => a + (Number(p?.liquidity ?? 0) || 0), 0)
-            const primary = Number(pools?.[0]?.liquidity ?? 0) || 0
-            return total > 0 ? (primary / total) * 100 : null
-          })(),
-          ownershipCheckAttempted: needsLpHolderFetch || rpcCallsAttempted > 0,
-          failureStage: lpControl.status === 'insufficient_data' ? 'pool_address_missing' : (lpControl.status === 'unverified' ? 'ownership_not_proven' : null),
-          poolCount: matchingPools.length,
-          selectedPoolId: (mainPool as any)?.id ?? null,
+          reason: lpControl.reason,
         },
       }
     } else {

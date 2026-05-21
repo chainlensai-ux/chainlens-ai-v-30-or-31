@@ -706,8 +706,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
     holderState.kind !== 'rowsWithPercent'                              ? 'holder concentration'  : null,
     lpStatus !== 'locked' && lpStatus !== 'burned'                      ? 'LP proof'              : null,
     result.marketCapUsd == null                                         ? 'market cap'            : null,
-    !hp?.simulationSuccess                                              ? 'security simulation'   : null,
-    result.goplus == null                                               ? 'owner status'          : null,
+    !hp?.simulationSuccess                                              ? 'tax/security simulation'   : null,
   ].filter((v): v is string => v != null)
   const missingPenalty = Math.min(missingItems.length * 4, 18)
   pts -= missingPenalty
@@ -756,6 +755,9 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   // Both security AND LP unverified → tighter cap
   if (!simVerified2 && !lpVerified2) {
     setCapIfLower(76, 'Score capped by incomplete LP/security checks.')
+  }
+  if (holderState.kind !== 'rowsWithPercent' && !lpVerified2 && !hp?.simulationSuccess) {
+    setCapIfLower(64, 'Score capped by missing holder, LP, and tax checks.')
   }
   // Holder concentration unavailable
   if (holderState.kind === 'noRowsFallback') {
