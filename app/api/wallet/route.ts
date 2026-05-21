@@ -29,6 +29,9 @@ export async function POST(req: Request) {
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
     const key = String(address ?? '').toLowerCase()
+    if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
+      return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
+    }
     const cached = allowDebugFresh ? null : walletCache.get(key)
     if (cached && cached.exp > Date.now()) {
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload

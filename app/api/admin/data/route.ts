@@ -2,18 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
 // ─── Admin access list ────────────────────────────────────────────────────────
-const ADMIN_EMAILS = new Set([
-  'chainlensai@gmail.com',
-  'anthonynoumeir7@gmail.com',
-  'anthonynoumeir@gmail.com',
-])
+function getAdminEmails(): Set<string> {
+  const raw = process.env.ADMIN_EMAILS
+  if (raw) return new Set(raw.split(',').map(e => e.trim().toLowerCase()).filter(Boolean))
+  return new Set()
+}
+const ADMIN_EMAILS = getAdminEmails()
 
 // ─── Internal / test emails ───────────────────────────────────────────────────
-const INTERNAL_EMAILS = new Set([
-  'chainlensai@gmail.com',
-  'anthonynoumeir7@gmail.com',
-  'anthonynoumeir@gmail.com',
-])
+const INTERNAL_EMAILS = ADMIN_EMAILS
 
 const CONFIRMED_STATUSES = new Set(['confirmed', 'finished'])
 const UNPAID_STATUSES    = new Set(['created', 'waiting', 'pending'])
