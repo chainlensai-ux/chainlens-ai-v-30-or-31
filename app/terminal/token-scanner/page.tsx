@@ -761,6 +761,10 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   if (holderState.kind === 'noRowsFallback') {
     setCapIfLower(75, 'Score capped by unverified holder data.')
   }
+  // Holder concentration partial (rows present, percentages missing)
+  if (holderState.kind === 'rowsWithoutPercent') {
+    setCapIfLower(82, 'Score capped by partial holder data.')
+  }
   // High holder concentration
   if (highHolderConc) {
     setCapIfLower(72, 'Score capped by high holder concentration.')
@@ -1919,7 +1923,7 @@ export default function TerminalTokenScanner() {
                                 {concRisk != null && <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${concColor}44`, color: concColor, background: `${concColor}10` }}>{concRisk} CONC</span>}
                               </div>
                               {result.holderDistribution?.holderCount != null && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
-                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>Holder rows were returned, but concentration percentages were incomplete.</p>}
+                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>Holder rows found — concentration percentages unavailable. Addresses and amounts shown below.</p>}
                               {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
                                 {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
                                   <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 64px', alignItems: 'center', gap: '10px' }}>
@@ -2590,6 +2594,12 @@ export default function TerminalTokenScanner() {
                 {/* Holder / Supply */}
                 <div style={ss}>
                   <p style={stitle}>Holder Read</p>
+                  {d.holderState.kind === 'rowsWithPercent' && (
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(45,212,191,.35)',color:'#2dd4bf',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.07)'}}>CONCENTRATION VERIFIED</div>
+                  )}
+                  {d.holderState.kind === 'rowsWithoutPercent' && (
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION INCOMPLETE</div>
+                  )}
                   {d.holderState.kind === 'noRowsFallback' && (
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION UNVERIFIED</div>
                   )}

@@ -83,9 +83,9 @@ type HolderDistribution = {
 }
 type HolderDistributionStatus = {
   status: "ok" | "partial" | "empty" | "unavailable" | "error"
-  reason?: string
-  itemCount?: number
-  normalizedCount?: number
+  reason: string
+  itemCount: number
+  normalizedCount: number
 }
 
 function toNum(v: unknown): number | null {
@@ -103,7 +103,7 @@ function pickNum(...vals: unknown[]): number | null {
 
 function normalizeHolderPercent(v: unknown): number | null {
   const n = toNum(v)
-  if (n == null || n < 0 || n > 100) return null
+  if (n == null || n <= 0 || n > 100) return null
   if (n > 0 && n <= 1) return n * 100
   return n
 }
@@ -1299,16 +1299,17 @@ export async function POST(req: Request) {
     const percentSource: 'provider' | 'calculated' | 'unavailable' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'unavailable'
     console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct, '[holders] pct source', percentSource)
     const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
-    const derivedTopBuckets = hasPct
     const top1 = hasPct ? sum(1) : null
     const top5 = hasPct ? sum(5) : null
     const top10 = hasPct ? sum(10) : null
     const top20 = hasPct ? sum(20) : null
     const normalizedTop = topHolders.slice(0, 200)
-    const holderDistribution: HolderDistribution | null = normalizedTop.length ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop } : null
-    const holderDistributionStatus: HolderDistributionStatus = holderDistribution
+    const holderDistribution: HolderDistribution = normalizedTop.length
+      ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop }
+      : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
+    const holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
-          ? { status: 'ok', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
+          ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
           : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
       : { status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: holderItems.length, normalizedCount: 0 }
 
@@ -2012,19 +2013,14 @@ export async function POST(req: Request) {
           marketStatus,
         } : null,
         holderDiagnostics: {
-          status: holderDistributionStatus.status,
-          reason: holderDistributionStatus.reason ?? null,
+          attempted: holdersRaw?.__status !== 'unavailable',
+          statusCode: holdersRaw?.__statusCode ?? undefined,
+          fetchFailed: holdersRaw?.__status === 'error',
+          failureStage: holderDistributionStatus.status === 'ok' ? undefined : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
           rawItemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
-          percentRows: percentRows.length,
-          rowsWithAddress: topHolders.filter((h: any) => Boolean(h.address)).length,
-          rowsWithAmount: topHolders.filter((h: any) => h.amount != null).length,
-          rowsWithPercent: topHolders.filter((h: any) => h.percent != null).length,
-          derivedTopBuckets,
-          firstHolderKeys: holderItems[0] ? Object.keys(holderItems[0]) : null,
-          samplePercents: topHolders.slice(0, 5).map((h: any) => h.percent).filter((x: any) => x != null),
-          holderProviderCalled: holdersRaw?.__status !== 'unavailable',
-          failureStage: holderDistributionStatus.status === 'ok' ? null : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
+          firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : undefined,
+          reason: holderDistributionStatus.reason,
         },
         lpDiagnostics: {
           poolType: lpControl.poolType,
