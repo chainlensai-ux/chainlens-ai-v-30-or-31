@@ -53,7 +53,7 @@ type ScanResult = {
   displayMarketValueReason?: string
   estimatedMarketCap?: number | null
   pools?: Pool[]
-  goplus?: Record<string, Record<string, unknown>> | null
+  contractSecurity?: Record<string, Record<string, unknown>> | null
   honeypot?: {
     isHoneypot: boolean | null
     buyTax: number | null
@@ -329,15 +329,14 @@ function humanizeReasonCode(reason?: string): string {
 
 function humanizeSectionLine(source?: string, status?: string, reason?: string): string {
   const sourceMap: Record<string, string> = {
-    base_rpc:                  'Contract verification',
-    alchemy_rpc:               'Contract verification',
-    geckoterminal:             'Market data',
-    goldrush:                  'Holder data',
-    honeypot:                  'Security simulation',
-    'honeypot.is':             'Security simulation',
-    goplus_limited_fallback:   'Security signals',
-    goplus_optional_fallback:  'Security signals',
-    unavailable:               'Data check',
+    rpc:                     'Contract verification',
+    'dex_data+rpc':          'Contract verification',
+    market_data:             'Market data',
+    dex_data:                'Market data',
+    on_chain:                'Holder data',
+    security_check:          'Security simulation',
+    security_check_limited:  'Security signals',
+    unavailable:             'Data check',
   }
   const sourceLabel = sourceMap[source ?? ''] ?? 'CORTEX check'
   const statusLabel = status ? status.charAt(0).toUpperCase() + status.slice(1) : 'No signal in checked window'
@@ -407,8 +406,8 @@ function deriveOwnerStatus(gp: Record<string, unknown> | null): OwnerStatus {
 }
 
 function deriveHolderFallbackEvidence(result: ScanResult): HolderFallbackEvidence {
-  const gp = result.goplus && result.contract
-    ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+  const gp = result.contractSecurity && result.contract
+    ? (result.contractSecurity[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
     : null
   const ratio = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0
     ? (result.marketCapUsd / result.fdvUsd) * 100
@@ -461,8 +460,8 @@ function dedupeSecurityChips(chips: SecurityChip[]): SecurityChip[] {
 }
 
 function deriveVerdictInput(result: ScanResult): VerdictInput {
-  const gp = result.goplus && result.contract
-    ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+  const gp = result.contractSecurity && result.contract
+    ? (result.contractSecurity[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
     : null
   const hp = result.honeypot
   const baseChips: SecurityChip[] = [
@@ -707,7 +706,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
     lpStatus !== 'locked' && lpStatus !== 'burned'                      ? 'LP proof'              : null,
     result.marketCapUsd == null                                         ? 'market cap'            : null,
     !hp?.simulationSuccess                                              ? 'security simulation'   : null,
-    result.goplus == null                                               ? 'owner status'          : null,
+    result.contractSecurity == null                                               ? 'owner status'          : null,
   ].filter((v): v is string => v != null)
   const missingPenalty = Math.min(missingItems.length * 4, 18)
   pts -= missingPenalty
@@ -1249,7 +1248,7 @@ export default function TerminalTokenScanner() {
             volume24h:      num((attr(p).volume_usd as Record<string, unknown> | undefined)?.h24),
             priceChange24h: num((attr(p).price_change_percentage as Record<string, unknown> | undefined)?.h24),
           })),
-          goplus:   json.goplus   ?? null,
+          contractSecurity: json.contractSecurity ?? null,
           honeypot: json.honeypot ?? null,
           holderDistribution: json.holderDistribution ?? null,
           holderDistributionStatus: json.holderDistributionStatus ?? null,
@@ -2193,7 +2192,7 @@ export default function TerminalTokenScanner() {
                     </div>
                   )}
                   {!planLoading && isFullAccess && (() => {
-                    const gp = result.goplus&&result.contract?(result.goplus[result.contract.toLowerCase()]??null) as Record<string,unknown>|null:null
+                    const gp = result.contractSecurity&&result.contract?(result.contractSecurity[result.contract.toLowerCase()]??null) as Record<string,unknown>|null:null
                     const hp = result.honeypot
                     const simVerified = hp?.simulationSuccess===true
                     type RC = { label:string;value:string;style:PillStyle }

@@ -1136,7 +1136,7 @@ export async function POST(req: Request) {
         const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
-          lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
+          lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "dex_data+rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
@@ -1151,7 +1151,7 @@ export async function POST(req: Request) {
           ]);
           const burnShare = burn0 + burnDead;
           const lockerShare = _lockerPcts.reduce((a: number, b: number) => a + b, 0);
-          const base = { poolType: "v2" as const, source: "geckoterminal+alchemy_rpc", poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
+          const base = { poolType: "v2" as const, source: "dex_data+rpc", poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
           if (burnShare >= 50) {
             lpControl = { ...base, status: "burned", confidence: confidenceFor(burnShare), reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
           } else if (lockerShare >= 50) {
@@ -1161,9 +1161,9 @@ export async function POST(req: Request) {
           }
         }
       } else if (probe.v3Like) {
-        lpControl = { status: "protocol", confidence: "low", poolType: "v3", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as concentrated-liquidity (V3-like); LP lock requires protocol-specific verification.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: concentrated-liquidity interface detected"], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
+        lpControl = { status: "protocol", confidence: "low", poolType: "v3", source: "dex_data+rpc", reason: "Pool probed as concentrated-liquidity (V3-like); LP lock requires protocol-specific verification.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: concentrated-liquidity interface detected"], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
       } else {
-        lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "geckoterminal+alchemy_rpc", reason: alchemyConfigured ? "Verification pool found, but current RPC checks did not confirm a standard V2/V3 LP interface." : "Alchemy RPC fallback not configured.", evidence: [`Verification pool: ${lpPair}`, "Pool type: unknown", `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`, alchemyConfigured ? "RPC probe: no V2/V3 interface confirmed" : "RPC probe: unavailable (Alchemy not configured)"], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
+        lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "dex_data+rpc", reason: alchemyConfigured ? "Verification pool found, but current RPC checks did not confirm a standard V2/V3 LP interface." : "Alchemy RPC fallback not configured.", evidence: [`Verification pool: ${lpPair}`, "Pool type: unknown", `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`, alchemyConfigured ? "RPC probe: no V2/V3 interface confirmed" : "RPC probe: unavailable (Alchemy not configured)"], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
       }
     } else {
       // V2 — run GoldRush LP holder check
@@ -1189,7 +1189,7 @@ export async function POST(req: Request) {
         const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
-          lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
+          lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "dex_data+rpc", reason: "LP holder percentages unavailable; RPC totalSupply read is unavailable.", evidence: [`pool=${primaryPoolAddress}`] };
         } else {
           const readPct = async (addr: string) => {
             const data = `0x70a08231${pad32HexAddress(addr)}`;
@@ -1205,11 +1205,11 @@ export async function POST(req: Request) {
           const burnShare = burn0 + burnDead;
           const lockerShare = _lockerPcts.reduce((a: number, b: number) => a + b, 0);
           if (burnShare >= 50) {
-            lpControl = { status: "burned", confidence: confidenceFor(burnShare), poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`] };
+            lpControl = { status: "burned", confidence: confidenceFor(burnShare), poolType: lpPoolType, source: "dex_data+rpc", reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`] };
           } else if (lockerShare >= 50) {
-            lpControl = { status: "locked", confidence: confidenceFor(lockerShare), poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`] };
+            lpControl = { status: "locked", confidence: confidenceFor(lockerShare), poolType: lpPoolType, source: "dex_data+rpc", reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`] };
           } else {
-            lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+alchemy_rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
+            lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "dex_data+rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
           }
         }
       } else {
@@ -1644,8 +1644,8 @@ export async function POST(req: Request) {
           chain: chain === 'eth' ? 'eth-mainnet' : 'base-mainnet',
           endpointPath: holdersRaw?.__endpointPath ?? `/v1/${chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'}/tokens/${contract}/token_holders_v2/`,
           authMode: 'bearer',
-          hasGoldrushKey: Boolean(process.env.GOLDRUSH_API_KEY),
-          hasCovalentKey: Boolean(process.env.COVALENT_API_KEY),
+          holderKeyConfigured: Boolean(process.env.GOLDRUSH_API_KEY),
+          holderAltKeyConfigured: Boolean(process.env.COVALENT_API_KEY),
           statusCode: holdersRaw?.__statusCode ?? null,
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
@@ -1710,8 +1710,7 @@ export async function POST(req: Request) {
 
       gmgn: gmgn?.data || null,
 
-      // GoPlus security data — keyed by lowercase contract address
-      goplus: (gpRaw as Record<string, unknown>)?.result ?? null,
+      contractSecurity: (gpRaw as Record<string, unknown>)?.result ?? null,
 
       // Internal diagnostics
       _diagnostics: {
