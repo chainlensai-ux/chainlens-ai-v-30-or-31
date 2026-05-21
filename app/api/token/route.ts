@@ -23,9 +23,11 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
 }
 
 const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
+const HOLDER_SUPPLY_CACHE_TTL_MS = 30 * 60 * 1000
 const TOKEN_RATE_WINDOW_MS = 60 * 1000
 const TOKEN_RATE_BY_PLAN: Record<string, number> = { free: 12, pro: 40, elite: 120 }
 const tokenResponseCache = new Map<string, { exp: number; payload: unknown }>()
+const holderSupplyCache = new Map<string, { exp: number; totalSupplyRaw: bigint | null; decimals: number | null }>()
 const tokenRateMap = new Map<string, { count: number; resetAt: number }>()
 const BASE_TOKEN_ALIAS_MAP: Record<string, { address: string; symbol: string }> = {
   WETH: { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH' },
@@ -514,6 +516,28 @@ function normalizeHolderRowPercent(h: any): number | null {
     ?? normalizeHolderPercent(h?.ownership_percentage)
     ?? normalizeHolderPercent(h?.share)
     ?? normalizeHolderPercent(h?.holder_percentage)
+}
+async function getHolderDerivationInputs(chain: ChainKey, contract: string): Promise<{ totalSupplyRaw: bigint | null; decimals: number | null }> {
+  const key = `${chain}:${contract.toLowerCase()}`
+  const now = Date.now()
+  const cached = holderSupplyCache.get(key)
+  if (cached && cached.exp > now) return { totalSupplyRaw: cached.totalSupplyRaw, decimals: cached.decimals }
+  const [supplyHex, decHex] = await Promise.all([
+    rpcCall(chain, 'eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest']),
+    rpcCall(chain, 'eth_call', [{ to: contract, data: '0x313ce567' }, 'latest']),
+  ])
+  let totalSupplyRaw: bigint | null = null
+  let decimals: number | null = null
+  try { if (supplyHex && supplyHex !== '0x') totalSupplyRaw = BigInt(supplyHex) } catch {}
+  try {
+    if (decHex && decHex !== '0x') {
+      const decBig = BigInt(decHex)
+      const decNum = Number(decBig)
+      if (Number.isInteger(decNum) && decNum >= 0 && decNum <= 36) decimals = decNum
+    }
+  } catch {}
+  holderSupplyCache.set(key, { exp: now + HOLDER_SUPPLY_CACHE_TTL_MS, totalSupplyRaw, decimals })
+  return { totalSupplyRaw, decimals }
 }
 
 type LpControlResult = {
@@ -1295,19 +1319,49 @@ export async function POST(req: Request) {
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? null
     const holderPctFromProvider: boolean[] = []
+    const holderRawAmountNumeric: boolean[] = []
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
       const address = normalizeHolderAddress(h)
       const amount = normalizeHolderAmount(h)
+      const rawAmount = h?.balance ?? h?.token_balance ?? h?.amount ?? h?.quantity ?? null
       const pctRaw = normalizeHolderRowPercent(h)
       const percent = pctRaw
       holderPctFromProvider.push(percent != null)
-      return { rank: i + 1, address, amount, percent }
+      holderRawAmountNumeric.push(rawAmount != null && /^-?\d+$/.test(String(rawAmount)))
+      return { rank: i + 1, address, amount, percent, rawAmount }
     }).filter((h: any) => h.address)
 
+    let derivationAttempted = false
+    let derivationSucceeded = false
+    let derivationFailureReason: string | null = null
+    let percentSource: 'provider' | 'derived_total_supply' | 'missing' = holderPctFromProvider.some(Boolean) ? 'provider' : 'missing'
+    if (!holderPctFromProvider.some(Boolean) && topHolders.length > 0) {
+      derivationAttempted = true
+      const deriv = await getHolderDerivationInputs(chainKey, contract)
+      const totalSupplyRaw = deriv.totalSupplyRaw
+      const decimalsAvail = deriv.decimals != null
+      if (!totalSupplyRaw || totalSupplyRaw <= BigInt(0)) derivationFailureReason = 'missing_total_supply'
+      else if (!decimalsAvail) derivationFailureReason = 'missing_decimals'
+      else if (!holderRawAmountNumeric.every(Boolean)) derivationFailureReason = 'non_numeric_amounts'
+      else {
+        let pctSum = 0
+        let invalid = false
+        for (const h of topHolders) {
+          const pct = bigIntPct(h.rawAmount, totalSupplyRaw)
+          if (pct == null || pct <= 0 || pct > 100) { invalid = true; break }
+          h.percent = pct
+          pctSum += pct
+        }
+        if (invalid || pctSum > 100.2) derivationFailureReason = 'invalid_derived_percent'
+        else {
+          derivationSucceeded = true
+          percentSource = 'derived_total_supply'
+        }
+      }
+    }
     const percentRows = topHolders.filter((h: any) => h.percent != null)
     const hasPct = percentRows.length > 0
-    const anyProviderPct = holderPctFromProvider.some(Boolean)
-    const percentSource: 'provider' | 'calculated' | 'unavailable' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'unavailable'
+    if (!hasPct && !derivationFailureReason && derivationAttempted) derivationFailureReason = 'invalid_derived_percent'
     const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
     const top1 = hasPct ? sum(1) : null
     const top5 = hasPct ? sum(5) : null
@@ -1319,8 +1373,8 @@ export async function POST(req: Request) {
       : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
     const holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
-          ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
-          : { status: 'partial', reason: 'rows_without_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
+          ? { status: 'ok', reason: (percentSource === 'derived_total_supply' ? 'holder_percentages_derived_from_supply' : 'holder_percentages_verified'), itemCount: holderItems.length, normalizedCount: normalizedTop.length }
+          : { status: 'partial', reason: (derivationFailureReason ?? 'rows_without_percentages'), itemCount: holderItems.length, normalizedCount: normalizedTop.length })
       : (holdersRaw?.__statusCode === 200
           ? { status: 'empty', reason: 'no_holder_rows', itemCount: holderItems.length, normalizedCount: 0 }
           : holdersRaw?.__status === 'error'
@@ -2031,16 +2085,22 @@ export async function POST(req: Request) {
         holderDiagnostics: {
           attempted: holdersRaw?.__status !== 'unavailable',
           chainUsed: holdersRaw?.__chainUsed ?? (chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet'),
+          rawItemCount: holderItems.length,
+          normalizedCount: normalizedTop.length,
+          percentSource,
+          totalSupplyAvailable: derivationAttempted ? (derivationFailureReason !== 'missing_total_supply') : (percentSource === 'provider'),
+          decimalsAvailable: derivationAttempted ? (derivationFailureReason !== 'missing_decimals') : (percentSource === 'provider'),
+          derivationAttempted,
+          derivationSucceeded,
+          derivationFailureReason,
+          reason: holderDistributionStatus.reason,
           endpointTemplate: holdersRaw?.__endpointTemplate ?? `https://api.covalenthq.com/v1/${chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet'}/tokens/{token}/token_holders_v2/?page-number=0&page-size=100`,
           hasApiKey: Boolean(holdersRaw?.__hasApiKey),
           statusCode: holdersRaw?.__statusCode ?? undefined,
           fetchFailed: holdersRaw?.__status === 'error',
           failureStage: holderDistributionStatus.status === 'ok' ? undefined : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
-          rawItemCount: holderItems.length,
           rawTopLevelKeys: holdersRaw ? Object.keys(holdersRaw) : undefined,
-          normalizedCount: normalizedTop.length,
           firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : undefined,
-          reason: holderDistributionStatus.reason,
         },
         lpDiagnostics: {
           attempted: Boolean(lpPoolAddress || matchingPools.length > 0),
