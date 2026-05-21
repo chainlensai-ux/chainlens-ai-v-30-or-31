@@ -538,7 +538,7 @@ function getSummaryReasons(result: ScanResult): string[] {
     const mcStr = result.marketCapUsd != null ? `MC ${fmtLarge(result.marketCapUsd)} verified` : 'market cap unverified'
     reasons.push(`Market is live — price ${fmtPrice(result.price)}, liquidity ${fmtLarge(liq)}, ${mcStr}.`)
   } else if (result.noActivePools) {
-    reasons.push('No active liquidity pool found for this token on Base.')
+    reasons.push(`No active liquidity pool found for this token on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`)
   } else {
     reasons.push('Market data is unavailable or limited.')
   }
@@ -580,7 +580,7 @@ function getNextAction(result: ScanResult): string {
   const liq = result.liquidity ?? 0
   const holderState = deriveHolderState(result)
   if (hp?.isHoneypot === true) return 'Do not trade — honeypot detected in simulation.'
-  if (result.noActivePools) return 'No active pool found. Verify the contract is live on Base.'
+  if (result.noActivePools) return `No active pool found. Verify the contract is live on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`
   if (liq > 0 && liq < 10000) return 'Liquidity is very thin — high slippage and exit risk present.'
   if (liq > 0 && liq < 50000) return 'Liquidity is limited. Verify LP lock or burn proof before entering.'
   if (holderState.kind === 'noRowsFallback') return 'Holder concentration not confirmed. Verify top holders before forming conviction on this token.'
@@ -918,7 +918,7 @@ function getHolderRead(result: ScanResult): string {
 function getLiquidityRead(result: ScanResult): string {
   const liq = result.liquidity ?? 0
   const poolCount = result.pools?.length ?? 0
-  if (result.noActivePools || poolCount === 0) return 'No active liquidity pool detected on Base.'
+  if (result.noActivePools || poolCount === 0) return `No active liquidity pool detected on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`
   const depth = liq > 1_000_000 ? 'Deep' : liq > 200_000 ? 'Moderate' : liq > 50_000 ? 'Limited' : liq > 0 ? 'Thin' : 'Unverified'
   const poolStr = poolCount > 1 ? `${poolCount} pools found.` : 'Primary pool found.'
   const lpStatus = result.lpControl?.status
@@ -1492,7 +1492,7 @@ export default function TerminalTokenScanner() {
                   holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed — open risk check.' : holderState.kind === 'rowsWithoutPercent' ? 'Holder wallets found but percentages not confirmed.' : '',
                   result.marketCapUsd == null ? 'Market cap not verified — supply unconfirmed.' : '',
                   !hp2?.simulationSuccess ? 'Tax simulation unavailable — status unverified.' : '',
-                  result.noActivePools ? 'No active liquidity pool detected on Base.' : '',
+                  result.noActivePools ? `No active liquidity pool detected on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.` : '',
                 ].filter(Boolean).slice(0, 4) as string[]
                 const missing2 = getMissingChecks(result)
                 const next2 = getNextAction(result)
@@ -1742,7 +1742,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
                         <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: '#fbbf24', textTransform: 'uppercase' }}>No Active Pool Found</span>
                       </div>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>No liquidity pools were found for this contract on Base. Price, volume, and liquidity data are unavailable.</p>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>No liquidity pools were found for this contract on {result.chain === 'eth' ? 'Ethereum' : 'Base'}. Price, volume, and liquidity data are unavailable.</p>
                     </div>
                   ) : (
                     <>
