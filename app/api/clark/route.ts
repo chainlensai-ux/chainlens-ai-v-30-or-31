@@ -74,6 +74,14 @@ type ClarkSessionMemory = {
     scanSummary: string | null;
     ts: number;
   } | null;
+  prevToken?: {
+    address: string;
+    symbol: string | null;
+    name: string | null;
+    scanSummary: string | null;
+    chain: "base" | "eth";
+    ts: number;
+  } | null;
   lastWallet: {
     address: string;
     ensName: string | null;
@@ -158,7 +166,9 @@ function getSessionKeySource(req: NextRequest, authenticated: boolean): "user" |
 }
 
 function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string | null, name: string | null, scanSummary: string | null) {
-  if (mem.lastToken && mem.lastToken.address !== address) mem.prevToken = mem.lastToken;
+  if (mem.lastToken) {
+    mem.prevToken = { ...mem.lastToken, chain: mem.selectedChain }
+  }
   mem.lastToken = { address, symbol, name, scanSummary, ts: Date.now() };
   mem.recentTokens = [{ address, symbol, name, chain: mem.selectedChain, summary: scanSummary, ts: Date.now() }, ...mem.recentTokens.filter(t => t.address !== address)].slice(0, 3)
 }
