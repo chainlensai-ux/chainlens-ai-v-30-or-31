@@ -502,7 +502,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 }
 
 type LpControlResult = {
-  status: "burned" | "locked" | "team_controlled" | "unverified" | "unsupported" | "error";
+  status: "burned" | "locked" | "protocol" | "team_controlled" | "concentrated_liquidity" | "unverified" | "insufficient_data" | "error";
   confidence: "high" | "medium" | "low";
   poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
   source: string;
@@ -557,7 +557,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
         couldNotVerify: [],
         nextAction: "Liquidity removal risk exists. Treat with caution until LP is locked or burned.",
       };
-    case "unsupported":
+    case "protocol":
       if (lp.poolType === "aerodrome") {
         return {
           title: "Protocol liquidity — requires protocol-specific verification",
@@ -575,6 +575,24 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
         whatWasFound: [...poolLine, "Pool type: concentrated / V3"],
         couldNotVerify: ["LP token holder distribution (V2 method N/A)", "Lock or burn status via standard ERC-20 check"],
         nextAction: "Check LP positions on-chain via the V3 position manager or a protocol-specific explorer.",
+      };
+    case "concentrated_liquidity":
+      return {
+        title: "Concentrated liquidity detected",
+        meaning: "Concentrated liquidity pool detected. Exit depth may shift rapidly.",
+        riskLevel: "Caution",
+        whatWasFound: [...poolLine, "Pool type: concentrated / V3"],
+        couldNotVerify: ["Locker proof unavailable via standard ERC-20 LP holder method"],
+        nextAction: "Inspect active position ranges and protocol lock mechanics.",
+      };
+    case "insufficient_data":
+      return {
+        title: "Insufficient LP verification data",
+        meaning: "LP ownership could not be verified this scan.",
+        riskLevel: "Unknown",
+        whatWasFound: [...poolLine, "Pool check attempted"],
+        couldNotVerify: ["Burn proof", "Locker proof", "Dominant owner verification"],
+        nextAction: "Rescan and verify with additional on-chain LP ownership data.",
       };
     default: // unverified, error
       if (!lp.poolAddressPresent) {
@@ -1093,14 +1111,14 @@ export async function POST(req: Request) {
       lpVerificationPoolReason: lpReason,
     };
     if (!lpPoolAddressPresent) {
-      lpControl = { ...lpControl, status: "unverified", reason: "No pool address found from provider for LP-holder verification." };
+      lpControl = { ...lpControl, status: "insufficient_data", reason: "No pool address found from provider for LP-holder verification." };
     } else if (lpPoolType === "v3" || lpPoolType === "aerodrome" || lpPoolType === "concentrated") {
       lpControl = {
-        status: "unsupported",
+        status: "protocol",
         confidence: "low",
         poolType: lpPoolType,
         source: "geckoterminal",
-        reason: "Pool uses concentrated/protocol liquidity; LP lock requires protocol-specific verification.",
+        reason: "Protocol-managed liquidity detected. Locker proof unavailable.",
         evidence: [`pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`],
       };
     } else if (lpPoolType === "unknown") {
@@ -1139,7 +1157,7 @@ export async function POST(req: Request) {
           }
         }
       } else if (probe.v3Like) {
-        lpControl = { status: "unsupported", confidence: "low", poolType: "v3", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as concentrated-liquidity (V3-like); LP lock requires protocol-specific verification.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: concentrated-liquidity interface detected"], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
+        lpControl = { status: "protocol", confidence: "low", poolType: "v3", source: "geckoterminal+alchemy_rpc", reason: "Pool probed as concentrated-liquidity (V3-like); LP lock requires protocol-specific verification.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: concentrated-liquidity interface detected"], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
       } else {
         lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "geckoterminal+alchemy_rpc", reason: alchemyConfigured ? "Verification pool found, but current RPC checks did not confirm a standard V2/V3 LP interface." : "Alchemy RPC fallback not configured.", evidence: [`Verification pool: ${lpPair}`, "Pool type: unknown", `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`, alchemyConfigured ? "RPC probe: no V2/V3 interface confirmed" : "RPC probe: unavailable (Alchemy not configured)"], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
       }
@@ -2007,6 +2025,28 @@ export async function POST(req: Request) {
           samplePercents: topHolders.slice(0, 5).map((h: any) => h.percent).filter((x: any) => x != null),
           holderProviderCalled: holdersRaw?.__status !== 'unavailable',
           failureStage: holderDistributionStatus.status === 'ok' ? null : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
+        },
+        lpDiagnostics: {
+          poolType: lpControl.poolType,
+          lpState: lpControl.status,
+          confidence: lpControl.confidence,
+          protocolManaged: lpControl.status === 'protocol',
+          lockerDetected: (lpControl.evidence ?? []).some((e) => /locker_share=|known locker/i.test(e)),
+          burnDetected: (lpControl.evidence ?? []).some((e) => /burn_share=|burn\/dead/i.test(e)),
+          deadAddressDetected: (lpControl.evidence ?? []).some((e) => /dead/i.test(e)),
+          concentratedLiquidity: lpControl.status === 'concentrated_liquidity' || lpControl.poolType === 'v3' || lpControl.poolType === 'concentrated',
+          primaryPoolLiquidity: (responsePayload as any)?.liquidity ?? null,
+          totalLiquidity: (Array.isArray((responsePayload as any)?.pools) ? (responsePayload as any).pools : []).reduce((a: number, p: any) => a + (Number(p?.liquidity ?? 0) || 0), 0),
+          liquidityDominancePct: (() => {
+            const pools = Array.isArray((responsePayload as any).pools) ? (responsePayload as any).pools : []
+            const total = pools.reduce((a: number, p: any) => a + (Number(p?.liquidity ?? 0) || 0), 0)
+            const primary = Number(pools?.[0]?.liquidity ?? 0) || 0
+            return total > 0 ? (primary / total) * 100 : null
+          })(),
+          ownershipCheckAttempted: needsLpHolderFetch || rpcCallsAttempted > 0,
+          failureStage: lpControl.status === 'insufficient_data' ? 'pool_address_missing' : (lpControl.status === 'unverified' ? 'ownership_not_proven' : null),
+          poolCount: matchingPools.length,
+          selectedPoolId: (mainPool as any)?.id ?? null,
         },
       }
     } else {
