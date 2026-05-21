@@ -163,19 +163,6 @@ function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string
   mem.recentTokens = [{ address, symbol, name, chain: mem.selectedChain, summary: scanSummary, ts: Date.now() }, ...mem.recentTokens.filter(t => t.address !== address)].slice(0, 3)
 }
 
-function appendMemHistory(mem: ClarkSessionMemory, role: 'user' | 'assistant', content: string) {
-  mem.conversationHistory.push({ role, content: content.slice(0, 600) });
-  if (mem.conversationHistory.length > 12) mem.conversationHistory = mem.conversationHistory.slice(-12);
-}
-
-function setMemPage(mem: ClarkSessionMemory, page: string | null | undefined) {
-  if (page) mem.currentPage = page;
-}
-
-function setMemChain(mem: ClarkSessionMemory, chain: string | null | undefined) {
-  if (chain) mem.selectedChain = chain;
-}
-
 function updateMemWallet(mem: ClarkSessionMemory, address: string, ensName: string | null, walletSummary: string | null) {
   mem.lastWallet = { address, ensName, walletSummary, ts: Date.now() };
   mem.recentWallets = [{ address, chain: mem.selectedChain, summary: walletSummary, ts: Date.now() }, ...mem.recentWallets.filter(w => w.address !== address)].slice(0, 2)
