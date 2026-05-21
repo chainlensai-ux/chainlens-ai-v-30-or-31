@@ -1106,7 +1106,7 @@ export async function POST(req: Request) {
       status: "unverified",
       confidence: "low",
       poolType: lpPoolType,
-      source: "geckoterminal",
+      source: "dex_data",
       reason: "LP control requires holder-level LP token verification.",
       evidence: _lpBaseDiagnostics,
       poolAddressPresent: Boolean(lpPoolAddress),
@@ -1121,7 +1121,7 @@ export async function POST(req: Request) {
         status: "protocol",
         confidence: "low",
         poolType: lpPoolType,
-        source: "geckoterminal",
+        source: "dex_data",
         reason: "Protocol-managed liquidity detected. Locker proof unavailable.",
         evidence: [`pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`],
       };
@@ -1908,8 +1908,8 @@ export async function POST(req: Request) {
         simulationSuccess: hpResult.simulationSuccess,
       } : gpHoneypot,
       securityDiagnostics: {
-        honeypotProvider: hpResult.ok ? "ok" : (gpHasData ? "optional_fallback_goplus" : hpResult.honeypotProvider),
-        honeypotSource:   hpResult.ok ? "honeypot.is" : (gpHasData ? "goplus_optional_fallback" : "unavailable"),
+        honeypotProvider: hpResult.ok ? "ok" : (gpHasData ? "security_check_limited" : hpResult.honeypotProvider),
+        honeypotSource:   hpResult.ok ? "security_check" : (gpHasData ? "security_check_limited" : "unavailable"),
         honeypotChecked:  true,
       },
 
@@ -1931,7 +1931,7 @@ export async function POST(req: Request) {
         market: {
           status: marketStatus,
           reason: marketReason,
-          source: marketDataSource === 'fallback' ? 'market_data' : 'geckoterminal',
+          source: 'market_data',
           price: _ep,
           liquidity: _el,
           volume24h: _ev,
@@ -1942,7 +1942,7 @@ export async function POST(req: Request) {
         security: {
           status: securityStatus,
           reason: securityReason,
-          source: hpResult.ok ? "honeypot.is" : (gpHasData ? "goplus_limited_fallback" : "unavailable"),
+          source: hpResult.ok ? "security_check" : (gpHasData ? "security_check_limited" : "unavailable"),
           honeypot: hpResult.ok ? hpResult.honeypot : null,
           buyTax: hpResult.ok ? hpResult.buyTax : null,
           sellTax: hpResult.ok ? hpResult.sellTax : null,
@@ -1951,14 +1951,14 @@ export async function POST(req: Request) {
         holders: {
           status: holdersStatus,
           reason: holdersReason,
-          source: "goldrush",
+          source: "on_chain",
           holderCount: holderCount ?? null,
           top1, top5, top10, top20,
         },
         liquidity: {
           status: liquidityStatus,
           reason: liquidityReason,
-          source: "geckoterminal",
+          source: "dex_data",
           poolCount: matchingPools.length,
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
@@ -1968,7 +1968,7 @@ export async function POST(req: Request) {
         contractChecks: {
           status: contractChecksStatus,
           reason: contractChecksReason,
-          source: "alchemy_rpc",
+          source: "rpc",
           bytecodeStatus,
           ownerStatus,
           mintStatus,
