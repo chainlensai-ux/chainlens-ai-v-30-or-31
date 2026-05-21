@@ -309,10 +309,12 @@ interface DexFallbackResult {
 }
 
 const _dexFbCache = new Map<string, { data: DexFallbackResult | null; ts: number }>()
-const DEX_FB_TTL = 90_000
+const DEX_FB_TTL = 3 * 60_000
+const _chartCache = new Map<string, { data: { timeframe: '24h'|'48h'|'7d'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'unavailable'|'error'; reason?: string; fallbackUsed?: boolean }; ts: number }>()
+const CHART_CACHE_TTL = 3 * 60_000
 
-async function fetchDexScreenerFallback(tokenAddress: string): Promise<DexFallbackResult | null> {
-  const key = tokenAddress.toLowerCase()
+async function fetchDexScreenerFallback(chain: ChainKey, tokenAddress: string): Promise<DexFallbackResult | null> {
+  const key = `${chain}:${tokenAddress.toLowerCase()}`
   const hit = _dexFbCache.get(key)
   if (hit && Date.now() - hit.ts < DEX_FB_TTL) return hit.data
 
@@ -322,12 +324,13 @@ async function fetchDexScreenerFallback(tokenAddress: string): Promise<DexFallba
   }
 
   try {
+    const dexChain = chain === 'eth' ? 'ethereum' : 'base'
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 4000)
     let res: Response
     try {
       res = await fetch(
-        `https://api.dexscreener.com/token-pairs/v1/base/${tokenAddress}`,
+        `https://api.dexscreener.com/token-pairs/v1/${dexChain}/${tokenAddress}`,
         { signal: ctrl.signal, cache: 'no-store' }
       )
     } finally {
@@ -347,26 +350,26 @@ async function fetchDexScreenerFallback(tokenAddress: string): Promise<DexFallba
       : []
 
     const addrLower = tokenAddress.toLowerCase()
-    const basePairs = pairs.filter((p) => {
+    const scopedPairs = pairs.filter((p) => {
       const pair = p as Record<string, unknown>
       const bt = pair.baseToken as Record<string, unknown> | null
       const qt = pair.quoteToken as Record<string, unknown> | null
       return (
-        pair.chainId === 'base' &&
+        String(pair.chainId ?? '').toLowerCase() === dexChain &&
         (String(bt?.address ?? '').toLowerCase() === addrLower ||
          String(qt?.address ?? '').toLowerCase() === addrLower)
       )
     })
 
-    if (basePairs.length === 0) return miss(null)
+    if (scopedPairs.length === 0) return miss(null)
 
     // Highest liquidity.usd among Base pairs that include this token
-    const best = basePairs.reduce<Record<string, unknown>>((acc, p) => {
+    const best = scopedPairs.reduce<Record<string, unknown>>((acc, p) => {
       const pair = p as Record<string, unknown>
       const liqP = Number((pair.liquidity as Record<string, unknown> | null)?.usd ?? 0)
       const liqA = Number((acc.liquidity as Record<string, unknown> | null)?.usd ?? 0)
       return liqP > liqA ? pair : acc
-    }, basePairs[0] as Record<string, unknown>)
+    }, scopedPairs[0] as Record<string, unknown>)
 
     const liq = best.liquidity as Record<string, unknown> | null
     const vol = best.volume as Record<string, unknown> | null
@@ -1503,13 +1506,23 @@ export async function POST(req: Request) {
     // Secondary market read — fires once, server-side, when primary has no pool/price/liquidity.
     // In debug-only mode, forceDexFallback=true skips primary market values and calls the
     // fallback directly so it can be verified from production without altering normal scans.
-    const _primaryHasMarket = priceUsd != null || liquidityUsd != null
-    const _fallbackNeeded = !_primaryHasMarket || forceDexFallback
+    const _primaryHasPrice = priceUsd != null
+    const _primaryHasLiquidity = liquidityUsd != null
+    const _primaryHasVolume = resolvedVolume24hUsd != null
+    const _primaryHasPools = matchingPools.length > 0
+    const _primaryHasMarket = _primaryHasPrice || _primaryHasLiquidity || _primaryHasVolume || _primaryHasPools
+    const _fallbackReason = forceDexFallback ? 'forced_debug' : [
+      !_primaryHasPrice ? 'no_price' : null,
+      !_primaryHasLiquidity ? 'no_liquidity' : null,
+      !_primaryHasVolume ? 'no_volume' : null,
+      !_primaryHasPools ? 'no_pools' : null,
+    ].filter(Boolean).join('|')
+    const _fallbackNeeded = !_primaryHasPrice || !_primaryHasLiquidity || !_primaryHasVolume || !_primaryHasPools || forceDexFallback
     let _dexFb: DexFallbackResult | null = null
     let marketDataSource: 'primary' | 'fallback' | 'none' = (_primaryHasMarket && !forceDexFallback) ? 'primary' : 'none'
     let marketConfidence: 'high' | 'medium' | 'low' = (_primaryHasMarket && !forceDexFallback) ? 'high' : 'low'
     if (_fallbackNeeded) {
-      _dexFb = await fetchDexScreenerFallback(contract)
+      _dexFb = await fetchDexScreenerFallback(chainKey, contract)
       if (_dexFb != null) {
         marketDataSource = 'fallback'
         marketConfidence = 'medium'
@@ -1543,7 +1556,11 @@ export async function POST(req: Request) {
 
     const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
     const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
-    let priceChart: { timeframe: '24h'|'48h'|'7d'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'unavailable'|'error'; reason?: string; fallbackUsed?: boolean } = {
+    const chartCacheKey = `${chainKey}:${contract.toLowerCase()}`
+    const cachedChart = _chartCache.get(chartCacheKey)
+    let priceChart: { timeframe: '24h'|'48h'|'7d'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'unavailable'|'error'; reason?: string; fallbackUsed?: boolean } = (cachedChart && (Date.now() - cachedChart.ts < CHART_CACHE_TTL))
+      ? cachedChart.data
+      : {
       timeframe: '24h',
       points: [],
       sourceStatus: 'unavailable',
@@ -1576,7 +1593,7 @@ export async function POST(req: Request) {
     ]
     let chartFailureReason: string | null = maxAttempts > 0 ? null : 'primary_pool_missing'
     let chartSelectedPoolForChart: { address: string; name: string | null } | null = null
-    for (let i = 0; i < maxAttempts; i += 1) {
+    if (!(cachedChart && (Date.now() - cachedChart.ts < CHART_CACHE_TTL))) for (let i = 0; i < maxAttempts; i += 1) {
       const candidate = uniqueChartPools[i]
       chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
       for (let t = 0; t < Math.min(2, timeframeAttempts.length); t += 1) {
@@ -1604,15 +1621,16 @@ export async function POST(req: Request) {
       }
       if (priceChart.sourceStatus === 'ok') break
     }
-    if (priceChart.sourceStatus !== 'ok' && maxAttempts > 0) {
+    if (!(cachedChart && (Date.now() - cachedChart.ts < CHART_CACHE_TTL)) && priceChart.sourceStatus !== 'ok' && maxAttempts > 0) {
       priceChart = { timeframe: '24h', points: [], sourceStatus: 'unavailable', reason: chartFailureReason ?? 'ohlcv_not_exposed' }
     }
+    if (!(cachedChart && (Date.now() - cachedChart.ts < CHART_CACHE_TTL))) _chartCache.set(chartCacheKey, { data: priceChart, ts: Date.now() })
     const chartAttempted = chartAttemptedPools.length > 0
     const chartFallbackUsed = chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
     const chartStatus: 'ok' | 'no_candles' | 'fallback_snapshot_only' | 'unavailable' =
       priceChart.sourceStatus === 'ok' ? 'ok' :
-      marketDataSource === 'fallback' ? 'fallback_snapshot_only' :
+      (_dexFb != null && !noActivePools) ? 'fallback_snapshot_only' :
       noActivePools ? 'unavailable' :
       'no_candles'
     const chartDataSource: 'primary' | 'fallback' | 'none' =
@@ -2067,6 +2085,22 @@ export async function POST(req: Request) {
         fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
         requestDurationMs: Date.now() - _t0,
         checks: rpcCheckDiagnostics,
+        marketDiagnostics: {
+          chain: chainKey,
+          primaryAttempted: true,
+          primaryHasPrice: _primaryHasPrice,
+          primaryHasPools: _primaryHasPools,
+          primaryHasChart: priceChart.sourceStatus === 'ok' && !priceChart.fallbackUsed,
+          fallbackAttempted: _fallbackNeeded,
+          fallbackUsed: _dexFb != null,
+          fallbackReason: _fallbackReason || null,
+          fallbackHasPrice: _dexFb?.priceUsd != null,
+          fallbackHasPools: _dexFb?.pairAddress != null,
+          fallbackHasChart: Boolean(priceChart.sourceStatus === 'ok' && priceChart.fallbackUsed),
+          selectedPoolLiquidity: toNum(mainPoolAttr.reserve_in_usd) ?? _dexFb?.liquidityUsd ?? null,
+          chartPointCount: priceChart.points.length,
+          reason: priceChart.reason ?? null,
+        },
         dexFallbackTest: forceDexFallback ? {
           forced: true,
           primaryMarketAvailable: _primaryHasMarket,
