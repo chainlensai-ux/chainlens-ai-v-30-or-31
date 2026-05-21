@@ -98,6 +98,17 @@ type ClarkSessionMemory = {
   allowedRankScanUntil: number;
   allowedRankScanUsed: boolean;
   lastMomentumShownCount: number;
+  // CORTEX memory extensions
+  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+  currentPage: string | null;
+  selectedChain: string | null;
+  prevToken: {
+    address: string;
+    symbol: string | null;
+    name: string | null;
+    scanSummary: string | null;
+    ts: number;
+  } | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -108,7 +119,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0 };
+    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, conversationHistory: [], currentPage: null, selectedChain: null, prevToken: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -153,7 +164,21 @@ function getSessionKeySource(req: NextRequest, authenticated: boolean): "user" |
 }
 
 function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string | null, name: string | null, scanSummary: string | null) {
+  if (mem.lastToken && mem.lastToken.address !== address) mem.prevToken = mem.lastToken;
   mem.lastToken = { address, symbol, name, scanSummary, ts: Date.now() };
+}
+
+function appendMemHistory(mem: ClarkSessionMemory, role: 'user' | 'assistant', content: string) {
+  mem.conversationHistory.push({ role, content: content.slice(0, 600) });
+  if (mem.conversationHistory.length > 12) mem.conversationHistory = mem.conversationHistory.slice(-12);
+}
+
+function setMemPage(mem: ClarkSessionMemory, page: string | null | undefined) {
+  if (page) mem.currentPage = page;
+}
+
+function setMemChain(mem: ClarkSessionMemory, chain: string | null | undefined) {
+  if (chain) mem.selectedChain = chain;
 }
 
 function updateMemWallet(mem: ClarkSessionMemory, address: string, ensName: string | null, walletSummary: string | null) {
@@ -5699,7 +5724,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0 };
+  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, conversationHistory: [], currentPage: null, selectedChain: null, prevToken: null };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -6220,6 +6245,139 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: "I can check holder distribution, but I need a token symbol or contract first.",
       };
     }
+  }
+
+  // "why is it risky" — pull risk section from scan summary
+  const WHY_RISKY_RE = /\b(why\s+is\s+it\s+risky|what\s+makes\s+it\s+risky|why\s+is\s+(?:it|this|that)\s+(?:a\s+)?risk(?:y)?|explain\s+the\s+risk|why\s+(?:avoid|risky))\b/i;
+  if (WHY_RISKY_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
+    const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
+    const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"} (${sessionMem.lastToken.address.slice(0, 6)}...${sessionMem.lastToken.address.slice(-4)})` : "Last scanned token";
+    if (scanSrc) {
+      const riskMatch = scanSrc.match(/(?:Risks?|Risk\s+flags?|Red\s+flags?):\s*\n([\s\S]*?)(?:\n\n|\nNext\s+action|\nMissing|\nWatch|$)/i);
+      const riskLines = riskMatch ? riskMatch[1].trim() : null;
+      const avoidMatch = scanSrc.includes("AVOID") || scanSrc.includes("Avoid");
+      const watchMatch = scanSrc.includes("WATCH") || scanSrc.includes("Watch");
+      const verdict = avoidMatch ? "AVOID" : watchMatch ? "WATCH" : "SCAN DEEPER";
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+        analysis: [
+          `RISK READ — ${tokenLabel}`,
+          "",
+          `Verdict: ${verdict}`,
+          "",
+          riskLines ? `Risk signals:\n${riskLines}` : "No explicit risk lines found in last scan.",
+          "",
+          "These are the signals from the last CORTEX read. Missing checks (holder concentration, LP control, dev wallet) add uncertainty — absence of clean signals is itself a risk.",
+          "",
+          "Next: Run Token Scanner for deeper checks or ask 'show me the missing checks'.",
+        ].join("\n"),
+      };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "I need a token first. Scan one and then ask again." };
+  }
+
+  // "show me the missing checks" — extract from scan summary
+  const MISSING_CHECKS_RE = /\b(show\s+(?:me\s+)?(?:the\s+)?missing\s+checks?|what\s+(?:checks?\s+)?(?:are\s+)?missing|which\s+checks?\s+(?:are\s+)?missing|what\s+(?:data\s+)?(?:is\s+)?incomplete|incomplete\s+checks?)\b/i;
+  if (MISSING_CHECKS_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
+    const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
+    const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"}` : "Last scanned token";
+    if (scanSrc) {
+      const missingMatch = scanSrc.match(/(?:Missing\s+checks?|Missing\s+data|Not\s+verified):\s*\n([\s\S]*?)(?:\n\n|\nNext\s+action|\nWatch|$)/i);
+      const missingLines = missingMatch ? missingMatch[1].trim() : null;
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+        analysis: [
+          `MISSING CHECKS — ${tokenLabel}`,
+          "",
+          missingLines ?? "Missing checks not explicitly listed in last scan — run Token Scanner for full coverage.",
+          "",
+          "Why it matters: each missing check is a confidence gap. The fewer confirmed signals, the lower the conviction.",
+          "",
+          "To fill gaps: run Token Scanner → Liquidity Safety → Dev Wallet Detector.",
+        ].join("\n"),
+      };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "I need a token scan first. Scan a token and then ask which checks are missing." };
+  }
+
+  // "compare to last one" — compare last 2 tokens in session memory
+  const COMPARE_LAST_RE = /\b(compare\s+(?:this\s+)?to\s+(?:the\s+)?last\s+one|compare\s+(?:it\s+)?to\s+(?:the\s+)?previous|how\s+does\s+(?:it|this)\s+compare\s+to\s+(?:the\s+)?last|vs\.?\s+(?:the\s+)?last\s+(?:one|token|scan)|versus\s+(?:the\s+)?last)\b/i;
+  if (COMPARE_LAST_RE.test(prompt) && !extractAddress(prompt)) {
+    const current = sessionMem.lastToken;
+    const prev = sessionMem.prevToken;
+    if (current && prev) {
+      const fmtToken = (t: NonNullable<ClarkSessionMemory['lastToken']>) => {
+        const short = `${t.address.slice(0, 6)}...${t.address.slice(-4)}`;
+        const label = `${t.symbol ?? "?"}${t.name && t.name !== t.symbol ? ` (${t.name})` : ""} — ${short}`;
+        if (!t.scanSummary) return `${label}\nNo scan data available.`;
+        const verdict = t.scanSummary.match(/Verdict:\s*([^\n]+)/i)?.[1]?.trim() ?? "Unknown";
+        const confidence = t.scanSummary.match(/Confidence:\s*([^\n]+)/i)?.[1]?.trim() ?? "Unknown";
+        const liq = t.scanSummary.match(/Liquidity:\s*([^\n]+)/i)?.[1]?.trim() ?? "n/a";
+        const score = t.scanSummary.match(/Score:\s*([^\n]+)/i)?.[1]?.trim() ?? "n/a";
+        return [label, `  Verdict: ${verdict}`, `  Confidence: ${confidence}`, `  Liquidity: ${liq}`, `  Score: ${score}`].join("\n");
+      };
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+        analysis: [
+          "COMPARISON — Last 2 Scans",
+          "",
+          "Current:",
+          fmtToken(current),
+          "",
+          "Previous:",
+          fmtToken(prev),
+          "",
+          "Note: comparison uses last CORTEX scan data. Re-scan for fresh signals.",
+        ].join("\n"),
+      };
+    }
+    if (current && !prev) return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `Only one token in memory (${current.symbol ?? current.address.slice(0, 8)}). Scan a second token and then ask again.` };
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "I need at least two tokens scanned in this session to compare. Scan two tokens and then ask again." };
+  }
+
+  // "what should I watch next" — suggest from momentum list or last scan context
+  const WATCH_NEXT_RE = /\b(what\s+should\s+i\s+(?:watch|look\s+at)\s+next|what(?:'s|\s+is)\s+(?:worth\s+watching|next|the\s+next\s+(?:one|token|play))|what\s+do\s+i\s+(?:look\s+at|check)\s+next|next\s+token|next\s+watch)\b/i;
+  if (WATCH_NEXT_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
+    const memList = sessionMem.lastMomentumList;
+    const shownCount = sessionMem.lastMomentumShownCount ?? 0;
+    const nextCandidates = memList.slice(shownCount, shownCount + 3);
+    if (nextCandidates.length > 0) {
+      const rows = nextCandidates.map(m => {
+        const vol = m.volume24h != null ? `Vol $${m.volume24h >= 1e6 ? (m.volume24h / 1e6).toFixed(1) + "M" : m.volume24h >= 1e3 ? (m.volume24h / 1e3).toFixed(0) + "K" : m.volume24h.toFixed(0)}` : "Vol n/a";
+        const liq = m.liquidity != null ? `Liq $${m.liquidity >= 1e6 ? (m.liquidity / 1e6).toFixed(1) + "M" : m.liquidity >= 1e3 ? (m.liquidity / 1e3).toFixed(0) + "K" : m.liquidity.toFixed(0)}` : "Liq n/a";
+        const tag = m.tag ?? "watch";
+        return `${m.rank}. ${m.symbol} — ${vol} | ${liq} | ${tag}`;
+      });
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [],
+        analysis: [
+          "NEXT WATCH CANDIDATES",
+          "",
+          "From the current CORTEX momentum list:",
+          "",
+          ...rows,
+          "",
+          `Say "scan ${nextCandidates[0]?.rank ?? "1"}" for a full CORTEX read on any of these.`,
+        ].join("\n"),
+      };
+    }
+    if (sessionMem.lastToken) {
+      const t = sessionMem.lastToken;
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+        analysis: [
+          `NEXT STEPS — ${t.symbol ?? "Last token"}`,
+          "",
+          "After this scan, the highest-value follow-ups are:",
+          "1. Liquidity Safety — confirm LP control and pool depth",
+          "2. Dev Wallet Detector — check deployer history and cluster",
+          "3. Whale Alerts — any large movement tied to this token",
+          "",
+          "Say 'liquidity check this' or 'who deployed this' to continue.",
+        ].join("\n"),
+      };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "casual", toolsUsed: [], analysis: "Ask 'what's pumping on Base?' first to load the momentum list, then I can suggest what to watch next." };
   }
 
   // Casual chat — short-circuit before plan execution
@@ -7074,9 +7232,29 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis: "I can help with a token, wallet, liquidity, dev wallet, whale flow, pump alerts, or Base movers. I can also explain any crypto concept. Try 'scan BRETT', 'what\\'s pumping on Base?', or ask 'what is FDV?'.",
     };
   }
-  const memoryPrompt = historyContext
-    ? `${prompt}\n\nRecent conversation context (use this for follow-ups like "it", "that", "why", "what about holders/liquidity"; ask one concise clarifying question only if reference is ambiguous):\n${historyContext}`
-    : prompt;
+  // Build page-aware prefix for Anthropic context
+  const pageCtxLines: string[] = [];
+  const activePage = sessionMem.currentPage ?? body.uiModeHint ?? null;
+  if (activePage) pageCtxLines.push(`User is currently on: ${activePage}`);
+  if (sessionMem.selectedChain) pageCtxLines.push(`Selected chain: ${sessionMem.selectedChain}`);
+  if (sessionMem.lastToken) {
+    const t = sessionMem.lastToken;
+    pageCtxLines.push(`Last scanned token: ${t.symbol ?? "?"} (${t.address.slice(0, 8)}...) on chain ${sessionMem.selectedChain ?? 'base'}`);
+  }
+  if (sessionMem.lastWallet) pageCtxLines.push(`Last scanned wallet: ${sessionMem.lastWallet.address.slice(0, 8)}...`);
+
+  // Prefer server-stored conversation history when client doesn't send history
+  const serverHistory = sessionMem.conversationHistory.slice(-8);
+  const effectiveHistory = (body.history && body.history.length > 0)
+    ? historyContext
+    : serverHistory.length > 0
+      ? serverHistory.map(m => `${m.role === 'user' ? 'User' : 'Clark'}: ${m.content}`).join("\n")
+      : "";
+
+  const pageCtxStr = pageCtxLines.length > 0 ? `\n\nContext:\n${pageCtxLines.join("\n")}` : "";
+  const memoryPrompt = effectiveHistory
+    ? `${prompt}${pageCtxStr}\n\nRecent conversation context (use this for follow-ups like "it", "that", "why", "what about holders/liquidity"; ask one concise clarifying question only if reference is ambiguous):\n${effectiveHistory}`
+    : `${prompt}${pageCtxStr}`;
   const analysis = await callAnthropic(memoryPrompt, context);
   return { feature: "clark-ai", chain, mode: replyMode, analysis, intent: plan.intent, toolsUsed };
 }
@@ -7119,7 +7297,12 @@ export async function POST(req: NextRequest) {
   }
   if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
+  // Sync page and chain into session memory
+  setMemPage(sessionMem, body.uiModeHint);
+  setMemChain(sessionMem, body.chain);
   const earlyPrompt = (body.prompt ?? '').trim()
+  // Store incoming user message into server-side conversation history (before processing)
+  if (body.feature === 'clark-ai' && earlyPrompt) appendMemHistory(sessionMem, 'user', earlyPrompt);
   const isMoreFollowup = earlyPrompt ? (MORE_CONTEXT_RE.test(earlyPrompt) && (sessionMem.lastMomentumList.length > 0 || Boolean(sessionMem.lastToken))) : false
   const earlyRank = earlyPrompt ? parseRankFollowup(earlyPrompt) : null
   const rankFromMemory = Boolean(earlyRank && sessionMem.lastMomentumList.length > 0)
@@ -7150,15 +7333,18 @@ export async function POST(req: NextRequest) {
     const origin = req.nextUrl.origin;
     const moreResult = await handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem);
     const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(moreResult, body) } as Record<string, unknown>
-    if (debugMemory) normalized.debugMemory = {
-      memoryKeySource,
-      hasLastMomentumList: sessionMem.lastMomentumList.length > 0,
-      lastMomentumListLength: sessionMem.lastMomentumList.length,
-      hasLastToken: Boolean(sessionMem.lastToken),
-      lastActionableIntent: sessionMem.lastActionableIntent,
-      rankParsed: earlyRank,
-      allowedRankScanActive: (!sessionMem.allowedRankScanUsed && Date.now() < sessionMem.allowedRankScanUntil),
-      cooldownBucketUsed: 'lowcost',
+    if (debugMemory) normalized._debug = {
+      memory: {
+        messageCount: sessionMem.conversationHistory.length,
+        entitiesRemembered: [sessionMem.lastToken ? `token:${sessionMem.lastToken.symbol ?? '?'}` : null, `movers:${sessionMem.lastMomentumList.length}`].filter(Boolean),
+        contextChars: sessionMem.conversationHistory.map(m => m.content).join('').length,
+        usedRecentScan: Boolean(sessionMem.lastToken?.scanSummary),
+        followupResolved: true,
+        skippedRawPayloads: true,
+        currentPage: sessionMem.currentPage,
+        selectedChain: sessionMem.selectedChain,
+        cooldownBucketUsed: 'lowcost',
+      }
     }
     normalized.quotaConsumed = false
     return NextResponse.json(normalized, { status: 200 })
@@ -7272,15 +7458,37 @@ export async function POST(req: NextRequest) {
     for (const k of ["reply", "response", "analysis", "verdict"] as const) {
       if (typeof normData[k] === "string") normData[k] = cleanClarkText(normData[k] as string)
     }
-    if (debugMemory) normalized.debugMemory = {
-      memoryKeySource,
-      hasLastMomentumList: sessionMem.lastMomentumList.length > 0,
-      lastMomentumListLength: sessionMem.lastMomentumList.length,
-      hasLastToken: Boolean(sessionMem.lastToken),
-      lastActionableIntent: sessionMem.lastActionableIntent,
-      rankParsed: earlyRank,
-      allowedRankScanActive: (!sessionMem.allowedRankScanUsed && Date.now() < sessionMem.allowedRankScanUntil),
-      cooldownBucketUsed: (promptIsLowCost || rankAllowanceActive) ? 'lowcost' : 'tool',
+    // Store assistant reply into conversation history
+    if (body.feature === 'clark-ai') {
+      const normData2 = normalized.data as Record<string, unknown>
+      const replyText = typeof normData2.reply === 'string' ? normData2.reply : typeof normData2.analysis === 'string' ? normData2.analysis : null
+      if (replyText) appendMemHistory(sessionMem, 'assistant', replyText)
+    }
+    const entitiesRemembered = [
+      sessionMem.lastToken ? `token:${sessionMem.lastToken.symbol ?? sessionMem.lastToken.address.slice(0, 8)}` : null,
+      sessionMem.lastWallet ? `wallet:${sessionMem.lastWallet.address.slice(0, 8)}` : null,
+      sessionMem.lastMomentumList.length > 0 ? `movers:${sessionMem.lastMomentumList.length}` : null,
+      sessionMem.currentPage ? `page:${sessionMem.currentPage}` : null,
+      sessionMem.selectedChain ? `chain:${sessionMem.selectedChain}` : null,
+    ].filter(Boolean)
+    const contextChars = (sessionMem.conversationHistory.map(m => m.content).join('') + (sessionMem.lastToken?.scanSummary ?? '')).length
+    if (debugMemory) normalized._debug = {
+      memory: {
+        messageCount: sessionMem.conversationHistory.length,
+        entitiesRemembered,
+        contextChars,
+        usedRecentScan: Boolean(sessionMem.lastToken?.scanSummary),
+        followupResolved: Boolean(sessionMem.lastToken || sessionMem.lastWallet),
+        skippedRawPayloads: true,
+        currentPage: sessionMem.currentPage,
+        selectedChain: sessionMem.selectedChain,
+        hasLastToken: Boolean(sessionMem.lastToken),
+        hasLastWallet: Boolean(sessionMem.lastWallet),
+        hasPrevToken: Boolean(sessionMem.prevToken),
+        lastActionableIntent: sessionMem.lastActionableIntent,
+        memoryKeySource,
+        cooldownBucketUsed: (promptIsLowCost || rankAllowanceActive) ? 'lowcost' : 'tool',
+      }
     }
     const resultAnalysis = typeof (result as Record<string, unknown>)?.analysis === 'string' ? (result as Record<string, unknown>).analysis as string : ''
     const quotaConsumed = !isValidationOnlyAnalysis(resultAnalysis)
