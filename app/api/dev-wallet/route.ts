@@ -10,9 +10,27 @@ function resolveBaseRpcUrl(): string | null {
   return null
 }
 
-const ALCHEMY_BASE_URL = resolveBaseRpcUrl()
+
+type SupportedChain = 'base' | 'eth'
+
+type ChainConfig = { chain: SupportedChain; chainLabel: 'Base' | 'Ethereum'; chainId: '8453' | '1'; covalentChain: 'base-mainnet' | 'eth-mainnet'; explorerHost: string; rpcUrl: string | null }
+
+function resolveEthRpcUrl(): string | null {
+  const explicit = process.env.ALCHEMY_ETH_RPC_URL || process.env.ETH_RPC_URL
+  if (explicit && /^https?:\/\//.test(explicit)) return explicit
+  const key = process.env.ALCHEMY_ETHEREUM_KEY || process.env.ALCHEMY_ETH_KEY || process.env.ALCHEMY_API_KEY
+  if (key) return `https://eth-mainnet.g.alchemy.com/v2/${key}`
+  return null
+}
+
+function getChainConfig(chain: SupportedChain): ChainConfig {
+  return chain === 'eth'
+    ? { chain: 'eth', chainLabel: 'Ethereum', chainId: '1', covalentChain: 'eth-mainnet', explorerHost: 'etherscan.io', rpcUrl: resolveEthRpcUrl() }
+    : { chain: 'base', chainLabel: 'Base', chainId: '8453', covalentChain: 'base-mainnet', explorerHost: 'basescan.org', rpcUrl: resolveBaseRpcUrl() }
+}
+let activeChainConfig: ChainConfig = getChainConfig('base')
 const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
-const CREATOR_LOOKUP_CHAIN_ID = '8453'
+const CREATOR_LOOKUP_CHAIN_ID = () => activeChainConfig.chainId
 const CREATOR_LOOKUP_TIMEOUT_MS = 3000
 const CREATOR_LOOKUP_RPS_LIMIT = 2
 const CREATOR_LOOKUP_WINDOW_MS = 1000
@@ -210,8 +228,8 @@ type CovalentTxItem = {
 }
 
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
-  if (!ALCHEMY_BASE_URL) throw new Error('rpc_not_configured')
-  const res = await fetch(ALCHEMY_BASE_URL, {
+  if (!activeChainConfig.rpcUrl) throw new Error('rpc_not_configured')
+  const res = await fetch(activeChainConfig.rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
@@ -298,7 +316,7 @@ async function discoverOrigin(contract: string): Promise<{
     diag.contract_transaction_history.attempted = true
     try {
       const txRes = await fetch(
-        `${COVALENT_BASE_URL}/base-mainnet/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
+        `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
         { cache: 'no-store', signal: AbortSignal.timeout(10000) }
       )
       diag.contract_transaction_history.httpStatus = txRes.status
@@ -543,7 +561,7 @@ async function getSupplyData(
 
   try {
     const res = await fetch(
-      `${COVALENT_BASE_URL}/base-mainnet/tokens/${contract}/token_holders_v2/?page-size=50&key=${apiKey}`,
+      `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/tokens/${contract}/token_holders_v2/?page-size=50&key=${apiKey}`,
       { cache: 'no-store', signal: AbortSignal.timeout(9000) }
     )
     if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
@@ -605,7 +623,7 @@ async function getPreviousActivity(deployer: string | null, excludeContract?: st
   if (covalentKey) {
     try {
       const res = await fetch(
-        `${COVALENT_BASE_URL}/base-mainnet/address/${deployer}/transactions_v2/?key=${covalentKey}&page-size=100&block-signed-at-asc=false&no-logs=true`,
+        `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/address/${deployer}/transactions_v2/?key=${covalentKey}&page-size=100&block-signed-at-asc=false&no-logs=true`,
         { cache: 'no-store', signal: AbortSignal.timeout(10000) }
       )
       if (res.ok) {
@@ -1035,7 +1053,7 @@ async function getClarkVerdict(origin: string, data: {
 
   const prompt =
     `MODE: dev-wallet\n` +
-    `Analyze this Base token scan and return JSON only.\n` +
+    `Analyze this ${activeChainConfig.chainLabel} token scan and return JSON only.\n` +
     `Use only the fields below. Keep response short and professional.\n` +
     (data.deployerStatus === 'confirmed'
       ? `Creator wallet is confirmed from on-chain records. State this clearly.\n`
@@ -1087,7 +1105,8 @@ async function getClarkVerdict(origin: string, data: {
       body: JSON.stringify({
         feature: 'clark-ai',
         mode: 'dev-wallet',
-        chain: 'base',
+        chain: activeChainConfig.chain,
+      chainLabel: activeChainConfig.chainLabel,
         message: prompt,
         prompt,
         context: {
@@ -1315,8 +1334,11 @@ export async function POST(req: Request) {
     else if (now - rr.lastAt < DEV_COOLDOWN_MS[plan]) return NextResponse.json({ error: 'Cooldown active. Please retry shortly.', rateLimited: true }, { status: 429 })
     else if (rr.count >= DEV_RATE_LIMIT[plan]) return NextResponse.json({ error: 'Rate limit reached. Try again shortly.', rateLimited: true }, { status: 429 })
     else { rr.count += 1; rr.lastAt = now }
-    const body = await req.json() as { contractAddress?: string }
+    const body = await req.json() as { contractAddress?: string; chain?: string }
     const { contractAddress } = body
+    const normalizedChain = body.chain === 'eth' ? 'eth' : body.chain === 'base' || body.chain == null ? 'base' : null
+    if (!normalizedChain) return NextResponse.json({ error: 'Unsupported chain. Use base or eth.' }, { status: 400 })
+    activeChainConfig = getChainConfig(normalizedChain)
 
     if (!contractAddress || !/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
       return NextResponse.json(
@@ -1326,7 +1348,8 @@ export async function POST(req: Request) {
     }
 
     const normalizedAddress = contractAddress.toLowerCase()
-    const cached = devCache.get(normalizedAddress)
+    const cacheKey = `${activeChainConfig.chain}:${normalizedAddress}`
+    const cached = devCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) {
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload
       if (debug && cp && typeof cp === 'object') cp._debug = { routeName: '/api/dev-wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
@@ -1335,7 +1358,7 @@ export async function POST(req: Request) {
 
     let bytecode: string | null = null
     let rpcStatus: 'ok' | 'partial' | 'unavailable' = 'ok'
-    const providerUsed = ALCHEMY_BASE_URL ? 'alchemy' : 'none'
+    const providerUsed = activeChainConfig.rpcUrl ? 'configured' : 'none'
     try {
       bytecode = await alchemyRpc('eth_getCode', [normalizedAddress, 'latest']) as string
     } catch {
@@ -1344,7 +1367,7 @@ export async function POST(req: Request) {
 
     if (bytecode === '0x') {
       return NextResponse.json(
-        { error: 'No contract found at this address on Base mainnet' },
+        { error: `No contract found at this address on ${activeChainConfig.chainLabel} mainnet` },
         { status: 400 }
       )
     }
@@ -1514,7 +1537,8 @@ export async function POST(req: Request) {
 
     const responsePayload = {
       contractAddress: normalizedAddress,
-      chain: 'base',
+      chain: activeChainConfig.chain,
+      chainLabel: activeChainConfig.chainLabel,
       deployerAddress,
       deployerConfidence,
       methodUsed,
@@ -1568,7 +1592,7 @@ export async function POST(req: Request) {
       ...(debugMode ? {
         _diagnostics: {
           modules: moduleDiags,
-          rpcConfigured: Boolean(ALCHEMY_BASE_URL),
+          rpcConfigured: Boolean(activeChainConfig.rpcUrl),
           rpcStatus,
           providerUsed,
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
@@ -1624,17 +1648,17 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._debug = {
         routeName: '/api/dev-wallet',
         cacheHit: false,
-        alchemyConfigured: Boolean(ALCHEMY_BASE_URL),
+        alchemyConfigured: Boolean(activeChainConfig.rpcUrl),
         alchemyCallsAttempted: 1,
         alchemyCallsSucceeded: rpcStatus === 'ok' ? 1 : 0,
         alchemyCallsFailed: rpcStatus === 'unavailable' ? 1 : 0,
         rpcMethodsUsed: ['eth_getCode', 'alchemy_getAssetTransfers', 'eth_getTransactionReceipt'],
-        skippedReason: ALCHEMY_BASE_URL ? null : 'alchemy_not_configured',
+        skippedReason: activeChainConfig.rpcUrl ? null : 'rpc_not_configured',
         fallbackUsed: tokenEvidenceResult.ok === false || linkedWalletsCheckStatus !== 'ok',
         requestDurationMs: Date.now() - startedAt,
       }
     }
-    devCache.set(normalizedAddress, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
+    devCache.set(cacheKey, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
     return NextResponse.json(responsePayload)
   } catch (err) {
     console.error('[dev-wallet] fatal:', err)

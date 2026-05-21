@@ -325,6 +325,10 @@ export default function DevWalletPage() {
   const [showAllProj,  setShowAllProj]  = useState(false)
   const [copied,       setCopied]       = useState(false)
   const [activeTab,    setActiveTab]    = useState<DevMapSection>('dev-map')
+  const [chain,        setChain]        = useState<'base' | 'eth'>('base')
+  const chainLabel = chain === 'eth' ? 'Ethereum' : 'Base'
+  const chainBadge = chain === 'eth' ? 'ETH' : 'BASE'
+  const explorerBase = chain === 'eth' ? 'https://etherscan.io' : 'https://basescan.org'
 
   async function handleScan() {
     const q = input.trim()
@@ -346,7 +350,7 @@ export default function DevWalletPage() {
       const res = await fetch('/api/dev-wallet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ contractAddress: q }),
+        body: JSON.stringify({ contractAddress: q, chain }),
       })
       const json = await res.json() as DevWalletResult & { error?: string }
       if (!res.ok || json.error) {
@@ -365,7 +369,7 @@ export default function DevWalletPage() {
     if (!result) return '/terminal/clark-ai'
     const prompt = [
       '[mode: dev-wallet]',
-      `CORTEX Dev Control follow-up for ${result.contractAddress}`,
+      `CORTEX Dev Control follow-up for ${result.contractAddress} on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}`,
       `Likely deployer: ${result.deployerAddress ?? 'unknown'}`,
       `Confidence: ${result.deployerConfidence}`,
       `Linked wallets: ${result.linkedWallets.length}`,
@@ -423,18 +427,27 @@ export default function DevWalletPage() {
               CORTEX Dev Control Map
             </h1>
             <p style={{ fontSize:'13px', color:'#64748b', margin:0 }}>
-              Trace the deployer, map linked wallets, and assess supply control risk for any Base token.
+              {`Find deployer and linked wallets for ${chainLabel} tokens.`}
             </p>
           </div>
 
           {/* Input */}
           <div className="devmap-input-row" style={{ display:'flex', gap:'10px', maxWidth:'760px', marginBottom:'28px' }}>
+            <select
+              value={chain}
+              onChange={e => setChain((e.target.value === 'eth' ? 'eth' : 'base'))}
+              disabled={loading}
+              style={{ background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.10)', borderRadius:'12px', padding:'0 12px', color:'#e2e8f0', fontSize:'14px', fontFamily:'var(--font-plex-mono)' }}
+            >
+              <option value="base">Base</option>
+              <option value="eth">Ethereum</option>
+            </select>
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="0x… token contract address on Base"
+              placeholder={chain === 'eth' ? 'Paste Ethereum token contract' : 'Paste Base token contract'}
               style={{ flex:1, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.10)', borderRadius:'12px', padding:'14px 16px', color:'#e2e8f0', fontSize:'16px', outline:'none', fontFamily:'var(--font-plex-mono)', transition:'border-color 0.15s, box-shadow 0.15s' }}
               onFocus={e => { e.currentTarget.style.borderColor='rgba(139,92,246,0.55)'; e.currentTarget.style.boxShadow='0 0 0 3px rgba(139,92,246,0.15)' }}
               onBlur={e  => { e.currentTarget.style.borderColor='rgba(255,255,255,0.10)'; e.currentTarget.style.boxShadow='none' }}
@@ -465,7 +478,7 @@ export default function DevWalletPage() {
           {!loading && !result && !error && (
             <div style={{ textAlign:'center', padding:'60px 20px', color:'#3a5268', fontFamily:'var(--font-plex-mono)' }}>
               <div style={{ fontSize:'32px', opacity:0.3, marginBottom:'12px' }}>⬡</div>
-              <p style={{ fontSize:'13px', margin:0 }}>Enter a Base token contract to map deployer wallet and dev control signals</p>
+              <p style={{ fontSize:'13px', margin:0 }}>{`Enter a ${chainLabel} token contract to map deployer wallet and dev control signals`}</p>
             </div>
           )}
 
@@ -483,7 +496,7 @@ export default function DevWalletPage() {
                     {result.tokenEvidence?.symbol && <span style={{ marginLeft:'10px', fontSize:'13px', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>{result.tokenEvidence.symbol}</span>}
                   </h2>
                   <p style={{ fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', margin:0 }}>
-                    {shortAddr(result.contractAddress, 10, 8)} · BASE
+                    {shortAddr(result.contractAddress, 10, 8)} · {result.chain === 'eth' ? 'ETH' : 'BASE'}
                     {result.tokenEvidence?.liquidity != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Liq {fmtUsd(result.tokenEvidence.liquidity)}</span>}
                     {result.tokenEvidence?.volume24h != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Vol 24h {fmtUsd(result.tokenEvidence.volume24h)}</span>}
                     {result.tokenEvidence?.holderCount != null && <span style={{ marginLeft:'12px', color:'#475569' }}>{result.tokenEvidence.holderCount.toLocaleString()} holders</span>}
@@ -655,7 +668,7 @@ export default function DevWalletPage() {
                               : <span style={{ color:'#64748b' }}>Not confirmed from current checks</span>
                         } />
                         <DataRow label="Detection" value={formatMethod(result.methodUsed)} />
-                        <DataRow label="Chain" value="Base" />
+                        <DataRow label="Chain" value={result.chain === 'eth' ? 'Ethereum' : 'Base'} />
                         <DataRow label="Scanned" value={fmtDate(result.fetchedAt)} />
                         {result.deployerAddress && (
                           <div style={{ marginTop:'14px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
@@ -665,7 +678,7 @@ export default function DevWalletPage() {
                             >
                               {copied ? 'Copied' : 'Copy'}
                             </button>
-                            <a href={`https://basescan.org/address/${result.deployerAddress}`} target="_blank" rel="noopener noreferrer" style={{ display:'inline-flex', alignItems:'center', gap:'5px', padding:'6px 12px', borderRadius:'8px', textDecoration:'none', fontSize:'11px', fontWeight:600, color:'#a78bfa', background:'rgba(139,92,246,0.08)', border:'1px solid rgba(139,92,246,0.20)', fontFamily:'var(--font-plex-mono)' }}>
+                            <a href={`${explorerBase}/address/${result.deployerAddress}`} target="_blank" rel="noopener noreferrer" style={{ display:'inline-flex', alignItems:'center', gap:'5px', padding:'6px 12px', borderRadius:'8px', textDecoration:'none', fontSize:'11px', fontWeight:600, color:'#a78bfa', background:'rgba(139,92,246,0.08)', border:'1px solid rgba(139,92,246,0.20)', fontFamily:'var(--font-plex-mono)' }}>
                               ↗ Explorer
                             </a>
                             <button
@@ -716,7 +729,7 @@ export default function DevWalletPage() {
                                   <span style={{ color:'#e2e8f0', fontWeight:600 }}>{fmtAmount(w.amountReceived, w.asset)}</span>
                                   <span style={{ color:'#64748b', fontSize:'10px' }}>{w.txHash ? shortHash(w.txHash) : '—'}</span>
                                   {w.txHash
-                                    ? <a href={`https://basescan.org/tx/${w.txHash}`} target="_blank" rel="noopener noreferrer" style={{ color:'#3a5268', textDecoration:'none', fontSize:'10px' }}>↗</a>
+                                    ? <a href={`${explorerBase}/tx/${w.txHash}`} target="_blank" rel="noopener noreferrer" style={{ color:'#3a5268', textDecoration:'none', fontSize:'10px' }}>↗</a>
                                     : <span />
                                   }
                                 </div>
