@@ -1154,6 +1154,7 @@ export default function TerminalTokenScanner() {
   const isFullAccess = true
 
   const [input, setInput]       = useState('')
+  const [chain, setChain]       = useState<'base' | 'eth'>('base')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
@@ -1194,13 +1195,13 @@ export default function TerminalTokenScanner() {
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-        body: JSON.stringify({ contract: q, ...(debugHolder ? { debugHolder: true } : {}) }),
+        body: JSON.stringify({ contract: q, chain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       const json = await res.json()
       if (!res.ok || json.error) {
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
-        else if (json?.status === 'ambiguous') setError('Multiple Base tokens match this. Paste the contract address or choose one.')
-        else setError("Couldn't resolve that Base token. Paste the contract address or try a verified symbol.")
+        else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
+        else setError("Couldn't resolve that token on the selected chain. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
@@ -1314,17 +1315,25 @@ export default function TerminalTokenScanner() {
               }} />
               TOKEN SCANNER
             </div>
-            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : 'Full scan access.'}</p>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : 'Full scan access.'}</p>
           </div>
 
           {/* Input row */}
           <div className="token-input-row glass-card" style={{ display: 'flex', gap: '10px', maxWidth: '820px', marginBottom: '24px', padding: '10px' }}>
+            <select
+              value={chain}
+              onChange={(e) => setChain(e.target.value === 'eth' ? 'eth' : 'base')}
+              style={{ borderRadius: '10px', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.04)', color: '#e2e8f0', padding: '0 12px', fontFamily: 'var(--font-plex-mono)' }}
+            >
+              <option value="base">Base</option>
+              <option value="eth">Ethereum</option>
+            </select>
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="Paste Base contract, symbol, or token name"
+              placeholder="Paste contract, symbol, or token name"
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
