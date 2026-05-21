@@ -5,9 +5,38 @@ import { supabase } from '@/lib/supabaseClient'
 import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
 
 export { canAccessFeature }
-const PLAN_CACHE_KEY = 'chainlens_cached_plan'
-const PLAN_CACHE_MAX_AGE_MS = 1000 * 60 * 30
-type CachedPlan = { plan: UserPlan; updatedAt: number; userId?: string | null; email?: string | null }
+export const PLAN_CACHE_KEY = 'chainlens_cached_plan'
+export const PLAN_CACHE_MAX_AGE_MS = 1000 * 60 * 30
+type CachedPlan = { plan: UserPlan; updatedAt: number; userId?: string | null; emailHash?: string | null; v: 2 }
+export type PlanStatus = 'loading' | 'free' | 'pro' | 'elite' | 'unknown'
+
+function hashEmail(email?: string | null): string | null {
+  if (!email) return null
+  let h = 0
+  const normalized = email.trim().toLowerCase()
+  for (let i = 0; i < normalized.length; i++) h = (Math.imul(31, h) + normalized.charCodeAt(i)) | 0
+  return `e${Math.abs(h)}`
+}
+
+export function readCachedPlan(userId?: string | null, email?: string | null): UserPlan | null {
+  try {
+    const raw = window.localStorage.getItem(PLAN_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as CachedPlan
+    if (!parsed || (parsed.plan !== 'free' && parsed.plan !== 'pro' && parsed.plan !== 'elite')) return null
+    if (Date.now() - Number(parsed.updatedAt ?? 0) > PLAN_CACHE_MAX_AGE_MS) return null
+    if (userId && parsed.userId && parsed.userId !== userId) return null
+    const emailHashed = hashEmail(email)
+    if (emailHashed && parsed.emailHash && parsed.emailHash !== emailHashed) return null
+    return parsed.plan
+  } catch { return null }
+}
+
+export function writeCachedPlan(nextPlan: UserPlan, userId?: string | null, email?: string | null) {
+  try { window.localStorage.setItem(PLAN_CACHE_KEY, JSON.stringify({ plan: nextPlan, updatedAt: Date.now(), userId: userId ?? null, emailHash: hashEmail(email), v: 2 } satisfies CachedPlan)) } catch {}
+}
+
+export function clearPlanCache() { try { window.localStorage.removeItem(PLAN_CACHE_KEY) } catch {} }
 
 function resolvePlan(json: Record<string, unknown>): UserPlan {
   const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
@@ -43,26 +72,11 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
   const [error, setError] = useState<string | null>(null)
   const [betaEliteActive, setBetaEliteActive] = useState(false)
   useEffect(() => {
-    function readCachedPlan(userId?: string | null, email?: string | null): UserPlan | null {
-      try {
-        const raw = window.localStorage.getItem(PLAN_CACHE_KEY)
-        if (!raw) return null
-        const parsed = JSON.parse(raw) as CachedPlan
-        if (!parsed || (parsed.plan !== 'free' && parsed.plan !== 'pro' && parsed.plan !== 'elite')) return null
-        if (Date.now() - Number(parsed.updatedAt ?? 0) > PLAN_CACHE_MAX_AGE_MS) return null
-        if ((userId && parsed.userId && parsed.userId !== userId) || (email && parsed.email && parsed.email !== email)) return null
-        return parsed.plan
-      } catch { return null }
-    }
-    function writeCachedPlan(nextPlan: UserPlan, userId?: string | null, email?: string | null) {
-      try { window.localStorage.setItem(PLAN_CACHE_KEY, JSON.stringify({ plan: nextPlan, updatedAt: Date.now(), userId: userId ?? null, email: email ?? null } satisfies CachedPlan)) } catch {}
-    }
-    function clearCache() { try { window.localStorage.removeItem(PLAN_CACHE_KEY) } catch {} }
     async function load(session: { access_token?: string; user?: { id?: string; email?: string | null } } | null | undefined) {
       const token = session?.access_token
       const userId = session?.user?.id
       const email = session?.user?.email ?? null
-      if (!token) { clearCache(); setPlan('free'); setBetaEliteActive(false); setError(null); setLoading(false); setResolved(true); return }
+      if (!token) { clearPlanCache(); setPlan('free'); setBetaEliteActive(false); setError(null); setLoading(false); setResolved(true); return }
       const cached = readCachedPlan(userId, email)
       if (cached) setPlan(cached)
       try {
