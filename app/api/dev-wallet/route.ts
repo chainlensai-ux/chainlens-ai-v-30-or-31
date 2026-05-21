@@ -10,9 +10,27 @@ function resolveBaseRpcUrl(): string | null {
   return null
 }
 
-const ALCHEMY_BASE_URL = resolveBaseRpcUrl()
+
+type SupportedChain = 'base' | 'eth'
+
+type ChainConfig = { chain: SupportedChain; chainLabel: 'Base' | 'Ethereum'; chainId: '8453' | '1'; covalentChain: 'base-mainnet' | 'eth-mainnet'; explorerHost: string; rpcUrl: string | null }
+
+function resolveEthRpcUrl(): string | null {
+  const explicit = process.env.ALCHEMY_ETH_RPC_URL || process.env.ETH_RPC_URL
+  if (explicit && /^https?:\/\//.test(explicit)) return explicit
+  const key = process.env.ALCHEMY_ETHEREUM_KEY || process.env.ALCHEMY_ETH_KEY || process.env.ALCHEMY_API_KEY
+  if (key) return `https://eth-mainnet.g.alchemy.com/v2/${key}`
+  return null
+}
+
+function getChainConfig(chain: SupportedChain): ChainConfig {
+  return chain === 'eth'
+    ? { chain: 'eth', chainLabel: 'Ethereum', chainId: '1', covalentChain: 'eth-mainnet', explorerHost: 'etherscan.io', rpcUrl: resolveEthRpcUrl() }
+    : { chain: 'base', chainLabel: 'Base', chainId: '8453', covalentChain: 'base-mainnet', explorerHost: 'basescan.org', rpcUrl: resolveBaseRpcUrl() }
+}
+let activeChainConfig: ChainConfig = getChainConfig('base')
 const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
-const CREATOR_LOOKUP_CHAIN_ID = '8453'
+const CREATOR_LOOKUP_CHAIN_ID = () => activeChainConfig.chainId
 const CREATOR_LOOKUP_TIMEOUT_MS = 3000
 const CREATOR_LOOKUP_RPS_LIMIT = 2
 const CREATOR_LOOKUP_WINDOW_MS = 1000
@@ -20,7 +38,9 @@ const CREATOR_CACHE_SUCCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const CREATOR_CACHE_NOT_FOUND_TTL_MS = 12 * 60 * 60 * 1000
 const CREATOR_CACHE_ERROR_TTL_MS = 10 * 60 * 1000
 const DEV_CACHE_TTL_MS = 3 * 60 * 1000
+const META_CACHE_TTL_MS = 60 * 60 * 1000
 const devCache = new Map<string, { exp: number; payload: unknown }>()
+const metaCache = new Map<string, { exp: number; data: { name: string | null; symbol: string | null; decimals: number | null } }>()
 const devRate = new Map<string, { count: number; resetAt: number; lastAt: number }>()
 const creatorLookupCache = new Map<string, {
   exp: number
@@ -210,8 +230,8 @@ type CovalentTxItem = {
 }
 
 async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
-  if (!ALCHEMY_BASE_URL) throw new Error('rpc_not_configured')
-  const res = await fetch(ALCHEMY_BASE_URL, {
+  if (!activeChainConfig.rpcUrl) throw new Error('rpc_not_configured')
+  const res = await fetch(activeChainConfig.rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
@@ -222,6 +242,43 @@ async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
   const json = await res.json() as { result?: unknown; error?: { message: string } }
   if (json.error) throw new Error(`Alchemy: ${json.error.message}`)
   return json.result
+}
+function decodeHexStringResult(hex: string): string | null {
+  if (!hex || hex === '0x') return null
+  try {
+    const clean = hex.slice(2)
+    if (clean.length >= 128) {
+      const len = parseInt(clean.slice(64, 128), 16)
+      const data = clean.slice(128, 128 + len * 2)
+      const str = Buffer.from(data, 'hex').toString('utf8').replace(/\0/g, '').trim()
+      return str || null
+    }
+    const str = Buffer.from(clean, 'hex').toString('utf8').replace(/\0/g, '').trim()
+    return str || null
+  } catch { return null }
+}
+async function fetchTokenMetadata(contract: string, marketData?: Record<string, unknown> | null): Promise<{ name: string | null; symbol: string | null; decimals: number | null; diag: Record<string, unknown> }> {
+  const key = `${activeChainConfig.chain}:${contract}`
+  const cached = metaCache.get(key)
+  if (cached && cached.exp > Date.now()) return { ...cached.data, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(cached.data.name), symbolFound: Boolean(cached.data.symbol), source: 'cache', cacheHit: true, reason: 'ok' } }
+  let name = typeof marketData?.name === 'string' ? marketData.name : null
+  let symbol = typeof marketData?.symbol === 'string' ? marketData.symbol : null
+  let decimals: number | null = null
+  let source = name || symbol ? 'token_api' : 'rpc'
+  try {
+    const [n, s, d] = await Promise.all([
+      alchemyRpc('eth_call', [{ to: contract, data: '0x06fdde03' }, 'latest']) as Promise<string>,
+      alchemyRpc('eth_call', [{ to: contract, data: '0x95d89b41' }, 'latest']) as Promise<string>,
+      alchemyRpc('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest']) as Promise<string>,
+    ])
+    name = name ?? decodeHexStringResult(n)
+    symbol = symbol ?? decodeHexStringResult(s)
+    if (d && d !== '0x') decimals = parseInt(d, 16)
+  } catch {}
+  if (!name) name = `${contract.slice(0, 6)}…${contract.slice(-4)}`
+  const out = { name, symbol, decimals }
+  metaCache.set(key, { exp: Date.now() + META_CACHE_TTL_MS, data: out })
+  return { ...out, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(name), symbolFound: Boolean(symbol), source, cacheHit: false, reason: 'ok' } }
 }
 
 async function getAssetTransfers(params: Record<string, unknown>): Promise<AlchemyTransfer[]> {
@@ -298,7 +355,7 @@ async function discoverOrigin(contract: string): Promise<{
     diag.contract_transaction_history.attempted = true
     try {
       const txRes = await fetch(
-        `${COVALENT_BASE_URL}/base-mainnet/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
+        `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
         { cache: 'no-store', signal: AbortSignal.timeout(10000) }
       )
       diag.contract_transaction_history.httpStatus = txRes.status
@@ -510,12 +567,14 @@ async function getSupplyData(
   holderDataAvailable: boolean
   supplyControlled: number | null
   matchedHolderWallets: MatchedHolder[]
+  holderStats?: { top1: number | null; top10: number | null; top20: number | null; holderCount: number | null; creatorInTopHolders: boolean; linkedWalletSupply: number | null; devClusterSupply: number | null }
+  diag?: Record<string, unknown>
 }> {
   const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
 
   if (preloadedTopHolders && preloadedTopHolders.length > 0) {
     if (!deployer && linkedSet.size === 0) {
-      return { holderDataAvailable: true, supplyControlled: null, matchedHolderWallets: [] }
+      return { holderDataAvailable: true, supplyControlled: null, matchedHolderWallets: [], holderStats: { top1: null, top10: null, top20: null, holderCount: preloadedTopHolders.length, creatorInTopHolders: false, linkedWalletSupply: null, devClusterSupply: null } }
     }
     const matched: MatchedHolder[] = []
     let controlled = 0
@@ -529,24 +588,29 @@ async function getSupplyData(
       controlled += pct
       matched.push({ address: addr, supplyPct: pct, isDeployer, isLinked })
     }
+    const top = preloadedTopHolders.map(h => (typeof h.percent === 'number' ? h.percent : 0))
     return {
       holderDataAvailable: true,
       supplyControlled: Math.round(controlled * 100) / 100,
       matchedHolderWallets: matched.sort((a, b) => b.supplyPct - a.supplyPct),
+      holderStats: {
+        top1: top[0] ?? null, top10: top.slice(0, 10).reduce((a, b) => a + b, 0) || null, top20: top.slice(0, 20).reduce((a, b) => a + b, 0) || null,
+        holderCount: preloadedTopHolders.length, creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: Math.round(controlled * 100) / 100,
+      },
     }
   }
 
   const apiKey = process.env.COVALENT_API_KEY
   if (!apiKey) {
-    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
+    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: false, hasApiKey: false, reason: 'missing_api_key' } }
   }
 
   try {
     const res = await fetch(
-      `${COVALENT_BASE_URL}/base-mainnet/tokens/${contract}/token_holders_v2/?page-size=50&key=${apiKey}`,
+      `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/tokens/${contract}/token_holders_v2/?page-size=50&key=${apiKey}`,
       { cache: 'no-store', signal: AbortSignal.timeout(9000) }
     )
-    if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
+    if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, reason: 'http_error' } }
 
     const json = await res.json() as {
       data?: {
@@ -555,7 +619,7 @@ async function getSupplyData(
     }
 
     const items = json?.data?.items ?? []
-    if (items.length === 0) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
+    if (items.length === 0) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, rawItemCount: 0, reason: 'no_items' } }
 
     const totalSupplyRaw = items[0]?.total_supply ?? '0'
     const totalSupply = BigInt(totalSupplyRaw === '' ? '0' : totalSupplyRaw)
@@ -579,13 +643,19 @@ async function getSupplyData(
       matched.push({ address: addr, supplyPct: pct, isDeployer, isLinked })
     }
 
+    const pcts = items.map(item => totalSupply > BigInt(0) ? Number((BigInt(item.balance ?? '0') * BigInt(10000)) / totalSupply) / 100 : 0)
     return {
       holderDataAvailable: true,
       supplyControlled: Math.round(controlled * 100) / 100,
       matchedHolderWallets: matched.sort((a, b) => b.supplyPct - a.supplyPct),
+      holderStats: {
+        top1: pcts[0] ?? null, top10: pcts.slice(0, 10).reduce((a, b) => a + b, 0), top20: pcts.slice(0, 20).reduce((a, b) => a + b, 0), holderCount: items.length,
+        creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: Math.round(controlled * 100) / 100,
+      },
+      diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, rawItemCount: items.length, normalizedCount: items.length, percentSource: 'derived_from_total_supply', derivationAttempted: true, derivationSucceeded: totalSupply > BigInt(0), reason: 'ok' },
     }
   } catch {
-    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
+    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: Boolean(process.env.COVALENT_API_KEY), reason: 'fetch_error' } }
   }
 }
 
@@ -605,7 +675,7 @@ async function getPreviousActivity(deployer: string | null, excludeContract?: st
   if (covalentKey) {
     try {
       const res = await fetch(
-        `${COVALENT_BASE_URL}/base-mainnet/address/${deployer}/transactions_v2/?key=${covalentKey}&page-size=100&block-signed-at-asc=false&no-logs=true`,
+        `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/address/${deployer}/transactions_v2/?key=${covalentKey}&page-size=100&block-signed-at-asc=false&no-logs=true`,
         { cache: 'no-store', signal: AbortSignal.timeout(10000) }
       )
       if (res.ok) {
@@ -1035,7 +1105,7 @@ async function getClarkVerdict(origin: string, data: {
 
   const prompt =
     `MODE: dev-wallet\n` +
-    `Analyze this Base token scan and return JSON only.\n` +
+    `Analyze this ${activeChainConfig.chainLabel} token scan and return JSON only.\n` +
     `Use only the fields below. Keep response short and professional.\n` +
     (data.deployerStatus === 'confirmed'
       ? `Creator wallet is confirmed from on-chain records. State this clearly.\n`
@@ -1087,7 +1157,8 @@ async function getClarkVerdict(origin: string, data: {
       body: JSON.stringify({
         feature: 'clark-ai',
         mode: 'dev-wallet',
-        chain: 'base',
+        chain: activeChainConfig.chain,
+      chainLabel: activeChainConfig.chainLabel,
         message: prompt,
         prompt,
         context: {
@@ -1315,8 +1386,11 @@ export async function POST(req: Request) {
     else if (now - rr.lastAt < DEV_COOLDOWN_MS[plan]) return NextResponse.json({ error: 'Cooldown active. Please retry shortly.', rateLimited: true }, { status: 429 })
     else if (rr.count >= DEV_RATE_LIMIT[plan]) return NextResponse.json({ error: 'Rate limit reached. Try again shortly.', rateLimited: true }, { status: 429 })
     else { rr.count += 1; rr.lastAt = now }
-    const body = await req.json() as { contractAddress?: string }
+    const body = await req.json() as { contractAddress?: string; chain?: string }
     const { contractAddress } = body
+    const normalizedChain = body.chain === 'eth' ? 'eth' : body.chain === 'base' || body.chain == null ? 'base' : null
+    if (!normalizedChain) return NextResponse.json({ error: 'Unsupported chain. Use base or eth.' }, { status: 400 })
+    activeChainConfig = getChainConfig(normalizedChain)
 
     if (!contractAddress || !/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
       return NextResponse.json(
@@ -1326,7 +1400,8 @@ export async function POST(req: Request) {
     }
 
     const normalizedAddress = contractAddress.toLowerCase()
-    const cached = devCache.get(normalizedAddress)
+    const cacheKey = `${activeChainConfig.chain}:${normalizedAddress}`
+    const cached = devCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) {
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload
       if (debug && cp && typeof cp === 'object') cp._debug = { routeName: '/api/dev-wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
@@ -1335,7 +1410,7 @@ export async function POST(req: Request) {
 
     let bytecode: string | null = null
     let rpcStatus: 'ok' | 'partial' | 'unavailable' = 'ok'
-    const providerUsed = ALCHEMY_BASE_URL ? 'alchemy' : 'none'
+    const providerUsed = activeChainConfig.rpcUrl ? 'configured' : 'none'
     try {
       bytecode = await alchemyRpc('eth_getCode', [normalizedAddress, 'latest']) as string
     } catch {
@@ -1344,7 +1419,7 @@ export async function POST(req: Request) {
 
     if (bytecode === '0x') {
       return NextResponse.json(
-        { error: 'No contract found at this address on Base mainnet' },
+        { error: `No contract found at this address on ${activeChainConfig.chainLabel} mainnet` },
         { status: 400 }
       )
     }
@@ -1413,7 +1488,7 @@ export async function POST(req: Request) {
       linkedWalletsDiag = lwResult.diag
     }
 
-    const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets } =
+    const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets, holderStats, diag: holderDiag } =
       await getSupplyData(normalizedAddress, deployerAddress, linkedWallets, holderDistributionRaw?.topHolders)
     const holderDataAvailable = holderDataFromToken || holderDataFromCovalent
     if (!holderDataAvailable) {
@@ -1442,11 +1517,13 @@ export async function POST(req: Request) {
       await getPreviousActivity(deployerAddress, normalizedAddress)
     if (activityWarning) warnings.push(activityWarning)
 
-    const tokenName = typeof tokenEvidence?.name === 'string' ? tokenEvidence.name : null
-    const tokenSymbol = typeof tokenEvidence?.symbol === 'string' ? tokenEvidence.symbol : null
-    const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : null
-    const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1  : null
-    const holderCount = typeof holderDistributionRaw?.holderCount === 'number' ? holderDistributionRaw.holderCount : null
+    const meta = await fetchTokenMetadata(normalizedAddress, tokenEvidence)
+    const tokenName = meta.name
+    const tokenSymbol = meta.symbol
+    const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : (holderStats?.top10 ?? null)
+    const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1 : (holderStats?.top1 ?? null)
+    const holderTop20 = typeof holderDistributionRaw?.top20 === 'number' ? holderDistributionRaw.top20 : (holderStats?.top20 ?? null)
+    const holderCount = typeof holderDistributionRaw?.holderCount === 'number' ? holderDistributionRaw.holderCount : (holderStats?.holderCount ?? null)
     const secHoneypot: boolean | null = typeof secEv.honeypot === 'boolean' ? secEv.honeypot : null
     const secBuyTax: number | null = typeof secEv.buyTax === 'number' ? secEv.buyTax : null
     const secSellTax: number | null = typeof secEv.sellTax === 'number' ? secEv.sellTax : null
@@ -1514,7 +1591,8 @@ export async function POST(req: Request) {
 
     const responsePayload = {
       contractAddress: normalizedAddress,
-      chain: 'base',
+      chain: activeChainConfig.chain,
+      chainLabel: activeChainConfig.chainLabel,
       deployerAddress,
       deployerConfidence,
       methodUsed,
@@ -1537,8 +1615,11 @@ export async function POST(req: Request) {
         marketValue: market.marketCap ?? market.fdv ?? null,
         top1: holderDistributionRaw?.top1 ?? null,
         top10: holderTop10,
-        top20: holderDistributionRaw?.top20 ?? null,
+        top20: holderTop20,
         holderCount,
+        creatorInTopHolders: holderStats?.creatorInTopHolders ?? false,
+        linkedWalletSupply: holderStats?.linkedWalletSupply ?? null,
+        devClusterSupply: holderStats?.devClusterSupply ?? null,
         lpControl: liqEv.lpControl ?? null,
         lpControlStatus,
         security: secEv ?? null,
@@ -1550,7 +1631,7 @@ export async function POST(req: Request) {
       originReason,
       supplyControlStatus,
       linkedWalletsStatus: linkedWalletsCheckStatus,
-      holderStatus: holderDataAvailable ? 'ok' : 'partial',
+      holderStatus: holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
       verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)
@@ -1568,7 +1649,7 @@ export async function POST(req: Request) {
       ...(debugMode ? {
         _diagnostics: {
           modules: moduleDiags,
-          rpcConfigured: Boolean(ALCHEMY_BASE_URL),
+          rpcConfigured: Boolean(activeChainConfig.rpcUrl),
           rpcStatus,
           providerUsed,
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
@@ -1616,6 +1697,8 @@ export async function POST(req: Request) {
               reason: supplyControlStatus,
             },
           },
+          metadataDiagnostics: meta.diag,
+          holderDiagnostics: holderDiag ?? { chainUsed: activeChainConfig.covalentChain, attempted: false, reason: 'no_holder_diag' },
         },
       } : {}),
       fetchedAt: new Date().toISOString(),
@@ -1624,17 +1707,17 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._debug = {
         routeName: '/api/dev-wallet',
         cacheHit: false,
-        alchemyConfigured: Boolean(ALCHEMY_BASE_URL),
+        alchemyConfigured: Boolean(activeChainConfig.rpcUrl),
         alchemyCallsAttempted: 1,
         alchemyCallsSucceeded: rpcStatus === 'ok' ? 1 : 0,
         alchemyCallsFailed: rpcStatus === 'unavailable' ? 1 : 0,
         rpcMethodsUsed: ['eth_getCode', 'alchemy_getAssetTransfers', 'eth_getTransactionReceipt'],
-        skippedReason: ALCHEMY_BASE_URL ? null : 'alchemy_not_configured',
+        skippedReason: activeChainConfig.rpcUrl ? null : 'rpc_not_configured',
         fallbackUsed: tokenEvidenceResult.ok === false || linkedWalletsCheckStatus !== 'ok',
         requestDurationMs: Date.now() - startedAt,
       }
     }
-    devCache.set(normalizedAddress, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
+    devCache.set(cacheKey, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
     return NextResponse.json(responsePayload)
   } catch (err) {
     console.error('[dev-wallet] fatal:', err)
