@@ -502,7 +502,11 @@ function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
 type OnChainData = { isContract: boolean | null; nativeBalanceEth: number | null; txCount: number | null }
 const onChainCache = new Map<string, { exp: number; data: OnChainData }>()
 const ONCHAIN_TTL_MS = 4 * 60 * 1000
+const CONTRACT_TTL_MS = 10 * 60 * 1000
 const MAX_WALLETS = 20
+const MAX_ENRICHED_WALLETS = 5
+const RPC_BUDGET = 15
+const FETCH_CONCURRENCY = 3
 
 function resolveBaseRpc(): string {
   const explicit = process.env.ALCHEMY_BASE_RPC_URL ?? process.env.BASE_RPC_URL
@@ -514,7 +518,8 @@ function resolveBaseRpc(): string {
 const BASE_RPC = resolveBaseRpc()
 
 async function fetchOnChain(address: string): Promise<OnChainData> {
-  const cached = onChainCache.get(address.toLowerCase())
+  const cacheKey = `base:${address.toLowerCase()}`
+  const cached = onChainCache.get(cacheKey)
   if (cached && cached.exp > Date.now()) return cached.data
   let isContract: boolean | null = null, nativeBalanceEth: number | null = null, txCount: number | null = null
   try {
@@ -538,7 +543,8 @@ async function fetchOnChain(address: string): Promise<OnChainData> {
     }
   } catch { /* leave as null */ }
   const data: OnChainData = { isContract, nativeBalanceEth, txCount }
-  onChainCache.set(address.toLowerCase(), { exp: Date.now() + ONCHAIN_TTL_MS, data })
+  const ttl = data.isContract !== null ? CONTRACT_TTL_MS : ONCHAIN_TTL_MS
+  onChainCache.set(cacheKey, { exp: Date.now() + ttl, data })
   return data
 }
 
@@ -834,18 +840,54 @@ export async function GET(req: NextRequest) {
       const c = behaviorHistCache.get(addr)
       d7ByWallet.set(addr, c ? c.rows : (h24ByWallet.get(addr) ?? []))
     }
-    // On-chain enrichment: parallel, cached, timeout-protected
-    const onChainResults = await Promise.allSettled(walletAddrs.map(addr => fetchOnChain(addr)))
+    // On-chain enrichment: capped to MAX_ENRICHED_WALLETS per request (concurrency 3).
+    // Highest-signal wallets enriched first. Cached wallets resolved free of budget.
+    // Wallets beyond the budget receive null on-chain data and are flagged as partial.
+    const NULL_ONCHAIN: OnChainData = { isContract: null, nativeBalanceEth: null, txCount: null }
+    const nowEnrich = Date.now()
+
+    const walletSignalScore = new Map<string, number>()
+    for (const alert of grouped) {
+      const addr = (alert.wallet_address as string | null)?.toLowerCase()
+      if (!addr) continue
+      const interestScore = (alert.interesting_score as number | null) ?? 0
+      const usdScore = Math.min(20, Math.log10(Math.max(1, (alert.amount_usd as number | null) ?? 0)) * 3)
+      walletSignalScore.set(addr, Math.max(walletSignalScore.get(addr) ?? 0, interestScore + usdScore))
+    }
+
+    const walletsByPriority = [...walletAddrs].sort(
+      (a, b) => (walletSignalScore.get(b) ?? 0) - (walletSignalScore.get(a) ?? 0),
+    )
+    const cachedWallets   = walletsByPriority.filter(a => { const c = onChainCache.get(`base:${a}`); return !!c && c.exp > nowEnrich })
+    const uncachedWallets = walletsByPriority.filter(a => { const c = onChainCache.get(`base:${a}`); return !c || c.exp <= nowEnrich })
+    const walletsToFetch  = uncachedWallets.slice(0, MAX_ENRICHED_WALLETS)
+    const walletsSkipped  = uncachedWallets.slice(MAX_ENRICHED_WALLETS)
+    const skippedWalletSet = new Set(walletsSkipped)
+
+    const fetchedMap = new Map<string, OnChainData>()
+    if (walletsToFetch.length > 0) {
+      let fetchNext = 0
+      const enrichWorker = async () => {
+        while (fetchNext < walletsToFetch.length) {
+          const i = fetchNext++
+          fetchedMap.set(walletsToFetch[i], await fetchOnChain(walletsToFetch[i]).catch(() => NULL_ONCHAIN))
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, walletsToFetch.length) }, () => enrichWorker()))
+    }
+
+    const onChainMap = new Map<string, OnChainData>()
+    for (const addr of cachedWallets) { const c = onChainCache.get(`base:${addr}`); if (c) onChainMap.set(addr, c.data) }
+    for (const [addr, data] of fetchedMap) onChainMap.set(addr, data)
+    for (const addr of walletsSkipped) onChainMap.set(addr, NULL_ONCHAIN)
+
     const walletBehaviorMap = new Map<string, WalletBehavior>()
     let behaviorSkippedCount = 0
-    for (let i = 0; i < walletAddrs.length; i++) {
-      const addr = walletAddrs[i]
+    for (const addr of walletAddrs) {
       const h24Rows = h24ByWallet.get(addr) ?? []
       const d7Rows  = d7ByWallet.get(addr) ?? h24Rows
       if (h24Rows.length === 0 && d7Rows.length === 0) { behaviorSkippedCount++; continue }
-      const r = onChainResults[i]
-      const onChain: OnChainData = r.status === 'fulfilled' ? r.value : { isContract: null, nativeBalanceEth: null, txCount: null }
-      walletBehaviorMap.set(addr, buildWalletBehavior(addr, h24Rows, d7Rows, onChain))
+      walletBehaviorMap.set(addr, buildWalletBehavior(addr, h24Rows, d7Rows, onChainMap.get(addr) ?? NULL_ONCHAIN))
     }
     // Attach walletContext to alert rows
     const alertsWithContext = grouped.map(alert => {
@@ -862,6 +904,7 @@ export async function GET(req: NextRequest) {
           verifiedUsdFlow7d: beh.windows.d7.verifiedUsdFlow,
           monitorReason: beh.monitorReason, nextWatch: beh.nextWatch,
           tags: beh.reasons.slice(0, 3), isContract: beh.isContract,
+          ...(addr && skippedWalletSet.has(addr) ? { enrichmentPartial: true } : {}),
         },
       }
     })
@@ -914,7 +957,17 @@ export async function GET(req: NextRequest) {
         else             sampleUnpricedReasons.push(`${sym}: price_lookup_failed`)
       }
       debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons,
-        behaviorDiagnostics: { walletsAnalyzed: walletBehaviorMap.size, alertHistoryRowsUsed: historyRowsUsed, historyWindowUsed: '7d', behaviorLeadersCount: behaviorLeaders.length, skippedWallets: behaviorSkippedCount } }
+        behaviorDiagnostics: { walletsAnalyzed: walletBehaviorMap.size, alertHistoryRowsUsed: historyRowsUsed, historyWindowUsed: '7d', behaviorLeadersCount: behaviorLeaders.length, skippedWallets: behaviorSkippedCount },
+        enrichmentBudget: {
+          uniqueWalletsSeen: walletAddrs.length,
+          walletsEnriched: cachedWallets.length + walletsToFetch.length,
+          cacheHits: cachedWallets.length,
+          skippedForBudget: walletsSkipped.length,
+          rpcCallsAttempted: walletsToFetch.length,
+          rpcBudget: RPC_BUDGET,
+          partialAlerts: alertsWithContext.filter(a => (a as Record<string, unknown>).walletContext && ((a as Record<string, unknown>).walletContext as Record<string, unknown>).enrichmentPartial === true).length,
+        },
+      }
     }
 
     const payload = {

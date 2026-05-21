@@ -138,6 +138,19 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
 
 const EMPTY_STATS: RadarStats = { totalNewTokens: 0, averageLiquidity: 0, mostCommonRisk: 'SAFE', dangerCount: 0, cautionCount: 0, safeCount: 0 }
 
+const HONEYPOT_CACHE_TTL_MS = 5 * 60 * 1000
+const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
+
+async function getCachedHoneypot(contract: string): Promise<HoneypotResult | null> {
+  const key = contract.toLowerCase()
+  const now = Date.now()
+  const cached = honeypotCache.get(key)
+  if (cached && now - cached.cachedAt <= HONEYPOT_CACHE_TTL_MS) return cached.result
+  const result = await fetchHoneypot(contract)
+  honeypotCache.set(key, { result, cachedAt: Date.now() })
+  return result
+}
+
 export async function GET(req: NextRequest) {
   if (!limiter.check(getClientIp(req))) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
@@ -244,8 +257,9 @@ export async function GET(req: NextRequest) {
     const toCheck = candidates.slice(0, 10)
 
     // 2. Honeypot checks in parallel with 5s timeout each
+    const hpCacheHitFlags = toCheck.map(t => { const c = honeypotCache.get(t.contract.toLowerCase()); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
     const hpResults = await Promise.allSettled(
-      toCheck.map(t => withTimeout(fetchHoneypot(t.contract), 5000, null))
+      toCheck.map(t => withTimeout(getCachedHoneypot(t.contract), 5000, null))
     )
 
     const scored: Candidate[] = toCheck.map((token, i) => {
@@ -278,7 +292,9 @@ export async function GET(req: NextRequest) {
       dangerCount, cautionCount, safeCount,
     }
 
-    return NextResponse.json({ tokens, stats, fetchedAt: new Date().toISOString(), warning: gtResult.warning })
+    const debug = req.nextUrl.searchParams.get('debug') === 'true'
+    const hpHitCount = hpCacheHitFlags.filter(Boolean).length
+    return NextResponse.json({ tokens, stats, fetchedAt: new Date().toISOString(), warning: gtResult.warning, ...(debug ? { _debug: { cacheHit: hpHitCount > 0, cacheTtlSeconds: HONEYPOT_CACHE_TTL_MS / 1000, honeypotCacheHits: hpHitCount, honeypotCacheMisses: hpCacheHitFlags.length - hpHitCount, providerFetchNeeded: hpHitCount < hpCacheHitFlags.length } } : {}) })
   } catch (err) {
     console.error('[radar] processing error:', err)
     return NextResponse.json({ tokens: [], stats: EMPTY_STATS, fetchedAt: new Date().toISOString() })

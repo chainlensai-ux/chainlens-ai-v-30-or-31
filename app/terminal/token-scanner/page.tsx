@@ -688,8 +688,12 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   let lpPts = 0, lpStatusLabel = 'unavailable', lpReason = 'No LP lock or burn proof confirmed.'
   if (lpStatus === 'locked' || lpStatus === 'burned') {
     lpPts = 10; lpStatusLabel = 'ok'; lpReason = `LP ${lpStatus} — exit liquidity confirmed.`
-  } else if (lpStatus === 'unsupported' || result.lpControl?.poolAddressPresent) {
-    lpPts = 4; lpStatusLabel = 'partial'; lpReason = 'Pool structure reviewed but LP proof not confirmed.'
+  } else if (lpStatus === 'protocol') {
+    lpPts = -6; lpStatusLabel = 'partial'; lpReason = 'Protocol-managed liquidity detected. Locker proof unavailable.'
+  } else if (lpStatus === 'concentrated_liquidity') {
+    lpPts = -8; lpStatusLabel = 'partial'; lpReason = 'Concentrated liquidity pool detected. Exit depth may shift rapidly.'
+  } else if (result.lpControl?.poolAddressPresent) {
+    lpPts = -10; lpStatusLabel = 'partial'; lpReason = 'LP ownership could not be verified this scan.'
   } else if (lpStatus === 'risky') {
     lpPts = -20; lpStatusLabel = 'critical'; lpReason = 'LP flagged risky.'
   } else {
@@ -702,8 +706,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
     holderState.kind !== 'rowsWithPercent'                              ? 'holder concentration'  : null,
     lpStatus !== 'locked' && lpStatus !== 'burned'                      ? 'LP proof'              : null,
     result.marketCapUsd == null                                         ? 'market cap'            : null,
-    !hp?.simulationSuccess                                              ? 'security simulation'   : null,
-    result.goplus == null                                               ? 'owner status'          : null,
+    !hp?.simulationSuccess                                              ? 'tax/security simulation'   : null,
   ].filter((v): v is string => v != null)
   const missingPenalty = Math.min(missingItems.length * 4, 18)
   pts -= missingPenalty
@@ -747,15 +750,22 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   }
   // LP lock/burn proof unverified
   if (!lpVerified2) {
-    setCapIfLower(80, 'Score capped by incomplete security/LP checks.')
+    setCapIfLower(72, 'Score capped by missing LP ownership proof.')
   }
   // Both security AND LP unverified → tighter cap
   if (!simVerified2 && !lpVerified2) {
     setCapIfLower(76, 'Score capped by incomplete LP/security checks.')
   }
+  if (holderState.kind !== 'rowsWithPercent' && !lpVerified2 && !hp?.simulationSuccess) {
+    setCapIfLower(64, 'Score capped by missing holder, LP, and tax checks.')
+  }
   // Holder concentration unavailable
   if (holderState.kind === 'noRowsFallback') {
     setCapIfLower(75, 'Score capped by unverified holder data.')
+  }
+  // Holder concentration partial (rows present, percentages missing)
+  if (holderState.kind === 'rowsWithoutPercent') {
+    setCapIfLower(82, 'Score capped by partial holder data.')
   }
   // High holder concentration
   if (highHolderConc) {
@@ -784,6 +794,9 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   // 95–100 only if everything is genuinely verified
   if (!allMajorVerified) {
     setCapIfLower(94, capReason ?? 'Score capped by incomplete verification.')
+  }
+  if (liq > 0 && liq < 25_000) {
+    setCapIfLower(62, 'Score capped by low liquidity depth.')
   }
 
   // ── Clamp ────────────────────────────────────────────────────────────────
@@ -1143,6 +1156,7 @@ export default function TerminalTokenScanner() {
   const isFullAccess = true
 
   const [input, setInput]       = useState('')
+  const [chain, setChain]       = useState<'base' | 'eth'>('base')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
@@ -1183,13 +1197,13 @@ export default function TerminalTokenScanner() {
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-        body: JSON.stringify({ contract: q, ...(debugHolder ? { debugHolder: true } : {}) }),
+        body: JSON.stringify({ contract: q, chain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       const json = await res.json()
       if (!res.ok || json.error) {
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
-        else if (json?.status === 'ambiguous') setError('Multiple Base tokens match this. Paste the contract address or choose one.')
-        else setError("Couldn't resolve that Base token. Paste the contract address or try a verified symbol.")
+        else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
+        else setError("Couldn't resolve that token on the selected chain. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
@@ -1303,17 +1317,25 @@ export default function TerminalTokenScanner() {
               }} />
               TOKEN SCANNER
             </div>
-            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : 'Full scan access.'}</p>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : 'Full scan access.'}</p>
           </div>
 
           {/* Input row */}
           <div className="token-input-row glass-card" style={{ display: 'flex', gap: '10px', maxWidth: '820px', marginBottom: '24px', padding: '10px' }}>
+            <select
+              value={chain}
+              onChange={(e) => setChain(e.target.value === 'eth' ? 'eth' : 'base')}
+              style={{ borderRadius: '10px', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.04)', color: '#e2e8f0', padding: '0 12px', fontFamily: 'var(--font-plex-mono)' }}
+            >
+              <option value="base">Base</option>
+              <option value="eth">Ethereum</option>
+            </select>
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="Paste Base contract, symbol, or token name"
+              placeholder="Paste contract, symbol, or token name"
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
@@ -1480,7 +1502,7 @@ export default function TerminalTokenScanner() {
                 ]
                 const marketStrengthLabel = result.noActivePools ? 'Unverified' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Unverified'
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
-                const lpProofLabel = lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'unsupported' ? 'Protocol liquidity' : 'Unverified'
+                const lpProofLabel = lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') ? 'Protocol liquidity' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
@@ -1912,7 +1934,7 @@ export default function TerminalTokenScanner() {
                                 {concRisk != null && <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${concColor}44`, color: concColor, background: `${concColor}10` }}>{concRisk} CONC</span>}
                               </div>
                               {result.holderDistribution?.holderCount != null && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
-                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>Holder rows were returned, but concentration percentages were incomplete.</p>}
+                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>Holder rows found — concentration percentages unavailable. Addresses and amounts shown below.</p>}
                               {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
                                 {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
                                   <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 64px', alignItems: 'center', gap: '10px' }}>
@@ -2013,7 +2035,7 @@ export default function TerminalTokenScanner() {
                     const exitRiskColor = exitRisk === 'CRITICAL' ? '#f87171' : exitRisk === 'HIGH' ? '#fb923c' : exitRisk === 'ELEVATED' ? '#fbbf24' : exitRisk === 'MEDIUM' ? '#a78bfa' : '#34d399'
                     const exitRead = result.noActivePools
                       ? 'No active liquidity pool detected — exit risk cannot be assessed.'
-                      : !lpVerifiedExit && lpS === 'unsupported'
+                      : (!lpVerifiedExit && (lpS === 'protocol' || lpS === 'concentrated_liquidity'))
                         ? 'Protocol-managed liquidity detected. Lock/burn proof requires protocol-specific verification.'
                         : !lpVerifiedExit
                           ? 'Liquidity exists, but lock/burn proof is not confirmed. Treat exit liquidity as unprotected.'
@@ -2028,7 +2050,7 @@ export default function TerminalTokenScanner() {
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '8px', marginBottom: '10px' }}>
                           {[
-                            ['LP Proof', lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : lpS === 'unsupported' ? 'Protocol LP' : 'Unverified'],
+                            ['LP Proof', lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : lpS === 'protocol' || lpS === 'concentrated_liquidity' ? 'Protocol LP' : 'Unverified'],
                             ['Liquidity Depth', liqDepth != null ? fmtLarge(liqDepth) : 'Unverified'],
                             ['Primary Pool', primaryPool ?? 'Unverified'],
                             ['Exit Risk', exitRisk],
@@ -2055,9 +2077,9 @@ export default function TerminalTokenScanner() {
                     const lp = result.lpControl
                     const read = result.lpControlRead
                     const lpIsVerified = lp.status === 'locked' || lp.status === 'burned'
-                    const statusColor: Record<string,string> = { burned:'#34d399',locked:'#34d399',team_controlled:'#f87171',unsupported:'#fbbf24',unverified:'#94a3b8',error:'#f87171' }
+                    const statusColor: Record<string,string> = { burned:'#34d399',locked:'#60a5fa',protocol:'#f59e0b',concentrated_liquidity:'#a855f7',team_controlled:'#f87171',unverified:'#94a3b8',insufficient_data:'#94a3b8',error:'#f87171' }
                     const color = statusColor[lp.status??'unverified']??'#94a3b8'
-                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',team_controlled:'Team controlled',unsupported:'Protocol liquidity',unverified:'Unverified',error:'Unverified' }
+                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',protocol:'Protocol',concentrated_liquidity:'Concentrated liquidity',team_controlled:'Team controlled',unverified:'Unverified',insufficient_data:'Insufficient data',error:'Unverified' }
                     const evidence = Array.isArray(lp.evidence)?lp.evidence:[]
                     const verificationPool = evidenceValue(evidence,'Verification pool')??read?.whatWasFound?.find((x)=>/^Pair:/i.test(x))?.replace(/^Pair:\s*/i,'')??'Unverified'
                     const evidenceText = evidence.join(' ').toLowerCase()
@@ -2067,8 +2089,8 @@ export default function TerminalTokenScanner() {
                     fallbackChecked.push('Liquidity scan completed')
                     if (lp.status!=='error'&&lp.status!=='unverified'?true:lp.poolAddressPresent) fallbackChecked.push('Pool structure reviewed')
                     const checked = ((read?.whatWasFound??[]).filter((x)=>!/^Pair:/i.test(x)).length?(read?.whatWasFound??[]).filter((x)=>!/^Pair:/i.test(x)):fallbackChecked).filter((v,i,arr)=>arr.indexOf(v)===i)
-                    const unresolved = read?.couldNotVerify?.length?read.couldNotVerify:['Holder concentration unverified','Contract ownership unverified',lp.status==='unsupported'?'Protocol-specific LP proof':'LP lock or burn proof']
-                    const riskRead = read?.meaning??(lp.status==='unsupported'?'Protocol liquidity detected — requires protocol-specific verification.':lp.poolAddressPresent?'Liquidity exists, but LP lock/control could not be proven from current checks.':'No active liquidity pool found.')
+                    const unresolved = read?.couldNotVerify?.length?read.couldNotVerify:['Holder concentration unverified','Contract ownership unverified',lp.status==='protocol' || lp.status==='concentrated_liquidity'?'Protocol-specific LP proof':'LP lock or burn proof']
+                    const riskRead = read?.meaning??(lp.status==='protocol' || lp.status==='concentrated_liquidity'?'Protocol liquidity detected — requires protocol-specific verification.':lp.poolAddressPresent?'Liquidity exists, but LP lock/control could not be proven from current checks.':'No active liquidity pool found.')
                     const nextAction = read?.nextAction??'Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.'
                     return (
                       <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg,rgba(15,23,42,0.72),rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
@@ -2077,7 +2099,7 @@ export default function TerminalTokenScanner() {
                             ['Pool detected', lp.poolAddressPresent ? 'Yes' : 'No'],
                             ['Primary market selected', verificationPool !== 'Unverified' ? 'Yes' : 'No'],
                             ['LP lock/burn proof', lpIsVerified ? 'Verified' : 'Unverified'],
-                            ['Protocol-specific proof', lp.status === 'unsupported' ? 'Required' : 'N/A'],
+                            ['Protocol-specific proof', lp.status === 'protocol' || lp.status === 'concentrated_liquidity' ? 'Required' : 'N/A'],
                             ['Next action', nextAction],
                           ].map(([k,v])=>(
                             <div key={String(k)} style={{ padding:'8px 9px', border:'1px solid rgba(148,163,184,0.18)', borderRadius:'9px', background:'rgba(8,14,28,0.55)' }}>
@@ -2106,7 +2128,7 @@ export default function TerminalTokenScanner() {
                               </div>
                               <div style={{ padding:'8px 10px',border:'1px solid rgba(245,158,11,0.2)',borderRadius:'10px',background:'rgba(245,158,11,0.08)' }}>
                                 <div style={{ fontSize:'10px',color:'#fbbf24',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Open checks</div>
-                                <div style={{ fontSize:'11px',color:'#fde68a',marginBottom:'6px' }}>Treat as incomplete, not safe.</div>
+                                <div style={{ fontSize:'11px',color:'#fde68a',marginBottom:'6px' }}>LP ownership could not be verified this scan.</div>
                                 {unresolved.map((f,i)=><div key={i} style={{ color:'#f8fafc',display:'flex',gap:'6px' }}><span style={{ color:'#f59e0b' }}>✕</span>{f}</div>)}
                               </div>
                             </div>
@@ -2250,7 +2272,7 @@ export default function TerminalTokenScanner() {
                           <div style={gs}>
                             <div style={{ padding:'14px 16px',background:'rgba(245,158,11,0.04)',border:'1px solid rgba(245,158,11,0.18)',borderRadius:'12px' }}>
                               <p style={{...gt,color:'#fbbf24'}}>Open Risks</p>
-                              <p style={{ margin:'0 0 8px',fontSize:'10px',color:'#78716c',fontFamily:'var(--font-plex-mono)' }}>These checks could not be verified in this scan. Treat as incomplete, not safe.</p>
+                              <p style={{ margin:'0 0 8px',fontSize:'10px',color:'#78716c',fontFamily:'var(--font-plex-mono)' }}>These checks could not be verified in this scan. LP ownership could not be verified this scan.</p>
                               <div style={{ display:'flex',flexDirection:'column',gap:'5px' }}>
                                 {openRisks.map((r,i)=>(
                                   <div key={i} style={{ display:'flex',gap:'7px',alignItems:'flex-start' }}>
@@ -2583,6 +2605,12 @@ export default function TerminalTokenScanner() {
                 {/* Holder / Supply */}
                 <div style={ss}>
                   <p style={stitle}>Holder Read</p>
+                  {d.holderState.kind === 'rowsWithPercent' && (
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(45,212,191,.35)',color:'#2dd4bf',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.07)'}}>CONCENTRATION VERIFIED</div>
+                  )}
+                  {d.holderState.kind === 'rowsWithoutPercent' && (
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION INCOMPLETE</div>
+                  )}
                   {d.holderState.kind === 'noRowsFallback' && (
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION UNVERIFIED</div>
                   )}

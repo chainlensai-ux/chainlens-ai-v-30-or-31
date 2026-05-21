@@ -10,11 +10,22 @@ function isValidAvatarUrl(url: unknown): boolean {
   if (parsed.protocol !== 'https:') return false
   if (parsed.username || parsed.password) return false
   const host = parsed.hostname.toLowerCase()
+  // Block well-known loopback/link-local names
   if (['localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.169.254'].includes(host)) return false
+  // Block private/internal DNS TLDs and cloud metadata
+  if (/\.(local|internal|intranet|corp|home|lan|localdomain)$/.test(host)) return false
+  // Block cloud IMDS hostnames
+  if (['metadata.google.internal', 'instance-data'].includes(host)) return false
+  // Block IPv4 private ranges
   const parts = host.split('.').map(Number)
   if (parts.length === 4 && parts.every(p => Number.isInteger(p) && p >= 0 && p <= 255)) {
     const [a, b] = parts
-    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)) return false
+    if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || a === 127) return false
+  }
+  // Block IPv6 private ranges (as bracketed hostnames)
+  if (host.startsWith('[')) {
+    const bare = host.slice(1, -1)
+    if (/^(::1|fe80:|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:)/i.test(bare)) return false
   }
   return true
 }

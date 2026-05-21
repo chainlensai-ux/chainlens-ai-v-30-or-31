@@ -1738,10 +1738,19 @@ async function handleStoredWhaleFlow(prompt: string, body: ClarkRequestBody, ori
   return handleWhaleAlertFeed(prompt, body, origin, authHeader);
 }
 
+const MAJORS_TTL_MS = 60_000
+let majorsCacheEntry: { data: Record<string, { usd?: number; usd_24h_change?: number }>; cachedAt: number } | null = null
+
 async function fetchCoinGeckoMajors() {
+  const now = Date.now()
+  if (majorsCacheEntry && now - majorsCacheEntry.cachedAt <= MAJORS_TTL_MS) {
+    return { data: majorsCacheEntry.data, cacheHit: true, cacheAgeSeconds: Math.floor((now - majorsCacheEntry.cachedAt) / 1000) }
+  }
   const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true", { cache: "no-store" });
   if (!res.ok) throw new Error("coingecko majors failed");
-  return res.json() as Promise<Record<string, { usd?: number; usd_24h_change?: number }>>;
+  const data = await res.json() as Record<string, { usd?: number; usd_24h_change?: number }>;
+  majorsCacheEntry = { data, cachedAt: now }
+  return { data, cacheHit: false, cacheAgeSeconds: null as number | null }
 }
 
 function pct(value?: number) {
@@ -4989,7 +4998,8 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   const isBalanceQuestion = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(t);
   const isQualityQuestion = /\b(good wallet|worth following|smart money|copy trad|is this|analyze|review|verdict)\b/i.test(t);
 
-  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress }, authHeader ?? undefined);
+  const wantsRefresh = /\b(refresh|rescan|re.?scan|force|reload|update)\b/i.test(userPrompt)
+  const { ok, json: walletData } = await callInternalApi(origin, "/api/wallet", { address: walletAddress, ...(wantsRefresh ? { refresh: true } : {}) }, authHeader ?? undefined);
 
   if (!ok || (walletData as Record<string, unknown>)?.error) {
     return {
@@ -6228,9 +6238,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (liveIntent === "MARKET_OVERVIEW") {
     try {
-      const data = await fetchCoinGeckoMajors();
+      const { data, cacheHit: majorsCacheHit, cacheAgeSeconds: majorsCacheAge } = await fetchCoinGeckoMajors();
       const eth = data.ethereum ?? {};
       const btc = data.bitcoin ?? {};
+      const debugOn = Boolean((body as { debugMemory?: boolean }).debugMemory)
       return {
         feature: "clark-ai",
         chain,
@@ -6242,6 +6253,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           `Bitcoin is at ${fmtPrice(btc.usd)} (${pct(btc.usd_24h_change)} 24h).`,
           `Market sentiment: ${(eth.usd_24h_change ?? 0) + (btc.usd_24h_change ?? 0) >= 0 ? "mildly bullish" : "cautious"} based on 24h momentum.`,
         ].join("\n"),
+        ...(debugOn ? { _debug: { cacheHit: majorsCacheHit, cacheTtlSeconds: MAJORS_TTL_MS / 1000, cacheAgeSeconds: majorsCacheAge, providerFetchNeeded: !majorsCacheHit } } : {}),
       };
     } catch {
       return { feature: "clark-ai", chain, mode: "general_market", intent: "market", toolsUsed: ["coingecko_simple_price"], analysis: "No fresh signal in the checked window. Try another token or check again shortly." };
