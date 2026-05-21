@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/walletSnapshot'
 
 const PORTFOLIO_CACHE_TTL_MS = 3 * 60 * 1000
-const portfolioCache = new Map<string, { exp: number; payload: unknown }>()
+const portfolioCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const portfolioRate = new Map<string, { count: number; resetAt: number }>()
 const RATE_LIMIT_PER_MIN = 12
 const SNAPSHOT_TIMEOUT_MS = 12_000
@@ -26,17 +26,26 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json() as { address?: string; refresh?: boolean }
+    const url = new URL(req.url)
+    const debug = url.searchParams.get('debug') === 'true'
     const address = String(body.address ?? '').trim().toLowerCase()
     if (!address) return NextResponse.json({ error: 'Wallet address required.' }, { status: 400 })
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return NextResponse.json({ error: 'Invalid wallet address.' }, { status: 400 })
     const refresh = body.refresh === true
     const cached = refresh ? null : portfolioCache.get(address)
-    if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
+    if (cached && cached.exp > Date.now()) {
+      const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
+      const cp = typeof cached.payload === 'object' && cached.payload
+        ? { ...(cached.payload as Record<string, unknown>), dataFreshness: 'cached', cacheAgeSeconds }
+        : cached.payload
+      return NextResponse.json(cp)
+    }
     const snapshot = await Promise.race([
       fetchWalletSnapshot(address, { refresh } satisfies WalletSnapshotOptions),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), SNAPSHOT_TIMEOUT_MS)),
     ])
-    const payload = {
+    const providerFallback = (snapshot as any)._diagnostics?.providerFallback ?? null
+    const basePayload: Record<string, unknown> = {
       address: snapshot.address,
       holdings: snapshot.holdings,
       totalValue: snapshot.totalValue,
@@ -47,8 +56,9 @@ export async function POST(req: Request) {
       dataFreshness: snapshot.dataFreshness ?? 'live',
       cacheAgeSeconds: snapshot.cacheAgeSeconds ?? null,
     }
-    if (!refresh) portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload })
-    return NextResponse.json(payload)
+    if (!refresh) portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload: basePayload, cachedAt: Date.now() })
+    const responsePayload = debug ? { ...basePayload, _debug: { providerFallback } } : basePayload
+    return NextResponse.json(responsePayload)
   } catch {
     return NextResponse.json({ error: 'Portfolio data is currently unavailable.' }, { status: 200 })
   }

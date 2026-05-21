@@ -53,7 +53,7 @@ type ScanResult = {
   displayMarketValueReason?: string
   estimatedMarketCap?: number | null
   pools?: Pool[]
-  goplus?: Record<string, Record<string, unknown>> | null
+  contractSecurity?: Record<string, Record<string, unknown>> | null
   honeypot?: {
     isHoneypot: boolean | null
     buyTax: number | null
@@ -329,15 +329,14 @@ function humanizeReasonCode(reason?: string): string {
 
 function humanizeSectionLine(source?: string, status?: string, reason?: string): string {
   const sourceMap: Record<string, string> = {
-    base_rpc:                  'Contract verification',
-    alchemy_rpc:               'Contract verification',
-    geckoterminal:             'Market data',
-    goldrush:                  'Holder data',
-    honeypot:                  'Security simulation',
-    'honeypot.is':             'Security simulation',
-    goplus_limited_fallback:   'Security signals',
-    goplus_optional_fallback:  'Security signals',
-    unavailable:               'Data check',
+    rpc:                     'Contract verification',
+    'dex_data+rpc':          'Contract verification',
+    market_data:             'Market data',
+    dex_data:                'Market data',
+    on_chain:                'Holder data',
+    security_check:          'Security simulation',
+    security_check_limited:  'Security signals',
+    unavailable:             'Data check',
   }
   const sourceLabel = sourceMap[source ?? ''] ?? 'CORTEX check'
   const statusLabel = status ? status.charAt(0).toUpperCase() + status.slice(1) : 'No signal in checked window'
@@ -407,8 +406,8 @@ function deriveOwnerStatus(gp: Record<string, unknown> | null): OwnerStatus {
 }
 
 function deriveHolderFallbackEvidence(result: ScanResult): HolderFallbackEvidence {
-  const gp = result.goplus && result.contract
-    ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+  const gp = result.contractSecurity && result.contract
+    ? (result.contractSecurity[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
     : null
   const ratio = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0
     ? (result.marketCapUsd / result.fdvUsd) * 100
@@ -461,8 +460,8 @@ function dedupeSecurityChips(chips: SecurityChip[]): SecurityChip[] {
 }
 
 function deriveVerdictInput(result: ScanResult): VerdictInput {
-  const gp = result.goplus && result.contract
-    ? (result.goplus[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
+  const gp = result.contractSecurity && result.contract
+    ? (result.contractSecurity[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
     : null
   const hp = result.honeypot
   const baseChips: SecurityChip[] = [
@@ -539,7 +538,7 @@ function getSummaryReasons(result: ScanResult): string[] {
     const mcStr = result.marketCapUsd != null ? `MC ${fmtLarge(result.marketCapUsd)} verified` : 'market cap unverified'
     reasons.push(`Market is live — price ${fmtPrice(result.price)}, liquidity ${fmtLarge(liq)}, ${mcStr}.`)
   } else if (result.noActivePools) {
-    reasons.push('No active liquidity pool found for this token on Base.')
+    reasons.push(`No active liquidity pool found for this token on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`)
   } else {
     reasons.push('Market data is unavailable or limited.')
   }
@@ -581,7 +580,7 @@ function getNextAction(result: ScanResult): string {
   const liq = result.liquidity ?? 0
   const holderState = deriveHolderState(result)
   if (hp?.isHoneypot === true) return 'Do not trade — honeypot detected in simulation.'
-  if (result.noActivePools) return 'No active pool found. Verify the contract is live on Base.'
+  if (result.noActivePools) return `No active pool found. Verify the contract is live on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`
   if (liq > 0 && liq < 10000) return 'Liquidity is very thin — high slippage and exit risk present.'
   if (liq > 0 && liq < 50000) return 'Liquidity is limited. Verify LP lock or burn proof before entering.'
   if (holderState.kind === 'noRowsFallback') return 'Holder concentration not confirmed. Verify top holders before forming conviction on this token.'
@@ -706,7 +705,8 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
     holderState.kind !== 'rowsWithPercent'                              ? 'holder concentration'  : null,
     lpStatus !== 'locked' && lpStatus !== 'burned'                      ? 'LP proof'              : null,
     result.marketCapUsd == null                                         ? 'market cap'            : null,
-    !hp?.simulationSuccess                                              ? 'tax/security simulation'   : null,
+    !hp?.simulationSuccess                                              ? 'security simulation'   : null,
+    result.contractSecurity == null                                               ? 'owner status'          : null,
   ].filter((v): v is string => v != null)
   const missingPenalty = Math.min(missingItems.length * 4, 18)
   pts -= missingPenalty
@@ -755,9 +755,6 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   // Both security AND LP unverified → tighter cap
   if (!simVerified2 && !lpVerified2) {
     setCapIfLower(76, 'Score capped by incomplete LP/security checks.')
-  }
-  if (holderState.kind !== 'rowsWithPercent' && !lpVerified2 && !hp?.simulationSuccess) {
-    setCapIfLower(64, 'Score capped by missing holder, LP, and tax checks.')
   }
   // Holder concentration unavailable
   if (holderState.kind === 'noRowsFallback') {
@@ -921,7 +918,7 @@ function getHolderRead(result: ScanResult): string {
 function getLiquidityRead(result: ScanResult): string {
   const liq = result.liquidity ?? 0
   const poolCount = result.pools?.length ?? 0
-  if (result.noActivePools || poolCount === 0) return 'No active liquidity pool detected on Base.'
+  if (result.noActivePools || poolCount === 0) return `No active liquidity pool detected on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`
   const depth = liq > 1_000_000 ? 'Deep' : liq > 200_000 ? 'Moderate' : liq > 50_000 ? 'Limited' : liq > 0 ? 'Thin' : 'Unverified'
   const poolStr = poolCount > 1 ? `${poolCount} pools found.` : 'Primary pool found.'
   const lpStatus = result.lpControl?.status
@@ -1155,8 +1152,8 @@ export default function TerminalTokenScanner() {
   const { loading: planLoading } = usePlanWithLoading()
   const isFullAccess = true
 
-  const [input, setInput]       = useState('')
   const [chain, setChain]       = useState<'base' | 'eth'>('base')
+  const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
@@ -1170,16 +1167,20 @@ export default function TerminalTokenScanner() {
   // Auto-scan when opened from Base Radar with ?contract= param
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const params   = new URLSearchParams(window.location.search)
-    const contract = params.get('contract')
+    const params      = new URLSearchParams(window.location.search)
+    const contract    = params.get('contract')
+    const chainParam  = params.get('chain')
+    const autoChain   = chainParam === 'eth' ? 'eth' : 'base'
+    if (chainParam === 'eth') setChain('eth')
     if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
-      handleScan(contract)
+      handleScan(contract, autoChain)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function handleScan(override?: string) {
-    const q = (override ?? input).trim()
+  async function handleScan(override?: string, chainOverride?: 'base' | 'eth') {
+    const q             = (override ?? input).trim()
+    const effectiveChain = chainOverride ?? chain
     if (!q || loading) return
     setLoading(true)
     setClarkLoading(true)
@@ -1197,13 +1198,13 @@ export default function TerminalTokenScanner() {
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-        body: JSON.stringify({ contract: q, chain, ...(debugHolder ? { debugHolder: true } : {}) }),
+        body: JSON.stringify({ contract: q, chain: effectiveChain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       const json = await res.json()
       if (!res.ok || json.error) {
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
-        else setError("Couldn't resolve that token on the selected chain. Paste the contract address or try a verified symbol.")
+        else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
         const pairs: Array<Record<string, unknown>> = Array.isArray(json.pairs) ? json.pairs : []
@@ -1247,7 +1248,7 @@ export default function TerminalTokenScanner() {
             volume24h:      num((attr(p).volume_usd as Record<string, unknown> | undefined)?.h24),
             priceChange24h: num((attr(p).price_change_percentage as Record<string, unknown> | undefined)?.h24),
           })),
-          goplus:   json.goplus   ?? null,
+          contractSecurity: json.contractSecurity ?? null,
           honeypot: json.honeypot ?? null,
           holderDistribution: json.holderDistribution ?? null,
           holderDistributionStatus: json.holderDistributionStatus ?? null,
@@ -1317,25 +1318,26 @@ export default function TerminalTokenScanner() {
               }} />
               TOKEN SCANNER
             </div>
-            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>Scan tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : 'Full scan access.'}</p>
+            <h1 style={{ fontSize: '28px', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, margin: 0 }}>Token Scanner</h1><p style={{margin:'8px 0 0',color:'#94a3b8',fontSize:'13px'}}>{chain === 'eth' ? 'Scan Ethereum tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.' : 'Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.'}</p><p style={{margin:'6px 0 0',color:'#64748b',fontSize:'11px',fontFamily:'var(--font-plex-mono)'}}>{planLoading ? 'Checking CORTEX access…' : 'Full scan access.'}</p>
+          </div>
+
+          {/* Chain selector */}
+          <div style={{ display: 'flex', gap: '6px', marginBottom: '12px' }}>
+            {(['base', 'eth'] as const).map(c => (
+              <button key={c} type="button" onClick={() => setChain(c)} style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '10px', fontWeight: 700, letterSpacing: '.1em', fontFamily: 'var(--font-plex-mono)', border: chain === c ? '1px solid rgba(45,212,191,.6)' : '1px solid rgba(255,255,255,0.10)', background: chain === c ? 'rgba(45,212,191,.12)' : 'transparent', color: chain === c ? '#2DD4BF' : '#64748b', cursor: 'pointer', transition: 'all 0.12s' }}>
+                {c === 'base' ? 'BASE' : 'ETHEREUM'}
+              </button>
+            ))}
           </div>
 
           {/* Input row */}
           <div className="token-input-row glass-card" style={{ display: 'flex', gap: '10px', maxWidth: '820px', marginBottom: '24px', padding: '10px' }}>
-            <select
-              value={chain}
-              onChange={(e) => setChain(e.target.value === 'eth' ? 'eth' : 'base')}
-              style={{ borderRadius: '10px', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.04)', color: '#e2e8f0', padding: '0 12px', fontFamily: 'var(--font-plex-mono)' }}
-            >
-              <option value="base">Base</option>
-              <option value="eth">Ethereum</option>
-            </select>
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder="Paste contract, symbol, or token name"
+              placeholder={chain === 'eth' ? 'Paste Ethereum contract address' : 'Paste Base contract, symbol, or token name'}
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
@@ -1408,7 +1410,7 @@ export default function TerminalTokenScanner() {
                 {result.contract && (
                   <p style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
                     {shorten(result.contract)}{` · ${String(result.chain ?? 'Base').toUpperCase()}`}
-                    <span style={{ marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(59,130,246,.35)', borderRadius: '999px', color: '#93c5fd' }}>BASE</span>
+                    <span style={{ marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(59,130,246,.35)', borderRadius: '999px', color: '#93c5fd' }}>{String(result.chain ?? chain).toUpperCase()}</span>
                   </p>
                 )}
                 {result.resolvedInput && result.resolvedInput.type !== 'address' && (
@@ -1490,7 +1492,7 @@ export default function TerminalTokenScanner() {
                   holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed — open risk check.' : holderState.kind === 'rowsWithoutPercent' ? 'Holder wallets found but percentages not confirmed.' : '',
                   result.marketCapUsd == null ? 'Market cap not verified — supply unconfirmed.' : '',
                   !hp2?.simulationSuccess ? 'Tax simulation unavailable — status unverified.' : '',
-                  result.noActivePools ? 'No active liquidity pool detected on Base.' : '',
+                  result.noActivePools ? `No active liquidity pool detected on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.` : '',
                 ].filter(Boolean).slice(0, 4) as string[]
                 const missing2 = getMissingChecks(result)
                 const next2 = getNextAction(result)
@@ -1740,7 +1742,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
                         <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: '#fbbf24', textTransform: 'uppercase' }}>No Active Pool Found</span>
                       </div>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>No liquidity pools were found for this contract on Base. Price, volume, and liquidity data are unavailable.</p>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>No liquidity pools were found for this contract on {result.chain === 'eth' ? 'Ethereum' : 'Base'}. Price, volume, and liquidity data are unavailable.</p>
                     </div>
                   ) : (
                     <>
@@ -1798,12 +1800,6 @@ export default function TerminalTokenScanner() {
                     <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                       <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
                       <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not available for this pool. Current price and market data are still live.</p>
-                    </div>
-                  )}
-                  {result.chartStatus === 'unavailable' && (
-                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                      <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Chart unavailable for this token right now. Live market fields will continue to load when available.</p>
                     </div>
                   )}
                   {result.chartStatus === 'fallback_snapshot_only' && (
@@ -2196,7 +2192,7 @@ export default function TerminalTokenScanner() {
                     </div>
                   )}
                   {!planLoading && isFullAccess && (() => {
-                    const gp = result.goplus&&result.contract?(result.goplus[result.contract.toLowerCase()]??null) as Record<string,unknown>|null:null
+                    const gp = result.contractSecurity&&result.contract?(result.contractSecurity[result.contract.toLowerCase()]??null) as Record<string,unknown>|null:null
                     const hp = result.honeypot
                     const simVerified = hp?.simulationSuccess===true
                     type RC = { label:string;value:string;style:PillStyle }
@@ -2494,7 +2490,7 @@ export default function TerminalTokenScanner() {
               fontSize: '11px', color: '#1e3a44',
               fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
             }}>
-              Scan a Base token to generate a structured Clark verdict.
+              Scan a token to generate a structured Clark verdict.
             </p>
           )}
 
