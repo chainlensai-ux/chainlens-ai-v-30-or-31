@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
-const PLAN_CACHE_KEY = 'chainlens_cached_plan'
+import { clearPlanCache, readCachedPlan, writeCachedPlan } from '@/lib/usePlan'
 
 const AVATAR_COLORS: Record<string, string> = {
   mint:   'linear-gradient(135deg, #2DD4BF 0%, #14b8a6 100%)',
@@ -75,21 +75,8 @@ export default function Navbar() {
   const pathname = usePathname()
 
   useEffect(() => {
-    function readCachedPlan(userId?: string, email?: string | null): UserPlan | null {
-      try {
-        const raw = localStorage.getItem(PLAN_CACHE_KEY)
-        if (!raw) return null
-        const x = JSON.parse(raw) as { plan?: string; updatedAt?: number; userId?: string | null; email?: string | null }
-        if (Date.now() - Number(x.updatedAt ?? 0) > 1000 * 60 * 30) return null
-        if ((userId && x.userId && x.userId !== userId) || (email && x.email && x.email !== email)) return null
-        return x.plan === 'pro' || x.plan === 'elite' || x.plan === 'free' ? x.plan : null
-      } catch { return null }
-    }
-    function writeCachedPlan(nextPlan: UserPlan, userId?: string, email?: string | null) {
-      try { localStorage.setItem(PLAN_CACHE_KEY, JSON.stringify({ plan: nextPlan, updatedAt: Date.now(), userId: userId ?? null, email: email ?? null })) } catch {}
-    }
     async function loadSession(token?: string, userId?: string, email?: string | null) {
-      if (!token) { try { localStorage.removeItem(PLAN_CACHE_KEY) } catch {}; setPlan('free'); setPlanLoading(false); return }
+      if (!token) { clearPlanCache(); setPlan('free'); setPlanLoading(false); return }
       const cached = readCachedPlan(userId, email)
       if (cached) setPlan(cached)
       try {
@@ -140,7 +127,7 @@ export default function Navbar() {
     : null
   const initials = (displayName?.[0] ?? shortEmail?.[0] ?? 'A').toUpperCase()
   const displayPlan: UserPlan = plan ?? 'free'
-  const planLabel = !accountEmail ? '' : planLoading && !plan ? 'CHECKING PLAN…' : (plan ?? 'free').toUpperCase()
+  const planLabel = !accountEmail ? '' : planLoading && !plan ? 'CHECKING PLAN…' : (plan ?? 'unknown').toUpperCase()
 
   return (
     <>
