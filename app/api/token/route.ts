@@ -8,7 +8,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-type ChainKey = "eth" | "base" | "polygon" | "bnb";
+type ChainKey = "eth" | "base";
 function getAlchemyRpcUrl(chain: ChainKey): string | null {
   if (chain === "base") {
     const explicit = process.env.ALCHEMY_BASE_RPC_URL
@@ -16,18 +16,10 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
     const key = process.env.ALCHEMY_BASE_KEY
     return key ? `https://base-mainnet.g.alchemy.com/v2/${key}` : null
   }
-  const keyMap: Record<Exclude<ChainKey, "base">, string | undefined> = {
-    eth: process.env.ALCHEMY_ETHEREUM_KEY,
-    polygon: process.env.ALCHEMY_POLYGON_KEY,
-    bnb: process.env.ALCHEMY_BNB_KEY,
-  }
-  const domainMap: Record<Exclude<ChainKey, "base">, string> = {
-    eth: "eth-mainnet",
-    polygon: "polygon-mainnet",
-    bnb: "bnb-mainnet",
-  }
-  const key = keyMap[chain as Exclude<ChainKey, "base">]
-  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base">]}.g.alchemy.com/v2/${key}` : null
+  const explicitEth = process.env.ETH_RPC_URL || process.env.ALCHEMY_ETH_RPC_URL
+  if (explicitEth && /^https?:\/\//.test(explicitEth)) return explicitEth
+  const key = process.env.ALCHEMY_ETHEREUM_KEY
+  return key ? `https://eth-mainnet.g.alchemy.com/v2/${key}` : null
 }
 
 const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
@@ -231,8 +223,6 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
     const networkMap: Record<ChainKey, string> = {
       eth:     'eth',
       base:    'base',
-      polygon: 'polygon_pos',
-      bnb:     'bsc',
     };
     const network = networkMap[chain] ?? 'base';
     const res = await fetch(
@@ -259,8 +249,6 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
     const networkMap: Record<ChainKey, string> = {
       eth:     'eth',
       base:    'base',
-      polygon: 'polygon_pos',
-      bnb:     'bsc',
     };
     const network = networkMap[chain] ?? 'base';
     const res = await fetch(
@@ -284,8 +272,6 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
     const networkMap: Record<ChainKey, string> = {
       eth: 'eth',
       base: 'base',
-      polygon: 'polygon_pos',
-      bnb: 'bsc',
     }
     const network = networkMap[chain] ?? 'base'
     const res = await fetch(
@@ -300,7 +286,7 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
   } catch { return null }
 }
 
-const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
+const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453 };
 
 // ─── Secondary market data fallback ──────────────────────────────────────────
 // Server-side only. Called once when the primary market source has no pool.
@@ -410,8 +396,6 @@ async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> 
     const chainIdMap: Record<ChainKey, string> = {
       eth:     '1',
       base:    '8453',
-      polygon: '137',
-      bnb:     '56',
     };
     const chainId = chainIdMap[chain];
     if (!chainId) return null;
@@ -454,7 +438,7 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 
 
 async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<any> {
-  const chainSlug = 'base-mainnet'
+  const chainSlug = _chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'
   const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
   let statusCode: number | undefined
   try {
@@ -866,7 +850,12 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract: contractInput, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback } = body;
+    const { contract: contractInput, chain: rawChain, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback } = body;
+    const chain = String(rawChain ?? 'base').toLowerCase()
+    if (chain !== 'base' && chain !== 'eth') {
+      return NextResponse.json({ error: "Unsupported chain. Use chain=base or chain=eth." }, { status: 400 })
+    }
+    const chainKey: ChainKey = chain
     const forceDexFallback = debugMode === true && _forceDexFallback === true
     const originalInput = String(contractInput ?? '').trim()
     const normalizedInput = originalInput.toUpperCase()
@@ -880,7 +869,7 @@ export async function POST(req: Request) {
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
-    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain: "base", _cv: 7 })
+    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain: chainKey, _cv: 8 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
@@ -895,14 +884,14 @@ export async function POST(req: Request) {
     if (!resolvedAddress && /^0x[a-fA-F0-9]+$/i.test(originalInput) && originalInput.length !== 42) {
       return NextResponse.json({
         status: 'invalid_address',
-        error: `Invalid Base address: expected 0x + 40 hex chars, got ${originalInput.length - 2}. Check for typos.`,
+        error: `Invalid EVM token address: expected 0x + 40 hex chars, got ${originalInput.length - 2}. Check for typos.`,
       }, { status: 400 })
     }
 
     if (!resolvedAddress) {
       return NextResponse.json({
         status: 'not_found',
-        error: "Couldn't resolve that Base token. Paste the contract address or try a verified symbol.",
+        error: "Couldn't resolve that token on the selected chain. Paste the contract address or try a verified symbol.",
         ...(debugMode === true ? { _diagnostics: { resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map' } } : {}),
       }, { status: 404 })
     }
@@ -910,9 +899,7 @@ export async function POST(req: Request) {
 
     console.log("Incoming scan request:", contract);
 
-    // Token Scanner is Base-only.
-    const chain: ChainKey = "base";
-    const alchemyConfigured = Boolean(getAlchemyRpcUrl(chain))
+    const alchemyConfigured = Boolean(getAlchemyRpcUrl(chainKey))
     let rpcCallsAttempted = 0
     let rpcCallsSucceeded = 0
     let rpcCallsFailed = 0
@@ -920,7 +907,7 @@ export async function POST(req: Request) {
     const countedRpcCall = async (method: string, params: unknown[], checkName = "rpcCheck", critical = false) => {
       const t0 = Date.now()
       rpcCallsAttempted += 1
-      const out = await rpcCall(chain, method, params)
+      const out = await rpcCall(chainKey, method, params)
       if (out) {
         rpcCallsSucceeded += 1
       } else {
@@ -947,7 +934,7 @@ export async function POST(req: Request) {
 
     const bytecodePromise = (async () => {
       const t0 = Date.now()
-      const out = await fetchBytecode(chain, contract)
+      const out = await fetchBytecode(chainKey, contract)
       if (debugMode) {
         rpcCheckDiagnostics.push({
           checkName: 'bytecodeCheck',
@@ -964,14 +951,14 @@ export async function POST(req: Request) {
     })()
     const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpResult] = await Promise.all([
       bytecodePromise,
-      fetchGoldRush(chain, contract),
-      fetchTokenHolders(chain, contract),
-      fetchGeckoTerminal(contract, chain),
-      fetchGeckoTerminalToken(contract, chain),
+      fetchGoldRush(chainKey, contract),
+      fetchTokenHolders(chainKey, contract),
+      fetchGeckoTerminal(contract, chainKey),
+      fetchGeckoTerminalToken(contract, chainKey),
       fetchGMGN(contract),
-      fetchTokenMetadata(chain, contract),
-      fetchGoPlus(chain, contract),
-      fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chain]),
+      fetchTokenMetadata(chainKey, contract),
+      fetchGoPlus(chainKey, contract),
+      fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chainKey]),
     ]);
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase1Ms', Date.now() - _t0)
 
@@ -1069,7 +1056,7 @@ export async function POST(req: Request) {
     const [_lpHoldersSettled, _aiSettled, _onchainSettled] = await Promise.allSettled([
       needsLpHolderFetch
         ? Promise.race([
-            fetchTokenHolders(chain, lpPoolAddress!),
+            fetchTokenHolders(chainKey, lpPoolAddress!),
             new Promise<Record<string, unknown>>(r =>
               setTimeout(() => r({ __status: 'error', __reason: 'lp_holder_timeout' }), 7000)
             ),
@@ -1081,7 +1068,7 @@ export async function POST(req: Request) {
             new Promise<null>(r => setTimeout(() => r(null), 18000)),
           ])
         : Promise.resolve(null),
-      needsOnchainMc ? fetchOnchainSupply(chain, contract) : Promise.resolve(null),
+      needsOnchainMc ? fetchOnchainSupply(chainKey, contract) : Promise.resolve(null),
     ])
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase2Ms', Date.now() - _t2, 'needsLP', needsLpHolderFetch, 'needsAI', needsAI, 'needsOnchain', needsOnchainMc)
 
@@ -1123,7 +1110,7 @@ export async function POST(req: Request) {
       };
     } else if (lpPoolType === "unknown") {
       // Probe pool via RPC to classify before giving up
-      const probe = await probePoolTypeViaRpc(chain, lpPoolAddress!);
+      const probe = await probePoolTypeViaRpc(chainKey, lpPoolAddress!);
       if (probe.v2Like) {
         // Pool behaves like V2 — run Alchemy burn/locker check directly
         const confidenceFor = (pct: number): "high" | "medium" | "low" => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
@@ -1512,7 +1499,7 @@ export async function POST(req: Request) {
       for (let t = 0; t < Math.min(2, timeframeAttempts.length); t += 1) {
         const tf = timeframeAttempts[t + (i > 1 ? 1 : 0)] ?? timeframeAttempts[t]
         chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
-        const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf)
+        const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chainKey, tf)
         const list = chartRaw?.data?.attributes?.ohlcv_list
         if (!Array.isArray(list)) { chartFailureReason = 'ohlcv_not_exposed'; continue }
         const points = list.map((row: unknown) => {
@@ -1594,8 +1581,8 @@ export async function POST(req: Request) {
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
-    const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
-    const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
+    const rpcName = await rpcTokenString(chainKey, contract, '0x06fdde03')
+    const rpcSymbol = await rpcTokenString(chainKey, contract, '0x95d89b41')
 
     // Upgrade name/symbol with RPC fallback when all API sources returned nothing
     const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
@@ -1613,7 +1600,7 @@ export async function POST(req: Request) {
       : 'Contract bytecode, supply, owner, and available safety flags reviewed.'
 
     const responsePayload = {
-      chain,
+      chain: chainKey,
       contract,
       resolvedInput,
 
@@ -1637,8 +1624,8 @@ export async function POST(req: Request) {
       ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'unavailable',
-          chain: 'base-mainnet',
-          endpointPath: holdersRaw?.__endpointPath ?? `/v1/base-mainnet/tokens/${contract}/token_holders_v2/`,
+          chain: chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet',
+          endpointPath: holdersRaw?.__endpointPath ?? `/v1/${chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet'}/tokens/${contract}/token_holders_v2/`,
           authMode: 'bearer',
           hasGoldrushKey: Boolean(process.env.GOLDRUSH_API_KEY),
           hasCovalentKey: Boolean(process.env.COVALENT_API_KEY),
@@ -1778,7 +1765,7 @@ export async function POST(req: Request) {
             // A) Token identity
             inputContract: contract,
             normalizedContract: String(contract).toLowerCase(),
-            chain: 'base',
+            chain: chainKey,
             tokenName: resolvedName,
             tokenSymbol: resolvedSymbol,
             tokenDecimals: resolvedDecimals,
