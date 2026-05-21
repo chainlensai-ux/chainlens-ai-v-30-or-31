@@ -98,17 +98,11 @@ type ClarkSessionMemory = {
   allowedRankScanUntil: number;
   allowedRankScanUsed: boolean;
   lastMomentumShownCount: number;
-  // CORTEX memory extensions
-  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
-  currentPage: string | null;
-  selectedChain: string | null;
-  prevToken: {
-    address: string;
-    symbol: string | null;
-    name: string | null;
-    scanSummary: string | null;
-    ts: number;
-  } | null;
+  recentMessages: Array<{ role: "user" | "assistant"; content: string; ts: number }>;
+  recentTokens: Array<{ address: string; symbol: string | null; name: string | null; chain: "base" | "eth"; summary: string | null; ts: number }>;
+  recentWallets: Array<{ address: string; chain: "base" | "eth"; summary: string | null; ts: number }>;
+  selectedChain: "base" | "eth";
+  lastActiveTool: string | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -119,7 +113,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, conversationHistory: [], currentPage: null, selectedChain: null, prevToken: null };
+    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -166,6 +160,7 @@ function getSessionKeySource(req: NextRequest, authenticated: boolean): "user" |
 function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string | null, name: string | null, scanSummary: string | null) {
   if (mem.lastToken && mem.lastToken.address !== address) mem.prevToken = mem.lastToken;
   mem.lastToken = { address, symbol, name, scanSummary, ts: Date.now() };
+  mem.recentTokens = [{ address, symbol, name, chain: mem.selectedChain, summary: scanSummary, ts: Date.now() }, ...mem.recentTokens.filter(t => t.address !== address)].slice(0, 3)
 }
 
 function appendMemHistory(mem: ClarkSessionMemory, role: 'user' | 'assistant', content: string) {
@@ -183,6 +178,25 @@ function setMemChain(mem: ClarkSessionMemory, chain: string | null | undefined) 
 
 function updateMemWallet(mem: ClarkSessionMemory, address: string, ensName: string | null, walletSummary: string | null) {
   mem.lastWallet = { address, ensName, walletSummary, ts: Date.now() };
+  mem.recentWallets = [{ address, chain: mem.selectedChain, summary: walletSummary, ts: Date.now() }, ...mem.recentWallets.filter(w => w.address !== address)].slice(0, 2)
+}
+function rememberMessage(mem: ClarkSessionMemory, role: "user" | "assistant", content: string) {
+  const c = content.trim()
+  if (!c) return
+  mem.recentMessages = [{ role, content: c.slice(0, 280), ts: Date.now() }, ...mem.recentMessages].slice(0, 6)
+}
+function buildCompactAppContext(mem: ClarkSessionMemory, body: ClarkRequestBody, evidence: ClarkToolEvidence): { text: string; chars: number; usedCachedContext: boolean } {
+  const fromContext = body.context && typeof body.context === 'object' ? body.context as Record<string, unknown> : {}
+  const tool = body.feature || body.mode || "clark-ai"
+  const selectedChain = mem.selectedChain === "eth" ? "Ethereum" : "Base"
+  const tokenLine = mem.recentTokens[0] ? `Token: ${mem.recentTokens[0].symbol ?? "?"} ${mem.recentTokens[0].address} ${mem.recentTokens[0].summary ?? "summary unavailable"}` : "Token: none"
+  const walletLine = mem.recentWallets[0] ? `Wallet: ${mem.recentWallets[0].address} ${mem.recentWallets[0].summary ?? "summary unavailable"}` : "Wallet: none"
+  const whale = typeof fromContext.selectedWhaleAlertSummary === 'string' ? fromContext.selectedWhaleAlertSummary : 'none'
+  const portfolio = typeof fromContext.portfolioSummary === 'string' ? fromContext.portfolioSummary : 'none'
+  const hist = mem.recentMessages.map(m => `${m.role}: ${m.content}`).join(" | ")
+  let text = `Tool=${tool}; Chain=${selectedChain}; ${tokenLine}; ${walletLine}; Whale=${whale}; Portfolio=${portfolio}; Recent=${hist}`
+  if (text.length > 2500) text = text.slice(0, 2500)
+  return { text, chars: text.length, usedCachedContext: !evidence.tokenScan && !evidence.walletSnapshot && !evidence.devWallet }
 }
 
 function updateMemMomentum(mem: ClarkSessionMemory, items: ClarkSessionMemory['lastMomentumList']) {
@@ -2894,13 +2908,17 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
     ? `<holder_contract_analysis>\n${JSON.stringify(holderScan)}\n</holder_contract_analysis>\n\n`
     : "";
 
+  const compact = (v: unknown, limit = 420) => {
+    const s = typeof v === "string" ? v : JSON.stringify(v ?? {})
+    return s.length > limit ? `${s.slice(0, limit)}…` : s
+  }
   const userContent =
     `${prompt}\n\n` +
-    `<trending_tokens>\n${JSON.stringify(trending)}\n</trending_tokens>\n\n` +
-    `<gt_pools>\n${JSON.stringify(gtPools)}\n</gt_pools>\n\n` +
-    `<token_data>\n${JSON.stringify(tokenData)}\n</token_data>\n\n` +
-    `<analysis>\n${JSON.stringify(analysis)}\n</analysis>\n\n` +
-    `<wallet_scan>\n${JSON.stringify(walletScan)}\n</wallet_scan>\n\n` +
+    `<trending_tokens>\n${compact(trending)}\n</trending_tokens>\n\n` +
+    `<gt_pools>\n${compact(gtPools)}\n</gt_pools>\n\n` +
+    `<token_data>\n${compact(tokenData, 900)}\n</token_data>\n\n` +
+    `<analysis>\n${compact(analysis, 700)}\n</analysis>\n\n` +
+    `<wallet_scan>\n${compact(walletScan, 900)}\n</wallet_scan>\n\n` +
     contractRiskBlock +
     holderScanBlock;
 
@@ -5724,7 +5742,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, conversationHistory: [], currentPage: null, selectedChain: null, prevToken: null };
+  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -7301,8 +7319,8 @@ export async function POST(req: NextRequest) {
   setMemPage(sessionMem, body.uiModeHint);
   setMemChain(sessionMem, body.chain);
   const earlyPrompt = (body.prompt ?? '').trim()
-  // Store incoming user message into server-side conversation history (before processing)
-  if (body.feature === 'clark-ai' && earlyPrompt) appendMemHistory(sessionMem, 'user', earlyPrompt);
+  sessionMem.selectedChain = body.chain === "ethereum" ? "eth" : "base"
+  rememberMessage(sessionMem, "user", earlyPrompt)
   const isMoreFollowup = earlyPrompt ? (MORE_CONTEXT_RE.test(earlyPrompt) && (sessionMem.lastMomentumList.length > 0 || Boolean(sessionMem.lastToken))) : false
   const earlyRank = earlyPrompt ? parseRankFollowup(earlyPrompt) : null
   const rankFromMemory = Boolean(earlyRank && sessionMem.lastMomentumList.length > 0)
@@ -7458,37 +7476,19 @@ export async function POST(req: NextRequest) {
     for (const k of ["reply", "response", "analysis", "verdict"] as const) {
       if (typeof normData[k] === "string") normData[k] = cleanClarkText(normData[k] as string)
     }
-    // Store assistant reply into conversation history
-    if (body.feature === 'clark-ai') {
-      const normData2 = normalized.data as Record<string, unknown>
-      const replyText = typeof normData2.reply === 'string' ? normData2.reply : typeof normData2.analysis === 'string' ? normData2.analysis : null
-      if (replyText) appendMemHistory(sessionMem, 'assistant', replyText)
-    }
-    const entitiesRemembered = [
-      sessionMem.lastToken ? `token:${sessionMem.lastToken.symbol ?? sessionMem.lastToken.address.slice(0, 8)}` : null,
-      sessionMem.lastWallet ? `wallet:${sessionMem.lastWallet.address.slice(0, 8)}` : null,
-      sessionMem.lastMomentumList.length > 0 ? `movers:${sessionMem.lastMomentumList.length}` : null,
-      sessionMem.currentPage ? `page:${sessionMem.currentPage}` : null,
-      sessionMem.selectedChain ? `chain:${sessionMem.selectedChain}` : null,
-    ].filter(Boolean)
-    const contextChars = (sessionMem.conversationHistory.map(m => m.content).join('') + (sessionMem.lastToken?.scanSummary ?? '')).length
+    const replyForMem = typeof normData.reply === 'string' ? normData.reply : (typeof normData.analysis === 'string' ? normData.analysis : "")
+    rememberMessage(sessionMem, "assistant", replyForMem)
     if (debugMemory) normalized._debug = {
       memory: {
-        messageCount: sessionMem.conversationHistory.length,
-        entitiesRemembered,
-        contextChars,
-        usedRecentScan: Boolean(sessionMem.lastToken?.scanSummary),
-        followupResolved: Boolean(sessionMem.lastToken || sessionMem.lastWallet),
-        skippedRawPayloads: true,
-        currentPage: sessionMem.currentPage,
+        currentTool: sessionMem.lastActiveTool ?? body.feature,
         selectedChain: sessionMem.selectedChain,
-        hasLastToken: Boolean(sessionMem.lastToken),
-        hasLastWallet: Boolean(sessionMem.lastWallet),
-        hasPrevToken: Boolean(sessionMem.prevToken),
-        lastActionableIntent: sessionMem.lastActionableIntent,
-        memoryKeySource,
-        cooldownBucketUsed: (promptIsLowCost || rankAllowanceActive) ? 'lowcost' : 'tool',
-      }
+        rememberedTokens: sessionMem.recentTokens.map(t => ({ address: t.address, symbol: t.symbol, chain: t.chain })),
+        rememberedWallets: sessionMem.recentWallets.map(w => ({ address: w.address, chain: w.chain })),
+        contextChars: Math.min(2500, JSON.stringify(body.context ?? {}).length),
+        usedCachedContext: !/scan|refresh|rescan/i.test(earlyPrompt),
+        calledScanApi: (promptIsLowCost || rankAllowanceActive) ? false : true,
+        followupResolved: /\b(it|this|last|compare|missing|why)\b/i.test(earlyPrompt),
+      },
     }
     const resultAnalysis = typeof (result as Record<string, unknown>)?.analysis === 'string' ? (result as Record<string, unknown>).analysis as string : ''
     const quotaConsumed = !isValidationOnlyAnalysis(resultAnalysis)
