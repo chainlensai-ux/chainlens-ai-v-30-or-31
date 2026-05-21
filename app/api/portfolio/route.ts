@@ -26,6 +26,8 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json() as { address?: string; refresh?: boolean }
+    const url = new URL(req.url)
+    const debug = url.searchParams.get('debug') === 'true'
     const address = String(body.address ?? '').trim().toLowerCase()
     if (!address) return NextResponse.json({ error: 'Wallet address required.' }, { status: 400 })
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) return NextResponse.json({ error: 'Invalid wallet address.' }, { status: 400 })
@@ -36,7 +38,8 @@ export async function POST(req: Request) {
       fetchWalletSnapshot(address, { refresh } satisfies WalletSnapshotOptions),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), SNAPSHOT_TIMEOUT_MS)),
     ])
-    const payload = {
+    const providerFallback = (snapshot as any)._diagnostics?.providerFallback ?? null
+    const payload: Record<string, unknown> = {
       address: snapshot.address,
       holdings: snapshot.holdings,
       totalValue: snapshot.totalValue,
@@ -46,6 +49,7 @@ export async function POST(req: Request) {
       estimatedPnl: snapshot.estimatedPnl,
       dataFreshness: snapshot.dataFreshness ?? 'live',
       cacheAgeSeconds: snapshot.cacheAgeSeconds ?? null,
+      ...(debug ? { _debug: { providerFallback } } : {}),
     }
     if (!refresh) portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload })
     return NextResponse.json(payload)

@@ -1,3 +1,5 @@
+import { fetchMoralisBalances, type MoralisFetchResult } from './moralis'
+
 type Holding = {
   contract?: string
   name: string
@@ -116,6 +118,15 @@ export type WalletSnapshot = {
         reason: string
       }
       alchemy: { configured: boolean; behaviorAttempted: boolean; transfersReturned: number; reason: string }
+      moralis?: {
+        configured: boolean
+        attempted: boolean
+        usable: boolean
+        holdingsReturned: number
+        cacheHit: boolean
+        reason: string
+        httpStatus?: number | null
+      }
       cacheHit?: boolean
     }
     walletProviderFieldsPresent: {
@@ -133,6 +144,24 @@ export type WalletSnapshot = {
       refreshBypassedCache: boolean
       cacheAgeSeconds: number | null
       cacheTtlSeconds: number
+    }
+    moralis?: {
+      configured: boolean
+      attempted: boolean
+      usable: boolean
+      holdingsReturned: number
+      cacheHit: boolean
+      reason: string
+      httpStatus?: number | null
+    }
+    providerFallback?: {
+      primaryAttempted: boolean
+      primaryUsable: boolean
+      fallbackAttempted: boolean
+      fallbackUsed: boolean
+      fallbackReason: string
+      cacheHit: boolean
+      reason: string
     }
   }
 }
@@ -678,6 +707,35 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
+  // Capture GoldRush outcome for fallback diagnostics
+  const _grPrimaryAttempted = Boolean(GOLDRUSH_KEY)
+  const _grPrimaryUsable = providerUsed === 'goldrush'
+  const _preFallbackReason = reason
+
+  // Moralis tertiary fallback — only runs when Zerion + GoldRush both yielded no holdings
+  let _moralisEthResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
+  let _moralisBaseResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
+  let _moralisUsed = false
+
+  if (holdings.length === 0 && Boolean(process.env.MORALIS_API_KEY)) {
+    ;[_moralisEthResult, _moralisBaseResult] = await Promise.all([
+      fetchMoralisBalances(addr, 'eth'),
+      fetchMoralisBalances(addr, 'base'),
+    ])
+    const moralisHoldings = [
+      ..._moralisEthResult.holdings,
+      ..._moralisBaseResult.holdings,
+    ].sort((a, b) => b.value - a.value)
+
+    if (moralisHoldings.length > 0) {
+      holdings = moralisHoldings as Holding[]
+      totalValue = holdings.reduce((s, h) => s + h.value, 0)
+      providerStatus = 'partial'
+      reason = ''
+      _moralisUsed = true
+    }
+  }
+
   if (holdings.length === 0 && !reason) {
     reason = 'No token balances found on supported chains.'
   }
@@ -798,6 +856,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           transfersReturned: behaviorTxCount,
           reason: behaviorRes.status === 'fulfilled' ? '' : 'Behavior check unavailable from current checks.',
         },
+        moralis: {
+          configured: Boolean(process.env.MORALIS_API_KEY),
+          attempted: _moralisEthResult.attempted || _moralisBaseResult.attempted,
+          usable: _moralisEthResult.usable || _moralisBaseResult.usable,
+          holdingsReturned: _moralisEthResult.holdings.length + _moralisBaseResult.holdings.length,
+          cacheHit: _moralisEthResult.cacheHit || _moralisBaseResult.cacheHit,
+          reason: _moralisEthResult.reason || _moralisBaseResult.reason || '',
+        },
       },
       walletProviderFieldsPresent: {
         holdings: holdings.length > 0,
@@ -815,6 +881,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       snapshotCache: {
         memoryHit: false, persistentHit: false, providerFetchNeeded: true,
         refreshBypassedCache: refresh, cacheAgeSeconds: null, cacheTtlSeconds: snapshotTtlMs / 1000,
+      },
+      providerFallback: {
+        primaryAttempted: _grPrimaryAttempted,
+        primaryUsable: _grPrimaryUsable,
+        fallbackAttempted: _moralisEthResult.attempted || _moralisBaseResult.attempted,
+        fallbackUsed: _moralisUsed,
+        fallbackReason: _preFallbackReason,
+        cacheHit: _moralisEthResult.cacheHit || _moralisBaseResult.cacheHit,
+        reason: _moralisUsed
+          ? 'moralis_holdings_used'
+          : holdings.length > 0
+          ? 'primary_ok'
+          : 'all_providers_empty',
       },
     },
   }
