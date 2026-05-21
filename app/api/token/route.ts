@@ -8,7 +8,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-type ChainKey = "eth" | "base" | "polygon" | "bnb";
+type ChainKey = "eth" | "base";
 function getAlchemyRpcUrl(chain: ChainKey): string | null {
   if (chain === "base") {
     const explicit = process.env.ALCHEMY_BASE_RPC_URL
@@ -16,18 +16,10 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
     const key = process.env.ALCHEMY_BASE_KEY
     return key ? `https://base-mainnet.g.alchemy.com/v2/${key}` : null
   }
-  const keyMap: Record<Exclude<ChainKey, "base">, string | undefined> = {
-    eth: process.env.ALCHEMY_ETHEREUM_KEY,
-    polygon: process.env.ALCHEMY_POLYGON_KEY,
-    bnb: process.env.ALCHEMY_BNB_KEY,
-  }
-  const domainMap: Record<Exclude<ChainKey, "base">, string> = {
-    eth: "eth-mainnet",
-    polygon: "polygon-mainnet",
-    bnb: "bnb-mainnet",
-  }
-  const key = keyMap[chain as Exclude<ChainKey, "base">]
-  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base">]}.g.alchemy.com/v2/${key}` : null
+  const explicitEth = process.env.ETH_RPC_URL || process.env.ALCHEMY_ETH_RPC_URL
+  if (explicitEth && /^https?:\/\//.test(explicitEth)) return explicitEth
+  const key = process.env.ALCHEMY_ETHEREUM_KEY
+  return key ? `https://eth-mainnet.g.alchemy.com/v2/${key}` : null
 }
 
 const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
@@ -231,8 +223,6 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
     const networkMap: Record<ChainKey, string> = {
       eth:     'eth',
       base:    'base',
-      polygon: 'polygon_pos',
-      bnb:     'bsc',
     };
     const network = networkMap[chain] ?? 'base';
     const res = await fetch(
@@ -259,8 +249,6 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
     const networkMap: Record<ChainKey, string> = {
       eth:     'eth',
       base:    'base',
-      polygon: 'polygon_pos',
-      bnb:     'bsc',
     };
     const network = networkMap[chain] ?? 'base';
     const res = await fetch(
@@ -284,8 +272,6 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
     const networkMap: Record<ChainKey, string> = {
       eth: 'eth',
       base: 'base',
-      polygon: 'polygon_pos',
-      bnb: 'bsc',
     }
     const network = networkMap[chain] ?? 'base'
     const res = await fetch(
@@ -300,7 +286,7 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
   } catch { return null }
 }
 
-const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
+const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453 };
 
 // ─── Secondary market data fallback ──────────────────────────────────────────
 // Server-side only. Called once when the primary market source has no pool.
@@ -410,8 +396,6 @@ async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> 
     const chainIdMap: Record<ChainKey, string> = {
       eth:     '1',
       base:    '8453',
-      polygon: '137',
-      bnb:     '56',
     };
     const chainId = chainIdMap[chain];
     if (!chainId) return null;
@@ -454,57 +438,88 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 
 
 async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<any> {
-  const chainSlug = 'base-mainnet'
+  const chainSlug = _chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'
   const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
+  const endpointTemplate = `https://api.covalenthq.com${endpointPath}?page-number=0&page-size=100`
   let statusCode: number | undefined
   try {
-    // Use GOLDRUSH_API_KEY first (matches proxy/test routes); fall back to COVALENT_API_KEY
     const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
     if (!apiKey) {
-      console.warn('[holder-debug] contract', contract, 'chain', chainSlug, 'result: missing API key')
-      return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath }
+      return { __status: 'unavailable', __reason: 'auth_missing', __statusCode: undefined, __endpointPath: endpointPath, __endpointTemplate: endpointTemplate, __chainUsed: chainSlug, __hasApiKey: false }
     }
-    // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
-    const url = `https://api.covalenthq.com${endpointPath}?page-number=0&page-size=100`
-    console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'path', endpointPath, 'params page-number=0&page-size=100')
-    const res = await fetch(url, {
+
+    const baseUrl = `https://api.covalenthq.com${endpointPath}?page-number=0&page-size=100`
+    const res = await fetch(baseUrl, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(8000),
     })
     statusCode = res.status
-    if (!res.ok) {
-      // Try to parse JSON error body for a safe reason; fall back to text snippet
-      let safeReason = statusCode === 400 ? 'bad_request_check_endpoint_params' : 'provider_unavailable'
-      try {
-        const errJson = await res.json()
-        if (errJson?.error_message) safeReason = errJson.error_message
-        console.warn('[holder-debug] non-ok', statusCode, 'error_message:', errJson?.error_message ?? '(none)', 'error_code:', errJson?.error_code ?? '(none)')
-      } catch {
-        const errText = await res.text().catch(() => '').then(t => t.slice(0, 200))
-        console.warn('[holder-debug] non-ok', statusCode, errText)
-      }
-      return { __status: 'error', __reason: safeReason, __statusCode: statusCode, __endpointPath: endpointPath }
+
+    let finalRes = res
+    if ((res.status === 401 || res.status === 403 || res.status === 404) && apiKey) {
+      const urlWithKey = `${baseUrl}&key=${encodeURIComponent(apiKey)}`
+      const retry = await fetch(urlWithKey, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(8000),
+      })
+      statusCode = retry.status
+      if (retry.ok) finalRes = retry
+      else finalRes = retry
     }
-    const json = await res.json()
+
+    if (!finalRes.ok) {
+      const reason = statusCode === 401 || statusCode === 403
+        ? 'auth'
+        : statusCode === 404
+          ? 'endpoint_or_chain'
+          : 'provider_unavailable'
+      return { __status: statusCode === 401 || statusCode === 403 || statusCode === 404 ? 'unavailable' : 'error', __reason: reason, __statusCode: statusCode, __endpointPath: endpointPath, __endpointTemplate: endpointTemplate, __chainUsed: chainSlug, __hasApiKey: true }
+    }
+    const json = await finalRes.json()
     const topKeys = Object.keys(json ?? {})
-    const itemCount = json?.data?.items?.length ?? 0
-    console.log('[holder-debug] statusCode', statusCode, 'responseKeys', topKeys, 'data.items.length', itemCount)
     if (json?.error) {
-      console.warn('[holder-debug] API-level error:', json?.error_message)
-      return { __status: 'error', __reason: json?.error_message ?? 'api_error', __statusCode: statusCode, __endpointPath: endpointPath, __responseKeys: topKeys }
+      return { __status: 'error', __reason: 'provider_error', __statusCode: statusCode, __endpointPath: endpointPath, __responseKeys: topKeys, __endpointTemplate: endpointTemplate, __chainUsed: chainSlug, __hasApiKey: true }
     }
-    return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys }
-  } catch (err) {
-    console.error('[holder-debug] exception', err)
-    return { __status: 'error', __reason: 'provider_unavailable', __statusCode: statusCode, __endpointPath: endpointPath }
+    return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys, __endpointTemplate: endpointTemplate, __chainUsed: chainSlug, __hasApiKey: true }
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      return { __status: 'error', __reason: 'timeout', __statusCode: statusCode, __endpointPath: endpointPath, __endpointTemplate: endpointTemplate, __chainUsed: chainSlug, __hasApiKey: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY) }
+    }
+    return { __status: 'error', __reason: 'fetch_error', __statusCode: statusCode, __endpointPath: endpointPath, __endpointTemplate: endpointTemplate, __chainUsed: chainSlug, __hasApiKey: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY) }
   }
+}
+
+function pickHolderItems(raw: any): any[] {
+  const holderCandidates = [
+    raw?.data?.items,
+    raw?.data?.data?.items,
+    raw?.data?.data,
+    raw?.items,
+    raw?.holders,
+    raw?.result,
+    raw?.result?.holders,
+  ]
+  return holderCandidates.find((x) => Array.isArray(x)) ?? []
+}
+function normalizeHolderAddress(h: any): string {
+  return h?.address || h?.holder_address || h?.wallet_address || h?.owner || h?.account || h?.owner_address || h?.contract_address || ''
+}
+function normalizeHolderAmount(h: any): number | null {
+  return toNum(h?.balance) ?? toNum(h?.balance_quote) ?? toNum(h?.amount) ?? toNum(h?.quantity) ?? null
+}
+function normalizeHolderRowPercent(h: any): number | null {
+  return normalizeHolderPercent(h?.percent)
+    ?? normalizeHolderPercent(h?.percentage)
+    ?? normalizeHolderPercent(h?.ownership_percentage)
+    ?? normalizeHolderPercent(h?.share)
+    ?? normalizeHolderPercent(h?.holder_percentage)
 }
 
 type LpControlResult = {
   status: "burned" | "locked" | "protocol" | "team_controlled" | "concentrated_liquidity" | "unverified" | "insufficient_data" | "error";
   confidence: "high" | "medium" | "low";
-  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
+  poolType: "v2" | "v3" | "aerodrome" | "alienbase" | "sushi" | "concentrated" | "unknown";
   source: string;
   reason: string;
   evidence: string[];
@@ -735,7 +750,7 @@ type NormalizedPool = {
   quoteTokenSymbol?: string | null;
   baseTokenAddress?: string | null;
   quoteTokenAddress?: string | null;
-  poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
+  poolType: "v2" | "v3" | "aerodrome" | "alienbase" | "sushi" | "concentrated" | "unknown";
   hasDexMeta: boolean;
   isValidAddress: boolean;
   containsScannedToken?: boolean;
@@ -799,6 +814,8 @@ function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["
   const has = (re: RegExp) => re.test(text);
 
   if (has(/\baerodrome\b|\bslipstream\b/)) return "aerodrome";
+  if (has(/\balienbase\b/)) return "alienbase";
+  if (has(/\bsushi(?:swap)?\b/)) return "sushi";
   if (has(/\bconcentrated\b|\bcl pool\b|\balgebra\b/)) return "concentrated";
   if (has(/\buniswap(?:[_-]?v)?3\b|\bpancakeswap(?:[_-]?v)?3\b|\bv3\b/)) return "v3";
 
@@ -866,7 +883,12 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract: contractInput, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback } = body;
+    const { contract: contractInput, chain: rawChain, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback } = body;
+    const chain = String(rawChain ?? 'base').toLowerCase()
+    if (chain !== 'base' && chain !== 'eth') {
+      return NextResponse.json({ error: "Unsupported chain. Use chain=base or chain=eth." }, { status: 400 })
+    }
+    const chainKey: ChainKey = chain
     const forceDexFallback = debugMode === true && _forceDexFallback === true
     const originalInput = String(contractInput ?? '').trim()
     const normalizedInput = originalInput.toUpperCase()
@@ -880,7 +902,7 @@ export async function POST(req: Request) {
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
-    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain: "base", _cv: 7 })
+    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain: chainKey, _cv: 8 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
@@ -895,14 +917,14 @@ export async function POST(req: Request) {
     if (!resolvedAddress && /^0x[a-fA-F0-9]+$/i.test(originalInput) && originalInput.length !== 42) {
       return NextResponse.json({
         status: 'invalid_address',
-        error: `Invalid Base address: expected 0x + 40 hex chars, got ${originalInput.length - 2}. Check for typos.`,
+        error: `Invalid EVM token address: expected 0x + 40 hex chars, got ${originalInput.length - 2}. Check for typos.`,
       }, { status: 400 })
     }
 
     if (!resolvedAddress) {
       return NextResponse.json({
         status: 'not_found',
-        error: "Couldn't resolve that Base token. Paste the contract address or try a verified symbol.",
+        error: "Couldn't resolve that token on the selected chain. Paste the contract address or try a verified symbol.",
         ...(debugMode === true ? { _diagnostics: { resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map' } } : {}),
       }, { status: 404 })
     }
@@ -910,9 +932,7 @@ export async function POST(req: Request) {
 
     console.log("Incoming scan request:", contract);
 
-    // Token Scanner is Base-only.
-    const chain: ChainKey = "base";
-    const alchemyConfigured = Boolean(getAlchemyRpcUrl(chain))
+    const alchemyConfigured = Boolean(getAlchemyRpcUrl(chainKey))
     let rpcCallsAttempted = 0
     let rpcCallsSucceeded = 0
     let rpcCallsFailed = 0
@@ -920,7 +940,7 @@ export async function POST(req: Request) {
     const countedRpcCall = async (method: string, params: unknown[], checkName = "rpcCheck", critical = false) => {
       const t0 = Date.now()
       rpcCallsAttempted += 1
-      const out = await rpcCall(chain, method, params)
+      const out = await rpcCall(chainKey, method, params)
       if (out) {
         rpcCallsSucceeded += 1
       } else {
@@ -947,7 +967,7 @@ export async function POST(req: Request) {
 
     const bytecodePromise = (async () => {
       const t0 = Date.now()
-      const out = await fetchBytecode(chain, contract)
+      const out = await fetchBytecode(chainKey, contract)
       if (debugMode) {
         rpcCheckDiagnostics.push({
           checkName: 'bytecodeCheck',
@@ -964,14 +984,14 @@ export async function POST(req: Request) {
     })()
     const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpResult] = await Promise.all([
       bytecodePromise,
-      fetchGoldRush(chain, contract),
-      fetchTokenHolders(chain, contract),
-      fetchGeckoTerminal(contract, chain),
-      fetchGeckoTerminalToken(contract, chain),
+      fetchGoldRush(chainKey, contract),
+      fetchTokenHolders(chainKey, contract),
+      fetchGeckoTerminal(contract, chainKey),
+      fetchGeckoTerminalToken(contract, chainKey),
       fetchGMGN(contract),
-      fetchTokenMetadata(chain, contract),
-      fetchGoPlus(chain, contract),
-      fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chain]),
+      fetchTokenMetadata(chainKey, contract),
+      fetchGoPlus(chainKey, contract),
+      fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chainKey]),
     ]);
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase1Ms', Date.now() - _t0)
 
@@ -1069,7 +1089,7 @@ export async function POST(req: Request) {
     const [_lpHoldersSettled, _aiSettled, _onchainSettled] = await Promise.allSettled([
       needsLpHolderFetch
         ? Promise.race([
-            fetchTokenHolders(chain, lpPoolAddress!),
+            fetchTokenHolders(chainKey, lpPoolAddress!),
             new Promise<Record<string, unknown>>(r =>
               setTimeout(() => r({ __status: 'error', __reason: 'lp_holder_timeout' }), 7000)
             ),
@@ -1081,7 +1101,7 @@ export async function POST(req: Request) {
             new Promise<null>(r => setTimeout(() => r(null), 18000)),
           ])
         : Promise.resolve(null),
-      needsOnchainMc ? fetchOnchainSupply(chain, contract) : Promise.resolve(null),
+      needsOnchainMc ? fetchOnchainSupply(chainKey, contract) : Promise.resolve(null),
     ])
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase2Ms', Date.now() - _t2, 'needsLP', needsLpHolderFetch, 'needsAI', needsAI, 'needsOnchain', needsOnchainMc)
 
@@ -1123,7 +1143,7 @@ export async function POST(req: Request) {
       };
     } else if (lpPoolType === "unknown") {
       // Probe pool via RPC to classify before giving up
-      const probe = await probePoolTypeViaRpc(chain, lpPoolAddress!);
+      const probe = await probePoolTypeViaRpc(chainKey, lpPoolAddress!);
       if (probe.v2Like) {
         // Pool behaves like V2 — run Alchemy burn/locker check directly
         const confidenceFor = (pct: number): "high" | "medium" | "low" => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
@@ -1271,23 +1291,14 @@ export async function POST(req: Request) {
       18;
 
     
-    const holderCandidates = [
-      holdersRaw?.data?.items,
-      holdersRaw?.data?.data?.items,
-      holdersRaw?.items,
-      holdersRaw?.holders,
-      holdersRaw?.token_holders,
-    ]
-    const holderItems: any[] = holderCandidates.find((x) => Array.isArray(x)) ?? []
-    console.log('[holders] items length', holderItems.length)
+    const holderItems: any[] = pickHolderItems(holdersRaw)
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? null
     const holderPctFromProvider: boolean[] = []
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
-      const address = h.address || h.holder_address || h.wallet_address || h.owner_address || h.contract_address || ''
-      const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
-      const amount = toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null
-      const pctRaw = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage)
+      const address = normalizeHolderAddress(h)
+      const amount = normalizeHolderAmount(h)
+      const pctRaw = normalizeHolderRowPercent(h)
       const percent = pctRaw
       holderPctFromProvider.push(percent != null)
       return { rank: i + 1, address, amount, percent }
@@ -1297,7 +1308,6 @@ export async function POST(req: Request) {
     const hasPct = percentRows.length > 0
     const anyProviderPct = holderPctFromProvider.some(Boolean)
     const percentSource: 'provider' | 'calculated' | 'unavailable' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'unavailable'
-    console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct, '[holders] pct source', percentSource)
     const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
     const top1 = hasPct ? sum(1) : null
     const top5 = hasPct ? sum(5) : null
@@ -1310,8 +1320,14 @@ export async function POST(req: Request) {
     const holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
-          : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
-      : { status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: holderItems.length, normalizedCount: 0 }
+          : { status: 'partial', reason: 'rows_without_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
+      : (holdersRaw?.__statusCode === 200
+          ? { status: 'empty', reason: 'no_holder_rows', itemCount: holderItems.length, normalizedCount: 0 }
+          : holdersRaw?.__status === 'error'
+          ? { status: 'error', reason: (holdersRaw?.__reason ?? 'provider_error'), itemCount: holderItems.length, normalizedCount: 0 }
+          : holdersRaw?.__status === 'unavailable'
+            ? { status: 'unavailable', reason: (holdersRaw?.__reason ?? 'provider_unavailable'), itemCount: holderItems.length, normalizedCount: 0 }
+            : { status: 'error', reason: 'fetch_error', itemCount: holderItems.length, normalizedCount: 0 })
 
     const poolAttr = mainPool?.attributes ?? {}
     // True market cap priority:
@@ -1512,7 +1528,7 @@ export async function POST(req: Request) {
       for (let t = 0; t < Math.min(2, timeframeAttempts.length); t += 1) {
         const tf = timeframeAttempts[t + (i > 1 ? 1 : 0)] ?? timeframeAttempts[t]
         chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
-        const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf)
+        const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chainKey, tf)
         const list = chartRaw?.data?.attributes?.ohlcv_list
         if (!Array.isArray(list)) { chartFailureReason = 'ohlcv_not_exposed'; continue }
         const points = list.map((row: unknown) => {
@@ -1594,8 +1610,8 @@ export async function POST(req: Request) {
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
-    const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
-    const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
+    const rpcName = await rpcTokenString(chainKey, contract, '0x06fdde03')
+    const rpcSymbol = await rpcTokenString(chainKey, contract, '0x95d89b41')
 
     // Upgrade name/symbol with RPC fallback when all API sources returned nothing
     const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
@@ -1613,7 +1629,7 @@ export async function POST(req: Request) {
       : 'Contract bytecode, supply, owner, and available safety flags reviewed.'
 
     const responsePayload = {
-      chain,
+      chain: chainKey,
       contract,
       resolvedInput,
 
@@ -1637,8 +1653,8 @@ export async function POST(req: Request) {
       ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'unavailable',
-          chain: 'base-mainnet',
-          endpointPath: holdersRaw?.__endpointPath ?? `/v1/base-mainnet/tokens/${contract}/token_holders_v2/`,
+          chain: chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet',
+          endpointPath: holdersRaw?.__endpointPath ?? `/v1/${chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet'}/tokens/${contract}/token_holders_v2/`,
           authMode: 'bearer',
           hasGoldrushKey: Boolean(process.env.GOLDRUSH_API_KEY),
           hasCovalentKey: Boolean(process.env.COVALENT_API_KEY),
@@ -1778,7 +1794,7 @@ export async function POST(req: Request) {
             // A) Token identity
             inputContract: contract,
             normalizedContract: String(contract).toLowerCase(),
-            chain: 'base',
+            chain: chainKey,
             tokenName: resolvedName,
             tokenSymbol: resolvedSymbol,
             tokenDecimals: resolvedDecimals,
@@ -2014,35 +2030,27 @@ export async function POST(req: Request) {
         } : null,
         holderDiagnostics: {
           attempted: holdersRaw?.__status !== 'unavailable',
+          chainUsed: holdersRaw?.__chainUsed ?? (chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet'),
+          endpointTemplate: holdersRaw?.__endpointTemplate ?? `https://api.covalenthq.com/v1/${chainKey === 'eth' ? 'eth-mainnet' : 'base-mainnet'}/tokens/{token}/token_holders_v2/?page-number=0&page-size=100`,
+          hasApiKey: Boolean(holdersRaw?.__hasApiKey),
           statusCode: holdersRaw?.__statusCode ?? undefined,
           fetchFailed: holdersRaw?.__status === 'error',
           failureStage: holderDistributionStatus.status === 'ok' ? undefined : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
           rawItemCount: holderItems.length,
+          rawTopLevelKeys: holdersRaw ? Object.keys(holdersRaw) : undefined,
           normalizedCount: normalizedTop.length,
           firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : undefined,
           reason: holderDistributionStatus.reason,
         },
         lpDiagnostics: {
+          attempted: Boolean(lpPoolAddress || matchingPools.length > 0),
+          poolCount: matchingPools.length,
+          primaryPool: lpPoolAddress ?? null,
           poolType: lpControl.poolType,
+          lpTokenFound: Boolean(lpPoolAddress && lpControl.poolType === 'v2'),
           lpState: lpControl.status,
           confidence: lpControl.confidence,
-          protocolManaged: lpControl.status === 'protocol',
-          lockerDetected: (lpControl.evidence ?? []).some((e) => /locker_share=|known locker/i.test(e)),
-          burnDetected: (lpControl.evidence ?? []).some((e) => /burn_share=|burn\/dead/i.test(e)),
-          deadAddressDetected: (lpControl.evidence ?? []).some((e) => /dead/i.test(e)),
-          concentratedLiquidity: lpControl.status === 'concentrated_liquidity' || lpControl.poolType === 'v3' || lpControl.poolType === 'concentrated',
-          primaryPoolLiquidity: (responsePayload as any)?.liquidity ?? null,
-          totalLiquidity: (Array.isArray((responsePayload as any)?.pools) ? (responsePayload as any).pools : []).reduce((a: number, p: any) => a + (Number(p?.liquidity ?? 0) || 0), 0),
-          liquidityDominancePct: (() => {
-            const pools = Array.isArray((responsePayload as any).pools) ? (responsePayload as any).pools : []
-            const total = pools.reduce((a: number, p: any) => a + (Number(p?.liquidity ?? 0) || 0), 0)
-            const primary = Number(pools?.[0]?.liquidity ?? 0) || 0
-            return total > 0 ? (primary / total) * 100 : null
-          })(),
-          ownershipCheckAttempted: needsLpHolderFetch || rpcCallsAttempted > 0,
-          failureStage: lpControl.status === 'insufficient_data' ? 'pool_address_missing' : (lpControl.status === 'unverified' ? 'ownership_not_proven' : null),
-          poolCount: matchingPools.length,
-          selectedPoolId: (mainPool as any)?.id ?? null,
+          reason: lpControl.reason,
         },
       }
     } else {
