@@ -869,7 +869,10 @@ export async function POST(req: Request) {
     const body = await req.json();
     const { contract: contractInput, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback } = body;
     const rawChain = String(body.chain ?? 'base').toLowerCase()
-    const chain: ChainKey = rawChain === 'eth' ? 'eth' : 'base'
+    if (rawChain !== 'base' && rawChain !== 'eth') {
+      return NextResponse.json({ error: 'Unsupported chain. Use chain=base or chain=eth.' }, { status: 400 })
+    }
+    const chain: ChainKey = rawChain as ChainKey
     const forceDexFallback = debugMode === true && _forceDexFallback === true
     const originalInput = String(contractInput ?? '').trim()
     const normalizedInput = originalInput.toUpperCase()
@@ -883,7 +886,7 @@ export async function POST(req: Request) {
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
-    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 7 })
+    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 8 })
     const cached = tokenResponseCache.get(cacheKey)
     if (cached && cached.exp > Date.now() && !debugMode) {
       if (typeof cached.payload === 'object' && cached.payload) {
@@ -1224,7 +1227,7 @@ export async function POST(req: Request) {
     ];
 
     // AI summary from parallel phase 2
-    let aiSummary = "Unverified on Base — insufficient data for a risk verdict.";
+    let aiSummary = `Unverified on ${chain === 'eth' ? 'Ethereum' : 'Base'} — insufficient data for a risk verdict.`;
     const _aiResult = _aiSettled.status === 'fulfilled' ? _aiSettled.value : null
     if (_aiResult && typeof _aiResult === 'object' && 'content' in _aiResult) {
       const _aiContent = (_aiResult as { content: Array<{type: string; text?: string}> }).content
@@ -1779,7 +1782,7 @@ export async function POST(req: Request) {
             // A) Token identity
             inputContract: contract,
             normalizedContract: String(contract).toLowerCase(),
-            chain: 'base',
+            chain,
             tokenName: resolvedName,
             tokenSymbol: resolvedSymbol,
             tokenDecimals: resolvedDecimals,
