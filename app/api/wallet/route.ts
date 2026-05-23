@@ -75,6 +75,7 @@ export async function POST(req: Request) {
         walletProviderRouting: (snapshot as any)._diagnostics?.walletProviderRouting ?? null,
         moralisUsage: (snapshot as any)._diagnostics?.moralisUsage ?? null,
         providerFlow: (snapshot as any)._diagnostics?.providerFlow ?? null,
+        chainUsage: (snapshot as any)._diagnostics?.chainUsage ?? null,
       }
     }
     if (!debug) {

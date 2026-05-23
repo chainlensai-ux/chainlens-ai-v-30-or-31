@@ -192,6 +192,14 @@ export type WalletSnapshot = {
       goldrushAttempted: boolean
       goldrushSkippedReason: string | null
     }
+    chainUsage?: {
+      requestedChain: string
+      chainMode: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'
+      activeChains: MoralisChain[]
+      alchemyChainsAttempted: string[]
+      skippedChains: MoralisChain[]
+      reason: string
+    }
     walletProviderRouting?: {
       primaryProviders: string[]
       alchemyUsed: boolean
@@ -807,6 +815,42 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (activeChains.length === 0) activeChains = ['base', 'eth']
   activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, chainMode === 'all_supported' && deepScan ? supportedMoralisChains.length : maxChainsBasicScan)
 
+  const minChainValueUsd = 1
+  const maxChainsBasicScan = 5
+  const supportedMoralisChains: MoralisChain[] = ['eth', 'base', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche', 'fantom', 'cronos', 'gnosis']
+  const mapChain = (raw: string): MoralisChain | null => {
+    const c = raw.toLowerCase()
+    if (c === 'eth' || c.includes('ethereum')) return 'eth'
+    if (c.includes('base')) return 'base'
+    if (c.includes('polygon') || c === 'matic') return 'polygon'
+    if (c.includes('binance') || c.includes('bsc')) return 'bsc'
+    if (c.includes('arbitrum')) return 'arbitrum'
+    if (c.includes('optimism')) return 'optimism'
+    if (c.includes('avalanche')) return 'avalanche'
+    if (c.includes('fantom')) return 'fantom'
+    if (c.includes('cronos')) return 'cronos'
+    if (c.includes('gnosis') || c.includes('xdai')) return 'gnosis'
+    return null
+  }
+  const chainValueMap = new Map<MoralisChain, number>()
+  for (const h of holdings) {
+    const rawChain = String(h.chain ?? '').toLowerCase()
+    const mapped = mapChain(rawChain)
+    if (!mapped) continue
+    chainValueMap.set(mapped, (chainValueMap.get(mapped) ?? 0) + (h.value ?? 0))
+  }
+  const discoveredChains = [...chainValueMap.entries()].map(([chain, usdValue]) => ({ chain, usdValue })).sort((a,b)=>b.usdValue-a.usdValue)
+  const skippedDustChains = discoveredChains.filter(c => c.usdValue < minChainValueUsd).map(c => c.chain)
+  let activeChains: MoralisChain[] = []
+  if (chainMode === 'base') activeChains = ['base']
+  else if (chainMode === 'eth') activeChains = ['eth']
+  else if (chainMode === 'base_eth') activeChains = ['base','eth']
+  else if (chainMode === 'all_supported' && deepScan) activeChains = [...supportedMoralisChains]
+  else activeChains = discoveredChains.filter(c => c.usdValue >= minChainValueUsd).map(c => c.chain)
+  if (activeChains.length === 0 && (requestedChain === 'base' || requestedChain === 'eth')) activeChains = [requestedChain]
+  if (activeChains.length === 0) activeChains = ['base', 'eth']
+  activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, chainMode === 'all_supported' && deepScan ? supportedMoralisChains.length : maxChainsBasicScan)
+
   // Moralis holdings layer for active chains.
   let grEthRes: PromiseSettledResult<Holding[]>
   let grBaseRes: PromiseSettledResult<Holding[]>
@@ -1061,6 +1105,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         partialFailures: [..._moralisByChain.values()].filter((r) => r.attempted && !r.usable).length,
         goldrushAttempted: _grPrimaryAttempted,
         goldrushSkippedReason: _grPrimaryAttempted ? null : (_moralisUsed ? 'moralis_holdings_available' : 'not_required'),
+      },
+      chainUsage: {
+        requestedChain,
+        chainMode,
+        activeChains,
+        alchemyChainsAttempted: [
+          ...(useEthAlchemy ? ['eth'] : []),
+          'base',
+        ],
+        skippedChains: supportedMoralisChains.filter((c) => !activeChains.includes(c)),
+        reason: chainMode === 'all_supported' && !deepScan
+          ? 'all_supported_requires_deep_scan; reverted to discovered or fallback chains'
+          : activeChains.length > 0
+          ? 'active_chain_gating_applied'
+          : 'fallback_base_eth',
       },
       walletProviderRouting,
       providerFlow: {
