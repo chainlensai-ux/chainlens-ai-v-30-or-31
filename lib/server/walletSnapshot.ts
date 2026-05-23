@@ -212,22 +212,6 @@ export type WalletSnapshot = {
       goldrushBalancesSkipped: boolean
       deepScan: boolean
     }
-    providerFlow?: {
-      requestedChain: string
-      deepScan: boolean
-      portfolioValueSource: 'portfolio_layer' | 'unverified'
-      holdingsSource: 'holdings_layer' | 'fallback_layer' | 'unverified'
-      activitySource: 'activity_layer' | 'fallback_layer' | 'unavailable'
-      zerionValueAttempted: boolean
-      zerionValueUsable: boolean
-      moralisHoldingsAttempted: boolean
-      moralisHoldingsUsable: boolean
-      goldrushAttempted: boolean
-      goldrushSkippedReason: string | null
-      cacheHits: number
-      dedupedCalls: number
-      providerCallCounts: { zerion: number; moralis: number; goldrush: number; alchemy: number }
-    }
   }
 }
 
@@ -674,6 +658,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     baseFirst,
     nonceRes,
     behaviorRes,
+    grPnlEthRes,
+    grPnlBaseRes,
     alchemyPnlRes,
   ] = await Promise.allSettled([
     ZERION_KEY
@@ -815,42 +801,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (activeChains.length === 0) activeChains = ['base', 'eth']
   activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, chainMode === 'all_supported' && deepScan ? supportedMoralisChains.length : maxChainsBasicScan)
 
-  const minChainValueUsd = 1
-  const maxChainsBasicScan = 5
-  const supportedMoralisChains: MoralisChain[] = ['eth', 'base', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche', 'fantom', 'cronos', 'gnosis']
-  const mapChain = (raw: string): MoralisChain | null => {
-    const c = raw.toLowerCase()
-    if (c === 'eth' || c.includes('ethereum')) return 'eth'
-    if (c.includes('base')) return 'base'
-    if (c.includes('polygon') || c === 'matic') return 'polygon'
-    if (c.includes('binance') || c.includes('bsc')) return 'bsc'
-    if (c.includes('arbitrum')) return 'arbitrum'
-    if (c.includes('optimism')) return 'optimism'
-    if (c.includes('avalanche')) return 'avalanche'
-    if (c.includes('fantom')) return 'fantom'
-    if (c.includes('cronos')) return 'cronos'
-    if (c.includes('gnosis') || c.includes('xdai')) return 'gnosis'
-    return null
-  }
-  const chainValueMap = new Map<MoralisChain, number>()
-  for (const h of holdings) {
-    const rawChain = String(h.chain ?? '').toLowerCase()
-    const mapped = mapChain(rawChain)
-    if (!mapped) continue
-    chainValueMap.set(mapped, (chainValueMap.get(mapped) ?? 0) + (h.value ?? 0))
-  }
-  const discoveredChains = [...chainValueMap.entries()].map(([chain, usdValue]) => ({ chain, usdValue })).sort((a,b)=>b.usdValue-a.usdValue)
-  const skippedDustChains = discoveredChains.filter(c => c.usdValue < minChainValueUsd).map(c => c.chain)
-  let activeChains: MoralisChain[] = []
-  if (chainMode === 'base') activeChains = ['base']
-  else if (chainMode === 'eth') activeChains = ['eth']
-  else if (chainMode === 'base_eth') activeChains = ['base','eth']
-  else if (chainMode === 'all_supported' && deepScan) activeChains = [...supportedMoralisChains]
-  else activeChains = discoveredChains.filter(c => c.usdValue >= minChainValueUsd).map(c => c.chain)
-  if (activeChains.length === 0 && (requestedChain === 'base' || requestedChain === 'eth')) activeChains = [requestedChain]
-  if (activeChains.length === 0) activeChains = ['base', 'eth']
-  activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, chainMode === 'all_supported' && deepScan ? supportedMoralisChains.length : maxChainsBasicScan)
-
   // Moralis holdings layer for active chains.
   let grEthRes: PromiseSettledResult<Holding[]>
   let grBaseRes: PromiseSettledResult<Holding[]>
@@ -870,6 +820,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   // GoldRush balances fallback only when Moralis has no usable holdings for active chains, or deepScan=true.
   const _goldrushBalancesSkipped = !deepScan && _moralisUsed
+  const _goldrushSkippedReason = _goldrushBalancesSkipped ? 'moralis_holdings_available' : null
   if (_goldrushBalancesSkipped) {
     grEthRes = { status: 'fulfilled', value: [] }; grBaseRes = { status: 'fulfilled', value: [] }
   } else {
@@ -962,6 +913,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         ? 'Transfer history returned but no valued events for cost-basis estimation.'
         : ''
   const alchemyConfigured = Boolean(ALCHEMY_BASE_KEY)
+  const _zerionSucceeded = _zerionValueUsable || _zerionPositionsUsable
   if (process.env.NODE_ENV !== 'production') {
     console.log('[wallet-diag] route=/api/wallet deepScan=', deepScan, 'requestedChain=', requestedChain, 'zerionValueUsable=', _zerionValueUsable, 'zerionPositionsUsable=', _zerionPositionsUsable, 'moralisHoldingsUsable=', _moralisHoldingsUsable, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'goldrushSkippedReason=', _goldrushSkippedReason, 'goldrushEventsReturned=', grEvents.length, 'pnlSource=', pnlSource, 'providerUsed=', providerUsed, 'totalMs=', Date.now() - startedAt)
   }
@@ -1072,6 +1024,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         primaryUsable: _grPrimaryUsable,
         fallbackAttempted: [..._moralisByChain.values()].some((r) => r.attempted),
         fallbackUsed: _moralisUsed,
+        tertiaryAttempted: _grPrimaryAttempted,
+        tertiaryUsed: !_moralisUsed && _grPrimaryUsable,
         fallbackReason: _preFallbackReason,
         cacheHit: [..._moralisByChain.values()].some((r) => r.cacheHit),
         reason: _moralisUsed
@@ -1122,27 +1076,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           : 'fallback_base_eth',
       },
       walletProviderRouting,
-      providerFlow: {
-        requestedChain,
-        deepScan,
-        portfolioValueSource: _zerionValueUsable ? 'portfolio_layer' as const : 'unverified' as const,
-        holdingsSource: _moralisHoldingsUsable ? 'holdings_layer' as const : _zerionPositionsUsable || _grPrimaryUsable ? 'fallback_layer' as const : 'unverified' as const,
-        activitySource: pnlSource === 'activity_layer' ? 'activity_layer' as const : pnlSource === 'fallback_layer' ? 'fallback_layer' as const : 'unavailable' as const,
-        zerionValueAttempted: Boolean(ZERION_KEY),
-        zerionValueUsable: _zerionValueUsable,
-        moralisHoldingsAttempted: _moralisAttempted,
-        moralisHoldingsUsable: _moralisHoldingsUsable,
-        goldrushAttempted: _grPrimaryAttempted,
-        goldrushSkippedReason: _goldrushSkippedReason,
-        cacheHits: (_moralisResult.cacheHit ? 1 : 0),
-        dedupedCalls: 0,
-        providerCallCounts: {
-          zerion: Boolean(ZERION_KEY) ? 2 : 0,
-          moralis: _moralisAttempted && !_moralisResult.cacheHit ? 1 : 0,
-          goldrush: (!_goldrushBalancesSkipped && GOLDRUSH_KEY ? 2 : 0) + (deepScan && Boolean(GOLDRUSH_KEY) ? (useEthAlchemy ? 2 : 1) : 0),
-          alchemy: (useEthAlchemy ? 5 : 4),
-        },
-      },
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(cacheKey)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
