@@ -105,6 +105,12 @@ function isWalletConnect(id: string) {
 function isMetaMaskConnector(id: string, name: string) {
   return /metamask/i.test(id) || /metamask/i.test(name)
 }
+function isMetaMaskMobileBrowser() {
+  if (typeof window === 'undefined') return false
+  const eth = (window as Window & { ethereum?: { isMetaMask?: boolean } }).ethereum
+  const ua = navigator.userAgent || ''
+  return !!eth?.isMetaMask && /mobile/i.test(ua)
+}
 function dedupeConnectors(all: ReturnType<typeof useConnect>['connectors']) {
   const seen = new Set<string>()
   return all.filter(c => {
@@ -163,6 +169,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const [savedState, setSavedState] = useState<SavedWalletState | null>(null)
   const [authUserId, setAuthUserId] = useState<string | null>(null)
   const reconnectAttemptedRef = useRef(false)
+  const routeChangeRef = useRef(false)
 
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -206,6 +213,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   }, [isConnected, modalOpen])
 
   useEffect(() => {
+    routeChangeRef.current = true
     setModalOpen(false)
     setDisconnectOpen(false)
     setConnecting(false)
@@ -281,7 +289,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         msg.includes('unsupported') ||
         msg.includes('unavailable')
 
-      if (isMetaMask && isMobileClient && unavailable && mounted) {
+      if (isMetaMask && isMobileClient && unavailable && mounted && !isMetaMaskMobileBrowser()) {
         const currentUrl = window.location.href.replace(/^https?:\/\//, '')
         setErrorMsg('Opening MetaMask...')
         setConnecting(false)
@@ -443,6 +451,25 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     })
   }, [mounted, connectAsync, connectors, isConnected, isReconnecting, savedState, authUserId])
 
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return
+    const debug = {
+      isMobile: isMobileClient,
+      savedWalletFound: !!savedState,
+      savedConnectorId: savedState?.connectorId ?? null,
+      wagmiStatus: isConnected ? 'connected' : (isReconnecting ? 'reconnecting' : 'disconnected'),
+      connectorIds: connectors.map(c => c.id),
+      reconnectOnMountEnabled: true,
+      reconnectAttempted: reconnectAttemptedRef.current,
+      walletConnectSkippedAutoConnect: !!savedState?.connectorId && isWalletConnect(savedState.connectorId),
+      manualDisconnectBlocked: getManualDisconnectFlag(authUserId),
+      routeChanged: routeChangeRef.current,
+      authUserIdPresent: !!authUserId,
+    }
+    console.debug('[ConnectWallet] walletRestoreDebug', debug)
+    routeChangeRef.current = false
+  }, [authUserId, connectors, isConnected, isMobileClient, isReconnecting, savedState, pathname])
+
   // ── shared button styles ──────────────────────────────────────────────────
 
   const baseStyle: React.CSSProperties = {
@@ -555,6 +582,9 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       </button>
     )
   }
+
+  const showReconnectState = !!savedState && !isConnected && !isReconnecting && !getManualDisconnectFlag(authUserId)
+  const hasSavedConnector = savedState?.connectorId ? connectors.find(c => c.id === savedState.connectorId || c.name === savedState.connectorId) : null
 
   // ── disconnected — trigger button + modal ─────────────────────────────────
 
@@ -763,27 +793,53 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       {/* WCBridge only renders client-side; keeps useWeb3Modal() out of SSR */}
       {mounted && walletConnectEnabled && <WCBridge openRef={openWeb3ModalRef} />}
 
-      <button
-        onClick={async (e) => {
-          await openModal()
-        }}
-        className={className}
-        style={baseStyle}
-        onMouseEnter={e => {
-          const el = e.currentTarget as HTMLButtonElement
-          el.style.opacity = '0.90'
-          el.style.transform = 'translateY(-1px)'
-          el.style.boxShadow = '0 0 44px rgba(34,211,238,0.65), 0 0 44px rgba(45,212,191,0.40)'
-        }}
-        onMouseLeave={e => {
-          const el = e.currentTarget as HTMLButtonElement
-          el.style.opacity = '1'
-          el.style.transform = 'translateY(0)'
-          el.style.boxShadow = '0 0 28px rgba(34,211,238,0.45), 0 0 28px rgba(45,212,191,0.25)'
-        }}
-      >
-        Connect Wallet
-      </button>
+      {showReconnectState && (
+        <div className={className} style={{ display: 'grid', gap: '8px' }}>
+          <button
+            onClick={async () => {
+              if (hasSavedConnector && isWalletConnect(hasSavedConnector.id) && walletConnectEnabled && openWeb3ModalRef.current) {
+                openWeb3ModalRef.current()
+                return
+              }
+              if (hasSavedConnector) {
+                await handleConnector(hasSavedConnector)
+                return
+              }
+              await openModal()
+            }}
+            style={baseStyle}
+          >
+            Reconnect Wallet
+          </button>
+          <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center' }}>
+            Saved wallet: {savedState?.address.slice(0, 6)}…{savedState?.address.slice(-4)}
+          </div>
+        </div>
+      )}
+
+      {!showReconnectState && (
+        <button
+          onClick={async () => {
+            await openModal()
+          }}
+          className={className}
+          style={baseStyle}
+          onMouseEnter={e => {
+            const el = e.currentTarget as HTMLButtonElement
+            el.style.opacity = '0.90'
+            el.style.transform = 'translateY(-1px)'
+            el.style.boxShadow = '0 0 44px rgba(34,211,238,0.65), 0 0 44px rgba(45,212,191,0.40)'
+          }}
+          onMouseLeave={e => {
+            const el = e.currentTarget as HTMLButtonElement
+            el.style.opacity = '1'
+            el.style.transform = 'translateY(0)'
+            el.style.boxShadow = '0 0 28px rgba(34,211,238,0.45), 0 0 28px rgba(45,212,191,0.25)'
+          }}
+        >
+          Connect Wallet
+        </button>
+      )}
 
       {/* ── modal rendered via portal so it escapes sidebar stacking context ── */}
       {mounted && modalOpen && createPortal(modalJsx, document.body)}
