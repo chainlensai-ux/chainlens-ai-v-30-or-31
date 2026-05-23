@@ -174,6 +174,12 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const reconnectButtonUsedRef = useRef(false)
   const reconnectResultRef = useRef<'idle' | 'restored' | 'modal_opened' | 'failed'>('idle')
   const passiveWcCheckDoneRef = useRef(false)
+  const saveAttemptedRef = useRef(false)
+  const saveSucceededRef = useRef(false)
+  const saveFailureReasonRef = useRef<string | null>(null)
+  const hydrateAfterLoginAttemptedRef = useRef(false)
+  const hydrateAfterLoginSucceededRef = useRef(false)
+  const logoutClearedServerWalletRef = useRef(false)
 
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -264,6 +270,52 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     return false
   }, [])
 
+  const fetchServerWalletState = useCallback(async (token: string): Promise<SavedWalletState | null> => {
+    const res = await fetch('/api/user-settings', {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    }).catch(() => null)
+    if (!res?.ok) return null
+    const body = await res.json().catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
+    const persisted = body?.settings?.saved_filters?.[USER_WALLET_FILTER_KEY] as Partial<SavedWalletState> | undefined
+    if (!persisted?.address) return null
+    return {
+      address: persisted.address,
+      connectorId: typeof persisted.connectorId === 'string' ? persisted.connectorId : null,
+      chainId: typeof (persisted as Record<string, unknown>).chainId === 'number' ? (persisted as Record<string, unknown>).chainId as number : null,
+      updatedAt: typeof persisted.updatedAt === 'string' ? persisted.updatedAt : new Date().toISOString(),
+    }
+  }, [])
+
+  const patchWalletStateToServer = useCallback(async (token: string, nextState: SavedWalletState | null) => {
+    saveAttemptedRef.current = true
+    try {
+      const current = await fetch('/api/user-settings', {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      }).then(r => r.ok ? r.json() : null).catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
+      const savedFilters = current?.settings?.saved_filters && typeof current.settings.saved_filters === 'object' ? current.settings.saved_filters : {}
+      const merged = { ...savedFilters }
+      if (nextState) merged[USER_WALLET_FILTER_KEY] = nextState
+      else delete merged[USER_WALLET_FILTER_KEY]
+      const patched = await fetch('/api/user-settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ saved_filters: merged }),
+      }).catch(() => null)
+      if (!patched?.ok) {
+        saveSucceededRef.current = false
+        saveFailureReasonRef.current = `patch_status_${patched?.status ?? 'unknown'}`
+        return
+      }
+      saveSucceededRef.current = true
+      saveFailureReasonRef.current = null
+    } catch {
+      saveSucceededRef.current = false
+      saveFailureReasonRef.current = 'patch_exception'
+    }
+  }, [])
+
   const handleConnector = useCallback(async (connector: (typeof connectors)[number]) => {
     if (!connector) return
     const isMetaMask = isMetaMaskConnector(connector.id, connector.name)
@@ -339,30 +391,18 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       if (!cancelled) setSavedState(local)
 
       if (!session?.access_token) return
-      const res = await fetch('/api/user-settings', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-        cache: 'no-store',
-      }).catch(() => null)
-      if (!res?.ok || cancelled) return
-      const body = await res.json().catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
-      const persisted = body?.settings?.saved_filters?.[USER_WALLET_FILTER_KEY] as Partial<SavedWalletState> | undefined
-      if (!persisted?.address || cancelled) return
-      const nextState: SavedWalletState = {
-        address: persisted.address,
-        connectorId: typeof persisted.connectorId === 'string' ? persisted.connectorId : null,
-        chainId: typeof (persisted as Record<string, unknown>).chainId === 'number' ? (persisted as Record<string, unknown>).chainId as number : null,
-        updatedAt: typeof persisted.updatedAt === 'string' ? persisted.updatedAt : new Date().toISOString(),
-      }
+      const nextState = await fetchServerWalletState(session.access_token)
+      if (!nextState || cancelled) return
       writeLocalWalletState(key, nextState)
       if (!cancelled) setSavedState(nextState)
 
       if (process.env.NODE_ENV !== 'production') {
-        console.debug('[ConnectWallet] hydrate', { savedWalletFound: !!local, savedUserWalletFound: !!persisted?.address, authUserIdPresent: !!userId })
+        console.debug('[ConnectWallet] hydrate', { savedWalletFound: !!local, savedUserWalletFound: !!nextState?.address, authUserIdPresent: !!userId })
       }
     }
     hydrateSavedWallet()
     return () => { cancelled = true }
-  }, [mounted])
+  }, [mounted, fetchServerWalletState])
 
   // Re-hydrate and reset reconnect state on auth changes (login / logout)
   useEffect(() => {
@@ -378,6 +418,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         return
       }
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && userId && session?.access_token) {
+        hydrateAfterLoginAttemptedRef.current = true
         setAuthUserId(userId)
         reconnectAttemptedRef.current = false
         const key = walletKeyForUser(userId)
@@ -385,27 +426,16 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         setSavedState(local)
         const token = session.access_token
         void (async () => {
-          const res = await fetch('/api/user-settings', {
-            headers: { Authorization: `Bearer ${token}` },
-            cache: 'no-store',
-          }).catch(() => null)
-          if (!res?.ok) return
-          const body = await res.json().catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
-          const persisted = body?.settings?.saved_filters?.[USER_WALLET_FILTER_KEY] as Partial<SavedWalletState> | undefined
-          if (!persisted?.address) return
-          const nextState: SavedWalletState = {
-            address: persisted.address,
-            connectorId: typeof persisted.connectorId === 'string' ? persisted.connectorId : null,
-            chainId: typeof (persisted as Record<string, unknown>).chainId === 'number' ? (persisted as Record<string, unknown>).chainId as number : null,
-            updatedAt: typeof persisted.updatedAt === 'string' ? persisted.updatedAt : new Date().toISOString(),
-          }
+          const nextState = await fetchServerWalletState(token)
+          if (!nextState) return
           writeLocalWalletState(key, nextState)
           setSavedState(nextState)
+          hydrateAfterLoginSucceededRef.current = true
         })()
       }
     })
     return () => subscription.unsubscribe()
-  }, [mounted])
+  }, [mounted, fetchServerWalletState])
 
   useEffect(() => {
     if (!isConnected || !address) return
@@ -422,19 +452,14 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     void (async () => {
       const { data } = await supabase.auth.getSession()
       const session = data.session
-      if (!session?.access_token) return
-      const current = await fetch('/api/user-settings', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-        cache: 'no-store',
-      }).then(r => r.ok ? r.json() : null).catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
-      const savedFilters = current?.settings?.saved_filters && typeof current.settings.saved_filters === 'object' ? current.settings.saved_filters : {}
-      await fetch('/api/user-settings', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ saved_filters: { ...savedFilters, [USER_WALLET_FILTER_KEY]: nextState } }),
-      }).catch(() => null)
+      if (!session?.access_token || !authUserId) {
+        saveSucceededRef.current = false
+        saveFailureReasonRef.current = 'missing_auth_session'
+        return
+      }
+      await patchWalletStateToServer(session.access_token, nextState)
     })()
-  }, [address, connector?.id, isConnected, chain?.id, authUserId])
+  }, [address, connector?.id, isConnected, chain?.id, authUserId, patchWalletStateToServer])
 
   useEffect(() => {
     if (!mounted) return
@@ -508,7 +533,16 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     if (process.env.NODE_ENV === 'production') return
     const isExternalMobileBrowser = isMobileClient && !isMetaMaskMobileBrowser()
     const wcConnector = getWalletConnectConnector()
+    const localWallet = readLocalWalletState(walletKeyForUser(authUserId))
     const debug = {
+      authUserId,
+      saveAttempted: saveAttemptedRef.current,
+      saveSucceeded: saveSucceededRef.current,
+      saveFailureReason: saveFailureReasonRef.current,
+      serverWalletFound: !!savedState,
+      localWalletFound: !!localWallet,
+      hydrateAfterLoginAttempted: hydrateAfterLoginAttemptedRef.current,
+      hydrateAfterLoginSucceeded: hydrateAfterLoginSucceededRef.current,
       isExternalMobileBrowser,
       savedWalletConnectFound: !!savedState?.connectorId && isWalletConnect(savedState.connectorId),
       wagmiStatus: isConnected ? 'connected' : (isReconnecting ? 'reconnecting' : 'disconnected'),
@@ -519,8 +553,9 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       reconnectButtonUsed: reconnectButtonUsedRef.current,
       reconnectResult: reconnectResultRef.current,
       manualDisconnectBlocked: getManualDisconnectFlag(authUserId),
+      logoutClearedServerWallet: logoutClearedServerWalletRef.current,
     }
-    console.debug('[ConnectWallet] walletConnectMobileDebug', debug)
+    console.debug('[ConnectWallet] accountWalletPersistenceDebug', debug)
     routeChangeRef.current = false
   }, [authUserId, connectors, getWalletConnectConnector, hasLikelyWcSession, isConnected, isMobileClient, isReconnecting, savedState, pathname])
 
@@ -598,18 +633,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
                   const { data } = await supabase.auth.getSession()
                   const session = data.session
                   if (!session?.access_token) return
-                  const current = await fetch('/api/user-settings', {
-                    headers: { Authorization: `Bearer ${session.access_token}` },
-                    cache: 'no-store',
-                  }).then(r => r.ok ? r.json() : null).catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
-                  const savedFilters = current?.settings?.saved_filters && typeof current.settings.saved_filters === 'object' ? current.settings.saved_filters : {}
-                  const nextFilters = { ...savedFilters }
-                  delete nextFilters[USER_WALLET_FILTER_KEY]
-                  await fetch('/api/user-settings', {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-                    body: JSON.stringify({ saved_filters: nextFilters }),
-                  }).catch(() => null)
+                  await patchWalletStateToServer(session.access_token, null)
                 })()
                 setDisconnectOpen(false)
               }}
@@ -883,11 +907,9 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
           <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center' }}>
             Saved wallet: {savedState?.address.slice(0, 6)}…{savedState?.address.slice(-4)}
           </div>
-          {!!savedState?.connectorId && isWalletConnect(savedState.connectorId) && (
-            <div style={{ fontSize: '10px', color: '#64748b', textAlign: 'center' }}>
-              Wallet session saved. Tap to reconnect.
-            </div>
-          )}
+          <div style={{ fontSize: '10px', color: '#64748b', textAlign: 'center' }}>
+            Wallet saved. Reconnect to use it.
+          </div>
         </div>
       )}
 
