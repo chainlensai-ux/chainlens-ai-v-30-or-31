@@ -170,6 +170,10 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const [authUserId, setAuthUserId] = useState<string | null>(null)
   const reconnectAttemptedRef = useRef(false)
   const routeChangeRef = useRef(false)
+  const visibilityRecheckCountRef = useRef(0)
+  const reconnectButtonUsedRef = useRef(false)
+  const reconnectResultRef = useRef<'idle' | 'restored' | 'modal_opened' | 'failed'>('idle')
+  const passiveWcCheckDoneRef = useRef(false)
 
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -243,6 +247,21 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     setConnecting(false)
     setSelected(null)
     setErrorMsg(null)
+  }, [])
+
+  const getWalletConnectConnector = useCallback(() => {
+    return connectors.find(c => isWalletConnect(c.id)) ?? null
+  }, [connectors])
+
+  const hasLikelyWcSession = useCallback(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const k = window.localStorage.key(i) ?? ''
+        if (/walletconnect|wc@2|wc:|reown/i.test(k)) return true
+      }
+    } catch {}
+    return false
   }, [])
 
   const handleConnector = useCallback(async (connector: (typeof connectors)[number]) => {
@@ -452,23 +471,58 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   }, [mounted, connectAsync, connectors, isConnected, isReconnecting, savedState, authUserId])
 
   useEffect(() => {
+    if (!mounted) return
+    const savedIsWC = !!savedState?.connectorId && isWalletConnect(savedState.connectorId)
+    if (!savedIsWC || isConnected || isReconnecting || getManualDisconnectFlag(authUserId)) return
+    if (passiveWcCheckDoneRef.current) return
+    passiveWcCheckDoneRef.current = true
+    const wcConnector = getWalletConnectConnector()
+    if (!wcConnector) return
+    const maybeSession = hasLikelyWcSession()
+    if (!maybeSession) return
+    void connectAsync({ connector: wcConnector }).then(() => {
+      reconnectResultRef.current = 'restored'
+    }).catch(() => {
+      reconnectResultRef.current = 'failed'
+    })
+  }, [authUserId, connectAsync, getWalletConnectConnector, hasLikelyWcSession, isConnected, isReconnecting, mounted, savedState])
+
+  useEffect(() => {
+    if (!mounted) return
+    const onVisibleOrFocus = () => {
+      const visible = typeof document !== 'undefined' ? document.visibilityState === 'visible' : true
+      if (!visible) return
+      visibilityRecheckCountRef.current += 1
+      reconnectAttemptedRef.current = false
+      passiveWcCheckDoneRef.current = false
+    }
+    document.addEventListener('visibilitychange', onVisibleOrFocus)
+    window.addEventListener('focus', onVisibleOrFocus)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibleOrFocus)
+      window.removeEventListener('focus', onVisibleOrFocus)
+    }
+  }, [mounted])
+
+  useEffect(() => {
     if (process.env.NODE_ENV === 'production') return
+    const isExternalMobileBrowser = isMobileClient && !isMetaMaskMobileBrowser()
+    const wcConnector = getWalletConnectConnector()
     const debug = {
-      isMobile: isMobileClient,
-      savedWalletFound: !!savedState,
-      savedConnectorId: savedState?.connectorId ?? null,
+      isExternalMobileBrowser,
+      savedWalletConnectFound: !!savedState?.connectorId && isWalletConnect(savedState.connectorId),
       wagmiStatus: isConnected ? 'connected' : (isReconnecting ? 'reconnecting' : 'disconnected'),
       connectorIds: connectors.map(c => c.id),
-      reconnectOnMountEnabled: true,
-      reconnectAttempted: reconnectAttemptedRef.current,
-      walletConnectSkippedAutoConnect: !!savedState?.connectorId && isWalletConnect(savedState.connectorId),
+      walletConnectConnectorFound: !!wcConnector,
+      sessionStorageLikelyPresent: hasLikelyWcSession(),
+      visibilityRecheckCount: visibilityRecheckCountRef.current,
+      reconnectButtonUsed: reconnectButtonUsedRef.current,
+      reconnectResult: reconnectResultRef.current,
       manualDisconnectBlocked: getManualDisconnectFlag(authUserId),
-      routeChanged: routeChangeRef.current,
-      authUserIdPresent: !!authUserId,
     }
-    console.debug('[ConnectWallet] walletRestoreDebug', debug)
+    console.debug('[ConnectWallet] walletConnectMobileDebug', debug)
     routeChangeRef.current = false
-  }, [authUserId, connectors, isConnected, isMobileClient, isReconnecting, savedState, pathname])
+  }, [authUserId, connectors, getWalletConnectConnector, hasLikelyWcSession, isConnected, isMobileClient, isReconnecting, savedState, pathname])
 
   // ── shared button styles ──────────────────────────────────────────────────
 
@@ -797,9 +851,24 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         <div className={className} style={{ display: 'grid', gap: '8px' }}>
           <button
             onClick={async () => {
-              if (hasSavedConnector && isWalletConnect(hasSavedConnector.id) && walletConnectEnabled && openWeb3ModalRef.current) {
-                openWeb3ModalRef.current()
-                return
+              reconnectButtonUsedRef.current = true
+              reconnectResultRef.current = 'idle'
+              if (hasSavedConnector && isWalletConnect(hasSavedConnector.id)) {
+                const wcConnector = getWalletConnectConnector()
+                if (wcConnector) {
+                  try {
+                    await connectAsync({ connector: wcConnector })
+                    reconnectResultRef.current = 'restored'
+                    return
+                  } catch {
+                    reconnectResultRef.current = 'failed'
+                  }
+                }
+                if (walletConnectEnabled && openWeb3ModalRef.current) {
+                  openWeb3ModalRef.current()
+                  reconnectResultRef.current = 'modal_opened'
+                  return
+                }
               }
               if (hasSavedConnector) {
                 await handleConnector(hasSavedConnector)
@@ -814,6 +883,11 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
           <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center' }}>
             Saved wallet: {savedState?.address.slice(0, 6)}…{savedState?.address.slice(-4)}
           </div>
+          {!!savedState?.connectorId && isWalletConnect(savedState.connectorId) && (
+            <div style={{ fontSize: '10px', color: '#64748b', textAlign: 'center' }}>
+              Wallet session saved. Tap to reconnect.
+            </div>
+          )}
         </div>
       )}
 
