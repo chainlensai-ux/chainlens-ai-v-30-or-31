@@ -150,6 +150,17 @@ type ScanResult = {
       reasons: string[]
     }
   } | null
+  rugRisk?: {
+    lp_safety: { status: string; unlock_at: string | null; countdown_seconds: number | null; owner: string | null; contract: string | null; movement_24h_usd: number | null; source_status: "ok" | "failed" }
+    contract_flags: { honeypot: boolean | null; blacklist: boolean | null; mint: boolean | null; upgradeable: boolean | null; source_status: "ok" | "failed" }
+    deployer_reputation: { score: number | null; rug_history: number | null; deploy_patterns: string[]; source_status: "ok" | "failed" }
+    sniper_activity: { level: "low" | "medium" | "high"; score: number; source_status: "ok" | "failed" }
+    early_buyers: Array<{ wallet: string; amount_usd: number | null; tx_count: number | null }>
+    liquidity_risk: { liquidity_usd: number | null; volatility_24h_pct: number | null; source_status: "ok" | "failed" }
+    trading_simulation: { success: boolean | null; buy_tax: number | null; sell_tax: number | null; source_status: "ok" | "failed" }
+    risk_drivers: string[]
+    overall_rug_risk_score: number | null
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -1281,6 +1292,7 @@ export default function TerminalTokenScanner() {
           chartDataSource: json.chartDataSource ?? null,
           resolvedInput: json.resolvedInput ?? null,
           riskEngine: json.riskEngine ?? null,
+          rugRisk: json.rugRisk ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -2214,6 +2226,7 @@ export default function TerminalTokenScanner() {
                   )}
                   {!planLoading && isFullAccess && (() => {
                     const engine = result.riskEngine
+                    const rug = result.rugRisk
                     const sim = result.honeypot
                     const simVerified = sim?.simulationSuccess === true
                     const lpState = result.lpControl?.status ?? 'unverified'
@@ -2225,23 +2238,24 @@ export default function TerminalTokenScanner() {
                     return (
                       <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
                         <div style={{ ...block, border:`1px solid ${scoreColor}55` }}>
-                          <p style={{ margin:'0 0 4px',fontSize:'11px',fontWeight:800,letterSpacing:'0.12em',color:'#c4b5fd',fontFamily:'var(--font-plex-mono)' }}>CORTEX Risk Engine</p>
+                          <p style={{ margin:'0 0 4px',fontSize:'11px',fontWeight:800,letterSpacing:'0.12em',color:'#c4b5fd',fontFamily:'var(--font-plex-mono)' }}>Rug Risk Engine</p>
                           <div style={{ display:'flex', alignItems:'baseline', gap:'10px', flexWrap:'wrap' }}>
-                            <div style={{ fontSize:'34px',fontWeight:800,color:scoreColor,fontFamily:'var(--font-plex-mono)' }}>{engine?.rugRiskScore ?? '—'}{engine?.rugRiskScore != null && <span style={{ fontSize:'13px', color:'#64748b' }}>/100</span>}</div>
+                            <div style={{ fontSize:'34px',fontWeight:800,color:scoreColor,fontFamily:'var(--font-plex-mono)' }}>{rug?.overall_rug_risk_score ?? engine?.rugRiskScore ?? '—'}{(rug?.overall_rug_risk_score ?? engine?.rugRiskScore) != null && <span style={{ fontSize:'13px', color:'#64748b' }}>/100</span>}</div>
                             <span style={{ padding:'4px 10px',borderRadius:'999px',border:`1px solid ${scoreColor}66`,color:scoreColor,fontSize:'11px',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{labelMap[engine?.rugRiskLabel ?? 'unverified']}</span>
                             <span style={{ padding:'4px 10px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.35)',color:'#7dd3fc',fontSize:'11px',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Confidence {(engine?.confidence ?? 'low').toUpperCase()}</span>
                           </div>
-                          <p style={{ margin:'10px 0 0',fontSize:'12px',lineHeight:1.6,color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{engine?.cortexRead ?? 'CORTEX Risk Engine is unverified because risk checks are missing.'}</p>
+                          <p style={{ margin:'10px 0 0',fontSize:'12px',lineHeight:1.6,color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{engine?.cortexRead ?? 'Rug risk analysis available when upstream APIs respond.'}</p>
                         </div>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:'10px' }}>
-                          <div style={block}><p style={title}>Rug Risk</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{labelMap[engine?.rugRiskLabel ?? 'unverified']}</p></div>
-                          <div style={block}><p style={title}>Sniper Activity</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{(engine?.sniperActivity.status ?? 'unverified').replace('_',' ')}</p></div>
-                          <div style={block}><p style={title}>Contract Control</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>Dev Control: {ownerState}</p><p style={{ margin:'5px 0 0',color:'#94a3b8',fontSize:'11px' }}>LP Control: {lpState.replace('_',' ')}</p></div>
-                          <div style={block}><p style={title}>Open Checks</p><p style={{ margin:0,color:(engine?.openChecks?.length ?? 0)>0?'#fbbf24':'#34d399',fontWeight:700 }}>{(engine?.openChecks?.length ?? 0)>0 ? `${engine?.openChecks?.length} open` : 'Verified'}</p></div>
+                          <div style={block}><p style={title}>LP lock status</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{rug?.lp_safety.status ?? lpState}</p><p style={{ margin:'5px 0 0',color:'#94a3b8',fontSize:'11px' }}>Countdown: {rug?.lp_safety.countdown_seconds != null ? `${Math.floor(rug.lp_safety.countdown_seconds/3600)}h` : 'N/A'}</p></div>
+                          <div style={block}><p style={title}>LP owner + contract</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{shorten(rug?.lp_safety.owner ?? 'N/A')}</p><p style={{ margin:'5px 0 0',color:'#94a3b8',fontSize:'11px' }}>{shorten(rug?.lp_safety.contract ?? 'N/A')}</p></div>
+                          <div style={block}><p style={title}>Deployer reputation</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{rug?.deployer_reputation.score ?? 'N/A'}</p></div>
+                          <div style={block}><p style={title}>Liquidity volatility</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{rug?.liquidity_risk.volatility_24h_pct != null ? `${rug.liquidity_risk.volatility_24h_pct.toFixed(2)}%` : 'N/A'}</p></div>
                         </div>
-                        <div style={block}><p style={title}>Verified Signals</p><ul style={{ margin:0,paddingLeft:'18px',color:'#86efac',fontSize:'12px' }}>{(engine?.verifiedSignals?.length ? engine.verifiedSignals : ['No verified signals were returned.']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
-                        <div style={block}><p style={title}>Risk Drivers</p><ul style={{ margin:0,paddingLeft:'18px',color:'#fda4af',fontSize:'12px' }}>{(engine?.riskDrivers?.length ? engine.riskDrivers : ['No active risk drivers surfaced from available checks.']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
-                        <div style={block}><p style={title}>Open Verification Checks</p><ul style={{ margin:0,paddingLeft:'18px',color:'#fde68a',fontSize:'12px' }}>{(engine?.openChecks?.length ? engine.openChecks : ['No open verification checks from current scan.']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
+                        <div style={block}><p style={title}>Contract flags</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>Honeypot: {String(rug?.contract_flags.honeypot ?? false)} · Mint: {String(rug?.contract_flags.mint ?? false)} · Upgradeable: {String(rug?.contract_flags.upgradeable ?? false)}</p></div>
+                        <div style={block}><p style={title}>Sniper activity heatmap</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{rug?.sniper_activity.level ?? 'low'} ({rug?.sniper_activity.score ?? 0}/100)</p></div>
+                        <div style={block}><p style={title}>Early buyers</p><ul style={{ margin:0,paddingLeft:'18px',color:'#cbd5e1',fontSize:'12px' }}>{(rug?.early_buyers?.length ? rug.early_buyers.map(b=>`${shorten(b.wallet)} · $${b.amount_usd ?? 0}`) : ['No early buyers detected']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
+                        <div style={block}><p style={title}>Risk drivers</p><ul style={{ margin:0,paddingLeft:'18px',color:'#fda4af',fontSize:'12px' }}>{(rug?.risk_drivers?.length ? rug.risk_drivers : engine?.riskDrivers ?? ['No active risk drivers']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
                         <div style={block}><p style={title}>Trading Simulation</p><p style={{ margin:'0 0 6px',color:simVerified?'#34d399':'#fbbf24',fontWeight:700 }}>{simVerified?'Verified':'Partial'}</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>Buy Tax: {sim?.buyTax != null ? `${sim.buyTax.toFixed(1)}%` : 'Unverified'} · Sell Tax: {sim?.sellTax != null ? `${sim.sellTax.toFixed(1)}%` : 'Unverified'}</p></div>
                         <div style={block}><p style={title}>Contract Flags</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>Mint: {result.analysis?.has_mint ? 'Yes' : 'No'} · Upgradeable: {result.analysis?.is_upgradeable ? 'Yes' : 'No'} · Withdraw/Sweep: {result.analysis?.has_withdraw || result.analysis?.has_sweep ? 'Yes' : 'No'}</p></div>
                         <div style={block}><p style={title}>Ownership / Control</p><p style={{ margin:'0 0 4px',color:'#f8fafc',fontWeight:700 }}>Dev Control: {ownerState}</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>LP Control: {lpState.replace('_',' ')}</p></div>
