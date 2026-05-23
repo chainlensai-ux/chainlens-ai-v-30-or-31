@@ -39,7 +39,7 @@ type GrTransferDiag = {
 
 export type WalletBehavior = {
   status: 'ok' | 'partial' | 'unavailable'
-  source: 'alchemy' | 'unavailable'
+  source: 'activity_layer' | 'unavailable'
   txCount: number | null
   activeDays: number | null
   topTokens: string[]
@@ -58,15 +58,15 @@ export type WalletSnapshot = {
   txCount: number | null
   firstTxDate: string | null
   walletAgeDays: number | null
-  providerUsed: 'zerion' | 'goldrush' | 'moralis' | 'none'
+  providerUsed: 'portfolio_layer' | 'holdings_layer' | 'fallback_layer' | 'unverified' | 'none'
   providerStatus: 'ok' | 'partial' | 'failed'
   holdingsCount: number
   totalUsdAvailable: boolean
   reason: string
-  portfolioSource: 'zerion' | 'goldrush' | 'moralis' | 'none'
-  behaviorSource: 'alchemy' | 'unavailable'
+  portfolioSource: 'portfolio_layer' | 'holdings_layer' | 'fallback_layer' | 'unverified' | 'none'
+  behaviorSource: 'activity_layer' | 'unavailable'
   behaviorChain: 'base'
-  pnlSource: 'goldrush' | 'alchemy' | 'unavailable'
+  pnlSource: 'activity_layer' | 'fallback_layer' | 'unavailable'
   pnlCoverageReason: string
   hiddenDustCount: number
   unpricedHoldingsCount: number
@@ -75,7 +75,7 @@ export type WalletSnapshot = {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
     confidence: 'high' | 'medium' | 'low' | null
     coveragePercent: number
-    source: 'goldrush' | 'alchemy' | 'none'
+    source: 'activity_layer' | 'fallback_layer' | 'none'
     totalEstimatedPnlUsd: number | null
     unrealizedPnlUsd: number | null
     realizedPnlUsd: number | null
@@ -181,10 +181,13 @@ export type WalletSnapshot = {
     providerFlow?: {
       requestedChain: string
       deepScan: boolean
-      zerionAttempted: boolean
-      zerionUsable: boolean
-      moralisAttempted: boolean
-      moralisUsable: boolean
+      portfolioValueSource: 'portfolio_layer' | 'unverified'
+      holdingsSource: 'holdings_layer' | 'fallback_layer' | 'unverified'
+      activitySource: 'activity_layer' | 'fallback_layer' | 'unavailable'
+      zerionValueAttempted: boolean
+      zerionValueUsable: boolean
+      moralisHoldingsAttempted: boolean
+      moralisHoldingsUsable: boolean
       goldrushAttempted: boolean
       goldrushSkippedReason: string | null
       cacheHits: number
@@ -545,7 +548,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
     const recv: Tx[] = recvRes.status === 'fulfilled' ? (recvRes.value?.transfers ?? []) : []
     const all = [...sent, ...recv]
     if (all.length === 0) {
-      return { ...BEHAVIOR_EMPTY, status: 'ok', source: 'alchemy', txCount: 0, activeDays: 0, recentActivitySummary: 'No recent Base activity found in the checked window.' }
+      return { ...BEHAVIOR_EMPTY, status: 'ok', source: 'activity_layer' as const, txCount: 0, activeDays: 0, recentActivitySummary: 'No recent Base activity found in the checked window.' }
     }
     const STABLES = /^(USDC|USDT|DAI|USDBC|EURC|LUSD)$/i
     const days = new Set(all.map(t => t.metadata?.blockTimestamp?.slice(0, 10)).filter(Boolean) as string[])
@@ -565,7 +568,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
       .map(([a]) => `${a.slice(0, 6)}…${a.slice(-4)}`)
     const stablecoinActivity = all.some(t => t.asset && STABLES.test(t.asset))
     return {
-      status: 'ok', source: 'alchemy',
+      status: 'ok', source: 'activity_layer' as const,
       txCount: all.length, activeDays: days.size,
       topTokens, topContracts,
       inboundCount: recv.length, outboundCount: sent.length,
@@ -623,17 +626,25 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const useEthAlchemy = requestedChain === 'eth' && Boolean(ALCHEMY_ETH_KEY)
   const nonceUrl = useEthAlchemy ? ethUrl : baseUrl
 
-  // Phase 1 (parallel): Zerion portfolio layer + Alchemy metadata.
-  // GoldRush and Moralis are excluded — they run sequentially in Phases 2/3 only when needed.
+  // Determine Moralis chain before Phase 1 so it can run in the parallel batch.
+  const _moralisChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
+
+  // Phase 1 (parallel): Zerion portfolio value + Moralis holdings (primary) + Alchemy metadata.
+  // Zerion positions are fetched in parallel as a fallback_layer — used only if Moralis fails.
+  // GoldRush excluded — runs only in Phase 3 (both primary/fallback fail) or deepScan=true.
   const [
-    positionsRes,
-    portfolioRes,
+    portfolioRes,    // Zerion: total portfolio value
+    positionsRes,    // Zerion: token positions — fallback_layer only
+    moralisRes,      // Moralis: primary holdings source
     ethFirst,
     baseFirst,
     nonceRes,
     behaviorRes,
     alchemyPnlRes,
   ] = await Promise.allSettled([
+    ZERION_KEY
+      ? zerionGet(`wallets/${addr}/portfolio/`, { currency: 'usd' })
+      : Promise.reject(new Error('Zerion key not configured')),
     ZERION_KEY
       ? zerionGet(`wallets/${addr}/positions/`, {
           currency: 'usd',
@@ -643,9 +654,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           'page[size]': '50',
         })
       : Promise.reject(new Error('Zerion key not configured')),
-    ZERION_KEY
-      ? zerionGet(`wallets/${addr}/portfolio/`, { currency: 'usd' })
-      : Promise.reject(new Error('Zerion key not configured')),
+    fetchMoralisBalances(addr, _moralisChain),  // handles not-configured internally
     useEthAlchemy ? getFirstTxOnChain(addr, ethUrl) : Promise.resolve(null),
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(nonceUrl, 'eth_getTransactionCount', [addr, 'latest']),
@@ -667,20 +676,45 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     ? parseInt(nonceRes.value as string, 16)
     : null
 
-  // ── Provider selection: Zerion → Moralis → GoldRush ──
+  // ── Provider values extracted from Phase 1 results ──
+  // Zerion portfolio total (for wallet value only — not for individual token positions)
+  const _zerionPortfolioTotal: number | null = portfolioRes.status === 'fulfilled'
+    ? (portfolioRes.value?.data?.attributes?.total?.positions ?? null)
+    : null
+  const _zerionValueUsable = typeof _zerionPortfolioTotal === 'number' && _zerionPortfolioTotal > 0
+
+  // Zerion positions (fallback_layer only — lower priority than Moralis)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawPos: any[] = positionsRes.status === 'fulfilled' ? (positionsRes.value?.data ?? []) : []
+  const _zerionPositionsUsable = rawPos.length > 0
+
+  // Moralis holdings (primary source)
+  const _moralisResult: MoralisFetchResult = moralisRes.status === 'fulfilled'
+    ? moralisRes.value
+    : { holdings: [], attempted: true, usable: false, cacheHit: false, reason: 'fetch_error' }
+  const _moralisHoldingsUsable = _moralisResult.usable && _moralisResult.holdings.length > 0
+  const _moralisAttempted = Boolean(process.env.MORALIS_API_KEY)
+
+  // ── Provider selection: Moralis (primary) → Zerion positions (fallback) → GoldRush ──
   let holdings: Holding[] = []
   let totalValue = 0
-  let providerUsed: 'zerion' | 'goldrush' | 'moralis' | 'none' = 'none'
+  let providerUsed: 'portfolio_layer' | 'holdings_layer' | 'fallback_layer' | 'unverified' | 'none' = 'none'
   let providerStatus: 'ok' | 'partial' | 'failed' = 'failed'
   let reason = ''
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rawPos: any[] = positionsRes.status === 'fulfilled' ? (positionsRes.value?.data ?? []) : []
-  const _zerionSucceeded = rawPos.length > 0
-
-  if (_zerionSucceeded) {
+  if (_moralisHoldingsUsable) {
+    // Moralis is primary — use its holdings with Zerion portfolio value when available
+    holdings = _moralisResult.holdings as Holding[]
+    totalValue = _zerionValueUsable
+      ? _zerionPortfolioTotal!
+      : holdings.reduce((s, h) => s + h.value, 0)
+    providerUsed = _zerionValueUsable ? 'portfolio_layer' : 'holdings_layer'
+    providerStatus = _zerionValueUsable ? 'ok' : 'partial'
+    if (!_zerionValueUsable) reason = 'Portfolio value estimated from holdings — could not verify total.'
+  } else if (_zerionPositionsUsable) {
+    // Moralis failed — use Zerion positions as fallback_layer for holdings
     holdings = rawPos
-      .map(pos => {
+      .map((pos) => {
         const a  = pos.attributes ?? {}
         const fi = a.fungible_info ?? {}
         return {
@@ -697,42 +731,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         }
       })
       .filter(h => h.value > 0.01)
-    totalValue = portfolioRes.status === 'fulfilled'
-      ? (portfolioRes.value?.data?.attributes?.total?.positions ?? holdings.reduce((s, h) => s + h.value, 0))
-      : holdings.reduce((s, h) => s + h.value, 0)
-    providerUsed = 'zerion'
-    providerStatus = 'ok'
+    totalValue = _zerionPortfolioTotal ?? holdings.reduce((s, h) => s + h.value, 0)
+    providerUsed = 'fallback_layer'
+    providerStatus = 'partial'
+    reason = 'Holdings from fallback layer — data may be incomplete.'
   } else {
-    reason = positionsRes.status === 'rejected'
-      ? 'Primary provider unavailable.'
-      : 'Primary provider returned no positions for this wallet.'
+    reason = positionsRes.status === 'rejected' && moralisRes.status === 'rejected'
+      ? 'Portfolio layer and holdings layer both unavailable.'
+      : 'No token balances found for this wallet.'
   }
 
-  // Phase 2: Moralis holdings layer — runs when Zerion returns empty/fails.
-  // Only queries the requested chain to avoid unnecessary cross-chain calls.
-  const _moralisChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
-  const _moralisAttempted = !_zerionSucceeded && Boolean(process.env.MORALIS_API_KEY)
-  let _moralisResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
+  // For diagnostics compat (tracks whether Zerion positions were returned)
+  const _zerionSucceeded = _zerionPositionsUsable
 
-  if (_moralisAttempted) {
-    _moralisResult = await fetchMoralisBalances(addr, _moralisChain)
-    if (_moralisResult.usable && _moralisResult.holdings.length > 0) {
-      holdings = _moralisResult.holdings as Holding[]
-      totalValue = holdings.reduce((s, h) => s + h.value, 0)
-      providerUsed = 'moralis'
-      providerStatus = 'partial'
-      reason = ''
-    }
-  }
-
-  // Phase 3: GoldRush balances — only when both Zerion and Moralis fail.
-  // deepScan=true is intentionally NOT a trigger here; GoldRush PnL (Phase 4) handles deep history.
+  // Phase 2 (conditional): GoldRush balances — only when both Moralis and Zerion positions fail.
   const _grBalancesNeeded = holdings.length === 0
   const _goldrushBalancesSkipped = !_grBalancesNeeded || !GOLDRUSH_KEY
   const _goldrushSkippedReason: string | null = !GOLDRUSH_KEY
     ? 'goldrush_not_configured'
     : !_grBalancesNeeded
-    ? (_zerionSucceeded ? 'zerion_primary_usable' : 'moralis_secondary_usable')
+    ? (_moralisHoldingsUsable ? 'moralis_primary_usable' : 'zerion_fallback_usable')
     : null
 
   let grEthRes: PromiseSettledResult<Holding[]>
@@ -752,8 +770,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (grHoldings.length > 0) {
       holdings = grHoldings
       totalValue = holdings.reduce((s, h) => s + h.value, 0)
-      providerUsed = 'goldrush'
-      providerStatus = 'ok'
+      providerUsed = 'fallback_layer'
+      providerStatus = 'partial'
       reason = ''
     } else {
       reason = reason || 'No priced holdings found on supported chains.'
@@ -764,9 +782,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   const _grPrimaryAttempted = !_goldrushBalancesSkipped && Boolean(GOLDRUSH_KEY)
-  const _grPrimaryUsable = providerUsed === 'goldrush'
+  const _grPrimaryUsable = holdings.length > 0 && !_moralisHoldingsUsable && !_zerionPositionsUsable
   const _preFallbackReason = reason
-  const _moralisUsed = providerUsed === 'moralis'
+  const _moralisUsed = _moralisHoldingsUsable
 
   // Phase 4: GoldRush PnL (transfers_v2) — only on deepScan=true.
   // Basic scans use Alchemy transfer history (no USD values) as PnL source, saving GoldRush credits.
@@ -802,7 +820,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
   const events = grEvents.length > 0 ? grEvents : alchemyEvents
-  const pnlSource: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
+  const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
+  const pnlSource: 'activity_layer' | 'fallback_layer' | 'none' = _pnlSourceRaw === 'goldrush' ? 'activity_layer' : _pnlSourceRaw === 'alchemy' ? 'fallback_layer' : 'none'
   const byToken = new Map<string, PnlEvent[]>()
   for (const e of events.slice(0, 250)) byToken.set(e.contract, [...(byToken.get(e.contract) ?? []), e])
   const pnlTokens: WalletSnapshot['estimatedPnl']['tokens'] = []
@@ -834,9 +853,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const status: WalletSnapshot['estimatedPnl']['status'] = pnlTokens.length === 0 || pnlSource === 'none' ? 'unavailable' : coveragePercent >= 60 ? 'ok' : 'partial'
   const filteredPnlTokens = pnlTokens.filter((t) => t.coveragePercent > 0).sort((a, b) => (b.currentValueUsd - a.currentValueUsd)).slice(0, 10)
   const pnlCoverageReason = status === 'unavailable'
-    ? (pnlSource === 'none' ? 'Need decoded buys/sells with USD values from GoldRush/Covalent or supported transfer history.' : 'Historical cost basis coverage is too low for a reliable estimate.')
+    ? (pnlSource === 'none' ? 'Enable Deep Activity Scan for full transfer history and cost-basis estimation.' : 'Historical cost basis coverage is too low for a reliable estimate.')
     : 'Estimated from indexed transfer history with average-cost method.'
-  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSource, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
+  const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
+  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
   const unpricedHoldingsCount = holdings.filter((h) => !h.price || h.price <= 0).length
   const hiddenDustCount = holdings.filter((h) => h.value <= 1).length
   const behaviorTxCount = behaviorRes.status === 'fulfilled' ? (behaviorRes.value.txCount ?? 0) : 0
@@ -856,7 +876,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : ''
   const alchemyConfigured = Boolean(ALCHEMY_BASE_KEY)
   if (process.env.NODE_ENV !== 'production') {
-    console.log('[wallet-diag] route=/api/wallet deepScan=', deepScan, 'requestedChain=', requestedChain, 'zerionSucceeded=', _zerionSucceeded, 'moralisAttempted=', _moralisAttempted, 'moralisUsable=', _moralisResult.usable, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'goldrushSkippedReason=', _goldrushSkippedReason, 'goldrushEventsReturned=', grEvents.length, 'valuedEventsReturned=', valuedGrEvents.length, 'providerUsed=', providerUsed, 'totalMs=', Date.now() - startedAt)
+    console.log('[wallet-diag] route=/api/wallet deepScan=', deepScan, 'requestedChain=', requestedChain, 'zerionValueUsable=', _zerionValueUsable, 'zerionPositionsUsable=', _zerionPositionsUsable, 'moralisHoldingsUsable=', _moralisHoldingsUsable, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'goldrushSkippedReason=', _goldrushSkippedReason, 'goldrushEventsReturned=', grEvents.length, 'pnlSource=', pnlSource, 'providerUsed=', providerUsed, 'totalMs=', Date.now() - startedAt)
   }
 
   const alchemyBaseUsed = Boolean(ALCHEMY_BASE_KEY)
@@ -901,7 +921,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     reason,
     behaviorSource: behaviorRes.status === 'fulfilled' ? behaviorRes.value.source : 'unavailable',
     behaviorChain: 'base',
-    pnlSource: pnlSource === 'none' ? 'unavailable' : pnlSource,
+    pnlSource: pnlSourcePublic,
     pnlCoverageReason,
     hiddenDustCount,
     unpricedHoldingsCount,
@@ -911,7 +931,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     cacheAgeSeconds: null,
     _diagnostics: {
       providers: {
-        zerion: { configured: Boolean(ZERION_KEY), attempted: true, succeeded: rawPos.length > 0 },
+        zerion: { configured: Boolean(ZERION_KEY), attempted: true, succeeded: _zerionValueUsable || _zerionPositionsUsable },
         goldrush: {
           configured: goldrushConfigured,
           balancesAttempted: !_goldrushBalancesSkipped && goldrushConfigured,
@@ -962,30 +982,33 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         refreshBypassedCache: refresh, cacheAgeSeconds: null, cacheTtlSeconds: snapshotTtlMs / 1000,
       },
       providerFallback: {
-        primaryAttempted: Boolean(ZERION_KEY),
-        primaryUsable: _zerionSucceeded,
-        fallbackAttempted: _moralisResult.attempted,
-        fallbackUsed: _moralisUsed,
+        primaryAttempted: _moralisAttempted,
+        primaryUsable: _moralisHoldingsUsable,
+        fallbackAttempted: _zerionPositionsUsable || Boolean(ZERION_KEY),
+        fallbackUsed: !_moralisHoldingsUsable && _zerionPositionsUsable,
         tertiaryAttempted: _grPrimaryAttempted,
         tertiaryUsed: _grPrimaryUsable,
         fallbackReason: _preFallbackReason,
         cacheHit: _moralisResult.cacheHit,
-        reason: providerUsed === 'zerion'
-          ? 'zerion_primary_ok'
-          : providerUsed === 'moralis'
-          ? 'moralis_holdings_used'
-          : providerUsed === 'goldrush'
-          ? 'goldrush_fallback_used'
+        reason: _moralisHoldingsUsable
+          ? 'moralis_primary_ok'
+          : _zerionPositionsUsable
+          ? 'zerion_fallback_used'
+          : _grPrimaryUsable
+          ? 'goldrush_tertiary_used'
           : 'all_providers_empty',
       },
       walletProviderRouting,
       providerFlow: {
         requestedChain,
         deepScan,
-        zerionAttempted: Boolean(ZERION_KEY),
-        zerionUsable: _zerionSucceeded,
-        moralisAttempted: _moralisAttempted,
-        moralisUsable: _moralisResult.usable && _moralisResult.holdings.length > 0,
+        portfolioValueSource: _zerionValueUsable ? 'portfolio_layer' as const : 'unverified' as const,
+        holdingsSource: _moralisHoldingsUsable ? 'holdings_layer' as const : _zerionPositionsUsable || _grPrimaryUsable ? 'fallback_layer' as const : 'unverified' as const,
+        activitySource: pnlSource === 'activity_layer' ? 'activity_layer' as const : pnlSource === 'fallback_layer' ? 'fallback_layer' as const : 'unavailable' as const,
+        zerionValueAttempted: Boolean(ZERION_KEY),
+        zerionValueUsable: _zerionValueUsable,
+        moralisHoldingsAttempted: _moralisAttempted,
+        moralisHoldingsUsable: _moralisHoldingsUsable,
         goldrushAttempted: _grPrimaryAttempted,
         goldrushSkippedReason: _goldrushSkippedReason,
         cacheHits: (_moralisResult.cacheHit ? 1 : 0),

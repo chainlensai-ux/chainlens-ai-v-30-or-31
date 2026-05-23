@@ -67,7 +67,6 @@ export async function POST(req: Request) {
         alchemyCallsFailed: providers.alchemy?.behaviorAttempted && Number(providers.alchemy?.transfersReturned ?? 0) === 0 ? 1 : 0,
         rpcMethodsUsed: providers.alchemy?.behaviorAttempted ? ['alchemy_getAssetTransfers'] : [],
         skippedReason: providers.alchemy?.behaviorAttempted ? null : 'alchemy_not_configured',
-        fallbackUsed: (snapshot as any).providerUsed !== 'goldrush',
         requestDurationMs: Date.now() - startedAt,
         walletSnapshotCache: snapshotCacheDebug,
         providerFallback: (snapshot as any)._diagnostics?.providerFallback ?? null,
