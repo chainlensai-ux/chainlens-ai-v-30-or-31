@@ -2634,6 +2634,12 @@ function buildStructuredVerdict(
 
 // ---------- API clients ----------
 
+// In-request dedupe: prevents the same GoldRush/Covalent endpoint from being
+// called twice within a single Clark request (e.g., if two handlers run for
+// the same token/wallet). Keyed by full URL with params; cleared per request.
+const _clarkGoldrushDedupeMap = new Map<string, Promise<unknown>>();
+function _clarkClearGoldrushDedupe() { _clarkGoldrushDedupeMap.clear(); }
+
 async function callGoldrush(
   path: string,
   params: Record<string, string> = {}
@@ -2641,21 +2647,26 @@ async function callGoldrush(
   const apiKey = requireEnv("GOLDRUSH_API_KEY", GOLDRUSH_API_KEY);
   const url = new URL(`https://api.covalenthq.com/v1/${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const cacheKey = `gr:${url.toString()}`;
+  if (_clarkGoldrushDedupeMap.has(cacheKey)) return _clarkGoldrushDedupeMap.get(cacheKey);
 
-  const res = await fetch(url.toString(), {
+  const promise = fetch(url.toString(), {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       Accept: "application/json",
     },
     next: { revalidate: 30 },
+    signal: AbortSignal.timeout(8_000),
+  }).then(async (res) => {
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`GoldRush ${res.status}: ${body.slice(0, 200)}`);
+    }
+    return res.json();
   });
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`GoldRush ${res.status}: ${body.slice(0, 200)}`);
-  }
-
-  return res.json();
+  _clarkGoldrushDedupeMap.set(cacheKey, promise);
+  return promise;
 }
 
 async function callCovalent(
@@ -2665,21 +2676,26 @@ async function callCovalent(
   const apiKey = requireEnv("COVALENT_API_KEY", COVALENT_API_KEY);
   const url = new URL(`https://api.covalenthq.com/v1/${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const cacheKey = `cv:${url.toString()}`;
+  if (_clarkGoldrushDedupeMap.has(cacheKey)) return _clarkGoldrushDedupeMap.get(cacheKey);
 
-  const res = await fetch(url.toString(), {
+  const promise = fetch(url.toString(), {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       Accept: "application/json",
     },
     next: { revalidate: 30 },
+    signal: AbortSignal.timeout(8_000),
+  }).then(async (res) => {
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Covalent ${res.status}: ${body.slice(0, 200)}`);
+    }
+    return res.json();
   });
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Covalent ${res.status}: ${body.slice(0, 200)}`);
-  }
-
-  return res.json();
+  _clarkGoldrushDedupeMap.set(cacheKey, promise);
+  return promise;
 }
 
 async function callZerion(
@@ -7372,6 +7388,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 // ---------- Main handler ----------
 
 export async function POST(req: NextRequest) {
+  // Clear per-request GoldRush/Covalent dedupe map so each request starts fresh
+  _clarkClearGoldrushDedupe();
   const auth = req.headers.get('authorization') ?? ''
   const authHeader = auth || undefined
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''

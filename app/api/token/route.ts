@@ -2354,6 +2354,18 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._debug = {
         routeName: '/api/token',
         cacheHit: false,
+        goldrushUsage: {
+          endpointName: `token_holders_v2`,
+          feature: 'token-scanner',
+          trigger: 'scan_button',
+          attempted: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY),
+          cacheHit: false,
+          deduped: false,
+          statusCode: holdersRaw?.__statusCode ?? null,
+          durationMs: null,
+          failureStage: holdersRaw?.__status === 'error' ? (holdersRaw?.__reason ?? 'unknown') : null,
+          reason: holderDistributionStatus.reason ?? holderDistributionStatus.status ?? null,
+        },
         alchemyConfigured,
         alchemyCallsAttempted: rpcCallsAttempted,
         alchemyCallsSucceeded: rpcCallsSucceeded,
