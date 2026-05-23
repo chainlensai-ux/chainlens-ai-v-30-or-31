@@ -152,7 +152,7 @@ type ScanResult = {
   } | null
   rugRisk?: {
     lp_safety: { status: string; unlock_at: string | null; countdown_seconds: number | null; owner: string | null; contract: string | null; movement_24h_usd: number | null; source_status: "ok" | "failed" }
-    contract_flags: { honeypot: boolean | null; blacklist: boolean | null; mint: boolean | null; upgradeable: boolean | null; source_status: "ok" | "failed" }
+    contract_flags: { honeypot: boolean | null; blacklist: boolean | null; mint: boolean | null; upgradeable: boolean | null; source_status: "ok" | "partial" | "failed" }
     deployer_reputation: { score: number | null; rug_history: number | null; deploy_patterns: string[]; source_status: "ok" | "failed" }
     sniper_activity: { level: "low" | "medium" | "high"; score: number; source_status: "ok" | "failed" }
     early_buyers: Array<{ wallet: string; amount_usd: number | null; tx_count: number | null }>
@@ -160,6 +160,16 @@ type ScanResult = {
     trading_simulation: { success: boolean | null; buy_tax: number | null; sell_tax: number | null; source_status: "ok" | "failed" }
     risk_drivers: string[]
     overall_rug_risk_score: number | null
+  } | null
+  contractFlags?: {
+    mint: { status: 'verified' | 'possible' | 'not_detected' | 'unverified'; confidence: 'high' | 'medium' | 'low'; note: string | null }
+    proxy: { status: 'verified' | 'possible' | 'not_detected' | 'unverified'; confidence: 'high' | 'medium' | 'low'; note: string | null }
+    pause: { status: 'verified' | 'possible' | 'not_detected' | 'unverified'; confidence: 'high' | 'medium' | 'low'; note: string | null }
+    blacklist: { status: 'verified' | 'possible' | 'not_detected' | 'unverified'; confidence: 'high' | 'medium' | 'low'; note: string | null }
+    withdraw: { status: 'verified' | 'possible' | 'not_detected' | 'unverified'; confidence: 'high' | 'medium' | 'low'; note: string | null }
+    bytecodeChecked: boolean
+    proxySlotChecked: boolean
+    pauseCallChecked: boolean
   } | null
 }
 
@@ -1354,6 +1364,7 @@ export default function TerminalTokenScanner() {
           resolvedInput: json.resolvedInput ?? null,
           riskEngine: json.riskEngine ?? null,
           rugRisk: json.rugRisk ?? null,
+          contractFlags: json.contractFlags ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -2429,18 +2440,33 @@ export default function TerminalTokenScanner() {
                           <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.18)' }}>
                             <p style={{ ...cardTitle, color:'#fbbf24' }}>Contract Flags</p>
                             <div style={{ display:'grid',gap:'7px' }}>
-                              {([
-                                ['Mint Function', result.rugRisk?.contract_flags?.mint ?? null],
-                                ['Upgradeable / Proxy', result.rugRisk?.contract_flags?.upgradeable ?? null],
-                                ['Blacklist / Pause', result.rugRisk?.contract_flags?.blacklist ?? null],
-                              ] as Array<[string, boolean|null]>).map(([label, flagVal]) => (
-                                <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
-                                  <span style={{ fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
-                                  <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,fontFamily:'var(--font-plex-mono)',color:flagVal?'#f87171':flagVal===false?'#34d399':'#64748b',background:flagVal?'rgba(248,113,113,0.10)':flagVal===false?'rgba(52,211,153,0.08)':'rgba(255,255,255,0.04)',border:`1px solid ${flagVal?'rgba(248,113,113,0.30)':flagVal===false?'rgba(52,211,153,0.22)':'rgba(255,255,255,0.08)'}` }}>
-                                    {flagVal==null?'N/A':flagVal?'YES':'NO'}
-                                  </span>
-                                </div>
-                              ))}
+                              {(() => {
+                                const cf = result.contractFlags
+                                type FlagStatus = 'verified'|'possible'|'not_detected'|'unverified'
+                                const flagRows: Array<[string, FlagStatus|undefined]> = [
+                                  ['Mint Function', cf?.mint?.status],
+                                  ['Upgradeable / Proxy', cf?.proxy?.status],
+                                  ['Blacklist', cf?.blacklist?.status],
+                                  ['Pause Control', cf?.pause?.status],
+                                  ['Withdraw Control', cf?.withdraw?.status],
+                                ]
+                                const flagLabel = (s: FlagStatus|undefined) =>
+                                  s === 'verified' ? 'Verified' : s === 'possible' ? 'Possible' : s === 'not_detected' ? 'Not detected' : 'Unverified'
+                                const flagColor = (s: FlagStatus|undefined) =>
+                                  s === 'verified' ? '#f87171' : s === 'possible' ? '#fbbf24' : s === 'not_detected' ? '#34d399' : '#64748b'
+                                const flagBg = (s: FlagStatus|undefined) =>
+                                  s === 'verified' ? 'rgba(248,113,113,0.10)' : s === 'possible' ? 'rgba(251,191,36,0.10)' : s === 'not_detected' ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.04)'
+                                const flagBorder = (s: FlagStatus|undefined) =>
+                                  s === 'verified' ? 'rgba(248,113,113,0.30)' : s === 'possible' ? 'rgba(251,191,36,0.30)' : s === 'not_detected' ? 'rgba(52,211,153,0.22)' : 'rgba(255,255,255,0.08)'
+                                return flagRows.map(([label, status]) => (
+                                  <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
+                                    <span style={{ fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,fontFamily:'var(--font-plex-mono)',color:flagColor(status),background:flagBg(status),border:`1px solid ${flagBorder(status)}` }}>
+                                      {flagLabel(status)}
+                                    </span>
+                                  </div>
+                                ))
+                              })()}
                             </div>
                           </div>
 

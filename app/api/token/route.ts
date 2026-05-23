@@ -118,7 +118,7 @@ type RugRiskReport = {
     blacklist: boolean | null
     mint: boolean | null
     upgradeable: boolean | null
-    source_status: "ok" | "failed"
+    source_status: "ok" | "partial" | "failed"
   }
   deployer_reputation: {
     score: number | null
@@ -924,6 +924,22 @@ function analyzeContract(bytecode: string | null): any {
     honeypot: "Security simulation unavailable from current source",
     suspiciousFunctions: suspicious,
   };
+}
+
+// ------------------------------
+// CORTEX Contract Flag Scanner — bytecode + RPC, no external APIs required
+// ------------------------------
+type ContractFlagStatus = 'verified' | 'possible' | 'not_detected' | 'unverified'
+type ContractFlagEntry = { status: ContractFlagStatus; confidence: 'high' | 'medium' | 'low'; note: string | null }
+type CortexContractFlagsResult = {
+  mint: ContractFlagEntry
+  proxy: ContractFlagEntry
+  pause: ContractFlagEntry
+  blacklist: ContractFlagEntry
+  withdraw: ContractFlagEntry
+  bytecodeChecked: boolean
+  proxySlotChecked: boolean
+  pauseCallChecked: boolean
 }
 
 // ------------------------------
@@ -1982,6 +1998,69 @@ export async function POST(req: Request) {
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
+
+    // CORTEX Contract Flag Scanner — bytecode selector scan + 2 RPC probes
+    const _hasBytecode = Boolean(bytecode && bytecode !== '0x' && bytecode.length > 10)
+    const _bytecodeLc = _hasBytecode ? bytecode!.toLowerCase() : ''
+    // PUSH4 opcode (0x63) followed by 4-byte selector in deployed bytecode
+    const _selPresent = (sel4: string) => _hasBytecode && _bytecodeLc.includes('63' + sel4)
+    const _cortexMintSel = _selPresent('40c10f19') || _selPresent('a0712d68')    // mint(address,uint256) | mint(uint256)
+    const _cortexProxySel = _selPresent('3659cfe6') || _selPresent('4f1ef286') || _selPresent('52d1902d') // upgradeTo | upgradeToAndCall | proxiableUUID
+    const _cortexPauseSel = _selPresent('8456cb59') || _selPresent('3f4ba83a')   // pause() | unpause()
+    const _cortexWithdrawSel = _selPresent('3ccfd60b') || _selPresent('2e1a7d4d') // withdraw() | withdraw(uint256)
+    const _cortexBlacklistStr = _hasBytecode && _bytecodeLc.includes('626c61636b6c697374') // ascii "blacklist"
+    const _EIP1967_IMPL = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
+    const _EIP1967_ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000'
+    const [_proxySlotHex, _pausedCallHex] = await Promise.all([
+      _hasBytecode ? countedRpcCall('eth_getStorageAt', [contract, _EIP1967_IMPL, 'latest'], 'proxySlotCheck', false) : Promise.resolve(null),
+      _hasBytecode ? countedRpcCall('eth_call', [{ to: contract, data: '0x5c975abb' }, 'latest'], 'pausedCheck', false) : Promise.resolve(null),
+    ])
+    const _isVerifiedProxy = Boolean(
+      _proxySlotHex && _proxySlotHex !== '0x' && _proxySlotHex !== _EIP1967_ZERO &&
+      _proxySlotHex.replace(/^0x0+/, '').length > 0
+    )
+    const _pauseFunctionExists = Boolean(_pausedCallHex && _pausedCallHex !== '0x')
+
+    // Merge bytecode signals with optional GoPlus enrichment (GoPlus is low-confidence fallback)
+    const cortexContractFlags: CortexContractFlagsResult = {
+      mint: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : _cortexMintSel
+          ? { status: 'verified', confidence: 'high', note: 'Mint selector found in bytecode' }
+          : gpMint === true
+            ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
+            : { status: 'not_detected', confidence: 'medium', note: 'No mint selector in bytecode' },
+      proxy: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : _isVerifiedProxy
+          ? { status: 'verified', confidence: 'high', note: 'EIP-1967 implementation slot is non-zero' }
+          : _cortexProxySel
+            ? { status: 'possible', confidence: 'medium', note: 'Upgrade selector in bytecode; no EIP-1967 slot confirmed' }
+            : gpUpgradeable === true
+              ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
+              : { status: 'not_detected', confidence: 'medium', note: 'No proxy slot or upgrade selector detected' },
+      pause: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : (_pauseFunctionExists || _cortexPauseSel)
+          ? { status: 'verified', confidence: 'high', note: _pauseFunctionExists ? 'paused() call responded' : 'Pause selector in bytecode' }
+          : { status: 'not_detected', confidence: 'medium', note: 'No pause selector or paused() response detected' },
+      blacklist: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : _cortexBlacklistStr
+          ? { status: 'verified', confidence: 'high', note: 'Blacklist string pattern in bytecode' }
+          : gpBlacklist === true
+            ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
+            : { status: 'not_detected', confidence: 'medium', note: 'No blacklist pattern in bytecode' },
+      withdraw: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : _cortexWithdrawSel
+          ? { status: 'verified', confidence: 'high', note: 'Withdraw selector found in bytecode' }
+          : { status: 'not_detected', confidence: 'medium', note: 'No withdraw selector in bytecode' },
+      bytecodeChecked: _hasBytecode,
+      proxySlotChecked: _proxySlotHex != null,
+      pauseCallChecked: _pausedCallHex != null,
+    }
+
     const riskVerifiedSignals: string[] = []
     const riskDrivers: string[] = []
     const openChecks: string[] = []
@@ -2035,9 +2114,11 @@ export async function POST(req: Request) {
       riskScore += 8
     }
 
-    if (gpMint === true || analysis?.has_mint) { riskDrivers.push('Contract can mint supply.'); riskScore += 12 }
-    if (gpUpgradeable === true || analysis?.is_upgradeable) { riskDrivers.push('Contract is upgradeable.'); riskScore += 10 }
-    if (analysis?.has_withdraw || analysis?.has_sweep || analysis?.has_rescue) { riskDrivers.push('Contract includes withdraw/sweep/rescue style controls.'); riskScore += 10 }
+    if (cortexContractFlags.mint.status === 'verified') { riskDrivers.push('Contract can mint supply.'); riskScore += 12 }
+    else if (cortexContractFlags.mint.status === 'possible') { riskDrivers.push('Contract may have mint capability (low-confidence signal).'); riskScore += 5 }
+    if (cortexContractFlags.proxy.status === 'verified') { riskDrivers.push('Contract is upgradeable (proxy confirmed).'); riskScore += 10 }
+    else if (cortexContractFlags.proxy.status === 'possible') { riskDrivers.push('Contract may be upgradeable (partial signal).'); riskScore += 5 }
+    if (cortexContractFlags.withdraw.status === 'verified') { riskDrivers.push('Contract includes withdraw/sweep style controls.'); riskScore += 10 }
 
     const majorMissingCount = [
       marketCapFromGt == null,
@@ -2109,10 +2190,10 @@ export async function POST(req: Request) {
       },
       contract_flags: {
         honeypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
-        blacklist: gpBlacklist,
-        mint: gpMint,
-        upgradeable: gpUpgradeable,
-        source_status: (hpResult.ok || gpHasData) ? "ok" : "failed",
+        blacklist: cortexContractFlags.blacklist.status === 'verified' ? true : cortexContractFlags.blacklist.status === 'not_detected' ? false : null,
+        mint: cortexContractFlags.mint.status === 'verified' ? true : cortexContractFlags.mint.status === 'not_detected' ? false : null,
+        upgradeable: cortexContractFlags.proxy.status === 'verified' ? true : cortexContractFlags.proxy.status === 'not_detected' ? false : null,
+        source_status: cortexContractFlags.bytecodeChecked ? "ok" : (hpResult.ok || gpHasData) ? "partial" : "failed",
       },
       deployer_reputation: {
         score: ownerAddr && ownerAddr !== '0x0000000000000000000000000000000000000000' ? (rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : 50) : null,
@@ -2194,14 +2275,14 @@ export async function POST(req: Request) {
 
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'unavailable'
     const ownerStatus = ownerAddr ? 'ok' : 'unavailable'
-    const mintStatus = gpToken?.is_mintable != null ? 'ok' : 'unavailable'
-    const proxyStatus = gpToken?.is_proxy != null ? 'ok' : 'unavailable'
+    const mintStatus = cortexContractFlags.mint.status !== 'unverified' ? 'ok' : 'unavailable'
+    const proxyStatus = cortexContractFlags.proxy.status !== 'unverified' ? 'ok' : 'unavailable'
     const transferControlStatus = (hpResult.ok || gpHasData) ? 'partial' : 'unavailable'
     const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
-      bytecodeStatus === 'ok' && (ownerStatus === 'ok' || mintStatus === 'ok' || proxyStatus === 'ok') ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
+      cortexContractFlags.bytecodeChecked ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
     const contractChecksReason = contractChecksStatus === 'unavailable'
       ? 'Unavailable from current checks.'
-      : 'Contract bytecode, supply, owner, and available safety flags reviewed.'
+      : 'Contract bytecode, supply, owner, and CORTEX flag scan reviewed.'
 
     const responsePayload = {
       chain,
@@ -2510,6 +2591,7 @@ export async function POST(req: Request) {
       // CORTEX Risk Engine v1 — pure derivation, no extra API calls
       riskEngine,
       rugRisk,
+      contractFlags: cortexContractFlags,
 
       // Token info object for frontend panels
       tokenInfo: {
@@ -2652,6 +2734,30 @@ export async function POST(req: Request) {
           proofStatus: lpDiagnostics.lpState,
           reason: lpDiagnostics.reason,
           _full: lpDiagnostics,
+        },
+        contractFlagDiagnostics: {
+          bytecodeChecked: cortexContractFlags.bytecodeChecked,
+          proxySlotChecked: cortexContractFlags.proxySlotChecked,
+          pauseCallChecked: cortexContractFlags.pauseCallChecked,
+          rawSelectors: {
+            mintSel: _cortexMintSel,
+            proxySel: _cortexProxySel,
+            pauseSel: _cortexPauseSel,
+            withdrawSel: _cortexWithdrawSel,
+            blacklistStr: _cortexBlacklistStr,
+          },
+          proxySlotRaw: _proxySlotHex ?? null,
+          pausedCallRaw: _pausedCallHex ?? null,
+          isVerifiedProxy: _isVerifiedProxy,
+          pauseFunctionExists: _pauseFunctionExists,
+          gpEnrichment: { mint: gpMint, upgradeable: gpUpgradeable, blacklist: gpBlacklist },
+          flags: {
+            mint: cortexContractFlags.mint,
+            proxy: cortexContractFlags.proxy,
+            pause: cortexContractFlags.pause,
+            blacklist: cortexContractFlags.blacklist,
+            withdraw: cortexContractFlags.withdraw,
+          },
         },
       }
     } else {
