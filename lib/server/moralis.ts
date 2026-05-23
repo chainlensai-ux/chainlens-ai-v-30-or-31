@@ -24,6 +24,7 @@ export type MoralisFetchResult = {
 
 const MORALIS_TTL_MS = 10 * 60 * 1000
 const _cache = new Map<string, { holdings: MoralisHolding[]; cachedAt: number }>()
+const _inflight = new Map<string, Promise<MoralisFetchResult>>()
 
 const NOT_NEEDED: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
 
@@ -56,6 +57,10 @@ export async function fetchMoralisBalances(
     `https://deep-index.moralis.io/api/v2.2/${address}/erc20` +
     `?chain=${CHAIN_PARAM[chain]}&exclude_spam=true`
 
+  const inFlight = _inflight.get(cacheKey)
+  if (inFlight) return inFlight
+
+  const run = (async (): Promise<MoralisFetchResult> => {
   try {
     const res = await fetch(url, {
       headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
@@ -140,5 +145,7 @@ export async function fetchMoralisBalances(
       cacheHit: false,
       reason: 'fetch_failed',
     }
-  }
+  }} )()
+  _inflight.set(cacheKey, run)
+  try { return await run } finally { _inflight.delete(cacheKey) }
 }

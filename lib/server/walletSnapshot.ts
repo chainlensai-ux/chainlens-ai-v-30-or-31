@@ -163,6 +163,16 @@ export type WalletSnapshot = {
       cacheHit: boolean
       reason: string
     }
+    moralisUsage?: {
+      attempted: boolean
+      endpointNames: string[]
+      requestedChain: 'eth' | 'base'
+      callCount: number
+      cacheHit: boolean
+      deduped: boolean
+      durationMs: number
+      skippedReason: string | null
+    }
     walletProviderRouting?: {
       primaryProviders: string[]
       alchemyUsed: boolean
@@ -180,7 +190,7 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base' }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -564,7 +574,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base' } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false } = options
   const cacheKey = (address ?? '').trim().toLowerCase()
 
   // Memory cache check — bypassed when refresh=true
@@ -633,12 +643,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     useEthAlchemy ? getFirstTxOnChain(addr, ethUrl) : Promise.resolve(null),
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(nonceUrl, 'eth_getTransactionCount', [addr, 'latest']),
-    fetchWalletBehavior(addr, baseUrl),
+    deepScan ? fetchWalletBehavior(addr, baseUrl) : Promise.resolve(BEHAVIOR_EMPTY),
     // ETH mainnet PnL transfers only when the caller explicitly requests ETH chain.
     // Default (base) scans skip this to avoid a wasted transfers_v2 call.
-    GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'ETH chain not requested — skipped to reduce API usage.' } }),
-    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush wallet history URL could not be built.' } }),
-    fetchAlchemyPnlEvents(addr, baseUrl),
+    deepScan && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: deepScan ? 'ETH chain not requested — skipped to reduce API usage.' : 'Deep scan disabled — skipped.' } }),
+    deepScan && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: deepScan ? 'GoldRush wallet history URL could not be built.' : 'Deep scan disabled — skipped.' } }),
+    deepScan ? fetchAlchemyPnlEvents(addr, baseUrl) : Promise.resolve([] as PnlEvent[]),
   ])
 
   // ── Tx / age / nonce (from Alchemy — unchanged path) ──
@@ -748,10 +758,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _moralisUsed = false
 
   if (holdings.length === 0 && Boolean(process.env.MORALIS_API_KEY)) {
-    ;[_moralisEthResult, _moralisBaseResult] = await Promise.all([
-      fetchMoralisBalances(addr, 'eth'),
-      fetchMoralisBalances(addr, 'base'),
-    ])
+    if (requestedChain === 'eth') _moralisEthResult = await fetchMoralisBalances(addr, 'eth')
+    else _moralisBaseResult = await fetchMoralisBalances(addr, 'base')
     const moralisHoldings = [
       ..._moralisEthResult.holdings,
       ..._moralisBaseResult.holdings,
@@ -948,6 +956,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           : holdings.length > 0
           ? 'primary_ok'
           : 'all_providers_empty',
+      },
+      moralisUsage: {
+        attempted: _moralisEthResult.attempted || _moralisBaseResult.attempted,
+        endpointNames: ['erc20_holdings'],
+        requestedChain,
+        callCount: (_moralisEthResult.attempted ? 1 : 0) + (_moralisBaseResult.attempted ? 1 : 0),
+        cacheHit: _moralisEthResult.cacheHit || _moralisBaseResult.cacheHit,
+        deduped: false,
+        durationMs: Date.now() - startedAt,
+        skippedReason: (_moralisEthResult.reason === 'not_needed' && _moralisBaseResult.reason === 'not_needed') ? 'fallback_not_needed' : null,
       },
       walletProviderRouting,
     },
