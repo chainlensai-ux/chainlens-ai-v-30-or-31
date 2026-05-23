@@ -2407,7 +2407,6 @@ export async function POST(req: Request) {
         symbol: finalResolvedSymbol,
         decimals: resolvedDecimals,
       },
-      riskEngine,
       sections: {
         market: {
           status: marketStatus,
