@@ -1328,6 +1328,7 @@ export async function POST(req: Request) {
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? null
     const holderPctFromProvider: boolean[] = []
+    const rawBalanceByAddress = new Map<string, unknown>()
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
       const address = h.address || h.holder_address || h.wallet_address || h.owner_address || h.contract_address || ''
       const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
@@ -1335,28 +1336,32 @@ export async function POST(req: Request) {
       const pctRaw = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage)
       const percent = pctRaw
       holderPctFromProvider.push(percent != null)
+      if (address && balanceRaw != null) rawBalanceByAddress.set(address.toLowerCase(), balanceRaw)
       return { rank: i + 1, address, amount, percent }
     }).filter((h: any) => h.address)
 
     const percentRows = topHolders.filter((h: any) => h.percent != null)
-    const hasPct = percentRows.length > 0
+    let hasPct = percentRows.length > 0
     const anyProviderPct = holderPctFromProvider.some(Boolean)
-    const percentSource: 'provider' | 'calculated' | 'unavailable' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'unavailable'
+    let percentSource: 'provider' | 'calculated' | 'unavailable' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'unavailable'
     console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct, '[holders] pct source', percentSource)
     const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
-    const top1 = hasPct ? sum(1) : null
-    const top5 = hasPct ? sum(5) : null
-    const top10 = hasPct ? sum(10) : null
-    const top20 = hasPct ? sum(20) : null
+    let top1 = hasPct ? sum(1) : null
+    let top5 = hasPct ? sum(5) : null
+    let top10 = hasPct ? sum(10) : null
+    let top20 = hasPct ? sum(20) : null
     const normalizedTop = topHolders.slice(0, 200)
-    const holderDistribution: HolderDistribution = normalizedTop.length
+    let holderDistribution: HolderDistribution = normalizedTop.length
       ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop }
       : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
-    const holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
+    let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
           : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
       : { status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: holderItems.length, normalizedCount: 0 }
+    let holderDerivationAttempted = false
+    let holderDerivationSucceeded = false
+    let holderDerivationFailureReason: string | null = null
 
     const poolAttr = mainPool?.attributes ?? {}
     // True market cap priority:
@@ -1639,6 +1644,50 @@ export async function POST(req: Request) {
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
+
+    // Derive holder percentages when provider rows have raw balances but no percent fields.
+    // bigIntPct(balance, supply) divides in the same raw unit so decimals cancel — no normalization needed.
+    // Guard: both values must be raw integer strings (no decimal point, no scientific notation).
+    if (!hasPct && normalizedTop.length > 0 && rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') {
+      holderDerivationAttempted = true
+      let derivedCount = 0
+      for (const h of normalizedTop as any[]) {
+        if (h.percent != null) continue
+        const rawBal = rawBalanceByAddress.get((h.address ?? '').toLowerCase())
+        if (rawBal == null) continue
+        const rawStr = String(rawBal)
+        // Skip human-readable amounts (already divided) — only process raw integer strings
+        if (rawStr === '' || rawStr.includes('.') || /[eE]/.test(rawStr)) continue
+        const pct = bigIntPct(rawBal, rpcSupply)
+        if (pct != null && pct > 0 && pct <= 100) {
+          h.percent = Math.round(pct * 10000) / 10000
+          derivedCount++
+        }
+      }
+      if (derivedCount > 0) {
+        holderDerivationSucceeded = true
+        hasPct = true
+        percentSource = 'calculated'
+        top1 = sum(1); top5 = sum(5); top10 = sum(10); top20 = sum(20)
+        holderDistribution = {
+          top1, top5, top10, top20,
+          others: top20 != null ? Math.max(0, 100 - top20) : null,
+          holderCount,
+          topHolders: normalizedTop,
+        }
+        holderDistributionStatus = {
+          status: 'ok',
+          reason: 'holder_percentages_derived_from_supply',
+          itemCount: holderItems.length,
+          normalizedCount: normalizedTop.length,
+        }
+      } else {
+        holderDerivationFailureReason = normalizedTop.length > 0
+          ? 'raw_balance_missing_or_float_format'
+          : 'no_holder_rows'
+      }
+    }
+
     const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
     const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
 
@@ -2065,6 +2114,12 @@ export async function POST(req: Request) {
           normalizedCount: normalizedTop.length,
           firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : undefined,
           reason: holderDistributionStatus.reason,
+          percentSource,
+          totalSupplyAvailable: Boolean(rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0'),
+          decimalsAvailable: resolvedDecimals != null,
+          derivationAttempted: holderDerivationAttempted,
+          derivationSucceeded: holderDerivationSucceeded,
+          derivationFailureReason: holderDerivationFailureReason,
         },
         lpDiagnostics,
       }
