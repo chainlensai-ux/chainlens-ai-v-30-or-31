@@ -40,7 +40,7 @@ export async function POST(req: Request) {
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
-      if (cp && typeof cp === 'object' && debug) cp._debug = { routeName: '/api/wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt, walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_CACHE_TTL_MS / 1000 } }
+      if (cp && typeof cp === 'object' && debug) cp._debug = { routeName: '/api/wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt, walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_CACHE_TTL_MS / 1000 }, providerFlow: null }
       if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
@@ -69,7 +69,6 @@ export async function POST(req: Request) {
         alchemyCallsFailed: providers.alchemy?.behaviorAttempted && Number(providers.alchemy?.transfersReturned ?? 0) === 0 ? 1 : 0,
         rpcMethodsUsed: providers.alchemy?.behaviorAttempted ? ['alchemy_getAssetTransfers'] : [],
         skippedReason: providers.alchemy?.behaviorAttempted ? null : 'alchemy_not_configured',
-        fallbackUsed: (snapshot as any).providerUsed !== 'goldrush',
         requestDurationMs: Date.now() - startedAt,
         walletSnapshotCache: snapshotCacheDebug,
         providerFallback: (snapshot as any)._diagnostics?.providerFallback ?? null,
