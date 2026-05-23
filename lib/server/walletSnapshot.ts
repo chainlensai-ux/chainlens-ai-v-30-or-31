@@ -604,12 +604,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const useEthAlchemy = requestedChain === 'eth' && Boolean(ALCHEMY_ETH_KEY)
   const nonceUrl = useEthAlchemy ? ethUrl : baseUrl
 
-  // Run all providers in parallel: Zerion (primary), GoldRush (fallback), Alchemy tx/nonce
+  // Phase 1 (parallel): Zerion (primary holdings) + Alchemy (tx/behavior/PnL) + GoldRush PnL.
+  // GoldRush balances_v2 are intentionally excluded here — they only run in Phase 2 if
+  // Zerion fails or returns empty, avoiding 2 wasted API calls on healthy Zerion sessions.
   const [
     positionsRes,
     portfolioRes,
-    grEthRes,
-    grBaseRes,
     ethFirst,
     baseFirst,
     nonceRes,
@@ -630,12 +630,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     ZERION_KEY
       ? zerionGet(`wallets/${addr}/portfolio/`, { currency: 'usd' })
       : Promise.reject(new Error('Zerion key not configured')),
-    GOLDRUSH_KEY
-      ? fetchGoldrushBalances(addr, 'eth-mainnet', GOLDRUSH_KEY)
-      : Promise.resolve([] as Holding[]),
-    GOLDRUSH_KEY
-      ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY)
-      : Promise.resolve([] as Holding[]),
     useEthAlchemy ? getFirstTxOnChain(addr, ethUrl) : Promise.resolve(null),
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(nonceUrl, 'eth_getTransactionCount', [addr, 'latest']),
@@ -661,7 +655,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     ? parseInt(nonceRes.value as string, 16)
     : null
 
-  // ── Provider selection: Zerion first, GoldRush fallback ──
+  // ── Provider selection: Zerion first, GoldRush sequential fallback ──
   let holdings: Holding[] = []
   let totalValue = 0
   let providerUsed: 'zerion' | 'goldrush' | 'none' = 'none'
@@ -670,8 +664,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rawPos: any[] = positionsRes.status === 'fulfilled' ? (positionsRes.value?.data ?? []) : []
+  const _zerionSucceeded = rawPos.length > 0
 
-  if (rawPos.length > 0) {
+  if (_zerionSucceeded) {
     holdings = rawPos
       .map(pos => {
         const a  = pos.attributes ?? {}
@@ -702,7 +697,27 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : 'Primary provider returned no positions for this wallet.'
   }
 
-  // GoldRush fallback when Zerion yielded no holdings
+  // Phase 2: GoldRush balances fallback — only runs when Zerion yielded no holdings.
+  // When Zerion succeeds this block is skipped entirely, saving 2 balances_v2 API calls.
+  let grEthRes: PromiseSettledResult<Holding[]>
+  let grBaseRes: PromiseSettledResult<Holding[]>
+  const _goldrushBalancesSkipped = _zerionSucceeded
+
+  if (_zerionSucceeded) {
+    grEthRes = { status: 'fulfilled', value: [] }
+    grBaseRes = { status: 'fulfilled', value: [] }
+  } else {
+    ;[grEthRes, grBaseRes] = await Promise.allSettled([
+      GOLDRUSH_KEY
+        ? fetchGoldrushBalances(addr, 'eth-mainnet', GOLDRUSH_KEY)
+        : Promise.resolve([] as Holding[]),
+      GOLDRUSH_KEY
+        ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY)
+        : Promise.resolve([] as Holding[]),
+    ])
+  }
+
+  // Apply GoldRush holdings when Zerion yielded nothing
   if (holdings.length === 0) {
     const grHoldings = [
       ...(grEthRes.status === 'fulfilled' ? grEthRes.value : []),
@@ -723,7 +738,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   // Capture GoldRush outcome for fallback diagnostics
-  const _grPrimaryAttempted = Boolean(GOLDRUSH_KEY)
+  const _grPrimaryAttempted = !_goldrushBalancesSkipped && Boolean(GOLDRUSH_KEY)
   const _grPrimaryUsable = providerUsed === 'goldrush'
   const _preFallbackReason = reason
 
@@ -818,7 +833,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : ''
   const alchemyConfigured = Boolean(ALCHEMY_BASE_KEY)
   if (process.env.NODE_ENV !== 'production') {
-    console.log('[wallet-diag] route=/api/wallet goldrushConfigured=', goldrushConfigured, 'goldrushEventsReturned=', grEvents.length, 'valuedEventsReturned=', valuedGrEvents.length, 'alchemyBehaviorAttempted=', alchemyConfigured, 'totalMs=', Date.now() - startedAt)
+    console.log('[wallet-diag] route=/api/wallet goldrushConfigured=', goldrushConfigured, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'zerionSucceeded=', _zerionSucceeded, 'goldrushEventsReturned=', grEvents.length, 'valuedEventsReturned=', valuedGrEvents.length, 'alchemyBehaviorAttempted=', alchemyConfigured, 'totalMs=', Date.now() - startedAt)
   }
 
   const alchemyBaseUsed = Boolean(ALCHEMY_BASE_KEY)
@@ -841,6 +856,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : 'base_first_tx_nonce_and_behavior_only',
     skippedAlchemyChains: useEthAlchemy ? [] : (ALCHEMY_ETH_KEY ? ['eth'] : []),
     pageLoadTriggered: false,
+    zerionSucceeded: _zerionSucceeded,
+    goldrushBalancesSkipped: _goldrushBalancesSkipped,
   }
 
   const hasHistory = estimatedPnl.status !== 'unavailable'
@@ -873,7 +890,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         zerion: { configured: Boolean(ZERION_KEY), attempted: true, succeeded: rawPos.length > 0 },
         goldrush: {
           configured: goldrushConfigured,
-          balancesAttempted: goldrushConfigured,
+          balancesAttempted: !_goldrushBalancesSkipped && goldrushConfigured,
           transactionsAttempted: goldrushConfigured,
           transfersAttempted: goldrushConfigured,
           eventsReturned: grEvents.length,
