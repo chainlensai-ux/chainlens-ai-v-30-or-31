@@ -1280,6 +1280,7 @@ export default function TerminalTokenScanner() {
           chartStatus: json.chartStatus ?? null,
           chartDataSource: json.chartDataSource ?? null,
           resolvedInput: json.resolvedInput ?? null,
+          riskEngine: json.riskEngine ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {

@@ -48,6 +48,18 @@ export async function POST(req: Request) {
       ;(snapshot as any)._debug = {
         routeName: '/api/wallet',
         cacheHit: false,
+        goldrushUsage: {
+          endpointName: 'balances_v2 + transfers_v2',
+          feature: 'wallet-scanner',
+          trigger: 'scan_button',
+          attempted: Boolean(providers.goldrush?.configured),
+          cacheHit: Boolean((snapshot as any)._diagnostics?.snapshotCache?.memoryHit),
+          deduped: false,
+          statusCode: providers.goldrush?.httpStatus ?? null,
+          durationMs: Date.now() - startedAt,
+          failureStage: providers.goldrush?.reason || null,
+          reason: providers.goldrush?.reason || null,
+        },
         alchemyConfigured: Boolean(providers.alchemy?.configured),
         alchemyCallsAttempted: providers.alchemy?.behaviorAttempted ? 1 : 0,
         alchemyCallsSucceeded: Number(providers.alchemy?.transfersReturned ?? 0) > 0 ? 1 : 0,

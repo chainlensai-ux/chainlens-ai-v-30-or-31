@@ -896,6 +896,243 @@ function analyzeContract(bytecode: string | null): any {
 }
 
 // ------------------------------
+// CORTEX Risk Engine v1
+// Derives risk score from existing scan data only. No external calls.
+// ------------------------------
+type RiskEngineResult = {
+  rugRiskScore: number | null;
+  rugRiskLevel: 'low' | 'medium' | 'high' | 'critical' | 'unverified';
+  confidence: 'high' | 'medium' | 'low';
+  drivers: string[];
+  missingChecks: string[];
+  sniperActivity: {
+    status: 'low_signal' | 'watch' | 'high' | 'unverified';
+    confidence: 'high' | 'medium' | 'low';
+    reasons: string[];
+  };
+}
+
+function computeRiskEngine(input: {
+  marketCapVerified: boolean;
+  liquidityUsd: number | null;
+  volume24hUsd: number | null;
+  holderStatus: string;
+  top1: number | null;
+  top5: number | null;
+  top10: number | null;
+  top20: number | null;
+  lpStatus: string;
+  lpConfidence: string;
+  isHoneypot: boolean | null;
+  buyTax: number | null;
+  sellTax: number | null;
+  simulationSuccess: boolean | null;
+  pairCreatedAt: string | null;
+  holderCount: number | null;
+  buys24h: number | null;
+  sells24h: number | null;
+}): RiskEngineResult {
+  let score = 0;
+  const drivers: string[] = [];
+  const missingChecks: string[] = [];
+  let confirmedDataPoints = 0;
+
+  // ── Market cap ─────────────────────────────────────────────────────────────
+  if (!input.marketCapVerified) {
+    score += 8;
+    missingChecks.push('Market cap unverified — circulating supply not confirmed');
+  } else {
+    confirmedDataPoints++;
+  }
+
+  // ── Liquidity depth ────────────────────────────────────────────────────────
+  if (input.liquidityUsd == null) {
+    score += 5;
+    missingChecks.push('Liquidity depth unavailable — pool depth not confirmed');
+  } else if (input.liquidityUsd < 25_000) {
+    score += 18;
+    const liqFmt = input.liquidityUsd < 1_000 ? `<$1K` : `$${(input.liquidityUsd / 1_000).toFixed(1)}K`;
+    drivers.push(`Very thin liquidity — ${liqFmt} pool depth`);
+    confirmedDataPoints++;
+  } else if (input.liquidityUsd < 100_000) {
+    score += 10;
+    drivers.push(`Thin liquidity — $${(input.liquidityUsd / 1_000).toFixed(0)}K pool depth`);
+    confirmedDataPoints++;
+  } else {
+    confirmedDataPoints++;
+  }
+
+  // ── Volume ─────────────────────────────────────────────────────────────────
+  if (input.volume24hUsd == null) {
+    score += 6;
+    missingChecks.push('24h volume unavailable');
+  } else if (input.volume24hUsd < 1_000) {
+    score += 6;
+    drivers.push('Very low 24h trading volume');
+    confirmedDataPoints++;
+  } else {
+    confirmedDataPoints++;
+  }
+
+  // ── Holder Map ─────────────────────────────────────────────────────────────
+  const holderUnavailable = input.holderStatus === 'unavailable' || input.holderStatus === 'empty' || input.holderStatus === 'error';
+  const holderPartial = input.holderStatus === 'partial';
+  if (holderUnavailable) {
+    score += 15;
+    missingChecks.push('Holder Map unavailable — concentration risk cannot be fully verified');
+  } else if (holderPartial) {
+    score += 8;
+    missingChecks.push('Holder Map partial — concentration estimate incomplete');
+    confirmedDataPoints++;
+  } else if (input.holderStatus === 'ok') {
+    confirmedDataPoints++;
+    if (input.top10 != null && input.top10 > 50) {
+      score += 20;
+      drivers.push(`High holder concentration — top 10 wallets hold ${input.top10.toFixed(1)}%`);
+    }
+    if (input.top20 != null && input.top20 > 60 && !(input.top10 != null && input.top10 > 50)) {
+      score += 15;
+      drivers.push(`Concentrated ownership — top 20 wallets hold ${input.top20.toFixed(1)}%`);
+    }
+    if (input.top1 != null && input.top1 > 15) {
+      score += 12;
+      drivers.push(`Single wallet dominance — top holder owns ${input.top1.toFixed(1)}%`);
+    }
+  }
+
+  // ── LP Control ─────────────────────────────────────────────────────────────
+  const lpSafe = input.lpStatus === 'burned' || input.lpStatus === 'locked';
+  const lpTeam = input.lpStatus === 'team_controlled';
+  const lpUnverified = input.lpStatus === 'unverified' || input.lpStatus === 'insufficient_data' || input.lpStatus === 'error';
+  const lpProtocol = input.lpStatus === 'protocol' || input.lpStatus === 'concentrated_liquidity';
+
+  if (lpTeam) {
+    score += 25;
+    drivers.push('LP controlled by a team wallet — liquidity can be removed at any time');
+    confirmedDataPoints++;
+  } else if (lpUnverified) {
+    score += 15;
+    missingChecks.push('LP Control unverified — lock or burn proof not confirmed');
+  } else if (lpSafe) {
+    if (input.lpConfidence === 'high') score -= 10;
+    confirmedDataPoints++;
+  } else if (lpProtocol) {
+    missingChecks.push('LP Control uses protocol liquidity — requires protocol-specific verification');
+    confirmedDataPoints++;
+  }
+
+  // ── Risk Checks (honeypot / tax) ───────────────────────────────────────────
+  if (input.isHoneypot === true) {
+    score += 30;
+    drivers.push('Honeypot detected — sell simulation blocked');
+    confirmedDataPoints++;
+  } else if (input.isHoneypot === false) {
+    confirmedDataPoints++;
+  }
+  if (input.simulationSuccess === false) {
+    missingChecks.push('Risk Checks simulation unavailable — tax and honeypot status unconfirmed');
+  }
+
+  const maxTax = Math.max(input.buyTax ?? 0, input.sellTax ?? 0);
+  if (maxTax >= 20) {
+    score += 20;
+    drivers.push(`Very high taxes — buy ${input.buyTax?.toFixed(1) ?? '?'}% / sell ${input.sellTax?.toFixed(1) ?? '?'}%`);
+  } else if (maxTax >= 10) {
+    score += 10;
+    drivers.push(`Elevated taxes — buy ${input.buyTax?.toFixed(1) ?? '?'}% / sell ${input.sellTax?.toFixed(1) ?? '?'}%`);
+  }
+
+  // ── Missing checks penalty ─────────────────────────────────────────────────
+  score += Math.min(missingChecks.length * 5, 20);
+
+  // ── Clamp ──────────────────────────────────────────────────────────────────
+  score = Math.min(100, Math.max(0, Math.round(score)));
+
+  // ── Confidence ────────────────────────────────────────────────────────────
+  const confidence: 'high' | 'medium' | 'low' =
+    confirmedDataPoints >= 4 ? 'high' :
+    confirmedDataPoints >= 2 ? 'medium' : 'low';
+
+  // ── Level ─────────────────────────────────────────────────────────────────
+  let rugRiskScore: number | null = score;
+  let rugRiskLevel: RiskEngineResult['rugRiskLevel'];
+  const coreDataMissing = input.liquidityUsd == null && holderUnavailable && input.simulationSuccess == null && lpUnverified;
+  if (confirmedDataPoints === 0 || (confidence === 'low' && coreDataMissing)) {
+    rugRiskLevel = 'unverified';
+    rugRiskScore = null;
+  } else if (score <= 30) {
+    rugRiskLevel = 'low';
+  } else if (score <= 60) {
+    rugRiskLevel = 'medium';
+  } else if (score <= 80) {
+    rugRiskLevel = 'high';
+  } else {
+    rugRiskLevel = 'critical';
+  }
+
+  // ── Sniper Activity V1 ───────────────────────────────────────────────────
+  const sniperReasons: string[] = [];
+  let sniperSignalCount = 0;
+  let pairAgeMs: number | null = null;
+  if (input.pairCreatedAt) {
+    try { pairAgeMs = Date.now() - new Date(input.pairCreatedAt).getTime() } catch {}
+  }
+  const pairAgeHours = pairAgeMs != null ? pairAgeMs / 3_600_000 : null;
+  const pairAgeDays = pairAgeMs != null ? pairAgeMs / 86_400_000 : null;
+
+  if (pairAgeHours != null && pairAgeHours < 24) {
+    sniperReasons.push(`Pool is very new — launched ${pairAgeHours < 1 ? '<1h' : `~${Math.floor(pairAgeHours)}h`} ago`);
+    sniperSignalCount += 2;
+  } else if (pairAgeDays != null && pairAgeDays < 7) {
+    sniperReasons.push(`Pool launched ${Math.floor(pairAgeDays)}d ago — early phase`);
+    sniperSignalCount++;
+  }
+  if (input.top1 != null && input.top1 > 20 && pairAgeDays != null && pairAgeDays < 14) {
+    sniperReasons.push(`Top wallet holds ${input.top1.toFixed(1)}% — early accumulation pattern`);
+    sniperSignalCount++;
+  }
+  if (input.top5 != null && input.top5 > 40 && pairAgeDays != null && pairAgeDays < 14) {
+    sniperReasons.push(`Top 5 wallets hold ${input.top5.toFixed(1)}% — concentrated early ownership`);
+    sniperSignalCount++;
+  }
+  if (input.holderCount != null && input.holderCount < 50 && pairAgeDays != null && pairAgeDays < 7) {
+    sniperReasons.push(`Very few holders (${input.holderCount}) — entry is highly concentrated`);
+    sniperSignalCount++;
+  }
+  if (input.buys24h != null && input.buys24h > 500 && pairAgeHours != null && pairAgeHours < 6) {
+    sniperReasons.push(`${input.buys24h} buys in first hours — abnormal early buy pressure`);
+    sniperSignalCount++;
+  }
+
+  let sniperStatus: RiskEngineResult['sniperActivity']['status'];
+  let sniperConfidence: RiskEngineResult['sniperActivity']['confidence'];
+  if (pairAgeHours == null && input.holderStatus !== 'ok') {
+    sniperStatus = 'unverified';
+    sniperConfidence = 'low';
+    if (sniperReasons.length === 0) sniperReasons.push('Early wallet activity unavailable — pool age and holder data not confirmed');
+  } else if (sniperSignalCount >= 3) {
+    sniperStatus = 'high';
+    sniperConfidence = 'high';
+  } else if (sniperSignalCount >= 1) {
+    sniperStatus = 'watch';
+    sniperConfidence = 'medium';
+  } else {
+    sniperStatus = 'low_signal';
+    sniperConfidence = pairAgeHours != null ? 'medium' : 'low';
+    if (sniperReasons.length === 0) sniperReasons.push('No strong early wallet concentration signals detected this scan');
+  }
+
+  return {
+    rugRiskScore,
+    rugRiskLevel,
+    confidence,
+    drivers: drivers.slice(0, 5),
+    missingChecks: missingChecks.slice(0, 6),
+    sniperActivity: { status: sniperStatus, confidence: sniperConfidence, reasons: sniperReasons.slice(0, 4) },
+  };
+}
+
+// ------------------------------
 // POST handler
 // ------------------------------
 export async function POST(req: Request) {
@@ -2142,6 +2379,28 @@ export async function POST(req: Request) {
       // AI summary from Cortex Engine
       aiSummary,
 
+      // CORTEX Risk Engine v1 — pure derivation, no extra API calls
+      riskEngine: computeRiskEngine({
+        marketCapVerified: marketCapFromGt != null,
+        liquidityUsd: _el,
+        volume24hUsd: _ev,
+        holderStatus: holderDistributionStatus.status,
+        top1,
+        top5,
+        top10,
+        top20,
+        lpStatus: lpControl.status,
+        lpConfidence: lpControl.confidence,
+        isHoneypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
+        buyTax: hpResult.ok ? hpResult.buyTax : (gpHoneypot?.buyTax ?? null),
+        sellTax: hpResult.ok ? hpResult.sellTax : (gpHoneypot?.sellTax ?? null),
+        simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : (gpHoneypot?.simulationSuccess ?? null),
+        pairCreatedAt: pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
+        holderCount: holderCount ?? null,
+        buys24h: buys24h ?? null,
+        sells24h: sells24h ?? null,
+      }),
+
       // Token info object for frontend panels
       tokenInfo: {
         name: finalResolvedName,
@@ -2214,6 +2473,18 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._debug = {
         routeName: '/api/token',
         cacheHit: false,
+        goldrushUsage: {
+          endpointName: `token_holders_v2`,
+          feature: 'token-scanner',
+          trigger: 'scan_button',
+          attempted: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY),
+          cacheHit: false,
+          deduped: false,
+          statusCode: holdersRaw?.__statusCode ?? null,
+          durationMs: null,
+          failureStage: holdersRaw?.__status === 'error' ? (holdersRaw?.__reason ?? 'unknown') : null,
+          reason: holderDistributionStatus.reason ?? holderDistributionStatus.status ?? null,
+        },
         alchemyConfigured,
         alchemyCallsAttempted: rpcCallsAttempted,
         alchemyCallsSucceeded: rpcCallsSucceeded,
