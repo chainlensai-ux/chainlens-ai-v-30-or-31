@@ -1,4 +1,4 @@
-import { fetchMoralisBalances, type MoralisFetchResult } from './moralis'
+import { fetchMoralisBalances, type MoralisFetchResult, type MoralisChain } from './moralis'
 
 type Holding = {
   contract?: string
@@ -169,7 +169,7 @@ export type WalletSnapshot = {
     moralisUsage?: {
       attempted: boolean
       endpointNames: string[]
-      requestedChain: 'eth' | 'base'
+      requestedChain: MoralisChain
       callCount: number
       cacheHit: boolean
       deduped: boolean
@@ -177,13 +177,15 @@ export type WalletSnapshot = {
       skippedReason: string | null
     }
     providerFlow?: {
-      chainMode: 'auto' | 'base' | 'eth' | 'base_eth'
+      chainMode: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'
       minChainValueUsd: number
-      discoveredChains: Array<{ chain: 'eth' | 'base'; usdValue: number }>
-      activeChains: Array<'eth' | 'base'>
-      skippedDustChains: Array<'eth' | 'base'>
+      supportedChains: MoralisChain[]
+      discoveredChains: Array<{ chain: MoralisChain; usdValue: number }>
+      activeChains: MoralisChain[]
+      skippedDustChains: MoralisChain[]
       maxChainsBasicScan: number
-      moralisChainsAttempted: Array<'eth' | 'base'>
+      moralisChainsAttempted: MoralisChain[]
+      moralisCallCount: number
       cacheHits: number
       dedupedCalls: number
       partialFailures: number
@@ -226,7 +228,7 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported' }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -771,38 +773,48 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const minChainValueUsd = 1
   const maxChainsBasicScan = 5
-  const supportedMoralisChains: Array<'eth' | 'base'> = ['eth', 'base']
-  const chainValueMap = new Map<'eth' | 'base', number>()
+  const supportedMoralisChains: MoralisChain[] = ['eth', 'base', 'polygon', 'bsc', 'arbitrum', 'optimism', 'avalanche', 'fantom', 'cronos', 'gnosis']
+  const mapChain = (raw: string): MoralisChain | null => {
+    const c = raw.toLowerCase()
+    if (c === 'eth' || c.includes('ethereum')) return 'eth'
+    if (c.includes('base')) return 'base'
+    if (c.includes('polygon') || c === 'matic') return 'polygon'
+    if (c.includes('binance') || c.includes('bsc')) return 'bsc'
+    if (c.includes('arbitrum')) return 'arbitrum'
+    if (c.includes('optimism')) return 'optimism'
+    if (c.includes('avalanche')) return 'avalanche'
+    if (c.includes('fantom')) return 'fantom'
+    if (c.includes('cronos')) return 'cronos'
+    if (c.includes('gnosis') || c.includes('xdai')) return 'gnosis'
+    return null
+  }
+  const chainValueMap = new Map<MoralisChain, number>()
   for (const h of holdings) {
     const rawChain = String(h.chain ?? '').toLowerCase()
-    const mapped: 'eth' | 'base' | null = rawChain.includes('ethereum') || rawChain === 'eth' ? 'eth' : (rawChain.includes('base') ? 'base' : null)
+    const mapped = mapChain(rawChain)
     if (!mapped) continue
     chainValueMap.set(mapped, (chainValueMap.get(mapped) ?? 0) + (h.value ?? 0))
   }
   const discoveredChains = [...chainValueMap.entries()].map(([chain, usdValue]) => ({ chain, usdValue })).sort((a,b)=>b.usdValue-a.usdValue)
   const skippedDustChains = discoveredChains.filter(c => c.usdValue < minChainValueUsd).map(c => c.chain)
-  let activeChains: Array<'eth' | 'base'> = []
+  let activeChains: MoralisChain[] = []
   if (chainMode === 'base') activeChains = ['base']
   else if (chainMode === 'eth') activeChains = ['eth']
   else if (chainMode === 'base_eth') activeChains = ['base','eth']
-  else activeChains = discoveredChains.filter(c => c.usdValue >= minChainValueUsd).map(c => c.chain as 'eth' | 'base')
+  else if (chainMode === 'all_supported' && deepScan) activeChains = [...supportedMoralisChains]
+  else activeChains = discoveredChains.filter(c => c.usdValue >= minChainValueUsd).map(c => c.chain)
   if (activeChains.length === 0 && (requestedChain === 'base' || requestedChain === 'eth')) activeChains = [requestedChain]
   if (activeChains.length === 0) activeChains = ['base', 'eth']
-  activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, maxChainsBasicScan)
+  activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, chainMode === 'all_supported' && deepScan ? supportedMoralisChains.length : maxChainsBasicScan)
 
   // Moralis holdings layer for active chains.
   let grEthRes: PromiseSettledResult<Holding[]>
   let grBaseRes: PromiseSettledResult<Holding[]>
-  let _moralisEthResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
-  let _moralisBaseResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
+  const _moralisByChain = new Map<MoralisChain, MoralisFetchResult>()
   let _moralisUsed = false
   if (Boolean(process.env.MORALIS_API_KEY)) {
-    if (activeChains.includes('eth')) _moralisEthResult = await fetchMoralisBalances(addr, 'eth')
-    if (activeChains.includes('base')) _moralisBaseResult = await fetchMoralisBalances(addr, 'base')
-    const moralisHoldings = [
-      ..._moralisEthResult.holdings,
-      ..._moralisBaseResult.holdings,
-    ].sort((a, b) => b.value - a.value)
+    for (const c of activeChains) _moralisByChain.set(c, await fetchMoralisBalances(addr, c))
+    const moralisHoldings = [..._moralisByChain.values()].flatMap((r) => r.holdings).sort((a, b) => b.value - a.value)
 
     if (moralisHoldings.length > 0) {
       holdings = moralisHoldings as Holding[]
@@ -987,12 +999,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         },
         moralis: {
           configured: Boolean(process.env.MORALIS_API_KEY),
-          attempted: _moralisResult.attempted,
-          usable: _moralisResult.usable,
-          holdingsReturned: _moralisResult.holdings.length,
-          cacheHit: _moralisResult.cacheHit,
-          reason: _moralisResult.reason || '',
-          chain: _moralisAttempted ? _moralisChain : undefined,
+          attempted: [..._moralisByChain.values()].some((r) => r.attempted),
+          usable: [..._moralisByChain.values()].some((r) => r.usable),
+          holdingsReturned: [..._moralisByChain.values()].reduce((n, r) => n + r.holdings.length, 0),
+          cacheHit: [..._moralisByChain.values()].some((r) => r.cacheHit),
+          reason: [..._moralisByChain.values()].map((r) => r.reason).find(Boolean) || '',
         },
       },
       walletProviderFieldsPresent: {
@@ -1013,46 +1024,41 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         refreshBypassedCache: refresh, cacheAgeSeconds: null, cacheTtlSeconds: snapshotTtlMs / 1000,
       },
       providerFallback: {
-        primaryAttempted: _moralisAttempted,
-        primaryUsable: _moralisHoldingsUsable,
-        fallbackAttempted: _zerionPositionsUsable || Boolean(ZERION_KEY),
-        fallbackUsed: !_moralisHoldingsUsable && _zerionPositionsUsable,
-        tertiaryAttempted: _grPrimaryAttempted,
-        tertiaryUsed: _grPrimaryUsable,
+        primaryAttempted: _grPrimaryAttempted,
+        primaryUsable: _grPrimaryUsable,
+        fallbackAttempted: [..._moralisByChain.values()].some((r) => r.attempted),
+        fallbackUsed: _moralisUsed,
         fallbackReason: _preFallbackReason,
-        cacheHit: _moralisResult.cacheHit,
-        reason: _moralisHoldingsUsable
-          ? 'moralis_primary_ok'
-          : _zerionPositionsUsable
-          ? 'zerion_fallback_used'
-          : _grPrimaryUsable
-          ? 'goldrush_tertiary_used'
+        cacheHit: [..._moralisByChain.values()].some((r) => r.cacheHit),
+        reason: _moralisUsed
+          ? 'moralis_holdings_used'
+          : holdings.length > 0
+          ? 'primary_ok'
           : 'all_providers_empty',
       },
       moralisUsage: {
-        attempted: _moralisEthResult.attempted || _moralisBaseResult.attempted,
+        attempted: [..._moralisByChain.values()].some((r) => r.attempted),
         endpointNames: ['erc20_holdings'],
-        requestedChain,
-        callCount: (_moralisEthResult.attempted ? 1 : 0) + (_moralisBaseResult.attempted ? 1 : 0),
-        cacheHit: _moralisEthResult.cacheHit || _moralisBaseResult.cacheHit,
+        requestedChain: activeChains[0] ?? requestedChain,
+        callCount: [..._moralisByChain.values()].filter((r) => r.attempted).length,
+        cacheHit: [..._moralisByChain.values()].some((r) => r.cacheHit),
         deduped: false,
         durationMs: Date.now() - startedAt,
-        skippedReason: (_moralisEthResult.reason === 'not_needed' && _moralisBaseResult.reason === 'not_needed') ? 'fallback_not_needed' : null,
+        skippedReason: [..._moralisByChain.values()].length === 0 ? 'fallback_not_needed' : null,
       },
       providerFlow: {
         chainMode,
+        supportedChains: supportedMoralisChains,
         minChainValueUsd,
         discoveredChains,
         activeChains,
         skippedDustChains,
         maxChainsBasicScan,
-        moralisChainsAttempted: [
-          ...(_moralisEthResult.attempted ? ['eth' as const] : []),
-          ...(_moralisBaseResult.attempted ? ['base' as const] : []),
-        ],
-        cacheHits: Number(_moralisEthResult.cacheHit) + Number(_moralisBaseResult.cacheHit),
+        moralisChainsAttempted: [..._moralisByChain.entries()].filter(([,r]) => r.attempted).map(([c]) => c),
+        moralisCallCount: [..._moralisByChain.values()].filter((r) => r.attempted).length,
+        cacheHits: [..._moralisByChain.values()].filter((r) => r.cacheHit).length,
         dedupedCalls: 0,
-        partialFailures: Number(_moralisEthResult.attempted && !_moralisEthResult.usable) + Number(_moralisBaseResult.attempted && !_moralisBaseResult.usable),
+        partialFailures: [..._moralisByChain.values()].filter((r) => r.attempted && !r.usable).length,
         goldrushAttempted: _grPrimaryAttempted,
         goldrushSkippedReason: _grPrimaryAttempted ? null : (_moralisUsed ? 'moralis_holdings_available' : 'not_required'),
       },

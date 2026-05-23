@@ -28,7 +28,7 @@ export async function POST(req: Request) {
     const refresh = body?.refresh === true
     const chain = body?.chain === 'eth' ? 'eth' : 'base'
     const deepScan = body?.deepScan === true || body?.deepScan === 'true'
-    const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' ? body.chainMode : 'auto'
+    const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' || body?.chainMode === 'all_supported' ? body.chainMode : 'auto'
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
