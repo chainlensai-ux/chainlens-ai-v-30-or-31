@@ -88,6 +88,20 @@ type HolderDistributionStatus = {
   normalizedCount: number
   percentSource: "provider" | "calculated" | "unavailable"
 }
+type RiskEngine = {
+  rugRiskScore: number | null
+  rugRiskLabel: "low_visible_risk" | "watch" | "high" | "critical" | "unverified"
+  confidence: "high" | "medium" | "low"
+  cortexRead: string
+  verifiedSignals: string[]
+  riskDrivers: string[]
+  openChecks: string[]
+  sniperActivity: {
+    status: "low_signal" | "watch" | "high" | "unverified"
+    confidence: "high" | "medium" | "low"
+    reasons: string[]
+  }
+}
 
 function toNum(v: unknown): number | null {
   const n = typeof v === "string" || typeof v === "number" ? Number(v) : NaN
@@ -1894,6 +1908,110 @@ export async function POST(req: Request) {
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
+    const riskVerifiedSignals: string[] = []
+    const riskDrivers: string[] = []
+    const openChecks: string[] = []
+    let riskScore = 35
+    const lpState = lpControl.status
+    const top10Pct = holderDistribution.top10
+    const top20Pct = holderDistribution.top20
+
+    if (marketCapFromGt != null) riskVerifiedSignals.push('Market data verified: market cap is available.')
+    else if (fdv != null) {
+      riskVerifiedSignals.push('Market data partial: FDV is available.')
+      openChecks.push('Market cap is not verified. Circulating supply confidence is lower.')
+      riskScore += 10
+    } else {
+      openChecks.push('Market value data is missing, which limits risk context.')
+      riskScore += 15
+    }
+    if (liquidityUsd != null) riskVerifiedSignals.push(`Liquidity depth detected (${Math.round(liquidityUsd).toLocaleString()} USD).`)
+    else openChecks.push('Liquidity depth is unavailable.')
+    if (holderDistributionStatus.status === 'ok' && top10Pct != null) {
+      riskVerifiedSignals.push(`Holder Map verified with Top 10 concentration at ${top10Pct.toFixed(1)}%.`)
+      if (top10Pct > 70) { riskDrivers.push('Holder concentration is very high (Top 10 > 70%).'); riskScore += 30 }
+      else if (top10Pct > 50) { riskDrivers.push('Holder concentration is elevated (Top 10 > 50%).'); riskScore += 20 }
+      else if (top10Pct > 35) { riskDrivers.push('Holder concentration is moderate (Top 10 > 35%).'); riskScore += 10 }
+      else riskScore -= 5
+    } else if (holderDistributionStatus.status === 'partial') {
+      riskVerifiedSignals.push('Holder Map rows were returned but concentration percentages are partial.')
+      openChecks.push('Holder concentration percentages are incomplete.')
+      riskScore += 8
+    } else {
+      openChecks.push('Holder Map could not verify concentration in this scan.')
+      riskScore += 15
+    }
+    if (lpState === 'burned' || lpState === 'locked') { riskVerifiedSignals.push(`LP Control shows ${lpState}.`); riskScore -= 12 }
+    else if (lpState === 'protocol' || lpState === 'concentrated_liquidity') { riskVerifiedSignals.push('LP Control indicates protocol-managed liquidity structure.'); riskScore += 3 }
+    else if (lpState === 'team_controlled') { riskDrivers.push('LP Control indicates a dominant team wallet can control liquidity.'); riskScore += 28 }
+    else { openChecks.push('LP Control does not provide lock or burn proof.'); riskScore += 10 }
+
+    const riskOwnerStatus = !ownerAddr || ownerAddr === '0x0000000000000000000000000000000000000000' ? 'renounced' : 'held'
+    if (riskOwnerStatus === 'renounced') { riskVerifiedSignals.push('Dev Control: ownership appears renounced.'); riskScore -= 6 }
+    else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
+    else openChecks.push('Dev Control ownership status is unverified.')
+
+    if (hpResult.ok) {
+      riskVerifiedSignals.push('Trading simulation returned tax and transfer signals.')
+      if (hpResult.honeypot === true) { riskDrivers.push('Trading simulation indicates a blocked or trapped sell path.'); riskScore += 45 }
+      if ((hpResult.buyTax ?? 0) > 12 || (hpResult.sellTax ?? 0) > 12) { riskDrivers.push('Trading taxes are high (>12%).'); riskScore += 20 }
+      else if ((hpResult.buyTax ?? 0) > 7 || (hpResult.sellTax ?? 0) > 7) { riskDrivers.push('Trading taxes are elevated (>7%).'); riskScore += 10 }
+    } else {
+      openChecks.push('Trading simulation is unavailable; tax behavior remains less certain.')
+      riskScore += 8
+    }
+
+    if (analysis?.has_mint) { riskDrivers.push('Contract can mint supply.'); riskScore += 12 }
+    if (analysis?.is_upgradeable) { riskDrivers.push('Contract is upgradeable.'); riskScore += 10 }
+    if (analysis?.has_withdraw || analysis?.has_sweep || analysis?.has_rescue) { riskDrivers.push('Contract includes withdraw/sweep/rescue style controls.'); riskScore += 10 }
+
+    const majorMissingCount = [
+      marketCapFromGt == null,
+      holderDistributionStatus.status !== 'ok',
+      !(lpState === 'burned' || lpState === 'locked' || lpState === 'protocol' || lpState === 'concentrated_liquidity' || lpState === 'team_controlled'),
+      !hpResult.ok,
+    ].filter(Boolean).length
+    const sufficientCoreData = [
+      marketCapFromGt != null || fdv != null,
+      liquidityUsd != null,
+      holderDistributionStatus.status === 'ok' || holderDistributionStatus.status === 'partial',
+      lpControl.status !== 'error' && lpControl.status !== 'insufficient_data',
+    ].filter(Boolean).length >= 3
+    let rugRiskScore: number | null = sufficientCoreData ? Math.max(0, Math.min(100, Math.round(riskScore))) : null
+    let rugRiskLabel: RiskEngine["rugRiskLabel"] = 'unverified'
+    if (rugRiskScore != null) {
+      if (rugRiskScore >= 85) rugRiskLabel = 'critical'
+      else if (rugRiskScore >= 65) rugRiskLabel = 'high'
+      else if (rugRiskScore >= 40) rugRiskLabel = 'watch'
+      else rugRiskLabel = majorMissingCount >= 2 ? 'watch' : 'low_visible_risk'
+    }
+    const riskConfidence: RiskEngine["confidence"] = majorMissingCount >= 3 ? 'low' : majorMissingCount >= 2 ? 'medium' : 'high'
+    const sniperStatus: RiskEngine["sniperActivity"]["status"] = transactions24h == null ? 'unverified' : transactions24h > 800 ? 'high' : transactions24h > 250 ? 'watch' : 'low_signal'
+    const sniperActivity: RiskEngine["sniperActivity"] = {
+      status: sniperStatus,
+      confidence: transactions24h == null ? 'low' : 'medium',
+      reasons: transactions24h == null
+        ? ['No early-wallet or trade-cluster telemetry is available in this scan.']
+        : [`24h transaction count observed: ${transactions24h}.`, 'No direct sniper-wallet attribution is available; this is a market-activity signal only.'],
+    }
+    const riskEngine: RiskEngine = {
+      rugRiskScore,
+      rugRiskLabel,
+      confidence: riskConfidence,
+      cortexRead: rugRiskScore == null
+        ? 'CORTEX Risk Engine is unverified because multiple core checks are missing in this scan.'
+        : rugRiskLabel === 'critical'
+          ? 'CORTEX Risk Engine flags critical rug risk from combined control and concentration signals.'
+          : rugRiskLabel === 'high'
+            ? 'CORTEX Risk Engine flags high risk and recommends a strict watch stance.'
+            : rugRiskLabel === 'watch'
+              ? 'CORTEX Risk Engine shows watch conditions due to active risks or incomplete checks.'
+              : 'CORTEX Risk Engine shows low visible risk with currently verified signals.',
+      verifiedSignals: riskVerifiedSignals,
+      riskDrivers,
+      openChecks,
+      sniperActivity,
+    }
 
     // Derive holder percentages when provider rows have raw balances but no percent fields.
     // bigIntPct(balance, supply) divides in the same raw unit so decimals cancel — no normalization needed.
@@ -2289,6 +2407,7 @@ export async function POST(req: Request) {
         symbol: finalResolvedSymbol,
         decimals: resolvedDecimals,
       },
+      riskEngine,
       sections: {
         market: {
           status: marketStatus,
