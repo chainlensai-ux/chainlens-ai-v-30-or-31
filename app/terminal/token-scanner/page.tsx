@@ -1190,10 +1190,40 @@ export default function TerminalTokenScanner() {
   const [error, setError]       = useState<string | null>(null)
   const [lpExpanded, setLpExpanded] = useState(true)
   const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-control'|'risk-checks'|'watch-plan'>('cortex-read')
+  const [copiedHolderAddress, setCopiedHolderAddress] = useState<string | null>(null)
 
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkError, setClarkError]     = useState<string | null>(null)
+
+  const isValidHolderAddress = (value: string | null | undefined) => typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
+
+  async function copyHolderAddress(address: string) {
+    if (!isValidHolderAddress(address)) return
+    try {
+      if (typeof window === 'undefined') return
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(address)
+      } else {
+        const textArea = document.createElement('textarea')
+        textArea.value = address
+        textArea.setAttribute('readonly', '')
+        textArea.style.position = 'fixed'
+        textArea.style.opacity = '0'
+        textArea.style.pointerEvents = 'none'
+        document.body.appendChild(textArea)
+        textArea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textArea)
+      }
+      setCopiedHolderAddress(address)
+      window.setTimeout(() => {
+        setCopiedHolderAddress((current) => (current === address ? null : current))
+      }, 1500)
+    } catch {
+      // Keep UI silent on clipboard errors.
+    }
+  }
 
   // Auto-scan when opened from Base Radar with ?contract= param
   useEffect(() => {
@@ -1995,14 +2025,42 @@ export default function TerminalTokenScanner() {
                             <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden' }}>
                               <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP HOLDERS</p>
                               <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#8aa3b8' }}>Top 10 holders</p>
-                              <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#6a8198', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>WALLET</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span></div>
+                              <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#6a8198', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>WALLET</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>COPY</span></div>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto', paddingRight: '3px' }}>
                                 {holderState.rows.slice(0,20).map((h)=>(
-                                  <div className="top-holder-row" key={h.rank+h.address} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px', gap: '10px', alignItems: 'center', padding: '10px', border: '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: 'rgba(15,23,42,.45)' }}>
+                                  <div className="top-holder-row" key={h.rank+h.address} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: 'rgba(15,23,42,.45)' }}>
                                     <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: h.rank<=3?'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))':'transparent', border: h.rank<=3?'1px solid rgba(167,139,250,.45)':'none' }}>{h.rank}</span>
                                     <span className="top-holder-mobile-meta" style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shorten(h.address)}<span style={{ display: 'none', fontSize: '12px', fontWeight: 800, color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span></span>
                                     <span className="top-holder-mobile-amt" style={{ fontSize: '12px', color: '#e5eef9', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{fmtTokenAmt(h.amount,result.decimals??18)}</span>
                                     <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'right', fontFamily: 'var(--font-plex-mono)', color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span>
+                                    {isValidHolderAddress(h.address) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => { void copyHolderAddress(h.address) }}
+                                        style={{
+                                          justifySelf: 'end',
+                                          padding: '4px 10px',
+                                          borderRadius: '999px',
+                                          border: copiedHolderAddress === h.address ? '1px solid rgba(45,212,191,0.55)' : '1px solid rgba(167,139,250,0.48)',
+                                          background: copiedHolderAddress === h.address
+                                            ? 'linear-gradient(135deg,rgba(45,212,191,0.18),rgba(45,212,191,0.1))'
+                                            : 'linear-gradient(135deg,rgba(167,139,250,0.2),rgba(45,212,191,0.08))',
+                                          color: copiedHolderAddress === h.address ? '#67e8f9' : '#c4b5fd',
+                                          fontSize: '10px',
+                                          fontWeight: 700,
+                                          letterSpacing: '0.08em',
+                                          fontFamily: 'var(--font-plex-mono)',
+                                          cursor: 'pointer',
+                                          whiteSpace: 'nowrap',
+                                          boxShadow: copiedHolderAddress === h.address ? '0 0 10px rgba(45,212,191,0.25)' : '0 0 10px rgba(167,139,250,0.14)',
+                                          transition: 'all 0.14s ease',
+                                          minHeight: '26px',
+                                        }}
+                                        aria-label={`Copy full holder address ${h.address}`}
+                                      >
+                                        {copiedHolderAddress === h.address ? 'Copied' : 'Copy'}
+                                      </button>
+                                    )}
                                   </div>
                                 ))}
                               </div>
