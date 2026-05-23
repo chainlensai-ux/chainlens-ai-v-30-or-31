@@ -67,6 +67,16 @@ function clarkActor(req: NextRequest, authenticated: boolean): string { return a
 
 // Session memory — lightweight short-term context per session/user
 type ClarkSessionMemory = {
+  lastTokenSymbol?: string | null;
+  lastTokenName?: string | null;
+  lastTokenAddress?: string | null;
+  lastTokenChain?: string | null;
+  lastTokenSummary?: string | null;
+  prevTokenSymbol?: string | null;
+  prevTokenName?: string | null;
+  prevTokenAddress?: string | null;
+  prevTokenChain?: string | null;
+  prevTokenSummary?: string | null;
   lastToken: {
     address: string;
     symbol: string | null;
@@ -124,7 +134,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
+    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -179,8 +189,18 @@ function getSessionKeySource(req: NextRequest, authenticated: boolean): "user" |
 function updateMemToken(mem: ClarkSessionMemory, address: string, symbol: string | null, name: string | null, scanSummary: string | null) {
   if (mem.lastToken) {
     mem.prevToken = { ...mem.lastToken, chain: mem.selectedChain }
+    mem.prevTokenSymbol = mem.lastToken.symbol;
+    mem.prevTokenName = mem.lastToken.name;
+    mem.prevTokenAddress = mem.lastToken.address;
+    mem.prevTokenChain = mem.selectedChain;
+    mem.prevTokenSummary = mem.lastToken.scanSummary;
   }
   mem.lastToken = { address, symbol, name, scanSummary, ts: Date.now() };
+  mem.lastTokenSymbol = symbol;
+  mem.lastTokenName = name;
+  mem.lastTokenAddress = address;
+  mem.lastTokenChain = mem.selectedChain;
+  mem.lastTokenSummary = scanSummary;
   mem.recentTokens = [{ address, symbol, name, chain: mem.selectedChain, summary: scanSummary, ts: Date.now() }, ...mem.recentTokens.filter(t => t.address !== address)].slice(0, 3)
 }
 
@@ -5780,7 +5800,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
+  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -6140,6 +6160,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return await handleClarkAI({ ...body, prompt: `scan ${ethTarget}`, chain: "ethereum" }, origin, authHeader, verifiedPlan, sessionMem);
   }
 
+  // "I'm talking about AERO" — resolve symbol from session context and make it active again.
+  const TALKING_ABOUT_RE = /\b(?:i['’]?m|im)\s+talking\s+about\s+([a-z0-9]{2,20})\b/i;
+  const talkingMatch = prompt.match(TALKING_ABOUT_RE);
+  if (talkingMatch && !extractAddress(prompt)) {
+    const spokenSymbol = talkingMatch[1].toUpperCase();
+    const tokenFromRecent = sessionMem.recentTokens.find((t) => (t.symbol ?? "").toUpperCase() === spokenSymbol) ?? null;
+    const tokenFromLast = sessionMem.lastToken && (sessionMem.lastToken.symbol ?? "").toUpperCase() === spokenSymbol ? sessionMem.lastToken : null;
+    const remembered = tokenFromLast ?? tokenFromRecent;
+    if (remembered?.address) {
+      const rememberedSummary = tokenFromLast ? tokenFromLast.scanSummary : (tokenFromRecent?.summary ?? null);
+      updateMemToken(sessionMem, remembered.address, remembered.symbol ?? spokenSymbol, remembered.name ?? spokenSymbol, rememberedSummary ?? sessionMem.lastTokenSummary ?? remembered.symbol ?? null);
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+        analysis: `CORTEX context locked: ${spokenSymbol} is the active token. Ask your follow-up (risk, missing checks, watch-next), or say 'scan it on ETH instead'.`,
+      };
+    }
+    return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `I don't have ${spokenSymbol} in session memory yet. Say 'scan ${spokenSymbol}' or paste the contract first.` };
+  }
+
   if (isFeedSafestFollowup(prompt)) {
     if (wasLastFeedEmpty(body.history)) {
       return {
@@ -6332,11 +6371,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           "",
           `Verdict: ${verdict}`,
           "",
-          riskLines ? `Risk signals:\n${riskLines}` : "No explicit risk lines found in last scan.",
+          `Why: ${verdict === "AVOID" ? "Too many unresolved/negative safety signals in the current CORTEX read." : verdict === "WATCH" ? "Mixed signals — monitor, do not blindly size in." : "Incomplete evidence; needs deeper checks before conviction."}`,
           "",
-          "These are the signals from the last CORTEX read. Missing checks (holder concentration, LP control, dev wallet) add uncertainty — absence of clean signals is itself a risk.",
+          `Signals: ${riskLines ? "Risk signals were found in the last CORTEX scan." : "No explicit risk block was found in the last scan text."}`,
           "",
-          "Next: Run Token Scanner for deeper checks or ask 'show me the missing checks'.",
+          `Risks:\n${riskLines ?? "- Missing/unclear risk lines in the last scan output."}`,
+          "",
+          "Watch next: Verify holder concentration, LP control/lock state, and deployer-wallet behavior before treating setup as safe.",
+          "",
+          "These are the signals from the last CORTEX read only — not a guarantee.",
         ].join("\n"),
       };
     }
@@ -6344,7 +6387,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   // "show me the missing checks" — extract from scan summary
-  const MISSING_CHECKS_RE = /\b(show\s+(?:me\s+)?(?:the\s+)?missing\s+checks?|what\s+(?:checks?\s+)?(?:are\s+)?missing|which\s+checks?\s+(?:are\s+)?missing|what\s+(?:data\s+)?(?:is\s+)?incomplete|incomplete\s+checks?)\b/i;
+  const MISSING_CHECKS_RE = /\b(show\s+(?:me\s+)?(?:the\s+)?missing\s+checks?|what\s+(?:checks?\s+)?(?:are\s+)?missing|what\s+is\s+missing|which\s+checks?\s+(?:are\s+)?missing|what\s+(?:data\s+)?(?:is\s+)?incomplete|incomplete\s+checks?)\b/i;
   if (MISSING_CHECKS_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
     const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
     const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"}` : "Last scanned token";
