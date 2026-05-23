@@ -113,6 +113,7 @@ type ClarkSessionMemory = {
   selectedChain: "base" | "eth";
   lastActiveTool: string | null;
   currentPage?: string | null;
+  lastDevWallet?: { address: string; summary: string | null; ts: number } | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -123,7 +124,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null };
+    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -198,10 +199,11 @@ function buildCompactAppContext(mem: ClarkSessionMemory, body: ClarkRequestBody,
   const selectedChain = mem.selectedChain === "eth" ? "Ethereum" : "Base"
   const tokenLine = mem.recentTokens[0] ? `Token: ${mem.recentTokens[0].symbol ?? "?"} ${mem.recentTokens[0].address} ${mem.recentTokens[0].summary ?? "summary unavailable"}` : "Token: none"
   const walletLine = mem.recentWallets[0] ? `Wallet: ${mem.recentWallets[0].address} ${mem.recentWallets[0].summary ?? "summary unavailable"}` : "Wallet: none"
+  const devLine = mem.lastDevWallet ? `DevWallet: ${mem.lastDevWallet.address} ${mem.lastDevWallet.summary ?? "summary unavailable"}` : "DevWallet: none"
   const whale = typeof fromContext.selectedWhaleAlertSummary === 'string' ? fromContext.selectedWhaleAlertSummary : 'none'
   const portfolio = typeof fromContext.portfolioSummary === 'string' ? fromContext.portfolioSummary : 'none'
   const hist = mem.recentMessages.map(m => `${m.role}: ${m.content}`).join(" | ")
-  let text = `Tool=${tool}; Chain=${selectedChain}; ${tokenLine}; ${walletLine}; Whale=${whale}; Portfolio=${portfolio}; Recent=${hist}`
+  let text = `Tool=${tool}; Chain=${selectedChain}; ${tokenLine}; ${walletLine}; ${devLine}; Whale=${whale}; Portfolio=${portfolio}; Recent=${hist}`
   if (text.length > 2500) text = text.slice(0, 2500)
   return { text, chars: text.length, usedCachedContext: !evidence.tokenScan && !evidence.walletSnapshot && !evidence.devWallet }
 }
@@ -2458,7 +2460,9 @@ function buildWalletQualityVerdict(
       behaviorNote ? `${read}\n${behaviorNote}` : read,
       signals,
       risks,
-      nextAction
+      nextAction,
+      undefined,
+      "Next check:"
     ),
     address
   );
@@ -2544,22 +2548,21 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
     "",
     `Verdict: ${verdictLine}`,
     "",
-    "Portfolio read:",
+    "Wallet read:",
     portfolioRead,
     ...topLines,
     "",
-    "Activity read:",
+    "Signals:",
     activityRead,
     "",
-    "Risk / concentration:",
+    "Risks:",
     concentration,
     `Unknown/unpriced assets hidden: ${snapshot.hiddenHoldingsCount}.`,
     "",
-    "Missing checks:",
-    "- PnL, win rate, and intent are not verified from this scan.",
-    "- Smart-money status is not confirmed.",
+    "Worth monitoring?",
+    snapshot.totalValue >= 10_000 ? "Yes — portfolio size and breadth support watchlist monitoring." : "Unclear — limited portfolio data reduces confidence.",
     "",
-    "Next action:",
+    "Next check:",
     "Monitor entries/exits before trusting this wallet. Run token scans on major holdings. No trade call.",
   ].join("\n");
 }
@@ -2594,16 +2597,18 @@ function buildStructuredVerdict(
   signals: string[],
   risks: string[],
   action: string,
-  asset?: string
+  asset?: string,
+  actionLabel?: string
 ): string {
+  const actionHeader = actionLabel ?? "Watch next:";
   return (
     `${asset ? `Asset: ${asset}\n` : ""}` +
     `Verdict: ${verdict}\n` +
     `Confidence: ${confidence}\n\n` +
-    `Read:\n${capWords(read, 35)}\n\n` +
-    `Key signals:\n${toBullets(signals.slice(0, 3))}\n\n` +
+    `Why:\n${capWords(read, 35)}\n\n` +
+    `Signals:\n${toBullets(signals.slice(0, 3))}\n\n` +
     `Risks:\n${toBullets(risks.slice(0, 3))}\n\n` +
-    `Next action:\n${capWords(action, 25)}`
+    `${actionHeader}\n${capWords(action, 25)}`
   );
 }
 
@@ -2940,24 +2945,29 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
       model: "claude-sonnet-4-6",
       max_tokens: 1024,
       system:
-        "You are Clark AI, the onchain intelligence analyst inside ChainLens — a Base-native crypto terminal powered by the CORTEX Engine.\n\n" +
+        "You are Clark — the onchain intelligence analyst inside ChainLens, a Base-native crypto terminal powered by the CORTEX Engine.\n\n" +
         "PERSONA:\n" +
         "- Crypto-native. Sharp. Concise. Confident but honest.\n" +
         "- Speak like a serious onchain analyst, not a generic chatbot.\n" +
         "- No fake hype, no fake certainty, no 'as an AI language model.'\n" +
-        "- Say things like: 'Good signal, weak confirmation.' / 'Worth monitoring, not enough for conviction.' / 'Volume can show attention. It does not prove safety.'\n\n" +
+        "- Use phrases like: 'Good signal, weak confirmation.' / 'Worth monitoring, not enough for conviction.' / 'Volume shows attention. It does not prove safety.'\n\n" +
+        "CORTEX ENGINE MODULES — use these terms when referencing data sources:\n" +
+        "- Market data: price, volume, liquidity, FDV, market cap from live pools\n" +
+        "- Holder Map: top wallet distribution, concentration, supply control\n" +
+        "- LP Control: whether LP is locked, burned, or controlled — never claim locked without data\n" +
+        "- Dev Control: deployer wallet, linked wallets, prior rug history\n" +
+        "- Risk Checks: honeypot flag, buy/sell tax, contract flags, simulation result\n\n" +
         "KNOWLEDGE:\n" +
         "You know crypto deeply: DeFi, memecoins, AI agents, Base ecosystem, liquidity mechanics, holder dynamics, whale behavior, token launches, rug patterns, LP locks, deployer risk, market cap vs FDV, trading psychology.\n\n" +
         "You know Base ecosystem tokens: ETH/WETH, USDC, BRETT (Base memecoin), AERO/Aerodrome (leading Base DEX), VIRTUAL/Virtuals Protocol (AI agent infrastructure), TOSHI, DEGEN, HIGHER, NORMIE, cbETH, and many others.\n\n" +
-        "You know DeFi concepts: Uniswap v3/v4, AMMs, LP mechanics, impermanent loss, liquidity depth, pool fragmentation, slippage, price impact.\n\n" +
+        "You know DeFi: Uniswap v3/v4, AMMs, LP mechanics, impermanent loss, liquidity depth, pool fragmentation, slippage, price impact.\n\n" +
         "WHAT YOU CAN ANSWER FROM KNOWLEDGE (no live call needed):\n" +
         "- General crypto concepts (FDV, market cap, liquidity, holder concentration, LP lock, slippage, honeypot, tax, dev wallet, whale alerts, pump alerts)\n" +
         "- Base ecosystem background (what is Base, who built it, why it matters)\n" +
         "- Known token background at HIGH LEVEL ONLY — never fake current prices, liquidity, or holders\n" +
         "- DeFi mechanics and risk frameworks\n" +
         "- Trading psychology and pattern recognition\n" +
-        "- How ChainLens and CORTEX work at a feature level\n" +
-        "- Checklists for evaluating tokens, wallets, and market signals\n\n" +
+        "- How ChainLens and CORTEX work at a feature level\n\n" +
         "WHAT NEEDS LIVE CORTEX DATA (never answer from memory):\n" +
         "- Current price, liquidity, volume, market cap, FDV, holders for any specific token\n" +
         "- Whether LP is locked for a specific token\n" +
@@ -2966,47 +2976,67 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "- Whether a wallet is profitable or trustworthy\n" +
         "- Current Base market movers\n\n" +
         "WHEN USER ASKS ABOUT A KNOWN TOKEN GENERALLY:\n" +
-        "Give high-level background (what it is, its narrative, why it matters). Then say:\n" +
-        "'For current liquidity, holders, and risk — say scan [SYMBOL] and I will run a live CORTEX check.'\n\n" +
+        "Give high-level background (what it is, its narrative, why it matters). Then say: 'For current liquidity, holders, and risk — say scan [SYMBOL] and I will run a live CORTEX check.'\n\n" +
         "SAFETY RULES — NEVER VIOLATE:\n" +
         "- Never say 'buy' or 'sell'\n" +
         "- Never say 'this is safe' about any token\n" +
-        "- Never claim LP is locked without live verification\n" +
-        "- Never claim deployer is clean without live verification\n" +
-        "- Never claim whales are buying without live verification\n" +
+        "- Never claim LP is locked without live LP Control data\n" +
+        "- Never claim deployer is clean without live Dev Control data\n" +
+        "- Never claim whales are buying without live whale data\n" +
         "- Never give copy-trade advice\n" +
         "- Never fake PnL, win rate, or smart-money labels\n" +
         "- Never expose provider/API names (no Alchemy, GoldRush, Covalent, Zerion, GeckoTerminal, CoinGecko, GoPlus, Honeypot.is)\n" +
         "- Never show raw errors\n\n" +
-        "USE THIS WORDING:\n" +
-        "- 'CORTEX' (not 'API' or provider names)\n" +
-        "- 'live Base data' (not 'real-time price feed from X')\n" +
-        "- 'not confirmed' / 'incomplete read' / 'needs live verification'\n\n" +
+        "TERMINOLOGY:\n" +
+        "- Say 'CORTEX' (not 'API' or provider names)\n" +
+        "- Say 'Holder Map' when discussing holder distribution\n" +
+        "- Say 'LP Control' when discussing LP lock/burn status\n" +
+        "- Say 'Dev Control' when discussing deployer/origin wallet\n" +
+        "- Say 'Risk Checks' when discussing honeypot/tax/contract flags\n" +
+        "- Say 'not confirmed' / 'incomplete read' / 'needs live verification'\n\n" +
         "HARD RULES FOR LIVE DATA:\n" +
         "- Use only provided fields from context blocks.\n" +
         "- Never invent numbers or certainty.\n" +
         "- Do not mention sources that are not present.\n" +
-        "- Mention Honeypot.is only when Honeypot fields are present.\n" +
         "- Do not claim LP is unlocked unless LP lock data is explicitly present and false.\n" +
-        "- Do not claim holder concentration unless holder data is explicitly present.\n" +
+        "- Do not claim holder concentration unless Holder Map data is explicitly present.\n" +
         "- If key data is missing, say: 'Not enough verified data to make a strong call.'\n\n" +
-        "DEFAULT OUTPUT FORMAT FOR TOKEN/WALLET SCANS:\n" +
+        "OUTPUT FORMAT — TOKEN SCAN:\n" +
         "Verdict: WATCH / AVOID / SCAN DEEPER / TRUSTWORTHY / UNKNOWN\n" +
         "Confidence: Low / Medium / High\n\n" +
-        "Read:\n" +
-        "1-2 short sentences.\n\n" +
-        "Key signals:\n" +
-        "- up to 3 bullets\n\n" +
+        "Why:\n" +
+        "1-2 short sentences explaining the verdict.\n\n" +
+        "Signals:\n" +
+        "- up to 3 bullets (what CORTEX found that supports the verdict)\n\n" +
         "Risks:\n" +
-        "- up to 3 bullets\n\n" +
-        "Next action:\n" +
-        "One clear sentence.\n\n" +
+        "- up to 3 bullets (what is unverified, flagged, or missing)\n\n" +
+        "Watch next:\n" +
+        "One clear sentence — what to check or monitor.\n\n" +
+        "OUTPUT FORMAT — WALLET READ:\n" +
+        "Wallet read:\n" +
+        "1-2 sentences on portfolio profile.\n\n" +
+        "Signals:\n" +
+        "- up to 3 bullets from CORTEX wallet data\n\n" +
+        "Risks:\n" +
+        "- up to 3 bullets on concentration, missing data, unverified claims\n\n" +
+        "Worth monitoring?\n" +
+        "One sentence: yes/no/unclear with reason.\n\n" +
+        "Next check:\n" +
+        "What to verify next. No trade call.\n\n" +
+        "OUTPUT FORMAT — WHALE SIGNAL:\n" +
+        "Signal:\n" +
+        "What the whale alert shows (1 sentence).\n\n" +
+        "Why it matters:\n" +
+        "Context and pattern significance.\n\n" +
+        "Confidence: Low / Medium / High\n\n" +
+        "What to verify:\n" +
+        "What to cross-check before acting on this signal.\n\n" +
         "RESPONSE STYLE:\n" +
         "- Short and direct for most questions\n" +
-        "- Use section headers for structured reads (TOKEN SCAN READ, WATCH VERDICT, etc.)\n" +
+        "- Use section headers for structured reads\n" +
         "- Never write essays unless the user explicitly asks for depth\n" +
         "- Trader-readable, not academic\n" +
-        "- Normal: 80-140 words. Deep report: up to 220 words. If user asks for full detail, allow longer.\n\n" +
+        "- Normal: 80-140 words. Deep report: up to 220 words.\n\n" +
         "STYLE PHRASES YOU MAY USE SPARINGLY:\n" +
         "- 'Good signal, weak confirmation.'\n" +
         "- 'Worth monitoring, not enough for conviction.'\n" +
@@ -3134,10 +3164,10 @@ function normalizeClarkOutput(input: {
     `Asset: ${asset}\n` +
     `Verdict: ${verdict}\n` +
     `Confidence: ${confidence}\n\n` +
-    `Read:\n${read}\n\n` +
-    `Key signals:\n${toBullets(safeSignals)}\n\n` +
+    `Why:\n${read}\n\n` +
+    `Signals:\n${toBullets(safeSignals)}\n\n` +
     `Risks:\n${toBullets(safeRisks)}\n\n` +
-    `Next action:\n${nextAction}`
+    `Watch next:\n${nextAction}`
   );
 }
 
@@ -3152,7 +3182,7 @@ function normalizeConfidence(confidence: string, text: string): "Low" | "Medium"
 function cleanLine(line: string): string {
   return line
     .replace(/\*\*/g, "")
-    .replace(/\b(verdict|confidence|read|key signals|risks|next action)\s*:/gi, "")
+    .replace(/\b(verdict|confidence|why|read|key signals|signals|risks|watch next|next action|next check)\s*:/gi, "")
     .replace(/0x[a-fA-F0-9]{40}/g, "")
     .replace(/\|\s*/g, " ")
     .replace(/\s+/g, " ")
@@ -3174,7 +3204,8 @@ function humanizeProviderReason(reason: string): string {
 }
 
 function buildCleanRead(text: string): string {
-  const readSection = extractSection(text, "Read:", ["Key signals:", "Risks:", "Next action:"]);
+  const readSection = extractSection(text, "Why:", ["Signals:", "Key signals:", "Risks:", "Watch next:", "Next action:"])
+    || extractSection(text, "Read:", ["Key signals:", "Signals:", "Risks:", "Watch next:", "Next action:"]);
   const source = readSection || text;
   const cleaned = source
     .split("\n")
@@ -3442,7 +3473,7 @@ function buildDevWalletRisks(ctx: ClarkContextExtract): string[] {
 
 function pickBullets(text: string, headers: string[], max: number, fallback: string[]): string[] {
   for (const h of headers) {
-    const section = extractSection(text, `${h}:`, ["Read:", "Key signals:", "Risks:", "Next action:"]);
+    const section = extractSection(text, `${h}:`, ["Why:", "Read:", "Key signals:", "Signals:", "Risks:", "Watch next:", "Next action:", "Next check:"]);
     if (!section) continue;
     const bullets = section
       .split(/\n|•|;/)
@@ -4807,7 +4838,7 @@ function buildTokenFollowupReply(type: TokenFollowupType, contractAddress: strin
   const lpControl = ex("LP control") ?? "Not confirmed";
   const holderCount = ex("Holder count") ?? "Not available";
   const top10 = ex("Top 10") ?? "Not available";
-  const missingMatch = scanText.match(/Missing checks:\n([\s\S]*?)(?:\n\n|\nNext action:|$)/i);
+  const missingMatch = scanText.match(/Missing checks:\n([\s\S]*?)(?:\n\n|\nWatch next:|\nNext action:|$)/i);
   const missingLines = missingMatch?.[1]
     ?.split("\n").filter(l => l.trim().startsWith("-")).slice(0, 3).map(l => l.trim()).join("\n")
     ?? "- LP control\n- Deployer behavior";
@@ -5749,7 +5780,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null };
+  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
@@ -6098,6 +6129,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return await handleClarkAI({ ...body, prompt: rerouted }, origin, authHeader, verifiedPlan, sessionMem);
   }
 
+  // "scan on ETH instead" — re-run last token scan on Ethereum mainnet
+  const SCAN_ETH_INSTEAD_RE = /\b(scan\s+(?:it|this|that)\s+on\s+(?:eth(?:ereum)?)|on\s+eth(?:ereum)?\s+(?:instead|too|also)|check\s+(?:it|this)\s+on\s+eth(?:ereum)?|eth(?:ereum)?\s+version)\b/i;
+  if (SCAN_ETH_INSTEAD_RE.test(prompt) && !extractAddress(prompt)) {
+    const memToken = sessionMem.lastToken ?? body.clientContext?.lastToken ?? null;
+    const ethTarget = memToken?.address ?? memToken?.symbol ?? null;
+    if (!ethTarget) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "Which token should I scan on Ethereum? Send a symbol or contract." };
+    }
+    return await handleClarkAI({ ...body, prompt: `scan ${ethTarget}`, chain: "ethereum" }, origin, authHeader, verifiedPlan, sessionMem);
+  }
+
   if (isFeedSafestFollowup(prompt)) {
     if (wasLastFeedEmpty(body.history)) {
       return {
@@ -6278,7 +6320,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
     const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"} (${sessionMem.lastToken.address.slice(0, 6)}...${sessionMem.lastToken.address.slice(-4)})` : "Last scanned token";
     if (scanSrc) {
-      const riskMatch = scanSrc.match(/(?:Risks?|Risk\s+flags?|Red\s+flags?):\s*\n([\s\S]*?)(?:\n\n|\nNext\s+action|\nMissing|\nWatch|$)/i);
+      const riskMatch = scanSrc.match(/(?:Risks?|Risk\s+flags?|Red\s+flags?):\s*\n([\s\S]*?)(?:\n\n|\nWatch\s+next|\nNext\s+action|\nMissing|\nWatch|$)/i);
       const riskLines = riskMatch ? riskMatch[1].trim() : null;
       const avoidMatch = scanSrc.includes("AVOID") || scanSrc.includes("Avoid");
       const watchMatch = scanSrc.includes("WATCH") || scanSrc.includes("Watch");
@@ -6307,7 +6349,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
     const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"}` : "Last scanned token";
     if (scanSrc) {
-      const missingMatch = scanSrc.match(/(?:Missing\s+checks?|Missing\s+data|Not\s+verified):\s*\n([\s\S]*?)(?:\n\n|\nNext\s+action|\nWatch|$)/i);
+      const missingMatch = scanSrc.match(/(?:Missing\s+checks?|Missing\s+data|Not\s+verified):\s*\n([\s\S]*?)(?:\n\n|\nWatch\s+next|\nNext\s+action|\nWatch|$)/i);
       const missingLines = missingMatch ? missingMatch[1].trim() : null;
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
