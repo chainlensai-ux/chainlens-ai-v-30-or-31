@@ -501,12 +501,12 @@ function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
 
 type OnChainData = { isContract: boolean | null; nativeBalanceEth: number | null; txCount: number | null }
 const onChainCache = new Map<string, { exp: number; data: OnChainData }>()
-const ONCHAIN_TTL_MS = 4 * 60 * 1000
-const CONTRACT_TTL_MS = 10 * 60 * 1000
+const ONCHAIN_TTL_MS = 8 * 60 * 1000
+const CONTRACT_TTL_MS = 20 * 60 * 1000
 const MAX_WALLETS = 20
-const MAX_ENRICHED_WALLETS = 5
-const RPC_BUDGET = 15
-const FETCH_CONCURRENCY = 3
+const MAX_ENRICHED_WALLETS = 3
+const RPC_BUDGET = 9
+const FETCH_CONCURRENCY = 2
 
 function resolveBaseRpc(): string {
   const explicit = process.env.ALCHEMY_BASE_RPC_URL ?? process.env.BASE_RPC_URL
