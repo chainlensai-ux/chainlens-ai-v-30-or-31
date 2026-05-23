@@ -130,6 +130,18 @@ type ScanResult = {
     symbol?: string
     confidence: 'high' | 'medium' | 'low'
   } | null
+  riskEngine?: {
+    rugRiskScore: number | null
+    rugRiskLevel: 'low' | 'medium' | 'high' | 'critical' | 'unverified'
+    confidence: 'high' | 'medium' | 'low'
+    drivers: string[]
+    missingChecks: string[]
+    sniperActivity: {
+      status: 'low_signal' | 'watch' | 'high' | 'unverified'
+      confidence: 'high' | 'medium' | 'low'
+      reasons: string[]
+    }
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -1260,6 +1272,7 @@ export default function TerminalTokenScanner() {
           chartStatus: json.chartStatus ?? null,
           chartDataSource: json.chartDataSource ?? null,
           resolvedInput: json.resolvedInput ?? null,
+          riskEngine: json.riskEngine ?? null,
         }
         setResult(mapped)
         if (json.aiSummary) {
@@ -2226,6 +2239,89 @@ export default function TerminalTokenScanner() {
                     ].filter((x):x is string=>x!=null)
                     return(
                       <div>
+                        {/* ── CORTEX Risk Engine v1 ─────────────────────── */}
+                        {result.riskEngine && (() => {
+                          const re = result.riskEngine!
+                          const scoreColor = re.rugRiskLevel==='critical'?'#f43f5e':re.rugRiskLevel==='high'?'#f87171':re.rugRiskLevel==='medium'?'#fbbf24':re.rugRiskLevel==='low'?'#2DD4BF':'#64748b'
+                          const scoreBg   = re.rugRiskLevel==='critical'?'rgba(244,63,94,0.07)':re.rugRiskLevel==='high'?'rgba(248,113,113,0.07)':re.rugRiskLevel==='medium'?'rgba(251,191,36,0.07)':re.rugRiskLevel==='low'?'rgba(45,212,191,0.07)':'rgba(100,116,139,0.07)'
+                          const scoreBdr  = re.rugRiskLevel==='critical'?'rgba(244,63,94,0.28)':re.rugRiskLevel==='high'?'rgba(248,113,113,0.28)':re.rugRiskLevel==='medium'?'rgba(251,191,36,0.28)':re.rugRiskLevel==='low'?'rgba(45,212,191,0.28)':'rgba(100,116,139,0.28)'
+                          const levelLbl  = re.rugRiskLevel==='critical'?'CRITICAL RISK':re.rugRiskLevel==='high'?'HIGH RISK':re.rugRiskLevel==='medium'?'MEDIUM RISK':re.rugRiskLevel==='low'?'LOW RISK':'UNVERIFIED'
+                          const sniColor  = re.sniperActivity.status==='high'?'#a78bfa':re.sniperActivity.status==='watch'?'#fbbf24':re.sniperActivity.status==='unverified'?'#64748b':'#2DD4BF'
+                          const sniLbl    = re.sniperActivity.status==='high'?'HIGH SIGNAL':re.sniperActivity.status==='watch'?'WATCH':re.sniperActivity.status==='unverified'?'UNVERIFIED':'LOW SIGNAL'
+                          const confClr   = re.confidence==='high'?'#2DD4BF':re.confidence==='medium'?'#fbbf24':'#64748b'
+                          const sniConfC  = re.sniperActivity.confidence==='high'?'#2DD4BF':re.sniperActivity.confidence==='medium'?'#fbbf24':'#64748b'
+                          const mono      = 'var(--font-plex-mono)'
+                          return (
+                            <div style={{ marginBottom:'20px' }}>
+                              <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px' }}>
+                                <p style={{ margin:0,fontSize:'9px',fontWeight:800,letterSpacing:'0.16em',color:'#f87171',fontFamily:mono }}>CORTEX RISK ENGINE</p>
+                                <span style={{ padding:'1px 6px',borderRadius:'999px',fontSize:'8px',fontWeight:700,letterSpacing:'.1em',fontFamily:mono,border:'1px solid rgba(248,113,113,0.22)',color:'#f87171',background:'rgba(248,113,113,0.06)' }}>v1</span>
+                              </div>
+                              <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'10px' }}>
+                                <div style={{ padding:'14px 15px',background:scoreBg,border:`1px solid ${scoreBdr}`,borderRadius:'12px' }}>
+                                  <div style={{ fontSize:'9px',letterSpacing:'.13em',color:'#64748b',marginBottom:'8px',fontFamily:mono,fontWeight:700,textTransform:'uppercase' as const }}>Rug Risk Score</div>
+                                  <div style={{ display:'flex',alignItems:'flex-end',gap:'5px',marginBottom:'8px' }}>
+                                    <span style={{ fontSize:'26px',fontWeight:800,color:scoreColor,fontFamily:mono,lineHeight:1 }}>{re.rugRiskScore!=null?re.rugRiskScore:'—'}</span>
+                                    {re.rugRiskScore!=null&&<span style={{ fontSize:'10px',color:'#64748b',fontFamily:mono,marginBottom:'3px' }}>/100</span>}
+                                  </div>
+                                  <div style={{ display:'flex',flexWrap:'wrap' as const,gap:'4px' }}>
+                                    <span style={{ padding:'2px 7px',borderRadius:'999px',fontSize:'8px',fontWeight:700,letterSpacing:'.09em',fontFamily:mono,color:scoreColor,background:scoreBg,border:`1px solid ${scoreBdr}` }}>{levelLbl}</span>
+                                    <span style={{ padding:'2px 7px',borderRadius:'999px',fontSize:'8px',fontWeight:700,letterSpacing:'.09em',fontFamily:mono,color:confClr,background:'rgba(0,0,0,0.28)',border:`1px solid ${confClr}40` }}>CONF {re.confidence.toUpperCase()}</span>
+                                  </div>
+                                </div>
+                                <div style={{ padding:'14px 15px',background:'rgba(8,14,28,0.6)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'12px' }}>
+                                  <div style={{ fontSize:'9px',letterSpacing:'.13em',color:'#64748b',marginBottom:'8px',fontFamily:mono,fontWeight:700,textTransform:'uppercase' as const }}>Sniper Activity</div>
+                                  <div style={{ display:'flex',alignItems:'center',gap:'6px',marginBottom:'7px' }}>
+                                    <span style={{ padding:'2px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:800,letterSpacing:'.07em',fontFamily:mono,color:sniColor,background:`${sniColor}18`,border:`1px solid ${sniColor}40` }}>{sniLbl}</span>
+                                  </div>
+                                  <span style={{ padding:'2px 6px',borderRadius:'999px',fontSize:'8px',fontWeight:700,letterSpacing:'.09em',fontFamily:mono,color:sniConfC,background:'rgba(0,0,0,0.28)',border:`1px solid ${sniConfC}40` }}>CONF {re.sniperActivity.confidence.toUpperCase()}</span>
+                                  {re.sniperActivity.reasons.length>0&&(
+                                    <div style={{ marginTop:'9px',display:'flex',flexDirection:'column' as const,gap:'4px' }}>
+                                      {re.sniperActivity.reasons.slice(0,4).map((r,i)=>(
+                                        <div key={i} style={{ display:'flex',gap:'6px',alignItems:'flex-start' }}>
+                                          <span style={{ color:sniColor,flexShrink:0,fontSize:'10px',lineHeight:'15px' }}>·</span>
+                                          <p style={{ margin:0,fontSize:'10px',color:'#94a3b8',lineHeight:1.4,fontFamily:mono }}>{r}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {re.sniperActivity.reasons.length===0&&<p style={{ margin:'8px 0 0',fontSize:'10px',color:'#3a5268',fontFamily:mono }}>No early-entry signals detected.</p>}
+                                </div>
+                              </div>
+                              {re.drivers.length>0&&(
+                                <div style={{ padding:'11px 13px',background:'rgba(248,113,113,0.04)',border:'1px solid rgba(248,113,113,0.13)',borderRadius:'10px',marginBottom:'8px' }}>
+                                  <div style={{ fontSize:'9px',letterSpacing:'.13em',color:'#f87171',marginBottom:'7px',fontFamily:mono,fontWeight:700,textTransform:'uppercase' as const }}>Risk Drivers</div>
+                                  <div style={{ display:'flex',flexDirection:'column' as const,gap:'4px' }}>
+                                    {re.drivers.map((d,i)=>(
+                                      <div key={i} style={{ display:'flex',gap:'7px',alignItems:'flex-start' }}>
+                                        <span style={{ color:'#f87171',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>·</span>
+                                        <p style={{ margin:0,fontSize:'11px',color:'#fca5a5',lineHeight:1.5,fontFamily:mono }}>{d}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {re.drivers.length===0&&re.rugRiskLevel!=='unverified'&&(
+                                <div style={{ padding:'9px 13px',background:'rgba(45,212,191,0.04)',border:'1px solid rgba(45,212,191,0.12)',borderRadius:'10px',marginBottom:'8px' }}>
+                                  <p style={{ margin:0,fontSize:'10px',color:'#2DD4BF',fontFamily:mono }}>No major risk drivers detected — scan data within normal parameters.</p>
+                                </div>
+                              )}
+                              {re.missingChecks.length>0&&(
+                                <div style={{ padding:'11px 13px',background:'rgba(251,191,36,0.04)',border:'1px solid rgba(251,191,36,0.13)',borderRadius:'10px' }}>
+                                  <div style={{ fontSize:'9px',letterSpacing:'.13em',color:'#fbbf24',marginBottom:'7px',fontFamily:mono,fontWeight:700,textTransform:'uppercase' as const }}>Missing Checks</div>
+                                  <div style={{ display:'flex',flexDirection:'column' as const,gap:'4px' }}>
+                                    {re.missingChecks.map((m,i)=>(
+                                      <div key={i} style={{ display:'flex',gap:'7px',alignItems:'flex-start' }}>
+                                        <span style={{ color:'#fbbf24',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>·</span>
+                                        <p style={{ margin:0,fontSize:'11px',color:'#fde68a',lineHeight:1.5,fontFamily:mono }}>{m}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })()}
                         <div style={{ marginBottom:'12px', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))', gap:'8px' }}>
                           {[
                             ['Simulation status', simVerified ? 'Verified' : 'Unverified'],
