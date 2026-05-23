@@ -107,10 +107,12 @@ type ClarkSessionMemory = {
   allowedRankScanUsed: boolean;
   lastMomentumShownCount: number;
   recentMessages: Array<{ role: "user" | "assistant"; content: string; ts: number }>;
+  conversationHistory: Array<{ role: "user" | "assistant"; content: string; ts: number }>;
   recentTokens: Array<{ address: string; symbol: string | null; name: string | null; chain: "base" | "eth"; summary: string | null; ts: number }>;
   recentWallets: Array<{ address: string; chain: "base" | "eth"; summary: string | null; ts: number }>;
   selectedChain: "base" | "eth";
   lastActiveTool: string | null;
+  currentPage?: string | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -121,7 +123,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null };
+    const fresh: ClarkSessionMemory = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -137,6 +139,14 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   if (existing.lastIntent && now - existing.lastIntentTs > INTENT_MEMORY_TTL_MS) existing.lastIntent = null;
   if (existing.lastActionableIntent && now - existing.lastActionableIntentTs > INTENT_MEMORY_TTL_MS) existing.lastActionableIntent = null;
   return existing;
+}
+
+function setMemPage(mem: ClarkSessionMemory, uiModeHint: string | null | undefined) {
+  mem.currentPage = uiModeHint ?? null;
+}
+
+function setMemChain(mem: ClarkSessionMemory, chain: string | null | undefined) {
+  mem.selectedChain = chain === "ethereum" ? "eth" : "base";
 }
 
 function parseRankFollowup(prompt: string): number | null {
@@ -5739,7 +5749,7 @@ async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, orig
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null };
+  if (!sessionMem) sessionMem = { lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null };
   const chain = body.chain ?? "base";
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   if (/what can you do|what can u do|help|yo clark what can u do/i.test(prompt.toLowerCase())) {
