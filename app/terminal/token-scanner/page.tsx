@@ -54,6 +54,12 @@ type ScanResult = {
   estimatedMarketCap?: number | null
   pools?: Pool[]
   contractSecurity?: Record<string, Record<string, unknown>> | null
+  analysis?: {
+    has_mint?: boolean
+    is_upgradeable?: boolean
+    has_withdraw?: boolean
+    has_sweep?: boolean
+  } | null
   honeypot?: {
     isHoneypot: boolean | null
     buyTax: number | null
@@ -129,6 +135,20 @@ type ScanResult = {
     resolvedAddress: string
     symbol?: string
     confidence: 'high' | 'medium' | 'low'
+  } | null
+  riskEngine?: {
+    rugRiskScore: number | null
+    rugRiskLabel: "low_visible_risk" | "watch" | "high" | "critical" | "unverified"
+    confidence: "high" | "medium" | "low"
+    cortexRead: string
+    verifiedSignals: string[]
+    riskDrivers: string[]
+    openChecks: string[]
+    sniperActivity: {
+      status: "low_signal" | "watch" | "high" | "unverified"
+      confidence: "high" | "medium" | "low"
+      reasons: string[]
+    }
   } | null
 }
 
@@ -2192,100 +2212,38 @@ export default function TerminalTokenScanner() {
                     </div>
                   )}
                   {!planLoading && isFullAccess && (() => {
-                    const gp = result.contractSecurity&&result.contract?(result.contractSecurity[result.contract.toLowerCase()]??null) as Record<string,unknown>|null:null
-                    const hp = result.honeypot
-                    const simVerified = hp?.simulationSuccess===true
-                    type RC = { label:string;value:string;style:PillStyle }
-                    const simGroup: RC[] = simVerified&&hp ? [
-                      { label:'Honeypot', value:hp.isHoneypot?'YES':'NO', style:hp.isHoneypot?pillDanger():pillSafe() },
-                      ...(hp.buyTax!=null?[{ label:'Buy Tax', value:`${hp.buyTax.toFixed(1)}%`, style:taxPct(hp.buyTax) }]:[]),
-                      ...(hp.sellTax!=null?[{ label:'Sell Tax', value:`${hp.sellTax.toFixed(1)}%`, style:taxPct(hp.sellTax) }]:[]),
-                      ...(hp.transferTax!=null&&hp.transferTax>0?[{ label:'Transfer Tax', value:`${hp.transferTax.toFixed(1)}%`, style:taxPct(hp.transferTax) }]:[]),
-                    ] : []
-                    function gpFlag(key:string,label:string,dangerOn='1'):RC|null{if(!gp)return null;const raw=gp[key];if(raw==null)return null;const v=String(raw);return{label,value:v==='1'?'YES':v==='0'?'NO':v,style:v===dangerOn?pillDanger():pillSafe()}}
-                    function gpTax(key:string,label:string):RC|null{if(!gp)return null;const raw=gp[key];if(raw==null)return null;const n=parseFloat(String(raw));if(isNaN(n))return null;return{label,value:`${(n*100).toFixed(1)}%`,style:taxPct(n*100)}}
-                    const contractGroup:RC[]=[gpFlag('is_mintable','Mint Function'),gpFlag('can_take_back_ownership','Ownership Revert'),gpFlag('is_blacklisted','Blacklist'),gpFlag('is_whitelisted','Whitelist','__never__'),gpFlag('is_proxy','Proxy','__never__'),gpTax('buy_tax','Buy Tax'),gpTax('sell_tax','Sell Tax')].filter((x):x is RC=>x!=null)
-                    const ownerAddr=gp?String(gp['owner_address']??''):''
-                    const isRenounced=!ownerAddr||ownerAddr==='0x0000000000000000000000000000000000000000'
-                    const ownerGroup:RC[]=gp?[{label:'Owner',value:isRenounced?'RENOUNCED':'HELD',style:isRenounced?pillSafe():pillAmber()}]:[]
-                    const hasAny=gp||(hp&&hp.simulationSuccess)
-                    if(!hasAny)return(
-                      <div style={{ padding:'16px 18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>No security simulation data surfaced for this scan. Tax simulation unavailable — status is unverified.</div>
-                    )
-                    const gs={marginBottom:'14px'}
-                    const gt={margin:'0 0 8px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#3a5268',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
-                    // Open risks: checks that could not be verified
-                    const riskHolderState = deriveHolderState(result)
-                    const riskLpStatus = result.lpControl?.status
-                    const riskLpVerified = riskLpStatus === 'locked' || riskLpStatus === 'burned'
-                    const openRisks: string[] = [
-                      !simVerified ? 'Tax simulation unavailable — buy/sell tax unverified.' : null,
-                      riskHolderState.kind!=='rowsWithPercent' ? 'Holder concentration not confirmed this scan.' : null,
-                      !riskLpVerified ? 'LP lock or burn proof not confirmed.' : null,
-                      result.marketCapUsd==null ? 'Circulating supply not confirmed — market cap unverified.' : null,
-                    ].filter((x):x is string=>x!=null)
-                    return(
-                      <div>
-                        <div style={{ marginBottom:'12px', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))', gap:'8px' }}>
-                          {[
-                            ['Simulation status', simVerified ? 'Verified' : 'Unverified'],
-                            ['Tax verification', simVerified ? 'Verified from simulation' : 'Open check'],
-                            ['Owner status', ownerGroup[0]?.value ?? 'Unverified'],
-                            ['Contract flags', contractGroup.length > 0 ? `${contractGroup.length} checks surfaced` : 'Unverified'],
-                            ['Open risks', openRisks.length > 0 ? `${openRisks.length} open` : 'None'],
-                          ].map(([label,value])=>(
-                            <div key={String(label)} style={{ padding:'10px 11px', border:'1px solid rgba(248,113,113,0.16)', borderRadius:'10px', background:'rgba(8,14,28,0.6)' }}>
-                              <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'4px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
-                              <div style={{ fontSize:'11px', color:'#f1f5f9', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
-                            </div>
-                          ))}
+                    const engine = result.riskEngine
+                    const sim = result.honeypot
+                    const simVerified = sim?.simulationSuccess === true
+                    const lpState = result.lpControl?.status ?? 'unverified'
+                    const ownerState = deriveHolderFallbackEvidence(result).ownerStatus
+                    const labelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', unverified:'Unverified' }
+                    const scoreColor = engine?.rugRiskScore == null ? '#94a3b8' : engine.rugRiskScore >= 85 ? '#f43f5e' : engine.rugRiskScore >= 65 ? '#f87171' : engine.rugRiskScore >= 40 ? '#fbbf24' : '#34d399'
+                    const block = { padding:'14px 16px',background:'linear-gradient(145deg, rgba(6,12,24,.92), rgba(14,16,32,.82))',border:'1px solid rgba(255,255,255,0.09)',borderRadius:'14px' }
+                    const title = { margin:'0 0 8px',fontSize:'10px',fontWeight:700 as const,letterSpacing:'.14em',color:'#94a3b8',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)' }
+                    return (
+                      <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+                        <div style={{ ...block, border:`1px solid ${scoreColor}55` }}>
+                          <p style={{ margin:'0 0 4px',fontSize:'11px',fontWeight:800,letterSpacing:'0.12em',color:'#c4b5fd',fontFamily:'var(--font-plex-mono)' }}>CORTEX Risk Engine</p>
+                          <div style={{ display:'flex', alignItems:'baseline', gap:'10px', flexWrap:'wrap' }}>
+                            <div style={{ fontSize:'34px',fontWeight:800,color:scoreColor,fontFamily:'var(--font-plex-mono)' }}>{engine?.rugRiskScore ?? '—'}{engine?.rugRiskScore != null && <span style={{ fontSize:'13px', color:'#64748b' }}>/100</span>}</div>
+                            <span style={{ padding:'4px 10px',borderRadius:'999px',border:`1px solid ${scoreColor}66`,color:scoreColor,fontSize:'11px',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{labelMap[engine?.rugRiskLabel ?? 'unverified']}</span>
+                            <span style={{ padding:'4px 10px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.35)',color:'#7dd3fc',fontSize:'11px',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Confidence {(engine?.confidence ?? 'low').toUpperCase()}</span>
+                          </div>
+                          <p style={{ margin:'10px 0 0',fontSize:'12px',lineHeight:1.6,color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{engine?.cortexRead ?? 'CORTEX Risk Engine is unverified because risk checks are missing.'}</p>
                         </div>
-                        <div style={gs}>
-                          <div style={{ padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px' }}>
-                            <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px',flexWrap:'wrap' }}>
-                              <p style={gt}>Trading Simulation</p>
-                              <span style={{ padding:'2px 7px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.1em',fontFamily:'var(--font-plex-mono)',border:simVerified?'1px solid rgba(52,211,153,.35)':'1px solid rgba(251,191,36,.35)',color:simVerified?'#34d399':'#fbbf24',background:simVerified?'rgba(52,211,153,.08)':'rgba(251,191,36,.08)' }}>{simVerified?'SIMULATION VERIFIED':'SIMULATION NOT RUN'}</span>
-                            </div>
-                            {simVerified&&simGroup.length>0?(
-                              <div style={{ display:'flex',flexWrap:'wrap',gap:'7px' }}>{simGroup.map(c=><RiskPill key={c.label} label={c.label} value={{...c.style,label:c.value}} />)}</div>
-                            ):(
-                              <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Tax simulation unavailable — honeypot and tax status could not be verified this pass.</p>
-                            )}
-                          </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:'10px' }}>
+                          <div style={block}><p style={title}>Rug Risk</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{labelMap[engine?.rugRiskLabel ?? 'unverified']}</p></div>
+                          <div style={block}><p style={title}>Sniper Activity</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{(engine?.sniperActivity.status ?? 'unverified').replace('_',' ')}</p></div>
+                          <div style={block}><p style={title}>Contract Control</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>Dev Control: {ownerState}</p><p style={{ margin:'5px 0 0',color:'#94a3b8',fontSize:'11px' }}>LP Control: {lpState.replace('_',' ')}</p></div>
+                          <div style={block}><p style={title}>Open Checks</p><p style={{ margin:0,color:(engine?.openChecks?.length ?? 0)>0?'#fbbf24':'#34d399',fontWeight:700 }}>{(engine?.openChecks?.length ?? 0)>0 ? `${engine?.openChecks?.length} open` : 'Verified'}</p></div>
                         </div>
-                        {contractGroup.length>0&&(
-                          <div style={gs}>
-                            <div style={{ padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px' }}>
-                              <p style={gt}>Contract Flags</p>
-                              <div style={{ display:'flex',flexWrap:'wrap',gap:'7px' }}>{contractGroup.map(c=><RiskPill key={c.label} label={c.label} value={{...c.style,label:c.value}} />)}</div>
-                            </div>
-                          </div>
-                        )}
-                        {ownerGroup.length>0&&(
-                          <div style={gs}>
-                            <div style={{ padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:'12px' }}>
-                              <p style={gt}>Ownership</p>
-                              <div style={{ display:'flex',flexWrap:'wrap',gap:'7px',marginBottom:ownerAddr&&!isRenounced?'8px':0 }}>{ownerGroup.map(c=><RiskPill key={c.label} label={c.label} value={{...c.style,label:c.value}} />)}</div>
-                              {ownerAddr&&!isRenounced&&<p style={{ margin:0,fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Owner: {shorten(ownerAddr)}</p>}
-                            </div>
-                          </div>
-                        )}
-                        {openRisks.length>0&&(
-                          <div style={gs}>
-                            <div style={{ padding:'14px 16px',background:'rgba(245,158,11,0.04)',border:'1px solid rgba(245,158,11,0.18)',borderRadius:'12px' }}>
-                              <p style={{...gt,color:'#fbbf24'}}>Open Risks</p>
-                              <p style={{ margin:'0 0 8px',fontSize:'10px',color:'#78716c',fontFamily:'var(--font-plex-mono)' }}>These checks could not be verified in this scan. LP ownership could not be verified this scan.</p>
-                              <div style={{ display:'flex',flexDirection:'column',gap:'5px' }}>
-                                {openRisks.map((r,i)=>(
-                                  <div key={i} style={{ display:'flex',gap:'7px',alignItems:'flex-start' }}>
-                                    <span style={{ color:'#fbbf24',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>·</span>
-                                    <p style={{ margin:0,fontSize:'11px',color:'#fde68a',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{r}</p>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        )}
+                        <div style={block}><p style={title}>Verified Signals</p><ul style={{ margin:0,paddingLeft:'18px',color:'#86efac',fontSize:'12px' }}>{(engine?.verifiedSignals?.length ? engine.verifiedSignals : ['No verified signals were returned.']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
+                        <div style={block}><p style={title}>Risk Drivers</p><ul style={{ margin:0,paddingLeft:'18px',color:'#fda4af',fontSize:'12px' }}>{(engine?.riskDrivers?.length ? engine.riskDrivers : ['No active risk drivers surfaced from available checks.']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
+                        <div style={block}><p style={title}>Open Verification Checks</p><ul style={{ margin:0,paddingLeft:'18px',color:'#fde68a',fontSize:'12px' }}>{(engine?.openChecks?.length ? engine.openChecks : ['No open verification checks from current scan.']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
+                        <div style={block}><p style={title}>Trading Simulation</p><p style={{ margin:'0 0 6px',color:simVerified?'#34d399':'#fbbf24',fontWeight:700 }}>{simVerified?'Verified':'Partial'}</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>Buy Tax: {sim?.buyTax != null ? `${sim.buyTax.toFixed(1)}%` : 'Unverified'} · Sell Tax: {sim?.sellTax != null ? `${sim.sellTax.toFixed(1)}%` : 'Unverified'}</p></div>
+                        <div style={block}><p style={title}>Contract Flags</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>Mint: {result.analysis?.has_mint ? 'Yes' : 'No'} · Upgradeable: {result.analysis?.is_upgradeable ? 'Yes' : 'No'} · Withdraw/Sweep: {result.analysis?.has_withdraw || result.analysis?.has_sweep ? 'Yes' : 'No'}</p></div>
+                        <div style={block}><p style={title}>Ownership / Control</p><p style={{ margin:'0 0 4px',color:'#f8fafc',fontWeight:700 }}>Dev Control: {ownerState}</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>LP Control: {lpState.replace('_',' ')}</p></div>
                       </div>
                     )
                   })()}
