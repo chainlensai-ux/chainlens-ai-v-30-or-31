@@ -166,6 +166,30 @@ export type WalletSnapshot = {
       cacheHit: boolean
       reason: string
     }
+    moralisUsage?: {
+      attempted: boolean
+      endpointNames: string[]
+      requestedChain: 'eth' | 'base'
+      callCount: number
+      cacheHit: boolean
+      deduped: boolean
+      durationMs: number
+      skippedReason: string | null
+    }
+    providerFlow?: {
+      chainMode: 'auto' | 'base' | 'eth' | 'base_eth'
+      minChainValueUsd: number
+      discoveredChains: Array<{ chain: 'eth' | 'base'; usdValue: number }>
+      activeChains: Array<'eth' | 'base'>
+      skippedDustChains: Array<'eth' | 'base'>
+      maxChainsBasicScan: number
+      moralisChainsAttempted: Array<'eth' | 'base'>
+      cacheHits: number
+      dedupedCalls: number
+      partialFailures: number
+      goldrushAttempted: boolean
+      goldrushSkippedReason: string | null
+    }
     walletProviderRouting?: {
       primaryProviders: string[]
       alchemyUsed: boolean
@@ -202,7 +226,7 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -586,7 +610,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base', deepScan = false } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false, chainMode = 'auto' } = options
   const cacheKey = (address ?? '').trim().toLowerCase()
 
   // Memory cache check — bypassed when refresh=true
@@ -658,8 +682,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     useEthAlchemy ? getFirstTxOnChain(addr, ethUrl) : Promise.resolve(null),
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(nonceUrl, 'eth_getTransactionCount', [addr, 'latest']),
-    fetchWalletBehavior(addr, baseUrl),
-    fetchAlchemyPnlEvents(addr, baseUrl),
+    deepScan ? fetchWalletBehavior(addr, baseUrl) : Promise.resolve(BEHAVIOR_EMPTY),
+    // ETH mainnet PnL transfers only when the caller explicitly requests ETH chain.
+    // Default (base) scans skip this to avoid a wasted transfers_v2 call.
+    deepScan && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: deepScan ? 'ETH chain not requested — skipped to reduce API usage.' : 'Deep scan disabled — skipped.' } }),
+    deepScan && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: deepScan ? 'GoldRush wallet history URL could not be built.' : 'Deep scan disabled — skipped.' } }),
+    deepScan ? fetchAlchemyPnlEvents(addr, baseUrl) : Promise.resolve([] as PnlEvent[]),
   ])
 
   // ── Tx / age / nonce ──
@@ -741,28 +769,63 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : 'No token balances found for this wallet.'
   }
 
-  // For diagnostics compat (tracks whether Zerion positions were returned)
-  const _zerionSucceeded = _zerionPositionsUsable
+  const minChainValueUsd = 1
+  const maxChainsBasicScan = 5
+  const supportedMoralisChains: Array<'eth' | 'base'> = ['eth', 'base']
+  const chainValueMap = new Map<'eth' | 'base', number>()
+  for (const h of holdings) {
+    const rawChain = String(h.chain ?? '').toLowerCase()
+    const mapped: 'eth' | 'base' | null = rawChain.includes('ethereum') || rawChain === 'eth' ? 'eth' : (rawChain.includes('base') ? 'base' : null)
+    if (!mapped) continue
+    chainValueMap.set(mapped, (chainValueMap.get(mapped) ?? 0) + (h.value ?? 0))
+  }
+  const discoveredChains = [...chainValueMap.entries()].map(([chain, usdValue]) => ({ chain, usdValue })).sort((a,b)=>b.usdValue-a.usdValue)
+  const skippedDustChains = discoveredChains.filter(c => c.usdValue < minChainValueUsd).map(c => c.chain)
+  let activeChains: Array<'eth' | 'base'> = []
+  if (chainMode === 'base') activeChains = ['base']
+  else if (chainMode === 'eth') activeChains = ['eth']
+  else if (chainMode === 'base_eth') activeChains = ['base','eth']
+  else activeChains = discoveredChains.filter(c => c.usdValue >= minChainValueUsd).map(c => c.chain as 'eth' | 'base')
+  if (activeChains.length === 0 && (requestedChain === 'base' || requestedChain === 'eth')) activeChains = [requestedChain]
+  if (activeChains.length === 0) activeChains = ['base', 'eth']
+  activeChains = activeChains.filter((c, i, a) => supportedMoralisChains.includes(c) && a.indexOf(c) === i).slice(0, maxChainsBasicScan)
 
-  // Phase 2 (conditional): GoldRush balances — only when both Moralis and Zerion positions fail.
-  const _grBalancesNeeded = holdings.length === 0
-  const _goldrushBalancesSkipped = !_grBalancesNeeded || !GOLDRUSH_KEY
-  const _goldrushSkippedReason: string | null = !GOLDRUSH_KEY
-    ? 'goldrush_not_configured'
-    : !_grBalancesNeeded
-    ? (_moralisHoldingsUsable ? 'moralis_primary_usable' : 'zerion_fallback_usable')
-    : null
-
+  // Moralis holdings layer for active chains.
   let grEthRes: PromiseSettledResult<Holding[]>
   let grBaseRes: PromiseSettledResult<Holding[]>
+  let _moralisEthResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
+  let _moralisBaseResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
+  let _moralisUsed = false
+  if (Boolean(process.env.MORALIS_API_KEY)) {
+    if (activeChains.includes('eth')) _moralisEthResult = await fetchMoralisBalances(addr, 'eth')
+    if (activeChains.includes('base')) _moralisBaseResult = await fetchMoralisBalances(addr, 'base')
+    const moralisHoldings = [
+      ..._moralisEthResult.holdings,
+      ..._moralisBaseResult.holdings,
+    ].sort((a, b) => b.value - a.value)
 
-  if (!_goldrushBalancesSkipped) {
-    const _fetchGrEth = requestedChain === 'eth' || deepScan
-    const _fetchGrBase = requestedChain === 'base' || deepScan
+    if (moralisHoldings.length > 0) {
+      holdings = moralisHoldings as Holding[]
+      totalValue = holdings.reduce((s, h) => s + h.value, 0)
+      providerStatus = 'partial'
+      reason = ''
+      _moralisUsed = true
+    }
+  }
+  // GoldRush balances fallback only when Moralis has no usable holdings for active chains, or deepScan=true.
+  const _goldrushBalancesSkipped = !deepScan && _moralisUsed
+  if (_goldrushBalancesSkipped) {
+    grEthRes = { status: 'fulfilled', value: [] }; grBaseRes = { status: 'fulfilled', value: [] }
+  } else {
     ;[grEthRes, grBaseRes] = await Promise.allSettled([
-      _fetchGrEth && GOLDRUSH_KEY ? fetchGoldrushBalances(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
-      _fetchGrBase && GOLDRUSH_KEY ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
+      GOLDRUSH_KEY && (deepScan || !_moralisUsed) ? fetchGoldrushBalances(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
+      GOLDRUSH_KEY && (deepScan || !_moralisUsed) ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
     ])
+  }
+  const _grPrimaryAttempted = Boolean(GOLDRUSH_KEY) && (deepScan || !_moralisUsed)
+  const _preFallbackReason = reason
+  const _grPrimaryUsable = false
+  if (holdings.length === 0) {
     const grHoldings = [
       ...(grEthRes.status === 'fulfilled' ? grEthRes.value : []),
       ...(grBaseRes.status === 'fulfilled' ? grBaseRes.value : []),
@@ -770,41 +833,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     if (grHoldings.length > 0) {
       holdings = grHoldings
       totalValue = holdings.reduce((s, h) => s + h.value, 0)
-      providerUsed = 'fallback_layer'
       providerStatus = 'partial'
       reason = ''
-    } else {
-      reason = reason || 'No priced holdings found on supported chains.'
     }
-  } else {
-    grEthRes = { status: 'fulfilled', value: [] }
-    grBaseRes = { status: 'fulfilled', value: [] }
-  }
-
-  const _grPrimaryAttempted = !_goldrushBalancesSkipped && Boolean(GOLDRUSH_KEY)
-  const _grPrimaryUsable = holdings.length > 0 && !_moralisHoldingsUsable && !_zerionPositionsUsable
-  const _preFallbackReason = reason
-  const _moralisUsed = _moralisHoldingsUsable
-
-  // Phase 4: GoldRush PnL (transfers_v2) — only on deepScan=true.
-  // Basic scans use Alchemy transfer history (no USD values) as PnL source, saving GoldRush credits.
-  const _skipPnlReason = deepScan ? '' : 'Activity scan not requested — skipped to reduce API usage.'
-  const _emptyPnlDiagEth: GoldrushHistoryDiag = { endpointKind: 'transfers_v2', chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?page-size=125&page-number=0', httpStatus: null, fetchFailed: true, failureStage: 'build_url', rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: deepScan ? 'ETH chain not requested.' : _skipPnlReason, fetchErrorKind: null, fetchErrorMessage: null, hasApiKey: Boolean(GOLDRUSH_KEY), requestHost: 'api.covalenthq.com', requestUrlValid: false, requestPathTemplate: '/v1/{chain}/address/{wallet}/transfers_v2/', authMode: GOLDRUSH_KEY ? 'bearer' : 'none', attemptedHosts: [] }
-  const _emptyPnlDiagBase: GoldrushHistoryDiag = { ..._emptyPnlDiagEth, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?page-size=125&page-number=0', reason: _skipPnlReason }
-
-  let grPnlEthRes: PromiseSettledResult<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }>
-  let grPnlBaseRes: PromiseSettledResult<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }>
-
-  if (deepScan && GOLDRUSH_KEY) {
-    ;[grPnlEthRes, grPnlBaseRes] = await Promise.allSettled([
-      useEthAlchemy
-        ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY)
-        : Promise.resolve({ events: [] as PnlEvent[], diag: _emptyPnlDiagEth }),
-      fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY),
-    ])
-  } else {
-    grPnlEthRes = { status: 'fulfilled', value: { events: [] as PnlEvent[], diag: _emptyPnlDiagEth } }
-    grPnlBaseRes = { status: 'fulfilled', value: { events: [] as PnlEvent[], diag: _emptyPnlDiagBase } }
   }
 
   if (holdings.length === 0 && !reason) {
@@ -997,6 +1028,33 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           : _grPrimaryUsable
           ? 'goldrush_tertiary_used'
           : 'all_providers_empty',
+      },
+      moralisUsage: {
+        attempted: _moralisEthResult.attempted || _moralisBaseResult.attempted,
+        endpointNames: ['erc20_holdings'],
+        requestedChain,
+        callCount: (_moralisEthResult.attempted ? 1 : 0) + (_moralisBaseResult.attempted ? 1 : 0),
+        cacheHit: _moralisEthResult.cacheHit || _moralisBaseResult.cacheHit,
+        deduped: false,
+        durationMs: Date.now() - startedAt,
+        skippedReason: (_moralisEthResult.reason === 'not_needed' && _moralisBaseResult.reason === 'not_needed') ? 'fallback_not_needed' : null,
+      },
+      providerFlow: {
+        chainMode,
+        minChainValueUsd,
+        discoveredChains,
+        activeChains,
+        skippedDustChains,
+        maxChainsBasicScan,
+        moralisChainsAttempted: [
+          ...(_moralisEthResult.attempted ? ['eth' as const] : []),
+          ...(_moralisBaseResult.attempted ? ['base' as const] : []),
+        ],
+        cacheHits: Number(_moralisEthResult.cacheHit) + Number(_moralisBaseResult.cacheHit),
+        dedupedCalls: 0,
+        partialFailures: Number(_moralisEthResult.attempted && !_moralisEthResult.usable) + Number(_moralisBaseResult.attempted && !_moralisBaseResult.usable),
+        goldrushAttempted: _grPrimaryAttempted,
+        goldrushSkippedReason: _grPrimaryAttempted ? null : (_moralisUsed ? 'moralis_holdings_available' : 'not_required'),
       },
       walletProviderRouting,
       providerFlow: {

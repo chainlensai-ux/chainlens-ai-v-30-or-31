@@ -26,7 +26,9 @@ export async function POST(req: Request) {
     const body = await req.json()
     const address = body?.address
     const refresh = body?.refresh === true
-    const deepScan = body?.deepScan === true
+    const chain = body?.chain === 'eth' ? 'eth' : 'base'
+    const deepScan = body?.deepScan === true || body?.deepScan === 'true'
+    const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' ? body.chainMode : 'auto'
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
@@ -42,7 +44,7 @@ export async function POST(req: Request) {
       if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
-    const snapshot = await fetchWalletSnapshot(address ?? '', { refresh, deepScan } satisfies WalletSnapshotOptions)
+    const snapshot = await fetchWalletSnapshot(address ?? '', { refresh, chain, deepScan, chainMode } satisfies WalletSnapshotOptions)
     const providers: any = (snapshot as any)._diagnostics?.providers ?? {}
     const snapshotCacheDebug = (snapshot as any)._diagnostics?.snapshotCache ?? null
     if (debug) {
@@ -71,8 +73,15 @@ export async function POST(req: Request) {
         walletSnapshotCache: snapshotCacheDebug,
         providerFallback: (snapshot as any)._diagnostics?.providerFallback ?? null,
         walletProviderRouting: (snapshot as any)._diagnostics?.walletProviderRouting ?? null,
+        moralisUsage: (snapshot as any)._diagnostics?.moralisUsage ?? null,
         providerFlow: (snapshot as any)._diagnostics?.providerFlow ?? null,
       }
+    }
+    if (!debug) {
+      ;(snapshot as any).providerUsed = 'holdings_layer'
+      ;(snapshot as any).portfolioSource = 'portfolio_layer'
+      ;(snapshot as any).behaviorSource = (snapshot as any).behaviorSource === 'unavailable' ? 'unavailable' : 'activity_layer'
+      ;(snapshot as any).pnlSource = (snapshot as any).pnlSource === 'unavailable' ? 'unavailable' : 'activity_layer'
     }
     delete (snapshot as any)._diagnostics
     if (!allowDebugFresh && !refresh) walletCache.set(key, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
