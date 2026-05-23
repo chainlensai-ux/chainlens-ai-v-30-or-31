@@ -38,7 +38,9 @@ const CREATOR_CACHE_SUCCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const CREATOR_CACHE_NOT_FOUND_TTL_MS = 12 * 60 * 60 * 1000
 const CREATOR_CACHE_ERROR_TTL_MS = 10 * 60 * 1000
 const DEV_CACHE_TTL_MS = 3 * 60 * 1000
+const META_CACHE_TTL_MS = 60 * 60 * 1000
 const devCache = new Map<string, { exp: number; payload: unknown }>()
+const metaCache = new Map<string, { exp: number; data: { name: string | null; symbol: string | null; decimals: number | null } }>()
 const devRate = new Map<string, { count: number; resetAt: number; lastAt: number }>()
 const creatorLookupCache = new Map<string, {
   exp: number
@@ -240,6 +242,43 @@ async function alchemyRpc(method: string, params: unknown[]): Promise<unknown> {
   const json = await res.json() as { result?: unknown; error?: { message: string } }
   if (json.error) throw new Error(`Alchemy: ${json.error.message}`)
   return json.result
+}
+function decodeHexStringResult(hex: string): string | null {
+  if (!hex || hex === '0x') return null
+  try {
+    const clean = hex.slice(2)
+    if (clean.length >= 128) {
+      const len = parseInt(clean.slice(64, 128), 16)
+      const data = clean.slice(128, 128 + len * 2)
+      const str = Buffer.from(data, 'hex').toString('utf8').replace(/\0/g, '').trim()
+      return str || null
+    }
+    const str = Buffer.from(clean, 'hex').toString('utf8').replace(/\0/g, '').trim()
+    return str || null
+  } catch { return null }
+}
+async function fetchTokenMetadata(contract: string, marketData?: Record<string, unknown> | null): Promise<{ name: string | null; symbol: string | null; decimals: number | null; diag: Record<string, unknown> }> {
+  const key = `${activeChainConfig.chain}:${contract}`
+  const cached = metaCache.get(key)
+  if (cached && cached.exp > Date.now()) return { ...cached.data, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(cached.data.name), symbolFound: Boolean(cached.data.symbol), source: 'cache', cacheHit: true, reason: 'ok' } }
+  let name = typeof marketData?.name === 'string' ? marketData.name : null
+  let symbol = typeof marketData?.symbol === 'string' ? marketData.symbol : null
+  let decimals: number | null = null
+  let source = name || symbol ? 'token_api' : 'rpc'
+  try {
+    const [n, s, d] = await Promise.all([
+      alchemyRpc('eth_call', [{ to: contract, data: '0x06fdde03' }, 'latest']) as Promise<string>,
+      alchemyRpc('eth_call', [{ to: contract, data: '0x95d89b41' }, 'latest']) as Promise<string>,
+      alchemyRpc('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest']) as Promise<string>,
+    ])
+    name = name ?? decodeHexStringResult(n)
+    symbol = symbol ?? decodeHexStringResult(s)
+    if (d && d !== '0x') decimals = parseInt(d, 16)
+  } catch {}
+  if (!name) name = `${contract.slice(0, 6)}…${contract.slice(-4)}`
+  const out = { name, symbol, decimals }
+  metaCache.set(key, { exp: Date.now() + META_CACHE_TTL_MS, data: out })
+  return { ...out, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(name), symbolFound: Boolean(symbol), source, cacheHit: false, reason: 'ok' } }
 }
 
 async function getAssetTransfers(params: Record<string, unknown>): Promise<AlchemyTransfer[]> {
@@ -528,12 +567,14 @@ async function getSupplyData(
   holderDataAvailable: boolean
   supplyControlled: number | null
   matchedHolderWallets: MatchedHolder[]
+  holderStats?: { top1: number | null; top10: number | null; top20: number | null; holderCount: number | null; creatorInTopHolders: boolean; linkedWalletSupply: number | null; devClusterSupply: number | null }
+  diag?: Record<string, unknown>
 }> {
   const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
 
   if (preloadedTopHolders && preloadedTopHolders.length > 0) {
     if (!deployer && linkedSet.size === 0) {
-      return { holderDataAvailable: true, supplyControlled: null, matchedHolderWallets: [] }
+      return { holderDataAvailable: true, supplyControlled: null, matchedHolderWallets: [], holderStats: { top1: null, top10: null, top20: null, holderCount: preloadedTopHolders.length, creatorInTopHolders: false, linkedWalletSupply: null, devClusterSupply: null } }
     }
     const matched: MatchedHolder[] = []
     let controlled = 0
@@ -547,16 +588,21 @@ async function getSupplyData(
       controlled += pct
       matched.push({ address: addr, supplyPct: pct, isDeployer, isLinked })
     }
+    const top = preloadedTopHolders.map(h => (typeof h.percent === 'number' ? h.percent : 0))
     return {
       holderDataAvailable: true,
       supplyControlled: Math.round(controlled * 100) / 100,
       matchedHolderWallets: matched.sort((a, b) => b.supplyPct - a.supplyPct),
+      holderStats: {
+        top1: top[0] ?? null, top10: top.slice(0, 10).reduce((a, b) => a + b, 0) || null, top20: top.slice(0, 20).reduce((a, b) => a + b, 0) || null,
+        holderCount: preloadedTopHolders.length, creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: Math.round(controlled * 100) / 100,
+      },
     }
   }
 
   const apiKey = process.env.COVALENT_API_KEY
   if (!apiKey) {
-    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
+    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: false, hasApiKey: false, reason: 'missing_api_key' } }
   }
 
   try {
@@ -564,7 +610,7 @@ async function getSupplyData(
       `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/tokens/${contract}/token_holders_v2/?page-size=50&key=${apiKey}`,
       { cache: 'no-store', signal: AbortSignal.timeout(9000) }
     )
-    if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
+    if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, reason: 'http_error' } }
 
     const json = await res.json() as {
       data?: {
@@ -573,7 +619,7 @@ async function getSupplyData(
     }
 
     const items = json?.data?.items ?? []
-    if (items.length === 0) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
+    if (items.length === 0) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, rawItemCount: 0, reason: 'no_items' } }
 
     const totalSupplyRaw = items[0]?.total_supply ?? '0'
     const totalSupply = BigInt(totalSupplyRaw === '' ? '0' : totalSupplyRaw)
@@ -597,13 +643,19 @@ async function getSupplyData(
       matched.push({ address: addr, supplyPct: pct, isDeployer, isLinked })
     }
 
+    const pcts = items.map(item => totalSupply > BigInt(0) ? Number((BigInt(item.balance ?? '0') * BigInt(10000)) / totalSupply) / 100 : 0)
     return {
       holderDataAvailable: true,
       supplyControlled: Math.round(controlled * 100) / 100,
       matchedHolderWallets: matched.sort((a, b) => b.supplyPct - a.supplyPct),
+      holderStats: {
+        top1: pcts[0] ?? null, top10: pcts.slice(0, 10).reduce((a, b) => a + b, 0), top20: pcts.slice(0, 20).reduce((a, b) => a + b, 0), holderCount: items.length,
+        creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: Math.round(controlled * 100) / 100,
+      },
+      diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, rawItemCount: items.length, normalizedCount: items.length, percentSource: 'derived_from_total_supply', derivationAttempted: true, derivationSucceeded: totalSupply > BigInt(0), reason: 'ok' },
     }
   } catch {
-    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [] }
+    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: Boolean(process.env.COVALENT_API_KEY), reason: 'fetch_error' } }
   }
 }
 
@@ -1436,7 +1488,7 @@ export async function POST(req: Request) {
       linkedWalletsDiag = lwResult.diag
     }
 
-    const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets } =
+    const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets, holderStats, diag: holderDiag } =
       await getSupplyData(normalizedAddress, deployerAddress, linkedWallets, holderDistributionRaw?.topHolders)
     const holderDataAvailable = holderDataFromToken || holderDataFromCovalent
     if (!holderDataAvailable) {
@@ -1465,11 +1517,13 @@ export async function POST(req: Request) {
       await getPreviousActivity(deployerAddress, normalizedAddress)
     if (activityWarning) warnings.push(activityWarning)
 
-    const tokenName = typeof tokenEvidence?.name === 'string' ? tokenEvidence.name : null
-    const tokenSymbol = typeof tokenEvidence?.symbol === 'string' ? tokenEvidence.symbol : null
-    const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : null
-    const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1  : null
-    const holderCount = typeof holderDistributionRaw?.holderCount === 'number' ? holderDistributionRaw.holderCount : null
+    const meta = await fetchTokenMetadata(normalizedAddress, tokenEvidence)
+    const tokenName = meta.name
+    const tokenSymbol = meta.symbol
+    const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : (holderStats?.top10 ?? null)
+    const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1 : (holderStats?.top1 ?? null)
+    const holderTop20 = typeof holderDistributionRaw?.top20 === 'number' ? holderDistributionRaw.top20 : (holderStats?.top20 ?? null)
+    const holderCount = typeof holderDistributionRaw?.holderCount === 'number' ? holderDistributionRaw.holderCount : (holderStats?.holderCount ?? null)
     const secHoneypot: boolean | null = typeof secEv.honeypot === 'boolean' ? secEv.honeypot : null
     const secBuyTax: number | null = typeof secEv.buyTax === 'number' ? secEv.buyTax : null
     const secSellTax: number | null = typeof secEv.sellTax === 'number' ? secEv.sellTax : null
@@ -1561,8 +1615,11 @@ export async function POST(req: Request) {
         marketValue: market.marketCap ?? market.fdv ?? null,
         top1: holderDistributionRaw?.top1 ?? null,
         top10: holderTop10,
-        top20: holderDistributionRaw?.top20 ?? null,
+        top20: holderTop20,
         holderCount,
+        creatorInTopHolders: holderStats?.creatorInTopHolders ?? false,
+        linkedWalletSupply: holderStats?.linkedWalletSupply ?? null,
+        devClusterSupply: holderStats?.devClusterSupply ?? null,
         lpControl: liqEv.lpControl ?? null,
         lpControlStatus,
         security: secEv ?? null,
@@ -1574,7 +1631,7 @@ export async function POST(req: Request) {
       originReason,
       supplyControlStatus,
       linkedWalletsStatus: linkedWalletsCheckStatus,
-      holderStatus: holderDataAvailable ? 'ok' : 'partial',
+      holderStatus: holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'partial',
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
       verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)
@@ -1640,6 +1697,8 @@ export async function POST(req: Request) {
               reason: supplyControlStatus,
             },
           },
+          metadataDiagnostics: meta.diag,
+          holderDiagnostics: holderDiag ?? { chainUsed: activeChainConfig.covalentChain, attempted: false, reason: 'no_holder_diag' },
         },
       } : {}),
       fetchedAt: new Date().toISOString(),

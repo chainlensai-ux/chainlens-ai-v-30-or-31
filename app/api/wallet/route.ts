@@ -58,6 +58,7 @@ export async function POST(req: Request) {
         requestDurationMs: Date.now() - startedAt,
         walletSnapshotCache: snapshotCacheDebug,
         providerFallback: (snapshot as any)._diagnostics?.providerFallback ?? null,
+        walletProviderRouting: (snapshot as any)._diagnostics?.walletProviderRouting ?? null,
       }
     }
     delete (snapshot as any)._diagnostics

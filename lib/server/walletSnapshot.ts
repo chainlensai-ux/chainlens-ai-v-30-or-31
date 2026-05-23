@@ -163,6 +163,15 @@ export type WalletSnapshot = {
       cacheHit: boolean
       reason: string
     }
+    walletProviderRouting?: {
+      primaryProviders: string[]
+      alchemyUsed: boolean
+      alchemyMethods: string[]
+      alchemyChainsUsed: string[]
+      alchemyReason: string
+      skippedAlchemyChains: string[]
+      pageLoadTriggered: boolean
+    }
   }
 }
 
@@ -171,7 +180,7 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-export type WalletSnapshotOptions = { refresh?: boolean }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base' }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -555,7 +564,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false } = options
+  const { refresh = false, chain: requestedChain = 'base' } = options
   const cacheKey = (address ?? '').trim().toLowerCase()
 
   // Memory cache check — bypassed when refresh=true
@@ -591,6 +600,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const ethUrl  = `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_ETH_KEY}`
   const baseUrl = `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_BASE_KEY}`
 
+  // ETH Alchemy calls only when explicitly requested — default is Base only
+  const useEthAlchemy = requestedChain === 'eth' && Boolean(ALCHEMY_ETH_KEY)
+  const nonceUrl = useEthAlchemy ? ethUrl : baseUrl
+
   // Run all providers in parallel: Zerion (primary), GoldRush (fallback), Alchemy tx/nonce
   const [
     positionsRes,
@@ -623,9 +636,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     GOLDRUSH_KEY
       ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY)
       : Promise.resolve([] as Holding[]),
-    getFirstTxOnChain(addr, ethUrl),
+    useEthAlchemy ? getFirstTxOnChain(addr, ethUrl) : Promise.resolve(null),
     getFirstTxOnChain(addr, baseUrl),
-    alchemyRpc(ethUrl, 'eth_getTransactionCount', [addr, 'latest']),
+    alchemyRpc(nonceUrl, 'eth_getTransactionCount', [addr, 'latest']),
     fetchWalletBehavior(addr, baseUrl),
     GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush wallet history URL could not be built.' } }),
     GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush wallet history URL could not be built.' } }),
@@ -806,6 +819,28 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     console.log('[wallet-diag] route=/api/wallet goldrushConfigured=', goldrushConfigured, 'goldrushEventsReturned=', grEvents.length, 'valuedEventsReturned=', valuedGrEvents.length, 'alchemyBehaviorAttempted=', alchemyConfigured, 'totalMs=', Date.now() - startedAt)
   }
 
+  const alchemyBaseUsed = Boolean(ALCHEMY_BASE_KEY)
+  const walletProviderRouting = {
+    primaryProviders: [
+      ...(ZERION_KEY ? ['zerion'] : []),
+      ...(GOLDRUSH_KEY ? ['goldrush'] : []),
+      ...(process.env.MORALIS_API_KEY ? ['moralis'] : []),
+    ],
+    alchemyUsed: alchemyBaseUsed,
+    alchemyMethods: alchemyBaseUsed
+      ? ['alchemy_getAssetTransfers', 'eth_getTransactionCount']
+      : [],
+    alchemyChainsUsed: [
+      ...(useEthAlchemy ? ['eth'] : []),
+      ...(alchemyBaseUsed ? ['base'] : []),
+    ],
+    alchemyReason: useEthAlchemy
+      ? 'first_tx_both_chains_nonce_eth_plus_base_behavior'
+      : 'base_first_tx_nonce_and_behavior_only',
+    skippedAlchemyChains: useEthAlchemy ? [] : (ALCHEMY_ETH_KEY ? ['eth'] : []),
+    pageLoadTriggered: false,
+  }
+
   const hasHistory = estimatedPnl.status !== 'unavailable'
   const snapshotTtlMs = hasHistory ? SNAPSHOT_HISTORY_TTL_MS : SNAPSHOT_TTL_MS
   const snapshot: WalletSnapshot = {
@@ -895,6 +930,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           ? 'primary_ok'
           : 'all_providers_empty',
       },
+      walletProviderRouting,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(cacheKey)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })

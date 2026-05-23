@@ -45,6 +45,7 @@ export async function POST(req: Request) {
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), SNAPSHOT_TIMEOUT_MS)),
     ])
     const providerFallback = (snapshot as any)._diagnostics?.providerFallback ?? null
+    const walletProviderRouting = (snapshot as any)._diagnostics?.walletProviderRouting ?? null
     const basePayload: Record<string, unknown> = {
       address: snapshot.address,
       holdings: snapshot.holdings,
@@ -57,7 +58,7 @@ export async function POST(req: Request) {
       cacheAgeSeconds: snapshot.cacheAgeSeconds ?? null,
     }
     if (!refresh) portfolioCache.set(address, { exp: Date.now() + PORTFOLIO_CACHE_TTL_MS, payload: basePayload, cachedAt: Date.now() })
-    const responsePayload = debug ? { ...basePayload, _debug: { providerFallback } } : basePayload
+    const responsePayload = debug ? { ...basePayload, _debug: { providerFallback, walletProviderRouting } } : basePayload
     return NextResponse.json(responsePayload)
   } catch {
     return NextResponse.json({ error: 'Portfolio data is currently unavailable.' }, { status: 200 })

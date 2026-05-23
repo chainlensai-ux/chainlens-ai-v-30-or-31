@@ -675,7 +675,7 @@ export default function BaseRadarPage() {
   const [data, setData] = useState<RadarData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [countdown, setCountdown] = useState(60)
+  const [countdown, setCountdown] = useState(120)
   const [refreshKey, setRefreshKey] = useState(0)
   const [activeFilter, setActiveFilter] = useState<RadarFilter>('ALL')
   const [sortMode, setSortMode] = useState<SortMode>('NEWEST')
@@ -710,7 +710,7 @@ export default function BaseRadarPage() {
       setCountdown(c => {
         if (c <= 1) {
           setRefreshKey(k => k + 1)
-          return 60
+          return 120
         }
         return c - 1
       })
@@ -721,12 +721,12 @@ export default function BaseRadarPage() {
   useEffect(() => {
     if (refreshKey > 0 && canAccessFeature(plan, 'base-radar')) {
       fetchData()
-      setCountdown(60)
+      setCountdown(120)
     }
   }, [refreshKey, fetchData, plan])
 
   function handleManualRefresh() {
-    setCountdown(60)
+    setCountdown(120)
     fetchData()
   }
 

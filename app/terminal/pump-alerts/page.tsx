@@ -310,7 +310,7 @@ export default function PumpAlertsPage() {
   const [alerts, setAlerts] = useState<PumpAlert[]>([])
   const [fetchedAt, setFetchedAt] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [countdown, setCountdown] = useState(60)
+  const [countdown, setCountdown] = useState(120)
   const [activeFilter, setActiveFilter] = useState<FilterKey>('ALL')
   const [refreshKey, setRefreshKey] = useState(0)
 
@@ -338,7 +338,7 @@ export default function PumpAlertsPage() {
   useEffect(() => {
     const id = setInterval(() => {
       setCountdown(c => {
-        if (c <= 1) { setRefreshKey(k => k + 1); return 60 }
+        if (c <= 1) { setRefreshKey(k => k + 1); return 120 }
         return c - 1
       })
     }, 1000)
@@ -346,7 +346,7 @@ export default function PumpAlertsPage() {
   }, [])
 
   useEffect(() => {
-    if (refreshKey > 0) { fetchAlerts(); setCountdown(60) }
+    if (refreshKey > 0) { fetchAlerts(); setCountdown(120) }
   }, [refreshKey, fetchAlerts])
 
   function openToken(contract: string) {

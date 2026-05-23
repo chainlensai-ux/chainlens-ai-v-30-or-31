@@ -24,6 +24,7 @@ async function getContractCode(address: string): Promise<string | null> {
       params: [address, "latest"],
     }),
     cache: "no-store",
+    signal: AbortSignal.timeout(5_000),
   });
 
   if (!res.ok) return null;
