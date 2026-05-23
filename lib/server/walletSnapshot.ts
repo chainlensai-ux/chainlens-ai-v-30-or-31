@@ -58,12 +58,12 @@ export type WalletSnapshot = {
   txCount: number | null
   firstTxDate: string | null
   walletAgeDays: number | null
-  providerUsed: 'zerion' | 'goldrush' | 'none'
+  providerUsed: 'zerion' | 'goldrush' | 'moralis' | 'none'
   providerStatus: 'ok' | 'partial' | 'failed'
   holdingsCount: number
   totalUsdAvailable: boolean
   reason: string
-  portfolioSource: 'zerion' | 'goldrush' | 'none'
+  portfolioSource: 'zerion' | 'goldrush' | 'moralis' | 'none'
   behaviorSource: 'alchemy' | 'unavailable'
   behaviorChain: 'base'
   pnlSource: 'goldrush' | 'alchemy' | 'unavailable'
@@ -126,6 +126,7 @@ export type WalletSnapshot = {
         cacheHit: boolean
         reason: string
         httpStatus?: number | null
+        chain?: string
       }
       cacheHit?: boolean
     }
@@ -159,6 +160,8 @@ export type WalletSnapshot = {
       primaryUsable: boolean
       fallbackAttempted: boolean
       fallbackUsed: boolean
+      tertiaryAttempted: boolean
+      tertiaryUsed: boolean
       fallbackReason: string
       cacheHit: boolean
       reason: string
@@ -171,6 +174,22 @@ export type WalletSnapshot = {
       alchemyReason: string
       skippedAlchemyChains: string[]
       pageLoadTriggered: boolean
+      zerionSucceeded: boolean
+      goldrushBalancesSkipped: boolean
+      deepScan: boolean
+    }
+    providerFlow?: {
+      requestedChain: string
+      deepScan: boolean
+      zerionAttempted: boolean
+      zerionUsable: boolean
+      moralisAttempted: boolean
+      moralisUsable: boolean
+      goldrushAttempted: boolean
+      goldrushSkippedReason: string | null
+      cacheHits: number
+      dedupedCalls: number
+      providerCallCounts: { zerion: number; moralis: number; goldrush: number; alchemy: number }
     }
   }
 }
@@ -180,7 +199,7 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base' }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -564,7 +583,7 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base' } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false } = options
   const cacheKey = (address ?? '').trim().toLowerCase()
 
   // Memory cache check — bypassed when refresh=true
@@ -604,9 +623,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const useEthAlchemy = requestedChain === 'eth' && Boolean(ALCHEMY_ETH_KEY)
   const nonceUrl = useEthAlchemy ? ethUrl : baseUrl
 
-  // Phase 1 (parallel): Zerion (primary holdings) + Alchemy (tx/behavior/PnL) + GoldRush PnL.
-  // GoldRush balances_v2 are intentionally excluded here — they only run in Phase 2 if
-  // Zerion fails or returns empty, avoiding 2 wasted API calls on healthy Zerion sessions.
+  // Phase 1 (parallel): Zerion portfolio layer + Alchemy metadata.
+  // GoldRush and Moralis are excluded — they run sequentially in Phases 2/3 only when needed.
   const [
     positionsRes,
     portfolioRes,
@@ -614,8 +632,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     baseFirst,
     nonceRes,
     behaviorRes,
-    grPnlEthRes,
-    grPnlBaseRes,
     alchemyPnlRes,
   ] = await Promise.allSettled([
     ZERION_KEY
@@ -634,14 +650,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(nonceUrl, 'eth_getTransactionCount', [addr, 'latest']),
     fetchWalletBehavior(addr, baseUrl),
-    // ETH mainnet PnL transfers only when the caller explicitly requests ETH chain.
-    // Default (base) scans skip this to avoid a wasted transfers_v2 call.
-    GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'ETH chain not requested — skipped to reduce API usage.' } }),
-    GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: 'GoldRush wallet history URL could not be built.' } }),
     fetchAlchemyPnlEvents(addr, baseUrl),
   ])
 
-  // ── Tx / age / nonce (from Alchemy — unchanged path) ──
+  // ── Tx / age / nonce ──
   const firstCandidates: Date[] = []
   if (ethFirst.status === 'fulfilled' && ethFirst.value) firstCandidates.push(ethFirst.value)
   if (baseFirst.status === 'fulfilled' && baseFirst.value) firstCandidates.push(baseFirst.value)
@@ -655,10 +667,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     ? parseInt(nonceRes.value as string, 16)
     : null
 
-  // ── Provider selection: Zerion first, GoldRush sequential fallback ──
+  // ── Provider selection: Zerion → Moralis → GoldRush ──
   let holdings: Holding[] = []
   let totalValue = 0
-  let providerUsed: 'zerion' | 'goldrush' | 'none' = 'none'
+  let providerUsed: 'zerion' | 'goldrush' | 'moralis' | 'none' = 'none'
   let providerStatus: 'ok' | 'partial' | 'failed' = 'failed'
   let reason = ''
 
@@ -691,79 +703,90 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     providerUsed = 'zerion'
     providerStatus = 'ok'
   } else {
-    // Zerion returned empty or failed — reason for diagnostic logging
     reason = positionsRes.status === 'rejected'
       ? 'Primary provider unavailable.'
       : 'Primary provider returned no positions for this wallet.'
   }
 
-  // Phase 2: GoldRush balances fallback — only runs when Zerion yielded no holdings.
-  // When Zerion succeeds this block is skipped entirely, saving 2 balances_v2 API calls.
-  let grEthRes: PromiseSettledResult<Holding[]>
-  let grBaseRes: PromiseSettledResult<Holding[]>
-  const _goldrushBalancesSkipped = _zerionSucceeded
+  // Phase 2: Moralis holdings layer — runs when Zerion returns empty/fails.
+  // Only queries the requested chain to avoid unnecessary cross-chain calls.
+  const _moralisChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
+  const _moralisAttempted = !_zerionSucceeded && Boolean(process.env.MORALIS_API_KEY)
+  let _moralisResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
 
-  if (_zerionSucceeded) {
-    grEthRes = { status: 'fulfilled', value: [] }
-    grBaseRes = { status: 'fulfilled', value: [] }
-  } else {
-    ;[grEthRes, grBaseRes] = await Promise.allSettled([
-      GOLDRUSH_KEY
-        ? fetchGoldrushBalances(addr, 'eth-mainnet', GOLDRUSH_KEY)
-        : Promise.resolve([] as Holding[]),
-      GOLDRUSH_KEY
-        ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY)
-        : Promise.resolve([] as Holding[]),
-    ])
+  if (_moralisAttempted) {
+    _moralisResult = await fetchMoralisBalances(addr, _moralisChain)
+    if (_moralisResult.usable && _moralisResult.holdings.length > 0) {
+      holdings = _moralisResult.holdings as Holding[]
+      totalValue = holdings.reduce((s, h) => s + h.value, 0)
+      providerUsed = 'moralis'
+      providerStatus = 'partial'
+      reason = ''
+    }
   }
 
-  // Apply GoldRush holdings when Zerion yielded nothing
-  if (holdings.length === 0) {
+  // Phase 3: GoldRush balances — only when both Zerion and Moralis fail.
+  // deepScan=true is intentionally NOT a trigger here; GoldRush PnL (Phase 4) handles deep history.
+  const _grBalancesNeeded = holdings.length === 0
+  const _goldrushBalancesSkipped = !_grBalancesNeeded || !GOLDRUSH_KEY
+  const _goldrushSkippedReason: string | null = !GOLDRUSH_KEY
+    ? 'goldrush_not_configured'
+    : !_grBalancesNeeded
+    ? (_zerionSucceeded ? 'zerion_primary_usable' : 'moralis_secondary_usable')
+    : null
+
+  let grEthRes: PromiseSettledResult<Holding[]>
+  let grBaseRes: PromiseSettledResult<Holding[]>
+
+  if (!_goldrushBalancesSkipped) {
+    const _fetchGrEth = requestedChain === 'eth' || deepScan
+    const _fetchGrBase = requestedChain === 'base' || deepScan
+    ;[grEthRes, grBaseRes] = await Promise.allSettled([
+      _fetchGrEth && GOLDRUSH_KEY ? fetchGoldrushBalances(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
+      _fetchGrBase && GOLDRUSH_KEY ? fetchGoldrushBalances(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve([] as Holding[]),
+    ])
     const grHoldings = [
       ...(grEthRes.status === 'fulfilled' ? grEthRes.value : []),
       ...(grBaseRes.status === 'fulfilled' ? grBaseRes.value : []),
     ].sort((a, b) => b.value - a.value)
-
     if (grHoldings.length > 0) {
       holdings = grHoldings
       totalValue = holdings.reduce((s, h) => s + h.value, 0)
       providerUsed = 'goldrush'
       providerStatus = 'ok'
       reason = ''
-    } else if (GOLDRUSH_KEY) {
-      reason = reason || 'No priced holdings found on Ethereum or Base for this wallet.'
     } else {
-      reason = reason || 'Wallet data provider not configured.'
+      reason = reason || 'No priced holdings found on supported chains.'
     }
+  } else {
+    grEthRes = { status: 'fulfilled', value: [] }
+    grBaseRes = { status: 'fulfilled', value: [] }
   }
 
-  // Capture GoldRush outcome for fallback diagnostics
   const _grPrimaryAttempted = !_goldrushBalancesSkipped && Boolean(GOLDRUSH_KEY)
   const _grPrimaryUsable = providerUsed === 'goldrush'
   const _preFallbackReason = reason
+  const _moralisUsed = providerUsed === 'moralis'
 
-  // Moralis tertiary fallback — only runs when Zerion + GoldRush both yielded no holdings
-  let _moralisEthResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
-  let _moralisBaseResult: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
-  let _moralisUsed = false
+  // Phase 4: GoldRush PnL (transfers_v2) — only on deepScan=true.
+  // Basic scans use Alchemy transfer history (no USD values) as PnL source, saving GoldRush credits.
+  const _skipPnlReason = deepScan ? '' : 'Activity scan not requested — skipped to reduce API usage.'
+  const _emptyPnlDiagEth: GoldrushHistoryDiag = { endpointKind: 'transfers_v2', chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?page-size=125&page-number=0', httpStatus: null, fetchFailed: true, failureStage: 'build_url', rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: deepScan ? 'ETH chain not requested.' : _skipPnlReason, fetchErrorKind: null, fetchErrorMessage: null, hasApiKey: Boolean(GOLDRUSH_KEY), requestHost: 'api.covalenthq.com', requestUrlValid: false, requestPathTemplate: '/v1/{chain}/address/{wallet}/transfers_v2/', authMode: GOLDRUSH_KEY ? 'bearer' : 'none', attemptedHosts: [] }
+  const _emptyPnlDiagBase: GoldrushHistoryDiag = { ..._emptyPnlDiagEth, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?page-size=125&page-number=0', reason: _skipPnlReason }
 
-  if (holdings.length === 0 && Boolean(process.env.MORALIS_API_KEY)) {
-    ;[_moralisEthResult, _moralisBaseResult] = await Promise.all([
-      fetchMoralisBalances(addr, 'eth'),
-      fetchMoralisBalances(addr, 'base'),
+  let grPnlEthRes: PromiseSettledResult<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }>
+  let grPnlBaseRes: PromiseSettledResult<{ events: PnlEvent[]; diag: GoldrushHistoryDiag }>
+
+  if (deepScan && GOLDRUSH_KEY) {
+    ;[grPnlEthRes, grPnlBaseRes] = await Promise.allSettled([
+      useEthAlchemy
+        ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY)
+        : Promise.resolve({ events: [] as PnlEvent[], diag: _emptyPnlDiagEth }),
+      fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY),
     ])
-    const moralisHoldings = [
-      ..._moralisEthResult.holdings,
-      ..._moralisBaseResult.holdings,
-    ].sort((a, b) => b.value - a.value)
-
-    if (moralisHoldings.length > 0) {
-      holdings = moralisHoldings as Holding[]
-      totalValue = holdings.reduce((s, h) => s + h.value, 0)
-      providerStatus = 'partial'
-      reason = ''
-      _moralisUsed = true
-    }
+  } else {
+    grPnlEthRes = { status: 'fulfilled', value: { events: [] as PnlEvent[], diag: _emptyPnlDiagEth } }
+    grPnlBaseRes = { status: 'fulfilled', value: { events: [] as PnlEvent[], diag: _emptyPnlDiagBase } }
   }
 
   if (holdings.length === 0 && !reason) {
@@ -833,7 +856,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         : ''
   const alchemyConfigured = Boolean(ALCHEMY_BASE_KEY)
   if (process.env.NODE_ENV !== 'production') {
-    console.log('[wallet-diag] route=/api/wallet goldrushConfigured=', goldrushConfigured, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'zerionSucceeded=', _zerionSucceeded, 'goldrushEventsReturned=', grEvents.length, 'valuedEventsReturned=', valuedGrEvents.length, 'alchemyBehaviorAttempted=', alchemyConfigured, 'totalMs=', Date.now() - startedAt)
+    console.log('[wallet-diag] route=/api/wallet deepScan=', deepScan, 'requestedChain=', requestedChain, 'zerionSucceeded=', _zerionSucceeded, 'moralisAttempted=', _moralisAttempted, 'moralisUsable=', _moralisResult.usable, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'goldrushSkippedReason=', _goldrushSkippedReason, 'goldrushEventsReturned=', grEvents.length, 'valuedEventsReturned=', valuedGrEvents.length, 'providerUsed=', providerUsed, 'totalMs=', Date.now() - startedAt)
   }
 
   const alchemyBaseUsed = Boolean(ALCHEMY_BASE_KEY)
@@ -858,6 +881,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     pageLoadTriggered: false,
     zerionSucceeded: _zerionSucceeded,
     goldrushBalancesSkipped: _goldrushBalancesSkipped,
+    deepScan,
   }
 
   const hasHistory = estimatedPnl.status !== 'unavailable'
@@ -891,8 +915,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         goldrush: {
           configured: goldrushConfigured,
           balancesAttempted: !_goldrushBalancesSkipped && goldrushConfigured,
-          transactionsAttempted: goldrushConfigured,
-          transfersAttempted: goldrushConfigured,
+          transactionsAttempted: deepScan && goldrushConfigured,
+          transfersAttempted: deepScan && goldrushConfigured,
           eventsReturned: grEvents.length,
           valuedEventsReturned: valuedGrEvents.length,
           pnlEventsUsable: filteredPnlTokens.length,
@@ -912,11 +936,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         },
         moralis: {
           configured: Boolean(process.env.MORALIS_API_KEY),
-          attempted: _moralisEthResult.attempted || _moralisBaseResult.attempted,
-          usable: _moralisEthResult.usable || _moralisBaseResult.usable,
-          holdingsReturned: _moralisEthResult.holdings.length + _moralisBaseResult.holdings.length,
-          cacheHit: _moralisEthResult.cacheHit || _moralisBaseResult.cacheHit,
-          reason: _moralisEthResult.reason || _moralisBaseResult.reason || '',
+          attempted: _moralisResult.attempted,
+          usable: _moralisResult.usable,
+          holdingsReturned: _moralisResult.holdings.length,
+          cacheHit: _moralisResult.cacheHit,
+          reason: _moralisResult.reason || '',
+          chain: _moralisAttempted ? _moralisChain : undefined,
         },
       },
       walletProviderFieldsPresent: {
@@ -937,19 +962,41 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         refreshBypassedCache: refresh, cacheAgeSeconds: null, cacheTtlSeconds: snapshotTtlMs / 1000,
       },
       providerFallback: {
-        primaryAttempted: _grPrimaryAttempted,
-        primaryUsable: _grPrimaryUsable,
-        fallbackAttempted: _moralisEthResult.attempted || _moralisBaseResult.attempted,
+        primaryAttempted: Boolean(ZERION_KEY),
+        primaryUsable: _zerionSucceeded,
+        fallbackAttempted: _moralisResult.attempted,
         fallbackUsed: _moralisUsed,
+        tertiaryAttempted: _grPrimaryAttempted,
+        tertiaryUsed: _grPrimaryUsable,
         fallbackReason: _preFallbackReason,
-        cacheHit: _moralisEthResult.cacheHit || _moralisBaseResult.cacheHit,
-        reason: _moralisUsed
+        cacheHit: _moralisResult.cacheHit,
+        reason: providerUsed === 'zerion'
+          ? 'zerion_primary_ok'
+          : providerUsed === 'moralis'
           ? 'moralis_holdings_used'
-          : holdings.length > 0
-          ? 'primary_ok'
+          : providerUsed === 'goldrush'
+          ? 'goldrush_fallback_used'
           : 'all_providers_empty',
       },
       walletProviderRouting,
+      providerFlow: {
+        requestedChain,
+        deepScan,
+        zerionAttempted: Boolean(ZERION_KEY),
+        zerionUsable: _zerionSucceeded,
+        moralisAttempted: _moralisAttempted,
+        moralisUsable: _moralisResult.usable && _moralisResult.holdings.length > 0,
+        goldrushAttempted: _grPrimaryAttempted,
+        goldrushSkippedReason: _goldrushSkippedReason,
+        cacheHits: (_moralisResult.cacheHit ? 1 : 0),
+        dedupedCalls: 0,
+        providerCallCounts: {
+          zerion: Boolean(ZERION_KEY) ? 2 : 0,
+          moralis: _moralisAttempted && !_moralisResult.cacheHit ? 1 : 0,
+          goldrush: (!_goldrushBalancesSkipped && GOLDRUSH_KEY ? 2 : 0) + (deepScan && Boolean(GOLDRUSH_KEY) ? (useEthAlchemy ? 2 : 1) : 0),
+          alchemy: (useEthAlchemy ? 5 : 4),
+        },
+      },
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(cacheKey)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
