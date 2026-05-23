@@ -1395,6 +1395,13 @@ export async function POST(req: Request) {
     ])
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase2Ms', Date.now() - _t2, 'needsLP', needsLpHolderFetch, 'needsAI', needsAI, 'needsOnchain', needsOnchainMc)
 
+    // Early owner fetch for LP team-wallet check — runs after phase2 to not block parallel work.
+    // Only needed when pool is V2-like (burn/locker checks will use it). Fast single RPC call.
+    const _ownerHexForLp = (lpPoolAddressPresent && (lpPoolType === 'v2' || lpPoolType === 'unknown'))
+      ? await rpcCall(chain, 'eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest']).catch(() => null)
+      : null
+    const ownerAddrEarlyForLp = _ownerHexForLp && _ownerHexForLp.length >= 42 ? `0x${_ownerHexForLp.slice(-40)}`.toLowerCase() : null
+
     // LP control using pre-fetched LP holder data (no sequential blocking)
     const _lpHoldersForControl = (_lpHoldersSettled.status === 'fulfilled' ? _lpHoldersSettled.value : { __status: 'error', __reason: 'lp_fetch_failed' }) as any
     const _lpAddrSnippet = lpPoolAddress ? `${lpPoolAddress.slice(0, 10)}…${lpPoolAddress.slice(-4)}` : "none";
@@ -1409,7 +1416,14 @@ export async function POST(req: Request) {
       `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`,
     ];
     const DEAD = new Set(["0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"]);
-    const KNOWN_LOCKERS = new Set<string>(["0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", "0x71b5759d73262fbb223956913ecf4ecc51057641"]);
+    const KNOWN_LOCKERS = new Set<string>([
+      "0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", // UNCX / UniCrypt
+      "0x71b5759d73262fbb223956913ecf4ecc51057641", // PinkLock
+      "0xe2fe530c047f2d85298b07d9333c05737f1435fb", // Team Finance
+      "0xdba68f07d1b7ca219f78ae8582c213d975c25caf", // UniCrypt V3
+      "0xf6c7282943dc5ea13461ef77dd3a24e5d01e5e1a", // DxLock
+      "0x0be46842df45f36a19bea0de0fd6e34da00fd8a5", // Mudra
+    ]);
     const confidenceFor = (pct: number): "high" | "medium" | "low" => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
     let lpDiagnostics: LpDiagnostics = {
       attempted: lpPoolAddressPresent,
@@ -1467,18 +1481,23 @@ export async function POST(req: Request) {
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
-          const [burn0, burnDead, _lockerPcts] = await Promise.all([
+          const _ownerForLpProbe = ownerAddrEarlyForLp && !DEAD.has(ownerAddrEarlyForLp) && !KNOWN_LOCKERS.has(ownerAddrEarlyForLp) ? ownerAddrEarlyForLp : null
+          const [burn0, burnDead, _lockerPcts, _ownerLpPctProbe] = await Promise.all([
             readPct("0x0000000000000000000000000000000000000000"),
             readPct("0x000000000000000000000000000000000000dEaD"),
             Promise.all([...KNOWN_LOCKERS].map(readPct)),
+            _ownerForLpProbe ? readPct(_ownerForLpProbe) : Promise.resolve(0),
           ]);
           const burnShare = burn0 + burnDead;
           const lockerShare = _lockerPcts.reduce((a: number, b: number) => a + b, 0);
+          const teamShareProbe = _ownerLpPctProbe ?? 0;
           const base = { poolType: "v2" as const, source: "dex_data+rpc", poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
           if (burnShare >= 50) {
             lpControl = { ...base, status: "burned", confidence: confidenceFor(burnShare), reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
           } else if (lockerShare >= 50) {
             lpControl = { ...base, status: "locked", confidence: confidenceFor(lockerShare), reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+          } else if (teamShareProbe >= 80) {
+            lpControl = { ...base, status: "team_controlled", confidence: "high", reason: `Owner wallet holds ${teamShareProbe.toFixed(2)}% of LP supply (RPC verified).`, evidence: [`owner_lp_share=${teamShareProbe.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
           } else {
             lpControl = { ...base, status: "unverified", confidence: "low", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
           }
@@ -1517,17 +1536,22 @@ export async function POST(req: Request) {
             if (!balHex) return 0;
             return (Number(BigInt(balHex)) / totalSupply) * 100;
           };
-          const [burn0, burnDead, _lockerPcts] = await Promise.all([
+          const _ownerForLpFallback = ownerAddrEarlyForLp && !DEAD.has(ownerAddrEarlyForLp) && !KNOWN_LOCKERS.has(ownerAddrEarlyForLp) ? ownerAddrEarlyForLp : null
+          const [burn0, burnDead, _lockerPcts, _ownerLpPctFallback] = await Promise.all([
             readPct("0x0000000000000000000000000000000000000000"),
             readPct("0x000000000000000000000000000000000000dEaD"),
             Promise.all([...KNOWN_LOCKERS].map(readPct)),
+            _ownerForLpFallback ? readPct(_ownerForLpFallback) : Promise.resolve(0),
           ]);
           const burnShare = burn0 + burnDead;
           const lockerShare = _lockerPcts.reduce((a: number, b: number) => a + b, 0);
+          const teamShareFallback = _ownerLpPctFallback ?? 0;
           if (burnShare >= 50) {
             lpControl = { status: "burned", confidence: confidenceFor(burnShare), poolType: lpPoolType, source: "dex_data+rpc", reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`] };
           } else if (lockerShare >= 50) {
             lpControl = { status: "locked", confidence: confidenceFor(lockerShare), poolType: lpPoolType, source: "dex_data+rpc", reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`] };
+          } else if (teamShareFallback >= 80) {
+            lpControl = { status: "team_controlled", confidence: "high", poolType: lpPoolType, source: "dex_data+rpc", reason: `Owner wallet holds ${teamShareFallback.toFixed(2)}% of LP supply (RPC verified).`, evidence: [`owner_lp_share=${teamShareFallback.toFixed(2)}%`] };
           } else {
             lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "dex_data+rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
           }
@@ -1935,7 +1959,7 @@ export async function POST(req: Request) {
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "unavailable"));
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
-    const ownerCall = await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
+    const ownerCall = _ownerHexForLp ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
@@ -2465,26 +2489,7 @@ export async function POST(req: Request) {
       aiSummary,
 
       // CORTEX Risk Engine v1 — pure derivation, no extra API calls
-      riskEngine: computeRiskEngine({
-        marketCapVerified: marketCapFromGt != null,
-        liquidityUsd: _el,
-        volume24hUsd: _ev,
-        holderStatus: holderDistributionStatus.status,
-        top1,
-        top5,
-        top10,
-        top20,
-        lpStatus: lpControl.status,
-        lpConfidence: lpControl.confidence,
-        isHoneypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
-        buyTax: hpResult.ok ? hpResult.buyTax : (gpHoneypot?.buyTax ?? null),
-        sellTax: hpResult.ok ? hpResult.sellTax : (gpHoneypot?.sellTax ?? null),
-        simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : (gpHoneypot?.simulationSuccess ?? null),
-        pairCreatedAt: pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
-        holderCount: holderCount ?? null,
-        buys24h: buys24h ?? null,
-        sells24h: sells24h ?? null,
-      }),
+      riskEngine,
       rugRisk,
 
       // Token info object for frontend panels
@@ -2614,7 +2619,18 @@ export async function POST(req: Request) {
           derivationSucceeded: holderDerivationSucceeded,
           derivationFailureReason: holderDerivationFailureReason,
         },
-        lpDiagnostics,
+        lpDiagnostics: {
+          poolType: lpDiagnostics.poolType,
+          primaryPool: lpDiagnostics.primaryPoolAddress,
+          lpToken: lpDiagnostics.lpTokenAddress,
+          totalSupplyChecked: lpDiagnostics.lpTokenTotalSupplyFound,
+          burnBalanceChecked: lpDiagnostics.burnBalanceFound,
+          lockerChecked: lpDiagnostics.lockerBalanceFound,
+          teamBalanceChecked: lpDiagnostics.teamBalanceFound,
+          proofStatus: lpDiagnostics.lpState,
+          reason: lpDiagnostics.reason,
+          _full: lpDiagnostics,
+        },
       }
     } else {
       delete (responsePayload as any)._diagnostics
