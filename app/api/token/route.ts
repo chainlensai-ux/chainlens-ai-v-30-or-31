@@ -103,6 +103,37 @@ type RiskEngine = {
   }
 }
 
+type RugRiskReport = {
+  lp_safety: {
+    status: "locked" | "unlocked" | "team_controlled" | "protocol" | "concentrated_liquidity" | "unknown"
+    unlock_at: string | null
+    countdown_seconds: number | null
+    owner: string | null
+    contract: string | null
+    movement_24h_usd: number | null
+    source_status: "ok" | "failed"
+  }
+  contract_flags: {
+    honeypot: boolean | null
+    blacklist: boolean | null
+    mint: boolean | null
+    upgradeable: boolean | null
+    source_status: "ok" | "failed"
+  }
+  deployer_reputation: {
+    score: number | null
+    rug_history: number | null
+    deploy_patterns: string[]
+    source_status: "ok" | "failed"
+  }
+  sniper_activity: { level: "low" | "medium" | "high"; score: number; source_status: "ok" | "failed" }
+  early_buyers: Array<{ wallet: string; amount_usd: number | null; tx_count: number | null }>
+  liquidity_risk: { liquidity_usd: number | null; volatility_24h_pct: number | null; source_status: "ok" | "failed" }
+  trading_simulation: { success: boolean | null; buy_tax: number | null; sell_tax: number | null; source_status: "ok" | "failed" }
+  risk_drivers: string[]
+  overall_rug_risk_score: number | null
+}
+
 function toNum(v: unknown): number | null {
   const n = typeof v === "string" || typeof v === "number" ? Number(v) : NaN
   return Number.isFinite(n) ? n : null
@@ -2012,6 +2043,60 @@ export async function POST(req: Request) {
       openChecks,
       sniperActivity,
     }
+    const lpUnlockAt = goldrush?.lock?.unlockAt ?? null
+    const unlockEpoch = lpUnlockAt ? Date.parse(String(lpUnlockAt)) : NaN
+    const lpCountdownSeconds = Number.isFinite(unlockEpoch) ? Math.max(0, Math.floor((unlockEpoch - Date.now()) / 1000)) : null
+    const rugRisk: RugRiskReport = {
+      lp_safety: {
+        status: lpControl.status === "burned" || lpControl.status === "locked"
+          ? "locked"
+          : lpControl.status === "team_controlled"
+            ? "team_controlled"
+            : lpControl.status === "protocol"
+              ? "protocol"
+              : lpControl.status === "concentrated_liquidity"
+                ? "concentrated_liquidity"
+                : "unlocked",
+        unlock_at: lpUnlockAt,
+        countdown_seconds: lpCountdownSeconds,
+        owner: ownerAddr ?? null,
+        contract: primaryPoolAddress ?? null,
+        movement_24h_usd: _ev ?? null,
+        source_status: "ok",
+      },
+      contract_flags: {
+        honeypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
+        blacklist: gpHasData ? (((gpRaw as any)?.is_blacklisted === "1") || ((gpRaw as any)?.blacklist_dex === "1")) : null,
+        mint: analysis?.has_mint ?? null,
+        upgradeable: analysis?.is_upgradeable ?? null,
+        source_status: (hpResult.ok || gpHasData) ? "ok" : "failed",
+      },
+      deployer_reputation: {
+        score: ownerAddr && ownerAddr !== '0x0000000000000000000000000000000000000000' ? (rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : 50) : null,
+        rug_history: null,
+        deploy_patterns: ownerAddr ? [`owner_wallet=${ownerAddr}`] : [],
+        source_status: ownerAddr ? "ok" : "failed",
+      },
+      sniper_activity: {
+        level: sniperStatus === "high" ? "high" : sniperStatus === "watch" ? "medium" : "low",
+        score: sniperStatus === "high" ? 85 : sniperStatus === "watch" ? 55 : 25,
+        source_status: transactions24h == null ? "failed" : "ok",
+      },
+      early_buyers: [],
+      liquidity_risk: {
+        liquidity_usd: _el ?? null,
+        volatility_24h_pct: _dexFb?.priceChange24h ?? pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24),
+        source_status: (_el != null) ? "ok" : "failed",
+      },
+      trading_simulation: {
+        success: hpResult.ok ? hpResult.simulationSuccess : null,
+        buy_tax: hpResult.ok ? hpResult.buyTax : null,
+        sell_tax: hpResult.ok ? hpResult.sellTax : null,
+        source_status: hpResult.ok ? "ok" : "failed",
+      },
+      risk_drivers: riskDrivers,
+      overall_rug_risk_score: rugRiskScore,
+    }
 
     // Derive holder percentages when provider rows have raw balances but no percent fields.
     // bigIntPct(balance, supply) divides in the same raw unit so decimals cancel — no normalization needed.
@@ -2400,6 +2485,7 @@ export async function POST(req: Request) {
         buys24h: buys24h ?? null,
         sells24h: sells24h ?? null,
       }),
+      rugRisk,
 
       // Token info object for frontend panels
       tokenInfo: {
