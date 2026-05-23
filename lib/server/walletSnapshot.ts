@@ -915,7 +915,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const alchemyConfigured = Boolean(ALCHEMY_BASE_KEY)
   const _zerionSucceeded = _zerionValueUsable || _zerionPositionsUsable
   if (process.env.NODE_ENV !== 'production') {
-    console.log('[wallet-diag] route=/api/wallet deepScan=', deepScan, 'requestedChain=', requestedChain, 'zerionValueUsable=', _zerionValueUsable, 'zerionPositionsUsable=', _zerionPositionsUsable, 'moralisHoldingsUsable=', _moralisHoldingsUsable, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'goldrushSkippedReason=', _goldrushSkippedReason, 'goldrushEventsReturned=', grEvents.length, 'pnlSource=', pnlSource, 'providerUsed=', providerUsed, 'totalMs=', Date.now() - startedAt)
+    console.log('[wallet-diag] route=/api/wallet deepScan=', deepScan, 'requestedChain=', requestedChain, 'zerionValueUsable=', _zerionValueUsable, 'zerionPositionsUsable=', _zerionPositionsUsable, 'moralisHoldingsUsable=', _moralisHoldingsUsable, 'goldrushBalancesSkipped=', _goldrushBalancesSkipped, 'goldrushEventsReturned=', grEvents.length, 'pnlSource=', pnlSource, 'providerUsed=', providerUsed, 'totalMs=', Date.now() - startedAt)
   }
 
   const alchemyBaseUsed = Boolean(ALCHEMY_BASE_KEY)
@@ -938,7 +938,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : 'base_first_tx_nonce_and_behavior_only',
     skippedAlchemyChains: useEthAlchemy ? [] : (ALCHEMY_ETH_KEY ? ['eth'] : []),
     pageLoadTriggered: false,
-    zerionSucceeded: _zerionSucceeded,
+    zerionSucceeded: _zerionValueUsable || _zerionPositionsUsable,
     goldrushBalancesSkipped: _goldrushBalancesSkipped,
     deepScan,
   }

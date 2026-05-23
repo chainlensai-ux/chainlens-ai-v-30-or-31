@@ -1016,6 +1016,36 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
   )
 }
 
+// ─── Risk Gauge Circle ───────────────────────────────────────────────
+
+function RiskGaugeCircle({ score, color }: { score: number | null; color: string }) {
+  const size = 130
+  const sw = 10
+  const r = (size - sw) / 2
+  const circ = 2 * Math.PI * r
+  const pct = score != null ? Math.max(0, Math.min(100, score)) / 100 : 0
+  const offset = circ - pct * circ
+  return (
+    <div style={{ position: 'relative', width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)' }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={sw} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={sw}
+          strokeLinecap="round"
+          strokeDasharray={circ}
+          strokeDashoffset={score != null ? offset : circ}
+          style={{ transition: 'stroke-dashoffset 0.8s ease, stroke 0.4s ease', filter: `drop-shadow(0 0 8px ${color}80)` }}
+        />
+      </svg>
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
+        <span style={{ fontSize: '28px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
+          {score != null ? score : '—'}
+        </span>
+        <span style={{ fontSize: '8px', color: '#3a5268', letterSpacing: '.14em', fontFamily: 'var(--font-plex-mono)' }}>RUG RISK</span>
+      </div>
+    </div>
+  )
+}
+
 // ─── Contract Security ───────────────────────────────────────────────
 
 type PillStyle = { color: string; bg: string; border: string }
@@ -2172,7 +2202,7 @@ export default function TerminalTokenScanner() {
                     const lpIsVerified = lp.status === 'locked' || lp.status === 'burned'
                     const statusColor: Record<string,string> = { burned:'#34d399',locked:'#60a5fa',protocol:'#f59e0b',concentrated_liquidity:'#a855f7',team_controlled:'#f87171',unverified:'#94a3b8',insufficient_data:'#94a3b8',error:'#f87171' }
                     const color = statusColor[lp.status??'unverified']??'#94a3b8'
-                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',protocol:'Protocol',concentrated_liquidity:'Concentrated liquidity',team_controlled:'Team controlled',unverified:'Unverified',insufficient_data:'Insufficient data',error:'Unverified' }
+                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',protocol:'Protocol liquidity',concentrated_liquidity:'Concentrated liquidity',team_controlled:'Team controlled',unverified:'Unverified',insufficient_data:'Insufficient data',error:'Unverified' }
                     const evidence = Array.isArray(lp.evidence)?lp.evidence:[]
                     const verificationPool = evidenceValue(evidence,'Verification pool')??read?.whatWasFound?.find((x)=>/^Pair:/i.test(x))?.replace(/^Pair:\s*/i,'')??'Unverified'
                     const evidenceText = evidence.join(' ').toLowerCase()
@@ -2267,12 +2297,12 @@ export default function TerminalTokenScanner() {
                 </>
               )}
 
-              {/* ── RISK CHECKS ───────────────────────────────────────── */}
+              {/* ── RISK CHECKS (CORTEX Risk Engine) ─────────────────── */}
               {activeSection === 'risk-checks' && (
                 <>
                   <div style={{ marginBottom: '18px' }}>
-                    <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#f87171',fontFamily:'var(--font-plex-mono)' }}>RISK CHECKS</p>
-                    <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Security simulation, contract flags, and ownership checks.</p>
+                    <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#f43f5e',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</p>
+                    <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Rug risk scores, contract flags, and simulation results.</p>
                   </div>
                   {!planLoading && !isFullAccess && (
                     <div style={{ padding:'24px',border:'1px solid rgba(139,92,246,0.28)',borderRadius:'16px',background:'rgba(139,92,246,0.06)',textAlign:'center' }}>
@@ -2284,39 +2314,167 @@ export default function TerminalTokenScanner() {
                   )}
                   {!planLoading && isFullAccess && (() => {
                     const engine = result.riskEngine
-                    const rug = result.rugRisk
                     const sim = result.honeypot
                     const simVerified = sim?.simulationSuccess === true
                     const lpState = result.lpControl?.status ?? 'unverified'
                     const ownerState = deriveHolderFallbackEvidence(result).ownerStatus
-                    const labelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', unverified:'Unverified' }
-                    const scoreColor = engine?.rugRiskScore == null ? '#94a3b8' : engine.rugRiskScore >= 85 ? '#f43f5e' : engine.rugRiskScore >= 65 ? '#f87171' : engine.rugRiskScore >= 40 ? '#fbbf24' : '#34d399'
-                    const block = { padding:'14px 16px',background:'linear-gradient(145deg, rgba(6,12,24,.92), rgba(14,16,32,.82))',border:'1px solid rgba(255,255,255,0.09)',borderRadius:'14px' }
-                    const title = { margin:'0 0 8px',fontSize:'10px',fontWeight:700 as const,letterSpacing:'.14em',color:'#94a3b8',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)' }
+                    const missing2 = getMissingChecks(result)
+                    const next2 = getNextAction(result)
+                    const rugLabelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', unverified:'Unverified' }
+                    const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Protocol liquidity', concentrated_liquidity:'Concentrated liquidity', team_controlled:'Team controlled', unverified:'Unverified', insufficient_data:'Insufficient data', error:'Unverified' }
+                    const gaugeColor = engine?.rugRiskScore == null ? '#94a3b8' : engine.rugRiskScore >= 70 ? '#f43f5e' : engine.rugRiskScore >= 40 ? '#fbbf24' : '#34d399'
+                    const confColor = engine?.confidence === 'high' ? '#34d399' : engine?.confidence === 'medium' ? '#fbbf24' : '#94a3b8'
+                    const cardBase: React.CSSProperties = { padding:'14px 16px', background:'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,16,32,.84))', borderRadius:'14px' }
+                    const cardTitle: React.CSSProperties = { margin:'0 0 10px',fontSize:'10px',fontWeight:700,letterSpacing:'.14em',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }
                     return (
-                      <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
-                        <div style={{ ...block, border:`1px solid ${scoreColor}55` }}>
-                          <p style={{ margin:'0 0 4px',fontSize:'11px',fontWeight:800,letterSpacing:'0.12em',color:'#c4b5fd',fontFamily:'var(--font-plex-mono)' }}>Rug Risk Engine</p>
-                          <div style={{ display:'flex', alignItems:'baseline', gap:'10px', flexWrap:'wrap' }}>
-                            <div style={{ fontSize:'34px',fontWeight:800,color:scoreColor,fontFamily:'var(--font-plex-mono)' }}>{rug?.overall_rug_risk_score ?? engine?.rugRiskScore ?? '—'}{(rug?.overall_rug_risk_score ?? engine?.rugRiskScore) != null && <span style={{ fontSize:'13px', color:'#64748b' }}>/100</span>}</div>
-                            <span style={{ padding:'4px 10px',borderRadius:'999px',border:`1px solid ${scoreColor}66`,color:scoreColor,fontSize:'11px',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{labelMap[engine?.rugRiskLabel ?? 'unverified']}</span>
-                            <span style={{ padding:'4px 10px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.35)',color:'#7dd3fc',fontSize:'11px',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Confidence {(engine?.confidence ?? 'low').toUpperCase()}</span>
+                      <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+                        {/* Hero: gauge + verdict + CORTEX read */}
+                        <div style={{ padding:'20px 22px', background:'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'18px', boxShadow:`0 0 44px ${gaugeColor}0c` }}>
+                          <div style={{ display:'flex', alignItems:'flex-start', gap:'22px', flexWrap:'wrap', marginBottom: engine?.cortexRead ? '16px' : '0' }}>
+                            <div style={{ flexShrink:0 }}>
+                              <RiskGaugeCircle score={engine?.rugRiskScore ?? null} color={gaugeColor} />
+                            </div>
+                            <div style={{ flex:1, minWidth:'160px', paddingTop:'4px' }}>
+                              <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'8px' }}>CORTEX RISK ENGINE</div>
+                              <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
+                                <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
+                                  {rugLabelMap[engine?.rugRiskLabel ?? 'unverified'] ?? 'UNVERIFIED'}
+                                </span>
+                                <span style={{ padding:'5px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:confColor,background:`${confColor}12`,border:`1px solid ${confColor}38`,fontFamily:'var(--font-plex-mono)' }}>
+                                  {(engine?.confidence ?? 'low').toUpperCase()} CONFIDENCE
+                                </span>
+                              </div>
+                              {engine?.cortexRead ? (
+                                <div style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.18)' }}>
+                                  <p style={{ margin:0,fontSize:'11px',color:'#99f6e4',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{engine.cortexRead}</p>
+                                </div>
+                              ) : (
+                                <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Rug risk analysis available when upstream APIs respond.</p>
+                              )}
+                            </div>
                           </div>
-                          <p style={{ margin:'10px 0 0',fontSize:'12px',lineHeight:1.6,color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{engine?.cortexRead ?? 'Rug risk analysis available when upstream APIs respond.'}</p>
                         </div>
-                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:'10px' }}>
-                          <div style={block}><p style={title}>LP lock status</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{rug?.lp_safety.status ?? lpState}</p><p style={{ margin:'5px 0 0',color:'#94a3b8',fontSize:'11px' }}>Countdown: {rug?.lp_safety.countdown_seconds != null ? `${Math.floor(rug.lp_safety.countdown_seconds/3600)}h` : 'N/A'}</p></div>
-                          <div style={block}><p style={title}>LP owner + contract</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{shorten(rug?.lp_safety.owner ?? 'N/A')}</p><p style={{ margin:'5px 0 0',color:'#94a3b8',fontSize:'11px' }}>{shorten(rug?.lp_safety.contract ?? 'N/A')}</p></div>
-                          <div style={block}><p style={title}>Deployer reputation</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{rug?.deployer_reputation.score ?? 'N/A'}</p></div>
-                          <div style={block}><p style={title}>Liquidity volatility</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{rug?.liquidity_risk.volatility_24h_pct != null ? `${rug.liquidity_risk.volatility_24h_pct.toFixed(2)}%` : 'N/A'}</p></div>
+
+                        {/* Cards grid */}
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'12px' }}>
+                          {/* Risk Drivers */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(244,63,94,0.22)' }}>
+                            <p style={{ ...cardTitle, color:'#f43f5e' }}>Risk Drivers</p>
+                            {(engine?.riskDrivers?.length ? engine.riskDrivers : ['No active risk drivers detected.']).map((d, i) => (
+                              <div key={i} style={{ display:'flex',gap:'7px',marginBottom:'5px',alignItems:'flex-start' }}>
+                                <span style={{ color:'#f43f5e',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>!</span>
+                                <p style={{ margin:0,fontSize:'11px',color:'#fda4af',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{d}</p>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* LP Control */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(52,211,153,0.18)' }}>
+                            <p style={{ ...cardTitle, color:'#34d399' }}>LP Control</p>
+                            <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',flexWrap:'wrap' }}>
+                              <span style={{ fontSize:'13px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>{lpLabelMap[lpState] ?? lpState.replace(/_/g,' ')}</span>
+                              {(lpState==='locked'||lpState==='burned') && (
+                                <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#34d399',background:'rgba(52,211,153,0.12)',border:'1px solid rgba(52,211,153,0.30)',fontFamily:'var(--font-plex-mono)' }}>VERIFIED</span>
+                              )}
+                            </div>
+                            {result.lpControl?.reason && <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{result.lpControl.reason}</p>}
+                            {result.lpControl?.confidence && <p style={{ margin:'5px 0 0',fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Confidence: {result.lpControl.confidence}</p>}
+                          </div>
+
+                          {/* Ownership / Control */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(167,139,250,0.18)' }}>
+                            <p style={{ ...cardTitle, color:'#a78bfa' }}>Ownership / Control</p>
+                            <div style={{ display:'grid',gap:'7px' }}>
+                              {[
+                                ['Dev Control', ownerState, ownerState==='Renounced'?'#34d399':ownerState==='Held'?'#fbbf24':'#94a3b8'],
+                                ['LP Control', lpLabelMap[lpState] ?? lpState.replace(/_/g,' '), '#e2e8f0'],
+                              ].map(([label, val, col]) => (
+                                <div key={String(label)} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
+                                  <span style={{ fontSize:'11px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                  <span style={{ fontSize:'11px',fontWeight:700,color:String(col),fontFamily:'var(--font-plex-mono)' }}>{val}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Trading Simulation */}
+                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(45,212,191,0.25)':'rgba(251,191,36,0.20)'}` }}>
+                            <p style={{ ...cardTitle, color:'#67e8f9' }}>Trading Simulation</p>
+                            <div style={{ display:'flex',gap:'6px',marginBottom:'10px',flexWrap:'wrap' }}>
+                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':'#fbbf24',background:simVerified?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':'rgba(251,191,36,0.30)'}`,fontFamily:'var(--font-plex-mono)' }}>
+                                {simVerified?'VERIFIED':'PARTIAL'}
+                              </span>
+                              {sim?.isHoneypot === true && (
+                                <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#f87171',background:'rgba(248,113,113,0.10)',border:'1px solid rgba(248,113,113,0.35)',fontFamily:'var(--font-plex-mono)' }}>HONEYPOT</span>
+                              )}
+                            </div>
+                            <div style={{ display:'grid',gap:'6px' }}>
+                              {([
+                                ['Honeypot', sim?.isHoneypot==null?'Unverified':sim.isHoneypot?'YES':'NO', sim?.isHoneypot?'#f87171':sim?.isHoneypot===false?'#34d399':'#94a3b8'],
+                                ['Buy Tax', sim?.buyTax!=null?`${sim.buyTax.toFixed(1)}%`:'Unverified', sim?.buyTax!=null?(sim.buyTax>8?'#f87171':sim.buyTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
+                                ['Sell Tax', sim?.sellTax!=null?`${sim.sellTax.toFixed(1)}%`:'Unverified', sim?.sellTax!=null?(sim.sellTax>8?'#f87171':sim.sellTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
+                                ...(sim?.transferTax!=null&&sim.transferTax>0 ? [['Transfer Tax',`${sim.transferTax.toFixed(1)}%`,'#fbbf24'] as [string,string,string]] : []),
+                              ] as Array<[string,string,string]>).map(([label,val,col])=>(
+                                <div key={label} style={{ display:'flex',justifyContent:'space-between',gap:'8px' }}>
+                                  <span style={{ fontSize:'11px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                  <span style={{ fontSize:'11px',fontWeight:700,color:col,fontFamily:'var(--font-plex-mono)' }}>{val}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Contract Flags */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.18)' }}>
+                            <p style={{ ...cardTitle, color:'#fbbf24' }}>Contract Flags</p>
+                            <div style={{ display:'grid',gap:'7px' }}>
+                              {([
+                                ['Mint Function', result.analysis?.has_mint ?? null],
+                                ['Upgradeable', result.analysis?.is_upgradeable ?? null],
+                                ['Withdraw / Sweep', (result.analysis?.has_withdraw||result.analysis?.has_sweep) ?? null],
+                              ] as Array<[string, boolean|null]>).map(([label, flagVal]) => (
+                                <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
+                                  <span style={{ fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                  <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,fontFamily:'var(--font-plex-mono)',color:flagVal?'#f87171':flagVal===false?'#34d399':'#64748b',background:flagVal?'rgba(248,113,113,0.10)':flagVal===false?'rgba(52,211,153,0.08)':'rgba(255,255,255,0.04)',border:`1px solid ${flagVal?'rgba(248,113,113,0.30)':flagVal===false?'rgba(52,211,153,0.22)':'rgba(255,255,255,0.08)'}` }}>
+                                    {flagVal==null?'N/A':flagVal?'YES':'NO'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Open Checks */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.16)' }}>
+                            <p style={{ ...cardTitle, color:'#fbbf24' }}>Open Checks</p>
+                            {missing2.length > 0 ? (
+                              <div style={{ display:'flex',flexWrap:'wrap',gap:'5px' }}>
+                                {missing2.map(m => (
+                                  <span key={m} style={{ padding:'3px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:600,color:'#fbbf24',background:'rgba(251,191,36,0.07)',border:'1px solid rgba(251,191,36,0.22)',fontFamily:'var(--font-plex-mono)',whiteSpace:'nowrap' }}>{m}</span>
+                                ))}
+                              </div>
+                            ) : (
+                              <p style={{ margin:0,fontSize:'11px',color:'#34d399',fontFamily:'var(--font-plex-mono)' }}>All key checks passed.</p>
+                            )}
+                          </div>
                         </div>
-                        <div style={block}><p style={title}>Contract flags</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>Honeypot: {String(rug?.contract_flags.honeypot ?? false)} · Mint: {String(rug?.contract_flags.mint ?? false)} · Upgradeable: {String(rug?.contract_flags.upgradeable ?? false)}</p></div>
-                        <div style={block}><p style={title}>Sniper activity heatmap</p><p style={{ margin:0,color:'#f8fafc',fontWeight:700 }}>{rug?.sniper_activity.level ?? 'low'} ({rug?.sniper_activity.score ?? 0}/100)</p></div>
-                        <div style={block}><p style={title}>Early buyers</p><ul style={{ margin:0,paddingLeft:'18px',color:'#cbd5e1',fontSize:'12px' }}>{(rug?.early_buyers?.length ? rug.early_buyers.map(b=>`${shorten(b.wallet)} · $${b.amount_usd ?? 0}`) : ['No early buyers detected']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
-                        <div style={block}><p style={title}>Risk drivers</p><ul style={{ margin:0,paddingLeft:'18px',color:'#fda4af',fontSize:'12px' }}>{(rug?.risk_drivers?.length ? rug.risk_drivers : engine?.riskDrivers ?? ['No active risk drivers']).map((x,i)=><li key={i}>{x}</li>)}</ul></div>
-                        <div style={block}><p style={title}>Trading Simulation</p><p style={{ margin:'0 0 6px',color:simVerified?'#34d399':'#fbbf24',fontWeight:700 }}>{simVerified?'Verified':'Partial'}</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>Buy Tax: {sim?.buyTax != null ? `${sim.buyTax.toFixed(1)}%` : 'Unverified'} · Sell Tax: {sim?.sellTax != null ? `${sim.sellTax.toFixed(1)}%` : 'Unverified'}</p></div>
-                        <div style={block}><p style={title}>Contract Flags</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>Mint: {result.analysis?.has_mint ? 'Yes' : 'No'} · Upgradeable: {result.analysis?.is_upgradeable ? 'Yes' : 'No'} · Withdraw/Sweep: {result.analysis?.has_withdraw || result.analysis?.has_sweep ? 'Yes' : 'No'}</p></div>
-                        <div style={block}><p style={title}>Ownership / Control</p><p style={{ margin:'0 0 4px',color:'#f8fafc',fontWeight:700 }}>Dev Control: {ownerState}</p><p style={{ margin:0,color:'#cbd5e1',fontSize:'12px' }}>LP Control: {lpState.replace('_',' ')}</p></div>
+
+                        {/* Verified Signals */}
+                        {engine?.verifiedSignals && engine.verifiedSignals.length > 0 && (
+                          <div style={{ padding:'14px 16px',background:'rgba(52,211,153,0.04)',border:'1px solid rgba(52,211,153,0.18)',borderRadius:'12px' }}>
+                            <p style={{ margin:'0 0 10px',fontSize:'9px',fontWeight:700,letterSpacing:'.14em',color:'#34d399',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Verified Signals</p>
+                            {engine.verifiedSignals.map((s, i) => (
+                              <div key={i} style={{ display:'flex',gap:'7px',marginBottom:'4px' }}>
+                                <span style={{ color:'#34d399',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>✓</span>
+                                <p style={{ margin:0,fontSize:'11px',color:'#86efac',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{s}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Next Action */}
+                        <div style={{ padding:'14px 16px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.22)',borderRadius:'12px' }}>
+                          <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#2DD4BF',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Next Action</p>
+                          <p style={{ margin:0,fontSize:'12px',color:'#67e8f9',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{next2}</p>
+                        </div>
                       </div>
                     )
                   })()}
