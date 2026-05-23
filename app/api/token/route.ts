@@ -86,6 +86,7 @@ type HolderDistributionStatus = {
   reason: string
   itemCount: number
   normalizedCount: number
+  percentSource: "provider" | "calculated" | "unavailable"
 }
 
 function toNum(v: unknown): number | null {
@@ -455,7 +456,13 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 
 
 async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<any> {
-  const chainSlug = _chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'
+  const CHAIN_SLUG_MAP: Record<ChainKey, string> = {
+    eth: 'eth-mainnet',
+    base: 'base-mainnet',
+    polygon: 'matic-mainnet',
+    bnb: 'bsc-mainnet',
+  }
+  const chainSlug = CHAIN_SLUG_MAP[_chain] ?? 'base-mainnet'
   const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
   let statusCode: number | undefined
   try {
@@ -463,7 +470,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
     const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
     if (!apiKey) {
       console.warn('[holder-debug] contract', contract, 'chain', chainSlug, 'result: missing API key')
-      return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath }
+      return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: false }
     }
     // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
     const url = `https://api.covalenthq.com${endpointPath}?page-number=0&page-size=100`
@@ -485,7 +492,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
         const errText = await res.text().catch(() => '').then(t => t.slice(0, 200))
         console.warn('[holder-debug] non-ok', statusCode, errText)
       }
-      return { __status: 'error', __reason: safeReason, __statusCode: statusCode, __endpointPath: endpointPath }
+      return { __status: 'error', __reason: safeReason, __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: true }
     }
     const json = await res.json()
     const topKeys = Object.keys(json ?? {})
@@ -493,12 +500,12 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
     console.log('[holder-debug] statusCode', statusCode, 'responseKeys', topKeys, 'data.items.length', itemCount)
     if (json?.error) {
       console.warn('[holder-debug] API-level error:', json?.error_message)
-      return { __status: 'error', __reason: json?.error_message ?? 'api_error', __statusCode: statusCode, __endpointPath: endpointPath, __responseKeys: topKeys }
+      return { __status: 'error', __reason: json?.error_message ?? 'api_error', __statusCode: statusCode, __endpointPath: endpointPath, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
     }
-    return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys }
+    return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
   } catch (err) {
     console.error('[holder-debug] exception', err)
-    return { __status: 'error', __reason: 'provider_unavailable', __statusCode: statusCode, __endpointPath: endpointPath }
+    return { __status: 'error', __reason: 'provider_unavailable', __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY) }
   }
 }
 
@@ -1593,9 +1600,15 @@ export async function POST(req: Request) {
       : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
-          ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
-          : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
-      : { status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: holderItems.length, normalizedCount: 0 }
+          ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource }
+          : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource })
+      : {
+          status: (holdersRaw?.__status === 'error' ? 'error' : (holdersRaw?.__status === 'unavailable' ? 'unavailable' : 'empty')) ,
+          reason: (holdersRaw?.__reason ?? 'no_rows'),
+          itemCount: holderItems.length,
+          normalizedCount: 0,
+          percentSource,
+        }
     let holderDerivationAttempted = false
     let holderDerivationSucceeded = false
     let holderDerivationFailureReason: string | null = null
@@ -1917,6 +1930,7 @@ export async function POST(req: Request) {
           reason: 'holder_percentages_derived_from_supply',
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
+          percentSource,
         }
       } else {
         holderDerivationFailureReason = normalizedTop.length > 0
@@ -2366,10 +2380,14 @@ export async function POST(req: Request) {
         } : null,
         holderDiagnostics: {
           attempted: holdersRaw?.__status !== 'unavailable',
+          chainUsed: holdersRaw?.__chainUsed ?? (chain === 'eth' ? 'eth-mainnet' : chain === 'base' ? 'base-mainnet' : chain),
+          endpointTemplate: holdersRaw?.__endpointPath ?? undefined,
+          hasApiKey: holdersRaw?.__hasApiKey ?? Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY),
           statusCode: holdersRaw?.__statusCode ?? undefined,
           fetchFailed: holdersRaw?.__status === 'error',
           failureStage: holderDistributionStatus.status === 'ok' ? undefined : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
           rawItemCount: holderItems.length,
+          rawTopLevelKeys: holdersRaw ? Object.keys(holdersRaw) : undefined,
           normalizedCount: normalizedTop.length,
           firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : undefined,
           reason: holderDistributionStatus.reason,
