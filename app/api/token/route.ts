@@ -1557,8 +1557,20 @@ export async function POST(req: Request) {
           }
         }
       } else {
-        lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "LP checks ran but could not prove burned/locked/team-controlled state.", evidence: [`top_rows=${top.length}`] };
+        const partialEv = [
+          burnPct > 0.5 ? `burn_share=${burnPct.toFixed(2)}%` : null,
+          lockerPct > 0.5 ? `locker_share=${lockerPct.toFixed(2)}%` : null,
+        ].filter(Boolean) as string[]
+        const partialReason = partialEv.length
+          ? `LP holder check inconclusive — no dominant burn/lock pattern. ${partialEv.join(', ')}.`
+          : "LP checks ran but could not prove burned/locked/team-controlled state."
+        lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: partialReason, evidence: [`top_rows=${top.length}`, ...partialEv] };
       }
+    }
+    const _extractEvidencePct = (ev: string[], prefix: string): number | null => {
+      const line = ev.find(e => e.startsWith(`${prefix}=`))
+      if (!line) return null
+      return parseFloat(line.split('=')[1]?.replace('%', '') ?? '') || null
     }
     lpDiagnostics = {
       ...lpDiagnostics,
@@ -1937,6 +1949,13 @@ export async function POST(req: Request) {
       simulationSuccess: null as boolean | null,
     } : null;
 
+    // GoPlus-derived contract flags (low-confidence fallback; only used when GoPlus has data)
+    const gpMint = gpHasData ? (String(gpToken.is_mintable ?? '') === '1') : null
+    const gpUpgradeable = gpHasData ? (String(gpToken.is_proxy ?? '') === '1') : null
+    const gpBlacklist = gpHasData
+      ? (String(gpToken.is_blacklisted ?? '') === '1' || String(gpToken.transfer_pausable ?? '') === '1')
+      : null
+
     // Final JSON response
     const marketStatus: "ok" | "fallback_ok" | "partial" | "no_pool_found" | "unavailable" | "error" =
       (_ep != null && _el != null && _ev != null && marketDataSource === 'primary') ? "ok" :
@@ -2016,8 +2035,8 @@ export async function POST(req: Request) {
       riskScore += 8
     }
 
-    if (analysis?.has_mint) { riskDrivers.push('Contract can mint supply.'); riskScore += 12 }
-    if (analysis?.is_upgradeable) { riskDrivers.push('Contract is upgradeable.'); riskScore += 10 }
+    if (gpMint === true || analysis?.has_mint) { riskDrivers.push('Contract can mint supply.'); riskScore += 12 }
+    if (gpUpgradeable === true || analysis?.is_upgradeable) { riskDrivers.push('Contract is upgradeable.'); riskScore += 10 }
     if (analysis?.has_withdraw || analysis?.has_sweep || analysis?.has_rescue) { riskDrivers.push('Contract includes withdraw/sweep/rescue style controls.'); riskScore += 10 }
 
     const majorMissingCount = [
@@ -2090,9 +2109,9 @@ export async function POST(req: Request) {
       },
       contract_flags: {
         honeypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
-        blacklist: gpHasData ? (((gpRaw as any)?.is_blacklisted === "1") || ((gpRaw as any)?.blacklist_dex === "1")) : null,
-        mint: analysis?.has_mint ?? null,
-        upgradeable: analysis?.is_upgradeable ?? null,
+        blacklist: gpBlacklist,
+        mint: gpMint,
+        upgradeable: gpUpgradeable,
         source_status: (hpResult.ok || gpHasData) ? "ok" : "failed",
       },
       deployer_reputation: {
@@ -2627,6 +2646,9 @@ export async function POST(req: Request) {
           burnBalanceChecked: lpDiagnostics.burnBalanceFound,
           lockerChecked: lpDiagnostics.lockerBalanceFound,
           teamBalanceChecked: lpDiagnostics.teamBalanceFound,
+          burnPercent: _extractEvidencePct(lpControl.evidence ?? [], 'burn_share'),
+          lockedPercent: _extractEvidencePct(lpControl.evidence ?? [], 'locker_share'),
+          teamPercent: _extractEvidencePct(lpControl.evidence ?? [], 'owner_lp_share'),
           proofStatus: lpDiagnostics.lpState,
           reason: lpDiagnostics.reason,
           _full: lpDiagnostics,

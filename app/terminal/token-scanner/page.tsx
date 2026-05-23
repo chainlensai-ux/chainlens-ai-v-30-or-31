@@ -597,10 +597,11 @@ function getMissingChecks(result: ScanResult): string[] {
   const holderState = deriveHolderState(result)
   const lpStatus = result.lpControl?.status
   const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
+  const lpProtocol = lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity'
   return [
     result.noActivePools ? 'Active liquidity pool' : null,
     holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : null,
-    !lpVerified ? 'LP lock or burn proof' : null,
+    lpProtocol ? 'Protocol-specific LP verification' : (!lpVerified ? 'LP lock or burn proof' : null),
     result.marketCapUsd == null ? 'Verified market cap' : null,
     'Supply spread',
   ].filter((v): v is string => v != null)
@@ -2316,6 +2317,7 @@ export default function TerminalTokenScanner() {
                     const engine = result.riskEngine
                     const sim = result.honeypot
                     const simVerified = sim?.simulationSuccess === true
+                    const simUnavailable = sim == null
                     const lpState = result.lpControl?.status ?? 'unverified'
                     const ownerState = deriveHolderFallbackEvidence(result).ownerStatus
                     const missing2 = getMissingChecks(result)
@@ -2398,11 +2400,11 @@ export default function TerminalTokenScanner() {
                           </div>
 
                           {/* Trading Simulation */}
-                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(45,212,191,0.25)':'rgba(251,191,36,0.20)'}` }}>
+                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(45,212,191,0.25)':simUnavailable?'rgba(100,116,139,0.18)':'rgba(251,191,36,0.20)'}` }}>
                             <p style={{ ...cardTitle, color:'#67e8f9' }}>Trading Simulation</p>
                             <div style={{ display:'flex',gap:'6px',marginBottom:'10px',flexWrap:'wrap' }}>
-                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':'#fbbf24',background:simVerified?'rgba(52,211,153,0.10)':'rgba(251,191,36,0.10)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':'rgba(251,191,36,0.30)'}`,fontFamily:'var(--font-plex-mono)' }}>
-                                {simVerified?'VERIFIED':'PARTIAL'}
+                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':simUnavailable?'#94a3b8':'#fbbf24',background:simVerified?'rgba(52,211,153,0.10)':simUnavailable?'rgba(148,163,184,0.08)':'rgba(251,191,36,0.10)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':simUnavailable?'rgba(148,163,184,0.22)':'rgba(251,191,36,0.30)'}`,fontFamily:'var(--font-plex-mono)' }}>
+                                {simVerified?'VERIFIED':simUnavailable?'UNVERIFIED':'PARTIAL'}
                               </span>
                               {sim?.isHoneypot === true && (
                                 <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#f87171',background:'rgba(248,113,113,0.10)',border:'1px solid rgba(248,113,113,0.35)',fontFamily:'var(--font-plex-mono)' }}>HONEYPOT</span>
@@ -2428,9 +2430,9 @@ export default function TerminalTokenScanner() {
                             <p style={{ ...cardTitle, color:'#fbbf24' }}>Contract Flags</p>
                             <div style={{ display:'grid',gap:'7px' }}>
                               {([
-                                ['Mint Function', result.analysis?.has_mint ?? null],
-                                ['Upgradeable', result.analysis?.is_upgradeable ?? null],
-                                ['Withdraw / Sweep', (result.analysis?.has_withdraw||result.analysis?.has_sweep) ?? null],
+                                ['Mint Function', result.rugRisk?.contract_flags?.mint ?? null],
+                                ['Upgradeable / Proxy', result.rugRisk?.contract_flags?.upgradeable ?? null],
+                                ['Blacklist / Pause', result.rugRisk?.contract_flags?.blacklist ?? null],
                               ] as Array<[string, boolean|null]>).map(([label, flagVal]) => (
                                 <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
                                   <span style={{ fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
@@ -2445,15 +2447,21 @@ export default function TerminalTokenScanner() {
                           {/* Open Checks */}
                           <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.16)' }}>
                             <p style={{ ...cardTitle, color:'#fbbf24' }}>Open Checks</p>
-                            {missing2.length > 0 ? (
-                              <div style={{ display:'flex',flexWrap:'wrap',gap:'5px' }}>
-                                {missing2.map(m => (
-                                  <span key={m} style={{ padding:'3px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:600,color:'#fbbf24',background:'rgba(251,191,36,0.07)',border:'1px solid rgba(251,191,36,0.22)',fontFamily:'var(--font-plex-mono)',whiteSpace:'nowrap' }}>{m}</span>
-                                ))}
-                              </div>
-                            ) : (
-                              <p style={{ margin:0,fontSize:'11px',color:'#34d399',fontFamily:'var(--font-plex-mono)' }}>All key checks passed.</p>
-                            )}
+                            {(() => {
+                              const openItems = (engine?.openChecks?.length ? engine.openChecks : missing2)
+                              return openItems.length > 0 ? (
+                                <div style={{ display:'flex',flexDirection:'column',gap:'5px' }}>
+                                  {openItems.map((m, i) => (
+                                    <div key={i} style={{ display:'flex',gap:'6px',alignItems:'flex-start' }}>
+                                      <span style={{ color:'#fbbf24',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>⚠</span>
+                                      <p style={{ margin:0,fontSize:'11px',color:'#fde68a',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{m}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p style={{ margin:0,fontSize:'11px',color:'#34d399',fontFamily:'var(--font-plex-mono)' }}>All key checks passed.</p>
+                              )
+                            })()}
                           </div>
                         </div>
 
