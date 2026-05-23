@@ -13,16 +13,17 @@ import { supabase } from '@/lib/supabaseClient'
 type SavedWalletState = {
   address: string
   connectorId: string | null
+  chainId?: number | null
   updatedAt: string
 }
 
 const LOCAL_WALLET_KEY = 'chainlens_wallet_linked'
 const USER_WALLET_FILTER_KEY = 'chainlens_wallet_linked'
 
-function readLocalWalletState(): SavedWalletState | null {
+function readLocalWalletState(key = LOCAL_WALLET_KEY): SavedWalletState | null {
   if (typeof window === 'undefined') return null
   try {
-    const raw = window.localStorage.getItem(LOCAL_WALLET_KEY)
+    const raw = window.localStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<SavedWalletState>
     if (!parsed?.address || typeof parsed.address !== 'string') return null
@@ -36,13 +37,34 @@ function readLocalWalletState(): SavedWalletState | null {
   }
 }
 
-function writeLocalWalletState(state: SavedWalletState | null) {
+function writeLocalWalletState(key = LOCAL_WALLET_KEY, state: SavedWalletState | null) {
   if (typeof window === 'undefined') return
   if (!state) {
-    window.localStorage.removeItem(LOCAL_WALLET_KEY)
+    window.localStorage.removeItem(key)
     return
   }
-  window.localStorage.setItem(LOCAL_WALLET_KEY, JSON.stringify(state))
+  window.localStorage.setItem(key, JSON.stringify(state))
+}
+
+// ── user-scoped key helpers ───────────────────────────────────────────────────
+
+const MANUAL_DISCONNECT_KEY = 'chainlens_wallet_manual_disconnect'
+
+function walletKeyForUser(userId: string | null): string {
+  return userId ? `${LOCAL_WALLET_KEY}:${userId}` : LOCAL_WALLET_KEY
+}
+
+function getManualDisconnectFlag(userId: string | null): boolean {
+  if (typeof window === 'undefined') return false
+  const k = userId ? `${MANUAL_DISCONNECT_KEY}:${userId}` : MANUAL_DISCONNECT_KEY
+  return window.localStorage.getItem(k) === '1'
+}
+
+function setManualDisconnectFlag(userId: string | null, v: boolean): void {
+  if (typeof window === 'undefined') return
+  const k = userId ? `${MANUAL_DISCONNECT_KEY}:${userId}` : MANUAL_DISCONNECT_KEY
+  if (v) window.localStorage.setItem(k, '1')
+  else window.localStorage.removeItem(k)
 }
 
 // ---------- connector display metadata ----------
@@ -122,7 +144,7 @@ function WCBridge({ openRef }: { openRef: React.MutableRefObject<(() => void) | 
 
 export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void | Promise<void> }) {
   const pathname = usePathname()
-  const { address, isConnected, isReconnecting, connector } = useAccount()
+  const { address, isConnected, isReconnecting, connector, chain } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
   const filteredConnectors = visibleConnectors(connectors)
@@ -139,6 +161,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [disconnectOpen, setDisconnectOpen] = useState(false)
   const [savedState, setSavedState] = useState<SavedWalletState | null>(null)
+  const [authUserId, setAuthUserId] = useState<string | null>(null)
   const reconnectAttemptedRef = useRef(false)
 
   const menuRef = useRef<HTMLDivElement>(null)
@@ -279,39 +302,95 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     if (!mounted) return
     let cancelled = false
     async function hydrateSavedWallet() {
-      const local = readLocalWalletState()
-      if (!cancelled) setSavedState(local)
-
       const { data } = await supabase.auth.getSession()
       const session = data.session
-      if (!session?.access_token) return
+      const userId = session?.user?.id ?? null
+      if (!cancelled) setAuthUserId(userId)
 
+      const key = walletKeyForUser(userId)
+      const local = readLocalWalletState(key)
+      if (!cancelled) setSavedState(local)
+
+      if (!session?.access_token) return
       const res = await fetch('/api/user-settings', {
         headers: { Authorization: `Bearer ${session.access_token}` },
         cache: 'no-store',
       }).catch(() => null)
-      if (!res?.ok) return
+      if (!res?.ok || cancelled) return
       const body = await res.json().catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
       const persisted = body?.settings?.saved_filters?.[USER_WALLET_FILTER_KEY] as Partial<SavedWalletState> | undefined
       if (!persisted?.address || cancelled) return
       const nextState: SavedWalletState = {
         address: persisted.address,
         connectorId: typeof persisted.connectorId === 'string' ? persisted.connectorId : null,
+        chainId: typeof (persisted as Record<string, unknown>).chainId === 'number' ? (persisted as Record<string, unknown>).chainId as number : null,
         updatedAt: typeof persisted.updatedAt === 'string' ? persisted.updatedAt : new Date().toISOString(),
       }
-      writeLocalWalletState(nextState)
-      setSavedState(nextState)
+      writeLocalWalletState(key, nextState)
+      if (!cancelled) setSavedState(nextState)
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[ConnectWallet] hydrate', { savedWalletFound: !!local, savedUserWalletFound: !!persisted?.address, authUserIdPresent: !!userId })
+      }
     }
     hydrateSavedWallet()
     return () => { cancelled = true }
   }, [mounted])
 
+  // Re-hydrate and reset reconnect state on auth changes (login / logout)
+  useEffect(() => {
+    if (!mounted) return
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const userId = session?.user?.id ?? null
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[ConnectWallet] auth state change', { event, authUserIdPresent: !!userId })
+      }
+      if (event === 'SIGNED_OUT') {
+        setAuthUserId(null)
+        setSavedState(null)
+        return
+      }
+      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && userId && session?.access_token) {
+        setAuthUserId(userId)
+        reconnectAttemptedRef.current = false
+        const key = walletKeyForUser(userId)
+        const local = readLocalWalletState(key)
+        setSavedState(local)
+        const token = session.access_token
+        void (async () => {
+          const res = await fetch('/api/user-settings', {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: 'no-store',
+          }).catch(() => null)
+          if (!res?.ok) return
+          const body = await res.json().catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
+          const persisted = body?.settings?.saved_filters?.[USER_WALLET_FILTER_KEY] as Partial<SavedWalletState> | undefined
+          if (!persisted?.address) return
+          const nextState: SavedWalletState = {
+            address: persisted.address,
+            connectorId: typeof persisted.connectorId === 'string' ? persisted.connectorId : null,
+            chainId: typeof (persisted as Record<string, unknown>).chainId === 'number' ? (persisted as Record<string, unknown>).chainId as number : null,
+            updatedAt: typeof persisted.updatedAt === 'string' ? persisted.updatedAt : new Date().toISOString(),
+          }
+          writeLocalWalletState(key, nextState)
+          setSavedState(nextState)
+        })()
+      }
+    })
+    return () => subscription.unsubscribe()
+  }, [mounted])
+
   useEffect(() => {
     if (!isConnected || !address) return
     const connectorId = connector?.id ?? null
-    const nextState: SavedWalletState = { address, connectorId, updatedAt: new Date().toISOString() }
-    writeLocalWalletState(nextState)
+    const nextState: SavedWalletState = { address, connectorId, chainId: chain?.id ?? null, updatedAt: new Date().toISOString() }
+    const key = walletKeyForUser(authUserId)
+    writeLocalWalletState(key, nextState)
     setSavedState(nextState)
+    setManualDisconnectFlag(authUserId, false)
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[ConnectWallet] wallet saved', { address: address.slice(0, 6) + '…', connectorId, chainId: chain?.id ?? null, authUserIdPresent: !!authUserId })
+    }
 
     void (async () => {
       const { data } = await supabase.auth.getSession()
@@ -328,17 +407,41 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         body: JSON.stringify({ saved_filters: { ...savedFilters, [USER_WALLET_FILTER_KEY]: nextState } }),
       }).catch(() => null)
     })()
-  }, [address, connector?.id, isConnected])
+  }, [address, connector?.id, isConnected, chain?.id, authUserId])
 
   useEffect(() => {
+    if (!mounted) return
     if (reconnectAttemptedRef.current || isConnected || isReconnecting || !savedState) return
+    if (getManualDisconnectFlag(authUserId)) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[ConnectWallet] reconnect skipped — manual disconnect flag set', { authUserIdPresent: !!authUserId })
+      }
+      return
+    }
     const preferred = savedState.connectorId
       ? connectors.find(c => c.id === savedState.connectorId || c.name === savedState.connectorId)
       : connectors[0]
     if (!preferred) return
+    // Skip WalletConnect — wagmi's reconnectOnMount handles WC session restore
+    if (isWalletConnect(preferred.id)) return
     reconnectAttemptedRef.current = true
-    void connectAsync({ connector: preferred }).catch(() => null)
-  }, [connectAsync, connectors, isConnected, isReconnecting, savedState])
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[ConnectWallet] attempting silent reconnect', {
+        connectorId: preferred.id,
+        savedAddress: savedState.address.slice(0, 6) + '…',
+        authUserIdPresent: !!authUserId,
+      })
+    }
+    void connectAsync({ connector: preferred }).then(() => {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[ConnectWallet] silent reconnect succeeded')
+      }
+    }).catch((err) => {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[ConnectWallet] silent reconnect failed', { reason: err instanceof Error ? err.message : String(err) })
+      }
+    })
+  }, [mounted, connectAsync, connectors, isConnected, isReconnecting, savedState, authUserId])
 
   // ── shared button styles ──────────────────────────────────────────────────
 
@@ -402,8 +505,14 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
               type="button"
               onClick={() => {
                 disconnect()
-                writeLocalWalletState(null)
+                const disconnectKey = walletKeyForUser(authUserId)
+                writeLocalWalletState(disconnectKey, null)
+                setManualDisconnectFlag(authUserId, true)
                 setSavedState(null)
+                reconnectAttemptedRef.current = false
+                if (process.env.NODE_ENV !== 'production') {
+                  console.debug('[ConnectWallet] manual disconnect', { authUserIdPresent: !!authUserId })
+                }
                 void (async () => {
                   const { data } = await supabase.auth.getSession()
                   const session = data.session
