@@ -24,18 +24,30 @@ export type MoralisFetchResult = {
 
 const MORALIS_TTL_MS = 10 * 60 * 1000
 const _cache = new Map<string, { holdings: MoralisHolding[]; cachedAt: number }>()
+const _inflight = new Map<string, Promise<MoralisFetchResult>>()
 
 const NOT_NEEDED: MoralisFetchResult = { holdings: [], attempted: false, usable: false, cacheHit: false, reason: 'not_needed' }
 
+export type MoralisChain = 'eth' | 'base' | 'polygon' | 'bsc' | 'arbitrum' | 'optimism' | 'avalanche' | 'fantom' | 'cronos' | 'gnosis'
+
 // Moralis chain identifiers
-const CHAIN_PARAM: Record<'eth' | 'base', string> = {
+// Some chains use hex identifiers per Moralis v2.2 token balances API.
+const CHAIN_PARAM: Record<MoralisChain, string> = {
   eth: 'eth',
   base: '0x2105',
+  polygon: 'polygon',
+  bsc: 'bsc',
+  arbitrum: 'arbitrum',
+  optimism: 'optimism',
+  avalanche: 'avalanche',
+  fantom: 'fantom',
+  cronos: 'cronos',
+  gnosis: 'gnosis',
 }
 
 export async function fetchMoralisBalances(
   address: string,
-  chain: 'eth' | 'base',
+  chain: MoralisChain,
 ): Promise<MoralisFetchResult> {
   const apiKey = process.env.MORALIS_API_KEY ?? ''
   if (!apiKey) return { ...NOT_NEEDED, reason: 'not_configured' }
@@ -56,6 +68,10 @@ export async function fetchMoralisBalances(
     `https://deep-index.moralis.io/api/v2.2/${address}/erc20` +
     `?chain=${CHAIN_PARAM[chain]}&exclude_spam=true`
 
+  const inFlight = _inflight.get(cacheKey)
+  if (inFlight) return inFlight
+
+  const run = (async (): Promise<MoralisFetchResult> => {
   try {
     const res = await fetch(url, {
       headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
@@ -82,7 +98,7 @@ export async function fetchMoralisBalances(
       ? (raw!.result as unknown[])
       : []
 
-    const chainShort = chain === 'eth' ? 'eth' : 'base'
+    const chainShort = chain
     const holdings: MoralisHolding[] = items
       .map((item) => {
         const it = item as Record<string, unknown>
@@ -140,5 +156,7 @@ export async function fetchMoralisBalances(
       cacheHit: false,
       reason: 'fetch_failed',
     }
-  }
+  }} )()
+  _inflight.set(cacheKey, run)
+  try { return await run } finally { _inflight.delete(cacheKey) }
 }
