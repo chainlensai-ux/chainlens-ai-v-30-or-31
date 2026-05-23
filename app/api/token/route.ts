@@ -86,6 +86,52 @@ type HolderDistributionStatus = {
   reason: string
   itemCount: number
   normalizedCount: number
+  percentSource: "provider" | "calculated" | "unavailable"
+}
+type RiskEngine = {
+  rugRiskScore: number | null
+  rugRiskLabel: "low_visible_risk" | "watch" | "high" | "critical" | "unverified"
+  confidence: "high" | "medium" | "low"
+  cortexRead: string
+  verifiedSignals: string[]
+  riskDrivers: string[]
+  openChecks: string[]
+  sniperActivity: {
+    status: "low_signal" | "watch" | "high" | "unverified"
+    confidence: "high" | "medium" | "low"
+    reasons: string[]
+  }
+}
+
+type RugRiskReport = {
+  lp_safety: {
+    status: "locked" | "unlocked" | "team_controlled" | "protocol" | "concentrated_liquidity" | "unknown"
+    unlock_at: string | null
+    countdown_seconds: number | null
+    owner: string | null
+    contract: string | null
+    movement_24h_usd: number | null
+    source_status: "ok" | "failed"
+  }
+  contract_flags: {
+    honeypot: boolean | null
+    blacklist: boolean | null
+    mint: boolean | null
+    upgradeable: boolean | null
+    source_status: "ok" | "failed"
+  }
+  deployer_reputation: {
+    score: number | null
+    rug_history: number | null
+    deploy_patterns: string[]
+    source_status: "ok" | "failed"
+  }
+  sniper_activity: { level: "low" | "medium" | "high"; score: number; source_status: "ok" | "failed" }
+  early_buyers: Array<{ wallet: string; amount_usd: number | null; tx_count: number | null }>
+  liquidity_risk: { liquidity_usd: number | null; volatility_24h_pct: number | null; source_status: "ok" | "failed" }
+  trading_simulation: { success: boolean | null; buy_tax: number | null; sell_tax: number | null; source_status: "ok" | "failed" }
+  risk_drivers: string[]
+  overall_rug_risk_score: number | null
 }
 
 function toNum(v: unknown): number | null {
@@ -455,7 +501,13 @@ async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<an
 
 
 async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<any> {
-  const chainSlug = _chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'
+  const CHAIN_SLUG_MAP: Record<ChainKey, string> = {
+    eth: 'eth-mainnet',
+    base: 'base-mainnet',
+    polygon: 'matic-mainnet',
+    bnb: 'bsc-mainnet',
+  }
+  const chainSlug = CHAIN_SLUG_MAP[_chain] ?? 'base-mainnet'
   const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
   let statusCode: number | undefined
   try {
@@ -463,7 +515,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
     const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
     if (!apiKey) {
       console.warn('[holder-debug] contract', contract, 'chain', chainSlug, 'result: missing API key')
-      return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath }
+      return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: false }
     }
     // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
     const url = `https://api.covalenthq.com${endpointPath}?page-number=0&page-size=100`
@@ -485,7 +537,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
         const errText = await res.text().catch(() => '').then(t => t.slice(0, 200))
         console.warn('[holder-debug] non-ok', statusCode, errText)
       }
-      return { __status: 'error', __reason: safeReason, __statusCode: statusCode, __endpointPath: endpointPath }
+      return { __status: 'error', __reason: safeReason, __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: true }
     }
     const json = await res.json()
     const topKeys = Object.keys(json ?? {})
@@ -493,12 +545,12 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
     console.log('[holder-debug] statusCode', statusCode, 'responseKeys', topKeys, 'data.items.length', itemCount)
     if (json?.error) {
       console.warn('[holder-debug] API-level error:', json?.error_message)
-      return { __status: 'error', __reason: json?.error_message ?? 'api_error', __statusCode: statusCode, __endpointPath: endpointPath, __responseKeys: topKeys }
+      return { __status: 'error', __reason: json?.error_message ?? 'api_error', __statusCode: statusCode, __endpointPath: endpointPath, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
     }
-    return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys }
+    return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
   } catch (err) {
     console.error('[holder-debug] exception', err)
-    return { __status: 'error', __reason: 'provider_unavailable', __statusCode: statusCode, __endpointPath: endpointPath }
+    return { __status: 'error', __reason: 'provider_unavailable', __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY) }
   }
 }
 
@@ -871,6 +923,243 @@ function analyzeContract(bytecode: string | null): any {
     liquidityStatus: "LP lock/control unavailable from current source",
     honeypot: "Security simulation unavailable from current source",
     suspiciousFunctions: suspicious,
+  };
+}
+
+// ------------------------------
+// CORTEX Risk Engine v1
+// Derives risk score from existing scan data only. No external calls.
+// ------------------------------
+type RiskEngineResult = {
+  rugRiskScore: number | null;
+  rugRiskLevel: 'low' | 'medium' | 'high' | 'critical' | 'unverified';
+  confidence: 'high' | 'medium' | 'low';
+  drivers: string[];
+  missingChecks: string[];
+  sniperActivity: {
+    status: 'low_signal' | 'watch' | 'high' | 'unverified';
+    confidence: 'high' | 'medium' | 'low';
+    reasons: string[];
+  };
+}
+
+function computeRiskEngine(input: {
+  marketCapVerified: boolean;
+  liquidityUsd: number | null;
+  volume24hUsd: number | null;
+  holderStatus: string;
+  top1: number | null;
+  top5: number | null;
+  top10: number | null;
+  top20: number | null;
+  lpStatus: string;
+  lpConfidence: string;
+  isHoneypot: boolean | null;
+  buyTax: number | null;
+  sellTax: number | null;
+  simulationSuccess: boolean | null;
+  pairCreatedAt: string | null;
+  holderCount: number | null;
+  buys24h: number | null;
+  sells24h: number | null;
+}): RiskEngineResult {
+  let score = 0;
+  const drivers: string[] = [];
+  const missingChecks: string[] = [];
+  let confirmedDataPoints = 0;
+
+  // ── Market cap ─────────────────────────────────────────────────────────────
+  if (!input.marketCapVerified) {
+    score += 8;
+    missingChecks.push('Market cap unverified — circulating supply not confirmed');
+  } else {
+    confirmedDataPoints++;
+  }
+
+  // ── Liquidity depth ────────────────────────────────────────────────────────
+  if (input.liquidityUsd == null) {
+    score += 5;
+    missingChecks.push('Liquidity depth unavailable — pool depth not confirmed');
+  } else if (input.liquidityUsd < 25_000) {
+    score += 18;
+    const liqFmt = input.liquidityUsd < 1_000 ? `<$1K` : `$${(input.liquidityUsd / 1_000).toFixed(1)}K`;
+    drivers.push(`Very thin liquidity — ${liqFmt} pool depth`);
+    confirmedDataPoints++;
+  } else if (input.liquidityUsd < 100_000) {
+    score += 10;
+    drivers.push(`Thin liquidity — $${(input.liquidityUsd / 1_000).toFixed(0)}K pool depth`);
+    confirmedDataPoints++;
+  } else {
+    confirmedDataPoints++;
+  }
+
+  // ── Volume ─────────────────────────────────────────────────────────────────
+  if (input.volume24hUsd == null) {
+    score += 6;
+    missingChecks.push('24h volume unavailable');
+  } else if (input.volume24hUsd < 1_000) {
+    score += 6;
+    drivers.push('Very low 24h trading volume');
+    confirmedDataPoints++;
+  } else {
+    confirmedDataPoints++;
+  }
+
+  // ── Holder Map ─────────────────────────────────────────────────────────────
+  const holderUnavailable = input.holderStatus === 'unavailable' || input.holderStatus === 'empty' || input.holderStatus === 'error';
+  const holderPartial = input.holderStatus === 'partial';
+  if (holderUnavailable) {
+    score += 15;
+    missingChecks.push('Holder Map unavailable — concentration risk cannot be fully verified');
+  } else if (holderPartial) {
+    score += 8;
+    missingChecks.push('Holder Map partial — concentration estimate incomplete');
+    confirmedDataPoints++;
+  } else if (input.holderStatus === 'ok') {
+    confirmedDataPoints++;
+    if (input.top10 != null && input.top10 > 50) {
+      score += 20;
+      drivers.push(`High holder concentration — top 10 wallets hold ${input.top10.toFixed(1)}%`);
+    }
+    if (input.top20 != null && input.top20 > 60 && !(input.top10 != null && input.top10 > 50)) {
+      score += 15;
+      drivers.push(`Concentrated ownership — top 20 wallets hold ${input.top20.toFixed(1)}%`);
+    }
+    if (input.top1 != null && input.top1 > 15) {
+      score += 12;
+      drivers.push(`Single wallet dominance — top holder owns ${input.top1.toFixed(1)}%`);
+    }
+  }
+
+  // ── LP Control ─────────────────────────────────────────────────────────────
+  const lpSafe = input.lpStatus === 'burned' || input.lpStatus === 'locked';
+  const lpTeam = input.lpStatus === 'team_controlled';
+  const lpUnverified = input.lpStatus === 'unverified' || input.lpStatus === 'insufficient_data' || input.lpStatus === 'error';
+  const lpProtocol = input.lpStatus === 'protocol' || input.lpStatus === 'concentrated_liquidity';
+
+  if (lpTeam) {
+    score += 25;
+    drivers.push('LP controlled by a team wallet — liquidity can be removed at any time');
+    confirmedDataPoints++;
+  } else if (lpUnverified) {
+    score += 15;
+    missingChecks.push('LP Control unverified — lock or burn proof not confirmed');
+  } else if (lpSafe) {
+    if (input.lpConfidence === 'high') score -= 10;
+    confirmedDataPoints++;
+  } else if (lpProtocol) {
+    missingChecks.push('LP Control uses protocol liquidity — requires protocol-specific verification');
+    confirmedDataPoints++;
+  }
+
+  // ── Risk Checks (honeypot / tax) ───────────────────────────────────────────
+  if (input.isHoneypot === true) {
+    score += 30;
+    drivers.push('Honeypot detected — sell simulation blocked');
+    confirmedDataPoints++;
+  } else if (input.isHoneypot === false) {
+    confirmedDataPoints++;
+  }
+  if (input.simulationSuccess === false) {
+    missingChecks.push('Risk Checks simulation unavailable — tax and honeypot status unconfirmed');
+  }
+
+  const maxTax = Math.max(input.buyTax ?? 0, input.sellTax ?? 0);
+  if (maxTax >= 20) {
+    score += 20;
+    drivers.push(`Very high taxes — buy ${input.buyTax?.toFixed(1) ?? '?'}% / sell ${input.sellTax?.toFixed(1) ?? '?'}%`);
+  } else if (maxTax >= 10) {
+    score += 10;
+    drivers.push(`Elevated taxes — buy ${input.buyTax?.toFixed(1) ?? '?'}% / sell ${input.sellTax?.toFixed(1) ?? '?'}%`);
+  }
+
+  // ── Missing checks penalty ─────────────────────────────────────────────────
+  score += Math.min(missingChecks.length * 5, 20);
+
+  // ── Clamp ──────────────────────────────────────────────────────────────────
+  score = Math.min(100, Math.max(0, Math.round(score)));
+
+  // ── Confidence ────────────────────────────────────────────────────────────
+  const confidence: 'high' | 'medium' | 'low' =
+    confirmedDataPoints >= 4 ? 'high' :
+    confirmedDataPoints >= 2 ? 'medium' : 'low';
+
+  // ── Level ─────────────────────────────────────────────────────────────────
+  let rugRiskScore: number | null = score;
+  let rugRiskLevel: RiskEngineResult['rugRiskLevel'];
+  const coreDataMissing = input.liquidityUsd == null && holderUnavailable && input.simulationSuccess == null && lpUnverified;
+  if (confirmedDataPoints === 0 || (confidence === 'low' && coreDataMissing)) {
+    rugRiskLevel = 'unverified';
+    rugRiskScore = null;
+  } else if (score <= 30) {
+    rugRiskLevel = 'low';
+  } else if (score <= 60) {
+    rugRiskLevel = 'medium';
+  } else if (score <= 80) {
+    rugRiskLevel = 'high';
+  } else {
+    rugRiskLevel = 'critical';
+  }
+
+  // ── Sniper Activity V1 ───────────────────────────────────────────────────
+  const sniperReasons: string[] = [];
+  let sniperSignalCount = 0;
+  let pairAgeMs: number | null = null;
+  if (input.pairCreatedAt) {
+    try { pairAgeMs = Date.now() - new Date(input.pairCreatedAt).getTime() } catch {}
+  }
+  const pairAgeHours = pairAgeMs != null ? pairAgeMs / 3_600_000 : null;
+  const pairAgeDays = pairAgeMs != null ? pairAgeMs / 86_400_000 : null;
+
+  if (pairAgeHours != null && pairAgeHours < 24) {
+    sniperReasons.push(`Pool is very new — launched ${pairAgeHours < 1 ? '<1h' : `~${Math.floor(pairAgeHours)}h`} ago`);
+    sniperSignalCount += 2;
+  } else if (pairAgeDays != null && pairAgeDays < 7) {
+    sniperReasons.push(`Pool launched ${Math.floor(pairAgeDays)}d ago — early phase`);
+    sniperSignalCount++;
+  }
+  if (input.top1 != null && input.top1 > 20 && pairAgeDays != null && pairAgeDays < 14) {
+    sniperReasons.push(`Top wallet holds ${input.top1.toFixed(1)}% — early accumulation pattern`);
+    sniperSignalCount++;
+  }
+  if (input.top5 != null && input.top5 > 40 && pairAgeDays != null && pairAgeDays < 14) {
+    sniperReasons.push(`Top 5 wallets hold ${input.top5.toFixed(1)}% — concentrated early ownership`);
+    sniperSignalCount++;
+  }
+  if (input.holderCount != null && input.holderCount < 50 && pairAgeDays != null && pairAgeDays < 7) {
+    sniperReasons.push(`Very few holders (${input.holderCount}) — entry is highly concentrated`);
+    sniperSignalCount++;
+  }
+  if (input.buys24h != null && input.buys24h > 500 && pairAgeHours != null && pairAgeHours < 6) {
+    sniperReasons.push(`${input.buys24h} buys in first hours — abnormal early buy pressure`);
+    sniperSignalCount++;
+  }
+
+  let sniperStatus: RiskEngineResult['sniperActivity']['status'];
+  let sniperConfidence: RiskEngineResult['sniperActivity']['confidence'];
+  if (pairAgeHours == null && input.holderStatus !== 'ok') {
+    sniperStatus = 'unverified';
+    sniperConfidence = 'low';
+    if (sniperReasons.length === 0) sniperReasons.push('Early wallet activity unavailable — pool age and holder data not confirmed');
+  } else if (sniperSignalCount >= 3) {
+    sniperStatus = 'high';
+    sniperConfidence = 'high';
+  } else if (sniperSignalCount >= 1) {
+    sniperStatus = 'watch';
+    sniperConfidence = 'medium';
+  } else {
+    sniperStatus = 'low_signal';
+    sniperConfidence = pairAgeHours != null ? 'medium' : 'low';
+    if (sniperReasons.length === 0) sniperReasons.push('No strong early wallet concentration signals detected this scan');
+  }
+
+  return {
+    rugRiskScore,
+    rugRiskLevel,
+    confidence,
+    drivers: drivers.slice(0, 5),
+    missingChecks: missingChecks.slice(0, 6),
+    sniperActivity: { status: sniperStatus, confidence: sniperConfidence, reasons: sniperReasons.slice(0, 4) },
   };
 }
 
@@ -1356,9 +1645,15 @@ export async function POST(req: Request) {
       : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
-          ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length }
-          : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length })
-      : { status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable'), reason: (holdersRaw?.__reason ?? 'no_rows'), itemCount: holderItems.length, normalizedCount: 0 }
+          ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource }
+          : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource })
+      : {
+          status: (holdersRaw?.__status === 'error' ? 'error' : (holdersRaw?.__status === 'unavailable' ? 'unavailable' : 'empty')) ,
+          reason: (holdersRaw?.__reason ?? 'no_rows'),
+          itemCount: holderItems.length,
+          normalizedCount: 0,
+          percentSource,
+        }
     let holderDerivationAttempted = false
     let holderDerivationSucceeded = false
     let holderDerivationFailureReason: string | null = null
@@ -1644,6 +1939,164 @@ export async function POST(req: Request) {
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
+    const riskVerifiedSignals: string[] = []
+    const riskDrivers: string[] = []
+    const openChecks: string[] = []
+    let riskScore = 35
+    const lpState = lpControl.status
+    const top10Pct = holderDistribution.top10
+    const top20Pct = holderDistribution.top20
+
+    if (marketCapFromGt != null) riskVerifiedSignals.push('Market data verified: market cap is available.')
+    else if (fdv != null) {
+      riskVerifiedSignals.push('Market data partial: FDV is available.')
+      openChecks.push('Market cap is not verified. Circulating supply confidence is lower.')
+      riskScore += 10
+    } else {
+      openChecks.push('Market value data is missing, which limits risk context.')
+      riskScore += 15
+    }
+    if (liquidityUsd != null) riskVerifiedSignals.push(`Liquidity depth detected (${Math.round(liquidityUsd).toLocaleString()} USD).`)
+    else openChecks.push('Liquidity depth is unavailable.')
+    if (holderDistributionStatus.status === 'ok' && top10Pct != null) {
+      riskVerifiedSignals.push(`Holder Map verified with Top 10 concentration at ${top10Pct.toFixed(1)}%.`)
+      if (top10Pct > 70) { riskDrivers.push('Holder concentration is very high (Top 10 > 70%).'); riskScore += 30 }
+      else if (top10Pct > 50) { riskDrivers.push('Holder concentration is elevated (Top 10 > 50%).'); riskScore += 20 }
+      else if (top10Pct > 35) { riskDrivers.push('Holder concentration is moderate (Top 10 > 35%).'); riskScore += 10 }
+      else riskScore -= 5
+    } else if (holderDistributionStatus.status === 'partial') {
+      riskVerifiedSignals.push('Holder Map rows were returned but concentration percentages are partial.')
+      openChecks.push('Holder concentration percentages are incomplete.')
+      riskScore += 8
+    } else {
+      openChecks.push('Holder Map could not verify concentration in this scan.')
+      riskScore += 15
+    }
+    if (lpState === 'burned' || lpState === 'locked') { riskVerifiedSignals.push(`LP Control shows ${lpState}.`); riskScore -= 12 }
+    else if (lpState === 'protocol' || lpState === 'concentrated_liquidity') { riskVerifiedSignals.push('LP Control indicates protocol-managed liquidity structure.'); riskScore += 3 }
+    else if (lpState === 'team_controlled') { riskDrivers.push('LP Control indicates a dominant team wallet can control liquidity.'); riskScore += 28 }
+    else { openChecks.push('LP Control does not provide lock or burn proof.'); riskScore += 10 }
+
+    const riskOwnerStatus = !ownerAddr || ownerAddr === '0x0000000000000000000000000000000000000000' ? 'renounced' : 'held'
+    if (riskOwnerStatus === 'renounced') { riskVerifiedSignals.push('Dev Control: ownership appears renounced.'); riskScore -= 6 }
+    else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
+    else openChecks.push('Dev Control ownership status is unverified.')
+
+    if (hpResult.ok) {
+      riskVerifiedSignals.push('Trading simulation returned tax and transfer signals.')
+      if (hpResult.honeypot === true) { riskDrivers.push('Trading simulation indicates a blocked or trapped sell path.'); riskScore += 45 }
+      if ((hpResult.buyTax ?? 0) > 12 || (hpResult.sellTax ?? 0) > 12) { riskDrivers.push('Trading taxes are high (>12%).'); riskScore += 20 }
+      else if ((hpResult.buyTax ?? 0) > 7 || (hpResult.sellTax ?? 0) > 7) { riskDrivers.push('Trading taxes are elevated (>7%).'); riskScore += 10 }
+    } else {
+      openChecks.push('Trading simulation is unavailable; tax behavior remains less certain.')
+      riskScore += 8
+    }
+
+    if (analysis?.has_mint) { riskDrivers.push('Contract can mint supply.'); riskScore += 12 }
+    if (analysis?.is_upgradeable) { riskDrivers.push('Contract is upgradeable.'); riskScore += 10 }
+    if (analysis?.has_withdraw || analysis?.has_sweep || analysis?.has_rescue) { riskDrivers.push('Contract includes withdraw/sweep/rescue style controls.'); riskScore += 10 }
+
+    const majorMissingCount = [
+      marketCapFromGt == null,
+      holderDistributionStatus.status !== 'ok',
+      !(lpState === 'burned' || lpState === 'locked' || lpState === 'protocol' || lpState === 'concentrated_liquidity' || lpState === 'team_controlled'),
+      !hpResult.ok,
+    ].filter(Boolean).length
+    const sufficientCoreData = [
+      marketCapFromGt != null || fdv != null,
+      liquidityUsd != null,
+      holderDistributionStatus.status === 'ok' || holderDistributionStatus.status === 'partial',
+      lpControl.status !== 'error' && lpControl.status !== 'insufficient_data',
+    ].filter(Boolean).length >= 3
+    let rugRiskScore: number | null = sufficientCoreData ? Math.max(0, Math.min(100, Math.round(riskScore))) : null
+    let rugRiskLabel: RiskEngine["rugRiskLabel"] = 'unverified'
+    if (rugRiskScore != null) {
+      if (rugRiskScore >= 85) rugRiskLabel = 'critical'
+      else if (rugRiskScore >= 65) rugRiskLabel = 'high'
+      else if (rugRiskScore >= 40) rugRiskLabel = 'watch'
+      else rugRiskLabel = majorMissingCount >= 2 ? 'watch' : 'low_visible_risk'
+    }
+    const riskConfidence: RiskEngine["confidence"] = majorMissingCount >= 3 ? 'low' : majorMissingCount >= 2 ? 'medium' : 'high'
+    const sniperStatus: RiskEngine["sniperActivity"]["status"] = transactions24h == null ? 'unverified' : transactions24h > 800 ? 'high' : transactions24h > 250 ? 'watch' : 'low_signal'
+    const sniperActivity: RiskEngine["sniperActivity"] = {
+      status: sniperStatus,
+      confidence: transactions24h == null ? 'low' : 'medium',
+      reasons: transactions24h == null
+        ? ['No early-wallet or trade-cluster telemetry is available in this scan.']
+        : [`24h transaction count observed: ${transactions24h}.`, 'No direct sniper-wallet attribution is available; this is a market-activity signal only.'],
+    }
+    const riskEngine: RiskEngine = {
+      rugRiskScore,
+      rugRiskLabel,
+      confidence: riskConfidence,
+      cortexRead: rugRiskScore == null
+        ? 'CORTEX Risk Engine is unverified because multiple core checks are missing in this scan.'
+        : rugRiskLabel === 'critical'
+          ? 'CORTEX Risk Engine flags critical rug risk from combined control and concentration signals.'
+          : rugRiskLabel === 'high'
+            ? 'CORTEX Risk Engine flags high risk and recommends a strict watch stance.'
+            : rugRiskLabel === 'watch'
+              ? 'CORTEX Risk Engine shows watch conditions due to active risks or incomplete checks.'
+              : 'CORTEX Risk Engine shows low visible risk with currently verified signals.',
+      verifiedSignals: riskVerifiedSignals,
+      riskDrivers,
+      openChecks,
+      sniperActivity,
+    }
+    const lpUnlockAt = goldrush?.lock?.unlockAt ?? null
+    const unlockEpoch = lpUnlockAt ? Date.parse(String(lpUnlockAt)) : NaN
+    const lpCountdownSeconds = Number.isFinite(unlockEpoch) ? Math.max(0, Math.floor((unlockEpoch - Date.now()) / 1000)) : null
+    const rugRisk: RugRiskReport = {
+      lp_safety: {
+        status: lpControl.status === "burned" || lpControl.status === "locked"
+          ? "locked"
+          : lpControl.status === "team_controlled"
+            ? "team_controlled"
+            : lpControl.status === "protocol"
+              ? "protocol"
+              : lpControl.status === "concentrated_liquidity"
+                ? "concentrated_liquidity"
+                : "unlocked",
+        unlock_at: lpUnlockAt,
+        countdown_seconds: lpCountdownSeconds,
+        owner: ownerAddr ?? null,
+        contract: primaryPoolAddress ?? null,
+        movement_24h_usd: _ev ?? null,
+        source_status: "ok",
+      },
+      contract_flags: {
+        honeypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
+        blacklist: gpHasData ? (((gpRaw as any)?.is_blacklisted === "1") || ((gpRaw as any)?.blacklist_dex === "1")) : null,
+        mint: analysis?.has_mint ?? null,
+        upgradeable: analysis?.is_upgradeable ?? null,
+        source_status: (hpResult.ok || gpHasData) ? "ok" : "failed",
+      },
+      deployer_reputation: {
+        score: ownerAddr && ownerAddr !== '0x0000000000000000000000000000000000000000' ? (rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : 50) : null,
+        rug_history: null,
+        deploy_patterns: ownerAddr ? [`owner_wallet=${ownerAddr}`] : [],
+        source_status: ownerAddr ? "ok" : "failed",
+      },
+      sniper_activity: {
+        level: sniperStatus === "high" ? "high" : sniperStatus === "watch" ? "medium" : "low",
+        score: sniperStatus === "high" ? 85 : sniperStatus === "watch" ? 55 : 25,
+        source_status: transactions24h == null ? "failed" : "ok",
+      },
+      early_buyers: [],
+      liquidity_risk: {
+        liquidity_usd: _el ?? null,
+        volatility_24h_pct: _dexFb?.priceChange24h ?? pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24),
+        source_status: (_el != null) ? "ok" : "failed",
+      },
+      trading_simulation: {
+        success: hpResult.ok ? hpResult.simulationSuccess : null,
+        buy_tax: hpResult.ok ? hpResult.buyTax : null,
+        sell_tax: hpResult.ok ? hpResult.sellTax : null,
+        source_status: hpResult.ok ? "ok" : "failed",
+      },
+      risk_drivers: riskDrivers,
+      overall_rug_risk_score: rugRiskScore,
+    }
 
     // Derive holder percentages when provider rows have raw balances but no percent fields.
     // bigIntPct(balance, supply) divides in the same raw unit so decimals cancel — no normalization needed.
@@ -1680,6 +2133,7 @@ export async function POST(req: Request) {
           reason: 'holder_percentages_derived_from_supply',
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
+          percentSource,
         }
       } else {
         holderDerivationFailureReason = normalizedTop.length > 0
@@ -2010,6 +2464,29 @@ export async function POST(req: Request) {
       // AI summary from Cortex Engine
       aiSummary,
 
+      // CORTEX Risk Engine v1 — pure derivation, no extra API calls
+      riskEngine: computeRiskEngine({
+        marketCapVerified: marketCapFromGt != null,
+        liquidityUsd: _el,
+        volume24hUsd: _ev,
+        holderStatus: holderDistributionStatus.status,
+        top1,
+        top5,
+        top10,
+        top20,
+        lpStatus: lpControl.status,
+        lpConfidence: lpControl.confidence,
+        isHoneypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
+        buyTax: hpResult.ok ? hpResult.buyTax : (gpHoneypot?.buyTax ?? null),
+        sellTax: hpResult.ok ? hpResult.sellTax : (gpHoneypot?.sellTax ?? null),
+        simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : (gpHoneypot?.simulationSuccess ?? null),
+        pairCreatedAt: pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
+        holderCount: holderCount ?? null,
+        buys24h: buys24h ?? null,
+        sells24h: sells24h ?? null,
+      }),
+      rugRisk,
+
       // Token info object for frontend panels
       tokenInfo: {
         name: finalResolvedName,
@@ -2081,6 +2558,18 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._debug = {
         routeName: '/api/token',
         cacheHit: false,
+        goldrushUsage: {
+          endpointName: `token_holders_v2`,
+          feature: 'token-scanner',
+          trigger: 'scan_button',
+          attempted: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY),
+          cacheHit: false,
+          deduped: false,
+          statusCode: holdersRaw?.__statusCode ?? null,
+          durationMs: null,
+          failureStage: holdersRaw?.__status === 'error' ? (holdersRaw?.__reason ?? 'unknown') : null,
+          reason: holderDistributionStatus.reason ?? holderDistributionStatus.status ?? null,
+        },
         alchemyConfigured,
         alchemyCallsAttempted: rpcCallsAttempted,
         alchemyCallsSucceeded: rpcCallsSucceeded,
@@ -2107,10 +2596,14 @@ export async function POST(req: Request) {
         } : null,
         holderDiagnostics: {
           attempted: holdersRaw?.__status !== 'unavailable',
+          chainUsed: holdersRaw?.__chainUsed ?? (chain === 'eth' ? 'eth-mainnet' : chain === 'base' ? 'base-mainnet' : chain),
+          endpointTemplate: holdersRaw?.__endpointPath ?? undefined,
+          hasApiKey: holdersRaw?.__hasApiKey ?? Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY),
           statusCode: holdersRaw?.__statusCode ?? undefined,
           fetchFailed: holdersRaw?.__status === 'error',
           failureStage: holderDistributionStatus.status === 'ok' ? undefined : (holderDistributionStatus.reason ?? holdersRaw?.__status ?? 'unknown'),
           rawItemCount: holderItems.length,
+          rawTopLevelKeys: holdersRaw ? Object.keys(holdersRaw) : undefined,
           normalizedCount: normalizedTop.length,
           firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : undefined,
           reason: holderDistributionStatus.reason,

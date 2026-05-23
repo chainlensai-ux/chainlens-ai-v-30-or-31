@@ -20,7 +20,7 @@ type Holding = {
 
 type WalletBehavior = {
   status: 'ok' | 'partial' | 'unavailable'
-  source: 'alchemy' | 'unavailable'
+  source: 'activity_layer' | 'unavailable'
   txCount: number | null
   activeDays: number | null
   topTokens: string[]
@@ -48,15 +48,15 @@ type WalletResult = {
   txCount: number | null
   firstTxDate: string | null
   walletAgeDays: number | null
-  providerUsed?: 'zerion' | 'goldrush' | 'none' | null
+  providerUsed?: 'portfolio_layer' | 'holdings_layer' | 'fallback_layer' | 'unverified' | 'none' | null
   providerStatus?: 'ok' | 'partial' | 'failed' | null
   holdingsCount?: number | null
   totalUsdAvailable?: boolean
   reason?: string | null
-  portfolioSource?: 'zerion' | 'goldrush' | 'none'
-  behaviorSource?: 'alchemy' | 'unavailable'
+  portfolioSource?: 'portfolio_layer' | 'holdings_layer' | 'fallback_layer' | 'unverified' | 'none'
+  behaviorSource?: 'activity_layer' | 'unavailable'
   behaviorChain?: 'base'
-  pnlSource?: 'goldrush' | 'alchemy' | 'unavailable'
+  pnlSource?: 'activity_layer' | 'fallback_layer' | 'unavailable'
   pnlCoverageReason?: string
   hiddenDustCount?: number
   unpricedHoldingsCount?: number
@@ -65,7 +65,7 @@ type WalletResult = {
     status: 'ok' | 'partial' | 'unavailable' | 'error'
     confidence: 'high' | 'medium' | 'low' | null
     coveragePercent: number
-    source: 'goldrush' | 'alchemy' | 'none'
+    source: 'activity_layer' | 'fallback_layer' | 'none'
     totalEstimatedPnlUsd: number | null
     unrealizedPnlUsd: number | null
     realizedPnlUsd: number | null

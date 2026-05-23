@@ -26,6 +26,7 @@ export async function POST(req: Request) {
     const body = await req.json()
     const address = body?.address
     const refresh = body?.refresh === true
+    const deepScan = body?.deepScan === true
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
@@ -37,28 +38,40 @@ export async function POST(req: Request) {
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
-      if (cp && typeof cp === 'object' && debug) cp._debug = { routeName: '/api/wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt, walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_CACHE_TTL_MS / 1000 } }
+      if (cp && typeof cp === 'object' && debug) cp._debug = { routeName: '/api/wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt, walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_CACHE_TTL_MS / 1000 }, providerFlow: null }
       if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
-    const snapshot = await fetchWalletSnapshot(address ?? '', { refresh } satisfies WalletSnapshotOptions)
+    const snapshot = await fetchWalletSnapshot(address ?? '', { refresh, deepScan } satisfies WalletSnapshotOptions)
     const providers: any = (snapshot as any)._diagnostics?.providers ?? {}
     const snapshotCacheDebug = (snapshot as any)._diagnostics?.snapshotCache ?? null
     if (debug) {
       ;(snapshot as any)._debug = {
         routeName: '/api/wallet',
         cacheHit: false,
+        goldrushUsage: {
+          endpointName: 'balances_v2 + transfers_v2',
+          feature: 'wallet-scanner',
+          trigger: 'scan_button',
+          attempted: Boolean(providers.goldrush?.configured),
+          cacheHit: Boolean((snapshot as any)._diagnostics?.snapshotCache?.memoryHit),
+          deduped: false,
+          statusCode: providers.goldrush?.httpStatus ?? null,
+          durationMs: Date.now() - startedAt,
+          failureStage: providers.goldrush?.reason || null,
+          reason: providers.goldrush?.reason || null,
+        },
         alchemyConfigured: Boolean(providers.alchemy?.configured),
         alchemyCallsAttempted: providers.alchemy?.behaviorAttempted ? 1 : 0,
         alchemyCallsSucceeded: Number(providers.alchemy?.transfersReturned ?? 0) > 0 ? 1 : 0,
         alchemyCallsFailed: providers.alchemy?.behaviorAttempted && Number(providers.alchemy?.transfersReturned ?? 0) === 0 ? 1 : 0,
         rpcMethodsUsed: providers.alchemy?.behaviorAttempted ? ['alchemy_getAssetTransfers'] : [],
         skippedReason: providers.alchemy?.behaviorAttempted ? null : 'alchemy_not_configured',
-        fallbackUsed: (snapshot as any).providerUsed !== 'goldrush',
         requestDurationMs: Date.now() - startedAt,
         walletSnapshotCache: snapshotCacheDebug,
         providerFallback: (snapshot as any)._diagnostics?.providerFallback ?? null,
         walletProviderRouting: (snapshot as any)._diagnostics?.walletProviderRouting ?? null,
+        providerFlow: (snapshot as any)._diagnostics?.providerFlow ?? null,
       }
     }
     delete (snapshot as any)._diagnostics
