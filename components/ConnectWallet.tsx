@@ -6,6 +6,44 @@ import { useAccount, useConnect, useDisconnect } from 'wagmi'
 import { useWeb3Modal } from '@web3modal/wagmi/react'
 import { usePathname } from 'next/navigation'
 import { walletConnectEnabled } from '@/lib/wallet'
+import { supabase } from '@/lib/supabaseClient'
+
+
+
+type SavedWalletState = {
+  address: string
+  connectorId: string | null
+  updatedAt: string
+}
+
+const LOCAL_WALLET_KEY = 'chainlens_wallet_linked'
+const USER_WALLET_FILTER_KEY = 'chainlens_wallet_linked'
+
+function readLocalWalletState(): SavedWalletState | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(LOCAL_WALLET_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<SavedWalletState>
+    if (!parsed?.address || typeof parsed.address !== 'string') return null
+    return {
+      address: parsed.address,
+      connectorId: typeof parsed.connectorId === 'string' ? parsed.connectorId : null,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeLocalWalletState(state: SavedWalletState | null) {
+  if (typeof window === 'undefined') return
+  if (!state) {
+    window.localStorage.removeItem(LOCAL_WALLET_KEY)
+    return
+  }
+  window.localStorage.setItem(LOCAL_WALLET_KEY, JSON.stringify(state))
+}
 
 // ---------- connector display metadata ----------
 
@@ -84,7 +122,7 @@ function WCBridge({ openRef }: { openRef: React.MutableRefObject<(() => void) | 
 
 export default function ConnectWallet({ className, onBeforeOpen }: { className?: string; onBeforeOpen?: () => void | Promise<void> }) {
   const pathname = usePathname()
-  const { address, isConnected, isReconnecting } = useAccount()
+  const { address, isConnected, isReconnecting, connector } = useAccount()
   const { connectAsync, connectors: allConnectors } = useConnect()
   const connectors = dedupeConnectors(allConnectors)
   const filteredConnectors = visibleConnectors(connectors)
@@ -100,6 +138,8 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const [connecting, setConnecting] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [disconnectOpen, setDisconnectOpen] = useState(false)
+  const [savedState, setSavedState] = useState<SavedWalletState | null>(null)
+  const reconnectAttemptedRef = useRef(false)
 
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -176,7 +216,6 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
 
   const handleConnector = useCallback(async (connector: (typeof connectors)[number]) => {
     if (!connector) return
-    const connectorId = String(connector.id || '').toLowerCase()
     const isMetaMask = isMetaMaskConnector(connector.id, connector.name)
     const strictDesktopInjectedCheck =
       !isMobileClient &&
@@ -233,6 +272,73 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       setConnecting(false)
     }
   }, [connectAsync, connectors, closeModal, isMobileClient, mounted])
+
+
+
+  useEffect(() => {
+    if (!mounted) return
+    let cancelled = false
+    async function hydrateSavedWallet() {
+      const local = readLocalWalletState()
+      if (!cancelled) setSavedState(local)
+
+      const { data } = await supabase.auth.getSession()
+      const session = data.session
+      if (!session?.access_token) return
+
+      const res = await fetch('/api/user-settings', {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        cache: 'no-store',
+      }).catch(() => null)
+      if (!res?.ok) return
+      const body = await res.json().catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
+      const persisted = body?.settings?.saved_filters?.[USER_WALLET_FILTER_KEY] as Partial<SavedWalletState> | undefined
+      if (!persisted?.address || cancelled) return
+      const nextState: SavedWalletState = {
+        address: persisted.address,
+        connectorId: typeof persisted.connectorId === 'string' ? persisted.connectorId : null,
+        updatedAt: typeof persisted.updatedAt === 'string' ? persisted.updatedAt : new Date().toISOString(),
+      }
+      writeLocalWalletState(nextState)
+      setSavedState(nextState)
+    }
+    hydrateSavedWallet()
+    return () => { cancelled = true }
+  }, [mounted])
+
+  useEffect(() => {
+    if (!isConnected || !address) return
+    const connectorId = connector?.id ?? null
+    const nextState: SavedWalletState = { address, connectorId, updatedAt: new Date().toISOString() }
+    writeLocalWalletState(nextState)
+    setSavedState(nextState)
+
+    void (async () => {
+      const { data } = await supabase.auth.getSession()
+      const session = data.session
+      if (!session?.access_token) return
+      const current = await fetch('/api/user-settings', {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        cache: 'no-store',
+      }).then(r => r.ok ? r.json() : null).catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
+      const savedFilters = current?.settings?.saved_filters && typeof current.settings.saved_filters === 'object' ? current.settings.saved_filters : {}
+      await fetch('/api/user-settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ saved_filters: { ...savedFilters, [USER_WALLET_FILTER_KEY]: nextState } }),
+      }).catch(() => null)
+    })()
+  }, [address, connector?.id, isConnected])
+
+  useEffect(() => {
+    if (reconnectAttemptedRef.current || isConnected || isReconnecting || !savedState) return
+    const preferred = savedState.connectorId
+      ? connectors.find(c => c.id === savedState.connectorId || c.name === savedState.connectorId)
+      : connectors[0]
+    if (!preferred) return
+    reconnectAttemptedRef.current = true
+    void connectAsync({ connector: preferred }).catch(() => null)
+  }, [connectAsync, connectors, isConnected, isReconnecting, savedState])
 
   // ── shared button styles ──────────────────────────────────────────────────
 
@@ -294,7 +400,29 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
             </div>
             <button
               type="button"
-              onClick={() => { disconnect(); setDisconnectOpen(false) }}
+              onClick={() => {
+                disconnect()
+                writeLocalWalletState(null)
+                setSavedState(null)
+                void (async () => {
+                  const { data } = await supabase.auth.getSession()
+                  const session = data.session
+                  if (!session?.access_token) return
+                  const current = await fetch('/api/user-settings', {
+                    headers: { Authorization: `Bearer ${session.access_token}` },
+                    cache: 'no-store',
+                  }).then(r => r.ok ? r.json() : null).catch(() => null) as { settings?: { saved_filters?: Record<string, unknown> } } | null
+                  const savedFilters = current?.settings?.saved_filters && typeof current.settings.saved_filters === 'object' ? current.settings.saved_filters : {}
+                  const nextFilters = { ...savedFilters }
+                  delete nextFilters[USER_WALLET_FILTER_KEY]
+                  await fetch('/api/user-settings', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+                    body: JSON.stringify({ saved_filters: nextFilters }),
+                  }).catch(() => null)
+                })()
+                setDisconnectOpen(false)
+              }}
               style={{
                 width: '100%', borderRadius: '8px',
                 border: '1px solid rgba(248,113,113,0.36)',
