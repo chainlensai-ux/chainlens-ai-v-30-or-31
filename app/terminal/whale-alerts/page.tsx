@@ -71,7 +71,8 @@ type SyncResponse = {
   skipReasons?: Record<string, number>
   message?: string
 }
-type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number; hiddenAsBoring?: number; hiddenByFilter?: number; hiddenAsDust?: number }
+type EnrichmentBudget = { liveEnrichmentEnabled?: boolean; trigger?: string; rpcCallsAttempted?: number; cacheHits?: number; skippedForDefaultLoad?: number }
+type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number; hiddenAsBoring?: number; hiddenByFilter?: number; hiddenAsDust?: number; enrichmentBudget?: EnrichmentBudget }
 type AlertIntelligence = {
   walletCount?: number
   activeWalletCount?: number
@@ -294,6 +295,7 @@ export default function WhaleAlertsPage() {
   const [alerts, setAlerts]           = useState<AlertItem[]>([])
   const [stats, setStats]             = useState<AlertStats>({ alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
   const [loading, setLoading]         = useState(false)
+  const [enrichLoading, setEnrichLoading] = useState(false)
   const [syncing, setSyncing]         = useState(false)
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
@@ -326,8 +328,9 @@ export default function WhaleAlertsPage() {
     } catch {}
   }, [baseCooldownMs])
 
-  const loadAlerts = useCallback(async () => {
-    setLoading(true)
+  const loadAlerts = useCallback(async (opts?: { enrich?: boolean }) => {
+    if (opts?.enrich) setEnrichLoading(true)
+    else setLoading(true)
     setFeedError(false)
     try {
       const p = new URLSearchParams({ window: windowValue, limit: '100' })
@@ -336,6 +339,7 @@ export default function WhaleAlertsPage() {
       if (typeFilter !== 'all') p.set('type', typeFilter)
       if (sevFilter !== 'all')  p.set('severity', sevFilter)
       if (sideFilter !== 'all') p.set('side', sideFilter)
+      if (opts?.enrich) p.set('enrich', 'true')
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
       const res = await fetch(`/api/whale-alerts?${p.toString()}`, {
@@ -352,6 +356,7 @@ export default function WhaleAlertsPage() {
       setFeedError(true)
     } finally {
       setLoading(false)
+      setEnrichLoading(false)
     }
   }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter])
 
@@ -582,6 +587,7 @@ export default function WhaleAlertsPage() {
       style={{ background: 'radial-gradient(ellipse 90% 60% at 50% -8%,rgba(45,212,191,0.09) 0%,transparent 52%),radial-gradient(ellipse 55% 45% at 88% 6%,rgba(139,92,246,0.07) 0%,transparent 46%),#060810', color: '#f1f5f9' }}>
 
       <style>{`
+        @keyframes spin { to { transform: rotate(360deg) } }
         @media (max-width: 767px) {
           .wa-main-wrap  { padding-top: 60px !important; }
           .wa-hero       { grid-template-columns: 1fr !important; }
@@ -894,6 +900,11 @@ export default function WhaleAlertsPage() {
                   {alerts.length} shown{(feedDiagnostics?.afterDiversityCap ?? 0) > alerts.length ? ` of ${feedDiagnostics?.afterDiversityCap} matching` : ' matching'}
                 </span>
               )}
+              {feedDiagnostics != null && (
+                <Pill color={feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? 'teal' : 'amber'} dot>
+                  {feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? 'Signals: live' : 'Signals: cached'}
+                </Pill>
+              )}
             </div>
             <div className="flex items-center" style={{ gap: 8 }}>
               <button className="flex items-center justify-center rounded-[8px]"
@@ -908,6 +919,16 @@ export default function WhaleAlertsPage() {
                   <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
                 </svg>
                 Pause
+              </button>
+              <button onClick={() => void loadAlerts({ enrich: true })}
+                disabled={enrichLoading || loading}
+                className="flex items-center rounded-[8px] hover:opacity-90"
+                style={{ gap: 6, padding: '6px 12px', fontSize: 11, fontWeight: 600, background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.28)', color: '#2dd4bf', opacity: (enrichLoading || loading) ? 0.5 : 1 }}>
+                {enrichLoading
+                  ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0"/></svg>
+                  : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                }
+                {enrichLoading ? 'Loading…' : 'Refresh signals'}
               </button>
               <button onClick={goClark}
                 className="flex items-center rounded-[8px] hover:opacity-90"

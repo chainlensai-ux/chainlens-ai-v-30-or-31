@@ -692,7 +692,8 @@ export async function GET(req: NextRequest) {
     const side = params.get('side')?.trim() || null
     const severity = params.get('severity')?.trim() || null
     const limit = parseLimit(params.get('limit'))
-    const cacheKey = `whale:${plan}:${selectedWindow}:${valueRangeRaw}:${interestingRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}`
+    const liveEnrichment = params.get('enrich') === 'true'
+    const cacheKey = `whale:${plan}:${selectedWindow}:${valueRangeRaw}:${interestingRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}:${liveEnrichment ? 'live' : 'cached'}`
     const bypassCache = params.has('t')
     const cached = whaleCache.get(cacheKey)
     if (!bypassCache && cached && cached.exp > now) return NextResponse.json(cached.payload, { headers: { 'Cache-Control': 'no-store' } })
@@ -865,7 +866,7 @@ export async function GET(req: NextRequest) {
     const skippedWalletSet = new Set(walletsSkipped)
 
     const fetchedMap = new Map<string, OnChainData>()
-    if (walletsToFetch.length > 0) {
+    if (liveEnrichment && walletsToFetch.length > 0) {
       let fetchNext = 0
       const enrichWorker = async () => {
         while (fetchNext < walletsToFetch.length) {
@@ -939,6 +940,19 @@ export async function GET(req: NextRequest) {
     const unpricedCount = grouped.filter(r => (r.amount_usd as number | null) == null).length
     const zeroValueCount = grouped.filter(r => r.amount_usd === 0).length
 
+    const enrichmentBudget = {
+      liveEnrichmentEnabled: liveEnrichment,
+      trigger: liveEnrichment ? 'manual_refresh' : 'page_load_cached',
+      rpcCallsAttempted: liveEnrichment ? walletsToFetch.length : 0,
+      cacheHits: cachedWallets.length,
+      skippedForDefaultLoad: liveEnrichment ? 0 : uncachedWallets.length,
+      uniqueWalletsSeen: walletAddrs.length,
+      walletsEnriched: cachedWallets.length + (liveEnrichment ? walletsToFetch.length : 0),
+      skippedForBudget: liveEnrichment ? walletsSkipped.length : 0,
+      rpcBudget: RPC_BUDGET,
+      partialAlerts: alertsWithContext.filter(a => (a as Record<string, unknown>).walletContext && ((a as Record<string, unknown>).walletContext as Record<string, unknown>).enrichmentPartial === true).length,
+    }
+
     let debugExtra: Record<string, unknown> | null = null
     if (debugMode) {
       const rawData = (alertsRes.data ?? []) as RawRow[]
@@ -958,15 +972,6 @@ export async function GET(req: NextRequest) {
       }
       debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons,
         behaviorDiagnostics: { walletsAnalyzed: walletBehaviorMap.size, alertHistoryRowsUsed: historyRowsUsed, historyWindowUsed: '7d', behaviorLeadersCount: behaviorLeaders.length, skippedWallets: behaviorSkippedCount },
-        enrichmentBudget: {
-          uniqueWalletsSeen: walletAddrs.length,
-          walletsEnriched: cachedWallets.length + walletsToFetch.length,
-          cacheHits: cachedWallets.length,
-          skippedForBudget: walletsSkipped.length,
-          rpcCallsAttempted: walletsToFetch.length,
-          rpcBudget: RPC_BUDGET,
-          partialAlerts: alertsWithContext.filter(a => (a as Record<string, unknown>).walletContext && ((a as Record<string, unknown>).walletContext as Record<string, unknown>).enrichmentPartial === true).length,
-        },
       }
     }
 
@@ -1005,6 +1010,7 @@ export async function GET(req: NextRequest) {
         cacheHit: false,
         providerStatus: 'ok',
         rateLimited: false,
+        enrichmentBudget,
         ...(debugExtra ?? {}),
       },
     }
