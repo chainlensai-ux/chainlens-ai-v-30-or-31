@@ -1796,6 +1796,10 @@ export async function POST(req: Request) {
       dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
     };
 
+    // Ensure poolAddressPresent is always correct on the final object — some inner branches
+    // replace lpControl wholesale without setting this field (e.g., GoldRush/RPC paths).
+    lpControl.poolAddressPresent = lpPoolAddressPresent;
+
     lpControl.evidence = [
       ...(lpControl.evidence ?? []),
       `Market primary pair: ${marketPair}`,
