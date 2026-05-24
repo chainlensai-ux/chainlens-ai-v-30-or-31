@@ -1434,7 +1434,16 @@ export async function POST(req: Request) {
     const _mpAddrRaw = String(mainPoolAttr.address ?? '').trim().toLowerCase()
     const _mpIdHex = String(mainPool?.id ?? '').match(/0x[a-f0-9]{40}/i)?.[0]?.toLowerCase() ?? null
     const primaryPoolAddress = (/^0x[a-f0-9]{40}$/.test(_mpAddrRaw) ? _mpAddrRaw : _mpIdHex) || null
-    const lpPool = selectedLpPool.pool;
+    // Canonical primary pool for both Liquidity&Pools and LP Control:
+    // use the highest-liquidity normalized pool first (same ordering as matchingPools/mainPool),
+    // then fall back to LP verification selector if needed.
+    const canonicalPrimaryPool = normalizedPools[0] ?? null
+    const canonicalPrimaryUsable = Boolean(
+      canonicalPrimaryPool?.address &&
+      /^0x[a-f0-9]{40}$/.test(canonicalPrimaryPool.address) &&
+      (canonicalPrimaryPool.liquidityUsd ?? 0) > 0
+    )
+    const lpPool = canonicalPrimaryUsable ? canonicalPrimaryPool : selectedLpPool.pool;
     const lpPoolType = lpPool?.poolType ?? "unknown";
     const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
     const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
@@ -1542,9 +1551,13 @@ export async function POST(req: Request) {
     const _lpAddrSnippet = lpPoolAddress ? `${lpPoolAddress.slice(0, 10)}…${lpPoolAddress.slice(-4)}` : "none";
     const lpPair = lpPool?.pairName ?? `${lpPool?.baseTokenSymbol ?? "?"}/${lpPool?.quoteTokenSymbol ?? "?"}`;
     const marketPair = pairName ?? "unknown";
-    const lpReason = selectedLpPool.reason.includes("no preferred quote pair")
-      ? "No WETH/USDC/USDbC/cbBTC verification pool found from provider; using best available pool."
-      : selectedLpPool.reason;
+    const lpReason = canonicalPrimaryUsable
+      ? "using canonical primary highest-liquidity pool for LP verification"
+      : (
+          selectedLpPool.reason.includes("no preferred quote pair")
+            ? "No WETH/USDC/USDbC/cbBTC verification pool found from provider; using best available pool."
+            : selectedLpPool.reason
+        );
     const _lpBaseDiagnostics = [
       ...(lpPool ? [`Verification pool: ${lpPair}`] : []),
       `Pool type: ${lpPoolType}`,
@@ -1593,7 +1606,7 @@ export async function POST(req: Request) {
       dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
       poolDetected: normalizedPools.length > 0,
       poolSource: _dsFbPoolSynthesized ? 'dexscreener_synthesized' : (matchingPools.length > 0 ? 'geckoterminal' : 'none'),
-      primaryPoolSelected: Boolean(lpPool),
+      primaryPoolSelected: Boolean(lpPoolAddressPresent && (lpPool?.liquidityUsd ?? 0) > 0),
       selectedPoolAddress: lpPoolAddress,
       selectedPoolDex: lpPool?.dexId ?? lpPool?.dexName ?? null,
       selectedPoolType: lpPoolType,
@@ -2972,9 +2985,6 @@ export async function POST(req: Request) {
           teamPercent: lpDiagnostics.teamPercent,
           proofStatus: lpDiagnostics.lpState,
           failureReason: lpDiagnostics.failureReason,
-          dexscreenerPoolSynthesized: lpDiagnostics.dexscreenerPoolSynthesized,
-          reason: lpDiagnostics.reason,
-          _full: lpDiagnostics,
         },
         contractFlagDiagnostics: {
           bytecodeChecked: cortexContractFlags.bytecodeChecked,
