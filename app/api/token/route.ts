@@ -588,7 +588,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 }
 
 type LpControlResult = {
-  status: "burned" | "locked" | "protocol" | "team_controlled" | "concentrated_liquidity" | "unverified" | "insufficient_data" | "error";
+  status: "burned" | "locked" | "protocol" | "team_controlled" | "concentrated_liquidity" | "partial" | "unverified" | "no_pool" | "insufficient_data" | "error";
   confidence: "high" | "medium" | "low";
   poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
   source: string;
@@ -711,20 +711,30 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
         couldNotVerify: ["Locker proof unavailable via standard ERC-20 LP holder method"],
         nextAction: "Inspect active position ranges and protocol lock mechanics.",
       };
+    case "partial":
+      return {
+        title: "Partial LP proof",
+        meaning: "Pool detected, lock/burn proof not fully confirmed.",
+        riskLevel: "Medium",
+        whatWasFound: [...poolLine, "Some LP checks returned usable data"],
+        couldNotVerify: ["Complete lock/burn/team LP proof"],
+        nextAction: "Treat LP control as partial until more holder or RPC evidence is available.",
+      };
+    case "no_pool":
     case "insufficient_data":
       return {
         title: "Insufficient LP verification data",
-        meaning: "LP ownership could not be verified this scan.",
+        meaning: lp.status === "no_pool" ? "No usable liquidity pool address was found for LP verification." : "LP ownership could not be verified this scan.",
         riskLevel: "Unknown",
-        whatWasFound: [...poolLine, "Pool check attempted"],
+        whatWasFound: lp.status === "no_pool" ? [] : [...poolLine, "Pool check attempted"],
         couldNotVerify: ["Burn proof", "Locker proof", "Dominant owner verification"],
-        nextAction: "Rescan and verify with additional on-chain LP ownership data.",
+        nextAction: lp.status === "no_pool" ? "Confirm token has an active pool with a usable on-chain pair address." : "Rescan and verify with additional on-chain LP ownership data.",
       };
     default: // unverified, error
       if (!lp.poolAddressPresent) {
         return {
-          title: "No active liquidity pool found",
-          meaning: "No liquidity pool was found for this token. Liquidity risk and LP control cannot be assessed.",
+          title: "Pool detected, lock/burn proof not confirmed",
+          meaning: "Pool detected, lock/burn proof not confirmed.",
           riskLevel: "Unknown",
           whatWasFound: [],
           couldNotVerify: ["LP token distribution", "Lock or burn status", "Liquidity pool existence"],
@@ -1120,7 +1130,7 @@ function computeRiskEngine(input: {
   // ── LP Control ─────────────────────────────────────────────────────────────
   const lpSafe = input.lpStatus === 'burned' || input.lpStatus === 'locked';
   const lpTeam = input.lpStatus === 'team_controlled';
-  const lpUnverified = input.lpStatus === 'unverified' || input.lpStatus === 'insufficient_data' || input.lpStatus === 'error';
+  const lpUnverified = input.lpStatus === 'unverified' || input.lpStatus === 'partial' || input.lpStatus === 'no_pool' || input.lpStatus === 'insufficient_data' || input.lpStatus === 'error';
   const lpProtocol = input.lpStatus === 'protocol' || input.lpStatus === 'concentrated_liquidity';
 
   if (lpTeam) {
@@ -1424,7 +1434,16 @@ export async function POST(req: Request) {
     const _mpAddrRaw = String(mainPoolAttr.address ?? '').trim().toLowerCase()
     const _mpIdHex = String(mainPool?.id ?? '').match(/0x[a-f0-9]{40}/i)?.[0]?.toLowerCase() ?? null
     const primaryPoolAddress = (/^0x[a-f0-9]{40}$/.test(_mpAddrRaw) ? _mpAddrRaw : _mpIdHex) || null
-    const lpPool = selectedLpPool.pool;
+    // Canonical primary pool for both Liquidity&Pools and LP Control:
+    // use the highest-liquidity normalized pool first (same ordering as matchingPools/mainPool),
+    // then fall back to LP verification selector if needed.
+    const canonicalPrimaryPool = normalizedPools[0] ?? null
+    const canonicalPrimaryUsable = Boolean(
+      canonicalPrimaryPool?.address &&
+      /^0x[a-f0-9]{40}$/.test(canonicalPrimaryPool.address) &&
+      (canonicalPrimaryPool.liquidityUsd ?? 0) > 0
+    )
+    const lpPool = canonicalPrimaryUsable ? canonicalPrimaryPool : selectedLpPool.pool;
     const lpPoolType = lpPool?.poolType ?? "unknown";
     const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
     const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
@@ -1532,9 +1551,13 @@ export async function POST(req: Request) {
     const _lpAddrSnippet = lpPoolAddress ? `${lpPoolAddress.slice(0, 10)}…${lpPoolAddress.slice(-4)}` : "none";
     const lpPair = lpPool?.pairName ?? `${lpPool?.baseTokenSymbol ?? "?"}/${lpPool?.quoteTokenSymbol ?? "?"}`;
     const marketPair = pairName ?? "unknown";
-    const lpReason = selectedLpPool.reason.includes("no preferred quote pair")
-      ? "No WETH/USDC/USDbC/cbBTC verification pool found from provider; using best available pool."
-      : selectedLpPool.reason;
+    const lpReason = canonicalPrimaryUsable
+      ? "using canonical primary highest-liquidity pool for LP verification"
+      : (
+          selectedLpPool.reason.includes("no preferred quote pair")
+            ? "No WETH/USDC/USDbC/cbBTC verification pool found from provider; using best available pool."
+            : selectedLpPool.reason
+        );
     const _lpBaseDiagnostics = [
       `Verification pool: ${lpPair}`,
       `Pool type: ${lpPoolType}`,
@@ -1583,7 +1606,7 @@ export async function POST(req: Request) {
       dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
       poolDetected: normalizedPools.length > 0,
       poolSource: _dsFbPoolSynthesized ? 'dexscreener_synthesized' : (matchingPools.length > 0 ? 'geckoterminal' : 'none'),
-      primaryPoolSelected: Boolean(lpPool),
+      primaryPoolSelected: Boolean(lpPoolAddressPresent && (lpPool?.liquidityUsd ?? 0) > 0),
       selectedPoolAddress: lpPoolAddress,
       selectedPoolDex: lpPool?.dexId ?? lpPool?.dexName ?? null,
       selectedPoolType: lpPoolType,
@@ -1605,7 +1628,7 @@ export async function POST(req: Request) {
     let _lpRpcFallbackRan = false
     let _lpGrItemCount = 0
     if (!lpPoolAddressPresent) {
-      lpControl = { ...lpControl, status: "insufficient_data", reason: "No pool address found from provider for LP-holder verification." };
+      lpControl = { ...lpControl, status: "no_pool", reason: "No pool address found from provider for LP-holder verification." };
     } else if (lpPoolType === "v3" || lpPoolType === "aerodrome" || lpPoolType === "concentrated") {
       lpControl = {
         status: lpPoolType === "aerodrome" ? "protocol" : "concentrated_liquidity",
@@ -1651,7 +1674,7 @@ export async function POST(req: Request) {
             unknownBurnPct > 0.5 ? `burn_share=${unknownBurnPct.toFixed(2)}%` : null,
             unknownLockerPct > 0.5 ? `locker_share=${unknownLockerPct.toFixed(2)}%` : null,
           ].filter(Boolean) as string[]
-          lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+goldrush", reason: "LP holder check inconclusive — no dominant burn/lock pattern.", evidence: [`top_rows=${unknownTop.length}`, ...partialEv2, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+          lpControl = { status: partialEv2.length ? "partial" : "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+goldrush", reason: "LP holder check inconclusive — no dominant burn/lock pattern.", evidence: [`top_rows=${unknownTop.length}`, ...partialEv2, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
         }
       } else {
         // Step 2: GoldRush failed or empty — probe pool via RPC to classify
@@ -1687,7 +1710,7 @@ export async function POST(req: Request) {
             } else if (teamShareProbe >= 80) {
               lpControl = { ...base, status: "team_controlled", confidence: "high", reason: `Owner wallet holds ${teamShareProbe.toFixed(2)}% of LP supply (RPC verified).`, evidence: [`owner_lp_share=${teamShareProbe.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
             } else {
-              lpControl = { ...base, status: "unverified", confidence: "low", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+              lpControl = { ...base, status: (burnShare > 0 || lockerShare > 0) ? "partial" : "unverified", confidence: "low", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
             }
           }
         } else if (probe.v3Like) {
@@ -1754,7 +1777,7 @@ export async function POST(req: Request) {
           } else if (teamShareFallback >= 80) {
             lpControl = { status: "team_controlled", confidence: "high", poolType: lpPoolType, source: "dex_data+rpc", reason: `Owner wallet holds ${teamShareFallback.toFixed(2)}% of LP supply (RPC verified).`, evidence: [`owner_lp_share=${teamShareFallback.toFixed(2)}%`] };
           } else {
-            lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "dex_data+rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
+            lpControl = { status: (burnShare > 0 || lockerShare > 0) ? "partial" : "unverified", confidence: "low", poolType: lpPoolType, source: "dex_data+rpc", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`] };
           }
         }
       } else {
@@ -1765,7 +1788,7 @@ export async function POST(req: Request) {
         const partialReason = partialEv.length
           ? `LP holder check inconclusive — no dominant burn/lock pattern. ${partialEv.join(', ')}.`
           : "LP checks ran but could not prove burned/locked/team-controlled state."
-        lpControl = { status: "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: partialReason, evidence: [`top_rows=${top.length}`, ...partialEv] };
+        lpControl = { status: partialEv.length ? "partial" : "unverified", confidence: "low", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: partialReason, evidence: [`top_rows=${top.length}`, ...partialEv] };
       }
     }
     const _extractEvidencePct = (ev: string[], prefix: string): number | null => {
@@ -2870,7 +2893,7 @@ export async function POST(req: Request) {
       const skippedChecks: string[] = []
       if (!alchemyConfigured) skippedChecks.push('rpc_checks_missing_configuration')
       if (holdersStatus !== 'ok') skippedChecks.push('holder_verification_incomplete')
-      if (lpControl.status === 'insufficient_data' || lpControl.status === 'error' || lpControl.status === 'unverified') skippedChecks.push('lp_proof_incomplete')
+      if (lpControl.status === 'insufficient_data' || lpControl.status === 'error' || lpControl.status === 'unverified' || lpControl.status === 'partial' || lpControl.status === 'no_pool') skippedChecks.push('lp_proof_incomplete')
       if (!hpResult.ok) skippedChecks.push('trading_simulation_incomplete')
       const chainReasons = [
         holdersReason ? `holders:${holdersReason}` : null,
@@ -2940,14 +2963,18 @@ export async function POST(req: Request) {
         },
         lpDiagnostics: {
           chain: lpDiagnostics.chain,
-          primaryPool: lpDiagnostics.primaryPoolAddress,
-          poolType: lpDiagnostics.poolType,
-          dex: lpDiagnostics.primaryDex,
-          poolAddress: lpDiagnostics.lpTokenAddress,
+          poolDetected: lpDiagnostics.poolDetected,
+          primaryPoolSelected: lpDiagnostics.primaryPoolSelected,
+          poolSource: lpDiagnostics.poolSource,
+          poolCount: lpDiagnostics.poolCount,
+          selectedPoolAddress: lpDiagnostics.selectedPoolAddress,
+          selectedPoolDex: lpDiagnostics.selectedPoolDex,
+          selectedPoolType: lpDiagnostics.selectedPoolType,
+          selectedPoolLiquidityUsd: lpDiagnostics.selectedPoolLiquidityUsd,
           lpToken: lpDiagnostics.lpTokenAddress,
-          goldrushAttempted: lpDiagnostics.goldrushAttempted,
-          goldrushStatus: lpDiagnostics.goldrushStatus,
-          goldrushRawItemCount: lpDiagnostics.goldrushItemCount,
+          lpProofAttempted: lpDiagnostics.attempted,
+          holderProofAttempted: lpDiagnostics.goldrushAttempted,
+          holderRawItemCount: lpDiagnostics.goldrushItemCount,
           rpcAttempted: lpDiagnostics.rpcAttempted,
           totalSupplyChecked: lpDiagnostics.totalSupplyChecked,
           burnAddressesChecked: lpDiagnostics.burnAddressesChecked,
@@ -2958,16 +2985,6 @@ export async function POST(req: Request) {
           teamPercent: lpDiagnostics.teamPercent,
           proofStatus: lpDiagnostics.lpState,
           failureReason: lpDiagnostics.failureReason,
-          dexscreenerPoolSynthesized: lpDiagnostics.dexscreenerPoolSynthesized,
-          poolDetected: lpDiagnostics.poolDetected,
-          poolSource: lpDiagnostics.poolSource,
-          primaryPoolSelected: lpDiagnostics.primaryPoolSelected,
-          selectedPoolAddress: lpDiagnostics.selectedPoolAddress,
-          selectedPoolDex: lpDiagnostics.selectedPoolDex,
-          selectedPoolType: lpDiagnostics.selectedPoolType,
-          selectedPoolLiquidityUsd: lpDiagnostics.selectedPoolLiquidityUsd,
-          reason: lpDiagnostics.reason,
-          _full: lpDiagnostics,
         },
         contractFlagDiagnostics: {
           bytecodeChecked: cortexContractFlags.bytecodeChecked,
