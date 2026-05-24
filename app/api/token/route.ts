@@ -605,6 +605,10 @@ type LpDiagnostics = {
   lpState: LpControlResult["status"];
   confidence: LpControlResult["confidence"];
   reason: string;
+  goldrushAttempted: boolean;
+  goldrushItemCount: number;
+  goldrushPctDerived: boolean;
+  rpcFallbackAttempted: boolean;
 };
 
 type LpControlRead = {
@@ -1477,6 +1481,10 @@ export async function POST(req: Request) {
       lpState: "unverified",
       confidence: "low",
       reason: "LP control requires holder-level LP token verification.",
+      goldrushAttempted: needsLpHolderFetch,
+      goldrushItemCount: 0,
+      goldrushPctDerived: false,
+      rpcFallbackAttempted: false,
     };
     let lpControl: LpControlResult = {
       status: "unverified",
@@ -1490,6 +1498,9 @@ export async function POST(req: Request) {
       dexName: dexName || undefined,
       lpVerificationPoolReason: lpReason,
     };
+    let _lpGrPctDerived = false
+    let _lpRpcFallbackRan = false
+    let _lpGrItemCount = 0
     if (!lpPoolAddressPresent) {
       lpControl = { ...lpControl, status: "insufficient_data", reason: "No pool address found from provider for LP-holder verification." };
     } else if (lpPoolType === "v3" || lpPoolType === "aerodrome" || lpPoolType === "concentrated") {
@@ -1546,10 +1557,21 @@ export async function POST(req: Request) {
     } else {
       // V2 — run GoldRush LP holder check
       const lpItems = Array.isArray(_lpHoldersForControl?.data?.items) ? _lpHoldersForControl.data.items as Array<Record<string, unknown>> : [];
-      const top = lpItems.slice(0, 5).map((h) => ({
-        address: String(h.address ?? h.holder_address ?? h.wallet_address ?? "").toLowerCase(),
-        pct: toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? 0,
-      })).filter((x) => /^0x[a-f0-9]{40}$/.test(x.address));
+      _lpGrItemCount = lpItems.length
+      const _lpGrTotalSupply = lpItems.find(i => i?.total_supply != null)?.total_supply
+      const _lpGrSupplyStr = _lpGrTotalSupply != null ? String(_lpGrTotalSupply) : null
+      const top = lpItems.slice(0, 5).map((h) => {
+        const directPct = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        let derivedPct: number | null = null
+        if (directPct == null && _lpGrSupplyStr != null) {
+          derivedPct = bigIntPct(h.balance ?? h.token_balance, _lpGrSupplyStr)
+          if (derivedPct != null) _lpGrPctDerived = true
+        }
+        return {
+          address: String(h.address ?? h.holder_address ?? h.wallet_address ?? "").toLowerCase(),
+          pct: directPct ?? derivedPct ?? 0,
+        }
+      }).filter((x) => /^0x[a-f0-9]{40}$/.test(x.address));
       const topHolder = top[0] ?? null;
       const burnPct = top.filter((x) => DEAD.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
       const lockerPct = top.filter((x) => KNOWN_LOCKERS.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
@@ -1561,6 +1583,7 @@ export async function POST(req: Request) {
         lpControl = { status: "team_controlled", confidence: "high", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
       } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
         // Alchemy RPC fallback when GoldRush holder percentages are unavailable
+        _lpRpcFallbackRan = true
         const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
@@ -1617,6 +1640,9 @@ export async function POST(req: Request) {
       lpState: lpControl.status,
       confidence: lpControl.confidence,
       reason: lpControl.reason,
+      goldrushItemCount: _lpGrItemCount,
+      goldrushPctDerived: _lpGrPctDerived,
+      rpcFallbackAttempted: _lpRpcFallbackRan,
     };
 
     lpControl.evidence = [
@@ -2245,7 +2271,13 @@ export async function POST(req: Request) {
     // Derive holder percentages when provider rows have raw balances but no percent fields.
     // bigIntPct(balance, supply) divides in the same raw unit so decimals cancel — no normalization needed.
     // Guard: both values must be raw integer strings (no decimal point, no scientific notation).
-    if (!hasPct && normalizedTop.length > 0 && rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') {
+    // Prefer RPC totalSupply; fall back to provider-supplied total_supply when RPC is unavailable (e.g. ETH without Alchemy key).
+    const _holderProviderSupply = holderItems.find((h: any) => h?.total_supply != null)?.total_supply
+    const _derivationSupply: string | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0')
+      ? rpcSupply
+      : (_holderProviderSupply != null ? String(_holderProviderSupply) : null)
+    const _derivationSupplySource: 'rpc' | 'provider' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_derivationSupply ? 'provider' : null)
+    if (!hasPct && normalizedTop.length > 0 && _derivationSupply != null) {
       holderDerivationAttempted = true
       let derivedCount = 0
       for (const h of normalizedTop as any[]) {
@@ -2255,7 +2287,7 @@ export async function POST(req: Request) {
         const rawStr = String(rawBal)
         // Skip human-readable amounts (already divided) — only process raw integer strings
         if (rawStr === '' || rawStr.includes('.') || /[eE]/.test(rawStr)) continue
-        const pct = bigIntPct(rawBal, rpcSupply)
+        const pct = bigIntPct(rawBal, _derivationSupply)
         if (pct != null && pct > 0 && pct <= 100) {
           h.percent = Math.round(pct * 10000) / 10000
           derivedCount++
@@ -2274,7 +2306,9 @@ export async function POST(req: Request) {
         }
         holderDistributionStatus = {
           status: 'ok',
-          reason: 'holder_percentages_derived_from_supply',
+          reason: _derivationSupplySource === 'provider'
+            ? 'holder_percentages_derived_from_provider_supply'
+            : 'holder_percentages_derived_from_rpc_supply',
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
           percentSource,
@@ -2745,6 +2779,8 @@ export async function POST(req: Request) {
           reason: holderDistributionStatus.reason,
           percentSource,
           totalSupplyAvailable: Boolean(rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0'),
+          providerTotalSupplyAvailable: _holderProviderSupply != null,
+          derivationSupplySource: _derivationSupplySource,
           decimalsAvailable: resolvedDecimals != null,
           derivationAttempted: holderDerivationAttempted,
           derivationSucceeded: holderDerivationSucceeded,
