@@ -380,18 +380,21 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
   }
   const dexChainId = dexChainIdMap[chain] ?? 'base'
   const key = `${chain}:${tokenAddress.toLowerCase()}`
+  const cached = _dexFbCache.get(key)
+  if (cached && Date.now() - cached.ts < 5 * 60 * 1000) return cached.data
   const miss = (data: DexFallbackResult | null) => {
     _dexFbCache.set(key, { data, ts: Date.now() })
     return data
   }
 
   try {
+    const _dsBase = (process.env.DEXSCREENER_BASE_URL ?? 'https://api.dexscreener.com').replace(/\/$/, '')
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 4000)
     let res: Response
     try {
       res = await fetch(
-        `https://api.dexscreener.com/token-pairs/v1/${dexChainId}/${tokenAddress}`,
+        `${_dsBase}/token-pairs/v1/${dexChainId}/${tokenAddress}`,
         { signal: ctrl.signal, cache: 'no-store' }
       )
     } finally {
@@ -630,6 +633,7 @@ type LpDiagnostics = {
   lockedPercent: number | null;
   teamPercent: number | null;
   failureReason: string | null;
+  dexscreenerPoolSynthesized: boolean;
 };
 
 type LpControlRead = {
@@ -1337,7 +1341,7 @@ export async function POST(req: Request) {
       }
       return out
     })()
-    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, hpResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw] = await Promise.all([
+    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, hpResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw, dexFbEarly] = await Promise.all([
       bytecodePromise,
       fetchGoldRush(chain, contract),
       fetchTokenHolders(chain, contract),
@@ -1349,6 +1353,7 @@ export async function POST(req: Request) {
       fetchCoinGeckoToken(chain, contract),
       fetchMoralisHolders(chain, contract),
       fetchMoralisTransfers(chain, contract),
+      fetchDexScreenerFallback(contract, chain),
     ]);
     const alchemyMandatoryReads = await Promise.all([
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
@@ -1382,6 +1387,28 @@ export async function POST(req: Request) {
       if (id) includedTokenById.set(id, attrs);
     }
     const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById));
+    // When GeckoTerminal has no pool data, synthesize a pool from DexScreener pair address
+    // so LP verification (burn/lock/team checks) can still be attempted.
+    let _dsFbPoolSynthesized = false
+    if (normalizedPools.length === 0 && dexFbEarly?.pairAddress && /^0x[a-f0-9]{40}$/i.test(dexFbEarly.pairAddress)) {
+      const _dsFbDexId = dexFbEarly.dexId ?? null
+      const _dsFbType = detectPoolType(null, _dsFbDexId ?? undefined)
+      normalizedPools.push({
+        address: dexFbEarly.pairAddress.toLowerCase(),
+        pairName: [dexFbEarly.baseToken?.symbol, dexFbEarly.quoteToken?.symbol].filter(Boolean).join('/') || null,
+        liquidityUsd: dexFbEarly.liquidityUsd ?? 0,
+        dexId: _dsFbDexId,
+        dexName: normalizeDexLabel(_dsFbDexId) || null,
+        baseTokenSymbol: dexFbEarly.baseToken?.symbol ?? null,
+        quoteTokenSymbol: dexFbEarly.quoteToken?.symbol ?? null,
+        baseTokenAddress: dexFbEarly.baseToken?.address?.toLowerCase() ?? null,
+        quoteTokenAddress: dexFbEarly.quoteToken?.address?.toLowerCase() ?? null,
+        poolType: _dsFbType,
+        hasDexMeta: Boolean(_dsFbDexId),
+        isValidAddress: true,
+      })
+      _dsFbPoolSynthesized = true
+    }
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
@@ -1530,6 +1557,7 @@ export async function POST(req: Request) {
       lockedPercent: null,
       teamPercent: null,
       failureReason: null,
+      dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
     };
     let lpControl: LpControlResult = {
       status: "unverified",
@@ -1747,6 +1775,7 @@ export async function POST(req: Request) {
       lockedPercent: _extractedLockerPct,
       teamPercent: _extractedTeamPct,
       failureReason: _lpFailureReason,
+      dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
     };
 
     lpControl.evidence = [
@@ -1985,7 +2014,7 @@ export async function POST(req: Request) {
     let _dexFb: DexFallbackResult | null = null
     let marketDataSource: 'primary' | 'fallback' | 'none' = (_primaryHasMarket && !forceDexFallback) ? 'primary' : 'none'
     let marketConfidence: 'high' | 'medium' | 'low' = (_primaryHasMarket && !forceDexFallback) ? 'high' : 'low'
-    _dexFb = await fetchDexScreenerFallback(contract, chain)
+    _dexFb = dexFbEarly  // already fetched in phase 1 (cache hit if called again)
     if (_dexFb != null && (!_primaryHasMarket || forceDexFallback)) {
       marketDataSource = 'fallback'
       marketConfidence = 'medium'
@@ -2895,6 +2924,7 @@ export async function POST(req: Request) {
           teamPercent: lpDiagnostics.teamPercent,
           proofStatus: lpDiagnostics.lpState,
           failureReason: lpDiagnostics.failureReason,
+          dexscreenerPoolSynthesized: lpDiagnostics.dexscreenerPoolSynthesized,
           reason: lpDiagnostics.reason,
           _full: lpDiagnostics,
         },
