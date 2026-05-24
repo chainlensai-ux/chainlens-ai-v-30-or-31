@@ -1473,6 +1473,18 @@ export async function POST(req: Request) {
     const lpDexId = lpPool?.dexId ?? null
     const lpDexName = lpPool?.dexName ?? null
     const lpPoolAddressPresent = Boolean(lpPoolAddress && /^0x[a-f0-9]{40}$/.test(lpPoolAddress))
+    // Log LP pool selection so production scans self-document the fix
+    if (process.env.NODE_ENV === 'development' || process.env.LP_DEBUG === '1') {
+      console.log('[lp-pool-select]', JSON.stringify({
+        contract, chain,
+        gtPoolCount: matchingPools.length,
+        mainPoolId: mainPool?.id ?? null,
+        mainPoolAttrAddress: (mainPool?.attributes as Record<string,unknown>)?.address ?? null,
+        normalizedPoolCount: normalizedPools.length,
+        lpPoolAddress, lpPoolType, lpPoolAddressPresent,
+        dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
+      }))
+    }
     const needsLpHolderFetch = Boolean(lpPoolAddressPresent && (lpPoolType === 'v2' || lpPoolType === 'unknown'))
     const needsAI = !noActivePools || hasSecurityData
     const needsOnchainMc = _mcEarly == null && _priceEarly != null
