@@ -1546,7 +1546,7 @@ export async function POST(req: Request) {
       ? "No WETH/USDC/USDbC/cbBTC verification pool found from provider; using best available pool."
       : selectedLpPool.reason;
     const _lpBaseDiagnostics = [
-      `Verification pool: ${lpPair}`,
+      ...(lpPool ? [`Verification pool: ${lpPair}`] : []),
       `Pool type: ${lpPoolType}`,
       `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`,
     ];
@@ -2972,6 +2972,9 @@ export async function POST(req: Request) {
           teamPercent: lpDiagnostics.teamPercent,
           proofStatus: lpDiagnostics.lpState,
           failureReason: lpDiagnostics.failureReason,
+          dexscreenerPoolSynthesized: lpDiagnostics.dexscreenerPoolSynthesized,
+          reason: lpDiagnostics.reason,
+          _full: lpDiagnostics,
         },
         contractFlagDiagnostics: {
           bytecodeChecked: cortexContractFlags.bytecodeChecked,
