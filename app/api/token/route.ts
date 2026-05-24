@@ -33,7 +33,7 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
 const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
 const TOKEN_RATE_WINDOW_MS = 60 * 1000
 const TOKEN_RATE_BY_PLAN: Record<string, number> = { free: 12, pro: 40, elite: 120 }
-const tokenResponseCache = new Map<string, { exp: number; payload: unknown }>()
+// Token scanner caching intentionally disabled for full provider-run scans.
 const tokenRateMap = new Map<string, { count: number; resetAt: number }>()
 const BASE_TOKEN_ALIAS_MAP: Record<string, { address: string; symbol: string }> = {
   WETH: { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH' },
@@ -118,7 +118,7 @@ type RugRiskReport = {
     blacklist: boolean | null
     mint: boolean | null
     upgradeable: boolean | null
-    source_status: "ok" | "failed"
+    source_status: "ok" | "partial" | "failed"
   }
   deployer_reputation: {
     score: number | null
@@ -262,8 +262,9 @@ async function fetchBytecode(chain: ChainKey, contract: string): Promise<string 
 
 async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
   try {
+    const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
     const res = await fetch(
-      `https://api.covalenthq.com/v1/${chain}/tokens/${contract}/?key=${process.env.COVALENT_API_KEY}`,
+      `${_grBase}/v1/${chain}/tokens/${contract}/?key=${process.env.COVALENT_API_KEY}`,
       { signal: AbortSignal.timeout(5000) }
     );
     return res.ok ? await res.json() : null;
@@ -281,8 +282,9 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
       bnb:     'bsc',
     };
     const network = networkMap[chain] ?? 'base';
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
     const res = await fetch(
-      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contract}/pools?page=1&include=base_token%2Cquote_token`,
+      `${_gtBase}/api/v2/networks/${network}/tokens/${contract}/pools?page=1&include=base_token%2Cquote_token`,
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
@@ -309,8 +311,9 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
       bnb:     'bsc',
     };
     const network = networkMap[chain] ?? 'base';
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
     const res = await fetch(
-      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contract}`,
+      `${_gtBase}/api/v2/networks/${network}/tokens/${contract}`,
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
@@ -367,14 +370,16 @@ interface DexFallbackResult {
 }
 
 const _dexFbCache = new Map<string, { data: DexFallbackResult | null; ts: number }>()
-const DEX_FB_TTL = 90_000
 
 async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 'base'): Promise<DexFallbackResult | null> {
-  const dexChainId = chain === 'eth' ? 'ethereum' : 'base'
+  const dexChainIdMap: Record<ChainKey, string> = {
+    eth: 'ethereum',
+    base: 'base',
+    polygon: 'polygon',
+    bnb: 'bsc',
+  }
+  const dexChainId = dexChainIdMap[chain] ?? 'base'
   const key = `${chain}:${tokenAddress.toLowerCase()}`
-  const hit = _dexFbCache.get(key)
-  if (hit && Date.now() - hit.ts < DEX_FB_TTL) return hit.data
-
   const miss = (data: DexFallbackResult | null) => {
     _dexFbCache.set(key, { data, ts: Date.now() })
     return data
@@ -451,6 +456,56 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
   }
 }
 
+async function fetchCoinGeckoToken(chain: ChainKey, contract: string): Promise<any> {
+  try {
+    const platform = chain === 'eth' ? 'ethereum' : chain === 'base' ? 'base' : chain
+    const res = await fetch(`https://api.coingecko.com/api/v3/coins/${platform}/contract/${contract}`, { cache: 'no-store', signal: AbortSignal.timeout(7000) })
+    return res.ok ? await res.json() : null
+  } catch { return null }
+}
+
+async function fetchMoralisHolders(chain: ChainKey, contract: string): Promise<any> {
+  try {
+    const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc' }
+    const key = process.env.MORALIS_API_KEY
+    if (!key) return { __status: 'unavailable' }
+    const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/owners?chain=${chainMap[chain]}&limit=100`, {
+      headers: { 'X-API-Key': key },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+    })
+    return res.ok ? await res.json() : { __status: 'error' }
+  } catch { return { __status: 'error' } }
+}
+
+async function fetchMoralisTransfers(chain: ChainKey, contract: string): Promise<any> {
+  try {
+    const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc' }
+    const key = process.env.MORALIS_API_KEY
+    if (!key) return { __status: 'unavailable' }
+    const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/transfers?chain=${chainMap[chain]}&limit=50`, {
+      headers: { 'X-API-Key': key },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+    })
+    return res.ok ? await res.json() : { __status: 'error' }
+  } catch { return { __status: 'error' } }
+}
+
+function safeHolderReason(reason: string | null | undefined): string {
+  const r = String(reason ?? '').toLowerCase().trim()
+  if (!r) return 'holder_data_unavailable'
+  if (r.includes('missing_api_key')) return 'holder_provider_not_configured'
+  if (r.includes('timeout')) return 'holder_provider_timeout'
+  if (r.includes('bad_request')) return 'holder_query_rejected'
+  if (r.includes('provider_unavailable')) return 'holder_provider_unavailable'
+  if (r.includes('no_percentages')) return 'holder_rows_without_percentages'
+  if (r.includes('no_rows')) return 'no_holder_rows_returned'
+  if (r.includes('derived_from_supply')) return 'holder_percentages_derived_from_supply'
+  if (r.includes('api_error') || r.includes('error')) return 'holder_provider_error'
+  return reason ?? 'holder_data_unavailable'
+}
+
 
 async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> {
   try {
@@ -518,7 +573,8 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
       return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: false }
     }
     // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
-    const url = `https://api.covalenthq.com${endpointPath}?page-number=0&page-size=100`
+    const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
+    const url = `${_grBase}${endpointPath}?page-number=0&page-size=100`
     console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'path', endpointPath, 'params page-number=0&page-size=100')
     const res = await fetch(url, {
       cache: 'no-store',
@@ -585,6 +641,10 @@ type LpDiagnostics = {
   lpState: LpControlResult["status"];
   confidence: LpControlResult["confidence"];
   reason: string;
+  goldrushAttempted: boolean;
+  goldrushItemCount: number;
+  goldrushPctDerived: boolean;
+  rpcFallbackAttempted: boolean;
 };
 
 type LpControlRead = {
@@ -927,6 +987,22 @@ function analyzeContract(bytecode: string | null): any {
 }
 
 // ------------------------------
+// CORTEX Contract Flag Scanner — bytecode + RPC, no external APIs required
+// ------------------------------
+type ContractFlagStatus = 'verified' | 'possible' | 'not_detected' | 'unverified'
+type ContractFlagEntry = { status: ContractFlagStatus; confidence: 'high' | 'medium' | 'low'; note: string | null }
+type CortexContractFlagsResult = {
+  mint: ContractFlagEntry
+  proxy: ContractFlagEntry
+  pause: ContractFlagEntry
+  blacklist: ContractFlagEntry
+  withdraw: ContractFlagEntry
+  bytecodeChecked: boolean
+  proxySlotChecked: boolean
+  pauseCallChecked: boolean
+}
+
+// ------------------------------
 // CORTEX Risk Engine v1
 // Derives risk score from existing scan data only. No external calls.
 // ------------------------------
@@ -1192,16 +1268,7 @@ export async function POST(req: Request) {
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
-    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 8 })
-    const cached = tokenResponseCache.get(cacheKey)
-    if (cached && cached.exp > Date.now() && !debugMode) {
-      if (typeof cached.payload === 'object' && cached.payload) {
-        const cp: any = { ...(cached.payload as any) }
-        delete cp._diagnostics
-        return NextResponse.json(cp)
-      }
-      return NextResponse.json(cached.payload)
-    }
+    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 9, noCache: true })
 
     // Detect near-valid hex strings (0x prefix but wrong char count) and return a helpful error
     if (!resolvedAddress && /^0x[a-fA-F0-9]+$/i.test(originalInput) && originalInput.length !== 42) {
@@ -1272,7 +1339,7 @@ export async function POST(req: Request) {
       }
       return out
     })()
-    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpResult] = await Promise.all([
+    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, hpResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw] = await Promise.all([
       bytecodePromise,
       fetchGoldRush(chain, contract),
       fetchTokenHolders(chain, contract),
@@ -1280,8 +1347,10 @@ export async function POST(req: Request) {
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
-      fetchGoPlus(chain, contract),
       fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chain]),
+      fetchCoinGeckoToken(chain, contract),
+      fetchMoralisHolders(chain, contract),
+      fetchMoralisTransfers(chain, contract),
     ]);
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase1Ms', Date.now() - _t0)
 
@@ -1355,7 +1424,7 @@ export async function POST(req: Request) {
     const _mcEarly = toNum(_gtEarly?.market_cap_usd)
     const _decEarly: number = typeof _gtEarly?.decimals === 'number' ? _gtEarly.decimals : 18
     const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
-    const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok)
+    const hasSecurityData = Boolean(hpResult.ok)
     const lpPoolAddress = lpPool?.address ?? null
     const lpDexId = lpPool?.dexId ?? null
     const lpDexName = lpPool?.dexName ?? null
@@ -1441,6 +1510,10 @@ export async function POST(req: Request) {
       lpState: "unverified",
       confidence: "low",
       reason: "LP control requires holder-level LP token verification.",
+      goldrushAttempted: needsLpHolderFetch,
+      goldrushItemCount: 0,
+      goldrushPctDerived: false,
+      rpcFallbackAttempted: false,
     };
     let lpControl: LpControlResult = {
       status: "unverified",
@@ -1454,6 +1527,9 @@ export async function POST(req: Request) {
       dexName: dexName || undefined,
       lpVerificationPoolReason: lpReason,
     };
+    let _lpGrPctDerived = false
+    let _lpRpcFallbackRan = false
+    let _lpGrItemCount = 0
     if (!lpPoolAddressPresent) {
       lpControl = { ...lpControl, status: "insufficient_data", reason: "No pool address found from provider for LP-holder verification." };
     } else if (lpPoolType === "v3" || lpPoolType === "aerodrome" || lpPoolType === "concentrated") {
@@ -1510,10 +1586,21 @@ export async function POST(req: Request) {
     } else {
       // V2 — run GoldRush LP holder check
       const lpItems = Array.isArray(_lpHoldersForControl?.data?.items) ? _lpHoldersForControl.data.items as Array<Record<string, unknown>> : [];
-      const top = lpItems.slice(0, 5).map((h) => ({
-        address: String(h.address ?? h.holder_address ?? h.wallet_address ?? "").toLowerCase(),
-        pct: toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? 0,
-      })).filter((x) => /^0x[a-f0-9]{40}$/.test(x.address));
+      _lpGrItemCount = lpItems.length
+      const _lpGrTotalSupply = lpItems.find(i => i?.total_supply != null)?.total_supply
+      const _lpGrSupplyStr = _lpGrTotalSupply != null ? String(_lpGrTotalSupply) : null
+      const top = lpItems.slice(0, 5).map((h) => {
+        const directPct = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        let derivedPct: number | null = null
+        if (directPct == null && _lpGrSupplyStr != null) {
+          derivedPct = bigIntPct(h.balance ?? h.token_balance, _lpGrSupplyStr)
+          if (derivedPct != null) _lpGrPctDerived = true
+        }
+        return {
+          address: String(h.address ?? h.holder_address ?? h.wallet_address ?? "").toLowerCase(),
+          pct: directPct ?? derivedPct ?? 0,
+        }
+      }).filter((x) => /^0x[a-f0-9]{40}$/.test(x.address));
       const topHolder = top[0] ?? null;
       const burnPct = top.filter((x) => DEAD.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
       const lockerPct = top.filter((x) => KNOWN_LOCKERS.has(x.address)).reduce((a, b) => a + (b.pct ?? 0), 0);
@@ -1525,6 +1612,7 @@ export async function POST(req: Request) {
         lpControl = { status: "team_controlled", confidence: "high", poolType: lpPoolType, source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${topHolder.address}`, `top_share=${(topHolder.pct ?? 0).toFixed(2)}%`] };
       } else if (lpItems.length === 0 || !top.some((x) => (x.pct ?? 0) > 0)) {
         // Alchemy RPC fallback when GoldRush holder percentages are unavailable
+        _lpRpcFallbackRan = true
         const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
         const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
         if (!totalSupply || totalSupply <= 0) {
@@ -1581,6 +1669,9 @@ export async function POST(req: Request) {
       lpState: lpControl.status,
       confidence: lpControl.confidence,
       reason: lpControl.reason,
+      goldrushItemCount: _lpGrItemCount,
+      goldrushPctDerived: _lpGrPctDerived,
+      rpcFallbackAttempted: _lpRpcFallbackRan,
     };
 
     lpControl.evidence = [
@@ -1815,16 +1906,14 @@ export async function POST(req: Request) {
     // In debug-only mode, forceDexFallback=true skips primary market values and calls the
     // fallback directly so it can be verified from production without altering normal scans.
     const _primaryHasMarket = priceUsd != null || liquidityUsd != null
-    const _fallbackNeeded = !_primaryHasMarket || forceDexFallback
+    const _fallbackNeeded = true
     let _dexFb: DexFallbackResult | null = null
     let marketDataSource: 'primary' | 'fallback' | 'none' = (_primaryHasMarket && !forceDexFallback) ? 'primary' : 'none'
     let marketConfidence: 'high' | 'medium' | 'low' = (_primaryHasMarket && !forceDexFallback) ? 'high' : 'low'
-    if (_fallbackNeeded) {
-      _dexFb = await fetchDexScreenerFallback(contract, chain)
-      if (_dexFb != null) {
-        marketDataSource = 'fallback'
-        marketConfidence = 'medium'
-      }
+    _dexFb = await fetchDexScreenerFallback(contract, chain)
+    if (_dexFb != null && (!_primaryHasMarket || forceDexFallback)) {
+      marketDataSource = 'fallback'
+      marketConfidence = 'medium'
     }
 
     if (debugMode) {
@@ -1938,23 +2027,13 @@ export async function POST(req: Request) {
     }
     // Optional GoPlus data — only used if already present and Honeypot.is is unavailable.
     // GoPlus is not a core ChainLens security provider; treat its data as low-confidence fallback only.
-    const gpResultObj = (gpRaw as Record<string, unknown>)?.result as Record<string, unknown> ?? {};
-    const gpToken = gpResultObj[contract.toLowerCase()] as Record<string, unknown> ?? {};
-    const gpHasData = Object.keys(gpToken).length > 0;
-    const gpHoneypot = gpHasData ? {
-      isHoneypot:        gpToken.is_honeypot != null ? String(gpToken.is_honeypot) === "1" : null,
-      buyTax:            gpToken.buy_tax != null && gpToken.buy_tax !== "" ? Number(gpToken.buy_tax) : null,
-      sellTax:           gpToken.sell_tax != null && gpToken.sell_tax !== "" ? Number(gpToken.sell_tax) : null,
-      transferTax:       gpToken.transfer_tax != null && gpToken.transfer_tax !== "" ? Number(gpToken.transfer_tax) : null,
-      simulationSuccess: null as boolean | null,
-    } : null;
+    const gpHasData = false
+    const gpHoneypot: null = null
 
     // GoPlus-derived contract flags (low-confidence fallback; only used when GoPlus has data)
-    const gpMint = gpHasData ? (String(gpToken.is_mintable ?? '') === '1') : null
-    const gpUpgradeable = gpHasData ? (String(gpToken.is_proxy ?? '') === '1') : null
-    const gpBlacklist = gpHasData
-      ? (String(gpToken.is_blacklisted ?? '') === '1' || String(gpToken.transfer_pausable ?? '') === '1')
-      : null
+    const gpMint = null
+    const gpUpgradeable = null
+    const gpBlacklist = null
 
     // Final JSON response
     const marketStatus: "ok" | "fallback_ok" | "partial" | "no_pool_found" | "unavailable" | "error" =
@@ -1967,14 +2046,14 @@ export async function POST(req: Request) {
       : marketCapFromGt == null ? "unavailable_circulating_supply_not_verified"
       : "partial_market_fields_from_provider";
     const securityStatus: "ok" | "partial" | "unavailable" | "error" =
-      hpResult.ok ? "ok" : gpHasData ? "partial" : "unavailable";
-    const securityReason = hpResult.ok ? null : (gpHasData ? "security_check_limited_signals_used" : "security_simulation_unavailable");
+      hpResult.ok ? "ok" : "unavailable";
+    const securityReason = hpResult.ok ? null : "security_simulation_unavailable";
     const holdersStatus: "ok" | "partial" | "unavailable" | "error" =
       holderDistributionStatus.status === 'ok' ? 'ok' :
       holderDistributionStatus.status === 'partial' ? 'partial' :
       holderDistributionStatus.status === 'error' ? 'error' :
       'unavailable';
-    const holdersReason = holdersStatus === "ok" ? null : (holderDistributionStatus?.reason ?? "holder_data_unavailable");
+    const holdersReason = holdersStatus === "ok" ? null : safeHolderReason(holderDistributionStatus?.reason ?? "holder_data_unavailable");
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "unavailable"));
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
@@ -1982,6 +2061,69 @@ export async function POST(req: Request) {
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
+
+    // CORTEX Contract Flag Scanner — bytecode selector scan + 2 RPC probes
+    const _hasBytecode = Boolean(bytecode && bytecode !== '0x' && bytecode.length > 10)
+    const _bytecodeLc = _hasBytecode ? bytecode!.toLowerCase() : ''
+    // PUSH4 opcode (0x63) followed by 4-byte selector in deployed bytecode
+    const _selPresent = (sel4: string) => _hasBytecode && _bytecodeLc.includes('63' + sel4)
+    const _cortexMintSel = _selPresent('40c10f19') || _selPresent('a0712d68')    // mint(address,uint256) | mint(uint256)
+    const _cortexProxySel = _selPresent('3659cfe6') || _selPresent('4f1ef286') || _selPresent('52d1902d') // upgradeTo | upgradeToAndCall | proxiableUUID
+    const _cortexPauseSel = _selPresent('8456cb59') || _selPresent('3f4ba83a')   // pause() | unpause()
+    const _cortexWithdrawSel = _selPresent('3ccfd60b') || _selPresent('2e1a7d4d') // withdraw() | withdraw(uint256)
+    const _cortexBlacklistStr = _hasBytecode && _bytecodeLc.includes('626c61636b6c697374') // ascii "blacklist"
+    const _EIP1967_IMPL = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
+    const _EIP1967_ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000'
+    const [_proxySlotHex, _pausedCallHex] = await Promise.all([
+      _hasBytecode ? countedRpcCall('eth_getStorageAt', [contract, _EIP1967_IMPL, 'latest'], 'proxySlotCheck', false) : Promise.resolve(null),
+      _hasBytecode ? countedRpcCall('eth_call', [{ to: contract, data: '0x5c975abb' }, 'latest'], 'pausedCheck', false) : Promise.resolve(null),
+    ])
+    const _isVerifiedProxy = Boolean(
+      _proxySlotHex && _proxySlotHex !== '0x' && _proxySlotHex !== _EIP1967_ZERO &&
+      _proxySlotHex.replace(/^0x0+/, '').length > 0
+    )
+    const _pauseFunctionExists = Boolean(_pausedCallHex && _pausedCallHex !== '0x')
+
+    // Merge bytecode signals with optional GoPlus enrichment (GoPlus is low-confidence fallback)
+    const cortexContractFlags: CortexContractFlagsResult = {
+      mint: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : _cortexMintSel
+          ? { status: 'verified', confidence: 'high', note: 'Mint selector found in bytecode' }
+          : gpMint === true
+            ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
+            : { status: 'not_detected', confidence: 'medium', note: 'No mint selector in bytecode' },
+      proxy: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : _isVerifiedProxy
+          ? { status: 'verified', confidence: 'high', note: 'EIP-1967 implementation slot is non-zero' }
+          : _cortexProxySel
+            ? { status: 'possible', confidence: 'medium', note: 'Upgrade selector in bytecode; no EIP-1967 slot confirmed' }
+            : gpUpgradeable === true
+              ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
+              : { status: 'not_detected', confidence: 'medium', note: 'No proxy slot or upgrade selector detected' },
+      pause: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : (_pauseFunctionExists || _cortexPauseSel)
+          ? { status: 'verified', confidence: 'high', note: _pauseFunctionExists ? 'paused() call responded' : 'Pause selector in bytecode' }
+          : { status: 'not_detected', confidence: 'medium', note: 'No pause selector or paused() response detected' },
+      blacklist: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : _cortexBlacklistStr
+          ? { status: 'verified', confidence: 'high', note: 'Blacklist string pattern in bytecode' }
+          : gpBlacklist === true
+            ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
+            : { status: 'not_detected', confidence: 'medium', note: 'No blacklist pattern in bytecode' },
+      withdraw: !_hasBytecode
+        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
+        : _cortexWithdrawSel
+          ? { status: 'verified', confidence: 'high', note: 'Withdraw selector found in bytecode' }
+          : { status: 'not_detected', confidence: 'medium', note: 'No withdraw selector in bytecode' },
+      bytecodeChecked: _hasBytecode,
+      proxySlotChecked: _proxySlotHex != null,
+      pauseCallChecked: _pausedCallHex != null,
+    }
+
     const riskVerifiedSignals: string[] = []
     const riskDrivers: string[] = []
     const openChecks: string[] = []
@@ -2035,9 +2177,11 @@ export async function POST(req: Request) {
       riskScore += 8
     }
 
-    if (gpMint === true || analysis?.has_mint) { riskDrivers.push('Contract can mint supply.'); riskScore += 12 }
-    if (gpUpgradeable === true || analysis?.is_upgradeable) { riskDrivers.push('Contract is upgradeable.'); riskScore += 10 }
-    if (analysis?.has_withdraw || analysis?.has_sweep || analysis?.has_rescue) { riskDrivers.push('Contract includes withdraw/sweep/rescue style controls.'); riskScore += 10 }
+    if (cortexContractFlags.mint.status === 'verified') { riskDrivers.push('Contract can mint supply.'); riskScore += 12 }
+    else if (cortexContractFlags.mint.status === 'possible') { riskDrivers.push('Contract may have mint capability (low-confidence signal).'); riskScore += 5 }
+    if (cortexContractFlags.proxy.status === 'verified') { riskDrivers.push('Contract is upgradeable (proxy confirmed).'); riskScore += 10 }
+    else if (cortexContractFlags.proxy.status === 'possible') { riskDrivers.push('Contract may be upgradeable (partial signal).'); riskScore += 5 }
+    if (cortexContractFlags.withdraw.status === 'verified') { riskDrivers.push('Contract includes withdraw/sweep style controls.'); riskScore += 10 }
 
     const majorMissingCount = [
       marketCapFromGt == null,
@@ -2108,11 +2252,11 @@ export async function POST(req: Request) {
         source_status: "ok",
       },
       contract_flags: {
-        honeypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
-        blacklist: gpBlacklist,
-        mint: gpMint,
-        upgradeable: gpUpgradeable,
-        source_status: (hpResult.ok || gpHasData) ? "ok" : "failed",
+        honeypot: hpResult.ok ? hpResult.honeypot : null,
+        blacklist: cortexContractFlags.blacklist.status === 'verified' ? true : cortexContractFlags.blacklist.status === 'not_detected' ? false : null,
+        mint: cortexContractFlags.mint.status === 'verified' ? true : cortexContractFlags.mint.status === 'not_detected' ? false : null,
+        upgradeable: cortexContractFlags.proxy.status === 'verified' ? true : cortexContractFlags.proxy.status === 'not_detected' ? false : null,
+        source_status: cortexContractFlags.bytecodeChecked ? "ok" : (hpResult.ok || gpHasData) ? "partial" : "failed",
       },
       deployer_reputation: {
         score: ownerAddr && ownerAddr !== '0x0000000000000000000000000000000000000000' ? (rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : 50) : null,
@@ -2144,7 +2288,13 @@ export async function POST(req: Request) {
     // Derive holder percentages when provider rows have raw balances but no percent fields.
     // bigIntPct(balance, supply) divides in the same raw unit so decimals cancel — no normalization needed.
     // Guard: both values must be raw integer strings (no decimal point, no scientific notation).
-    if (!hasPct && normalizedTop.length > 0 && rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') {
+    // Prefer RPC totalSupply; fall back to provider-supplied total_supply when RPC is unavailable (e.g. ETH without Alchemy key).
+    const _holderProviderSupply = holderItems.find((h: any) => h?.total_supply != null)?.total_supply
+    const _derivationSupply: string | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0')
+      ? rpcSupply
+      : (_holderProviderSupply != null ? String(_holderProviderSupply) : null)
+    const _derivationSupplySource: 'rpc' | 'provider' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_derivationSupply ? 'provider' : null)
+    if (!hasPct && normalizedTop.length > 0 && _derivationSupply != null) {
       holderDerivationAttempted = true
       let derivedCount = 0
       for (const h of normalizedTop as any[]) {
@@ -2154,7 +2304,7 @@ export async function POST(req: Request) {
         const rawStr = String(rawBal)
         // Skip human-readable amounts (already divided) — only process raw integer strings
         if (rawStr === '' || rawStr.includes('.') || /[eE]/.test(rawStr)) continue
-        const pct = bigIntPct(rawBal, rpcSupply)
+        const pct = bigIntPct(rawBal, _derivationSupply)
         if (pct != null && pct > 0 && pct <= 100) {
           h.percent = Math.round(pct * 10000) / 10000
           derivedCount++
@@ -2173,7 +2323,9 @@ export async function POST(req: Request) {
         }
         holderDistributionStatus = {
           status: 'ok',
-          reason: 'holder_percentages_derived_from_supply',
+          reason: _derivationSupplySource === 'provider'
+            ? 'holder_percentages_derived_from_provider_supply'
+            : 'holder_percentages_derived_from_rpc_supply',
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
           percentSource,
@@ -2194,14 +2346,14 @@ export async function POST(req: Request) {
 
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'unavailable'
     const ownerStatus = ownerAddr ? 'ok' : 'unavailable'
-    const mintStatus = gpToken?.is_mintable != null ? 'ok' : 'unavailable'
-    const proxyStatus = gpToken?.is_proxy != null ? 'ok' : 'unavailable'
+    const mintStatus = cortexContractFlags.mint.status !== 'unverified' ? 'ok' : 'unavailable'
+    const proxyStatus = cortexContractFlags.proxy.status !== 'unverified' ? 'ok' : 'unavailable'
     const transferControlStatus = (hpResult.ok || gpHasData) ? 'partial' : 'unavailable'
     const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
-      bytecodeStatus === 'ok' && (ownerStatus === 'ok' || mintStatus === 'ok' || proxyStatus === 'ok') ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
+      cortexContractFlags.bytecodeChecked ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
     const contractChecksReason = contractChecksStatus === 'unavailable'
       ? 'Unavailable from current checks.'
-      : 'Contract bytecode, supply, owner, and available safety flags reviewed.'
+      : 'Contract bytecode, supply, owner, and CORTEX flag scan reviewed.'
 
     const responsePayload = {
       chain,
@@ -2297,7 +2449,7 @@ export async function POST(req: Request) {
 
       gmgn: gmgn?.data || null,
 
-      contractSecurity: (gpRaw as Record<string, unknown>)?.result ?? null,
+      contractSecurity: null,
 
       // Internal diagnostics
       _diagnostics: {
@@ -2333,7 +2485,7 @@ export async function POST(req: Request) {
           rpcCallsFailed,
           contractChecksAttempted: true,
         },
-        providerUsed: { market: marketDataSource === 'fallback' ? 'market_data' : 'geckoterminal', holders: 'goldrush', security: hpResult.ok ? 'honeypot.is' : (gpHasData ? 'goplus_limited_fallback' : 'unavailable'), contractChecks: 'alchemy_rpc', liquidity: lpControl.source ?? 'geckoterminal' },
+        providerUsed: { market: 'market_layer', holders: 'holders_layer', security: hpResult.ok ? 'risk_layer' : 'unavailable', contractChecks: 'risk_layer', liquidity: 'lp_layer' },
         marketFallback: { attempted: !_primaryHasMarket, found: _dexFb != null, pairAddress: _dexFb?.pairAddress ?? null, dexId: _dexFb?.dexId ?? null },
         tokenMarketFieldsPresent: {
           priceUsd: _ep != null,
@@ -2494,8 +2646,8 @@ export async function POST(req: Request) {
         simulationSuccess: hpResult.simulationSuccess,
       } : gpHoneypot,
       securityDiagnostics: {
-        honeypotProvider: hpResult.ok ? "ok" : (gpHasData ? "security_check_limited" : hpResult.honeypotProvider),
-        honeypotSource:   hpResult.ok ? "security_check" : (gpHasData ? "security_check_limited" : "unavailable"),
+        honeypotProvider: hpResult.ok ? "ok" : hpResult.honeypotProvider,
+        honeypotSource:   hpResult.ok ? "risk_layer" : "unavailable",
         honeypotChecked:  true,
       },
 
@@ -2510,6 +2662,7 @@ export async function POST(req: Request) {
       // CORTEX Risk Engine v1 — pure derivation, no extra API calls
       riskEngine,
       rugRisk,
+      contractFlags: cortexContractFlags,
 
       // Token info object for frontend panels
       tokenInfo: {
@@ -2532,7 +2685,7 @@ export async function POST(req: Request) {
         security: {
           status: securityStatus,
           reason: securityReason,
-          source: hpResult.ok ? "security_check" : (gpHasData ? "security_check_limited" : "unavailable"),
+          source: hpResult.ok ? "risk_layer" : "unavailable",
           honeypot: hpResult.ok ? hpResult.honeypot : null,
           buyTax: hpResult.ok ? hpResult.buyTax : null,
           sellTax: hpResult.ok ? hpResult.sellTax : null,
@@ -2541,14 +2694,14 @@ export async function POST(req: Request) {
         holders: {
           status: holdersStatus,
           reason: holdersReason,
-          source: "on_chain",
+          source: "holders_layer",
           holderCount: holderCount ?? null,
           top1, top5, top10, top20,
         },
         liquidity: {
           status: liquidityStatus,
           reason: liquidityReason,
-          source: "dex_data",
+          source: "lp_layer",
           poolCount: matchingPools.length,
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
@@ -2558,7 +2711,7 @@ export async function POST(req: Request) {
         contractChecks: {
           status: contractChecksStatus,
           reason: contractChecksReason,
-          source: "rpc",
+          source: "risk_layer",
           bytecodeStatus,
           ownerStatus,
           mintStatus,
@@ -2579,6 +2732,16 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._timing = { totalMs: _totalMs }
     }
     if (debugMode) {
+      const skippedChecks: string[] = []
+      if (!alchemyConfigured) skippedChecks.push('rpc_checks_missing_configuration')
+      if (holdersStatus !== 'ok') skippedChecks.push('holder_verification_incomplete')
+      if (lpControl.status === 'insufficient_data' || lpControl.status === 'error' || lpControl.status === 'unverified') skippedChecks.push('lp_proof_incomplete')
+      if (!hpResult.ok) skippedChecks.push('trading_simulation_incomplete')
+      const chainReasons = [
+        holdersReason ? `holders:${holdersReason}` : null,
+        lpControl.reason ? `lp:${lpControl.reason}` : null,
+        securityReason ? `security:${securityReason}` : null,
+      ].filter(Boolean) as string[]
       ;(responsePayload as any)._debug = {
         routeName: '/api/token',
         cacheHit: false,
@@ -2633,6 +2796,8 @@ export async function POST(req: Request) {
           reason: holderDistributionStatus.reason,
           percentSource,
           totalSupplyAvailable: Boolean(rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0'),
+          providerTotalSupplyAvailable: _holderProviderSupply != null,
+          derivationSupplySource: _derivationSupplySource,
           decimalsAvailable: resolvedDecimals != null,
           derivationAttempted: holderDerivationAttempted,
           derivationSucceeded: holderDerivationSucceeded,
@@ -2653,11 +2818,63 @@ export async function POST(req: Request) {
           reason: lpDiagnostics.reason,
           _full: lpDiagnostics,
         },
+        contractFlagDiagnostics: {
+          bytecodeChecked: cortexContractFlags.bytecodeChecked,
+          proxySlotChecked: cortexContractFlags.proxySlotChecked,
+          pauseCallChecked: cortexContractFlags.pauseCallChecked,
+          rawSelectors: {
+            mintSel: _cortexMintSel,
+            proxySel: _cortexProxySel,
+            pauseSel: _cortexPauseSel,
+            withdrawSel: _cortexWithdrawSel,
+            blacklistStr: _cortexBlacklistStr,
+          },
+          proxySlotRaw: _proxySlotHex ?? null,
+          pausedCallRaw: _pausedCallHex ?? null,
+          isVerifiedProxy: _isVerifiedProxy,
+          pauseFunctionExists: _pauseFunctionExists,
+          gpEnrichment: { mint: gpMint, upgradeable: gpUpgradeable, blacklist: gpBlacklist },
+          flags: {
+            mint: cortexContractFlags.mint,
+            proxy: cortexContractFlags.proxy,
+            pause: cortexContractFlags.pause,
+            blacklist: cortexContractFlags.blacklist,
+            withdraw: cortexContractFlags.withdraw,
+          },
+        },
+        chainDiagnostics: {
+          requestedChain: rawChain,
+          resolvedChain: chain,
+          marketNetwork: chain,
+          holderChainUsed: holdersRaw?.__chainUsed ?? (chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'),
+          rpcChainUsed: chain,
+          lpChainUsed: chain,
+          contractFlagChainUsed: chain,
+          securityChainUsed: chain,
+          skippedChecks,
+          reasons: chainReasons,
+        },
+        providerFlow: {
+          requestedChain: rawChain,
+          deepScan: true,
+          coingeckoAttempted: true,
+          dexScreenerAttempted: true,
+          moralisAttempted: true,
+          goldrushAttempted: true,
+          alchemyAttempted: true,
+          coingeckoUsable: Boolean(coingeckoRaw),
+          dexScreenerUsable: Boolean(gtData || _dexFb),
+          moralisUsable: Boolean((moralisHoldersRaw && moralisHoldersRaw.__status !== 'error') || (moralisTransfersRaw && moralisTransfersRaw.__status !== 'error')),
+          goldrushUsable: Boolean(goldrush || holdersRaw),
+          alchemyUsable: alchemyConfigured && rpcCallsSucceeded > 0,
+          cacheHits: 0,
+          dedupedCalls: 0,
+          providerCallCounts: { coingecko: 1, dexScreener: 1, moralis: 2, goldrush: 2, alchemy: rpcCallsAttempted },
+        },
       }
     } else {
       delete (responsePayload as any)._diagnostics
     }
-    tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
     return NextResponse.json(responsePayload)
   } catch (err) {
     console.error("Fatal backend error:", err);
