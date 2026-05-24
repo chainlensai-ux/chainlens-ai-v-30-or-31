@@ -262,8 +262,9 @@ async function fetchBytecode(chain: ChainKey, contract: string): Promise<string 
 
 async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
   try {
+    const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
     const res = await fetch(
-      `https://api.covalenthq.com/v1/${chain}/tokens/${contract}/?key=${process.env.COVALENT_API_KEY}`,
+      `${_grBase}/v1/${chain}/tokens/${contract}/?key=${process.env.COVALENT_API_KEY}`,
       { signal: AbortSignal.timeout(5000) }
     );
     return res.ok ? await res.json() : null;
@@ -281,8 +282,9 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
       bnb:     'bsc',
     };
     const network = networkMap[chain] ?? 'base';
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
     const res = await fetch(
-      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contract}/pools?page=1&include=base_token%2Cquote_token`,
+      `${_gtBase}/api/v2/networks/${network}/tokens/${contract}/pools?page=1&include=base_token%2Cquote_token`,
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
@@ -309,8 +311,9 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
       bnb:     'bsc',
     };
     const network = networkMap[chain] ?? 'base';
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
     const res = await fetch(
-      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contract}`,
+      `${_gtBase}/api/v2/networks/${network}/tokens/${contract}`,
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
@@ -538,7 +541,8 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
       return { __status: 'unavailable', __reason: 'missing_api_key', __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: false }
     }
     // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
-    const url = `https://api.covalenthq.com${endpointPath}?page-number=0&page-size=100`
+    const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
+    const url = `${_grBase}${endpointPath}?page-number=0&page-size=100`
     console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'path', endpointPath, 'params page-number=0&page-size=100')
     const res = await fetch(url, {
       cache: 'no-store',
