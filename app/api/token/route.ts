@@ -1559,7 +1559,7 @@ export async function POST(req: Request) {
             : selectedLpPool.reason
         );
     const _lpBaseDiagnostics = [
-      `Verification pool: ${lpPair}`,
+      ...(lpPool ? [`Verification pool: ${lpPair}`] : []),
       `Pool type: ${lpPoolType}`,
       `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`,
     ];
