@@ -33,7 +33,7 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
 const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
 const TOKEN_RATE_WINDOW_MS = 60 * 1000
 const TOKEN_RATE_BY_PLAN: Record<string, number> = { free: 12, pro: 40, elite: 120 }
-const tokenResponseCache = new Map<string, { exp: number; payload: unknown }>()
+// Token scanner caching intentionally disabled for full provider-run scans.
 const tokenRateMap = new Map<string, { count: number; resetAt: number }>()
 const BASE_TOKEN_ALIAS_MAP: Record<string, { address: string; symbol: string }> = {
   WETH: { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH' },
@@ -367,14 +367,16 @@ interface DexFallbackResult {
 }
 
 const _dexFbCache = new Map<string, { data: DexFallbackResult | null; ts: number }>()
-const DEX_FB_TTL = 90_000
 
 async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 'base'): Promise<DexFallbackResult | null> {
-  const dexChainId = chain === 'eth' ? 'ethereum' : 'base'
+  const dexChainIdMap: Record<ChainKey, string> = {
+    eth: 'ethereum',
+    base: 'base',
+    polygon: 'polygon',
+    bnb: 'bsc',
+  }
+  const dexChainId = dexChainIdMap[chain] ?? 'base'
   const key = `${chain}:${tokenAddress.toLowerCase()}`
-  const hit = _dexFbCache.get(key)
-  if (hit && Date.now() - hit.ts < DEX_FB_TTL) return hit.data
-
   const miss = (data: DexFallbackResult | null) => {
     _dexFbCache.set(key, { data, ts: Date.now() })
     return data
@@ -451,30 +453,54 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
   }
 }
 
-
-async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> {
+async function fetchCoinGeckoToken(chain: ChainKey, contract: string): Promise<any> {
   try {
-    const chainIdMap: Record<ChainKey, string> = {
-      eth:     '1',
-      base:    '8453',
-      polygon: '137',
-      bnb:     '56',
-    };
-    const chainId = chainIdMap[chain];
-    if (!chainId) return null;
-    const res = await fetch(
-      `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${contract}`,
-      { cache: 'no-store', signal: AbortSignal.timeout(5000) }
-    );
-    if (!res.ok) {
-      console.error('GoPlus error:', res.status);
-      return null;
-    }
-    return await res.json();
-  } catch (err) {
-    console.error('Error fetching GoPlus:', err);
-    return null;
-  }
+    const platform = chain === 'eth' ? 'ethereum' : chain === 'base' ? 'base' : chain
+    const res = await fetch(`https://api.coingecko.com/api/v3/coins/${platform}/contract/${contract}`, { cache: 'no-store', signal: AbortSignal.timeout(7000) })
+    return res.ok ? await res.json() : null
+  } catch { return null }
+}
+
+async function fetchMoralisHolders(chain: ChainKey, contract: string): Promise<any> {
+  try {
+    const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc' }
+    const key = process.env.MORALIS_API_KEY
+    if (!key) return { __status: 'unavailable' }
+    const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/owners?chain=${chainMap[chain]}&limit=100`, {
+      headers: { 'X-API-Key': key },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+    })
+    return res.ok ? await res.json() : { __status: 'error' }
+  } catch { return { __status: 'error' } }
+}
+
+async function fetchMoralisTransfers(chain: ChainKey, contract: string): Promise<any> {
+  try {
+    const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc' }
+    const key = process.env.MORALIS_API_KEY
+    if (!key) return { __status: 'unavailable' }
+    const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/transfers?chain=${chainMap[chain]}&limit=50`, {
+      headers: { 'X-API-Key': key },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+    })
+    return res.ok ? await res.json() : { __status: 'error' }
+  } catch { return { __status: 'error' } }
+}
+
+function safeHolderReason(reason: string | null | undefined): string {
+  const r = String(reason ?? '').toLowerCase().trim()
+  if (!r) return 'holder_data_unavailable'
+  if (r.includes('missing_api_key')) return 'holder_provider_not_configured'
+  if (r.includes('timeout')) return 'holder_provider_timeout'
+  if (r.includes('bad_request')) return 'holder_query_rejected'
+  if (r.includes('provider_unavailable')) return 'holder_provider_unavailable'
+  if (r.includes('no_percentages')) return 'holder_rows_without_percentages'
+  if (r.includes('no_rows')) return 'no_holder_rows_returned'
+  if (r.includes('derived_from_supply')) return 'holder_percentages_derived_from_supply'
+  if (r.includes('api_error') || r.includes('error')) return 'holder_provider_error'
+  return reason ?? 'holder_data_unavailable'
 }
 
 
@@ -1208,16 +1234,7 @@ export async function POST(req: Request) {
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
-    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 8 })
-    const cached = tokenResponseCache.get(cacheKey)
-    if (cached && cached.exp > Date.now() && !debugMode) {
-      if (typeof cached.payload === 'object' && cached.payload) {
-        const cp: any = { ...(cached.payload as any) }
-        delete cp._diagnostics
-        return NextResponse.json(cp)
-      }
-      return NextResponse.json(cached.payload)
-    }
+    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 10, noCache: true })
 
     // Detect near-valid hex strings (0x prefix but wrong char count) and return a helpful error
     if (!resolvedAddress && /^0x[a-fA-F0-9]+$/i.test(originalInput) && originalInput.length !== 42) {
@@ -1239,6 +1256,7 @@ export async function POST(req: Request) {
     console.log("Incoming scan request:", contract);
 
     const alchemyConfigured = Boolean(getAlchemyRpcUrl(chain))
+    const ownerSelectors = ['0x8da5cb5b', '0x893d20e8', '0xf851a440', '0x245a7bfc', '0x5c60da1b']
     let rpcCallsAttempted = 0
     let rpcCallsSucceeded = 0
     let rpcCallsFailed = 0
@@ -1288,7 +1306,7 @@ export async function POST(req: Request) {
       }
       return out
     })()
-    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, gpRaw, hpResult] = await Promise.all([
+    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, hpResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw] = await Promise.all([
       bytecodePromise,
       fetchGoldRush(chain, contract),
       fetchTokenHolders(chain, contract),
@@ -1296,9 +1314,19 @@ export async function POST(req: Request) {
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
-      fetchGoPlus(chain, contract),
       fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chain]),
+      fetchCoinGeckoToken(chain, contract),
+      fetchMoralisHolders(chain, contract),
+      fetchMoralisTransfers(chain, contract),
     ]);
+    const alchemyMandatoryReads = await Promise.all([
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[1] }, 'latest'], 'ownerCheck.getOwner', false),
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[2] }, 'latest'], 'ownerCheck.admin', false),
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[3] }, 'latest'], 'ownerCheck.proxyAdmin', false),
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[4] }, 'latest'], 'ownerCheck.implementation', false),
+      countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck.mandatory', true),
+    ])
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase1Ms', Date.now() - _t0)
 
     const analysis = analyzeContract(bytecode);
@@ -1371,7 +1399,7 @@ export async function POST(req: Request) {
     const _mcEarly = toNum(_gtEarly?.market_cap_usd)
     const _decEarly: number = typeof _gtEarly?.decimals === 'number' ? _gtEarly.decimals : 18
     const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
-    const hasSecurityData = Boolean((gpRaw as Record<string, unknown>)?.result || hpResult.ok)
+    const hasSecurityData = Boolean(hpResult.ok)
     const lpPoolAddress = lpPool?.address ?? null
     const lpDexId = lpPool?.dexId ?? null
     const lpDexName = lpPool?.dexName ?? null
@@ -1831,16 +1859,14 @@ export async function POST(req: Request) {
     // In debug-only mode, forceDexFallback=true skips primary market values and calls the
     // fallback directly so it can be verified from production without altering normal scans.
     const _primaryHasMarket = priceUsd != null || liquidityUsd != null
-    const _fallbackNeeded = !_primaryHasMarket || forceDexFallback
+    const _fallbackNeeded = true
     let _dexFb: DexFallbackResult | null = null
     let marketDataSource: 'primary' | 'fallback' | 'none' = (_primaryHasMarket && !forceDexFallback) ? 'primary' : 'none'
     let marketConfidence: 'high' | 'medium' | 'low' = (_primaryHasMarket && !forceDexFallback) ? 'high' : 'low'
-    if (_fallbackNeeded) {
-      _dexFb = await fetchDexScreenerFallback(contract, chain)
-      if (_dexFb != null) {
-        marketDataSource = 'fallback'
-        marketConfidence = 'medium'
-      }
+    _dexFb = await fetchDexScreenerFallback(contract, chain)
+    if (_dexFb != null && (!_primaryHasMarket || forceDexFallback)) {
+      marketDataSource = 'fallback'
+      marketConfidence = 'medium'
     }
 
     if (debugMode) {
@@ -1952,25 +1978,12 @@ export async function POST(req: Request) {
     if (process.env.NODE_ENV === "development") {
       console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] tokenEndpointMarketCapPresent', tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0, '[gt-market] poolEndpointMarketCapPresent', poolEndpointMarketCapPresent, '[gt-market] marketCap available', marketCapFromGt != null, '[gt-market] fdv available', fdv != null)
     }
-    // Optional GoPlus data — only used if already present and Honeypot.is is unavailable.
-    // GoPlus is not a core ChainLens security provider; treat its data as low-confidence fallback only.
-    const gpResultObj = (gpRaw as Record<string, unknown>)?.result as Record<string, unknown> ?? {};
-    const gpToken = gpResultObj[contract.toLowerCase()] as Record<string, unknown> ?? {};
-    const gpHasData = Object.keys(gpToken).length > 0;
-    const gpHoneypot = gpHasData ? {
-      isHoneypot:        gpToken.is_honeypot != null ? String(gpToken.is_honeypot) === "1" : null,
-      buyTax:            gpToken.buy_tax != null && gpToken.buy_tax !== "" ? Number(gpToken.buy_tax) : null,
-      sellTax:           gpToken.sell_tax != null && gpToken.sell_tax !== "" ? Number(gpToken.sell_tax) : null,
-      transferTax:       gpToken.transfer_tax != null && gpToken.transfer_tax !== "" ? Number(gpToken.transfer_tax) : null,
-      simulationSuccess: null as boolean | null,
-    } : null;
-
-    // GoPlus-derived contract flags (low-confidence fallback; only used when GoPlus has data)
-    const gpMint = gpHasData ? (String(gpToken.is_mintable ?? '') === '1') : null
-    const gpUpgradeable = gpHasData ? (String(gpToken.is_proxy ?? '') === '1') : null
-    const gpBlacklist = gpHasData
-      ? (String(gpToken.is_blacklisted ?? '') === '1' || String(gpToken.transfer_pausable ?? '') === '1')
-      : null
+    // Security fallbacks are disabled: risk layer uses active scan providers only.
+    const gpHasData = false
+    const gpHoneypot: null = null
+    const gpMint = null
+    const gpUpgradeable = null
+    const gpBlacklist = null
 
     // Final JSON response
     const marketStatus: "ok" | "fallback_ok" | "partial" | "no_pool_found" | "unavailable" | "error" =
@@ -1983,18 +1996,18 @@ export async function POST(req: Request) {
       : marketCapFromGt == null ? "unavailable_circulating_supply_not_verified"
       : "partial_market_fields_from_provider";
     const securityStatus: "ok" | "partial" | "unavailable" | "error" =
-      hpResult.ok ? "ok" : gpHasData ? "partial" : "unavailable";
-    const securityReason = hpResult.ok ? null : (gpHasData ? "security_check_limited_signals_used" : "security_simulation_unavailable");
+      hpResult.ok ? "ok" : "unavailable";
+    const securityReason = hpResult.ok ? null : "security_simulation_unavailable";
     const holdersStatus: "ok" | "partial" | "unavailable" | "error" =
       holderDistributionStatus.status === 'ok' ? 'ok' :
       holderDistributionStatus.status === 'partial' ? 'partial' :
       holderDistributionStatus.status === 'error' ? 'error' :
       'unavailable';
-    const holdersReason = holdersStatus === "ok" ? null : (holderDistributionStatus?.reason ?? "holder_data_unavailable");
+    const holdersReason = holdersStatus === "ok" ? null : safeHolderReason(holderDistributionStatus?.reason ?? "holder_data_unavailable");
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "unavailable"));
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
-    const ownerCall = _ownerHexForLp ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
+    const ownerCall = _ownerHexForLp ?? alchemyMandatoryReads[0] ?? alchemyMandatoryReads[1] ?? alchemyMandatoryReads[2] ?? alchemyMandatoryReads[3] ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
@@ -2189,7 +2202,7 @@ export async function POST(req: Request) {
         source_status: "ok",
       },
       contract_flags: {
-        honeypot: hpResult.ok ? hpResult.honeypot : (gpHoneypot?.isHoneypot ?? null),
+        honeypot: hpResult.ok ? hpResult.honeypot : null,
         blacklist: cortexContractFlags.blacklist.status === 'verified' ? true : cortexContractFlags.blacklist.status === 'not_detected' ? false : null,
         mint: cortexContractFlags.mint.status === 'verified' ? true : cortexContractFlags.mint.status === 'not_detected' ? false : null,
         upgradeable: cortexContractFlags.proxy.status === 'verified' ? true : cortexContractFlags.proxy.status === 'not_detected' ? false : null,
@@ -2277,7 +2290,7 @@ export async function POST(req: Request) {
     const ownerStatus = ownerAddr ? 'ok' : 'unavailable'
     const mintStatus = cortexContractFlags.mint.status !== 'unverified' ? 'ok' : 'unavailable'
     const proxyStatus = cortexContractFlags.proxy.status !== 'unverified' ? 'ok' : 'unavailable'
-    const transferControlStatus = (hpResult.ok || gpHasData) ? 'partial' : 'unavailable'
+    const transferControlStatus = hpResult.ok ? 'partial' : 'unavailable'
     const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
       cortexContractFlags.bytecodeChecked ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
     const contractChecksReason = contractChecksStatus === 'unavailable'
@@ -2378,7 +2391,7 @@ export async function POST(req: Request) {
 
       gmgn: gmgn?.data || null,
 
-      contractSecurity: (gpRaw as Record<string, unknown>)?.result ?? null,
+      contractSecurity: null,
 
       // Internal diagnostics
       _diagnostics: {
@@ -2414,7 +2427,7 @@ export async function POST(req: Request) {
           rpcCallsFailed,
           contractChecksAttempted: true,
         },
-        providerUsed: { market: marketDataSource === 'fallback' ? 'market_data' : 'geckoterminal', holders: 'goldrush', security: hpResult.ok ? 'honeypot.is' : (gpHasData ? 'goplus_limited_fallback' : 'unavailable'), contractChecks: 'alchemy_rpc', liquidity: lpControl.source ?? 'geckoterminal' },
+        providerUsed: { market: 'market_layer', holders: 'holders_layer', security: hpResult.ok ? 'risk_layer' : 'unavailable', contractChecks: 'risk_layer', liquidity: 'lp_layer' },
         marketFallback: { attempted: !_primaryHasMarket, found: _dexFb != null, pairAddress: _dexFb?.pairAddress ?? null, dexId: _dexFb?.dexId ?? null },
         tokenMarketFieldsPresent: {
           priceUsd: _ep != null,
@@ -2575,8 +2588,8 @@ export async function POST(req: Request) {
         simulationSuccess: hpResult.simulationSuccess,
       } : gpHoneypot,
       securityDiagnostics: {
-        honeypotProvider: hpResult.ok ? "ok" : (gpHasData ? "security_check_limited" : hpResult.honeypotProvider),
-        honeypotSource:   hpResult.ok ? "security_check" : (gpHasData ? "security_check_limited" : "unavailable"),
+        honeypotProvider: hpResult.ok ? "ok" : hpResult.honeypotProvider,
+        honeypotSource:   hpResult.ok ? "risk_layer" : "unavailable",
         honeypotChecked:  true,
       },
 
@@ -2614,7 +2627,7 @@ export async function POST(req: Request) {
         security: {
           status: securityStatus,
           reason: securityReason,
-          source: hpResult.ok ? "security_check" : (gpHasData ? "security_check_limited" : "unavailable"),
+          source: hpResult.ok ? "risk_layer" : "unavailable",
           honeypot: hpResult.ok ? hpResult.honeypot : null,
           buyTax: hpResult.ok ? hpResult.buyTax : null,
           sellTax: hpResult.ok ? hpResult.sellTax : null,
@@ -2623,14 +2636,14 @@ export async function POST(req: Request) {
         holders: {
           status: holdersStatus,
           reason: holdersReason,
-          source: "on_chain",
+          source: "holders_layer",
           holderCount: holderCount ?? null,
           top1, top5, top10, top20,
         },
         liquidity: {
           status: liquidityStatus,
           reason: liquidityReason,
-          source: "dex_data",
+          source: "lp_layer",
           poolCount: matchingPools.length,
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
@@ -2640,7 +2653,7 @@ export async function POST(req: Request) {
         contractChecks: {
           status: contractChecksStatus,
           reason: contractChecksReason,
-          source: "rpc",
+          source: "risk_layer",
           bytecodeStatus,
           ownerStatus,
           mintStatus,
@@ -2661,6 +2674,16 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._timing = { totalMs: _totalMs }
     }
     if (debugMode) {
+      const skippedChecks: string[] = []
+      if (!alchemyConfigured) skippedChecks.push('rpc_checks_missing_configuration')
+      if (holdersStatus !== 'ok') skippedChecks.push('holder_verification_incomplete')
+      if (lpControl.status === 'insufficient_data' || lpControl.status === 'error' || lpControl.status === 'unverified') skippedChecks.push('lp_proof_incomplete')
+      if (!hpResult.ok) skippedChecks.push('trading_simulation_incomplete')
+      const chainReasons = [
+        holdersReason ? `holders:${holdersReason}` : null,
+        lpControl.reason ? `lp:${lpControl.reason}` : null,
+        securityReason ? `security:${securityReason}` : null,
+      ].filter(Boolean) as string[]
       ;(responsePayload as any)._debug = {
         routeName: '/api/token',
         cacheHit: false,
@@ -2759,11 +2782,39 @@ export async function POST(req: Request) {
             withdraw: cortexContractFlags.withdraw,
           },
         },
+        chainDiagnostics: {
+          requestedChain: rawChain,
+          resolvedChain: chain,
+          marketNetwork: chain,
+          holderChainUsed: holdersRaw?.__chainUsed ?? (chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'),
+          rpcChainUsed: chain,
+          lpChainUsed: chain,
+          contractFlagChainUsed: chain,
+          securityChainUsed: chain,
+          skippedChecks,
+          reasons: chainReasons,
+        },
+        providerFlow: {
+          requestedChain: rawChain,
+          deepScan: true,
+          coingeckoAttempted: true,
+          dexScreenerAttempted: true,
+          moralisAttempted: true,
+          goldrushAttempted: true,
+          alchemyAttempted: true,
+          coingeckoUsable: Boolean(coingeckoRaw),
+          dexScreenerUsable: Boolean(gtData || _dexFb),
+          moralisUsable: Boolean((moralisHoldersRaw && moralisHoldersRaw.__status !== 'error') || (moralisTransfersRaw && moralisTransfersRaw.__status !== 'error')),
+          goldrushUsable: Boolean(goldrush || holdersRaw),
+          alchemyUsable: alchemyConfigured && rpcCallsSucceeded > 0,
+          cacheHits: 0,
+          dedupedCalls: 0,
+          providerCallCounts: { coingecko: 1, dexScreener: 1, moralis: 2, goldrush: 2, alchemy: rpcCallsAttempted },
+        },
       }
     } else {
       delete (responsePayload as any)._diagnostics
     }
-    tokenResponseCache.set(cacheKey, { exp: Date.now() + TOKEN_CACHE_TTL_MS, payload: responsePayload })
     return NextResponse.json(responsePayload)
   } catch (err) {
     console.error("Fatal backend error:", err);
