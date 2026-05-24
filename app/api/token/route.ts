@@ -370,7 +370,13 @@ const _dexFbCache = new Map<string, { data: DexFallbackResult | null; ts: number
 const DEX_FB_TTL = 90_000
 
 async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 'base'): Promise<DexFallbackResult | null> {
-  const dexChainId = chain === 'eth' ? 'ethereum' : 'base'
+  const dexChainIdMap: Record<ChainKey, string> = {
+    eth: 'ethereum',
+    base: 'base',
+    polygon: 'polygon',
+    bnb: 'bsc',
+  }
+  const dexChainId = dexChainIdMap[chain] ?? 'base'
   const key = `${chain}:${tokenAddress.toLowerCase()}`
   const hit = _dexFbCache.get(key)
   if (hit && Date.now() - hit.ts < DEX_FB_TTL) return hit.data
@@ -449,6 +455,20 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
   } catch {
     return miss(null)
   }
+}
+
+function safeHolderReason(reason: string | null | undefined): string {
+  const r = String(reason ?? '').toLowerCase().trim()
+  if (!r) return 'holder_data_unavailable'
+  if (r.includes('missing_api_key')) return 'holder_provider_not_configured'
+  if (r.includes('timeout')) return 'holder_provider_timeout'
+  if (r.includes('bad_request')) return 'holder_query_rejected'
+  if (r.includes('provider_unavailable')) return 'holder_provider_unavailable'
+  if (r.includes('no_percentages')) return 'holder_rows_without_percentages'
+  if (r.includes('no_rows')) return 'no_holder_rows_returned'
+  if (r.includes('derived_from_supply')) return 'holder_percentages_derived_from_supply'
+  if (r.includes('api_error') || r.includes('error')) return 'holder_provider_error'
+  return reason ?? 'holder_data_unavailable'
 }
 
 
@@ -1990,7 +2010,7 @@ export async function POST(req: Request) {
       holderDistributionStatus.status === 'partial' ? 'partial' :
       holderDistributionStatus.status === 'error' ? 'error' :
       'unavailable';
-    const holdersReason = holdersStatus === "ok" ? null : (holderDistributionStatus?.reason ?? "holder_data_unavailable");
+    const holdersReason = holdersStatus === "ok" ? null : safeHolderReason(holderDistributionStatus?.reason ?? "holder_data_unavailable");
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "unavailable"));
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
@@ -2661,6 +2681,16 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._timing = { totalMs: _totalMs }
     }
     if (debugMode) {
+      const skippedChecks: string[] = []
+      if (!alchemyConfigured) skippedChecks.push('rpc_checks_missing_configuration')
+      if (holdersStatus !== 'ok') skippedChecks.push('holder_verification_incomplete')
+      if (lpControl.status === 'insufficient_data' || lpControl.status === 'error' || lpControl.status === 'unverified') skippedChecks.push('lp_proof_incomplete')
+      if (!hpResult.ok) skippedChecks.push('trading_simulation_incomplete')
+      const chainReasons = [
+        holdersReason ? `holders:${holdersReason}` : null,
+        lpControl.reason ? `lp:${lpControl.reason}` : null,
+        securityReason ? `security:${securityReason}` : null,
+      ].filter(Boolean) as string[]
       ;(responsePayload as any)._debug = {
         routeName: '/api/token',
         cacheHit: false,
@@ -2758,6 +2788,18 @@ export async function POST(req: Request) {
             blacklist: cortexContractFlags.blacklist,
             withdraw: cortexContractFlags.withdraw,
           },
+        },
+        chainDiagnostics: {
+          requestedChain: rawChain,
+          resolvedChain: chain,
+          marketNetwork: chain,
+          holderChainUsed: holdersRaw?.__chainUsed ?? (chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'),
+          rpcChainUsed: chain,
+          lpChainUsed: chain,
+          contractFlagChainUsed: chain,
+          securityChainUsed: chain,
+          skippedChecks,
+          reasons: chainReasons,
         },
       }
     } else {
