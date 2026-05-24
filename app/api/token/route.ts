@@ -634,6 +634,13 @@ type LpDiagnostics = {
   teamPercent: number | null;
   failureReason: string | null;
   dexscreenerPoolSynthesized: boolean;
+  poolDetected: boolean;
+  poolSource: string;
+  primaryPoolSelected: boolean;
+  selectedPoolAddress: string | null;
+  selectedPoolDex: string | null;
+  selectedPoolType: string | null;
+  selectedPoolLiquidityUsd: number | null;
 };
 
 type LpControlRead = {
@@ -825,7 +832,9 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
   const quoteTokenAddress = String((quoteInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
   const baseTokenSymbol = String((baseInc as Record<string, unknown>).symbol ?? "").trim() || null;
   const quoteTokenSymbol = String((quoteInc as Record<string, unknown>).symbol ?? "").trim() || null;
-  const address = String(attrs.address ?? pool?.id ?? "").trim().toLowerCase() || null;
+  const _addrRaw = String(attrs.address ?? '').trim().toLowerCase()
+  const _idHex = String(pool?.id ?? '').match(/0x[a-f0-9]{40}/i)?.[0]?.toLowerCase() ?? null
+  const address = (/^0x[a-f0-9]{40}$/.test(_addrRaw) ? _addrRaw : _idHex) || null
   const { dexId, dexName } = extractPoolDex(pool, []);
   return {
     address,
@@ -1412,7 +1421,9 @@ export async function POST(req: Request) {
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
     const noActivePools = matchingPools.length === 0;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
-    const primaryPoolAddress = String(mainPoolAttr.address ?? mainPool?.id ?? "").trim().toLowerCase() || null;
+    const _mpAddrRaw = String(mainPoolAttr.address ?? '').trim().toLowerCase()
+    const _mpIdHex = String(mainPool?.id ?? '').match(/0x[a-f0-9]{40}/i)?.[0]?.toLowerCase() ?? null
+    const primaryPoolAddress = (/^0x[a-f0-9]{40}$/.test(_mpAddrRaw) ? _mpAddrRaw : _mpIdHex) || null
     const lpPool = selectedLpPool.pool;
     const lpPoolType = lpPool?.poolType ?? "unknown";
     const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
@@ -1558,6 +1569,13 @@ export async function POST(req: Request) {
       teamPercent: null,
       failureReason: null,
       dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
+      poolDetected: normalizedPools.length > 0,
+      poolSource: _dsFbPoolSynthesized ? 'dexscreener_synthesized' : (matchingPools.length > 0 ? 'geckoterminal' : 'none'),
+      primaryPoolSelected: Boolean(lpPool),
+      selectedPoolAddress: lpPoolAddress,
+      selectedPoolDex: lpPool?.dexId ?? lpPool?.dexName ?? null,
+      selectedPoolType: lpPoolType,
+      selectedPoolLiquidityUsd: lpPool?.liquidityUsd ?? null,
     };
     let lpControl: LpControlResult = {
       status: "unverified",
@@ -2925,6 +2943,13 @@ export async function POST(req: Request) {
           proofStatus: lpDiagnostics.lpState,
           failureReason: lpDiagnostics.failureReason,
           dexscreenerPoolSynthesized: lpDiagnostics.dexscreenerPoolSynthesized,
+          poolDetected: lpDiagnostics.poolDetected,
+          poolSource: lpDiagnostics.poolSource,
+          primaryPoolSelected: lpDiagnostics.primaryPoolSelected,
+          selectedPoolAddress: lpDiagnostics.selectedPoolAddress,
+          selectedPoolDex: lpDiagnostics.selectedPoolDex,
+          selectedPoolType: lpDiagnostics.selectedPoolType,
+          selectedPoolLiquidityUsd: lpDiagnostics.selectedPoolLiquidityUsd,
           reason: lpDiagnostics.reason,
           _full: lpDiagnostics,
         },
