@@ -177,9 +177,8 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const saveAttemptedRef = useRef(false)
   const saveSucceededRef = useRef(false)
   const saveFailureReasonRef = useRef<string | null>(null)
-  const hydrateAfterLoginAttemptedRef = useRef(false)
-  const hydrateAfterLoginSucceededRef = useRef(false)
-  const logoutClearedServerWalletRef = useRef(false)
+  const hydrateFromServerAttemptedRef = useRef(false)
+  const hydrateFromServerSucceededRef = useRef(false)
 
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -308,6 +307,12 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         saveFailureReasonRef.current = `patch_status_${patched?.status ?? 'unknown'}`
         return
       }
+      const patchJson = await patched.json().catch(() => null) as { error?: string; fallback?: boolean } | null
+      if (patchJson?.fallback || patchJson?.error) {
+        saveSucceededRef.current = false
+        saveFailureReasonRef.current = `server_upsert_failed: ${patchJson?.error ?? 'fallback'}`
+        return
+      }
       saveSucceededRef.current = true
       saveFailureReasonRef.current = null
     } catch {
@@ -391,10 +396,14 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       if (!cancelled) setSavedState(local)
 
       if (!session?.access_token) return
+      hydrateFromServerAttemptedRef.current = true
       const nextState = await fetchServerWalletState(session.access_token)
       if (!nextState || cancelled) return
       writeLocalWalletState(key, nextState)
-      if (!cancelled) setSavedState(nextState)
+      if (!cancelled) {
+        setSavedState(nextState)
+        hydrateFromServerSucceededRef.current = true
+      }
 
       if (process.env.NODE_ENV !== 'production') {
         console.debug('[ConnectWallet] hydrate', { savedWalletFound: !!local, savedUserWalletFound: !!nextState?.address, authUserIdPresent: !!userId })
@@ -418,7 +427,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         return
       }
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && userId && session?.access_token) {
-        hydrateAfterLoginAttemptedRef.current = true
+        hydrateFromServerAttemptedRef.current = true
         setAuthUserId(userId)
         reconnectAttemptedRef.current = false
         const key = walletKeyForUser(userId)
@@ -430,7 +439,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
           if (!nextState) return
           writeLocalWalletState(key, nextState)
           setSavedState(nextState)
-          hydrateAfterLoginSucceededRef.current = true
+          hydrateFromServerSucceededRef.current = true
         })()
       }
     })
@@ -534,15 +543,19 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     const isExternalMobileBrowser = isMobileClient && !isMetaMaskMobileBrowser()
     const wcConnector = getWalletConnectConnector()
     const localWallet = readLocalWalletState(walletKeyForUser(authUserId))
+    const manualDisconnectBlocked = getManualDisconnectFlag(authUserId)
+    const showingSavedReconnectState = !!savedState && !isConnected && !isReconnecting && !manualDisconnectBlocked
     const debug = {
       authUserId,
+      serverWalletFound: !!savedState,
+      localWalletFound: !!localWallet,
       saveAttempted: saveAttemptedRef.current,
       saveSucceeded: saveSucceededRef.current,
       saveFailureReason: saveFailureReasonRef.current,
-      serverWalletFound: !!savedState,
-      localWalletFound: !!localWallet,
-      hydrateAfterLoginAttempted: hydrateAfterLoginAttemptedRef.current,
-      hydrateAfterLoginSucceeded: hydrateAfterLoginSucceededRef.current,
+      hydrateFromServerAttempted: hydrateFromServerAttemptedRef.current,
+      hydrateFromServerSucceeded: hydrateFromServerSucceededRef.current,
+      manualDisconnectBlocked,
+      showingSavedReconnectState,
       isExternalMobileBrowser,
       savedWalletConnectFound: !!savedState?.connectorId && isWalletConnect(savedState.connectorId),
       wagmiStatus: isConnected ? 'connected' : (isReconnecting ? 'reconnecting' : 'disconnected'),
@@ -552,10 +565,8 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       visibilityRecheckCount: visibilityRecheckCountRef.current,
       reconnectButtonUsed: reconnectButtonUsedRef.current,
       reconnectResult: reconnectResultRef.current,
-      manualDisconnectBlocked: getManualDisconnectFlag(authUserId),
-      logoutClearedServerWallet: logoutClearedServerWalletRef.current,
     }
-    console.debug('[ConnectWallet] accountWalletPersistenceDebug', debug)
+    console.debug('[ConnectWallet] accountWalletDebug', debug)
     routeChangeRef.current = false
   }, [authUserId, connectors, getWalletConnectConnector, hasLikelyWcSession, isConnected, isMobileClient, isReconnecting, savedState, pathname])
 
@@ -904,11 +915,11 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
           >
             Reconnect Wallet
           </button>
-          <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center' }}>
-            Saved wallet: {savedState?.address.slice(0, 6)}…{savedState?.address.slice(-4)}
+          <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center', fontFamily: 'var(--font-plex-mono, monospace)' }}>
+            {savedState?.address.slice(0, 6)}…{savedState?.address.slice(-4)}
           </div>
           <div style={{ fontSize: '10px', color: '#64748b', textAlign: 'center' }}>
-            Wallet saved. Reconnect to use it.
+            Wallet saved to your account. Reconnect on this device.
           </div>
         </div>
       )}
