@@ -619,6 +619,17 @@ type LpDiagnostics = {
   goldrushItemCount: number;
   goldrushPctDerived: boolean;
   rpcFallbackAttempted: boolean;
+  // Extended diagnostic fields
+  goldrushStatus: string | null;
+  rpcAttempted: boolean;
+  totalSupplyChecked: boolean;
+  burnAddressesChecked: boolean;
+  lockerAddressesChecked: boolean;
+  ownerTeamBalanceChecked: boolean;
+  burnPercent: number | null;
+  lockedPercent: number | null;
+  teamPercent: number | null;
+  failureReason: string | null;
 };
 
 type LpControlRead = {
@@ -822,7 +833,7 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
     quoteTokenSymbol,
     baseTokenAddress,
     quoteTokenAddress,
-    poolType: detectPoolType(pool),
+    poolType: detectPoolType(pool, dexId || undefined),
     hasDexMeta: Boolean(dexId || dexName),
     isValidAddress: Boolean(address && /^0x[a-f0-9]{40}$/.test(address)),
     raw: pool,
@@ -890,26 +901,38 @@ function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string)
   return best ? { pool: best.pool, reason: best.reason, candidates: pools } : { pool: null, reason: "no_pool_candidates", candidates: pools };
 }
 
-function detectPoolType(pool: Record<string, unknown> | null): LpControlResult["poolType"] {
+function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string): LpControlResult["poolType"] {
   const a = (pool?.attributes ?? {}) as Record<string, unknown>;
   const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
+  // Correctly extract the dex id from the relationships object (avoids "[object Object]" stringification)
+  const relDexId = String(
+    ((rel.dex as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)?.id ?? ''
+  ).toLowerCase().trim()
   const candidates = [
-    a.dex_id, a.dex, a.dex_name, a.name, a.pool_name, a.pair_name, a.pool_type, a.address,
-    rel?.dex, rel?.base_token, rel?.quote_token,
+    dexIdHint,
+    relDexId,
+    a.dex_id, a.dex, a.dex_name, a.name, a.pool_name, a.pair_name, a.pool_type,
     pool?.id,
   ].map((v) => String(v ?? '').toLowerCase()).filter(Boolean);
   const text = candidates.join(' | ');
-
+  // Fast-path: use startsWith on the most reliable id signals first.
+  // This correctly handles network-suffixed variants like "uniswap_v2_eth" or "uniswap_v3_base".
+  const idSignals = [dexIdHint ?? '', relDexId, String(a.dex_id ?? a.dex ?? '').toLowerCase().trim()]
+  for (const s of idSignals) {
+    if (!s) continue
+    if (/^aerodrome|^slipstream/.test(s)) return "aerodrome"
+    if (/^uniswap_v4|^uniswap-v4/.test(s)) return "v3"  // treat V4 as concentrated
+    if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^sushiswap_v3|^algebra/.test(s)) return "v3"
+    if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^sushiswap_v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
+    if (/^pancakeswap_v3|^sushiswap_v3/.test(s)) return "v3"
+    if (/^sushiswap|^pancakeswap/.test(s)) return "v2"  // unversioned: default to v2
+  }
   const has = (re: RegExp) => re.test(text);
-
   if (has(/\baerodrome\b|\bslipstream\b/)) return "aerodrome";
   if (has(/\bconcentrated\b|\bcl pool\b|\balgebra\b/)) return "concentrated";
-  if (has(/\buniswap(?:[_-]?v)?3\b|\bpancakeswap(?:[_-]?v)?3\b|\bv3\b/)) return "v3";
-
-  if (has(/\buniswap(?:[_-]?v)?2\b|\bsushiswap(?:[_-]?v)?2\b|\bpancakeswap(?:[_-]?v)?2\b|\bbaseswap\b|\balienbase\b|\bswapbased\b|\bconstant[-_ ]?product\b|\bv2\b/)) {
-    return "v2";
-  }
-
+  // Use (?:_|-) instead of \b after version number to match "uniswap_v3_eth" etc.
+  if (has(/uniswap(?:[_-]?v)?3(?:[_-]|$)|\bpancakeswap(?:[_-]?v)?3(?:[_-]|$)|(?:^| )v3(?:[_-]|$)/)) return "v3";
+  if (has(/uniswap(?:[_-]?v)?2(?:[_-]|$)|sushiswap(?:[_-]?v)?2(?:[_-]|$)|pancakeswap(?:[_-]?v)?2(?:[_-]|$)|\bbaseswap\b|\balienbase\b|\bswapbased\b|\bshiba(?:swap)?\b|constant[-_ ]?product|(?:^| )v2(?:[_-]|$)/)) return "v2";
   return "unknown";
 }
 
@@ -1412,7 +1435,7 @@ export async function POST(req: Request) {
     const lpDexId = lpPool?.dexId ?? null
     const lpDexName = lpPool?.dexName ?? null
     const lpPoolAddressPresent = Boolean(lpPoolAddress && /^0x[a-f0-9]{40}$/.test(lpPoolAddress))
-    const needsLpHolderFetch = Boolean(lpPoolAddressPresent && lpPoolType === 'v2')
+    const needsLpHolderFetch = Boolean(lpPoolAddressPresent && (lpPoolType === 'v2' || lpPoolType === 'unknown'))
     const needsAI = !noActivePools || hasSecurityData
     const needsOnchainMc = _mcEarly == null && _priceEarly != null
 
@@ -1497,6 +1520,16 @@ export async function POST(req: Request) {
       goldrushItemCount: 0,
       goldrushPctDerived: false,
       rpcFallbackAttempted: false,
+      goldrushStatus: null,
+      rpcAttempted: false,
+      totalSupplyChecked: false,
+      burnAddressesChecked: false,
+      lockerAddressesChecked: false,
+      ownerTeamBalanceChecked: false,
+      burnPercent: null,
+      lockedPercent: null,
+      teamPercent: null,
+      failureReason: null,
     };
     let lpControl: LpControlResult = {
       status: "unverified",
@@ -1525,46 +1558,85 @@ export async function POST(req: Request) {
         evidence: [`pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`],
       };
     } else if (lpPoolType === "unknown") {
-      // Probe pool via RPC to classify before giving up
-      const probe = await probePoolTypeViaRpc(chain, lpPoolAddress!);
-      if (probe.v2Like) {
-        // Pool behaves like V2 — run Alchemy burn/locker check directly
-        const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
-        const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
-        if (!totalSupply || totalSupply <= 0) {
-          lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "dex_data+rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
-        } else {
-          const readPct = async (addr: string) => {
-            const data = `0x70a08231${pad32HexAddress(addr)}`;
-            const balHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data }, "latest"], "lpControlCheck.balanceOf", false);
-            if (!balHex) return 0;
-            return (Number(BigInt(balHex)) / totalSupply) * 100;
-          };
-          const _ownerForLpProbe = ownerAddrEarlyForLp && !DEAD.has(ownerAddrEarlyForLp) && !KNOWN_LOCKERS.has(ownerAddrEarlyForLp) ? ownerAddrEarlyForLp : null
-          const [burn0, burnDead, _lockerPcts, _ownerLpPctProbe] = await Promise.all([
-            readPct("0x0000000000000000000000000000000000000000"),
-            readPct("0x000000000000000000000000000000000000dEaD"),
-            Promise.all([...KNOWN_LOCKERS].map(readPct)),
-            _ownerForLpProbe ? readPct(_ownerForLpProbe) : Promise.resolve(0),
-          ]);
-          const burnShare = burn0 + burnDead;
-          const lockerShare = _lockerPcts.reduce((a: number, b: number) => a + b, 0);
-          const teamShareProbe = _ownerLpPctProbe ?? 0;
-          const base = { poolType: "v2" as const, source: "dex_data+rpc", poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
-          if (burnShare >= 50) {
-            lpControl = { ...base, status: "burned", confidence: confidenceFor(burnShare), reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
-          } else if (lockerShare >= 50) {
-            lpControl = { ...base, status: "locked", confidence: confidenceFor(lockerShare), reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
-          } else if (teamShareProbe >= 80) {
-            lpControl = { ...base, status: "team_controlled", confidence: "high", reason: `Owner wallet holds ${teamShareProbe.toFixed(2)}% of LP supply (RPC verified).`, evidence: [`owner_lp_share=${teamShareProbe.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
-          } else {
-            lpControl = { ...base, status: "unverified", confidence: "low", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
-          }
+      // Step 1: try GoldRush LP holder proof (same as v2 path) using pre-fetched data
+      const _unknownLpItems = Array.isArray(_lpHoldersForControl?.data?.items) ? _lpHoldersForControl.data.items as Array<Record<string, unknown>> : [];
+      _lpGrItemCount = _unknownLpItems.length
+      const _grStatus = _lpHoldersForControl?.__status ?? (_unknownLpItems.length > 0 ? 'ok' : 'empty')
+      const _unknownLpSupply = _unknownLpItems.find((i: Record<string, unknown>) => i?.total_supply != null)?.total_supply
+      const _unknownLpSupplyStr = _unknownLpSupply != null ? String(_unknownLpSupply) : null
+      const unknownTop = _unknownLpItems.slice(0, 5).map((h: Record<string, unknown>) => {
+        const directPct = toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage)
+        let derivedPct: number | null = null
+        if (directPct == null && _unknownLpSupplyStr != null) {
+          derivedPct = bigIntPct(h.balance ?? h.token_balance, _unknownLpSupplyStr)
+          if (derivedPct != null) _lpGrPctDerived = true
         }
-      } else if (probe.v3Like) {
-        lpControl = { status: "concentrated_liquidity", confidence: "medium", poolType: "v3", source: "dex_data+rpc", reason: "LP lock proof is not applicable to this pool type.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: concentrated-liquidity interface detected"], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
+        return {
+          address: String(h.address ?? h.holder_address ?? h.wallet_address ?? "").toLowerCase(),
+          pct: directPct ?? derivedPct ?? 0,
+        }
+      }).filter((x: { address: string; pct: number }) => /^0x[a-f0-9]{40}$/.test(x.address))
+      const unknownTopHolder = unknownTop[0] ?? null
+      const unknownBurnPct = unknownTop.filter((x: { address: string; pct: number }) => DEAD.has(x.address)).reduce((a: number, b: { pct: number }) => a + (b.pct ?? 0), 0)
+      const unknownLockerPct = unknownTop.filter((x: { address: string; pct: number }) => KNOWN_LOCKERS.has(x.address)).reduce((a: number, b: { pct: number }) => a + (b.pct ?? 0), 0)
+      const grProvedUnknown = unknownTop.some((x: { pct: number }) => (x.pct ?? 0) > 0)
+      if (grProvedUnknown) {
+        // GoldRush returned usable holder data — classify from it
+        if (unknownBurnPct >= 50) {
+          lpControl = { status: "burned", confidence: confidenceFor(unknownBurnPct), poolType: "v2", source: "geckoterminal+goldrush", reason: "Dominant LP share appears in burn/dead addresses.", evidence: [`burn_share=${unknownBurnPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+        } else if (unknownLockerPct >= 50) {
+          lpControl = { status: "locked", confidence: confidenceFor(unknownLockerPct), poolType: "v2", source: "geckoterminal+goldrush", reason: "Dominant LP share appears in known lockers.", evidence: [`locker_share=${unknownLockerPct.toFixed(2)}%`, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+        } else if (unknownTopHolder && (unknownTopHolder.pct ?? 0) >= 80 && !DEAD.has(unknownTopHolder.address) && !KNOWN_LOCKERS.has(unknownTopHolder.address)) {
+          lpControl = { status: "team_controlled", confidence: "high", poolType: "v2", source: "geckoterminal+goldrush", reason: "Single normal wallet holds dominant LP share.", evidence: [`top_holder=${unknownTopHolder.address}`, `top_share=${(unknownTopHolder.pct ?? 0).toFixed(2)}%`], poolAddressPresent: true, dexId: dexId || undefined };
+        } else {
+          const partialEv2 = [
+            unknownBurnPct > 0.5 ? `burn_share=${unknownBurnPct.toFixed(2)}%` : null,
+            unknownLockerPct > 0.5 ? `locker_share=${unknownLockerPct.toFixed(2)}%` : null,
+          ].filter(Boolean) as string[]
+          lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "geckoterminal+goldrush", reason: "LP holder check inconclusive — no dominant burn/lock pattern.", evidence: [`top_rows=${unknownTop.length}`, ...partialEv2, `pool=${_lpAddrSnippet}`], poolAddressPresent: true, dexId: dexId || undefined };
+        }
       } else {
-        lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "dex_data+rpc", reason: alchemyConfigured ? "Verification pool found, but current RPC checks did not confirm a standard V2/V3 LP interface." : "Alchemy RPC fallback not configured.", evidence: [`Verification pool: ${lpPair}`, "Pool type: unknown", `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`, alchemyConfigured ? "RPC probe: no V2/V3 interface confirmed" : "RPC probe: unavailable (Alchemy not configured)"], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
+        // Step 2: GoldRush failed or empty — probe pool via RPC to classify
+        _lpRpcFallbackRan = true
+        const probe = await probePoolTypeViaRpc(chain, lpPoolAddress!);
+        if (probe.v2Like) {
+          const totalSupplyHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
+          const totalSupply = totalSupplyHex ? Number(BigInt(totalSupplyHex)) : null;
+          if (!totalSupply || totalSupply <= 0) {
+            lpControl = { status: "unverified", confidence: "low", poolType: "v2", source: "dex_data+rpc", reason: "Pool probed as V2-like but RPC totalSupply read is unavailable.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
+          } else {
+            const readPct = async (addr: string) => {
+              const data = `0x70a08231${pad32HexAddress(addr)}`;
+              const balHex = await countedRpcCall("eth_call", [{ to: lpPoolAddress!, data }, "latest"], "lpControlCheck.balanceOf", false);
+              if (!balHex) return 0;
+              return (Number(BigInt(balHex)) / totalSupply) * 100;
+            };
+            const _ownerForLpProbe = ownerAddrEarlyForLp && !DEAD.has(ownerAddrEarlyForLp) && !KNOWN_LOCKERS.has(ownerAddrEarlyForLp) ? ownerAddrEarlyForLp : null
+            const [burn0, burnDead, _lockerPcts, _ownerLpPctProbe] = await Promise.all([
+              readPct("0x0000000000000000000000000000000000000000"),
+              readPct("0x000000000000000000000000000000000000dEaD"),
+              Promise.all([...KNOWN_LOCKERS].map(readPct)),
+              _ownerForLpProbe ? readPct(_ownerForLpProbe) : Promise.resolve(0),
+            ]);
+            const burnShare = burn0 + burnDead;
+            const lockerShare = _lockerPcts.reduce((a: number, b: number) => a + b, 0);
+            const teamShareProbe = _ownerLpPctProbe ?? 0;
+            const base = { poolType: "v2" as const, source: "dex_data+rpc", poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
+            if (burnShare >= 50) {
+              lpControl = { ...base, status: "burned", confidence: confidenceFor(burnShare), reason: "Dominant LP share appears in burn/dead balances via RPC.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+            } else if (lockerShare >= 50) {
+              lpControl = { ...base, status: "locked", confidence: confidenceFor(lockerShare), reason: "Dominant LP share appears in known locker balances via RPC.", evidence: [`locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+            } else if (teamShareProbe >= 80) {
+              lpControl = { ...base, status: "team_controlled", confidence: "high", reason: `Owner wallet holds ${teamShareProbe.toFixed(2)}% of LP supply (RPC verified).`, evidence: [`owner_lp_share=${teamShareProbe.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+            } else {
+              lpControl = { ...base, status: "unverified", confidence: "low", reason: "RPC balances do not prove burned/locked LP dominance.", evidence: [`burn_share=${burnShare.toFixed(2)}%`, `locker_share=${lockerShare.toFixed(2)}%`, `pool=${_lpAddrSnippet}`] };
+            }
+          }
+        } else if (probe.v3Like) {
+          lpControl = { status: "concentrated_liquidity", confidence: "medium", poolType: "v3", source: "dex_data+rpc", reason: "LP lock proof is not applicable to this pool type.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: concentrated-liquidity interface detected"], poolAddressPresent: true, probeV2Like: false, probeV3Like: true, dexId: dexId || undefined };
+        } else {
+          lpControl = { status: "unverified", confidence: "low", poolType: "unknown", source: "dex_data+rpc", reason: alchemyConfigured ? "Verification pool found, but current RPC checks did not confirm a standard V2/V3 LP interface." : "LP holder data unavailable and RPC probe did not confirm a standard V2/V3 interface.", evidence: [`Verification pool: ${lpPair}`, "Pool type: unknown", `DEX metadata: ${lpPool?.hasDexMeta ? (lpPool.dexId ?? lpPool.dexName ?? "available") : "unavailable"}`, `GoldRush: ${_grStatus}`, alchemyConfigured ? `RPC probe: ${probe.probeSummary}` : "RPC probe: unavailable (Alchemy not configured)"], poolAddressPresent: true, probeV2Like: false, probeV3Like: false, dexId: dexId || undefined };
+        }
       }
     } else {
       // V2 — run GoldRush LP holder check
@@ -1643,11 +1715,21 @@ export async function POST(req: Request) {
       if (!line) return null
       return parseFloat(line.split('=')[1]?.replace('%', '') ?? '') || null
     }
+    const _lpEv = lpControl.evidence ?? []
+    const _extractedBurnPct = _extractEvidencePct(_lpEv, 'burn_share')
+    const _extractedLockerPct = _extractEvidencePct(_lpEv, 'locker_share')
+    const _extractedTeamPct = _extractEvidencePct(_lpEv, 'owner_lp_share') ?? _extractEvidencePct(_lpEv, 'top_share')
+    const _lpFailureReason = lpControl.status === "unverified"
+      ? (_lpGrItemCount === 0 && !_lpRpcFallbackRan ? 'goldrush_no_rows'
+        : _lpGrItemCount === 0 && _lpRpcFallbackRan ? 'rpc_balance_checks_failed'
+        : _lpGrItemCount > 0 ? 'no_burn_or_locker_balance'
+        : 'unknown')
+      : null
     lpDiagnostics = {
       ...lpDiagnostics,
-      lpTokenTotalSupplyFound: (lpControl.evidence ?? []).some((e) => /totalSupply|burn_share|locker_share|top_rows|top_share/i.test(e)),
-      burnBalanceFound: (lpControl.evidence ?? []).some((e) => /burn_share=/i.test(e)),
-      lockerBalanceFound: (lpControl.evidence ?? []).some((e) => /locker_share=/i.test(e)),
+      lpTokenTotalSupplyFound: _lpEv.some((e) => /totalSupply|burn_share|locker_share|top_rows|top_share/i.test(e)),
+      burnBalanceFound: _lpEv.some((e) => /burn_share=/i.test(e)),
+      lockerBalanceFound: _lpEv.some((e) => /locker_share=/i.test(e)),
       teamBalanceFound: lpControl.status === "team_controlled",
       lpState: lpControl.status,
       confidence: lpControl.confidence,
@@ -1655,6 +1737,16 @@ export async function POST(req: Request) {
       goldrushItemCount: _lpGrItemCount,
       goldrushPctDerived: _lpGrPctDerived,
       rpcFallbackAttempted: _lpRpcFallbackRan,
+      goldrushStatus: needsLpHolderFetch ? (_lpGrItemCount > 0 ? 'ok' : (_lpHoldersForControl?.__reason ?? 'empty')) : 'not_attempted',
+      rpcAttempted: _lpRpcFallbackRan || lpPoolType === 'unknown',
+      totalSupplyChecked: _lpEv.some((e) => /totalSupply|burn_share|locker_share|top_rows|top_share/i.test(e)),
+      burnAddressesChecked: _lpEv.some((e) => /burn_share=/i.test(e)) || _lpRpcFallbackRan,
+      lockerAddressesChecked: _lpEv.some((e) => /locker_share=/i.test(e)) || _lpRpcFallbackRan,
+      ownerTeamBalanceChecked: lpControl.status === "team_controlled" || _lpEv.some((e) => /owner_lp_share=/i.test(e)),
+      burnPercent: _extractedBurnPct,
+      lockedPercent: _extractedLockerPct,
+      teamPercent: _extractedTeamPct,
+      failureReason: _lpFailureReason,
     };
 
     lpControl.evidence = [
@@ -2784,17 +2876,25 @@ export async function POST(req: Request) {
           derivationFailureReason: holderDerivationFailureReason,
         },
         lpDiagnostics: {
-          poolType: lpDiagnostics.poolType,
+          chain: lpDiagnostics.chain,
           primaryPool: lpDiagnostics.primaryPoolAddress,
+          poolType: lpDiagnostics.poolType,
+          dex: lpDiagnostics.primaryDex,
+          poolAddress: lpDiagnostics.lpTokenAddress,
           lpToken: lpDiagnostics.lpTokenAddress,
-          totalSupplyChecked: lpDiagnostics.lpTokenTotalSupplyFound,
-          burnBalanceChecked: lpDiagnostics.burnBalanceFound,
-          lockerChecked: lpDiagnostics.lockerBalanceFound,
-          teamBalanceChecked: lpDiagnostics.teamBalanceFound,
-          burnPercent: _extractEvidencePct(lpControl.evidence ?? [], 'burn_share'),
-          lockedPercent: _extractEvidencePct(lpControl.evidence ?? [], 'locker_share'),
-          teamPercent: _extractEvidencePct(lpControl.evidence ?? [], 'owner_lp_share'),
+          goldrushAttempted: lpDiagnostics.goldrushAttempted,
+          goldrushStatus: lpDiagnostics.goldrushStatus,
+          goldrushRawItemCount: lpDiagnostics.goldrushItemCount,
+          rpcAttempted: lpDiagnostics.rpcAttempted,
+          totalSupplyChecked: lpDiagnostics.totalSupplyChecked,
+          burnAddressesChecked: lpDiagnostics.burnAddressesChecked,
+          lockerAddressesChecked: lpDiagnostics.lockerAddressesChecked,
+          ownerTeamBalanceChecked: lpDiagnostics.ownerTeamBalanceChecked,
+          burnPercent: lpDiagnostics.burnPercent,
+          lockedPercent: lpDiagnostics.lockedPercent,
+          teamPercent: lpDiagnostics.teamPercent,
           proofStatus: lpDiagnostics.lpState,
+          failureReason: lpDiagnostics.failureReason,
           reason: lpDiagnostics.reason,
           _full: lpDiagnostics,
         },
