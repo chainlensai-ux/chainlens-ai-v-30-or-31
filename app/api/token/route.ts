@@ -507,32 +507,6 @@ function safeHolderReason(reason: string | null | undefined): string {
 }
 
 
-async function fetchGoPlus(chain: ChainKey, contract: string): Promise<unknown> {
-  try {
-    const chainIdMap: Record<ChainKey, string> = {
-      eth:     '1',
-      base:    '8453',
-      polygon: '137',
-      bnb:     '56',
-    };
-    const chainId = chainIdMap[chain];
-    if (!chainId) return null;
-    const res = await fetch(
-      `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${contract}`,
-      { cache: 'no-store', signal: AbortSignal.timeout(5000) }
-    );
-    if (!res.ok) {
-      console.error('GoPlus error:', res.status);
-      return null;
-    }
-    return await res.json();
-  } catch (err) {
-    console.error('Error fetching GoPlus:', err);
-    return null;
-  }
-}
-
-
 async function fetchGMGN(contract: string): Promise<any> {
   try {
     const res = await fetch(`https://api.gmgn.ai/token/${contract}`, { signal: AbortSignal.timeout(3000) });
@@ -1268,7 +1242,7 @@ export async function POST(req: Request) {
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
-    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 9, noCache: true })
+    const cacheKey = JSON.stringify({ contract: String(resolvedAddress ?? '').toLowerCase(), chain, _cv: 10, noCache: true })
 
     // Detect near-valid hex strings (0x prefix but wrong char count) and return a helpful error
     if (!resolvedAddress && /^0x[a-fA-F0-9]+$/i.test(originalInput) && originalInput.length !== 42) {
@@ -1290,6 +1264,7 @@ export async function POST(req: Request) {
     console.log("Incoming scan request:", contract);
 
     const alchemyConfigured = Boolean(getAlchemyRpcUrl(chain))
+    const ownerSelectors = ['0x8da5cb5b', '0x893d20e8', '0xf851a440', '0x245a7bfc', '0x5c60da1b']
     let rpcCallsAttempted = 0
     let rpcCallsSucceeded = 0
     let rpcCallsFailed = 0
@@ -1352,6 +1327,14 @@ export async function POST(req: Request) {
       fetchMoralisHolders(chain, contract),
       fetchMoralisTransfers(chain, contract),
     ]);
+    const alchemyMandatoryReads = await Promise.all([
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[1] }, 'latest'], 'ownerCheck.getOwner', false),
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[2] }, 'latest'], 'ownerCheck.admin', false),
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[3] }, 'latest'], 'ownerCheck.proxyAdmin', false),
+      countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[4] }, 'latest'], 'ownerCheck.implementation', false),
+      countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck.mandatory', true),
+    ])
     if (process.env.NODE_ENV === 'development') console.log('[token-timing] phase1Ms', Date.now() - _t0)
 
     const analysis = analyzeContract(bytecode);
@@ -2025,12 +2008,9 @@ export async function POST(req: Request) {
     if (process.env.NODE_ENV === "development") {
       console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] tokenEndpointMarketCapPresent', tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0, '[gt-market] poolEndpointMarketCapPresent', poolEndpointMarketCapPresent, '[gt-market] marketCap available', marketCapFromGt != null, '[gt-market] fdv available', fdv != null)
     }
-    // Optional GoPlus data — only used if already present and Honeypot.is is unavailable.
-    // GoPlus is not a core ChainLens security provider; treat its data as low-confidence fallback only.
+    // Security fallbacks are disabled: risk layer uses active scan providers only.
     const gpHasData = false
     const gpHoneypot: null = null
-
-    // GoPlus-derived contract flags (low-confidence fallback; only used when GoPlus has data)
     const gpMint = null
     const gpUpgradeable = null
     const gpBlacklist = null
@@ -2057,7 +2037,7 @@ export async function POST(req: Request) {
     const liquidityStatus: "ok" | "partial" | "unavailable" | "error" =
       mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "unavailable"));
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
-    const ownerCall = _ownerHexForLp ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
+    const ownerCall = _ownerHexForLp ?? alchemyMandatoryReads[0] ?? alchemyMandatoryReads[1] ?? alchemyMandatoryReads[2] ?? alchemyMandatoryReads[3] ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
@@ -2348,7 +2328,7 @@ export async function POST(req: Request) {
     const ownerStatus = ownerAddr ? 'ok' : 'unavailable'
     const mintStatus = cortexContractFlags.mint.status !== 'unverified' ? 'ok' : 'unavailable'
     const proxyStatus = cortexContractFlags.proxy.status !== 'unverified' ? 'ok' : 'unavailable'
-    const transferControlStatus = (hpResult.ok || gpHasData) ? 'partial' : 'unavailable'
+    const transferControlStatus = hpResult.ok ? 'partial' : 'unavailable'
     const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
       cortexContractFlags.bytecodeChecked ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
     const contractChecksReason = contractChecksStatus === 'unavailable'

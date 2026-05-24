@@ -1230,7 +1230,7 @@ export default function TerminalTokenScanner() {
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
   const [lpExpanded, setLpExpanded] = useState(true)
-  const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-control'|'risk-checks'|'watch-plan'>('cortex-read')
+  const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-safety'|'risk-engine'|'deployer-intel'>('cortex-read')
   const [copiedHolderAddress, setCopiedHolderAddress] = useState<string | null>(null)
 
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
@@ -1529,9 +1529,9 @@ export default function TerminalTokenScanner() {
                   { id: 'cortex-read',  label: 'CORTEX Read',  dot: '#2DD4BF' },
                   { id: 'market-pulse', label: 'Market Pulse',  dot: '#67e8f9' },
                   { id: 'holder-map',   label: 'Holder Map',    dot: '#a78bfa' },
-                  { id: 'lp-control',   label: 'LP Control',    dot: '#34d399' },
-                  { id: 'risk-checks',  label: 'Risk Checks',   dot: '#f87171' },
-                  { id: 'watch-plan',   label: 'Watch Plan',    dot: '#fbbf24' },
+                  { id: 'lp-safety',    label: 'LP Safety Analyzer', dot: '#34d399' },
+                  { id: 'risk-engine',  label: 'CORTEX Risk Engine', dot: '#f87171' },
+                  { id: 'deployer-intel', label: 'Deployer Intelligence', dot: '#fbbf24' },
                 ]
                 return (
                   <div style={{ display: 'flex', gap: '3px', marginBottom: '22px', overflowX: 'auto', paddingBottom: '6px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -2150,7 +2150,7 @@ export default function TerminalTokenScanner() {
               })()}
 
               {/* ── LP CONTROL ────────────────────────────────────────── */}
-              {activeSection === 'lp-control' && (
+              {activeSection === 'lp-safety' && (
                 <>
                   <div style={{ marginBottom: '18px' }}>
                     <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP CONTROL</p>
@@ -2310,7 +2310,7 @@ export default function TerminalTokenScanner() {
               )}
 
               {/* ── RISK CHECKS (CORTEX Risk Engine) ─────────────────── */}
-              {activeSection === 'risk-checks' && (
+              {activeSection === 'risk-engine' && (
                 <>
                   <div style={{ marginBottom: '18px' }}>
                     <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#f43f5e',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</p>
@@ -2515,8 +2515,8 @@ export default function TerminalTokenScanner() {
                 </>
               )}
 
-              {/* ── WATCH PLAN ────────────────────────────────────────── */}
-              {activeSection === 'watch-plan' && (() => {
+              {/* ── DEPLOYER INTELLIGENCE ─────────────────────────────── */}
+              {activeSection === 'deployer-intel' && (() => {
                 const holderState = deriveHolderState(result)
                 const lpStatus = result.lpControl?.status
                 const lpVerified = lpStatus==='locked'||lpStatus==='burned'
@@ -2540,8 +2540,8 @@ export default function TerminalTokenScanner() {
                 return(
                   <>
                     <div style={{ marginBottom:'18px' }}>
-                      <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>WATCH PLAN</p>
-                      <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Priority actions and signals to monitor before acting on this scan.</p>
+                      <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>DEPLOYER INTELLIGENCE</p>
+                      <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Deployer and behavior intelligence derived from deployer_layer risk signals.</p>
                     </div>
                     {/* Next Action */}
                     <div style={{ marginBottom:'16px',padding:'16px 18px',background:'rgba(45,212,191,0.06)',border:'1px solid rgba(45,212,191,0.24)',borderRadius:'14px' }}>
