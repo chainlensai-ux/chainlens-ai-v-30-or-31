@@ -269,7 +269,49 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
     (typeof marketData?.symbol === 'string' ? marketData.symbol : null) ??
     (typeof sectionMeta?.symbol === 'string' ? sectionMeta.symbol : null)
   let decimals: number | null = null
+  const providersCalled: string[] = []
+  const providersFailed: string[] = []
   let source = name || symbol ? 'token_api' : 'rpc'
+  if (name || symbol) providersCalled.push('token_api')
+  if (activeChainConfig.chain === 'base') {
+    providersCalled.push('dexscreener')
+    try {
+      const res = await fetch(`https://api.dexscreener.com/token-pairs/v1/base/${contract}`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+      if (res.ok) {
+        const json = await res.json() as Array<Record<string, unknown>>
+        const pair = Array.isArray(json) ? json.find((p) => {
+          const bt = (p.baseToken as Record<string, unknown> | undefined)?.address
+          const qt = (p.quoteToken as Record<string, unknown> | undefined)?.address
+          const c = contract.toLowerCase()
+          return String(bt ?? '').toLowerCase() === c || String(qt ?? '').toLowerCase() === c
+        }) : null
+        const bt = pair?.baseToken as Record<string, unknown> | undefined
+        if (!name && typeof bt?.name === 'string' && bt.name.trim()) name = bt.name.trim()
+        if (!symbol && typeof bt?.symbol === 'string' && bt.symbol.trim()) symbol = bt.symbol.trim()
+        if ((name || symbol) && source === 'rpc') source = 'dexscreener'
+      } else providersFailed.push(`dexscreener_http_${res.status}`)
+    } catch {
+      providersFailed.push('dexscreener_error')
+    }
+    if (!name || !symbol) {
+      providersCalled.push('basescan')
+      const scanKey = process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY
+      if (scanKey) {
+        try {
+          const scanRes = await fetch(`https://api.basescan.org/api?module=token&action=tokeninfo&contractaddress=${contract}&apikey=${scanKey}`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+          if (scanRes.ok) {
+            const scanJson = await scanRes.json() as { result?: Array<Record<string, unknown>> }
+            const t = scanJson?.result?.[0]
+            if (!name && typeof t?.tokenName === 'string' && t.tokenName.trim()) name = t.tokenName.trim()
+            if (!symbol && typeof t?.symbol === 'string' && t.symbol.trim()) symbol = t.symbol.trim()
+            if ((name || symbol) && source === 'rpc') source = 'basescan'
+          } else providersFailed.push(`basescan_http_${scanRes.status}`)
+        } catch {
+          providersFailed.push('basescan_error')
+        }
+      } else providersFailed.push('basescan_missing_key')
+    }
+  }
   try {
     const [n, s, d] = await Promise.all([
       alchemyRpc('eth_call', [{ to: contract, data: '0x06fdde03' }, 'latest']) as Promise<string>,
@@ -280,9 +322,31 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
     symbol = symbol ?? decodeHexStringResult(s)
     if (d && d !== '0x') decimals = parseInt(d, 16)
   } catch {}
+  if (!name || !symbol) {
+    providersCalled.push('goldrush_metadata')
+    const grKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
+    if (grKey) {
+      try {
+        const grRes = await fetch(`https://api.covalenthq.com/v1/${activeChainConfig.covalentChain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`, {
+          headers: { Authorization: `Bearer ${grKey}` },
+          cache: 'no-store',
+          signal: AbortSignal.timeout(6000),
+        })
+        if (grRes.ok) {
+          const grJson = await grRes.json() as { data?: { items?: Array<Record<string, unknown>> } }
+          const first = grJson?.data?.items?.[0]
+          if (!name && typeof first?.contract_name === 'string' && first.contract_name.trim()) name = first.contract_name.trim()
+          if (!symbol && typeof first?.contract_ticker_symbol === 'string' && first.contract_ticker_symbol.trim()) symbol = first.contract_ticker_symbol.trim()
+          if ((name || symbol) && source === 'rpc') source = 'goldrush'
+        } else providersFailed.push(`goldrush_http_${grRes.status}`)
+      } catch {
+        providersFailed.push('goldrush_error')
+      }
+    } else providersFailed.push('goldrush_missing_key')
+  }
   const out = { name, symbol, decimals }
   metaCache.set(key, { exp: Date.now() + META_CACHE_TTL_MS, data: out })
-  return { ...out, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(name), symbolFound: Boolean(symbol), source, cacheHit: false, reason: 'ok' } }
+  return { ...out, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(name), symbolFound: Boolean(symbol), source, cacheHit: false, reason: 'ok', metadataSource: source, providersCalled, providersFailed, finalResolvedName: name, finalResolvedSymbol: symbol } }
 }
 
 async function getAssetTransfers(params: Record<string, unknown>): Promise<AlchemyTransfer[]> {
@@ -604,17 +668,17 @@ async function getSupplyData(
     }
   }
 
-  const apiKey = process.env.COVALENT_API_KEY
+  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
   if (!apiKey) {
-    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: false, hasApiKey: false, reason: 'missing_api_key' } }
+    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: false, hasApiKey: false, holderRowsCount: 0, percentAvailable: false, creatorRowFound: false, linkedWalletComputed: false, devClusterComputed: false, reason: 'missing_api_key' } }
   }
 
   try {
     const res = await fetch(
-      `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/tokens/${contract}/token_holders_v2/?page-size=50&key=${apiKey}`,
-      { cache: 'no-store', signal: AbortSignal.timeout(9000) }
+      `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/tokens/${contract}/token_holders_v2/?page-size=50`,
+      { cache: 'no-store', signal: AbortSignal.timeout(9000), headers: { Authorization: `Bearer ${apiKey}` } }
     )
-    if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, reason: 'http_error' } }
+    if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, holderRowsCount: 0, percentAvailable: false, creatorRowFound: false, linkedWalletComputed: false, devClusterComputed: false, reason: 'http_error' } }
 
     const json = await res.json() as {
       data?: {
@@ -623,7 +687,7 @@ async function getSupplyData(
     }
 
     const items = json?.data?.items ?? []
-    if (items.length === 0) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, rawItemCount: 0, reason: 'no_items' } }
+    if (items.length === 0) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, holderRowsCount: 0, rawItemCount: 0, percentAvailable: false, creatorRowFound: false, linkedWalletComputed: false, devClusterComputed: false, reason: 'no_items' } }
 
     const totalSupplyRaw = items[0]?.total_supply ?? '0'
     const totalSupply = BigInt(totalSupplyRaw === '' ? '0' : totalSupplyRaw)
@@ -656,10 +720,10 @@ async function getSupplyData(
         top1: pcts[0] ?? null, top10: pcts.slice(0, 10).reduce((a, b) => a + b, 0), top20: pcts.slice(0, 20).reduce((a, b) => a + b, 0), holderCount: items.length,
         creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: Math.round(controlled * 100) / 100,
       },
-      diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, rawItemCount: items.length, normalizedCount: items.length, percentSource: 'derived_from_total_supply', derivationAttempted: true, derivationSucceeded: totalSupply > BigInt(0), reason: 'ok' },
+      diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, holderRowsCount: items.length, rawItemCount: items.length, normalizedCount: items.length, percentAvailable: totalSupply > BigInt(0), creatorRowFound: matched.some(m => m.isDeployer), linkedWalletComputed: true, devClusterComputed: true, percentSource: 'derived_from_total_supply', derivationAttempted: true, derivationSucceeded: totalSupply > BigInt(0), reason: 'ok' },
     }
   } catch {
-    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: Boolean(process.env.COVALENT_API_KEY), reason: 'fetch_error' } }
+    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY), holderRowsCount: 0, percentAvailable: false, creatorRowFound: false, linkedWalletComputed: false, devClusterComputed: false, reason: 'fetch_error' } }
   }
 }
 
