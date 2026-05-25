@@ -638,7 +638,6 @@ function getSummaryReasons(result: ScanResult): string[] {
 
 
 
-type LpMode = 'protocol' | 'lp_token' | 'unknown'
 
 function getLpMode(result: ScanResult): LpMode {
   const status = result.lpControl?.status
@@ -2332,13 +2331,13 @@ export default function TerminalTokenScanner() {
                     return (
                       <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg,rgba(15,23,42,0.72),rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
                         <div style={{ padding:'11px 12px', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px' }}>
-                          {(_lpMode === 'protocol' ? [
+                          {[
                             ['Pool detected', lp.poolAddressPresent ? 'Yes' : 'No'],
                             ['Primary market selected', verificationPool !== 'Unverified' ? 'Yes' : 'No'],
-                            ['LP lock/burn proof', getLpMode(result) === 'protocol' ? 'Not Applicable' : lpIsVerified ? 'Verified' : 'Unverified'],
+                            ['LP Proof', getLpMode(result) === 'protocol' ? 'Not Applicable' : lpIsVerified ? 'Verified' : 'Unverified'],
                             ['LP Token Model', getLpMode(result) === 'protocol' ? 'Not Used' : getLpMode(result) === 'unknown' ? 'Unknown' : 'Used'],
                             ['Next action', nextAction],
-                          ]).map(([k,v])=>(
+                          ].map(([k,v])=>(
                             <div key={String(k)} style={{ padding:'8px 9px', border:'1px solid rgba(148,163,184,0.18)', borderRadius:'9px', background:'rgba(8,14,28,0.55)' }}>
                               <div style={{ fontSize:'9px', color:'#64748b', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{k}</div>
                               <div style={{ fontSize:'11px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)' }}>{v}</div>
