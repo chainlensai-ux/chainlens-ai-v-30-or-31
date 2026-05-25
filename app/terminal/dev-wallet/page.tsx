@@ -316,7 +316,7 @@ function WarningBanner({ warnings, deployerStatus }: { warnings: string[]; deplo
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function DevWalletPage() {
-  const { plan, loading: planLoading } = usePlanWithLoading()
+  const { plan, loading: planLoading, elitePass } = usePlanWithLoading()
   const [input,        setInput]        = useState('')
   const [loading,      setLoading]      = useState(false)
   const [result,       setResult]       = useState<DevWalletResult | null>(null)
@@ -387,7 +387,8 @@ export default function DevWalletPage() {
       </div>
     )
   }
-  if (!canAccessFeature(plan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
+  const effectivePlan = elitePass.active ? 'elite' : plan
+  if (!canAccessFeature(effectivePlan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
 
   return (
     <>
@@ -492,7 +493,7 @@ export default function DevWalletPage() {
                 {/* Token identity strip */}
                 <div style={{ marginBottom:'18px' }}>
                   <h2 style={{ fontSize:'19px', fontWeight:700, color:'#f8fafc', margin:'0 0 3px' }}>
-                    {result.tokenEvidence?.name ?? 'Unknown'}
+                    {result.tokenEvidence?.name ?? shortAddr(result.contractAddress, 8, 6)}
                     {result.tokenEvidence?.symbol && <span style={{ marginLeft:'10px', fontSize:'13px', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>{result.tokenEvidence.symbol}</span>}
                   </h2>
                   <p style={{ fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', margin:0 }}>
@@ -809,19 +810,17 @@ export default function DevWalletPage() {
                       <GlassCard style={{ marginBottom:'14px' }}>
                         <p style={{ margin:'0 0 12px', fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#34d399', fontFamily:'var(--font-plex-mono)' }}>SUPPLY CONTROL SURFACE</p>
                         <DataRow label="Creator in top holders" value={
-                          result.supplyControlStatus === 'not_in_top_holders'
-                            ? <span style={{ color:'#34d399' }}>Not detected ✓</span>
-                            : result.supplyControlStatus === 'needs_confirmed_creator'
-                              ? <span style={{ color:'#94a3b8' }}>Unverified — no confirmed creator</span>
-                              : result.matchedHolderWallets.some(h => h.isDeployer)
-                                ? <span style={{ color:'#f87171' }}>Yes — deployer in top holders</span>
-                                : <span style={{ color:'#94a3b8' }}>Unverified</span>
+                          !result.deployerAddress || !result.holderDataAvailable
+                            ? <span style={{ color:'#94a3b8' }}>Open check — creator/holder data unavailable.</span>
+                            : result.matchedHolderWallets.some(h => h.isDeployer)
+                              ? <span style={{ color:'#f87171' }}>Confirmed — creator appears in top holders.</span>
+                              : <span style={{ color:'#34d399' }}>Not detected</span>
                         } />
-                        <DataRow label="Top 1 concentration"  value={te?.top1  != null ? `${te.top1.toFixed(2)}%`  : '—'} valueStyle={{ color: te?.top1 != null && te.top1 > 15 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Top 10 concentration" value={te?.top10 != null ? `${te.top10.toFixed(2)}%` : '—'} valueStyle={{ color: te?.top10 != null && te.top10 > 50 ? '#f87171' : te?.top10 != null && te.top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
-                        <DataRow label="Top 20 concentration" value={te?.top20 != null ? `${te.top20.toFixed(2)}%` : '—'} valueStyle={{ color: te?.top20 != null && te.top20 > 70 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Linked-wallet supply" value={result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}%` : 'Unverified'} valueStyle={{ color: result.supplyControlled != null && result.supplyControlled > 20 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Dev cluster supply"   value={result.holderDataAvailable ? (result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}% (linked wallets)` : 'Data available — no cluster match') : 'Unverified'} />
+                        <DataRow label="Top 1 concentration"  value={te?.top1  != null ? `${te.top1.toFixed(2)}%`  : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable.')} valueStyle={{ color: te?.top1 != null && te.top1 > 15 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 10 concentration" value={te?.top10 != null ? `${te.top10.toFixed(2)}%` : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable.')} valueStyle={{ color: te?.top10 != null && te.top10 > 50 ? '#f87171' : te?.top10 != null && te.top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
+                        <DataRow label="Top 20 concentration" value={te?.top20 != null ? `${te.top20.toFixed(2)}%` : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable.')} valueStyle={{ color: te?.top20 != null && te.top20 > 70 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Linked-wallet supply" value={result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}%` : 'Open check — linked wallet supply unavailable.'} valueStyle={{ color: result.supplyControlled != null && result.supplyControlled > 20 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Dev cluster supply"   value={result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}%` : 'Open check — cluster supply needs holder confirmation.'} />
 
                         {supplyBarPct != null && (
                           <div style={{ marginTop:'14px' }}>
