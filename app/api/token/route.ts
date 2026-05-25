@@ -273,6 +273,58 @@ async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
   }
 }
 
+// GoldRush Contract Intel — calls Covalent security endpoint for mint/blacklist/pause/proxy flags.
+// Falls back to null if API key is missing, chain not supported, or endpoint returns no data.
+// Bytecode signature scan is the fallback when this returns null.
+async function fetchGoldRushContractIntel(chain: ChainKey, contract: string): Promise<{
+  mint: boolean | null
+  blacklist: boolean | null
+  pause: boolean | null
+  withdraw: boolean | null
+  proxy: boolean | null
+  upgradeable: boolean | null
+  source: 'goldrush'
+  raw: Record<string, unknown>
+} | null> {
+  try {
+    const CHAIN_SLUG_MAP: Record<ChainKey, string> = {
+      eth: 'eth-mainnet',
+      base: 'base-mainnet',
+      polygon: 'matic-mainnet',
+      bnb: 'bsc-mainnet',
+    }
+    const chainSlug = CHAIN_SLUG_MAP[chain] ?? 'eth-mainnet'
+    const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
+    if (!apiKey) return null
+    const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
+    const res = await fetch(
+      `${_grBase}/v1/${chainSlug}/tokens/${contract}/security/`,
+      {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000),
+      }
+    )
+    if (!res.ok) return null
+    const json = await res.json()
+    const items = (json?.data?.items ?? json?.data) ?? null
+    const item = (Array.isArray(items) ? items[0] : items) as Record<string, unknown> | null
+    if (!item || typeof item !== 'object') return null
+    return {
+      mint: item.is_mintable != null ? Boolean(item.is_mintable) : (item.has_mint != null ? Boolean(item.has_mint) : null),
+      blacklist: item.is_blacklisted != null ? Boolean(item.is_blacklisted) : (item.has_blacklist != null ? Boolean(item.has_blacklist) : null),
+      pause: item.is_pausable != null ? Boolean(item.is_pausable) : (item.has_pause != null ? Boolean(item.has_pause) : null),
+      withdraw: item.has_withdraw != null ? Boolean(item.has_withdraw) : (item.is_withdrawal_risk != null ? Boolean(item.is_withdrawal_risk) : null),
+      proxy: item.is_proxy != null ? Boolean(item.is_proxy) : (item.is_upgradeable != null ? Boolean(item.is_upgradeable) : null),
+      upgradeable: item.is_upgradeable != null ? Boolean(item.is_upgradeable) : (item.is_proxy != null ? Boolean(item.is_proxy) : null),
+      source: 'goldrush',
+      raw: item,
+    }
+  } catch {
+    return null
+  }
+}
+
 async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<any> {
   try {
     const networkMap: Record<ChainKey, string> = {
@@ -1366,7 +1418,7 @@ export async function POST(req: Request) {
       }
       return out
     })()
-    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, hpResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw, dexFbEarly] = await Promise.all([
+    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, hpResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw, dexFbEarly, grContractIntel] = await Promise.all([
       bytecodePromise,
       // GoldRush: ETH + BASE only (metadata token info)
       isFullScanChain ? fetchGoldRush(chain, contract) : Promise.resolve(null),
@@ -1382,6 +1434,8 @@ export async function POST(req: Request) {
       moralisEnabled ? fetchMoralisHolders(chain, contract) : Promise.resolve({ __status: 'unavailable', __reason: 'chain_not_supported' }),
       moralisEnabled ? fetchMoralisTransfers(chain, contract) : Promise.resolve({ __status: 'unavailable', __reason: 'chain_not_supported' }),
       isFullScanChain ? fetchDexScreenerFallback(contract, chain) : Promise.resolve(null),
+      // GoldRush Contract Intel: ETH + BASE only — mint, blacklist, pause, withdraw, proxy, upgradeable
+      goldrushEnabled ? fetchGoldRushContractIntel(chain, contract) : Promise.resolve(null),
     ]);
     const alchemyMandatoryReads = await Promise.all([
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
@@ -2282,41 +2336,42 @@ export async function POST(req: Request) {
     )
     const _pauseFunctionExists = Boolean(_pausedCallHex && _pausedCallHex !== '0x')
 
-    // Merge bytecode signals with optional GoPlus enrichment (GoPlus is low-confidence fallback)
+    // Contract flag resolution: GoldRush Contract Intel is primary source.
+    // ABI/bytecode selector scan (PUSH4 opcode pattern) is fallback when GoldRush returns null.
+    // RPC probes (EIP-1967 proxy slot, paused() call) supplement both sources.
+    const _grCI = grContractIntel  // GoldRush Contract Intel result
+    const _grCIUsable = _grCI != null
+    type FlagStatus = { status: 'verified' | 'possible' | 'not_detected' | 'unverified'; confidence: 'high' | 'medium' | 'low'; note: string }
+    const _resolveFlag = (
+      grValue: boolean | null | undefined,
+      bytecodeSel: boolean,
+      bytecodeNote: string,
+      rpcConfirm?: boolean,
+    ): FlagStatus => {
+      if (rpcConfirm) return { status: 'verified', confidence: 'high', note: 'RPC call confirmed' }
+      if (grValue === true) return { status: 'verified', confidence: 'high', note: 'GoldRush Contract Intel confirmed' }
+      if (grValue === false) return { status: 'not_detected', confidence: 'high', note: 'GoldRush Contract Intel: not present' }
+      // GoldRush returned null — fall back to ABI/bytecode signature scan
+      if (!_hasBytecode) return { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable (RPC failed)' }
+      if (bytecodeSel) return { status: 'verified', confidence: 'high', note: bytecodeNote }
+      return { status: 'not_detected', confidence: 'medium', note: `ABI signature scan: not detected (GoldRush fallback)` }
+    }
     const cortexContractFlags: CortexContractFlagsResult = {
-      mint: !_hasBytecode
-        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
-        : _cortexMintSel
-          ? { status: 'verified', confidence: 'high', note: 'Mint selector found in bytecode' }
-          : gpMint === true
-            ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
-            : { status: 'not_detected', confidence: 'medium', note: 'No mint selector in bytecode' },
-      proxy: !_hasBytecode
-        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
-        : _isVerifiedProxy
-          ? { status: 'verified', confidence: 'high', note: 'EIP-1967 implementation slot is non-zero' }
-          : _cortexProxySel
-            ? { status: 'possible', confidence: 'medium', note: 'Upgrade selector in bytecode; no EIP-1967 slot confirmed' }
-            : gpUpgradeable === true
-              ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
-              : { status: 'not_detected', confidence: 'medium', note: 'No proxy slot or upgrade selector detected' },
-      pause: !_hasBytecode
-        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
-        : (_pauseFunctionExists || _cortexPauseSel)
-          ? { status: 'verified', confidence: 'high', note: _pauseFunctionExists ? 'paused() call responded' : 'Pause selector in bytecode' }
-          : { status: 'not_detected', confidence: 'medium', note: 'No pause selector or paused() response detected' },
-      blacklist: !_hasBytecode
-        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
-        : _cortexBlacklistStr
-          ? { status: 'verified', confidence: 'high', note: 'Blacklist string pattern in bytecode' }
-          : gpBlacklist === true
-            ? { status: 'possible', confidence: 'low', note: 'Not in bytecode; optional enrichment signal only' }
-            : { status: 'not_detected', confidence: 'medium', note: 'No blacklist pattern in bytecode' },
-      withdraw: !_hasBytecode
-        ? { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable' }
-        : _cortexWithdrawSel
-          ? { status: 'verified', confidence: 'high', note: 'Withdraw selector found in bytecode' }
-          : { status: 'not_detected', confidence: 'medium', note: 'No withdraw selector in bytecode' },
+      mint: _resolveFlag(_grCI?.mint, _cortexMintSel, 'Mint selector in ABI/bytecode (40c10f19 or a0712d68)'),
+      proxy: (() => {
+        if (_isVerifiedProxy) return { status: 'verified' as const, confidence: 'high' as const, note: 'EIP-1967 implementation slot is non-zero (RPC confirmed)' }
+        if (_grCI?.proxy === true || _grCI?.upgradeable === true) return { status: 'verified' as const, confidence: 'high' as const, note: 'GoldRush Contract Intel: proxy/upgradeable confirmed' }
+        if (_grCI?.proxy === false && _grCI?.upgradeable === false) return { status: 'not_detected' as const, confidence: 'high' as const, note: 'GoldRush Contract Intel: not proxy' }
+        if (!_hasBytecode) return { status: 'unverified' as const, confidence: 'low' as const, note: 'Bytecode unavailable (RPC failed)' }
+        if (_cortexProxySel) return { status: 'possible' as const, confidence: 'medium' as const, note: 'Upgrade selector in ABI/bytecode; EIP-1967 slot not confirmed' }
+        return { status: 'not_detected' as const, confidence: 'medium' as const, note: 'ABI signature scan: no proxy selector or EIP-1967 slot (GoldRush fallback)' }
+      })(),
+      pause: (() => {
+        if (_pauseFunctionExists) return { status: 'verified' as const, confidence: 'high' as const, note: 'paused() RPC call responded' }
+        return _resolveFlag(_grCI?.pause, _cortexPauseSel, 'Pause selector in ABI/bytecode (8456cb59 or 3f4ba83a)')
+      })(),
+      blacklist: _resolveFlag(_grCI?.blacklist, _cortexBlacklistStr, 'Blacklist string pattern in ABI/bytecode'),
+      withdraw: _resolveFlag(_grCI?.withdraw, _cortexWithdrawSel, 'Withdraw selector in ABI/bytecode (3ccfd60b or 2e1a7d4d)'),
       bytecodeChecked: _hasBytecode,
       proxySlotChecked: _proxySlotHex != null,
       pauseCallChecked: _pausedCallHex != null,
@@ -3071,6 +3126,10 @@ export async function POST(req: Request) {
           bytecodeChecked: cortexContractFlags.bytecodeChecked,
           proxySlotChecked: cortexContractFlags.proxySlotChecked,
           pauseCallChecked: cortexContractFlags.pauseCallChecked,
+          goldrushContractIntelAttempted: goldrushEnabled,
+          goldrushContractIntelUsable: _grCIUsable,
+          goldrushContractIntelRaw: _grCI?.raw ?? null,
+          abiSignatureScanUsed: _hasBytecode,
           rawSelectors: {
             mintSel: _cortexMintSel,
             proxySel: _cortexProxySel,
@@ -3082,7 +3141,6 @@ export async function POST(req: Request) {
           pausedCallRaw: _pausedCallHex ?? null,
           isVerifiedProxy: _isVerifiedProxy,
           pauseFunctionExists: _pauseFunctionExists,
-          gpEnrichment: { mint: gpMint, upgradeable: gpUpgradeable, blacklist: gpBlacklist },
           flags: {
             mint: cortexContractFlags.mint,
             proxy: cortexContractFlags.proxy,
@@ -3167,6 +3225,10 @@ export async function POST(req: Request) {
             proofStatus: lpDiagnostics.lpState,
           },
           contractFlow: {
+            goldrushContractIntelAttempted: goldrushEnabled,
+            goldrushContractIntelUsable: _grCIUsable,
+            abiSignatureScanUsed: _hasBytecode,
+            rpcProbesUsed: cortexContractFlags.proxySlotChecked || cortexContractFlags.pauseCallChecked,
             bytecodeAvailable: _hasBytecode,
             honeypotAttempted: true,
             honeypotUsable: hpResult.ok,
