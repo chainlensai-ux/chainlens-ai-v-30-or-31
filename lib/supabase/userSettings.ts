@@ -30,6 +30,9 @@ export type UserSettings = {
   trial_plan?: 'elite' | null;
   trial_used?: boolean;
   trial_granted_reason?: string | null;
+  trial_email_hash?: string | null;
+  trial_claim_ip_hash?: string | null;
+  trial_claim_user_agent_hash?: string | null;
 };
 
 export type UserSettingsUpdate = Partial<Pick<
