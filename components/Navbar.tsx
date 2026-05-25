@@ -70,6 +70,7 @@ export default function Navbar() {
   const [plan, setPlan] = useState<UserPlan | null>(null)
   const [planLoading, setPlanLoading] = useState(true)
   const [avatarColor, setAvatarColor] = useState<string>('mint')
+  const [trialDaysLeft, setTrialDaysLeft] = useState<number>(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [displayName, setDisplayName] = useState<string | null>(null)
   const pathname = usePathname()
@@ -88,6 +89,8 @@ export default function Navbar() {
           const json = await res.json() as Record<string, unknown>
           const settings = json?.settings as Record<string, unknown> | undefined
           const p = json?.plan ?? json?.effectivePlan ?? settings?.plan
+          const days = Number(json?.trialDaysLeft ?? 0)
+          setTrialDaysLeft(Number.isFinite(days) ? days : 0)
           const resolvedPlan: UserPlan = p === 'pro' || p === 'elite' ? p : 'free'
           setPlan(resolvedPlan)
           writeCachedPlan(resolvedPlan, userId, email)
@@ -128,6 +131,7 @@ export default function Navbar() {
   const initials = (displayName?.[0] ?? shortEmail?.[0] ?? 'A').toUpperCase()
   const displayPlan: UserPlan = plan ?? 'free'
   const planLabel = !accountEmail ? '' : planLoading && !plan ? 'CHECKING PLAN…' : (plan ?? 'unknown').toUpperCase()
+  const trialBadge = displayPlan === 'elite' && trialDaysLeft > 0 ? `Elite trial · ${trialDaysLeft} days left` : null
 
   return (
     <>
@@ -538,7 +542,7 @@ export default function Navbar() {
                   borderRadius: '4px', padding: '1px 5px',
                   background: `${PLAN_COLOR[displayPlan]}18`,
                   flexShrink: 0,
-                }}>{planLabel}</span>
+                }}>{planLabel}</span>{trialBadge ? <span style={{ marginLeft: 8, fontSize: 10, color: '#fbbf24' }}>{trialBadge}</span> : null}
               </Link>
             ) : (
               <Link href="/sign-in" className="btn-signin" prefetch={true}>Sign In</Link>
@@ -650,7 +654,7 @@ export default function Navbar() {
                       fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
                       color: PLAN_COLOR[displayPlan], border: `1px solid ${PLAN_COLOR[displayPlan]}44`,
                       borderRadius: '4px', padding: '1px 5px', background: `${PLAN_COLOR[displayPlan]}18`,
-                    }}>{planLabel}</span>
+                    }}>{planLabel}</span>{trialBadge ? <span style={{ marginLeft: 6, fontSize: 10, color: '#fbbf24' }}>{trialBadge}</span> : null}{trialBadge ? <span style={{ marginLeft: 8, fontSize: 10, color: '#fbbf24' }}>{trialBadge}</span> : null}
                     <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)' }}>Signed in</span>
                   </div>
                 </div>
