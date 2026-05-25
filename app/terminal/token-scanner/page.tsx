@@ -2216,10 +2216,20 @@ export default function TerminalTokenScanner() {
                     const color = statusColor[lp.status??'unverified']??'#94a3b8'
                     const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',protocol:'Protocol liquidity',concentrated_liquidity:'Concentrated liquidity',team_controlled:'Team controlled',unverified:'Unverified',insufficient_data:'Insufficient data',error:'Unverified' }
                     const evidence = Array.isArray(lp.evidence)?lp.evidence:[]
-                    const verificationPool = evidenceValue(evidence,'Verification pool')??read?.whatWasFound?.find((x)=>/^Pair:/i.test(x))?.replace(/^Pair:\s*/i,'')??'Unverified'
+                    // Extract split-pool info from evidence
+                    const lpV2PoolLabel = evidenceValue(evidence,'V2 proof pool') // "SENT/WETH (unknown)"
+                    const lpMarketPoolLabel = evidenceValue(evidence,'Market pool')  // "SENT/WETH (v3)"
+                    const lpDiffersFromMarket = evidence.some(e => e === 'V2 proof pool differs from market pool')
+                    // Primary market pool display (address-based, falls back to pair name)
+                    const primaryMarketRaw = evidenceValue(evidence,'Primary market pool') // "0x... (v3)"
+                    const primaryMarketDisplay = lpMarketPoolLabel ?? primaryMarketRaw ?? 'Unknown'
+                    // LP proof pool display
+                    const lpProofRaw = evidenceValue(evidence,'LP verification pool') // "0x... (v2)"
+                    const lpProofDisplay = lpV2PoolLabel ?? lpProofRaw ?? evidenceValue(evidence,'Verification pool') ?? read?.whatWasFound?.find((x)=>/^Pair:/i.test(x))?.replace(/^Pair:\s*/i,'') ?? 'Unverified'
+                    const verificationPool = lpProofDisplay
                     const evidenceText = evidence.join(' ').toLowerCase()
                     const fallbackChecked: string[] = []
-                    if (lp.poolAddressPresent||evidenceText.includes('verification pool')) fallbackChecked.push('Pool detected')
+                    if (lp.poolAddressPresent||evidenceText.includes('verification pool')||evidenceText.includes('v2 proof pool')) fallbackChecked.push('Pool detected')
                     if (verificationPool!=='Unverified') fallbackChecked.push('Primary market selected')
                     fallbackChecked.push('Liquidity scan completed')
                     if (lp.status!=='error'&&lp.status!=='unverified'?true:lp.poolAddressPresent) fallbackChecked.push('Pool structure reviewed')
@@ -2258,8 +2268,19 @@ export default function TerminalTokenScanner() {
                             </div>
                             <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:'8px',padding:'6px 12px 8px',borderTop:'1px solid rgba(255,255,255,0.05)' }}>
                               <div style={{ padding:'8px 10px',border:'1px solid rgba(52,211,153,0.16)',borderRadius:'10px',background:'rgba(15,23,42,0.36)' }}>
-                                <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>LP verification pool</div>
-                                <div style={{ color:'#e2e8f0' }}>{verificationPool}</div>
+                                {lpDiffersFromMarket ? (
+                                  <>
+                                    <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Primary market pool</div>
+                                    <div style={{ color:'#e2e8f0',marginBottom:'6px' }}>{primaryMarketDisplay}</div>
+                                    <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>LP proof pool (V2)</div>
+                                    <div style={{ color:'#e2e8f0' }}>{lpProofDisplay}</div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>LP verification pool</div>
+                                    <div style={{ color:'#e2e8f0' }}>{verificationPool}</div>
+                                  </>
+                                )}
                               </div>
                               <div style={{ padding:'8px 10px',border:'1px solid rgba(245,158,11,0.2)',borderRadius:'10px',background:'rgba(245,158,11,0.08)' }}>
                                 <div style={{ fontSize:'10px',color:'#fbbf24',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Open checks</div>
