@@ -1309,7 +1309,13 @@ export async function POST(req: Request) {
 
     console.log("Incoming scan request:", contract);
 
-    const alchemyConfigured = Boolean(getAlchemyRpcUrl(chain))
+    // ETH + BASE are the only chains with full provider support.
+    // GoldRush, Moralis, Alchemy RPC, and DexScreener are gated to these chains.
+    const SUPPORTED_FULL_SCAN_CHAINS: ChainKey[] = ['eth', 'base']
+    const isFullScanChain = SUPPORTED_FULL_SCAN_CHAINS.includes(chain)
+    const alchemyConfigured = isFullScanChain && Boolean(getAlchemyRpcUrl(chain))
+    const goldrushEnabled = isFullScanChain && Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY)
+    const moralisEnabled = isFullScanChain && Boolean(process.env.MORALIS_API_KEY)
     const ownerSelectors = ['0x8da5cb5b', '0x893d20e8', '0xf851a440', '0x245a7bfc', '0x5c60da1b']
     let rpcCallsAttempted = 0
     let rpcCallsSucceeded = 0
@@ -1362,17 +1368,20 @@ export async function POST(req: Request) {
     })()
     const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, hpResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw, dexFbEarly] = await Promise.all([
       bytecodePromise,
-      fetchGoldRush(chain, contract),
-      fetchTokenHolders(chain, contract),
+      // GoldRush: ETH + BASE only (metadata token info)
+      isFullScanChain ? fetchGoldRush(chain, contract) : Promise.resolve(null),
+      // GoldRush holders: ETH + BASE only (LP Safety + holder distribution)
+      goldrushEnabled ? fetchTokenHolders(chain, contract) : Promise.resolve({ __status: 'unavailable', __reason: 'chain_not_supported' }),
       fetchGeckoTerminal(contract, chain),
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
       fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chain]),
       fetchCoinGeckoToken(chain, contract),
-      fetchMoralisHolders(chain, contract),
-      fetchMoralisTransfers(chain, contract),
-      fetchDexScreenerFallback(contract, chain),
+      // Moralis: ETH + BASE only (full holder list)
+      moralisEnabled ? fetchMoralisHolders(chain, contract) : Promise.resolve({ __status: 'unavailable', __reason: 'chain_not_supported' }),
+      moralisEnabled ? fetchMoralisTransfers(chain, contract) : Promise.resolve({ __status: 'unavailable', __reason: 'chain_not_supported' }),
+      isFullScanChain ? fetchDexScreenerFallback(contract, chain) : Promise.resolve(null),
     ]);
     const alchemyMandatoryReads = await Promise.all([
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
@@ -2386,13 +2395,23 @@ export async function POST(req: Request) {
       !(lpState === 'burned' || lpState === 'locked' || lpState === 'protocol' || lpState === 'concentrated_liquidity' || lpState === 'team_controlled'),
       !hpResult.ok,
     ].filter(Boolean).length
+    // Only withhold a score when ALL core providers returned null — i.e. zero usable data.
+    // If any provider returned data, compute the score with missing-data penalties in riskScore.
+    const anyProviderData = [
+      marketCapFromGt != null || fdv != null || liquidityUsd != null,
+      holderDistributionStatus.status === 'ok' || holderDistributionStatus.status === 'partial',
+      lpControl.status !== 'error' && lpControl.status !== 'insufficient_data' && lpControl.status !== 'unverified',
+      hpResult.ok,
+      Boolean(bytecode && bytecode !== '0x'),
+    ].some(Boolean)
     const sufficientCoreData = [
       marketCapFromGt != null || fdv != null,
       liquidityUsd != null,
       holderDistributionStatus.status === 'ok' || holderDistributionStatus.status === 'partial',
       lpControl.status !== 'error' && lpControl.status !== 'insufficient_data',
     ].filter(Boolean).length >= 3
-    let rugRiskScore: number | null = sufficientCoreData ? Math.max(0, Math.min(100, Math.round(riskScore))) : null
+    // Compute score if any provider returned data; only null when completely blind.
+    let rugRiskScore: number | null = anyProviderData ? Math.max(0, Math.min(100, Math.round(riskScore))) : null
     let rugRiskLabel: RiskEngine["rugRiskLabel"] = 'unverified'
     if (rugRiskScore != null) {
       if (rugRiskScore >= 85) rugRiskLabel = 'critical'
@@ -2601,7 +2620,7 @@ export async function POST(req: Request) {
       liquidity: mainPool?.attributes?.reserve_in_usd ?? _dexFb?.liquidityUsd ?? null,
       market_cap: marketCapFromGt,
       marketCapUsd: marketCapFromGt,
-      marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
+      marketCapStatus: marketCapFromGt != null ? 'verified' : 'unavailable',
       marketCapSource,
       marketCapReason: marketCapFromGt != null
         ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
@@ -2618,7 +2637,7 @@ export async function POST(req: Request) {
         primaryValuationLabel: marketCapFromGt != null ? 'Market Cap' : (_efdv != null ? 'FDV' : 'Market Cap'),
         primaryValuationUsd: marketCapFromGt ?? _efdv ?? null,
         primaryValuationStatus: marketCapFromGt != null ? 'verified_mc' : (_efdv != null ? 'fdv_only' : 'unavailable'),
-        marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
+        marketCapStatus: marketCapFromGt != null ? 'verified' : 'unavailable',
         fdvUsd: _efdv ?? null,
         reason: marketCapFromGt != null ? 'Verified live market data' : (_efdv != null ? 'Market cap not verified live; FDV used as valuation context.' : 'No live valuation context was verified.'),
       },
@@ -2735,7 +2754,7 @@ export async function POST(req: Request) {
             rawEstimatedMarketCap: estimatedMarketCap,
             rawFdvUsd: fdv,
             circulatingSupply,
-            marketCapStatus: marketCapFromGt != null ? 'verified' : 'unverified',
+            marketCapStatus: marketCapFromGt != null ? 'verified' : 'unavailable',
             marketCapReason: marketCapFromGt != null
               ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'Verified live market data' : 'Verified live pool market data')
               : 'Circulating supply not verified by live market data',
@@ -3075,12 +3094,24 @@ export async function POST(req: Request) {
         chainDiagnostics: {
           requestedChain: rawChain,
           resolvedChain: chain,
+          isFullScanChain,
+          supportedFullScanChains: SUPPORTED_FULL_SCAN_CHAINS,
+          goldrushEnabled,
+          moralisEnabled,
+          alchemyEnabled: alchemyConfigured,
           marketNetwork: chain,
           holderChainUsed: holdersRaw?.__chainUsed ?? (chain === 'eth' ? 'eth-mainnet' : 'base-mainnet'),
           rpcChainUsed: chain,
           lpChainUsed: chain,
           contractFlagChainUsed: chain,
           securityChainUsed: chain,
+          chainParity: {
+            market_layer: (marketCapFromGt != null || fdv != null || liquidityUsd != null) ? 'populated' : 'empty',
+            holders_layer: holderDistributionStatus.status === 'ok' || holderDistributionStatus.status === 'partial' ? 'populated' : 'empty',
+            lp_layer: lpDiagnostics.poolDetected ? 'populated' : 'empty',
+            contract_flags: cortexContractFlags.bytecodeChecked ? 'populated' : 'empty',
+            risk_engine: anyProviderData ? 'populated' : 'empty',
+          },
           skippedChecks,
           reasons: chainReasons,
         },
