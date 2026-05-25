@@ -275,7 +275,7 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
     symbol = symbol ?? decodeHexStringResult(s)
     if (d && d !== '0x') decimals = parseInt(d, 16)
   } catch {}
-  if (!name) name = `${contract.slice(0, 6)}…${contract.slice(-4)}`
+  if (!name || /^unknown$/i.test(name)) name = `${contract.slice(0, 6)}…${contract.slice(-4)}`
   const out = { name, symbol, decimals }
   metaCache.set(key, { exp: Date.now() + META_CACHE_TTL_MS, data: out })
   return { ...out, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(name), symbolFound: Boolean(symbol), source, cacheHit: false, reason: 'ok' } }
@@ -1613,7 +1613,7 @@ export async function POST(req: Request) {
         liquidity: liqEv.liquidityDepth ?? tokenEvidence.liquidityUsd ?? market.liquidity ?? null,
         fdv: market.fdv ?? null,
         marketValue: market.marketCap ?? market.fdv ?? null,
-        top1: holderDistributionRaw?.top1 ?? null,
+        top1: holderTop1,
         top10: holderTop10,
         top20: holderTop20,
         holderCount,
@@ -1641,7 +1641,7 @@ export async function POST(req: Request) {
           : 'UNKNOWN',
       confidence: (tokenEvidence || holderDataAvailable) ? 'medium' : 'low',
       reasons: [
-        !deployerAddress && (tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'Creator link not confirmed; token evidence still indicates watchlist-level signal.' : '',
+        !deployerAddress && (tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'Creator not confirmed from current checks; token evidence still indicates watchlist-level signal.' : '',
         holderTop10 != null && holderTop10 >= 70 ? `Very high holder concentration — top 10 hold ${parseFloat(holderTop10.toFixed(2))}%.` : holderTop10 != null && holderTop10 >= 50 ? `High holder concentration — top 10 hold ${parseFloat(holderTop10.toFixed(2))}%.` : '',
         liqLpLocked === false ? 'LP appears team-controlled.' : '',
       ].filter(Boolean),
