@@ -607,11 +607,14 @@ function getMissingChecks(result: ScanResult): string[] {
   const holderState = deriveHolderState(result)
   const lpStatus = result.lpControl?.status
   const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
-  const lpProtocol = lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity'
+  const lpMode = deriveLpMode(result)
+  const lpItem = lpMode === 'protocol'
+    ? 'LP token model not used — protocol-managed concentrated liquidity.'
+    : !lpVerified ? 'LP lock or burn proof' : null
   return [
     result.noActivePools ? 'Active liquidity pool' : null,
     holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : null,
-    !lpVerified && !lpProtocol ? 'LP lock or burn proof' : null,
+    lpItem,
     result.marketCapUsd == null ? 'Verified market cap' : null,
     'Supply spread',
   ].filter((v): v is string => v != null)
@@ -627,6 +630,24 @@ function getNextAction(result: ScanResult): string {
   if (liq > 0 && liq < 50000) return 'Liquidity is limited. Verify LP lock or burn proof before entering.'
   if (holderState.kind === 'noRowsFallback') return 'Holder concentration not confirmed. Verify top holders before forming conviction on this token.'
   return 'Monitor liquidity and holder concentration before forming conviction. Treat incomplete checks as risk signals.'
+}
+
+// ─── LP Mode ─────────────────────────────────────────────────────────────────
+// Classifies the LP model for this token so protocol-managed concentrated
+// liquidity (V3/V4 on Base) is distinguished from V2 ERC-20 LP tokens.
+
+type LpMode = 'protocol' | 'lp_token' | 'unknown'
+function deriveLpMode(result: ScanResult): LpMode {
+  const chain = result.chain
+  const lpStatus = result.lpControl?.status
+  const lpPoolType = result.lpControl?.poolType
+  if (chain === 'base' && (lpStatus === 'concentrated_liquidity' || lpStatus === 'protocol')) {
+    return 'protocol'
+  }
+  if (lpStatus === 'burned' || lpStatus === 'locked' || lpStatus === 'team_controlled' || lpPoolType === 'v2') {
+    return 'lp_token'
+  }
+  return 'unknown'
 }
 
 // ─── CORTEX Score Engine ──────────────────────────────────────────────────
@@ -729,10 +750,12 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   let lpPts = 0, lpStatusLabel = 'unavailable', lpReason = 'No LP lock or burn proof confirmed.'
   if (lpStatus === 'locked' || lpStatus === 'burned') {
     lpPts = 10; lpStatusLabel = 'ok'; lpReason = `LP ${lpStatus} — exit liquidity confirmed.`
-  } else if (lpStatus === 'protocol') {
-    lpPts = -6; lpStatusLabel = 'partial'; lpReason = 'Protocol-managed liquidity detected. Locker proof unavailable.'
-  } else if (lpStatus === 'concentrated_liquidity') {
-    lpPts = -8; lpStatusLabel = 'partial'; lpReason = 'Concentrated liquidity pool detected. Exit depth may shift rapidly.'
+  } else if (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') {
+    if (deriveLpMode(result) === 'protocol') {
+      lpPts = 0; lpStatusLabel = 'protocol'; lpReason = 'Protocol liquidity (v3/v4) — LP token model not used.'
+    } else {
+      lpPts = -6; lpStatusLabel = 'partial'; lpReason = 'Protocol-managed liquidity. Locker proof unavailable.'
+    }
   } else if (result.lpControl?.poolAddressPresent) {
     lpPts = -10; lpStatusLabel = 'partial'; lpReason = 'LP ownership could not be verified this scan.'
   } else if (lpStatus === 'risky') {
@@ -1612,7 +1635,7 @@ export default function TerminalTokenScanner() {
                 ]
                 const marketStrengthLabel = result.noActivePools ? 'Unverified' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Unverified'
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
-                const lpProofLabel = lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') ? 'Protocol liquidity' : 'Unverified'
+                const lpProofLabel = lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : deriveLpMode(result) === 'protocol' ? 'Not Applicable' : (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') ? 'Protocol LP' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
@@ -2165,16 +2188,19 @@ export default function TerminalTokenScanner() {
                     const lpVerifiedExit = lpS === 'locked' || lpS === 'burned'
                     const liqDepth = result.liquidity ?? null
                     const primaryPool = result.pools?.[0]?.name ?? result.primaryDexName ?? null
+                    const lpModeExit = deriveLpMode(result)
                     const exitRisk = result.noActivePools
                       ? 'CRITICAL'
-                      : !lpVerifiedExit
-                        ? liqDepth != null && liqDepth < 50_000 ? 'HIGH' : 'ELEVATED'
-                        : liqDepth != null && liqDepth < 50_000 ? 'MEDIUM' : 'LOW'
-                    const exitRiskColor = exitRisk === 'CRITICAL' ? '#f87171' : exitRisk === 'HIGH' ? '#fb923c' : exitRisk === 'ELEVATED' ? '#fbbf24' : exitRisk === 'MEDIUM' ? '#a78bfa' : '#34d399'
+                      : lpModeExit === 'protocol'
+                        ? 'PROTOCOL-BASED'
+                        : !lpVerifiedExit
+                          ? liqDepth != null && liqDepth < 50_000 ? 'HIGH' : 'ELEVATED'
+                          : liqDepth != null && liqDepth < 50_000 ? 'MEDIUM' : 'LOW'
+                    const exitRiskColor = exitRisk === 'CRITICAL' ? '#f87171' : exitRisk === 'HIGH' ? '#fb923c' : exitRisk === 'ELEVATED' ? '#fbbf24' : exitRisk === 'PROTOCOL-BASED' ? '#a855f7' : exitRisk === 'MEDIUM' ? '#a78bfa' : '#34d399'
                     const exitRead = result.noActivePools
                       ? 'No active liquidity pool detected — exit risk cannot be assessed.'
-                      : (!lpVerifiedExit && (lpS === 'protocol' || lpS === 'concentrated_liquidity'))
-                        ? 'Protocol-managed liquidity detected. Lock/burn proof requires protocol-specific verification.'
+                      : lpModeExit === 'protocol'
+                        ? 'Protocol-managed concentrated liquidity. No ERC-20 LP token exists — burn/lock proof does not apply to this pool type.'
                         : !lpVerifiedExit
                           ? 'Liquidity exists, but lock/burn proof is not confirmed. Treat exit liquidity as unprotected.'
                           : lpS === 'burned'
@@ -2188,7 +2214,7 @@ export default function TerminalTokenScanner() {
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '8px', marginBottom: '10px' }}>
                           {[
-                            ['LP Proof', lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : lpS === 'protocol' || lpS === 'concentrated_liquidity' ? 'Protocol LP' : 'Unverified'],
+                            ['LP Proof', lpModeExit === 'protocol' ? 'Not Applicable' : lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : 'Unverified'],
                             ['Liquidity Depth', liqDepth != null ? fmtLarge(liqDepth) : 'Unverified'],
                             ['Primary Pool', primaryPool ?? 'Unverified'],
                             ['Exit Risk', exitRisk],
@@ -2217,7 +2243,8 @@ export default function TerminalTokenScanner() {
                     const lpIsVerified = lp.status === 'locked' || lp.status === 'burned'
                     const statusColor: Record<string,string> = { burned:'#34d399',locked:'#60a5fa',protocol:'#f59e0b',concentrated_liquidity:'#a855f7',team_controlled:'#f87171',unverified:'#94a3b8',insufficient_data:'#94a3b8',error:'#f87171' }
                     const color = statusColor[lp.status??'unverified']??'#94a3b8'
-                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',protocol:'Protocol liquidity',concentrated_liquidity:'Concentrated liquidity',team_controlled:'Team controlled',unverified:'Unverified',insufficient_data:'Insufficient data',error:'Unverified' }
+                    const _lpMode = deriveLpMode(result)
+                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',protocol:'Protocol-Managed Liquidity',concentrated_liquidity:_lpMode==='protocol'?'Concentrated Liquidity (v3/v4)':'Concentrated liquidity',team_controlled:'Team controlled',unverified:'Unverified',insufficient_data:'Insufficient data',error:'Unverified' }
                     const evidence = Array.isArray(lp.evidence)?lp.evidence:[]
                     // Extract split-pool info from evidence
                     const lpV2PoolLabel = evidenceValue(evidence,'V2 proof pool') // "SENT/WETH (unknown)"
@@ -2421,17 +2448,30 @@ export default function TerminalTokenScanner() {
                           </div>
 
                           {/* LP Control */}
-                          <div style={{ ...cardBase, border:'1px solid rgba(52,211,153,0.18)' }}>
-                            <p style={{ ...cardTitle, color:'#34d399' }}>LP Control</p>
-                            <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',flexWrap:'wrap' }}>
-                              <span style={{ fontSize:'13px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>{lpLabelMap[lpState] ?? lpState.replace(/_/g,' ')}</span>
-                              {(lpState==='locked'||lpState==='burned') && (
-                                <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#34d399',background:'rgba(52,211,153,0.12)',border:'1px solid rgba(52,211,153,0.30)',fontFamily:'var(--font-plex-mono)' }}>VERIFIED</span>
-                              )}
-                            </div>
-                            {result.lpControl?.reason && <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{result.lpControl.reason}</p>}
-                            {result.lpControl?.confidence && <p style={{ margin:'5px 0 0',fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Confidence: {result.lpControl.confidence}</p>}
-                          </div>
+                          {(() => {
+                            const lpMode2 = deriveLpMode(result)
+                            return (
+                              <div style={{ ...cardBase, border:`1px solid ${lpMode2==='protocol'?'rgba(168,85,247,0.22)':'rgba(52,211,153,0.18)'}` }}>
+                                <p style={{ ...cardTitle, color: lpMode2==='protocol'?'#a855f7':'#34d399' }}>LP Control</p>
+                                <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',flexWrap:'wrap' }}>
+                                  <span style={{ fontSize:'13px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>
+                                    {lpMode2==='protocol' ? 'Concentrated Liquidity (v3/v4)' : (lpLabelMap[lpState] ?? lpState.replace(/_/g,' '))}
+                                  </span>
+                                  {(lpState==='locked'||lpState==='burned') && (
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#34d399',background:'rgba(52,211,153,0.12)',border:'1px solid rgba(52,211,153,0.30)',fontFamily:'var(--font-plex-mono)' }}>VERIFIED</span>
+                                  )}
+                                  {lpMode2==='protocol' && (
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#a855f7',background:'rgba(168,85,247,0.10)',border:'1px solid rgba(168,85,247,0.30)',fontFamily:'var(--font-plex-mono)' }}>PROTOCOL</span>
+                                  )}
+                                </div>
+                                {lpMode2==='protocol'
+                                  ? <p style={{ margin:0,fontSize:'11px',color:'#c4b5fd',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>This token uses concentrated liquidity. No ERC-20 LP token exists, so traditional burn/lock proof does not apply.</p>
+                                  : result.lpControl?.reason && <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{result.lpControl.reason}</p>
+                                }
+                                {result.lpControl?.confidence && <p style={{ margin:'5px 0 0',fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Confidence: {result.lpControl.confidence}</p>}
+                              </div>
+                            )
+                          })()}
 
                           {/* Ownership / Control */}
                           <div style={{ ...cardBase, border:'1px solid rgba(167,139,250,0.18)' }}>
@@ -2439,7 +2479,7 @@ export default function TerminalTokenScanner() {
                             <div style={{ display:'grid',gap:'7px' }}>
                               {[
                                 ['Dev Control', ownerState, ownerState==='Renounced'?'#34d399':ownerState==='Held'?'#fbbf24':'#94a3b8'],
-                                ['LP Control', lpLabelMap[lpState] ?? lpState.replace(/_/g,' '), '#e2e8f0'],
+                                ['LP Control', deriveLpMode(result)==='protocol'?'Protocol-Managed':(lpLabelMap[lpState] ?? lpState.replace(/_/g,' ')), '#e2e8f0'],
                               ].map(([label, val, col]) => (
                                 <div key={String(label)} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
                                   <span style={{ fontSize:'11px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
