@@ -1508,6 +1508,9 @@ export async function POST(req: Request) {
       holderCount?: number | null
       topHolders?: Array<{ address?: string; percent?: number | null }>
     } | null | undefined
+    const holderStatusRaw = (tokenEvidence?.holderDistributionStatus as Record<string, unknown> | null | undefined) ?? null
+    const tokenHolderStatus = typeof holderStatusRaw?.status === 'string' ? holderStatusRaw.status : null
+    const tokenHolderReason = typeof holderStatusRaw?.reason === 'string' ? holderStatusRaw.reason : null
     const liqEv = (sections.liquidity as Record<string, unknown> | undefined) ?? {}
     const secEv = (sections.security as Record<string, unknown> | undefined) ?? {}
     const liquidityDataAvailable = typeof liqEv.liquidityDepth === 'number' || typeof tokenEvidence?.liquidityUsd === 'number'
@@ -1588,6 +1591,14 @@ export async function POST(req: Request) {
     const meta = await fetchTokenMetadata(normalizedAddress, tokenEvidence)
     const tokenName = meta.name
     const tokenSymbol = meta.symbol
+    const tokenNameResolved = Boolean(tokenName && tokenName.trim().length > 0)
+    const tokenSymbolResolved = Boolean(tokenSymbol && tokenSymbol.trim().length > 0)
+    const tokenScannerMetadataUsed = Boolean(
+      (typeof tokenEvidence?.name === 'string' && tokenEvidence.name.trim()) ||
+      (typeof (sections.metadata as Record<string, unknown> | undefined)?.name === 'string' && String((sections.metadata as Record<string, unknown>).name).trim()) ||
+      (typeof tokenEvidence?.symbol === 'string' && tokenEvidence.symbol.trim()) ||
+      (typeof (sections.metadata as Record<string, unknown> | undefined)?.symbol === 'string' && String((sections.metadata as Record<string, unknown>).symbol).trim())
+    )
     const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : (holderStats?.top10 ?? null)
     const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1 : (holderStats?.top1 ?? null)
     const holderTop20 = typeof holderDistributionRaw?.top20 === 'number' ? holderDistributionRaw.top20 : (holderStats?.top20 ?? null)
@@ -1676,6 +1687,7 @@ export async function POST(req: Request) {
       clarkVerdict,
       tokenEvidence: tokenEvidence ? {
         name: tokenName, symbol: tokenSymbol,
+        metadataSource: (meta.diag?.metadataSource as string | undefined) ?? (meta.diag?.source as string | undefined) ?? 'unknown',
         price: market.price ?? null,
         volume24h: market.volume24h ?? null,
         liquidity: liqEv.liquidityDepth ?? tokenEvidence.liquidityUsd ?? market.liquidity ?? null,
@@ -1699,7 +1711,7 @@ export async function POST(req: Request) {
       originReason,
       supplyControlStatus,
       linkedWalletsStatus: linkedWalletsCheckStatus,
-      holderStatus: holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'partial',
+      holderStatus: tokenHolderStatus === 'ok' || tokenHolderStatus === 'partial' || tokenHolderStatus === 'unavailable' ? tokenHolderStatus : (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
       verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)
@@ -1710,6 +1722,7 @@ export async function POST(req: Request) {
       confidence: (tokenEvidence || holderDataAvailable) ? 'medium' : 'low',
       reasons: [
         !deployerAddress && (tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'Creator not confirmed from current checks; token evidence still indicates watchlist-level signal.' : '',
+        deployerAddress && !holderDataAvailable ? 'Origin wallet was likely found, but holder distribution could not confirm supply control.' : '',
         holderTop10 != null && holderTop10 >= 70 ? `Very high holder concentration — top 10 hold ${parseFloat(holderTop10.toFixed(2))}%.` : holderTop10 != null && holderTop10 >= 50 ? `High holder concentration — top 10 hold ${parseFloat(holderTop10.toFixed(2))}%.` : '',
         liqLpLocked === false ? 'LP appears team-controlled.' : '',
       ].filter(Boolean),
@@ -1721,6 +1734,17 @@ export async function POST(req: Request) {
           rpcStatus,
           providerUsed,
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
+          metadataSource: (meta.diag?.metadataSource as string | undefined) ?? (meta.diag?.source as string | undefined) ?? 'unknown',
+          tokenNameResolved,
+          tokenSymbolResolved,
+          tokenScannerMetadataUsed,
+          holderSource: holderDataFromToken ? 'token_scanner_holder_distribution' : (holderDataFromCovalent ? 'covalent_fallback' : 'none'),
+          holderRowsCount: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
+          holderPercentAvailable: holderTop1 != null || holderTop10 != null || holderTop20 != null,
+          holderDistributionStatus: tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
+          creatorLookupAttempted: Boolean(originDiag && originDiag.optional_creation_lookup?.attempted),
+          creatorStatus: deployerStatus,
+          supplySurfaceState: supplyControlStatus,
           origin_discovery: originDiag ?? { skipped: true },
           post_deployer_intelligence: {
             linked_wallets: {
@@ -1767,16 +1791,10 @@ export async function POST(req: Request) {
           },
           metadataDiagnostics: meta.diag,
           holderDiagnostics: holderDiag ?? { chainUsed: activeChainConfig.covalentChain, attempted: false, reason: 'no_holder_diag' },
-          metadataSource: meta.diag?.source ?? 'unknown',
-          tokenNameResolved: Boolean(tokenName),
-          tokenSymbolResolved: Boolean(tokenSymbol),
-          creatorLookupAttempted: true,
-          creatorStatus: deployerStatus,
           holderLookupAttempted: Boolean(holderDataFromToken || holderDiag?.attempted),
           holderStatus: holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'open_check',
           topHolderRows: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
           topPercentAvailable: holderTop1 != null || holderTop10 != null || holderTop20 != null,
-          supplySurfaceState: supplyControlStatus,
         },
       } : {}),
       fetchedAt: new Date().toISOString(),
