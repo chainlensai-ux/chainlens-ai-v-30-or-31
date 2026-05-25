@@ -96,6 +96,10 @@ type RiskEngine = {
   verifiedSignals: string[]
   riskDrivers: string[]
   openChecks: string[]
+  lpRisk: {
+    status: "not_applicable" | "verified" | "partial" | "unverified"
+    confidence: "high" | "medium" | "low"
+  }
   sniperActivity: {
     status: "low_signal" | "watch" | "high" | "unverified"
     confidence: "high" | "medium" | "low"
@@ -2423,8 +2427,8 @@ export async function POST(req: Request) {
     const riskOwnerStatus = isRenounced ? 'renounced' : (ownershipVerified ? 'held' : 'unverified')
     if (riskOwnerStatus === 'renounced') { riskVerifiedSignals.push('Dev Control: ownership appears renounced.'); riskScore -= 6 }
     else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
-    // Only flag ownership as unverified when RPC was attempted but owner/admin calls all failed
-    else if (rpcOwnershipAttempted) { openChecks.push('Dev Control ownership status is unverified.') }
+    // Only flag ownership as unverified when RPC was attempted and all three methods (owner, admin, impl) returned nothing
+    else if (rpcOwnershipAttempted && !ownerAddr && !adminAddr && !proxyImplAddr) { openChecks.push('Dev Control ownership status is unverified.') }
     if (proxyImplAddr && !isRenounced) { riskDrivers.push('Proxy contract with active owner — upgrade risk present.'); riskScore += 5 }
 
     const tradingSimConfigured = isFullScanChain
@@ -2506,6 +2510,12 @@ export async function POST(req: Request) {
       verifiedSignals: riskVerifiedSignals,
       riskDrivers,
       openChecks,
+      lpRisk: {
+        status: lpProofStatus,
+        confidence: lpProofStatus === 'not_applicable' ? 'medium' :
+                    lpProofStatus === 'verified' ? 'high' :
+                    lpProofStatus === 'partial' ? 'medium' : 'low',
+      },
       sniperActivity,
     }
     const lpUnlockAt = goldrush?.lock?.unlockAt ?? null
@@ -2972,7 +2982,7 @@ export async function POST(req: Request) {
           simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : null,
         },
         holders: {
-          status: holdersStatus,
+          status: holderDataComplete ? 'verified' : holdersStatus,
           reason: holdersReason,
           source: "holders_layer",
           holderCount: holderCount ?? null,
