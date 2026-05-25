@@ -261,8 +261,13 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
   const key = `${activeChainConfig.chain}:${contract}`
   const cached = metaCache.get(key)
   if (cached && cached.exp > Date.now()) return { ...cached.data, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(cached.data.name), symbolFound: Boolean(cached.data.symbol), source: 'cache', cacheHit: true, reason: 'ok' } }
-  let name = typeof marketData?.name === 'string' ? marketData.name : null
-  let symbol = typeof marketData?.symbol === 'string' ? marketData.symbol : null
+  const sectionMeta = (marketData?.sections as Record<string, unknown> | undefined)?.metadata as Record<string, unknown> | undefined
+  let name =
+    (typeof marketData?.name === 'string' ? marketData.name : null) ??
+    (typeof sectionMeta?.name === 'string' ? sectionMeta.name : null)
+  let symbol =
+    (typeof marketData?.symbol === 'string' ? marketData.symbol : null) ??
+    (typeof sectionMeta?.symbol === 'string' ? sectionMeta.symbol : null)
   let decimals: number | null = null
   let source = name || symbol ? 'token_api' : 'rpc'
   try {
@@ -275,7 +280,6 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
     symbol = symbol ?? decodeHexStringResult(s)
     if (d && d !== '0x') decimals = parseInt(d, 16)
   } catch {}
-  if (!name || /^unknown$/i.test(name)) name = `${contract.slice(0, 6)}…${contract.slice(-4)}`
   const out = { name, symbol, decimals }
   metaCache.set(key, { exp: Date.now() + META_CACHE_TTL_MS, data: out })
   return { ...out, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(name), symbolFound: Boolean(symbol), source, cacheHit: false, reason: 'ok' } }
@@ -1699,6 +1703,16 @@ export async function POST(req: Request) {
           },
           metadataDiagnostics: meta.diag,
           holderDiagnostics: holderDiag ?? { chainUsed: activeChainConfig.covalentChain, attempted: false, reason: 'no_holder_diag' },
+          metadataSource: meta.diag?.source ?? 'unknown',
+          tokenNameResolved: Boolean(tokenName),
+          tokenSymbolResolved: Boolean(tokenSymbol),
+          creatorLookupAttempted: true,
+          creatorStatus: deployerStatus,
+          holderLookupAttempted: Boolean(holderDataFromToken || holderDiag?.attempted),
+          holderStatus: holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'open_check',
+          topHolderRows: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
+          topPercentAvailable: holderTop1 != null || holderTop10 != null || holderTop20 != null,
+          supplySurfaceState: supplyControlStatus,
         },
       } : {}),
       fetchedAt: new Date().toISOString(),

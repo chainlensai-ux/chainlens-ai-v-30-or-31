@@ -487,14 +487,18 @@ export default function DevWalletPage() {
           {result && (() => {
             const dc = calculateDevControl(result)
             const rugCount = result.previousProjects.filter(p => p.rugFlag === true).length
+            const resolvedTokenName = result.tokenEvidence?.name?.trim() || null
+            const resolvedTokenSymbol = result.tokenEvidence?.symbol?.trim() || null
+            const tokenTitle = resolvedTokenName ?? shortAddr(result.contractAddress, 8, 6)
+            const hasTokenTitleFallback = !resolvedTokenName
 
             return (
               <div>
                 {/* Token identity strip */}
                 <div style={{ marginBottom:'18px' }}>
                   <h2 style={{ fontSize:'19px', fontWeight:700, color:'#f8fafc', margin:'0 0 3px' }}>
-                    {result.tokenEvidence?.name ?? shortAddr(result.contractAddress, 8, 6)}
-                    {result.tokenEvidence?.symbol && <span style={{ marginLeft:'10px', fontSize:'13px', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>{result.tokenEvidence.symbol}</span>}
+                    {tokenTitle}
+                    {resolvedTokenSymbol && <span style={{ marginLeft:'10px', fontSize:'13px', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>{resolvedTokenSymbol}</span>}
                   </h2>
                   <p style={{ fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', margin:0 }}>
                     {shortAddr(result.contractAddress, 10, 8)} · {result.chain === 'eth' ? 'ETH' : 'BASE'}
@@ -502,6 +506,11 @@ export default function DevWalletPage() {
                     {result.tokenEvidence?.volume24h != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Vol 24h {fmtUsd(result.tokenEvidence.volume24h)}</span>}
                     {result.tokenEvidence?.holderCount != null && <span style={{ marginLeft:'12px', color:'#475569' }}>{result.tokenEvidence.holderCount.toLocaleString()} holders</span>}
                   </p>
+                  {hasTokenTitleFallback && (
+                    <p style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)', margin:'4px 0 0' }}>
+                      Name unavailable from metadata checks.
+                    </p>
+                  )}
                 </div>
 
                 {/* ── CORTEX Dev Control Hero ──────────────────────────────── */}
@@ -810,17 +819,19 @@ export default function DevWalletPage() {
                       <GlassCard style={{ marginBottom:'14px' }}>
                         <p style={{ margin:'0 0 12px', fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#34d399', fontFamily:'var(--font-plex-mono)' }}>SUPPLY CONTROL SURFACE</p>
                         <DataRow label="Creator in top holders" value={
-                          !result.deployerAddress || !result.holderDataAvailable
-                            ? <span style={{ color:'#94a3b8' }}>Open check — creator/holder data unavailable.</span>
+                          !result.holderDataAvailable
+                            ? <span style={{ color:'#94a3b8' }}>Open check — holder data unavailable after scan.</span>
+                            : !result.deployerAddress
+                            ? <span style={{ color:'#94a3b8' }}>Open check — creator not confirmed from current checks.</span>
                             : result.matchedHolderWallets.some(h => h.isDeployer)
                               ? <span style={{ color:'#f87171' }}>Confirmed — creator appears in top holders.</span>
                               : <span style={{ color:'#34d399' }}>Not detected</span>
                         } />
-                        <DataRow label="Top 1 concentration"  value={te?.top1  != null ? `${te.top1.toFixed(2)}%`  : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable.')} valueStyle={{ color: te?.top1 != null && te.top1 > 15 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Top 10 concentration" value={te?.top10 != null ? `${te.top10.toFixed(2)}%` : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable.')} valueStyle={{ color: te?.top10 != null && te.top10 > 50 ? '#f87171' : te?.top10 != null && te.top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
-                        <DataRow label="Top 20 concentration" value={te?.top20 != null ? `${te.top20.toFixed(2)}%` : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable.')} valueStyle={{ color: te?.top20 != null && te.top20 > 70 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Linked-wallet supply" value={result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}%` : 'Open check — linked wallet supply unavailable.'} valueStyle={{ color: result.supplyControlled != null && result.supplyControlled > 20 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Dev cluster supply"   value={result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}%` : 'Open check — cluster supply needs holder confirmation.'} />
+                        <DataRow label="Top 1 concentration"  value={te?.top1  != null ? `${te.top1.toFixed(2)}%`  : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable after scan.')} valueStyle={{ color: te?.top1 != null && te.top1 > 15 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 10 concentration" value={te?.top10 != null ? `${te.top10.toFixed(2)}%` : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable after scan.')} valueStyle={{ color: te?.top10 != null && te.top10 > 50 ? '#f87171' : te?.top10 != null && te.top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
+                        <DataRow label="Top 20 concentration" value={te?.top20 != null ? `${te.top20.toFixed(2)}%` : (result.holderDataAvailable ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable after scan.')} valueStyle={{ color: te?.top20 != null && te.top20 > 70 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Linked-wallet supply" value={result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}%` : 'Needs holder confirmation'} valueStyle={{ color: result.supplyControlled != null && result.supplyControlled > 20 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Dev cluster supply"   value={result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}%` : 'Needs holder confirmation'} />
 
                         {supplyBarPct != null && (
                           <div style={{ marginTop:'14px' }}>
