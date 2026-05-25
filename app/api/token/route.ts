@@ -407,6 +407,53 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
+// Resolves honeypot + tax simulation for a given chain and token address.
+// Wraps fetchHoneypotSecurity and returns the canonical simulation object or null on failure.
+async function resolveSimulation(chain: string, address: string): Promise<{
+  honeypot: boolean | null;
+  buyTax: number | null;
+  sellTax: number | null;
+  transferTax: number | null;
+  transferOK: boolean | null;
+  simulationSuccess: boolean | null;
+  source: string;
+} | null> {
+  try {
+    const r = await fetchHoneypotSecurity(address, CHAIN_ID_MAP[chain as ChainKey])
+    if (!r.ok) return null
+    return {
+      honeypot: r.honeypot,
+      buyTax: r.buyTax,
+      sellTax: r.sellTax,
+      transferTax: r.transferTax,
+      transferOK: r.simulationSuccess,
+      simulationSuccess: r.simulationSuccess,
+      source: 'honeypot_is',
+    }
+  } catch {
+    return null
+  }
+}
+
+// Resolves contract flags from ABI scan (GoldRush Contract Intel) with bytecode fallback.
+// Returns boolean|null per flag: true = detected, false = not detected, null = not analyzed.
+function resolveContractFlags(
+  grResult: { mint: boolean | null; blacklist: boolean | null; pause: boolean | null; withdraw: boolean | null; proxy: boolean | null; upgradeable: boolean | null } | null,
+  cortexFlags: { mint: { status: string }; blacklist: { status: string }; pause: { status: string }; withdraw: { status: string }; proxy: { status: string } },
+): { mint: boolean | null; blacklist: boolean | null; pause: boolean | null; withdraw: boolean | null; proxy: boolean | null } {
+  const resolve = (grVal: boolean | null | undefined, cortexStatus: string): boolean | null =>
+    grVal != null ? grVal :
+    cortexStatus === 'verified' ? true :
+    cortexStatus === 'not_detected' ? false : null
+  return {
+    mint: resolve(grResult?.mint, cortexFlags.mint.status),
+    blacklist: resolve(grResult?.blacklist, cortexFlags.blacklist.status),
+    pause: resolve(grResult?.pause, cortexFlags.pause.status),
+    withdraw: resolve(grResult?.withdraw, cortexFlags.withdraw.status),
+    proxy: resolve(grResult?.proxy ?? grResult?.upgradeable, cortexFlags.proxy.status),
+  }
+}
+
 // ─── Secondary market data fallback ──────────────────────────────────────────
 // Server-side only. Called once when the primary market source has no pool.
 // Any failure (non-200, non-JSON, timeout, wrong chain) silently returns null.
@@ -1457,7 +1504,7 @@ export async function POST(req: Request) {
       }
       return out
     })()
-    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, hpResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw, dexFbEarly, grContractIntel] = await Promise.all([
+    const [bytecode, goldrush, holdersRaw, gtData, gtTokenInfo, gmgn, metadata, _simResult, coingeckoRaw, moralisHoldersRaw, moralisTransfersRaw, dexFbEarly, grContractIntel] = await Promise.all([
       bytecodePromise,
       // GoldRush: ETH + BASE only (metadata token info)
       isFullScanChain ? fetchGoldRush(chain, contract) : Promise.resolve(null),
@@ -1467,15 +1514,26 @@ export async function POST(req: Request) {
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
-      fetchHoneypotSecurity(contract, CHAIN_ID_MAP[chain]),
+      // resolveSimulation: wraps fetchHoneypotSecurity — null on provider failure
+      resolveSimulation(chain, contract),
       fetchCoinGeckoToken(chain, contract),
       // Moralis: ETH + BASE only (full holder list)
       moralisEnabled ? fetchMoralisHolders(chain, contract) : Promise.resolve({ __status: 'unavailable', __reason: 'chain_not_supported' }),
       moralisEnabled ? fetchMoralisTransfers(chain, contract) : Promise.resolve({ __status: 'unavailable', __reason: 'chain_not_supported' }),
       isFullScanChain ? fetchDexScreenerFallback(contract, chain) : Promise.resolve(null),
-      // GoldRush Contract Intel: ETH + BASE only — mint, blacklist, pause, withdraw, proxy, upgradeable
+      // GoldRush Contract Intel: ETH + BASE only — ABI scan for mint, blacklist, pause, withdraw, proxy
       goldrushEnabled ? fetchGoldRushContractIntel(chain, contract) : Promise.resolve(null),
     ]);
+    // Compatibility wrapper: adapts resolveSimulation result to hpResult shape used throughout
+    const hpResult = {
+      ok: _simResult != null,
+      honeypot: _simResult?.honeypot ?? null,
+      buyTax: _simResult?.buyTax ?? null,
+      sellTax: _simResult?.sellTax ?? null,
+      transferTax: _simResult?.transferTax ?? null,
+      simulationSuccess: _simResult?.simulationSuccess ?? null,
+      honeypotProvider: _simResult != null ? 'ok' as const : 'unavailable' as const,
+    };
     const alchemyMandatoryReads = await Promise.all([
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[1] }, 'latest'], 'ownerCheck.getOwner', false),
@@ -2853,20 +2911,10 @@ export async function POST(req: Request) {
       contractSecurity: null,
 
       security: {
-        simulation: hpResult.ok ? {
-          isHoneypot: hpResult.honeypot,
-          buyTax: hpResult.buyTax,
-          sellTax: hpResult.sellTax,
-          transferTax: hpResult.transferTax,
-          simulationSuccess: hpResult.simulationSuccess,
-        } : null,
-        contractFlags: {
-          mint: cortexContractFlags.mint.status === 'verified' ? true : cortexContractFlags.mint.status === 'not_detected' ? false : null,
-          blacklist: cortexContractFlags.blacklist.status === 'verified' ? true : cortexContractFlags.blacklist.status === 'not_detected' ? false : null,
-          pause: cortexContractFlags.pause.status === 'verified' ? true : cortexContractFlags.pause.status === 'not_detected' ? false : null,
-          withdraw: cortexContractFlags.withdraw.status === 'verified' ? true : cortexContractFlags.withdraw.status === 'not_detected' ? false : null,
-          proxy: cortexContractFlags.proxy.status === 'verified' ? true : cortexContractFlags.proxy.status === 'not_detected' ? false : null,
-        },
+        // resolveSimulation result — null when Honeypot.is is unavailable
+        simulation: _simResult,
+        // resolveContractFlags: ABI scan (GoldRush) with bytecode fallback
+        contractFlags: resolveContractFlags(grContractIntel, cortexContractFlags),
         devOwnership: {
           ownerAddress: ownerAddr ?? null,
           adminAddress: adminAddr ?? null,
@@ -3086,6 +3134,7 @@ export async function POST(req: Request) {
         primaryMarketType: lpDiagnostics.primaryMarketType,
         primaryMarketDex: lpDiagnostics.primaryMarketDex,
         lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
+        proofStatus: lpDiagnostics.lpState ?? null,
       },
 
       // AI summary from Cortex Engine
@@ -3160,6 +3209,7 @@ export async function POST(req: Request) {
             primaryMarketType: lpDiagnostics.primaryMarketType,
             primaryMarketDex: lpDiagnostics.primaryMarketDex,
             lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
+            proofStatus: lpDiagnostics.lpState ?? null,
           },
         },
         ownership: {

@@ -178,14 +178,17 @@ type ScanResult = {
     primaryMarketType?: string | null
     primaryMarketDex?: string | null
     lpVerificationPoolSelected?: boolean | null
+    proofStatus?: string | null
   } | null
   security?: {
     simulation?: {
-      isHoneypot: boolean | null
+      honeypot: boolean | null
       buyTax: number | null
       sellTax: number | null
       transferTax: number | null
-      simulationSuccess: boolean
+      transferOK: boolean | null
+      simulationSuccess: boolean | null
+      source: string
     } | null
     contractFlags?: {
       mint: boolean | null
@@ -681,6 +684,7 @@ function deriveLpMode(result: ScanResult): LpMode {
   // protocol: Base + no V2 pools + any concentrated-liquidity signal
   if (chain === 'base' && (v2Count === 0 || v2Count == null)) {
     const isConcentrated = (
+      meta?.proofStatus === 'concentrated_liquidity' ||
       lpStatus === 'concentrated_liquidity' ||
       meta?.lpProofUnavailableReason === 'no_v2_lp_token_pool_found' ||
       meta?.primaryMarketType === 'v3' ||
@@ -2446,7 +2450,14 @@ export default function TerminalTokenScanner() {
                   )}
                   {!planLoading && isFullAccess && (() => {
                     const engine = result.riskEngine
-                    const sim = result.security?.simulation ?? result.honeypot
+                    const _secSim = result.security?.simulation
+                    const sim = _secSim != null ? {
+                      isHoneypot: _secSim.honeypot,
+                      buyTax: _secSim.buyTax,
+                      sellTax: _secSim.sellTax,
+                      transferTax: _secSim.transferTax,
+                      simulationSuccess: _secSim.simulationSuccess,
+                    } : result.honeypot
                     const simVerified = sim?.simulationSuccess === true
                     const simUnavailable = sim == null
                     const lpState = result.lpControl?.status ?? 'unverified'
