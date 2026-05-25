@@ -929,6 +929,12 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
     baseTokenAddress,
     quoteTokenAddress,
     poolType: detectPoolType(pool, dexId || undefined),
+    hasLpToken: (() => {
+      const pt = detectPoolType(pool, dexId || undefined)
+      if (pt === 'v2') return true
+      if (pt === 'v3' || pt === 'aerodrome' || pt === 'concentrated') return false
+      return null
+    })(),
     hasDexMeta: Boolean(dexId || dexName),
     isValidAddress: Boolean(address && /^0x[a-f0-9]{40}$/.test(address)),
     raw: pool,
@@ -946,6 +952,10 @@ type NormalizedPool = {
   baseTokenAddress?: string | null;
   quoteTokenAddress?: string | null;
   poolType: "v2" | "v3" | "aerodrome" | "concentrated" | "unknown";
+  // true = confirmed ERC20 LP token (V2-style, can probe burn/lock)
+  // false = no ERC20 LP token (V3/CL NFT positions, proof not applicable)
+  // null = unknown (needs RPC probe)
+  hasLpToken: boolean | null;
   hasDexMeta: boolean;
   isValidAddress: boolean;
   containsScannedToken?: boolean;
@@ -1506,6 +1516,16 @@ export async function POST(req: Request) {
         baseTokenAddress: dexFbEarly.baseToken?.address?.toLowerCase() ?? null,
         quoteTokenAddress: dexFbEarly.quoteToken?.address?.toLowerCase() ?? null,
         poolType: _dsFbType,
+        hasLpToken: (() => {
+          if (_dsFbType === 'v2') return true
+          if (_dsFbType === 'v3' || _dsFbType === 'aerodrome' || _dsFbType === 'concentrated') return false
+          // On Base, DexScreener may label V2 pools as unknown/v3 — detect by dexId
+          if (chain === 'base' && _dsFbDexId) {
+            const dxLc = _dsFbDexId.toLowerCase()
+            if (/v2|baseswap|alienbase|swapbased|sushiswap|shibaswap/.test(dxLc) && !/v3|v4|concentrated|slipstream|aerodrome/.test(dxLc)) return true
+          }
+          return null
+        })(),
         hasDexMeta: Boolean(_dsFbDexId),
         isValidAddress: true,
       })
@@ -1531,7 +1551,8 @@ export async function POST(req: Request) {
     // lpVerifyPool: separate from lpPool — best V2/unknown pool for burn/lock/team proof.
     // normalizedPools is sorted by liquidity desc, so first V2/unknown = highest-liquidity verifiable pool.
     const _isV2Verifiable = (p: NormalizedPool) =>
-      (p.poolType === 'v2' || p.poolType === 'unknown') && p.isValidAddress && Boolean(p.address)
+      (p.poolType === 'v2' || p.poolType === 'unknown' || (chain === 'base' && p.hasLpToken === true)) &&
+      p.isValidAddress && Boolean(p.address)
     const lpVerifyPool = normalizedPools.find(_isV2Verifiable) ?? null
     const lpVerifyPoolAddress = lpVerifyPool?.address ?? null
     const lpVerifyPoolType: NormalizedPool['poolType'] = lpVerifyPool?.poolType ?? 'unknown'
@@ -1758,6 +1779,16 @@ export async function POST(req: Request) {
         source: "dex_data",
         reason: "Protocol-specific LP proof required.",
         evidence: [`pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`],
+      };
+    } else if (lpVerifyPoolPresent && lpVerifyPool?.hasLpToken === false) {
+      // LP verification pool has no ERC20 LP token (V3/CL NFT) — burn/lock proof not applicable
+      lpControl = {
+        status: (lpVerifyPool.poolType === 'aerodrome') ? 'protocol' : 'concentrated_liquidity',
+        confidence: 'medium',
+        poolType: _lpProofType,
+        source: 'dex_data',
+        reason: 'Protocol-specific LP proof required.',
+        evidence: [`pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`],
       };
     } else if (_lpProofType === "unknown") {
       // Step 1: try GoldRush LP holder proof (same as v2 path) using pre-fetched data
