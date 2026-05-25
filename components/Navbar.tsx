@@ -131,7 +131,8 @@ export default function Navbar() {
   const initials = (displayName?.[0] ?? shortEmail?.[0] ?? 'A').toUpperCase()
   const displayPlan: UserPlan = plan ?? 'free'
   const planLabel = !accountEmail ? '' : planLoading && !plan ? 'CHECKING PLAN…' : (plan ?? 'unknown').toUpperCase()
-  const trialBadge = displayPlan === 'elite' && trialDaysLeft > 0 ? `Elite trial · ${trialDaysLeft} days left` : null
+  const trialBadgeDesktop = displayPlan === 'elite' && trialDaysLeft > 0 ? `Elite trial · ${trialDaysLeft} days left` : null
+  const trialBadgeMobile = displayPlan === 'elite' && trialDaysLeft > 0 ? 'Elite trial' : null
 
   return (
     <>
@@ -542,7 +543,7 @@ export default function Navbar() {
                   borderRadius: '4px', padding: '1px 5px',
                   background: `${PLAN_COLOR[displayPlan]}18`,
                   flexShrink: 0,
-                }}>{planLabel}</span>{trialBadge ? <span style={{ marginLeft: 8, fontSize: 10, color: '#fbbf24' }}>{trialBadge}</span> : null}
+                }}>{planLabel}</span>{trialBadgeDesktop ? <span style={{ marginLeft: 8, fontSize: 10, color: '#fbbf24', whiteSpace: 'nowrap' }}>{trialBadgeDesktop}</span> : null}
               </Link>
             ) : (
               <Link href="/sign-in" className="btn-signin" prefetch={true}>Sign In</Link>
@@ -654,7 +655,7 @@ export default function Navbar() {
                       fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
                       color: PLAN_COLOR[displayPlan], border: `1px solid ${PLAN_COLOR[displayPlan]}44`,
                       borderRadius: '4px', padding: '1px 5px', background: `${PLAN_COLOR[displayPlan]}18`,
-                    }}>{planLabel}</span>{trialBadge ? <span style={{ marginLeft: 6, fontSize: 10, color: '#fbbf24' }}>{trialBadge}</span> : null}{trialBadge ? <span style={{ marginLeft: 8, fontSize: 10, color: '#fbbf24' }}>{trialBadge}</span> : null}
+                    }}>{planLabel}</span>{trialBadgeMobile ? <span style={{ marginLeft: 6, fontSize: 10, color: '#fbbf24' }}>{trialBadgeMobile}</span> : null}
                     <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)' }}>Signed in</span>
                   </div>
                 </div>
