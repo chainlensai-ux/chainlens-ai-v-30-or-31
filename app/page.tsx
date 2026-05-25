@@ -6,6 +6,7 @@ import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
+const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
 const Reveal = ({ children }: { children: ReactNode; [key: string]: unknown }) => <>{children}</>
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
@@ -765,6 +766,8 @@ export default function HomePage() {
               </svg>
               Enter Terminal →
             </Link>
+
+            <ClaimTrialButton />
 
             {/* Start Free — purple */}
             <Link href="/pricing" style={{

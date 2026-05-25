@@ -603,15 +603,25 @@ function getSummaryReasons(result: ScanResult): string[] {
   return reasons.slice(0, 3)
 }
 
+
+
+type LpMode = 'protocol' | 'lp_token' | 'unknown'
+
+function getLpMode(result: ScanResult): LpMode {
+  const status = result.lpControl?.status
+  if (status === 'protocol' || status === 'concentrated_liquidity') return 'protocol'
+  if (status === 'locked' || status === 'burned' || status === 'team_controlled' || status === 'risky') return 'lp_token'
+  return 'unknown'
+}
 function getMissingChecks(result: ScanResult): string[] {
   const holderState = deriveHolderState(result)
+  const lpMode = getLpMode(result)
   const lpStatus = result.lpControl?.status
   const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
-  const lpProtocol = lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity'
   return [
     result.noActivePools ? 'Active liquidity pool' : null,
     holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : null,
-    lpProtocol ? 'Protocol-specific LP verification' : (!lpVerified ? 'LP lock or burn proof' : null),
+    lpMode === 'protocol' ? 'LP token model not used — protocol-managed concentrated liquidity.' : lpMode === 'unknown' ? 'Liquidity detected, but LP model could not be classified.' : (!lpVerified ? 'LP lock or burn proof' : null),
     result.marketCapUsd == null ? 'Verified market cap' : null,
     'Supply spread',
   ].filter((v): v is string => v != null)
@@ -652,6 +662,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   const liq        = result.liquidity ?? 0
   const holderState = deriveHolderState(result)
   const lpStatus   = result.lpControl?.status
+  const lpMode = getLpMode(result)
   const top1       = result.holderDistribution?.top1  ?? null
   const top10      = result.holderDistribution?.top10 ?? null
   const top20      = result.holderDistribution?.top20 ?? null
@@ -729,10 +740,8 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   let lpPts = 0, lpStatusLabel = 'unavailable', lpReason = 'No LP lock or burn proof confirmed.'
   if (lpStatus === 'locked' || lpStatus === 'burned') {
     lpPts = 10; lpStatusLabel = 'ok'; lpReason = `LP ${lpStatus} — exit liquidity confirmed.`
-  } else if (lpStatus === 'protocol') {
-    lpPts = -6; lpStatusLabel = 'partial'; lpReason = 'Protocol-managed liquidity detected. Locker proof unavailable.'
-  } else if (lpStatus === 'concentrated_liquidity') {
-    lpPts = -8; lpStatusLabel = 'partial'; lpReason = 'Concentrated liquidity pool detected. Exit depth may shift rapidly.'
+  } else if (lpMode === 'protocol') {
+    lpPts = 10; lpStatusLabel = 'ok'; lpReason = 'Concentrated Liquidity (v3/v4) — LP token model is not used.'
   } else if (result.lpControl?.poolAddressPresent) {
     lpPts = -10; lpStatusLabel = 'partial'; lpReason = 'LP ownership could not be verified this scan.'
   } else if (lpStatus === 'risky') {
@@ -745,7 +754,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   // ── Missing checks penalty ───────────────────────────────────────────────
   const missingItems = [
     holderState.kind !== 'rowsWithPercent'                              ? 'holder concentration'  : null,
-    lpStatus !== 'locked' && lpStatus !== 'burned'                      ? 'LP proof'              : null,
+    lpMode === 'protocol'                                                ? null                    : lpMode === 'unknown' ? 'LP model classification' : (lpStatus !== 'locked' && lpStatus !== 'burned' ? 'LP proof' : null),
     result.marketCapUsd == null                                         ? 'market cap'            : null,
     !hp?.simulationSuccess                                              ? 'security simulation'   : null,
     result.contractSecurity == null                                               ? 'owner status'          : null,
@@ -1571,6 +1580,7 @@ export default function TerminalTokenScanner() {
                 const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
                 const holderState = deriveHolderState(result)
                 const lpStatus = result.lpControl?.status
+                const lpMode = getLpMode(result)
                 const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
                 const marketChipOk = (result.price != null || result.liquidity != null) && !result.noActivePools
                 const holdersChipOk = holderState.kind === 'rowsWithPercent'
@@ -1604,12 +1614,12 @@ export default function TerminalTokenScanner() {
                 const statusChips = [
                   { label: 'Market',      chipOk: marketChipOk,    chipPartial: false,              chipColor: marketChipOk ? '#34d399' : '#f87171' },
                   { label: 'Holders',     chipOk: holdersChipOk,   chipPartial: holdersChipPartial, chipColor: holdersChipOk ? '#34d399' : holdersChipPartial ? '#fbbf24' : '#f87171' },
-                  { label: 'LP Control',  chipOk: lpVerified,      chipPartial: false,              chipColor: lpVerified ? '#34d399' : '#f87171' },
+                  { label: 'LP Control',  chipOk: lpVerified || lpMode === 'protocol', chipPartial: lpMode === 'unknown', chipColor: lpVerified || lpMode === 'protocol' ? '#34d399' : lpMode === 'unknown' ? '#fbbf24' : '#f87171' },
                   { label: 'Risk Checks', chipOk: riskChipOk,      chipPartial: simUnavailable,     chipColor: riskChipOk ? '#34d399' : simUnavailable ? '#94a3b8' : '#f87171' },
                 ]
                 const marketStrengthLabel = result.noActivePools ? 'Unverified' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Unverified'
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
-                const lpProofLabel = lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') ? 'Protocol liquidity' : 'Unverified'
+                const lpProofLabel = lpMode === 'protocol' ? 'Not Applicable' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpMode === 'unknown' ? 'Unknown model' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
@@ -2159,19 +2169,22 @@ export default function TerminalTokenScanner() {
                   {/* Exit Risk Read card — always visible */}
                   {(() => {
                     const lpS = result.lpControl?.status
-                    const lpVerifiedExit = lpS === 'locked' || lpS === 'burned'
+                    const lpMode = getLpMode(result)
+                    const lpVerifiedExit = lpMode === 'protocol' || lpS === 'locked' || lpS === 'burned'
                     const liqDepth = result.liquidity ?? null
                     const primaryPool = result.pools?.[0]?.name ?? result.primaryDexName ?? null
                     const exitRisk = result.noActivePools
                       ? 'CRITICAL'
-                      : !lpVerifiedExit
-                        ? liqDepth != null && liqDepth < 50_000 ? 'HIGH' : 'ELEVATED'
-                        : liqDepth != null && liqDepth < 50_000 ? 'MEDIUM' : 'LOW'
-                    const exitRiskColor = exitRisk === 'CRITICAL' ? '#f87171' : exitRisk === 'HIGH' ? '#fb923c' : exitRisk === 'ELEVATED' ? '#fbbf24' : exitRisk === 'MEDIUM' ? '#a78bfa' : '#34d399'
+                      : lpMode === 'protocol'
+                        ? 'PROTOCOL-BASED'
+                        : !lpVerifiedExit
+                          ? liqDepth != null && liqDepth < 50_000 ? 'HIGH' : 'ELEVATED'
+                          : liqDepth != null && liqDepth < 50_000 ? 'MEDIUM' : 'LOW'
+                    const exitRiskColor = exitRisk === 'CRITICAL' ? '#f87171' : exitRisk === 'HIGH' ? '#fb923c' : exitRisk === 'ELEVATED' ? '#fbbf24' : exitRisk === 'MEDIUM' ? '#a78bfa' : exitRisk === 'PROTOCOL-BASED' ? '#c084fc' : '#34d399'
                     const exitRead = result.noActivePools
                       ? 'No active liquidity pool detected — exit risk cannot be assessed.'
-                      : (!lpVerifiedExit && (lpS === 'protocol' || lpS === 'concentrated_liquidity'))
-                        ? 'Protocol-managed liquidity detected. Lock/burn proof requires protocol-specific verification.'
+                      : (lpMode === 'protocol')
+                        ? 'Protocol-managed concentrated liquidity detected. LP token model is not used.'
                         : !lpVerifiedExit
                           ? 'Liquidity exists, but lock/burn proof is not confirmed. Treat exit liquidity as unprotected.'
                           : lpS === 'burned'
@@ -2185,7 +2198,7 @@ export default function TerminalTokenScanner() {
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '8px', marginBottom: '10px' }}>
                           {[
-                            ['LP Proof', lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : lpS === 'protocol' || lpS === 'concentrated_liquidity' ? 'Protocol LP' : 'Unverified'],
+                            ['LP Proof', lpMode === 'protocol' ? 'Not Applicable' : lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : 'Unverified'],
                             ['Liquidity Depth', liqDepth != null ? fmtLarge(liqDepth) : 'Unverified'],
                             ['Primary Pool', primaryPool ?? 'Unverified'],
                             ['Exit Risk', exitRisk],
@@ -2214,7 +2227,7 @@ export default function TerminalTokenScanner() {
                     const lpIsVerified = lp.status === 'locked' || lp.status === 'burned'
                     const statusColor: Record<string,string> = { burned:'#34d399',locked:'#60a5fa',protocol:'#f59e0b',concentrated_liquidity:'#a855f7',team_controlled:'#f87171',unverified:'#94a3b8',insufficient_data:'#94a3b8',error:'#f87171' }
                     const color = statusColor[lp.status??'unverified']??'#94a3b8'
-                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',protocol:'Protocol liquidity',concentrated_liquidity:'Concentrated liquidity',team_controlled:'Team controlled',unverified:'Unverified',insufficient_data:'Insufficient data',error:'Unverified' }
+                    const statusLabelMap: Record<string,string> = { burned:'Burned',locked:'Locked',protocol:'Concentrated Liquidity (v3/v4)',concentrated_liquidity:'Concentrated Liquidity (v3/v4)',team_controlled:'Team controlled',unverified:'Unverified',insufficient_data:'Insufficient data',error:'Unverified' }
                     const evidence = Array.isArray(lp.evidence)?lp.evidence:[]
                     const verificationPool = evidenceValue(evidence,'Verification pool')??read?.whatWasFound?.find((x)=>/^Pair:/i.test(x))?.replace(/^Pair:\s*/i,'')??'Unverified'
                     const evidenceText = evidence.join(' ').toLowerCase()
@@ -2233,8 +2246,8 @@ export default function TerminalTokenScanner() {
                           {[
                             ['Pool detected', lp.poolAddressPresent ? 'Yes' : 'No'],
                             ['Primary market selected', verificationPool !== 'Unverified' ? 'Yes' : 'No'],
-                            ['LP lock/burn proof', lpIsVerified ? 'Verified' : 'Unverified'],
-                            ['Protocol-specific proof', lp.status === 'protocol' || lp.status === 'concentrated_liquidity' ? 'Required' : 'N/A'],
+                            ['LP lock/burn proof', getLpMode(result) === 'protocol' ? 'Not Applicable' : lpIsVerified ? 'Verified' : 'Unverified'],
+                            ['LP Token Model', getLpMode(result) === 'protocol' ? 'Not Used' : getLpMode(result) === 'unknown' ? 'Unknown' : 'Used'],
                             ['Next action', nextAction],
                           ].map(([k,v])=>(
                             <div key={String(k)} style={{ padding:'8px 9px', border:'1px solid rgba(148,163,184,0.18)', borderRadius:'9px', background:'rgba(8,14,28,0.55)' }}>

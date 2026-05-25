@@ -34,6 +34,7 @@ import {
   createAnonSupabaseClient,
   getOrCreateUserSettings,
   sanitizeSettingsUpdate,
+  resolveEffectivePlan,
   upsertUserSettings,
 } from '@/lib/supabase/userSettings';
 
@@ -76,9 +77,11 @@ export async function GET(request: NextRequest) {
 
   const result = await getOrCreateUserSettings(auth.supabase, auth.userId);
   const betaAllElite = process.env.BETA_ALL_ELITE === 'true';
-  const rawPlan = result.settings.plan === 'elite' || result.settings.plan === 'pro' ? result.settings.plan : 'free';
   const betaEliteActive = betaAllElite;
-  const effectivePlan = betaEliteActive ? 'elite' : rawPlan;
+  const effectivePlan = betaEliteActive ? 'elite' : resolveEffectivePlan(result.settings);
+  const trialEndsMs = result.settings.trial_ends_at ? Date.parse(result.settings.trial_ends_at) : Number.NaN;
+  const trialActive = result.settings.trial_plan === 'elite' && Number.isFinite(trialEndsMs) && trialEndsMs > Date.now();
+  const trialDaysLeft = trialActive ? Math.max(1, Math.ceil((trialEndsMs - Date.now()) / 86_400_000)) : 0;
   const plan = effectivePlan;
   const verifiedPlan = effectivePlan;
   const debugMode = process.env.NODE_ENV !== 'production' && request.nextUrl.searchParams.get('debug') === 'true';
@@ -102,6 +105,8 @@ export async function GET(request: NextRequest) {
         effectivePlan,
         verifiedPlan,
         subscription_status: result.settings.subscription_status ?? null,
+        trialActive,
+        trialDaysLeft,
         error: 'settings_unavailable',
         fallback: true,
         ...betaFields,
@@ -118,6 +123,8 @@ export async function GET(request: NextRequest) {
       effectivePlan,
       verifiedPlan,
       subscription_status: result.settings.subscription_status ?? null,
+      trialActive,
+      trialDaysLeft,
       fallback: false,
       ...betaFields,
       diagnostics,

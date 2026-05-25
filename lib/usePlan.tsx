@@ -65,18 +65,50 @@ export function usePlan(): UserPlan {
 
 /** Like usePlan but exposes loading state so pages can suppress the locked
  *  panel flash while the session/plan are still resolving. */
-export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null; betaEliteActive: boolean } {
+export type ElitePassState = {
+  active: boolean
+  expiresAt: string | null
+  remaining: { days: number; hours: number; minutes: number } | null
+  unlocks: string[]
+}
+
+const ELITE_UNLOCKS = ['token-scanner-full', 'wallet-scanner', 'dev-wallet', 'whale-alerts', 'pump-alerts', 'base-radar', 'clark-ai-full', 'liquidity-safety', 'portfolio', 'auto-verdicts', 'advanced-whale-alerts', 'priority-cortex', 'early-access']
+
+function computeRemaining(expiresAt: string | null): ElitePassState['remaining'] {
+  if (!expiresAt) return null
+  const diffMs = Date.parse(expiresAt) - Date.now()
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return null
+  const totalMinutes = Math.floor(diffMs / 60_000)
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  return { days, hours, minutes }
+}
+
+export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null; betaEliteActive: boolean; elitePass: ElitePassState } {
   const [plan, setPlan] = useState<UserPlan | null>(null)
   const [loading, setLoading] = useState(true)
   const [resolved, setResolved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [betaEliteActive, setBetaEliteActive] = useState(false)
+  const [elitePass, setElitePass] = useState<ElitePassState>({ active: false, expiresAt: null, remaining: null, unlocks: [] })
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setElitePass((prev) => {
+        if (!prev.active) return prev
+        const nextRemaining = computeRemaining(prev.expiresAt)
+        if (!nextRemaining) return { active: false, expiresAt: prev.expiresAt, remaining: null, unlocks: [] }
+        return { ...prev, remaining: nextRemaining }
+      })
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
   useEffect(() => {
     async function load(session: { access_token?: string; user?: { id?: string; email?: string | null } } | null | undefined) {
       const token = session?.access_token
       const userId = session?.user?.id
       const email = session?.user?.email ?? null
-      if (!token) { clearPlanCache(); setPlan('free'); setBetaEliteActive(false); setError(null); setLoading(false); setResolved(true); return }
+      if (!token) { clearPlanCache(); setPlan('free'); setBetaEliteActive(false); setElitePass({ active: false, expiresAt: null, remaining: null, unlocks: [] }); setError(null); setLoading(false); setResolved(true); return }
       const cached = readCachedPlan(userId, email)
       if (cached) setPlan(cached)
       try {
@@ -88,6 +120,15 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
           writeCachedPlan(resolvedPlan, userId, email)
           setBetaEliteActive(json?.betaEliteActive === true)
           setError(null)
+          const trialActive = json?.trialActive === true
+          const trialEndsAt = typeof json?.settings?.trial_ends_at === 'string' ? json.settings.trial_ends_at : null
+          const remaining = trialActive ? computeRemaining(trialEndsAt) : null
+          setElitePass({
+            active: trialActive && Boolean(remaining),
+            expiresAt: trialEndsAt,
+            remaining,
+            unlocks: trialActive && remaining ? ELITE_UNLOCKS : [],
+          })
         } else if (!cached) {
           setError('plan_fetch_failed')
         }
@@ -106,7 +147,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
     })
     return () => { l.subscription.unsubscribe() }
   }, [])
-  return { plan: plan ?? 'free', loading: loading || !resolved, error, betaEliteActive }
+  return { plan: plan ?? 'free', loading: loading || !resolved, error, betaEliteActive, elitePass }
 }
 
 const FEATURE_DISPLAY: Record<string, string> = {
