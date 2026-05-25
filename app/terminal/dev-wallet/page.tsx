@@ -490,7 +490,7 @@ export default function DevWalletPage() {
             const resolvedTokenName = result.tokenEvidence?.name?.trim() || null
             const resolvedTokenSymbol = result.tokenEvidence?.symbol?.trim() || null
             const tokenTitle = resolvedTokenName ?? shortAddr(result.contractAddress, 8, 6)
-            const hasTokenTitleFallback = !resolvedTokenName
+            const hasTokenTitleFallback = !resolvedTokenName && !resolvedTokenSymbol
 
             return (
               <div>
@@ -508,7 +508,7 @@ export default function DevWalletPage() {
                   </p>
                   {hasTokenTitleFallback && (
                     <p style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)', margin:'4px 0 0' }}>
-                      Name unavailable from metadata checks.
+                      Name unavailable from Token Scanner + metadata checks.
                     </p>
                   )}
                 </div>
@@ -806,7 +806,9 @@ export default function DevWalletPage() {
                   const devClusterSupply = te?.devClusterSupply ?? result.supplyControlled ?? null
                   const percentUnavailableLabel = hasHolderRows ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable after scan.'
                   const topHolderNote: string | null =
-                    result.supplyControlStatus === 'not_in_top_holders'
+                    result.deployerAddress && !hasHolderRows
+                      ? 'Origin wallet was likely found, but holder distribution could not confirm supply control.'
+                      : result.supplyControlStatus === 'not_in_top_holders'
                       ? 'Creator wallet is not in the top-holder set. Supply concentration remains an open risk check since linked wallets are not fully verified.'
                       : result.supplyControlStatus === 'needs_confirmed_creator'
                         ? 'Creator-linked supply control cannot be confirmed — no verified creator address available.'
