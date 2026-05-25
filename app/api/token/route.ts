@@ -2309,8 +2309,11 @@ export async function POST(req: Request) {
     const _implHex = alchemyMandatoryReads[4] ?? null
     const _ZERO_ADDR = '0x0000000000000000000000000000000000000000'
     const proxyImplAddr = _implHex && _implHex.length >= 42 && _implHex !== '0x' ? `0x${_implHex.slice(-40)}`.toLowerCase() : null
-    const isRenounced = !ownerAddr || ownerAddr === _ZERO_ADDR
-    const ownershipVerified = Boolean(ownerAddr || adminAddr)
+    // Only mark renounced when RPC was attempted (alchemyConfigured) and owner is zero/null.
+    // If RPC wasn't configured, ownerAddr is null but we haven't verified anything.
+    const rpcOwnershipAttempted = alchemyConfigured
+    const isRenounced = rpcOwnershipAttempted && (!ownerAddr || ownerAddr === _ZERO_ADDR)
+    const ownershipVerified = rpcOwnershipAttempted && Boolean(ownerAddr || adminAddr)
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
 
@@ -2393,14 +2396,13 @@ export async function POST(req: Request) {
       riskScore += 15
     }
     if (liquidityUsd != null) riskVerifiedSignals.push(`Liquidity depth detected (${Math.round(liquidityUsd).toLocaleString()} USD).`)
-    else openChecks.push('Liquidity depth is unavailable.')
-    if (holderDistributionStatus.status === 'ok' && top10Pct != null) {
+    if (holderDataComplete && top10Pct != null) {
       riskVerifiedSignals.push(`Holder Map verified with Top 10 concentration at ${top10Pct.toFixed(1)}%.`)
       if (top10Pct > 70) { riskDrivers.push('Holder concentration is very high (Top 10 > 70%).'); riskScore += 30 }
       else if (top10Pct > 50) { riskDrivers.push('Holder concentration is elevated (Top 10 > 50%).'); riskScore += 20 }
       else if (top10Pct > 35) { riskDrivers.push('Holder concentration is moderate (Top 10 > 35%).'); riskScore += 10 }
       else riskScore -= 5
-    } else if (holderDistributionStatus.status === 'partial') {
+    } else if (!holderDataComplete && holderDistributionStatus.status === 'partial') {
       riskVerifiedSignals.push('Holder Map rows were returned but concentration percentages are partial.')
       riskScore += 8
     } else {
@@ -2421,7 +2423,8 @@ export async function POST(req: Request) {
     const riskOwnerStatus = isRenounced ? 'renounced' : (ownershipVerified ? 'held' : 'unverified')
     if (riskOwnerStatus === 'renounced') { riskVerifiedSignals.push('Dev Control: ownership appears renounced.'); riskScore -= 6 }
     else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
-    else openChecks.push('Dev Control ownership status is unverified.')
+    // Only flag ownership as unverified when RPC was attempted but owner/admin calls all failed
+    else if (rpcOwnershipAttempted) { openChecks.push('Dev Control ownership status is unverified.') }
     if (proxyImplAddr && !isRenounced) { riskDrivers.push('Proxy contract with active owner — upgrade risk present.'); riskScore += 5 }
 
     const tradingSimConfigured = isFullScanChain
@@ -2992,6 +2995,8 @@ export async function POST(req: Request) {
           lpSafetyAttempted,
           lpSafetyUsable,
           lpOwnershipVerified,
+          lpProofStatus,
+          lpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' : (lpOwnershipVerified ? 'verified' : 'unverified'),
           lpControl,
           lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
         },
