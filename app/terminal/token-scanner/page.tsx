@@ -611,7 +611,7 @@ function getMissingChecks(result: ScanResult): string[] {
   return [
     result.noActivePools ? 'Active liquidity pool' : null,
     holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : null,
-    lpProtocol ? 'Protocol-specific LP verification' : (!lpVerified ? 'LP lock or burn proof' : null),
+    !lpVerified && !lpProtocol ? 'LP lock or burn proof' : null,
     result.marketCapUsd == null ? 'Verified market cap' : null,
     'Supply spread',
   ].filter((v): v is string => v != null)
@@ -744,11 +744,11 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
 
   // ── Missing checks penalty ───────────────────────────────────────────────
   const missingItems = [
-    holderState.kind !== 'rowsWithPercent'                              ? 'holder concentration'  : null,
-    lpStatus !== 'locked' && lpStatus !== 'burned'                      ? 'LP proof'              : null,
-    result.marketCapUsd == null                                         ? 'market cap'            : null,
-    !hp?.simulationSuccess                                              ? 'security simulation'   : null,
-    result.contractSecurity == null                                               ? 'owner status'          : null,
+    holderState.kind !== 'rowsWithPercent'                                                                                    ? 'holder concentration'  : null,
+    lpStatus !== 'locked' && lpStatus !== 'burned' && lpStatus !== 'protocol' && lpStatus !== 'concentrated_liquidity'        ? 'LP proof'              : null,
+    result.marketCapUsd == null                                                                                               ? 'market cap'            : null,
+    !hp?.simulationSuccess                                                                                                    ? 'security simulation'   : null,
+    result.contractSecurity == null                                                                                           ? 'owner status'          : null,
   ].filter((v): v is string => v != null)
   const missingPenalty = Math.min(missingItems.length * 4, 18)
   pts -= missingPenalty
@@ -2234,7 +2234,16 @@ export default function TerminalTokenScanner() {
                     fallbackChecked.push('Liquidity scan completed')
                     if (lp.status!=='error'&&lp.status!=='unverified'?true:lp.poolAddressPresent) fallbackChecked.push('Pool structure reviewed')
                     const checked = ((read?.whatWasFound??[]).filter((x)=>!/^Pair:/i.test(x)).length?(read?.whatWasFound??[]).filter((x)=>!/^Pair:/i.test(x)):fallbackChecked).filter((v,i,arr)=>arr.indexOf(v)===i)
-                    const unresolved = read?.couldNotVerify?.length?read.couldNotVerify:['Holder concentration unverified','Contract ownership unverified',lp.status==='protocol' || lp.status==='concentrated_liquidity'?'Protocol-specific LP proof':'LP lock or burn proof']
+                    const _holderState2 = deriveHolderState(result)
+                    const _ownerStatus2 = deriveHolderFallbackEvidence(result).ownerStatus
+                    const _lpIsProtocol = lp.status === 'protocol' || lp.status === 'concentrated_liquidity'
+                    const unresolved = _lpIsProtocol
+                      ? [
+                          'Protocol-specific LP proof required',
+                          ...(_holderState2.kind !== 'rowsWithPercent' ? ['Holder concentration unverified'] : []),
+                          ...(_ownerStatus2 === 'Unverified' ? ['Contract ownership unverified'] : []),
+                        ]
+                      : (read?.couldNotVerify?.length ? read.couldNotVerify : ['Holder concentration unverified','Contract ownership unverified','LP lock or burn proof'])
                     const riskRead = read?.meaning??(lp.status==='protocol' || lp.status==='concentrated_liquidity'?'Protocol liquidity detected — requires protocol-specific verification.':lp.poolAddressPresent?'Liquidity exists, but LP lock/control could not be proven from current checks.':'No active liquidity pool found.')
                     const nextAction = read?.nextAction??'Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.'
                     return (
@@ -2242,9 +2251,8 @@ export default function TerminalTokenScanner() {
                         <div style={{ padding:'11px 12px', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px' }}>
                           {[
                             ['Pool detected', lp.poolAddressPresent ? 'Yes' : 'No'],
-                            ['Primary market selected', verificationPool !== 'Unverified' ? 'Yes' : 'No'],
-                            ['LP lock/burn proof', lpIsVerified ? 'Verified' : 'Unverified'],
-                            ['Protocol-specific proof', lp.status === 'protocol' || lp.status === 'concentrated_liquidity' ? 'Required' : 'N/A'],
+                            ['Primary market selected', lp.poolAddressPresent ? 'Yes' : 'No'],
+                            ['LP proof', lpIsVerified ? 'Verified' : (lp.status === 'protocol' || lp.status === 'concentrated_liquidity') ? 'Protocol-specific' : 'Unverified'],
                             ['Next action', nextAction],
                           ].map(([k,v])=>(
                             <div key={String(k)} style={{ padding:'8px 9px', border:'1px solid rgba(148,163,184,0.18)', borderRadius:'9px', background:'rgba(8,14,28,0.55)' }}>
@@ -2268,7 +2276,14 @@ export default function TerminalTokenScanner() {
                             </div>
                             <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:'8px',padding:'6px 12px 8px',borderTop:'1px solid rgba(255,255,255,0.05)' }}>
                               <div style={{ padding:'8px 10px',border:'1px solid rgba(52,211,153,0.16)',borderRadius:'10px',background:'rgba(15,23,42,0.36)' }}>
-                                {lpDiffersFromMarket ? (
+                                {(lp.status === 'protocol' || lp.status === 'concentrated_liquidity') ? (
+                                  <>
+                                    <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Primary market pool</div>
+                                    <div style={{ color:'#e2e8f0',marginBottom:'6px' }}>{primaryMarketDisplay}</div>
+                                    <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>LP proof pool</div>
+                                    <div style={{ color:'#94a3b8',fontStyle:'italic' }}>None found — protocol-specific</div>
+                                  </>
+                                ) : lpDiffersFromMarket ? (
                                   <>
                                     <div style={{ fontSize:'10px',color:'#64748b',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Primary market pool</div>
                                     <div style={{ color:'#e2e8f0',marginBottom:'6px' }}>{primaryMarketDisplay}</div>
@@ -2284,7 +2299,7 @@ export default function TerminalTokenScanner() {
                               </div>
                               <div style={{ padding:'8px 10px',border:'1px solid rgba(245,158,11,0.2)',borderRadius:'10px',background:'rgba(245,158,11,0.08)' }}>
                                 <div style={{ fontSize:'10px',color:'#fbbf24',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Open checks</div>
-                                <div style={{ fontSize:'11px',color:'#fde68a',marginBottom:'6px' }}>LP ownership could not be verified this scan.</div>
+                                <div style={{ fontSize:'11px',color:'#fde68a',marginBottom:'6px' }}>{lp.status==='protocol'||lp.status==='concentrated_liquidity'?'LP proof not applicable to this pool type.':'LP ownership could not be verified this scan.'}</div>
                                 {unresolved.map((f,i)=><div key={i} style={{ color:'#f8fafc',display:'flex',gap:'6px' }}><span style={{ color:'#f59e0b' }}>✕</span>{f}</div>)}
                               </div>
                             </div>

@@ -713,6 +713,7 @@ type LpDiagnostics = {
   lpProofAttempted: boolean;
   holderProofAttempted: boolean;
   holderRawItemCount: number;
+  lpProofUnavailableReason: string | null;
 };
 
 type LpControlRead = {
@@ -776,12 +777,12 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null): Lp
       };
     case "concentrated_liquidity":
       return {
-        title: "Concentrated liquidity detected",
-        meaning: "Concentrated liquidity pool detected. Exit depth may shift rapidly.",
+        title: "Concentrated liquidity — LP proof not applicable",
+        meaning: "No ERC-20 V2 LP token found. Burn/lock proof requires protocol-specific position checks.",
         riskLevel: "Caution",
-        whatWasFound: [...poolLine, "Pool type: concentrated / V3"],
-        couldNotVerify: ["Locker proof unavailable via standard ERC-20 LP holder method"],
-        nextAction: "Inspect active position ranges and protocol lock mechanics.",
+        whatWasFound: [...poolLine.filter((x)=>!/^Pair:/i.test(x)), "Pool detected", "Primary market selected", "Pool structure reviewed"],
+        couldNotVerify: ["Protocol-specific LP proof required"],
+        nextAction: "Monitor liquidity movement and owner/control checks. V2 burn/lock proof is not available for this pool type.",
       };
     case "partial":
       return {
@@ -1751,6 +1752,7 @@ export async function POST(req: Request) {
       lpProofAttempted: needsLpHolderFetch,
       holderProofAttempted: needsLpHolderFetch,
       holderRawItemCount: 0,
+      lpProofUnavailableReason: null,
     };
     let lpControl: LpControlResult = {
       status: "unverified",
@@ -1778,7 +1780,10 @@ export async function POST(req: Request) {
         poolType: lpPoolType,
         source: "dex_data",
         reason: "Protocol-specific LP proof required.",
-        evidence: [`pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`],
+        evidence: [
+          `Market pool: ${marketPair} (${lpPoolType})`,
+          `pool=${primaryPoolAddress}`, `dex=${lpDexId ?? lpDexName ?? "unknown"}`, `poolType=${lpPoolType}`,
+        ],
       };
     } else if (lpVerifyPoolPresent && lpVerifyPool?.hasLpToken === false) {
       // LP verification pool has no ERC20 LP token (V3/CL NFT) — burn/lock proof not applicable
@@ -1788,7 +1793,10 @@ export async function POST(req: Request) {
         poolType: _lpProofType,
         source: 'dex_data',
         reason: 'Protocol-specific LP proof required.',
-        evidence: [`pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`],
+        evidence: [
+          `Market pool: ${marketPair} (${_lpProofType})`,
+          `pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`,
+        ],
       };
     } else if (_lpProofType === "unknown") {
       // Step 1: try GoldRush LP holder proof (same as v2 path) using pre-fetched data
@@ -1984,6 +1992,13 @@ export async function POST(req: Request) {
       holderRawItemCount: _lpGrItemCount,
       lpProofAttempted: needsLpHolderFetch,
       holderProofAttempted: needsLpHolderFetch,
+      lpProofUnavailableReason: (() => {
+        const s = lpControl.status
+        if (s === 'concentrated_liquidity' || s === 'protocol') {
+          return _v2PoolCandidates.length === 0 ? 'no_v2_lp_token_pool_found' : 'protocol_specific_liquidity'
+        }
+        return null
+      })(),
     };
 
     // LP Safety debug flags — track proof quality for this scan
@@ -3250,6 +3265,7 @@ export async function POST(req: Request) {
           lockedPercent: lpDiagnostics.lockedPercent,
           teamPercent: lpDiagnostics.teamPercent,
           proofStatus: lpDiagnostics.lpState,
+          lpProofUnavailableReason: lpDiagnostics.lpProofUnavailableReason,
           failureReason: lpDiagnostics.failureReason,
           dexscreenerPoolSynthesized: lpDiagnostics.dexscreenerPoolSynthesized,
           lpSafetyAttempted,
