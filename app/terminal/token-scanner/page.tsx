@@ -171,6 +171,36 @@ type ScanResult = {
     proxySlotChecked: boolean
     pauseCallChecked: boolean
   } | null
+  lpMeta?: {
+    v2PoolCandidatesCount?: number | null
+    protocolPoolCandidatesCount?: number | null
+    lpProofUnavailableReason?: string | null
+    primaryMarketType?: string | null
+    primaryMarketDex?: string | null
+    lpVerificationPoolSelected?: boolean | null
+  } | null
+  security?: {
+    simulation?: {
+      isHoneypot: boolean | null
+      buyTax: number | null
+      sellTax: number | null
+      transferTax: number | null
+      simulationSuccess: boolean
+    } | null
+    contractFlags?: {
+      mint: boolean | null
+      blacklist: boolean | null
+      pause: boolean | null
+      withdraw: boolean | null
+      proxy: boolean | null
+    } | null
+    devOwnership?: {
+      ownerAddress: string | null
+      adminAddress: string | null
+      isRenounced: boolean
+      ownershipVerified: boolean
+    } | null
+  } | null
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -641,12 +671,24 @@ function deriveLpMode(result: ScanResult): LpMode {
   const chain = result.chain
   const lpStatus = result.lpControl?.status
   const lpPoolType = result.lpControl?.poolType
-  if (chain === 'base' && (lpStatus === 'concentrated_liquidity' || lpStatus === 'protocol')) {
-    return 'protocol'
+  const meta = result.lpMeta
+  const v2Count = meta?.v2PoolCandidatesCount ?? null
+
+  // lp_token: when V2 LP-token pools exist, use normal burn/lock proof path
+  if (v2Count != null && v2Count > 0) return 'lp_token'
+  if (lpStatus === 'burned' || lpStatus === 'locked' || lpStatus === 'team_controlled' || lpPoolType === 'v2') return 'lp_token'
+
+  // protocol: Base + no V2 pools + any concentrated-liquidity signal
+  if (chain === 'base' && (v2Count === 0 || v2Count == null)) {
+    const isConcentrated = (
+      lpStatus === 'concentrated_liquidity' ||
+      meta?.lpProofUnavailableReason === 'no_v2_lp_token_pool_found' ||
+      meta?.primaryMarketType === 'v3' ||
+      (meta?.primaryMarketDex ?? '').toLowerCase().includes('uniswap v4')
+    )
+    if (isConcentrated) return 'protocol'
   }
-  if (lpStatus === 'burned' || lpStatus === 'locked' || lpStatus === 'team_controlled' || lpPoolType === 'v2') {
-    return 'lp_token'
-  }
+
   return 'unknown'
 }
 
@@ -1380,6 +1422,7 @@ export default function TerminalTokenScanner() {
           debugHolderStatus: json.debugHolderStatus ?? null,
           sections: json.sections ?? null,
           lpControl: json.lpControl ?? null,
+          lpMeta: json.lpMeta ?? null,
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
           chartStatus: json.chartStatus ?? null,
@@ -1388,6 +1431,7 @@ export default function TerminalTokenScanner() {
           riskEngine: json.riskEngine ?? null,
           rugRisk: json.rugRisk ?? null,
           contractFlags: json.contractFlags ?? null,
+          security: json.security ?? null,
         }
         setResult(mapped)
         if (typeof window !== 'undefined' && json._debug) {
@@ -2279,12 +2323,17 @@ export default function TerminalTokenScanner() {
                     return (
                       <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg,rgba(15,23,42,0.72),rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
                         <div style={{ padding:'11px 12px', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px' }}>
-                          {[
+                          {(_lpMode === 'protocol' ? [
+                            ['Pool detected', lp.poolAddressPresent ? 'Yes' : 'No'],
+                            ['Primary market selected', lp.poolAddressPresent ? 'Yes' : 'No'],
+                            ['LP Token Model', 'Not Used'],
+                            ['LP Proof', 'Not Applicable'],
+                          ] : [
                             ['Pool detected', lp.poolAddressPresent ? 'Yes' : 'No'],
                             ['Primary market selected', lp.poolAddressPresent ? 'Yes' : 'No'],
                             ['LP proof', lpIsVerified ? 'Verified' : (lp.status === 'protocol' || lp.status === 'concentrated_liquidity') ? 'Protocol-specific' : 'Unverified'],
                             ['Next action', nextAction],
-                          ].map(([k,v])=>(
+                          ]).map(([k,v])=>(
                             <div key={String(k)} style={{ padding:'8px 9px', border:'1px solid rgba(148,163,184,0.18)', borderRadius:'9px', background:'rgba(8,14,28,0.55)' }}>
                               <div style={{ fontSize:'9px', color:'#64748b', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{k}</div>
                               <div style={{ fontSize:'11px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)' }}>{v}</div>
@@ -2342,6 +2391,11 @@ export default function TerminalTokenScanner() {
                   {!planLoading && isFullAccess && !result.lpControl && (
                     <div style={{ padding:'14px 18px',marginBottom:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>LP control data was not returned in this scan.</div>
                   )}
+                  {!planLoading && isFullAccess && result.lpControl && deriveLpMode(result) === 'unknown' && (
+                    <div style={{ padding:'11px 14px',marginBottom:'12px',background:'rgba(100,116,139,0.06)',border:'1px solid rgba(100,116,139,0.18)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>
+                      Liquidity detected, but LP model could not be classified.
+                    </div>
+                  )}
                   {result.pools && result.pools.length > 0 && (
                     <>
                       <div style={{ display:'flex',alignItems:'baseline',gap:'10px',marginBottom:'10px',flexWrap:'wrap' }}>
@@ -2392,7 +2446,7 @@ export default function TerminalTokenScanner() {
                   )}
                   {!planLoading && isFullAccess && (() => {
                     const engine = result.riskEngine
-                    const sim = result.honeypot
+                    const sim = result.security?.simulation ?? result.honeypot
                     const simVerified = sim?.simulationSuccess === true
                     const simUnavailable = sim == null
                     const lpState = result.lpControl?.status ?? 'unverified'
@@ -2520,28 +2574,28 @@ export default function TerminalTokenScanner() {
                             <p style={{ ...cardTitle, color:'#fbbf24' }}>Contract Flags</p>
                             <div style={{ display:'grid',gap:'7px' }}>
                               {(() => {
-                                const cf = result.contractFlags
-                                type FlagStatus = 'verified'|'possible'|'not_detected'|'unverified'
-                                const flagRows: Array<[string, FlagStatus|undefined]> = [
-                                  ['Mint Function', cf?.mint?.status],
-                                  ['Upgradeable / Proxy', cf?.proxy?.status],
-                                  ['Blacklist', cf?.blacklist?.status],
-                                  ['Pause Control', cf?.pause?.status],
-                                  ['Withdraw Control', cf?.withdraw?.status],
+                                const scf = result.security?.contractFlags
+                                type BoolFlag = boolean | null | undefined
+                                const flagRows: Array<[string, BoolFlag]> = [
+                                  ['Mint Function', scf?.mint],
+                                  ['Upgradeable / Proxy', scf?.proxy],
+                                  ['Blacklist', scf?.blacklist],
+                                  ['Pause Control', scf?.pause],
+                                  ['Withdraw Control', scf?.withdraw],
                                 ]
-                                const flagLabel = (s: FlagStatus|undefined) =>
-                                  s === 'verified' ? 'Verified' : s === 'possible' ? 'Possible' : s === 'not_detected' ? 'Not detected' : 'Unverified'
-                                const flagColor = (s: FlagStatus|undefined) =>
-                                  s === 'verified' ? '#f87171' : s === 'possible' ? '#fbbf24' : s === 'not_detected' ? '#34d399' : '#64748b'
-                                const flagBg = (s: FlagStatus|undefined) =>
-                                  s === 'verified' ? 'rgba(248,113,113,0.10)' : s === 'possible' ? 'rgba(251,191,36,0.10)' : s === 'not_detected' ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.04)'
-                                const flagBorder = (s: FlagStatus|undefined) =>
-                                  s === 'verified' ? 'rgba(248,113,113,0.30)' : s === 'possible' ? 'rgba(251,191,36,0.30)' : s === 'not_detected' ? 'rgba(52,211,153,0.22)' : 'rgba(255,255,255,0.08)'
-                                return flagRows.map(([label, status]) => (
+                                const flagLabel = (v: BoolFlag) =>
+                                  v === true ? 'Detected' : v === false ? 'Not detected' : 'Not analyzed'
+                                const flagColor = (v: BoolFlag) =>
+                                  v === true ? '#f87171' : v === false ? '#34d399' : '#64748b'
+                                const flagBg = (v: BoolFlag) =>
+                                  v === true ? 'rgba(248,113,113,0.10)' : v === false ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.04)'
+                                const flagBorder = (v: BoolFlag) =>
+                                  v === true ? 'rgba(248,113,113,0.30)' : v === false ? 'rgba(52,211,153,0.22)' : 'rgba(255,255,255,0.08)'
+                                return flagRows.map(([label, val]) => (
                                   <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
                                     <span style={{ fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
-                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,fontFamily:'var(--font-plex-mono)',color:flagColor(status),background:flagBg(status),border:`1px solid ${flagBorder(status)}` }}>
-                                      {flagLabel(status)}
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,fontFamily:'var(--font-plex-mono)',color:flagColor(val),background:flagBg(val),border:`1px solid ${flagBorder(val)}` }}>
+                                      {flagLabel(val)}
                                     </span>
                                   </div>
                                 ))

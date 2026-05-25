@@ -2852,6 +2852,29 @@ export async function POST(req: Request) {
 
       contractSecurity: null,
 
+      security: {
+        simulation: hpResult.ok ? {
+          isHoneypot: hpResult.honeypot,
+          buyTax: hpResult.buyTax,
+          sellTax: hpResult.sellTax,
+          transferTax: hpResult.transferTax,
+          simulationSuccess: hpResult.simulationSuccess,
+        } : null,
+        contractFlags: {
+          mint: cortexContractFlags.mint.status === 'verified' ? true : cortexContractFlags.mint.status === 'not_detected' ? false : null,
+          blacklist: cortexContractFlags.blacklist.status === 'verified' ? true : cortexContractFlags.blacklist.status === 'not_detected' ? false : null,
+          pause: cortexContractFlags.pause.status === 'verified' ? true : cortexContractFlags.pause.status === 'not_detected' ? false : null,
+          withdraw: cortexContractFlags.withdraw.status === 'verified' ? true : cortexContractFlags.withdraw.status === 'not_detected' ? false : null,
+          proxy: cortexContractFlags.proxy.status === 'verified' ? true : cortexContractFlags.proxy.status === 'not_detected' ? false : null,
+        },
+        devOwnership: {
+          ownerAddress: ownerAddr ?? null,
+          adminAddress: adminAddr ?? null,
+          isRenounced,
+          ownershipVerified,
+        },
+      },
+
       // Internal diagnostics
       _diagnostics: {
         marketPrimaryPair: marketPair,
@@ -3056,6 +3079,14 @@ export async function POST(req: Request) {
       analysis,
       lpControl,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
+      lpMeta: {
+        v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
+        protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,
+        lpProofUnavailableReason: lpDiagnostics.lpProofUnavailableReason,
+        primaryMarketType: lpDiagnostics.primaryMarketType,
+        primaryMarketDex: lpDiagnostics.primaryMarketDex,
+        lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
+      },
 
       // AI summary from Cortex Engine
       aiSummary,
@@ -3122,6 +3153,14 @@ export async function POST(req: Request) {
           lpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' : (lpOwnershipVerified ? 'verified' : 'unverified'),
           lpControl,
           lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
+          lpMeta: {
+            v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
+            protocolPoolCandidatesCount: lpDiagnostics.protocolPoolCandidatesCount,
+            lpProofUnavailableReason: lpDiagnostics.lpProofUnavailableReason,
+            primaryMarketType: lpDiagnostics.primaryMarketType,
+            primaryMarketDex: lpDiagnostics.primaryMarketDex,
+            lpVerificationPoolSelected: lpDiagnostics.lpVerificationPoolSelected,
+          },
         },
         ownership: {
           is_renounced: isRenounced,
