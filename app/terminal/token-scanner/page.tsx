@@ -1367,6 +1367,9 @@ export default function TerminalTokenScanner() {
           contractFlags: json.contractFlags ?? null,
         }
         setResult(mapped)
+        if (typeof window !== 'undefined' && json._debug) {
+          (window as unknown as Record<string, unknown>).__CL_DEBUG__ = json._debug
+        }
         if (json.aiSummary) {
           setClarkVerdict(json.aiSummary)
         } else {

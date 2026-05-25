@@ -1385,7 +1385,15 @@ export async function POST(req: Request) {
       return NextResponse.json({
         status: 'not_found',
         error: "Couldn't resolve that token. Paste the contract address or try a verified symbol.",
-        ...(debugMode === true ? { _diagnostics: { resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map' } } : {}),
+        ...(debugMode === true ? {
+          _diagnostics: { resolverInput: originalInput, resolverType: 'none', resolverCandidatesCount: 0, resolverSelectedAddress: null, resolverReason: 'not_in_alias_map' },
+          _debug: {
+            resolverStatus: 'not_found',
+            resolverDiagnostics: { original: originalInput, type: 'none', resolvedAddress: null, confidence: 'none', reason: 'not_in_alias_map' },
+            normalizedPools: [],
+            lpDiagnostics: { poolDetected: false, primaryMarketSelected: false, lpVerificationPoolSelected: false, v2PoolCandidatesCount: 0, protocolPoolCandidatesCount: 0, proofStatus: 'no_pool', lpProofUnavailableReason: null, lpProofAttempted: false },
+          },
+        } : {}),
       }, { status: 404 })
     }
     const contract = resolvedAddress
@@ -3169,6 +3177,23 @@ export async function POST(req: Request) {
       ;(responsePayload as any)._debug = {
         routeName: '/api/token',
         cacheHit: false,
+        resolverStatus: resolvedInput?.type ?? 'address',
+        resolverDiagnostics: {
+          original: originalInput,
+          type: resolvedInput?.type ?? 'address',
+          resolvedAddress: contract,
+          symbol: resolvedInput?.symbol ?? null,
+          confidence: resolvedInput?.confidence ?? 'high',
+        },
+        normalizedPools: normalizedPools.map(p => ({
+          address: p.address,
+          pairName: p.pairName,
+          liquidityUsd: p.liquidityUsd,
+          dexId: p.dexId,
+          poolType: p.poolType,
+          hasLpToken: p.hasLpToken,
+          isValidAddress: p.isValidAddress,
+        })),
         goldrushUsage: {
           endpointName: `token_holders_v2`,
           feature: 'token-scanner',
@@ -3423,4 +3448,19 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
+}
+
+export async function GET(req: Request) {
+  const url = new URL(req.url)
+  const body = {
+    contract: url.searchParams.get('contract') ?? '',
+    chain: url.searchParams.get('chain') ?? 'base',
+    debug: url.searchParams.get('debug') === 'true',
+  }
+  const mockReq = new Request(req.url, {
+    method: 'POST',
+    headers: req.headers,
+    body: JSON.stringify(body),
+  })
+  return POST(mockReq)
 }
