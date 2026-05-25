@@ -1831,6 +1831,11 @@ export async function POST(req: Request) {
       dexscreenerPoolSynthesized: _dsFbPoolSynthesized,
     };
 
+    // LP Safety debug flags — track proof quality for this scan
+    const lpSafetyAttempted = needsLpHolderFetch
+    const lpSafetyUsable = lpControl.status === 'burned' || lpControl.status === 'locked' || lpControl.status === 'team_controlled'
+    const lpOwnershipVerified = Boolean(ownerAddrEarlyForLp && lpPoolAddressPresent)
+
     // Ensure poolAddressPresent is always correct on the final object — some inner branches
     // replace lpControl wholesale without setting this field (e.g., GoldRush/RPC paths).
     lpControl.poolAddressPresent = lpPoolAddressPresent;
@@ -1945,6 +1950,24 @@ export async function POST(req: Request) {
     let holderDerivationAttempted = false
     let holderDerivationSucceeded = false
     let holderDerivationFailureReason: string | null = null
+    // Holder enrichment — derived signals for risk scoring
+    const holderDataComplete = holderDistributionStatus.status === 'ok'
+    const _whalePressureTop1 = top1 ?? null
+    const _whalePressureTop5 = top5 ?? null
+    const whalePressure: 'high' | 'medium' | 'low' | 'unverified' =
+      _whalePressureTop1 == null && _whalePressureTop5 == null ? 'unverified'
+      : (_whalePressureTop1 != null && _whalePressureTop1 > 15) ? 'high'
+      : (_whalePressureTop5 != null && _whalePressureTop5 > 40) ? 'high'
+      : (_whalePressureTop5 != null && _whalePressureTop5 > 25) ? 'medium'
+      : 'low'
+    const holderRisk: 'high' | 'medium' | 'low' | 'unverified' =
+      top10 == null ? 'unverified'
+      : top10 > 70 ? 'high'
+      : top10 > 50 ? 'high'
+      : top10 > 35 ? 'medium'
+      : 'low'
+    const supplySpread: 'elevated' | 'normal' | 'unverified' =
+      top10 == null ? 'unverified' : top10 > 35 ? 'elevated' : 'normal'
 
     const poolAttr = mainPool?.attributes ?? {}
     // True market cap priority:
@@ -2217,6 +2240,14 @@ export async function POST(req: Request) {
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
     const ownerCall = _ownerHexForLp ?? alchemyMandatoryReads[0] ?? alchemyMandatoryReads[1] ?? alchemyMandatoryReads[2] ?? alchemyMandatoryReads[3] ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
+    // Ownership / control derivation — RPC-sourced admin and proxy implementation
+    const _adminHex = alchemyMandatoryReads[2] ?? alchemyMandatoryReads[3] ?? null
+    const adminAddr = _adminHex && _adminHex.length >= 42 && _adminHex !== '0x' ? `0x${_adminHex.slice(-40)}`.toLowerCase() : null
+    const _implHex = alchemyMandatoryReads[4] ?? null
+    const _ZERO_ADDR = '0x0000000000000000000000000000000000000000'
+    const proxyImplAddr = _implHex && _implHex.length >= 42 && _implHex !== '0x' ? `0x${_implHex.slice(-40)}`.toLowerCase() : null
+    const isRenounced = !ownerAddr || ownerAddr === _ZERO_ADDR
+    const ownershipVerified = Boolean(ownerAddr || adminAddr)
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
 
@@ -2320,10 +2351,11 @@ export async function POST(req: Request) {
     else if (lpState === 'team_controlled') { riskDrivers.push('LP Control indicates a dominant team wallet can control liquidity.'); riskScore += 28 }
     else { openChecks.push('LP Control does not provide lock or burn proof.'); riskScore += 10 }
 
-    const riskOwnerStatus = !ownerAddr || ownerAddr === '0x0000000000000000000000000000000000000000' ? 'renounced' : 'held'
+    const riskOwnerStatus = isRenounced ? 'renounced' : (ownershipVerified ? 'held' : 'unverified')
     if (riskOwnerStatus === 'renounced') { riskVerifiedSignals.push('Dev Control: ownership appears renounced.'); riskScore -= 6 }
     else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
     else openChecks.push('Dev Control ownership status is unverified.')
+    if (proxyImplAddr && !isRenounced) { riskDrivers.push('Proxy contract with active owner — upgrade risk present.'); riskScore += 5 }
 
     if (hpResult.ok) {
       riskVerifiedSignals.push('Trading simulation returned tax and transfer signals.')
@@ -2340,6 +2372,13 @@ export async function POST(req: Request) {
     if (cortexContractFlags.proxy.status === 'verified') { riskDrivers.push('Contract is upgradeable (proxy confirmed).'); riskScore += 10 }
     else if (cortexContractFlags.proxy.status === 'possible') { riskDrivers.push('Contract may be upgradeable (partial signal).'); riskScore += 5 }
     if (cortexContractFlags.withdraw.status === 'verified') { riskDrivers.push('Contract includes withdraw/sweep style controls.'); riskScore += 10 }
+    // Whale pressure and supply spread signals
+    if (whalePressure === 'high') { riskDrivers.push('Whale pressure is high: top holder or top-5 hold a dominant share.'); riskScore += 8 }
+    else if (whalePressure === 'medium') { riskDrivers.push('Whale pressure is medium: notable top-holder concentration.'); riskScore += 4 }
+    if (supplySpread === 'elevated') riskDrivers.push('Supply spread elevated: Top 10 hold more than 35% of supply.')
+    // Missing LP or holder data flags
+    if (!lpSafetyAttempted && lpDiagnostics.poolDetected) openChecks.push('LP safety proof was not attempted despite an active pool.')
+    if (!holderDataComplete) openChecks.push('Holder data is incomplete; concentration may be understated.')
 
     const majorMissingCount = [
       marketCapFromGt == null,
@@ -2855,6 +2894,10 @@ export async function POST(req: Request) {
           source: "holders_layer",
           holderCount: holderCount ?? null,
           top1, top5, top10, top20,
+          whale_pressure: whalePressure,
+          holder_risk: holderRisk,
+          supply_spread: supplySpread,
+          holderDataComplete,
         },
         liquidity: {
           status: liquidityStatus,
@@ -2863,8 +2906,21 @@ export async function POST(req: Request) {
           poolCount: matchingPools.length,
           primaryPair: mainPool?.attributes?.name ?? null,
           liquidityDepth: liquidityUsd,
+          pool_age: pairCreatedAt ?? _dexFb?.pairCreatedAt ?? null,
+          pool_protocol: primaryDexName ?? lpPool?.dexName ?? null,
+          pool_fragmentation: matchingPools.length > 2 ? 'fragmented' : matchingPools.length === 2 ? 'split' : matchingPools.length === 1 ? 'single' : 'none',
+          lpSafetyAttempted,
+          lpSafetyUsable,
+          lpOwnershipVerified,
           lpControl,
           lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
+        },
+        ownership: {
+          is_renounced: isRenounced,
+          owner_address: ownerAddr,
+          admin_address: adminAddr,
+          proxy_implementation: proxyImplAddr,
+          ownership_verified: ownershipVerified,
         },
         contractChecks: {
           status: contractChecksStatus,
@@ -2985,6 +3041,12 @@ export async function POST(req: Request) {
           teamPercent: lpDiagnostics.teamPercent,
           proofStatus: lpDiagnostics.lpState,
           failureReason: lpDiagnostics.failureReason,
+          dexscreenerPoolSynthesized: lpDiagnostics.dexscreenerPoolSynthesized,
+          lpSafetyAttempted,
+          lpSafetyUsable,
+          lpOwnershipVerified,
+          reason: lpDiagnostics.reason,
+          _full: lpDiagnostics,
         },
         contractFlagDiagnostics: {
           bytecodeChecked: cortexContractFlags.bytecodeChecked,
@@ -3038,6 +3100,71 @@ export async function POST(req: Request) {
           cacheHits: 0,
           dedupedCalls: 0,
           providerCallCounts: { coingecko: 1, dexScreener: 1, moralis: 2, goldrush: 2, alchemy: rpcCallsAttempted },
+          // Layer-level breakdown
+          marketFlow: {
+            geckoterminalAttempted: true,
+            geckoterminalUsable: Boolean(gtData?.data),
+            dexscreenerAttempted: true,
+            dexscreenerUsable: Boolean(_dexFb),
+            coingeckoAttempted: true,
+            coingeckoUsable: Boolean(coingeckoRaw),
+            effectiveSource: marketDataSource,
+          },
+          holderFlow: {
+            goldrushAttempted: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY),
+            goldrushUsable: holderDistributionStatus.status === 'ok' || holderDistributionStatus.status === 'partial',
+            goldrushStatus: holdersRaw?.__status ?? 'unknown',
+            moralisAttempted: Boolean(process.env.MORALIS_API_KEY),
+            moralisUsable: Boolean(moralisHoldersRaw && moralisHoldersRaw.__status !== 'error' && moralisHoldersRaw.__status !== 'unavailable'),
+            holderDataComplete,
+            holderCount: holderCount ?? null,
+            top10Pct: top10 ?? null,
+            supplySpread,
+            holderRisk,
+            whalePressure,
+          },
+          lpFlow: {
+            poolDetected: lpDiagnostics.poolDetected,
+            poolSource: lpDiagnostics.poolSource,
+            poolCount: lpDiagnostics.poolCount,
+            goldrushLpAttempted: lpSafetyAttempted,
+            goldrushLpUsable: lpSafetyUsable,
+            rpcLpAttempted: lpDiagnostics.rpcAttempted,
+            lpSafetyAttempted,
+            lpSafetyUsable,
+            lpOwnershipVerified,
+            proofStatus: lpDiagnostics.lpState,
+          },
+          contractFlow: {
+            bytecodeAvailable: _hasBytecode,
+            honeypotAttempted: true,
+            honeypotUsable: hpResult.ok,
+            mintDetected: cortexContractFlags.mint.status === 'verified' || cortexContractFlags.mint.status === 'possible',
+            blacklistDetected: cortexContractFlags.blacklist.status === 'verified',
+            pauseDetected: cortexContractFlags.pause.status === 'verified',
+            proxyDetected: cortexContractFlags.proxy.status === 'verified' || cortexContractFlags.proxy.status === 'possible',
+            withdrawDetected: cortexContractFlags.withdraw.status === 'verified',
+          },
+          ownershipFlow: {
+            rpcAttempted: alchemyConfigured,
+            ownerFound: Boolean(ownerAddr),
+            adminFound: Boolean(adminAddr),
+            proxyImplFound: Boolean(proxyImplAddr),
+            is_renounced: isRenounced,
+            ownership_verified: ownershipVerified,
+            owner_address: ownerAddr,
+            admin_address: adminAddr,
+          },
+          riskFlow: {
+            rugRiskScore: riskEngine.rugRiskScore,
+            rugRiskLabel: riskEngine.rugRiskLabel,
+            confidence: riskEngine.confidence,
+            majorMissingCount,
+            sufficientCoreData,
+            verifiedSignalCount: riskEngine.verifiedSignals.length,
+            riskDriverCount: riskEngine.riskDrivers.length,
+            openCheckCount: riskEngine.openChecks.length,
+          },
         },
       }
     } else {
