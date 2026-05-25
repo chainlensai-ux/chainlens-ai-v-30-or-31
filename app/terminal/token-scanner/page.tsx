@@ -638,7 +638,6 @@ function getSummaryReasons(result: ScanResult): string[] {
 
 
 
-type LpMode = 'protocol' | 'lp_token' | 'unknown'
 
 function getLpMode(result: ScanResult): LpMode {
   const status = result.lpControl?.status
