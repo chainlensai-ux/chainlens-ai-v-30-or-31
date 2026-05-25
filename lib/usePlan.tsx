@@ -72,6 +72,19 @@ export type ElitePassState = {
   unlocks: string[]
 }
 
+const ELITE_UNLOCKS = ['token-scanner-full', 'wallet-scanner', 'dev-wallet', 'whale-alerts', 'pump-alerts', 'base-radar', 'clark-ai-full', 'liquidity-safety', 'portfolio', 'auto-verdicts', 'advanced-whale-alerts', 'priority-cortex', 'early-access']
+
+function computeRemaining(expiresAt: string | null): ElitePassState['remaining'] {
+  if (!expiresAt) return null
+  const diffMs = Date.parse(expiresAt) - Date.now()
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return null
+  const totalMinutes = Math.floor(diffMs / 60_000)
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  return { days, hours, minutes }
+}
+
 export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null; betaEliteActive: boolean; elitePass: ElitePassState } {
   const [plan, setPlan] = useState<UserPlan | null>(null)
   const [loading, setLoading] = useState(true)
@@ -79,6 +92,17 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
   const [error, setError] = useState<string | null>(null)
   const [betaEliteActive, setBetaEliteActive] = useState(false)
   const [elitePass, setElitePass] = useState<ElitePassState>({ active: false, expiresAt: null, remaining: null, unlocks: [] })
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setElitePass((prev) => {
+        if (!prev.active) return prev
+        const nextRemaining = computeRemaining(prev.expiresAt)
+        if (!nextRemaining) return { active: false, expiresAt: prev.expiresAt, remaining: null, unlocks: [] }
+        return { ...prev, remaining: nextRemaining }
+      })
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
   useEffect(() => {
     async function load(session: { access_token?: string; user?: { id?: string; email?: string | null } } | null | undefined) {
       const token = session?.access_token
@@ -98,12 +122,12 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
           setError(null)
           const trialActive = json?.trialActive === true
           const trialEndsAt = typeof json?.settings?.trial_ends_at === 'string' ? json.settings.trial_ends_at : null
-          const trialDays = Number(json?.trialDaysLeft ?? 0)
+          const remaining = trialActive ? computeRemaining(trialEndsAt) : null
           setElitePass({
-            active: trialActive,
+            active: trialActive && Boolean(remaining),
             expiresAt: trialEndsAt,
-            remaining: trialActive ? { days: Math.max(0, trialDays), hours: 0, minutes: 0 } : null,
-            unlocks: trialActive ? ['token-scanner-full', 'wallet-scanner', 'dev-wallet', 'whale-alerts', 'pump-alerts', 'base-radar', 'clark-ai-full', 'liquidity-safety', 'portfolio', 'auto-verdicts', 'advanced-whale-alerts', 'priority-cortex', 'early-access'] : [],
+            remaining,
+            unlocks: trialActive && remaining ? ELITE_UNLOCKS : [],
           })
         } else if (!cached) {
           setError('plan_fetch_failed')

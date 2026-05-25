@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
     const endsAt = settings?.trial_ends_at ? Date.parse(settings.trial_ends_at) : Number.NaN
     const isActive = settings?.trial_plan === 'elite' && Number.isFinite(endsAt) && endsAt > Date.now()
     const daysLeft = isActive ? Math.max(1, Math.ceil((endsAt - Date.now()) / 86_400_000)) : 0
-    return NextResponse.json({ status: isActive ? 'already_active' : 'already_claimed', daysLeft }, { status: 200, headers: noStoreHeaders })
+    return NextResponse.json({ status: isActive ? 'already_active' : 'already_claimed', daysLeft, trialEndsAt: isActive ? settings?.trial_ends_at ?? null : null }, { status: 200, headers: noStoreHeaders })
   }
 
   const { data: priorEmailClaim, error: emailCheckError } = await supabase
