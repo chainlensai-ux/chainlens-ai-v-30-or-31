@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { createAnonSupabaseClient, createAuthedSupabaseClient } from '@/lib/supabase/userSettings'
+import { resolveEffectivePlan, type UserSettings } from '@/lib/supabase/userSettings'
 
 export type ChainlensPlan = 'free' | 'pro' | 'elite'
 export type ChainlensFeature =
@@ -38,9 +39,17 @@ export async function getCurrentUserPlanFromBearerToken(token: string) {
   // Use authed client so Bearer token is forwarded in global headers — required when RLS checks auth.uid().
   const authed = createAuthedSupabaseClient(token)
   const { data: row } = await (authed ?? anon)
-    .from('user_settings').select('plan').eq('user_id', user.id).maybeSingle()
+    .from('user_settings')
+    .select('plan,subscription_status,trial_plan,trial_ends_at')
+    .eq('user_id', user.id)
+    .maybeSingle()
   const settingsRowFound = row !== null
-  return { plan: normalizePlan(row?.plan), userId: user.id, email: user.email ?? null, settingsRowFound }
+  return {
+    plan: resolveEffectivePlan(row as Partial<UserSettings> | null),
+    userId: user.id,
+    email: user.email ?? null,
+    settingsRowFound,
+  }
 }
 
 export async function updatePlanServerSideByEmail(input: {
