@@ -81,6 +81,13 @@ const INFRA_EXCLUSIONS = new Set([
 ])
 
 interface PlanResolution {
+  rawPlan: 'free' | 'pro' | 'elite'
+  effectivePlan: 'free' | 'pro' | 'elite'
+  trialActive: boolean
+  trialEndsAt: string | null
+  isProOrElite: boolean
+  gateDecision: 'allow' | 'deny'
+  authSource: 'bearer' | 'none'
   plan: 'free' | 'pro' | 'elite'
   hasBearer: boolean
   userPresent: boolean
@@ -91,13 +98,32 @@ interface PlanResolution {
 async function resolveServerPlan(req: Request): Promise<PlanResolution> {
   const auth = req.headers.get('authorization') ?? ''
   const hasBearer = auth.toLowerCase().startsWith('bearer ') && auth.slice(7).trim().length > 0
-  if (!hasBearer) return { plan: 'free', hasBearer: false, userPresent: false, settingsRowFound: false, planSource: 'fallback' }
+  if (!hasBearer) return {
+    rawPlan: 'free',
+    effectivePlan: 'free',
+    trialActive: false,
+    trialEndsAt: null,
+    isProOrElite: false,
+    gateDecision: 'deny',
+    authSource: 'none',
+    plan: 'free',
+    hasBearer: false,
+    userPresent: false,
+    settingsRowFound: false,
+    planSource: 'fallback',
+  }
   const token = auth.slice(7).trim()
   try {
-    const startedAt = Date.now()
-    const debug = new URL(req.url).searchParams.get('debug') === 'true'
     const result = await getCurrentUserPlanFromBearerToken(token)
+    const isProOrElite = result.plan === 'pro' || result.plan === 'elite'
     return {
+      rawPlan: result.rawPlan,
+      effectivePlan: result.plan,
+      trialActive: result.trialActive,
+      trialEndsAt: result.trialEndsAt,
+      isProOrElite,
+      gateDecision: isProOrElite ? 'allow' : 'deny',
+      authSource: 'bearer',
       plan: result.plan,
       hasBearer: true,
       userPresent: result.userId !== null,
@@ -105,7 +131,20 @@ async function resolveServerPlan(req: Request): Promise<PlanResolution> {
       planSource: result.settingsRowFound ? 'user_settings' : 'fallback',
     }
   } catch {
-    return { plan: 'free', hasBearer: true, userPresent: false, settingsRowFound: false, planSource: 'fallback' }
+    return {
+      rawPlan: 'free',
+      effectivePlan: 'free',
+      trialActive: false,
+      trialEndsAt: null,
+      isProOrElite: false,
+      gateDecision: 'deny',
+      authSource: 'bearer',
+      plan: 'free',
+      hasBearer: true,
+      userPresent: false,
+      settingsRowFound: false,
+      planSource: 'fallback',
+    }
   }
 }
 
@@ -1445,6 +1484,17 @@ export async function POST(req: Request) {
           requiredPlan: 'pro',
         },
       },
+      ...(debug ? {
+        _debug: {
+          rawPlan: planRes.rawPlan,
+          effectivePlan: planRes.effectivePlan,
+          trialActive: planRes.trialActive,
+          trialEndsAt: planRes.trialEndsAt,
+          isProOrElite: planRes.isProOrElite,
+          gateDecision: planRes.gateDecision,
+          authSource: planRes.authSource,
+        },
+      } : {}),
     }, { status: 403 })
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
     const now = Date.now()
@@ -1811,6 +1861,13 @@ export async function POST(req: Request) {
         skippedReason: activeChainConfig.rpcUrl ? null : 'rpc_not_configured',
         fallbackUsed: tokenEvidenceResult.ok === false || linkedWalletsCheckStatus !== 'ok',
         requestDurationMs: Date.now() - startedAt,
+        rawPlan: planRes.rawPlan,
+        effectivePlan: planRes.effectivePlan,
+        trialActive: planRes.trialActive,
+        trialEndsAt: planRes.trialEndsAt,
+        isProOrElite: planRes.isProOrElite,
+        gateDecision: planRes.gateDecision,
+        authSource: planRes.authSource,
       }
     }
     devCache.set(cacheKey, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
