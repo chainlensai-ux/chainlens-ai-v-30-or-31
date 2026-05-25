@@ -1061,7 +1061,7 @@ function analyzeContract(bytecode: string | null): any {
 // ------------------------------
 // CORTEX Contract Flag Scanner — bytecode + RPC, no external APIs required
 // ------------------------------
-type ContractFlagStatus = 'verified' | 'possible' | 'not_detected' | 'unverified'
+type ContractFlagStatus = 'verified' | 'possible' | 'not_detected' | 'unverified' | 'unavailable'
 type ContractFlagEntry = { status: ContractFlagStatus; confidence: 'high' | 'medium' | 'low'; note: string | null }
 type CortexContractFlagsResult = {
   mint: ContractFlagEntry
@@ -2341,7 +2341,7 @@ export async function POST(req: Request) {
     // RPC probes (EIP-1967 proxy slot, paused() call) supplement both sources.
     const _grCI = grContractIntel  // GoldRush Contract Intel result
     const _grCIUsable = _grCI != null
-    type FlagStatus = { status: 'verified' | 'possible' | 'not_detected' | 'unverified'; confidence: 'high' | 'medium' | 'low'; note: string }
+    type FlagStatus = { status: 'verified' | 'possible' | 'not_detected' | 'unverified' | 'unavailable'; confidence: 'high' | 'medium' | 'low'; note: string }
     const _resolveFlag = (
       grValue: boolean | null | undefined,
       bytecodeSel: boolean,
@@ -2352,7 +2352,7 @@ export async function POST(req: Request) {
       if (grValue === true) return { status: 'verified', confidence: 'high', note: 'GoldRush Contract Intel confirmed' }
       if (grValue === false) return { status: 'not_detected', confidence: 'high', note: 'GoldRush Contract Intel: not present' }
       // GoldRush returned null — fall back to ABI/bytecode signature scan
-      if (!_hasBytecode) return { status: 'unverified', confidence: 'low', note: 'Bytecode unavailable (RPC failed)' }
+      if (!_hasBytecode) return { status: 'unavailable', confidence: 'low', note: 'Neither GoldRush nor bytecode available' }
       if (bytecodeSel) return { status: 'verified', confidence: 'high', note: bytecodeNote }
       return { status: 'not_detected', confidence: 'medium', note: `ABI signature scan: not detected (GoldRush fallback)` }
     }
@@ -2362,7 +2362,7 @@ export async function POST(req: Request) {
         if (_isVerifiedProxy) return { status: 'verified' as const, confidence: 'high' as const, note: 'EIP-1967 implementation slot is non-zero (RPC confirmed)' }
         if (_grCI?.proxy === true || _grCI?.upgradeable === true) return { status: 'verified' as const, confidence: 'high' as const, note: 'GoldRush Contract Intel: proxy/upgradeable confirmed' }
         if (_grCI?.proxy === false && _grCI?.upgradeable === false) return { status: 'not_detected' as const, confidence: 'high' as const, note: 'GoldRush Contract Intel: not proxy' }
-        if (!_hasBytecode) return { status: 'unverified' as const, confidence: 'low' as const, note: 'Bytecode unavailable (RPC failed)' }
+        if (!_hasBytecode) return { status: 'unavailable' as const, confidence: 'low' as const, note: 'Neither GoldRush nor bytecode available' }
         if (_cortexProxySel) return { status: 'possible' as const, confidence: 'medium' as const, note: 'Upgrade selector in ABI/bytecode; EIP-1967 slot not confirmed' }
         return { status: 'not_detected' as const, confidence: 'medium' as const, note: 'ABI signature scan: no proxy selector or EIP-1967 slot (GoldRush fallback)' }
       })(),
@@ -2388,10 +2388,8 @@ export async function POST(req: Request) {
     if (marketCapFromGt != null) riskVerifiedSignals.push('Market data verified: market cap is available.')
     else if (fdv != null) {
       riskVerifiedSignals.push('Market data partial: FDV is available.')
-      openChecks.push('Market cap is not verified. Circulating supply confidence is lower.')
       riskScore += 10
     } else {
-      openChecks.push('Market value data is missing, which limits risk context.')
       riskScore += 15
     }
     if (liquidityUsd != null) riskVerifiedSignals.push(`Liquidity depth detected (${Math.round(liquidityUsd).toLocaleString()} USD).`)
@@ -2404,16 +2402,21 @@ export async function POST(req: Request) {
       else riskScore -= 5
     } else if (holderDistributionStatus.status === 'partial') {
       riskVerifiedSignals.push('Holder Map rows were returned but concentration percentages are partial.')
-      openChecks.push('Holder concentration percentages are incomplete.')
       riskScore += 8
     } else {
-      openChecks.push('Holder Map could not verify concentration in this scan.')
       riskScore += 15
     }
+    // lpProofStatus: classify LP state for openChecks gating
+    const lpProofStatus: 'not_applicable' | 'verified' | 'partial' | 'unverified' =
+      (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' :
+      (lpState === 'burned' || lpState === 'locked') ? 'verified' :
+      (lpState === 'team_controlled') ? 'verified' :
+      (lpState === 'partial') ? 'partial' : 'unverified'
     if (lpState === 'burned' || lpState === 'locked') { riskVerifiedSignals.push(`LP Control shows ${lpState}.`); riskScore -= 12 }
     else if (lpState === 'protocol' || lpState === 'concentrated_liquidity') { riskVerifiedSignals.push('LP Control indicates protocol-managed liquidity structure.'); riskScore += 3 }
     else if (lpState === 'team_controlled') { riskDrivers.push('LP Control indicates a dominant team wallet can control liquidity.'); riskScore += 28 }
-    else { openChecks.push('LP Control does not provide lock or burn proof.'); riskScore += 10 }
+    else if (lpProofStatus === 'unverified') { openChecks.push('LP Control does not provide lock or burn proof.'); riskScore += 10 }
+    else { riskScore += 5 }
 
     const riskOwnerStatus = isRenounced ? 'renounced' : (ownershipVerified ? 'held' : 'unverified')
     if (riskOwnerStatus === 'renounced') { riskVerifiedSignals.push('Dev Control: ownership appears renounced.'); riskScore -= 6 }
@@ -2421,12 +2424,14 @@ export async function POST(req: Request) {
     else openChecks.push('Dev Control ownership status is unverified.')
     if (proxyImplAddr && !isRenounced) { riskDrivers.push('Proxy contract with active owner — upgrade risk present.'); riskScore += 5 }
 
+    const tradingSimConfigured = isFullScanChain
     if (hpResult.ok) {
       riskVerifiedSignals.push('Trading simulation returned tax and transfer signals.')
       if (hpResult.honeypot === true) { riskDrivers.push('Trading simulation indicates a blocked or trapped sell path.'); riskScore += 45 }
       if ((hpResult.buyTax ?? 0) > 12 || (hpResult.sellTax ?? 0) > 12) { riskDrivers.push('Trading taxes are high (>12%).'); riskScore += 20 }
       else if ((hpResult.buyTax ?? 0) > 7 || (hpResult.sellTax ?? 0) > 7) { riskDrivers.push('Trading taxes are elevated (>7%).'); riskScore += 10 }
-    } else {
+    } else if (tradingSimConfigured) {
+      // Provider was configured but failed — flag as open check
       openChecks.push('Trading simulation is unavailable; tax behavior remains less certain.')
       riskScore += 8
     }
@@ -2440,8 +2445,7 @@ export async function POST(req: Request) {
     if (whalePressure === 'high') { riskDrivers.push('Whale pressure is high: top holder or top-5 hold a dominant share.'); riskScore += 8 }
     else if (whalePressure === 'medium') { riskDrivers.push('Whale pressure is medium: notable top-holder concentration.'); riskScore += 4 }
     if (supplySpread === 'elevated') riskDrivers.push('Supply spread elevated: Top 10 hold more than 35% of supply.')
-    // Missing LP or holder data flags
-    if (!lpSafetyAttempted && lpDiagnostics.poolDetected) openChecks.push('LP safety proof was not attempted despite an active pool.')
+    // Holder data completeness — single authoritative check
     if (!holderDataComplete) openChecks.push('Holder data is incomplete; concentration may be understated.')
 
     const majorMissingCount = [
@@ -2617,8 +2621,8 @@ export async function POST(req: Request) {
 
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'unavailable'
     const ownerStatus = ownerAddr ? 'ok' : 'unavailable'
-    const mintStatus = cortexContractFlags.mint.status !== 'unverified' ? 'ok' : 'unavailable'
-    const proxyStatus = cortexContractFlags.proxy.status !== 'unverified' ? 'ok' : 'unavailable'
+    const mintStatus = (cortexContractFlags.mint.status !== 'unverified' && cortexContractFlags.mint.status !== 'unavailable') ? 'ok' : 'unavailable'
+    const proxyStatus = (cortexContractFlags.proxy.status !== 'unverified' && cortexContractFlags.proxy.status !== 'unavailable') ? 'ok' : 'unavailable'
     const transferControlStatus = hpResult.ok ? 'partial' : 'unavailable'
     const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
       cortexContractFlags.bytecodeChecked ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
@@ -2952,6 +2956,8 @@ export async function POST(req: Request) {
           change24h: _dexFb?.priceChange24h ?? pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24),
           marketCap: marketCapFromGt,
           fdv: _efdv,
+          marketCapStatus: marketCapFromGt != null ? 'verified' : 'unavailable',
+          mcVsFdvStatus: marketCapFromGt != null ? 'verified' : (fdv != null ? 'fdv_only' : 'unavailable'),
         },
         security: {
           status: securityStatus,
@@ -3010,6 +3016,16 @@ export async function POST(req: Request) {
           decimalsRpc: rpcDecimalsHex ?? null,
           nameFallback: rpcName ?? null,
           symbolFallback: rpcSymbol ?? null,
+        },
+        contract_flags: {
+          mint: cortexContractFlags.mint,
+          proxy: cortexContractFlags.proxy,
+          pause: cortexContractFlags.pause,
+          blacklist: cortexContractFlags.blacklist,
+          withdraw: cortexContractFlags.withdraw,
+          bytecodeChecked: cortexContractFlags.bytecodeChecked,
+          proxySlotChecked: cortexContractFlags.proxySlotChecked,
+          pauseCallChecked: cortexContractFlags.pauseCallChecked,
         },
       },
     }
