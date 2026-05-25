@@ -29,12 +29,36 @@ function getServiceRoleClient() {
 
 export async function getCurrentUserPlanFromBearerToken(token: string) {
   const anon = createAnonSupabaseClient()
-  if (!anon) return { plan: 'free' as ChainlensPlan, userId: null, email: null, settingsRowFound: false }
+  if (!anon) return {
+    plan: 'free' as ChainlensPlan,
+    rawPlan: 'free' as ChainlensPlan,
+    trialActive: false,
+    trialEndsAt: null,
+    userId: null,
+    email: null,
+    settingsRowFound: false,
+  }
   const { data } = await anon.auth.getUser(token)
   const user = data.user
-  if (!user) return { plan: 'free' as ChainlensPlan, userId: null, email: null, settingsRowFound: false }
+  if (!user) return {
+    plan: 'free' as ChainlensPlan,
+    rawPlan: 'free' as ChainlensPlan,
+    trialActive: false,
+    trialEndsAt: null,
+    userId: null,
+    email: null,
+    settingsRowFound: false,
+  }
   if (process.env.BETA_ALL_ELITE === 'true') {
-    return { plan: 'elite' as ChainlensPlan, userId: user.id, email: user.email ?? null, settingsRowFound: true }
+    return {
+      plan: 'elite' as ChainlensPlan,
+      rawPlan: 'elite' as ChainlensPlan,
+      trialActive: false,
+      trialEndsAt: null,
+      userId: user.id,
+      email: user.email ?? null,
+      settingsRowFound: true,
+    }
   }
   // Use authed client so Bearer token is forwarded in global headers — required when RLS checks auth.uid().
   const authed = createAuthedSupabaseClient(token)
@@ -44,8 +68,13 @@ export async function getCurrentUserPlanFromBearerToken(token: string) {
     .eq('user_id', user.id)
     .maybeSingle()
   const settingsRowFound = row !== null
+  const trialEndsAt = typeof row?.trial_ends_at === 'string' ? row.trial_ends_at : null
+  const trialActive = row?.trial_plan === 'elite' && Boolean(trialEndsAt) && Number.isFinite(Date.parse(trialEndsAt ?? '')) && Date.parse(trialEndsAt ?? '') > Date.now()
   return {
     plan: resolveEffectivePlan(row as Partial<UserSettings> | null),
+    rawPlan: normalizePlan(row?.plan),
+    trialActive,
+    trialEndsAt,
     userId: user.id,
     email: user.email ?? null,
     settingsRowFound,
