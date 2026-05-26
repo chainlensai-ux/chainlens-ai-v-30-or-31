@@ -653,7 +653,7 @@ function getMissingChecks(result: ScanResult): string[] {
   return [
     result.noActivePools ? 'Active liquidity pool' : null,
     holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : null,
-    lpMode === 'protocol' ? 'LP token model not used — protocol-managed concentrated liquidity.' : lpStatus === 'no_pool' ? 'No usable liquidity pool found.' : lpMode === 'unknown' ? 'Liquidity detected, but LP model could not be classified.' : (lpStatus === 'team_controlled' ? 'LP ownership concentrated in normal wallet.' : !lpVerified ? 'LP lock or burn proof' : null),
+    lpMode === 'protocol' ? 'LP token model not used — protocol-managed concentrated liquidity.' : lpStatus === 'no_pool' ? 'No usable liquidity pool found.' : lpStatus === 'unverified' ? 'LP lock or burn proof' : lpMode === 'unknown' ? 'Liquidity detected, but LP model could not be classified.' : (lpStatus === 'team_controlled' ? 'LP ownership concentrated in normal wallet.' : !lpVerified ? 'LP lock or burn proof' : null),
     result.marketCapUsd == null ? 'Verified market cap' : null,
     'Supply spread',
   ].filter((v): v is string => v != null)
@@ -817,7 +817,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   // ── Missing checks penalty ───────────────────────────────────────────────
   const missingItems = [
     holderState.kind !== 'rowsWithPercent'                              ? 'holder concentration'  : null,
-    lpMode === 'protocol'                                                ? null                    : lpMode === 'unknown' ? 'LP model classification' : (lpStatus !== 'locked' && lpStatus !== 'burned' ? 'LP proof' : null),
+    lpMode === 'protocol'                                                ? null                    : lpStatus === 'unverified' ? 'LP proof' : lpMode === 'unknown' ? 'LP model classification' : (lpStatus !== 'locked' && lpStatus !== 'burned' ? 'LP proof' : null),
     result.marketCapUsd == null                                         ? 'market cap'            : null,
     !hp?.simulationSuccess                                              ? 'security simulation'   : null,
     result.contractSecurity == null                                               ? 'owner status'          : null,
@@ -1687,7 +1687,7 @@ export default function TerminalTokenScanner() {
                 ]
                 const marketStrengthLabel = result.noActivePools ? 'Unverified' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Unverified'
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
-                const lpProofLabel = lpMode === 'protocol' ? 'Not Applicable' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Team Controlled' : lpStatus === 'partial' ? 'Partial' : lpStatus === 'no_pool' ? 'No Pool' : lpMode === 'unknown' ? 'Unknown model' : 'Unverified'
+                const lpProofLabel = lpMode === 'protocol' ? 'Not Applicable' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Team Controlled' : lpStatus === 'partial' ? 'Partial' : lpStatus === 'no_pool' ? 'No Pool' : lpStatus === 'unverified' ? 'Unverified' : lpMode === 'unknown' ? 'Unknown model' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
@@ -2397,9 +2397,9 @@ export default function TerminalTokenScanner() {
                   {!planLoading && isFullAccess && !result.lpControl && (
                     <div style={{ padding:'14px 18px',marginBottom:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>LP control data was not returned in this scan.</div>
                   )}
-                  {!planLoading && isFullAccess && result.lpControl && deriveLpMode(result) === 'unknown' && (
+                  {!planLoading && isFullAccess && result.lpControl && result.lpControl.status === 'unverified' && (
                     <div style={{ padding:'11px 14px',marginBottom:'12px',background:'rgba(100,116,139,0.06)',border:'1px solid rgba(100,116,139,0.18)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>
-                      Liquidity detected, but LP model could not be classified.
+                      LP lock/burn status could not be verified this scan.
                     </div>
                   )}
                   {result.pools && result.pools.length > 0 && (
