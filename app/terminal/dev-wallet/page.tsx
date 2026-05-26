@@ -3,7 +3,6 @@
 import { useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import Link from 'next/link'
-import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -325,7 +324,6 @@ function WarningBanner({ warnings, deployerStatus }: { warnings: string[]; deplo
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function DevWalletPage() {
-  const { plan, loading: planLoading, elitePass } = usePlanWithLoading()
   const [input,        setInput]        = useState('')
   const [loading,      setLoading]      = useState(false)
   const [result,       setResult]       = useState<DevWalletResult | null>(null)
@@ -390,15 +388,6 @@ export default function DevWalletPage() {
     return `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`
   }, [result])
 
-  if (planLoading) {
-    return (
-      <div style={{ display:'flex', flex:1, alignItems:'center', justifyContent:'center', minHeight:'80vh', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>
-        Loading plan access…
-      </div>
-    )
-  }
-  const effectivePlan = elitePass.active ? 'elite' : plan
-  if (!canAccessFeature(effectivePlan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
 
   return (
     <>

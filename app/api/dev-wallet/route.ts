@@ -96,24 +96,6 @@ interface PlanResolution {
 }
 
 async function resolveServerPlan(req: Request): Promise<PlanResolution> {
-  // Local dev bypass — only active when DEV_PLAN_BYPASS env var is set (never set in production)
-  const devBypass = process.env.DEV_PLAN_BYPASS
-  if (devBypass === 'pro' || devBypass === 'elite') {
-    return {
-      rawPlan: devBypass,
-      effectivePlan: devBypass,
-      trialActive: false,
-      trialEndsAt: null,
-      isProOrElite: true,
-      gateDecision: 'allow',
-      authSource: 'dev_bypass',
-      plan: devBypass,
-      hasBearer: true,
-      userPresent: true,
-      settingsRowFound: true,
-      planSource: 'dev_bypass',
-    }
-  }
   const auth = req.headers.get('authorization') ?? ''
   const hasBearer = auth.toLowerCase().startsWith('bearer ') && auth.slice(7).trim().length > 0
   if (!hasBearer) return {
@@ -1492,33 +1474,6 @@ export async function POST(req: Request) {
     const debug = new URL(req.url).searchParams.get('debug') === 'true'
     const planRes = await resolveServerPlan(req)
     const { plan } = planRes
-    if (plan === 'free') return NextResponse.json({
-      error: 'Dev Wallet Detector is included in Pro and Elite.',
-      rateLimited: false,
-      _diagnostics: {
-        planGate: {
-          route: '/api/dev-wallet',
-          verifiedPlan: plan,
-          hasBearer: planRes.hasBearer,
-          userPresent: planRes.userPresent,
-          settingsRowFound: planRes.settingsRowFound,
-          planSource: planRes.planSource,
-          requiredPlan: 'pro',
-        },
-      },
-      ...(debug ? {
-        _debug: {
-          hasBearer: planRes.hasBearer,
-          userPresent: planRes.userPresent,
-          settingsRowFound: planRes.settingsRowFound,
-          rawPlan: planRes.rawPlan,
-          effectivePlan: planRes.effectivePlan,
-          trialActive: planRes.trialActive,
-          trialEndsAt: planRes.trialEndsAt,
-          gateDecision: planRes.gateDecision,
-        },
-      } : {}),
-    }, { status: 403 })
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
     const now = Date.now()
     const rateKey = `${ip}:${plan}`
