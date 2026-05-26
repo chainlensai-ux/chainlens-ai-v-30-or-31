@@ -1702,7 +1702,7 @@ export default function TerminalTokenScanner() {
                 const degradedBadges = [
                   result.lpControl?.status === 'unverified' ? 'Unverified LP' : null,
                   result.holderDistributionStatus?.status === 'partial' ? 'Partial Holders' : null,
-                  result.marketStatus === 'unavailable' ? 'Market Data Unavailable' : null,
+                  (result.noActivePools || result.marketCapStatus === 'unavailable') ? 'Market Data Unavailable' : null,
                 ].filter(Boolean) as string[]
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
