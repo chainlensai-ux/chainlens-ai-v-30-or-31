@@ -91,6 +91,7 @@ interface PlanResolution {
   plan: 'free' | 'pro' | 'elite'
   hasBearer: boolean
   userPresent: boolean
+  userId: string | null
   settingsRowFound: boolean
   planSource: 'user_settings' | 'fallback'
 }
@@ -99,51 +100,27 @@ async function resolveServerPlan(req: Request): Promise<PlanResolution> {
   const auth = req.headers.get('authorization') ?? ''
   const hasBearer = auth.toLowerCase().startsWith('bearer ') && auth.slice(7).trim().length > 0
   if (!hasBearer) return {
-    rawPlan: 'free',
-    effectivePlan: 'free',
-    trialActive: false,
-    trialEndsAt: null,
-    isProOrElite: false,
-    gateDecision: 'deny',
-    authSource: 'none',
-    plan: 'free',
-    hasBearer: false,
-    userPresent: false,
-    settingsRowFound: false,
-    planSource: 'fallback',
+    rawPlan: 'free', effectivePlan: 'free', trialActive: false, trialEndsAt: null,
+    isProOrElite: false, gateDecision: 'deny', authSource: 'none', plan: 'free',
+    hasBearer: false, userPresent: false, userId: null, settingsRowFound: false, planSource: 'fallback',
   }
   const token = auth.slice(7).trim()
   try {
     const result = await getCurrentUserPlanFromBearerToken(token)
     const isProOrElite = result.plan === 'pro' || result.plan === 'elite'
     return {
-      rawPlan: result.rawPlan,
-      effectivePlan: result.plan,
-      trialActive: result.trialActive,
-      trialEndsAt: result.trialEndsAt,
-      isProOrElite,
-      gateDecision: isProOrElite ? 'allow' : 'deny',
-      authSource: 'bearer',
-      plan: result.plan,
-      hasBearer: true,
-      userPresent: result.userId !== null,
+      rawPlan: result.rawPlan, effectivePlan: result.plan, trialActive: result.trialActive,
+      trialEndsAt: result.trialEndsAt, isProOrElite, gateDecision: isProOrElite ? 'allow' : 'deny',
+      authSource: 'bearer', plan: result.plan, hasBearer: true,
+      userPresent: result.userId !== null, userId: result.userId ?? null,
       settingsRowFound: result.settingsRowFound,
       planSource: result.settingsRowFound ? 'user_settings' : 'fallback',
     }
   } catch {
     return {
-      rawPlan: 'free',
-      effectivePlan: 'free',
-      trialActive: false,
-      trialEndsAt: null,
-      isProOrElite: false,
-      gateDecision: 'deny',
-      authSource: 'bearer',
-      plan: 'free',
-      hasBearer: true,
-      userPresent: false,
-      settingsRowFound: false,
-      planSource: 'fallback',
+      rawPlan: 'free', effectivePlan: 'free', trialActive: false, trialEndsAt: null,
+      isProOrElite: false, gateDecision: 'deny', authSource: 'bearer', plan: 'free',
+      hasBearer: true, userPresent: false, userId: null, settingsRowFound: false, planSource: 'fallback',
     }
   }
 }
@@ -1472,27 +1449,56 @@ export async function POST(req: Request) {
   try {
     const startedAt = Date.now()
     const debug = new URL(req.url).searchParams.get('debug') === 'true'
-    const planRes = await resolveServerPlan(req)
-    const { plan } = planRes
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
-    const now = Date.now()
-    const rateKey = `${ip}:${plan}`
-    const rr = devRate.get(rateKey)
-    if (!rr || rr.resetAt <= now) devRate.set(rateKey, { count: 1, resetAt: now + 60_000, lastAt: now })
-    else if (now - rr.lastAt < DEV_COOLDOWN_MS[plan]) return NextResponse.json({ error: 'Cooldown active. Please retry shortly.', rateLimited: true }, { status: 429 })
-    else if (rr.count >= DEV_RATE_LIMIT[plan]) return NextResponse.json({ error: 'Rate limit reached. Try again shortly.', rateLimited: true }, { status: 429 })
-    else { rr.count += 1; rr.lastAt = now }
+
+    // ── 1. Parse + validate input BEFORE rate limiting so invalid requests never consume quota ──
     const body = await req.json() as { contractAddress?: string; chain?: string }
     const { contractAddress } = body
     const normalizedChain = body.chain === 'eth' ? 'eth' : body.chain === 'base' || body.chain == null ? 'base' : null
     if (!normalizedChain) return NextResponse.json({ error: 'Unsupported chain. Use base or eth.' }, { status: 400 })
-    activeChainConfig = getChainConfig(normalizedChain)
-
     if (!contractAddress || !/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
       return NextResponse.json(
         { error: 'Invalid contract address — must be a valid EVM address (0x + 40 hex chars)' },
         { status: 400 }
       )
+    }
+    activeChainConfig = getChainConfig(normalizedChain)
+
+    // ── 2. Resolve plan (needed for rate-limit tier) ──
+    const planRes = await resolveServerPlan(req)
+    const { plan } = planRes
+
+    // ── 3. Rate limit — key by userId when authenticated, else by IP (per-plan tier) ──
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+    const rateLimitKeyType: 'user' | 'ip' = planRes.userId ? 'user' : 'ip'
+    // Hash userId to avoid storing PII in memory key; use first 16 hex chars of a simple hash
+    const rateIdentity = planRes.userId
+      ? `u:${planRes.userId.replace(/-/g, '').slice(0, 16)}`
+      : `i:${ip}`
+    const rateKey = `dw:${plan}:${rateIdentity}`
+    const now = Date.now()
+    const rr = devRate.get(rateKey)
+    if (!rr || rr.resetAt <= now) {
+      devRate.set(rateKey, { count: 1, resetAt: now + 60_000, lastAt: now })
+    } else if (now - rr.lastAt < DEV_COOLDOWN_MS[plan]) {
+      const retryAfterSeconds = Math.ceil((rr.lastAt + DEV_COOLDOWN_MS[plan] - now) / 1000)
+      return NextResponse.json({
+        error: 'Cooldown active. Please retry shortly.',
+        rateLimited: true,
+        retryAfterSeconds,
+        cooldownKeyType: rateLimitKeyType,
+        ...(debug ? { _debug: { rateLimitChecked: true, rateLimitKeyType, retryAfterSeconds, invalidRequestSkippedRateLimit: false, userPresent: planRes.userPresent, hasBearer: planRes.hasBearer } } : {}),
+      }, { status: 429 })
+    } else if (rr.count >= DEV_RATE_LIMIT[plan]) {
+      const retryAfterSeconds = Math.ceil((rr.resetAt - now) / 1000)
+      return NextResponse.json({
+        error: 'Rate limit reached. Try again shortly.',
+        rateLimited: true,
+        retryAfterSeconds,
+        cooldownKeyType: rateLimitKeyType,
+        ...(debug ? { _debug: { rateLimitChecked: true, rateLimitKeyType, retryAfterSeconds, invalidRequestSkippedRateLimit: false, userPresent: planRes.userPresent, hasBearer: planRes.hasBearer } } : {}),
+      }, { status: 429 })
+    } else {
+      rr.count += 1; rr.lastAt = now
     }
 
     const normalizedAddress = contractAddress.toLowerCase()
@@ -1539,6 +1545,7 @@ export async function POST(req: Request) {
     const holderStatusRaw = (tokenEvidence?.holderDistributionStatus as Record<string, unknown> | null | undefined) ?? null
     const tokenHolderStatus = typeof holderStatusRaw?.status === 'string' ? holderStatusRaw.status : null
     const tokenHolderReason = typeof holderStatusRaw?.reason === 'string' ? holderStatusRaw.reason : null
+    const tokenHolderPercentSource = typeof holderStatusRaw?.percentSource === 'string' ? holderStatusRaw.percentSource : null
     const usableHolders = tokenHolderStatus === 'ok' || tokenHolderStatus === 'partial'
     const liqEv = (sections.liquidity as Record<string, unknown> | undefined) ?? {}
     const secEv = (sections.security as Record<string, unknown> | undefined) ?? {}
@@ -1715,6 +1722,8 @@ export async function POST(req: Request) {
       linkedWallets,
       holderDistribution: holderDistributionRaw ?? null,
       holderDistributionStatus: tokenHolderStatus ?? 'partial',
+      holderPercentAvailable: holderTop1 != null || holderTop10 != null || holderTop20 != null,
+      holderPercentSource: tokenHolderPercentSource,
       topHolders: holderDistributionRaw?.topHolders ?? [],
       top1: holderTop1 ?? null,
       top10: holderTop10 ?? null,
@@ -1846,6 +1855,15 @@ export async function POST(req: Request) {
         trialActive: planRes.trialActive,
         trialEndsAt: planRes.trialEndsAt,
         gateDecision: planRes.gateDecision,
+        holderRowsCount: holderDistributionRaw?.topHolders?.length ?? 0,
+        holderRowsHaveBalances: (holderDistributionRaw?.topHolders?.length ?? 0) > 0,
+        totalSupplyResolved: holderTop1 != null || holderTop10 != null,
+        totalSupplySource: tokenHolderPercentSource,
+        percentDerivationAttempted: tokenHolderStatus !== null,
+        percentDerivationReason: typeof holderStatusRaw?.reason === 'string' ? holderStatusRaw.reason : null,
+        top1: holderTop1 ?? null,
+        top10: holderTop10 ?? null,
+        top20: holderTop20 ?? null,
       }
     }
     devCache.set(cacheKey, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })

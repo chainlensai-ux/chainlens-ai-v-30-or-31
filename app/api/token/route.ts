@@ -2254,13 +2254,70 @@ export async function POST(req: Request) {
     let top5 = hasPct ? sum(5) : null
     let top10 = hasPct ? sum(10) : null
     let top20 = hasPct ? sum(20) : null
+
+    // Fallback percent derivation: provider returned holder rows with raw balances but no percentage
+    // field. Try to derive from RPC totalSupply(), then summed returned balances as last resort.
+    let _holderPctDerived = false
+    let _holderPctDerivedFromSummedRows = false
+    let _holderPctTotalSupplySource: string | null = null
+    if (!hasPct && topHolders.length > 0 && rawBalanceByAddress.size > 0) {
+      const _onchainVal = _onchainSettled.status === 'fulfilled'
+        ? (_onchainSettled.value as Awaited<ReturnType<typeof fetchOnchainSupply>> | null)
+        : null
+      let totalSupplyBig: bigint | null = _onchainVal?.totalSupply ?? null
+      if (totalSupplyBig != null && totalSupplyBig > BigInt(0)) {
+        _holderPctTotalSupplySource = 'rpc_onchain'
+      } else {
+        const tsHex = alchemyMandatoryReads[5]
+        if (tsHex && tsHex !== '0x' && tsHex !== '0x0') {
+          try { totalSupplyBig = BigInt(tsHex); _holderPctTotalSupplySource = 'rpc_phase1' } catch {}
+        }
+      }
+      if ((totalSupplyBig == null || totalSupplyBig <= BigInt(0)) && rawBalanceByAddress.size > 0) {
+        let sumBig = BigInt(0)
+        for (const rawBal of rawBalanceByAddress.values()) {
+          try { sumBig += BigInt(String(rawBal)) } catch {}
+        }
+        if (sumBig > BigInt(0)) {
+          totalSupplyBig = sumBig
+          _holderPctDerivedFromSummedRows = true
+          _holderPctTotalSupplySource = 'summed_returned_rows'
+        }
+      }
+      if (totalSupplyBig != null && totalSupplyBig > BigInt(0)) {
+        let anyDerived = false
+        for (const holder of topHolders as Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>) {
+          const rawBal = rawBalanceByAddress.get(holder.address.toLowerCase())
+          if (rawBal == null) continue
+          try {
+            const balBig = BigInt(String(rawBal))
+            holder.percent = Number(balBig * BigInt(10000) / totalSupplyBig) / 100
+            anyDerived = true
+          } catch {}
+        }
+        if (anyDerived) {
+          topHolders.sort((a: any, b: any) => (b.percent ?? 0) - (a.percent ?? 0))
+          hasPct = true
+          percentSource = 'calculated'
+          top1 = sum(1); top5 = sum(5); top10 = sum(10); top20 = sum(20)
+          _holderPctDerived = true
+        }
+      }
+    }
+
     const normalizedTop = topHolders.slice(0, 200)
     let holderDistribution: HolderDistribution = normalizedTop.length
       ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop }
       : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
-          ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource }
+          ? {
+              status: _holderPctDerivedFromSummedRows ? 'partial' : 'ok',
+              reason: _holderPctDerived
+                ? (_holderPctDerivedFromSummedRows ? 'percentages_estimated_from_returned_rows' : 'percentages_derived_from_rpc_supply')
+                : 'holder_percentages_verified',
+              itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource,
+            }
           : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource })
       : {
           // Map unavailable/empty → partial so the UI always shows holder section
