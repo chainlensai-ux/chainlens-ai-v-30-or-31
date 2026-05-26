@@ -1512,11 +1512,11 @@ export async function POST(req: Request) {
     // Chain auto-detection for address inputs: if selected chain has no pools,
     // try the opposite chain before continuing full scan.
     if (isAddressInput) {
-      const selectedPools = await fetchGeckoTerminalPools(contract, chain)
+      const selectedPools = await fetchGeckoTerminal(contract, chain)
       const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
       if (selectedCount === 0) {
         const altChain: ChainKey = chain === 'eth' ? 'base' : 'eth'
-        const altPools = await fetchGeckoTerminalPools(contract, altChain)
+        const altPools = await fetchGeckoTerminal(contract, altChain)
         const altCount = Array.isArray(altPools?.data) ? altPools.data.length : 0
         if (altCount > 0) {
           chain = altChain
