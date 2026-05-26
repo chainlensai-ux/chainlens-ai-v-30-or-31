@@ -334,7 +334,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const json = await res.json()
-          const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
+          const p = json?.effectivePlan ?? json?.plan ?? (json?.settings as Record<string, unknown>)?.plan
           const resolvedPlan = p === 'pro' || p === 'elite' ? p : 'free'
           setPlan(resolvedPlan)
           writeCachedPlan(resolvedPlan, session?.user?.id, session?.user?.email ?? null)

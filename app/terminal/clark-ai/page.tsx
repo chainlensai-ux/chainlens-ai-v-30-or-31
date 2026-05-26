@@ -140,7 +140,7 @@ function ClarkAiContent() {
         const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
         if (res.ok) {
           const json = await res.json() as Record<string, unknown>
-          const p = String(json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan ?? '')
+          const p = String(json?.effectivePlan ?? json?.plan ?? (json?.settings as Record<string, unknown>)?.plan ?? '')
           setPlanLimit(CLARK_DAILY_LIMITS[p] ?? CLARK_DAILY_LIMITS.free)
         } else { setPlanLimit(CLARK_DAILY_LIMITS.free) }
       } catch { setPlanLimit(CLARK_DAILY_LIMITS.free) }

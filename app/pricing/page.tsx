@@ -123,7 +123,7 @@ export default function PricingPage() {
         })
         if (res.ok) {
           const json = await res.json() as Record<string, unknown>
-          const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
+          const p = json?.effectivePlan ?? json?.plan ?? (json?.settings as Record<string, unknown>)?.plan
           if (p === 'pro' || p === 'elite') setUserPlan(p as UserPlan)
         }
       } catch { /* stay on free */ }

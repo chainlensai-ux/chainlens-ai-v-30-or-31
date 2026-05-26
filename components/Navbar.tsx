@@ -88,7 +88,7 @@ export default function Navbar() {
         if (res.ok) {
           const json = await res.json() as Record<string, unknown>
           const settings = json?.settings as Record<string, unknown> | undefined
-          const p = json?.plan ?? json?.effectivePlan ?? settings?.plan
+          const p = json?.effectivePlan ?? json?.plan ?? settings?.plan
           const days = Number(json?.trialDaysLeft ?? 0)
           setTrialDaysLeft(Number.isFinite(days) ? days : 0)
           const resolvedPlan: UserPlan = p === 'pro' || p === 'elite' ? p : 'free'
