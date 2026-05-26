@@ -809,56 +809,73 @@ export default function DevWalletPage() {
 
                 {/* ── SUPPLY CONTROL ──────────────────────────────────────── */}
                 {activeTab === 'supply' && (() => {
-                  const te = result.tokenEvidence
                   const usableHolders =
                     result.holderDistributionStatus === 'ok' ||
                     result.holderDistributionStatus === 'partial'
-                  const topHolders = result.holderDistribution?.topHolders ?? []
-                  const top1 = result.holderDistribution?.top1 ?? te?.top1 ?? null
-                  const top10 = result.holderDistribution?.top10 ?? te?.top10 ?? null
-                  const top20 = result.holderDistribution?.top20 ?? te?.top20 ?? null
-                  const hasHolderRows = topHolders.length > 0 || usableHolders
-                  const linkedAddrs = new Set(result.linkedWallets.map(w => w.address.toLowerCase()))
-                  const linkedTopHolders = topHolders.filter(h => h.address && linkedAddrs.has(h.address.toLowerCase()))
-                  const linkedSupply = linkedTopHolders.length > 0
-                    ? linkedTopHolders.reduce((s, h) => s + (h.percent ?? 0), 0)
-                    : (te?.linkedWalletSupply ?? null)
-                  const devClusterSupply = te?.devClusterSupply ?? result.supplyControlled ?? null
-                  const percentUnavailableLabel = hasHolderRows ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable after scan.'
+
+                  // All supply variables computed from scanner holderDistribution fields when usable.
+                  // When not usable, every field stays null and the UI renders "Open check".
+                  let top1: number | null = null
+                  let top10: number | null = null
+                  let top20: number | null = null
+                  let topHolders: Array<{ address?: string; percent?: number | null }> = []
+                  let linkedSupply: number | null = null
+                  let devClusterSupply: number | null = null
+                  let creatorInTopHolders: boolean = false
+
+                  if (usableHolders) {
+                    top1 = result.holderDistribution?.top1 ?? null
+                    top10 = result.holderDistribution?.top10 ?? null
+                    top20 = result.holderDistribution?.top20 ?? null
+                    topHolders = result.holderDistribution?.topHolders ?? []
+                    const linkedAddrs = new Set(result.linkedWallets.map(w => w.address.toLowerCase()))
+                    const linkedTopHolders = topHolders.filter(h => h.address && linkedAddrs.has(h.address.toLowerCase()))
+                    linkedSupply = linkedTopHolders.length > 0
+                      ? linkedTopHolders.reduce((s, h) => s + (h.percent ?? 0), 0)
+                      : (result.tokenEvidence?.linkedWalletSupply ?? null)
+                    devClusterSupply = result.supplyControlled ?? result.tokenEvidence?.devClusterSupply ?? null
+                    creatorInTopHolders = result.deployerAddress
+                      ? (topHolders.some(h => h.address?.toLowerCase() === result.deployerAddress?.toLowerCase()) ||
+                         result.matchedHolderWallets.some(h => h.isDeployer))
+                      : false
+                  }
+
+                  const openCheck = <span style={{ color:'#94a3b8' }}>Open check — holder data unavailable after scan.</span>
+                  const partialLabel = 'Partial — holder rows found, supply % unavailable.'
+                  const supplyBarPct = devClusterSupply != null ? Math.min(devClusterSupply, 100) : null
+                  const supplyBarColor = supplyBarPct != null ? (supplyBarPct > 50 ? '#f87171' : supplyBarPct > 20 ? '#fbbf24' : '#34d399') : '#3a5268'
+
                   const topHolderNote: string | null =
-                    result.deployerAddress && !hasHolderRows
+                    !usableHolders && result.deployerAddress
                       ? 'Origin wallet was likely found, but holder distribution could not confirm supply control.'
                       : result.supplyControlStatus === 'not_in_top_holders'
                       ? 'Creator wallet is not in the top-holder set. Supply concentration remains an open risk check since linked wallets are not fully verified.'
                       : result.supplyControlStatus === 'needs_confirmed_creator'
                         ? 'Creator-linked supply control cannot be confirmed — no verified creator address available.'
-                        : result.supplyControlled != null && result.supplyControlled > 20
-                          ? `Developer-linked supply detected at ${result.supplyControlled.toFixed(1)}% — monitor for exit or concentration risk.`
+                        : devClusterSupply != null && devClusterSupply > 20
+                          ? `Developer-linked supply detected at ${devClusterSupply.toFixed(1)}% — monitor for exit or concentration risk.`
                           : result.matchedHolderWallets.length > 0
                             ? `${result.matchedHolderWallets.length} creator/linked wallet${result.matchedHolderWallets.length !== 1 ? 's' : ''} found in top holders.`
                             : null
-
-                  const supplyBarPct = result.supplyControlled != null ? Math.min(result.supplyControlled, 100) : null
-                  const supplyBarColor = supplyBarPct != null ? (supplyBarPct > 50 ? '#f87171' : supplyBarPct > 20 ? '#fbbf24' : '#34d399') : '#3a5268'
 
                   return (
                     <>
                       <GlassCard style={{ marginBottom:'14px' }}>
                         <p style={{ margin:'0 0 12px', fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#34d399', fontFamily:'var(--font-plex-mono)' }}>SUPPLY CONTROL SURFACE</p>
                         <DataRow label="Creator in top holders" value={
-                          !hasHolderRows
-                            ? <span style={{ color:'#94a3b8' }}>Open check — holder data unavailable after scan.</span>
+                          !usableHolders
+                            ? openCheck
                             : !result.deployerAddress
                             ? <span style={{ color:'#94a3b8' }}>Open check — creator not confirmed from current checks.</span>
-                            : result.matchedHolderWallets.some(h => h.isDeployer)
+                            : creatorInTopHolders
                               ? <span style={{ color:'#f87171' }}>Confirmed — creator appears in top holders.</span>
                               : <span style={{ color:'#34d399' }}>Not detected</span>
                         } />
-                        <DataRow label="Top 1 concentration"  value={top1  != null ? `${top1.toFixed(2)}%`  : percentUnavailableLabel} valueStyle={{ color: top1 != null && top1 > 15 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Top 10 concentration" value={top10 != null ? `${top10.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: top10 != null && top10 > 50 ? '#f87171' : top10 != null && top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
-                        <DataRow label="Top 20 concentration" value={top20 != null ? `${top20.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: top20 != null && top20 > 70 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Linked-wallet supply" value={linkedSupply != null && linkedSupply > 0 ? `${linkedSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} valueStyle={{ color: linkedSupply != null && linkedSupply > 20 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Dev cluster supply"   value={devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} />
+                        <DataRow label="Top 1 concentration"  value={!usableHolders ? openCheck : top1  != null ? `${top1.toFixed(2)}%`  : partialLabel} valueStyle={{ color: top1 != null && top1 > 15 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 10 concentration" value={!usableHolders ? openCheck : top10 != null ? `${top10.toFixed(2)}%` : partialLabel} valueStyle={{ color: top10 != null && top10 > 50 ? '#f87171' : top10 != null && top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
+                        <DataRow label="Top 20 concentration" value={!usableHolders ? openCheck : top20 != null ? `${top20.toFixed(2)}%` : partialLabel} valueStyle={{ color: top20 != null && top20 > 70 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Linked-wallet supply" value={!usableHolders ? openCheck : linkedSupply != null && linkedSupply > 0 ? `${linkedSupply.toFixed(1)}%` : 'Needs holder confirmation.'} valueStyle={{ color: linkedSupply != null && linkedSupply > 20 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Dev cluster supply"   value={!usableHolders ? openCheck : devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : 'Needs holder confirmation.'} />
 
                         {supplyBarPct != null && (
                           <div style={{ marginTop:'14px' }}>
