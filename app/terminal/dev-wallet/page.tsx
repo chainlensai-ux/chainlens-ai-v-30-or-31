@@ -59,10 +59,18 @@ interface DevWalletResult {
   creationTxHash?: string | null
   originReason?: string | null
   linkedWallets: LinkedWallet[]
-  holderDataAvailable: boolean
-  holderDistribution?: { top1?: number | null; top10?: number | null; top20?: number | null; topHolders?: Array<{ address?: string; percent?: number | null }> } | null
+  holderDistribution?: { top1?: number | null; top10?: number | null; top20?: number | null; holderCount?: number | null; topHolders?: Array<{ address?: string; percent?: number | null }> } | null
   holderDistributionStatus?: string | null
-  supplyControlled: number | null
+  topHolders?: Array<{ address?: string; percent?: number | null }>
+  top1?: number | null
+  top10?: number | null
+  top20?: number | null
+  holderCount?: number | null
+  creatorInTopHolders?: boolean
+  linkedWalletSupply?: number | null
+  devClusterSupply?: number | null
+  liquidity?: number | null
+  volume24h?: number | null
   supplyControlStatus?: 'ok' | 'partial' | 'needs_confirmed_creator' | 'not_in_top_holders'
   previousActivityStatus?: string
   matchedHolderWallets: MatchedHolder[]
@@ -74,14 +82,12 @@ interface DevWalletResult {
   warnings: string[]
   tokenStatus?: string
   linkedWalletsStatus?: string
-  holderStatus?: string
   liquidityStatus?: string
   lpControlStatus?: string
   _diagnostics?: { modules?: unknown[]; rpcConfigured?: boolean; providerUsed?: string; tokenEvidenceDiag?: unknown; origin_discovery?: unknown }
   verdict?: VerdictLabel
   confidence?: string
   reasons?: string[]
-  tokenEvidence?: { name?: string | null; symbol?: string | null; price?: number | null; volume24h?: number | null; liquidity?: number | null; holderCount?: number | null; top1?: number | null; top10?: number | null; top20?: number | null; linkedWalletSupply?: number | null; devClusterSupply?: number | null } | null
   fetchedAt: string
 }
 
@@ -141,11 +147,11 @@ function calculateDevControl(result: DevWalletResult): DevControlScore {
   // Supply control
   if (result.supplyControlStatus === 'not_in_top_holders') {
     pts += 15
-  } else if (result.supplyControlled != null) {
-    if      (result.supplyControlled > 50) pts -= 25
-    else if (result.supplyControlled > 20) pts -= 15
-    else if (result.supplyControlled > 10) pts -= 8
-    else if (result.supplyControlled <= 5) pts += 8
+  } else if (result.devClusterSupply != null) {
+    if      (result.devClusterSupply > 50) pts -= 25
+    else if (result.devClusterSupply > 20) pts -= 15
+    else if (result.devClusterSupply > 10) pts -= 8
+    else if (result.devClusterSupply <= 5) pts += 8
   }
 
   // Linked wallets count — more wallets = higher potential cluster
@@ -162,7 +168,7 @@ function calculateDevControl(result: DevWalletResult): DevControlScore {
   else if (result.previousActivityAvailable) pts += 5
 
   // Token holder concentration from evidence
-  const top10 = result.holderDistribution?.top10 ?? result.tokenEvidence?.top10
+  const top10 = result.top10 ?? result.holderDistribution?.top10
   if (top10 != null && top10 > 60) pts -= 10
 
   const score = Math.min(100, Math.max(0, Math.round(pts)))
@@ -486,8 +492,8 @@ export default function DevWalletPage() {
           {result && (() => {
             const dc = calculateDevControl(result)
             const rugCount = result.previousProjects.filter(p => p.rugFlag === true).length
-            const resolvedTokenName = result.name || result.tokenEvidence?.name?.trim() || 'Unknown'
-            const resolvedTokenSymbol = result.symbol || result.tokenEvidence?.symbol?.trim() || '?'
+            const resolvedTokenName = result.name || 'Unknown'
+            const resolvedTokenSymbol = result.symbol || '?'
             const tokenTitle = resolvedTokenName !== 'Unknown' ? resolvedTokenName : shortAddr(result.contractAddress, 8, 6)
             const hasTokenTitleFallback = resolvedTokenName === 'Unknown' && resolvedTokenSymbol === '?'
 
@@ -501,9 +507,9 @@ export default function DevWalletPage() {
                   </h2>
                   <p style={{ fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', margin:0 }}>
                     {shortAddr(result.contractAddress, 10, 8)} · {result.chain === 'eth' ? 'ETH' : 'BASE'}
-                    {result.tokenEvidence?.liquidity != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Liq {fmtUsd(result.tokenEvidence.liquidity)}</span>}
-                    {result.tokenEvidence?.volume24h != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Vol 24h {fmtUsd(result.tokenEvidence.volume24h)}</span>}
-                    {result.tokenEvidence?.holderCount != null && <span style={{ marginLeft:'12px', color:'#475569' }}>{result.tokenEvidence.holderCount.toLocaleString()} holders</span>}
+                    {result.liquidity != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Liq {fmtUsd(result.liquidity)}</span>}
+                    {result.volume24h != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Vol 24h {fmtUsd(result.volume24h)}</span>}
+                    {result.holderCount != null && <span style={{ marginLeft:'12px', color:'#475569' }}>{result.holderCount.toLocaleString()} holders</span>}
                   </p>
                   {hasTokenTitleFallback && (
                     <p style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)', margin:'4px 0 0' }}>
@@ -558,8 +564,8 @@ export default function DevWalletPage() {
                         label: 'Supply Control',
                         ok: result.supplyControlStatus === 'not_in_top_holders',
                         partial: result.supplyControlStatus === 'partial',
-                        value: result.supplyControlStatus === 'not_in_top_holders' ? 'Not in top holders' : result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}% ctrl` : 'Unverified',
-                        color: result.supplyControlStatus === 'not_in_top_holders' ? '#34d399' : result.supplyControlled != null && result.supplyControlled > 20 ? '#f87171' : '#fbbf24',
+                        value: result.supplyControlStatus === 'not_in_top_holders' ? 'Not in top holders' : result.devClusterSupply != null ? `${result.devClusterSupply.toFixed(1)}% ctrl` : 'Unverified',
+                        color: result.supplyControlStatus === 'not_in_top_holders' ? '#34d399' : result.devClusterSupply != null && result.devClusterSupply > 20 ? '#f87171' : '#fbbf24',
                       },
                       {
                         label: 'Patterns',
@@ -821,8 +827,8 @@ export default function DevWalletPage() {
                     const linkedTopHolders = topHolders.filter(h => h.address && linkedAddrs.has(h.address.toLowerCase()))
                     linkedSupply = linkedTopHolders.length > 0
                       ? linkedTopHolders.reduce((s, h) => s + (h.percent ?? 0), 0)
-                      : (result.tokenEvidence?.linkedWalletSupply ?? null)
-                    devClusterSupply = result.supplyControlled ?? result.tokenEvidence?.devClusterSupply ?? null
+                      : (result.linkedWalletSupply ?? null)
+                    devClusterSupply = result.devClusterSupply ?? null
                     creatorInTopHolders = result.deployerAddress
                       ? (topHolders.some(h => h.address?.toLowerCase() === result.deployerAddress?.toLowerCase()) ||
                          result.matchedHolderWallets.some(h => h.isDeployer))
