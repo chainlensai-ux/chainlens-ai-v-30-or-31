@@ -51,6 +51,8 @@ interface ClarkVerdict {
 interface DevWalletResult {
   contractAddress: string
   chain: string
+  name?: string | null
+  symbol?: string | null
   deployerAddress: string | null
   deployerConfidence: 'high' | 'medium' | 'low'
   deployerStatus?: 'confirmed' | 'possible_match' | 'not_confirmed'
@@ -59,6 +61,8 @@ interface DevWalletResult {
   originReason?: string | null
   linkedWallets: LinkedWallet[]
   holderDataAvailable: boolean
+  holderDistribution?: { top1?: number | null; top10?: number | null; top20?: number | null; topHolders?: Array<{ address?: string; percent?: number | null }> } | null
+  holderDistributionStatus?: string | null
   supplyControlled: number | null
   supplyControlStatus?: 'ok' | 'partial' | 'needs_confirmed_creator' | 'not_in_top_holders'
   previousActivityStatus?: string
@@ -158,7 +162,7 @@ function calculateDevControl(result: DevWalletResult): DevControlScore {
   else if (result.previousActivityAvailable) pts += 5
 
   // Token holder concentration from evidence
-  const top10 = result.tokenEvidence?.top10
+  const top10 = result.holderDistribution?.top10 ?? result.tokenEvidence?.top10
   if (top10 != null && top10 > 60) pts -= 10
 
   const score = Math.min(100, Math.max(0, Math.round(pts)))
@@ -179,9 +183,14 @@ function calculateDevControl(result: DevWalletResult): DevControlScore {
     risk = 'CRITICAL'
   }
 
+  const usableHoldersForConf =
+    result.holderDataAvailable ||
+    result.holderDistributionStatus === 'ok' ||
+    result.holderDistributionStatus === 'partial'
+
   const confidence: 'High' | 'Medium' | 'Low' =
-    result.deployerAddress && result.holderDataAvailable ? 'High' :
-    result.deployerAddress || result.holderDataAvailable ? 'Medium' : 'Low'
+    result.deployerAddress && usableHoldersForConf ? 'High' :
+    result.deployerAddress || usableHoldersForConf ? 'Medium' : 'Low'
 
   const summary =
     risk === 'CRITICAL' ? 'Critical dev control risk — multiple serious signals confirmed.' :
@@ -488,8 +497,8 @@ export default function DevWalletPage() {
           {result && (() => {
             const dc = calculateDevControl(result)
             const rugCount = result.previousProjects.filter(p => p.rugFlag === true).length
-            const resolvedTokenName = result.tokenEvidence?.name?.trim() || null
-            const resolvedTokenSymbol = result.tokenEvidence?.symbol?.trim() || null
+            const resolvedTokenName = result.name?.trim() || result.tokenEvidence?.name?.trim() || null
+            const resolvedTokenSymbol = result.symbol?.trim() || result.tokenEvidence?.symbol?.trim() || null
             const tokenTitle = resolvedTokenName ?? shortAddr(result.contractAddress, 8, 6)
             const hasTokenTitleFallback = !resolvedTokenName && !resolvedTokenSymbol
 
@@ -801,9 +810,19 @@ export default function DevWalletPage() {
                 {/* ── SUPPLY CONTROL ──────────────────────────────────────── */}
                 {activeTab === 'supply' && (() => {
                   const te = result.tokenEvidence
-                  const holderRowsCount = te?.holderCount ?? 0
-                  const hasHolderRows = holderRowsCount > 0
-                  const linkedSupply = te?.linkedWalletSupply ?? null
+                  const usableHolders =
+                    result.holderDistributionStatus === 'ok' ||
+                    result.holderDistributionStatus === 'partial'
+                  const topHolders = result.holderDistribution?.topHolders ?? []
+                  const top1 = result.holderDistribution?.top1 ?? te?.top1 ?? null
+                  const top10 = result.holderDistribution?.top10 ?? te?.top10 ?? null
+                  const top20 = result.holderDistribution?.top20 ?? te?.top20 ?? null
+                  const hasHolderRows = topHolders.length > 0 || usableHolders
+                  const linkedAddrs = new Set(result.linkedWallets.map(w => w.address.toLowerCase()))
+                  const linkedTopHolders = topHolders.filter(h => h.address && linkedAddrs.has(h.address.toLowerCase()))
+                  const linkedSupply = linkedTopHolders.length > 0
+                    ? linkedTopHolders.reduce((s, h) => s + (h.percent ?? 0), 0)
+                    : (te?.linkedWalletSupply ?? null)
                   const devClusterSupply = te?.devClusterSupply ?? result.supplyControlled ?? null
                   const percentUnavailableLabel = hasHolderRows ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable after scan.'
                   const topHolderNote: string | null =
@@ -835,10 +854,10 @@ export default function DevWalletPage() {
                               ? <span style={{ color:'#f87171' }}>Confirmed — creator appears in top holders.</span>
                               : <span style={{ color:'#34d399' }}>Not detected</span>
                         } />
-                        <DataRow label="Top 1 concentration"  value={te?.top1  != null ? `${te.top1.toFixed(2)}%`  : percentUnavailableLabel} valueStyle={{ color: te?.top1 != null && te.top1 > 15 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Top 10 concentration" value={te?.top10 != null ? `${te.top10.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: te?.top10 != null && te.top10 > 50 ? '#f87171' : te?.top10 != null && te.top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
-                        <DataRow label="Top 20 concentration" value={te?.top20 != null ? `${te.top20.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: te?.top20 != null && te.top20 > 70 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Linked-wallet supply" value={linkedSupply != null ? `${linkedSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} valueStyle={{ color: linkedSupply != null && linkedSupply > 20 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 1 concentration"  value={top1  != null ? `${top1.toFixed(2)}%`  : percentUnavailableLabel} valueStyle={{ color: top1 != null && top1 > 15 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 10 concentration" value={top10 != null ? `${top10.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: top10 != null && top10 > 50 ? '#f87171' : top10 != null && top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
+                        <DataRow label="Top 20 concentration" value={top20 != null ? `${top20.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: top20 != null && top20 > 70 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Linked-wallet supply" value={linkedSupply != null && linkedSupply > 0 ? `${linkedSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} valueStyle={{ color: linkedSupply != null && linkedSupply > 20 ? '#f87171' : '#e2e8f0' }} />
                         <DataRow label="Dev cluster supply"   value={devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} />
 
                         {supplyBarPct != null && (
