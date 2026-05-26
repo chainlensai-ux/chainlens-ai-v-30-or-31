@@ -653,7 +653,7 @@ function getMissingChecks(result: ScanResult): string[] {
   return [
     result.noActivePools ? 'Active liquidity pool' : null,
     holderState.kind !== 'rowsWithPercent' ? 'Holder concentration' : null,
-    lpMode === 'protocol' ? 'LP token model not used — protocol-managed concentrated liquidity.' : lpMode === 'unknown' ? 'Liquidity detected, but LP model could not be classified.' : (!lpVerified ? 'LP lock or burn proof' : null),
+    lpMode === 'protocol' ? 'LP token model not used — protocol-managed concentrated liquidity.' : lpMode === 'unknown' ? 'Liquidity detected, but LP model could not be classified.' : (lpStatus === 'team_controlled' ? 'LP ownership concentrated in normal wallet.' : !lpVerified ? 'LP lock or burn proof' : null),
     result.marketCapUsd == null ? 'Verified market cap' : null,
     'Supply spread',
   ].filter((v): v is string => v != null)
@@ -1687,14 +1687,14 @@ export default function TerminalTokenScanner() {
                 ]
                 const marketStrengthLabel = result.noActivePools ? 'Unverified' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Unverified'
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
-                const lpProofLabel = lpMode === 'protocol' ? 'Not Applicable' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpMode === 'unknown' ? 'Unknown model' : 'Unverified'
+                const lpProofLabel = lpMode === 'protocol' ? 'Not Applicable' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Team Controlled' : lpMode === 'unknown' ? 'Unknown model' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
                   { label: 'Liquidity', ok: (result.liquidity ?? 0) > 1000, reason: (result.liquidity ?? 0) > 1000 ? `${fmtLarge(result.liquidity)} depth detected.` : 'Liquidity too thin or missing.' },
                   { label: 'Holders', ok: holderState.kind === 'rowsWithPercent', reason: holderState.kind === 'rowsWithPercent' ? 'Top holder percentages verified.' : 'Holder percentages unverified.' },
                   { label: 'Security', ok: riskChipOk, reason: riskChipOk ? 'Simulation passed with no honeypot flag.' : simUnavailable ? 'Simulation unavailable this pass.' : 'Security risk detected.' },
-                  { label: 'LP Proof', ok: lpVerified, reason: lpVerified ? `LP ${lpStatus}.` : 'No lock/burn proof confirmed.' },
+                  { label: 'LP Proof', ok: lpVerified, reason: lpVerified ? `LP ${lpStatus}.` : lpStatus === 'team_controlled' ? 'LP appears team-controlled.' : 'No lock/burn proof confirmed.' },
                   { label: 'Missing Checks', ok: missing2.length === 0, reason: missing2.length === 0 ? 'No open checks.' : `${missing2.length} open checks remain.` },
                 ]
                 const goodSignals = goodSigns.length >= 2 ? goodSigns : [...goodSigns, 'No additional positive signals confirmed this scan.']
@@ -2254,6 +2254,8 @@ export default function TerminalTokenScanner() {
                       ? 'No active liquidity pool detected — exit risk cannot be assessed.'
                       : (lpMode === 'protocol')
                         ? 'Protocol-managed concentrated liquidity detected. LP token model is not used.'
+                        : lpS === 'team_controlled'
+                          ? 'LP appears controlled by a normal wallet. Treat exit liquidity as team-controlled until lock/burn proof is found.'
                         : !lpVerifiedExit
                           ? 'Liquidity exists, but lock/burn proof is not confirmed. Treat exit liquidity as unprotected.'
                           : lpS === 'burned'
@@ -2267,7 +2269,7 @@ export default function TerminalTokenScanner() {
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '8px', marginBottom: '10px' }}>
                           {[
-                            ['LP Proof', lpMode === 'protocol' ? 'Not Applicable' : lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : 'Unverified'],
+                            ['LP Proof', lpMode === 'protocol' ? 'Not Applicable' : lpS === 'team_controlled' ? 'Team Controlled' : lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : 'Unverified'],
                             ['Liquidity Depth', liqDepth != null ? fmtLarge(liqDepth) : 'Unverified'],
                             ['Primary Pool', primaryPool ?? 'Unverified'],
                             ['Exit Risk', exitRisk],
@@ -2327,14 +2329,14 @@ export default function TerminalTokenScanner() {
                         ]
                       : (read?.couldNotVerify?.length ? read.couldNotVerify : ['Holder concentration unverified','Contract ownership unverified','LP lock or burn proof'])
                     const riskRead = read?.meaning??(lp.status==='protocol' || lp.status==='concentrated_liquidity'?'Protocol liquidity detected — requires protocol-specific verification.':lp.poolAddressPresent?'Liquidity exists, but LP lock/control could not be proven from current checks.':'No active liquidity pool found.')
-                    const nextAction = read?.nextAction??'Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.'
+                    const nextAction = read?.nextAction??(lp.status==='team_controlled'?'LP appears controlled by a normal wallet. Treat exit liquidity as team-controlled until lock/burn proof is found.':'Treat LP control as unverified until locker, burn-address, or protocol-specific proof is found.')
                     return (
                       <div style={{ marginBottom: '18px', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '12px', overflow: 'hidden', fontSize: '12px', background: 'linear-gradient(180deg,rgba(15,23,42,0.72),rgba(2,6,23,0.62))', backdropFilter: 'blur(5px)' }}>
                         <div style={{ padding:'11px 12px', borderBottom:'1px solid rgba(255,255,255,0.06)', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px' }}>
                           {[
                             ['Pool detected', lp.poolAddressPresent ? 'Yes' : 'No'],
                             ['Primary market selected', verificationPool !== 'Unverified' ? 'Yes' : 'No'],
-                            ['LP Proof', getLpMode(result) === 'protocol' ? 'Not Applicable' : lpIsVerified ? 'Verified' : 'Unverified'],
+                            ['LP Proof', getLpMode(result) === 'protocol' ? 'Not Applicable' : lpIsVerified ? 'Verified' : lp.status === 'team_controlled' ? 'Team Controlled' : 'Unverified'],
                             ['LP Token Model', getLpMode(result) === 'protocol' ? 'Not Used' : getLpMode(result) === 'unknown' ? 'Unknown' : 'Used'],
                             ['Next action', nextAction],
                           ].map(([k,v])=>(
@@ -2382,7 +2384,7 @@ export default function TerminalTokenScanner() {
                               </div>
                               <div style={{ padding:'8px 10px',border:'1px solid rgba(245,158,11,0.2)',borderRadius:'10px',background:'rgba(245,158,11,0.08)' }}>
                                 <div style={{ fontSize:'10px',color:'#fbbf24',letterSpacing:'0.08em',marginBottom:'4px',textTransform:'uppercase' }}>Open checks</div>
-                                <div style={{ fontSize:'11px',color:'#fde68a',marginBottom:'6px' }}>{lp.status==='protocol'||lp.status==='concentrated_liquidity'?'LP proof not applicable to this pool type.':'LP ownership could not be verified this scan.'}</div>
+                                <div style={{ fontSize:'11px',color:'#fde68a',marginBottom:'6px' }}>{lp.status==='protocol'||lp.status==='concentrated_liquidity'?'LP proof not applicable to this pool type.':lp.status==='team_controlled'?'LP ownership concentrated in normal wallet.':'LP ownership could not be verified this scan.'}</div>
                                 {unresolved.map((f,i)=><div key={i} style={{ color:'#f8fafc',display:'flex',gap:'6px' }}><span style={{ color:'#f59e0b' }}>✕</span>{f}</div>)}
                               </div>
                             </div>
