@@ -1699,6 +1699,11 @@ export default function TerminalTokenScanner() {
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
                 const lpProofLabel = lpMode === 'protocol' ? 'Not Applicable' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Team Controlled' : lpStatus === 'partial' ? 'Partial' : lpStatus === 'no_pool' ? 'No Pool' : lpStatus === 'unverified' ? 'Unverified' : lpMode === 'unknown' ? 'Unknown model' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
+                const degradedBadges = [
+                  result.lpControl?.status === 'unverified' ? 'Unverified LP' : null,
+                  result.holderDistributionStatus?.status === 'partial' ? 'Partial Holders' : null,
+                  result.marketStatus === 'unavailable' ? 'Market Data Unavailable' : null,
+                ].filter(Boolean) as string[]
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
                   { label: 'Liquidity', ok: (result.liquidity ?? 0) > 1000, reason: (result.liquidity ?? 0) > 1000 ? `${fmtLarge(result.liquidity)} depth detected.` : 'Liquidity too thin or missing.' },
@@ -1752,6 +1757,13 @@ export default function TerminalTokenScanner() {
                         </div>
                       ))}
                     </div>
+                    {degradedBadges.length > 0 && (
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '0 0 14px' }}>
+                        {degradedBadges.map((badge) => (
+                          <span key={badge} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', color: '#fbbf24', border: '1px solid rgba(251,191,36,.45)', borderRadius: '999px', padding: '4px 9px', background: 'rgba(146,64,14,.24)' }}>{badge}</span>
+                        ))}
+                      </div>
+                    )}
                     <div style={{ marginBottom:'20px', padding:'14px 16px', borderRadius:'12px', border:'1px solid rgba(125,211,252,0.18)', background:'rgba(8,14,28,0.65)' }}>
                       <p style={{ margin:'0 0 10px', fontSize:'10px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
                       <div style={{ display:'grid', gap:'7px' }}>
