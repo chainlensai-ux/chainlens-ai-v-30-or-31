@@ -278,25 +278,35 @@ function RawDataPanel({ data }: { data: ScanResult }) {
 
 export default function TokenScannerPage() {
   const [contract, setContract] = useState("");
+  const [chain, setChain] = useState<"base" | "eth">("base");
   const [data, setData] = useState<ScanResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>("Overview");
+  const [scanError, setScanError] = useState<string | null>(null);
 
   const [cortexVerdict, setCortexVerdict] = useState<CortexVerdict | null>(null);
   const [cortexLoading, setCortexLoading] = useState(false);
   const [cortexError, setCortexError] = useState<string | null>(null);
 
-  async function scanToken(contract: string) {
+  async function scanToken(contractValue: string, chainValue: "base" | "eth") {
     try {
-      const res = await fetch(`/api/scan-token?query=${encodeURIComponent(contract)}`, {
-        method: "GET",
+      const res = await fetch(`/api/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contract: contractValue, chain: chainValue }),
       });
-      if (!res.ok) return null;
       const json = await res.json();
-      return (json.ok ? json.data : null) as ScanResult | null;
+      if (process.env.NODE_ENV !== "production") console.log("[scanner] /api/token response", json);
+      if (!res.ok || json?.error) {
+        if (json?.status === "invalid_address") throw new Error(json.error ?? "Invalid address format.");
+        if (json?.status === "wrong_chain" || json?.status === "chain_mismatch") throw new Error(`Token not found on ${chainValue === "eth" ? "Ethereum" : "Base"}. Try switching chains.`);
+        if (json?.status === "no_pool_found" || json?.marketStatus === "no_pool_found") throw new Error(`No active liquidity pools found on ${chainValue === "eth" ? "Ethereum" : "Base"} for this token.`);
+        throw new Error(json?.error ?? "Scan failed");
+      }
+      return json as ScanResult;
     } catch (err) {
       console.error("Frontend scan error:", err);
-      return null;
+      throw err;
     }
   }
 
@@ -324,18 +334,27 @@ export default function TokenScannerPage() {
   }
 
   async function handleScan() {
-    if (!contract) return;
+    const trimmed = contract.trim();
+    if (!trimmed) {
+      setScanError("Please enter a token contract address before scanning.");
+      return;
+    }
     setLoading(true);
     setData(null);
     setCortexVerdict(null);
     setCortexError(null);
-    const result = await scanToken(contract);
-    setData(result);
+    setScanError(null);
+    try {
+      const result = await scanToken(trimmed, chain);
+      setData(result);
+      if (result) {
+        fetchCortexVerdict(result);
+      }
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : "Scan failed.");
+    }
     setActiveTab("Overview");
     setLoading(false);
-    if (result) {
-      fetchCortexVerdict(result);
-    }
   }
 
   const riskLevel = getRiskLevel(data);
@@ -360,6 +379,13 @@ export default function TokenScannerPage() {
 
         {/* Input + button */}
         <div className="mb-6 flex gap-4">
+          <div className="flex items-center gap-2">
+            {(["base", "eth"] as const).map((c) => (
+              <button key={c} type="button" onClick={() => setChain(c)} className={clsx("rounded-xl border px-3 py-2 text-xs", chain === c ? "border-cyan-300 text-cyan-300" : "border-white/10 text-neutral-400")}>
+                {c.toUpperCase()}
+              </button>
+            ))}
+          </div>
           <input
             type="text"
             placeholder="0x..."
@@ -380,6 +406,7 @@ export default function TokenScannerPage() {
             {loading ? "Scanning..." : "Scan Token"}
           </button>
         </div>
+        {scanError && <p className="mb-5 text-sm text-red-400">{scanError}</p>}
 
         {/* Tabs + Panels */}
         {data && (

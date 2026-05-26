@@ -1457,7 +1457,7 @@ export async function POST(req: Request) {
     if (rawChain !== 'base' && rawChain !== 'eth') {
       return NextResponse.json({ error: 'Unsupported chain. Use chain=base or chain=eth.' }, { status: 400 })
     }
-    const chain: ChainKey = rawChain as ChainKey
+    let chain: ChainKey = rawChain as ChainKey
     const forceDexFallback = debugMode === true && _forceDexFallback === true
     const originalInput = String(contractInput ?? '').trim()
     const normalizedInput = originalInput.toUpperCase()
@@ -1468,6 +1468,7 @@ export async function POST(req: Request) {
       original: originalInput,
       type: (isAddressInput ? 'address' : 'alias') as 'address' | 'alias' | 'live_search',
       resolvedAddress,
+      requestedChain: rawChain as ChainKey,
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
@@ -1497,6 +1498,20 @@ export async function POST(req: Request) {
       }, { status: 404 })
     }
     const contract = resolvedAddress
+    // Chain auto-detection for address inputs: if selected chain has no pools,
+    // try the opposite chain before continuing full scan.
+    if (isAddressInput) {
+      const selectedPools = await fetchGeckoTerminalPools(contract, chain)
+      const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
+      if (selectedCount === 0) {
+        const altChain: ChainKey = chain === 'eth' ? 'base' : 'eth'
+        const altPools = await fetchGeckoTerminalPools(contract, altChain)
+        const altCount = Array.isArray(altPools?.data) ? altPools.data.length : 0
+        if (altCount > 0) {
+          chain = altChain
+        }
+      }
+    }
 
     console.log("Incoming scan request:", contract);
 
@@ -2894,6 +2909,7 @@ export async function POST(req: Request) {
       holders: goldrush?.holders || null,
       holderDistribution,
       holderDistributionStatus,
+      holderStatus: holderDistributionStatus.status === 'ok' ? 'ok' : (holderDistributionStatus.status === 'partial' ? 'partial' : 'unavailable'),
       ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'unavailable',
@@ -3184,6 +3200,7 @@ export async function POST(req: Request) {
       // Contract analysis
       analysis,
       lpControl,
+      lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'unverified' : lpControl.status,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
