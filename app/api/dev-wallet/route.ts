@@ -670,6 +670,7 @@ async function getSupplyData(
   deployer: string | null,
   linkedWallets: LinkedWallet[],
   preloadedTopHolders?: Array<{ address?: string; percent?: number | null }>,
+  scannerDataProvided?: boolean,
 ): Promise<{
   holderDataAvailable: boolean
   supplyControlled: number | null
@@ -679,13 +680,16 @@ async function getSupplyData(
 }> {
   const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
 
-  if (preloadedTopHolders && preloadedTopHolders.length > 0) {
+  // When scanner explicitly provided holder data (even an empty array), use it directly
+  // and skip the GoldRush API fallback to avoid redundant calls that also fail without a key.
+  if (scannerDataProvided || (preloadedTopHolders && preloadedTopHolders.length > 0)) {
+    const holders = preloadedTopHolders ?? []
     if (!deployer && linkedSet.size === 0) {
-      return { holderDataAvailable: true, supplyControlled: null, matchedHolderWallets: [], holderStats: { top1: null, top10: null, top20: null, holderCount: preloadedTopHolders.length, creatorInTopHolders: false, linkedWalletSupply: null, devClusterSupply: null } }
+      return { holderDataAvailable: holders.length > 0, supplyControlled: null, matchedHolderWallets: [], holderStats: { top1: null, top10: null, top20: null, holderCount: holders.length, creatorInTopHolders: false, linkedWalletSupply: null, devClusterSupply: null } }
     }
     const matched: MatchedHolder[] = []
     let controlled = 0
-    for (const h of preloadedTopHolders) {
+    for (const h of holders) {
       const addr = (h.address ?? '').toLowerCase()
       if (!addr) continue
       const isDeployer = deployer ? addr === deployer.toLowerCase() : false
@@ -695,14 +699,14 @@ async function getSupplyData(
       controlled += pct
       matched.push({ address: addr, supplyPct: pct, isDeployer, isLinked })
     }
-    const top = preloadedTopHolders.map(h => (typeof h.percent === 'number' ? h.percent : 0))
+    const top = holders.map(h => (typeof h.percent === 'number' ? h.percent : 0))
     return {
-      holderDataAvailable: true,
-      supplyControlled: Math.round(controlled * 100) / 100,
+      holderDataAvailable: holders.length > 0,
+      supplyControlled: matched.length > 0 ? Math.round(controlled * 100) / 100 : null,
       matchedHolderWallets: matched.sort((a, b) => b.supplyPct - a.supplyPct),
       holderStats: {
         top1: top[0] ?? null, top10: top.slice(0, 10).reduce((a, b) => a + b, 0) || null, top20: top.slice(0, 20).reduce((a, b) => a + b, 0) || null,
-        holderCount: preloadedTopHolders.length, creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: Math.round(controlled * 100) / 100,
+        holderCount: holders.length, creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: matched.length > 0 ? Math.round(controlled * 100) / 100 : null,
       },
     }
   }
@@ -1435,7 +1439,7 @@ interface TokenEvidenceResult {
   reason: string
 }
 
-async function fetchTokenEvidence(origin: string, contractAddress: string, authHeader?: string): Promise<TokenEvidenceResult> {
+async function fetchTokenEvidence(origin: string, contractAddress: string, chain: string, authHeader?: string): Promise<TokenEvidenceResult> {
   const result: TokenEvidenceResult = { data: null, attempted: true, ok: false, httpStatus: null, reason: '' }
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', 'x-user-plan': 'pro' }
@@ -1443,7 +1447,7 @@ async function fetchTokenEvidence(origin: string, contractAddress: string, authH
     const res = await fetch(`${origin}/api/token`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ contract: contractAddress }),
+      body: JSON.stringify({ contract: contractAddress, chain }),
       cache: 'no-store',
       signal: AbortSignal.timeout(14000),
     })
@@ -1546,7 +1550,7 @@ export async function POST(req: Request) {
     const origin = new URL(req.url).origin
     const reqAuthHeader = req.headers.get('authorization') ?? undefined
     const debugMode = debug
-    const tokenEvidenceResult = await fetchTokenEvidence(origin, normalizedAddress, reqAuthHeader)
+    const tokenEvidenceResult = await fetchTokenEvidence(origin, normalizedAddress, activeChainConfig.chain, reqAuthHeader)
     const tokenEvidence = tokenEvidenceResult.data
 
     const sections = (tokenEvidence?.sections as Record<string, unknown> | undefined) ?? {}
@@ -1562,10 +1566,12 @@ export async function POST(req: Request) {
     const holderStatusRaw = (tokenEvidence?.holderDistributionStatus as Record<string, unknown> | null | undefined) ?? null
     const tokenHolderStatus = typeof holderStatusRaw?.status === 'string' ? holderStatusRaw.status : null
     const tokenHolderReason = typeof holderStatusRaw?.reason === 'string' ? holderStatusRaw.reason : null
+    const usableHolders = tokenHolderStatus === 'ok' || tokenHolderStatus === 'partial'
     const liqEv = (sections.liquidity as Record<string, unknown> | undefined) ?? {}
     const secEv = (sections.security as Record<string, unknown> | undefined) ?? {}
     const liquidityDataAvailable = typeof liqEv.liquidityDepth === 'number' || typeof tokenEvidence?.liquidityUsd === 'number'
-    const holderDataFromToken = holderDistributionRaw != null
+    // holderDataFromToken is true whenever scanner returned usable holder status (ok|partial)
+    const holderDataFromToken = usableHolders
     const securityDataAvailable = typeof secEv.honeypot === 'boolean' || secEv.status === 'ok' || secEv.status === 'partial' || Object.keys(secEv).length > 0
     if (!tokenEvidence) warnings.push('Market and security context limited in this release view.')
 
@@ -1610,8 +1616,10 @@ export async function POST(req: Request) {
       linkedWalletsDiag = lwResult.diag
     }
 
+    // Pass scannerDataProvided=true when the scanner returned usable holder status so
+    // getSupplyData skips the redundant GoldRush API call (which also fails without a key).
     const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets, holderStats, diag: holderDiag } =
-      await getSupplyData(normalizedAddress, deployerAddress, linkedWallets, holderDistributionRaw?.topHolders)
+      await getSupplyData(normalizedAddress, deployerAddress, linkedWallets, holderDistributionRaw?.topHolders, usableHolders)
     const holderDataAvailable = holderDataFromToken || holderDataFromCovalent
     if (!holderDataAvailable) {
       warnings.push('Holder distribution needs deeper confirmation.')
@@ -1640,8 +1648,11 @@ export async function POST(req: Request) {
     if (activityWarning) warnings.push(activityWarning)
 
     const meta = await fetchTokenMetadata(normalizedAddress, tokenEvidence)
-    const tokenName = meta.name
-    const tokenSymbol = meta.symbol
+    // Prefer scanner top-level name/symbol fields (set by our hardened rpcTokenString + fallback chain)
+    const scannerName = typeof tokenEvidence?.name === 'string' && tokenEvidence.name.trim() && tokenEvidence.name !== 'Unknown' ? tokenEvidence.name.trim() : null
+    const scannerSymbol = typeof tokenEvidence?.symbol === 'string' && tokenEvidence.symbol.trim() && tokenEvidence.symbol !== '?' ? tokenEvidence.symbol.trim() : null
+    const tokenName = scannerName ?? meta.name
+    const tokenSymbol = scannerSymbol ?? meta.symbol
     const tokenNameResolved = Boolean(tokenName && tokenName.trim().length > 0)
     const tokenSymbolResolved = Boolean(tokenSymbol && tokenSymbol.trim().length > 0)
     const tokenScannerMetadataUsed = Boolean(
