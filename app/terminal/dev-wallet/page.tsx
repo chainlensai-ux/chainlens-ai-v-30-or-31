@@ -61,6 +61,8 @@ interface DevWalletResult {
   linkedWallets: LinkedWallet[]
   holderDistribution?: { top1?: number | null; top10?: number | null; top20?: number | null; holderCount?: number | null; topHolders?: Array<{ address?: string; percent?: number | null }> } | null
   holderDistributionStatus?: string | null
+  holderPercentAvailable?: boolean
+  holderPercentSource?: string | null
   topHolders?: Array<{ address?: string; percent?: number | null }>
   top1?: number | null
   top10?: number | null
@@ -837,6 +839,8 @@ export default function DevWalletPage() {
 
                   const openCheck = <span style={{ color:'#94a3b8' }}>Open check — holder data unavailable after scan.</span>
                   const partialLabel = 'Partial — holder rows found, supply % unavailable.'
+                  const isEstimatedPartial = result.holderPercentSource === 'summed_returned_rows'
+                  const fmtPct = (v: number) => `${v.toFixed(2)}%${isEstimatedPartial ? ' (Partial estimate)' : ''}`
                   const supplyBarPct = devClusterSupply != null ? Math.min(devClusterSupply, 100) : null
                   const supplyBarColor = supplyBarPct != null ? (supplyBarPct > 50 ? '#f87171' : supplyBarPct > 20 ? '#fbbf24' : '#34d399') : '#3a5268'
 
@@ -866,9 +870,9 @@ export default function DevWalletPage() {
                               ? <span style={{ color:'#f87171' }}>Confirmed — creator appears in top holders.</span>
                               : <span style={{ color:'#34d399' }}>Not detected</span>
                         } />
-                        <DataRow label="Top 1 concentration"  value={!usableHolders ? openCheck : top1  != null ? `${top1.toFixed(2)}%`  : partialLabel} valueStyle={{ color: top1 != null && top1 > 15 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Top 10 concentration" value={!usableHolders ? openCheck : top10 != null ? `${top10.toFixed(2)}%` : partialLabel} valueStyle={{ color: top10 != null && top10 > 50 ? '#f87171' : top10 != null && top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
-                        <DataRow label="Top 20 concentration" value={!usableHolders ? openCheck : top20 != null ? `${top20.toFixed(2)}%` : partialLabel} valueStyle={{ color: top20 != null && top20 > 70 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 1 concentration"  value={!usableHolders ? openCheck : top1  != null ? fmtPct(top1)  : partialLabel} valueStyle={{ color: top1 != null && top1 > 15 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 10 concentration" value={!usableHolders ? openCheck : top10 != null ? fmtPct(top10) : partialLabel} valueStyle={{ color: top10 != null && top10 > 50 ? '#f87171' : top10 != null && top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
+                        <DataRow label="Top 20 concentration" value={!usableHolders ? openCheck : top20 != null ? fmtPct(top20) : partialLabel} valueStyle={{ color: top20 != null && top20 > 70 ? '#f87171' : '#e2e8f0' }} />
                         <DataRow label="Linked-wallet supply" value={!usableHolders ? openCheck : linkedSupply != null && linkedSupply > 0 ? `${linkedSupply.toFixed(1)}%` : 'Needs holder confirmation.'} valueStyle={{ color: linkedSupply != null && linkedSupply > 20 ? '#f87171' : '#e2e8f0' }} />
                         <DataRow label="Dev cluster supply"   value={!usableHolders ? openCheck : devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : 'Needs holder confirmation.'} />
 
