@@ -394,7 +394,7 @@ function humanizeReasonCode(reason?: string): string {
     no_active_liquidity_pool_found:                   'No active liquidity pool was found.',
     partial_market_fields_from_provider:              'Some market fields unavailable.',
     partial_market_data:                              'Some market fields unavailable.',
-    holder_data_unavailable:                          'Holder data unavailable for this scan.',
+    holder_data_unavailable:                          'Holder data partial — limited data available.',
   }
   if (map[reason]) return map[reason]
   if (/^[a-z0-9_]+$/.test(reason)) return reason.replace(/_/g, ' ')
@@ -446,9 +446,10 @@ function holderSafeReason(
   hasRows: boolean
 ): string {
   if (hasRows) return 'Holder data available.'
-  if (providerStatus === 'unavailable') return 'Holder data unavailable for this scan.'
+  if (providerStatus === 'unavailable') return 'Holder data partial — API key required for full detail.'
+  if (providerStatus === 'partial') return 'Holder data partial — limited data available.'
   if (providerStatus === 'error') return 'Holder data returned no usable rows.'
-  if (providerStatus === 'empty') return 'Holder data unavailable for this token.'
+  if (providerStatus === 'empty') return 'Holder data partial — no rows returned.'
   return 'Holder concentration currently unverified.'
 }
 

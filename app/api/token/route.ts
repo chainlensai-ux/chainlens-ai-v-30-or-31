@@ -25,18 +25,16 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
     if (key) return `https://base-mainnet.g.alchemy.com/v2/${key}`
     return "https://mainnet.base.org"
   }
-  const keyMap: Record<Exclude<ChainKey, "base">, string | undefined> = {
-    eth: process.env.ALCHEMY_ETHEREUM_KEY,
+  const keyMap: Record<Exclude<ChainKey, "base" | "eth">, string | undefined> = {
     polygon: process.env.ALCHEMY_POLYGON_KEY,
     bnb: process.env.ALCHEMY_BNB_KEY,
   }
-  const domainMap: Record<Exclude<ChainKey, "base">, string> = {
-    eth: "eth-mainnet",
+  const domainMap: Record<Exclude<ChainKey, "base" | "eth">, string> = {
     polygon: "polygon-mainnet",
     bnb: "bnb-mainnet",
   }
-  const key = keyMap[chain as Exclude<ChainKey, "base">]
-  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base">]}.g.alchemy.com/v2/${key}` : null
+  const key = keyMap[chain as Exclude<ChainKey, "base" | "eth">]
+  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base" | "eth">]}.g.alchemy.com/v2/${key}` : null
 }
 async function checkRpcHealth(chain: ChainKey): Promise<{ ok: boolean; providerUrl: string | null; reason: string | null }> {
   const providerUrl = getAlchemyRpcUrl(chain)
@@ -226,9 +224,22 @@ async function rpcTokenString(chain: ChainKey, contract: string, selector: strin
   try {
     const body = hex.startsWith('0x') ? hex.slice(2) : hex
     if (body.length >= 128) {
+      // ABI-encoded dynamic string: offset(32) + length(32) + data
+      const strLen = parseInt(body.slice(64, 128), 16)
+      if (strLen > 0 && strLen <= 256) {
+        const strHex = body.slice(128, 128 + strLen * 2)
+        const text = Buffer.from(strHex, 'hex').toString('utf8').replace(/\u0000/g, '').trim()
+        if (text) return text
+      }
+      // Fallback: trim trailing nulls from blob
       const strHex = body.slice(128).replace(/00+$/, '')
       const text = Buffer.from(strHex, 'hex').toString('utf8').replace(/\u0000/g, '').trim()
-      return text || null
+      if (text) return text
+    }
+    if (body.length === 64) {
+      // bytes32-encoded name (MKR-style): fixed 32-byte value, trim null bytes
+      const text = Buffer.from(body, 'hex').toString('utf8').replace(/\u0000/g, '').trim()
+      if (text) return text
     }
   } catch {}
   return null
@@ -2237,8 +2248,9 @@ export async function POST(req: Request) {
           ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource }
           : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource })
       : {
-          status: (holdersRaw?.__status === 'error' ? 'error' : (holdersRaw?.__status === 'unavailable' ? 'unavailable' : 'empty')) ,
-          reason: (holdersRaw?.__reason ?? 'no_rows'),
+          // Map unavailable/empty → partial so the UI always shows holder section
+          status: (holdersRaw?.__status === 'error' ? 'error' : 'partial'),
+          reason: (holdersRaw?.__reason ?? (holdersRaw?.__status === 'unavailable' ? 'api_key_missing' : 'no_rows')),
           itemCount: holderItems.length,
           normalizedCount: 0,
           percentSource,
@@ -2807,10 +2819,22 @@ export async function POST(req: Request) {
     // Guard: both values must be raw integer strings (no decimal point, no scientific notation).
     // Prefer RPC totalSupply; fall back to provider-supplied total_supply when RPC is unavailable (e.g. ETH without Alchemy key).
     const _holderProviderSupply = holderItems.find((h: any) => h?.total_supply != null)?.total_supply
+    // Compute sum of raw balances as last-resort supply estimate when both RPC and provider supply are unavailable
+    let _summedBalanceSupply: string | null = null
+    if (!rpcSupply && _holderProviderSupply == null && rawBalanceByAddress.size > 0) {
+      try {
+        let sum = BigInt(0)
+        for (const bal of rawBalanceByAddress.values()) {
+          const s = String(bal)
+          if (s && !s.includes('.') && !/[eE]/.test(s)) sum += BigInt(s)
+        }
+        if (sum > BigInt(0)) _summedBalanceSupply = '0x' + sum.toString(16)
+      } catch { /* ignore */ }
+    }
     const _derivationSupply: string | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0')
       ? rpcSupply
-      : (_holderProviderSupply != null ? String(_holderProviderSupply) : null)
-    const _derivationSupplySource: 'rpc' | 'provider' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_derivationSupply ? 'provider' : null)
+      : (_holderProviderSupply != null ? String(_holderProviderSupply) : _summedBalanceSupply)
+    const _derivationSupplySource: 'rpc' | 'provider' | 'summed' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_holderProviderSupply != null ? 'provider' : (_summedBalanceSupply ? 'summed' : null))
     if (!hasPct && normalizedTop.length > 0 && _derivationSupply != null) {
       holderDerivationAttempted = true
       let derivedCount = 0
@@ -2842,6 +2866,8 @@ export async function POST(req: Request) {
           status: 'ok',
           reason: _derivationSupplySource === 'provider'
             ? 'holder_percentages_derived_from_provider_supply'
+            : _derivationSupplySource === 'summed'
+            ? 'holder_percentages_derived_from_summed_balances'
             : 'holder_percentages_derived_from_rpc_supply',
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
