@@ -1486,13 +1486,14 @@ export async function POST(req: Request) {
       },
       ...(debug ? {
         _debug: {
+          hasBearer: planRes.hasBearer,
+          userPresent: planRes.userPresent,
+          settingsRowFound: planRes.settingsRowFound,
           rawPlan: planRes.rawPlan,
           effectivePlan: planRes.effectivePlan,
           trialActive: planRes.trialActive,
           trialEndsAt: planRes.trialEndsAt,
-          isProOrElite: planRes.isProOrElite,
           gateDecision: planRes.gateDecision,
-          authSource: planRes.authSource,
         },
       } : {}),
     }, { status: 403 })
@@ -1851,6 +1852,9 @@ export async function POST(req: Request) {
     }
     if (debug) {
       ;(responsePayload as any)._debug = {
+        hasBearer: planRes.hasBearer,
+        userPresent: planRes.userPresent,
+        settingsRowFound: planRes.settingsRowFound,
         routeName: '/api/dev-wallet',
         cacheHit: false,
         alchemyConfigured: Boolean(activeChainConfig.rpcUrl),
@@ -1865,9 +1869,7 @@ export async function POST(req: Request) {
         effectivePlan: planRes.effectivePlan,
         trialActive: planRes.trialActive,
         trialEndsAt: planRes.trialEndsAt,
-        isProOrElite: planRes.isProOrElite,
         gateDecision: planRes.gateDecision,
-        authSource: planRes.authSource,
       }
     }
     devCache.set(cacheKey, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })

@@ -350,6 +350,7 @@ export default function DevWalletPage() {
       const res = await fetch('/api/dev-wallet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        credentials: 'include',
         body: JSON.stringify({ contractAddress: q, chain }),
       })
       const json = await res.json() as DevWalletResult & { error?: string }
