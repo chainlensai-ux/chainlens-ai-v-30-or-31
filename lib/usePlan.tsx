@@ -39,7 +39,7 @@ export function writeCachedPlan(nextPlan: UserPlan, userId?: string | null, emai
 export function clearPlanCache() { try { window.localStorage.removeItem(PLAN_CACHE_KEY) } catch {} }
 
 function resolvePlan(json: Record<string, unknown>): UserPlan {
-  const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
+  const p = json?.effectivePlan ?? json?.plan ?? (json?.settings as Record<string, unknown>)?.plan
   return p === 'pro' || p === 'elite' ? p : 'free'
 }
 

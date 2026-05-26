@@ -78,7 +78,7 @@ interface DevWalletResult {
   verdict?: VerdictLabel
   confidence?: string
   reasons?: string[]
-  tokenEvidence?: { name?: string | null; symbol?: string | null; price?: number | null; volume24h?: number | null; liquidity?: number | null; holderCount?: number | null; top1?: number | null; top10?: number | null; top20?: number | null } | null
+  tokenEvidence?: { name?: string | null; symbol?: string | null; price?: number | null; volume24h?: number | null; liquidity?: number | null; holderCount?: number | null; top1?: number | null; top10?: number | null; top20?: number | null; linkedWalletSupply?: number | null; devClusterSupply?: number | null } | null
   fetchedAt: string
 }
 
@@ -316,7 +316,7 @@ function WarningBanner({ warnings, deployerStatus }: { warnings: string[]; deplo
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function DevWalletPage() {
-  const { plan, loading: planLoading } = usePlanWithLoading()
+  const { plan, loading: planLoading, elitePass } = usePlanWithLoading()
   const [input,        setInput]        = useState('')
   const [loading,      setLoading]      = useState(false)
   const [result,       setResult]       = useState<DevWalletResult | null>(null)
@@ -350,6 +350,7 @@ export default function DevWalletPage() {
       const res = await fetch('/api/dev-wallet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        credentials: 'include',
         body: JSON.stringify({ contractAddress: q, chain }),
       })
       const json = await res.json() as DevWalletResult & { error?: string }
@@ -387,7 +388,8 @@ export default function DevWalletPage() {
       </div>
     )
   }
-  if (!canAccessFeature(plan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
+  const effectivePlan = elitePass.active ? 'elite' : plan
+  if (!canAccessFeature(effectivePlan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
 
   return (
     <>
@@ -486,14 +488,18 @@ export default function DevWalletPage() {
           {result && (() => {
             const dc = calculateDevControl(result)
             const rugCount = result.previousProjects.filter(p => p.rugFlag === true).length
+            const resolvedTokenName = result.tokenEvidence?.name?.trim() || null
+            const resolvedTokenSymbol = result.tokenEvidence?.symbol?.trim() || null
+            const tokenTitle = resolvedTokenName ?? shortAddr(result.contractAddress, 8, 6)
+            const hasTokenTitleFallback = !resolvedTokenName && !resolvedTokenSymbol
 
             return (
               <div>
                 {/* Token identity strip */}
                 <div style={{ marginBottom:'18px' }}>
                   <h2 style={{ fontSize:'19px', fontWeight:700, color:'#f8fafc', margin:'0 0 3px' }}>
-                    {result.tokenEvidence?.name ?? 'Unknown'}
-                    {result.tokenEvidence?.symbol && <span style={{ marginLeft:'10px', fontSize:'13px', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>{result.tokenEvidence.symbol}</span>}
+                    {tokenTitle}
+                    {resolvedTokenSymbol && <span style={{ marginLeft:'10px', fontSize:'13px', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>{resolvedTokenSymbol}</span>}
                   </h2>
                   <p style={{ fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', margin:0 }}>
                     {shortAddr(result.contractAddress, 10, 8)} · {result.chain === 'eth' ? 'ETH' : 'BASE'}
@@ -501,6 +507,11 @@ export default function DevWalletPage() {
                     {result.tokenEvidence?.volume24h != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Vol 24h {fmtUsd(result.tokenEvidence.volume24h)}</span>}
                     {result.tokenEvidence?.holderCount != null && <span style={{ marginLeft:'12px', color:'#475569' }}>{result.tokenEvidence.holderCount.toLocaleString()} holders</span>}
                   </p>
+                  {hasTokenTitleFallback && (
+                    <p style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)', margin:'4px 0 0' }}>
+                      Name unavailable from Token Scanner + metadata checks.
+                    </p>
+                  )}
                 </div>
 
                 {/* ── CORTEX Dev Control Hero ──────────────────────────────── */}
@@ -790,8 +801,15 @@ export default function DevWalletPage() {
                 {/* ── SUPPLY CONTROL ──────────────────────────────────────── */}
                 {activeTab === 'supply' && (() => {
                   const te = result.tokenEvidence
+                  const holderRowsCount = te?.holderCount ?? 0
+                  const hasHolderRows = holderRowsCount > 0
+                  const linkedSupply = te?.linkedWalletSupply ?? null
+                  const devClusterSupply = te?.devClusterSupply ?? result.supplyControlled ?? null
+                  const percentUnavailableLabel = hasHolderRows ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable after scan.'
                   const topHolderNote: string | null =
-                    result.supplyControlStatus === 'not_in_top_holders'
+                    result.deployerAddress && !hasHolderRows
+                      ? 'Origin wallet was likely found, but holder distribution could not confirm supply control.'
+                      : result.supplyControlStatus === 'not_in_top_holders'
                       ? 'Creator wallet is not in the top-holder set. Supply concentration remains an open risk check since linked wallets are not fully verified.'
                       : result.supplyControlStatus === 'needs_confirmed_creator'
                         ? 'Creator-linked supply control cannot be confirmed — no verified creator address available.'
@@ -809,19 +827,19 @@ export default function DevWalletPage() {
                       <GlassCard style={{ marginBottom:'14px' }}>
                         <p style={{ margin:'0 0 12px', fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#34d399', fontFamily:'var(--font-plex-mono)' }}>SUPPLY CONTROL SURFACE</p>
                         <DataRow label="Creator in top holders" value={
-                          result.supplyControlStatus === 'not_in_top_holders'
-                            ? <span style={{ color:'#34d399' }}>Not detected ✓</span>
-                            : result.supplyControlStatus === 'needs_confirmed_creator'
-                              ? <span style={{ color:'#94a3b8' }}>Unverified — no confirmed creator</span>
-                              : result.matchedHolderWallets.some(h => h.isDeployer)
-                                ? <span style={{ color:'#f87171' }}>Yes — deployer in top holders</span>
-                                : <span style={{ color:'#94a3b8' }}>Unverified</span>
+                          !hasHolderRows
+                            ? <span style={{ color:'#94a3b8' }}>Open check — holder data unavailable after scan.</span>
+                            : !result.deployerAddress
+                            ? <span style={{ color:'#94a3b8' }}>Open check — creator not confirmed from current checks.</span>
+                            : result.matchedHolderWallets.some(h => h.isDeployer)
+                              ? <span style={{ color:'#f87171' }}>Confirmed — creator appears in top holders.</span>
+                              : <span style={{ color:'#34d399' }}>Not detected</span>
                         } />
-                        <DataRow label="Top 1 concentration"  value={te?.top1  != null ? `${te.top1.toFixed(2)}%`  : '—'} valueStyle={{ color: te?.top1 != null && te.top1 > 15 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Top 10 concentration" value={te?.top10 != null ? `${te.top10.toFixed(2)}%` : '—'} valueStyle={{ color: te?.top10 != null && te.top10 > 50 ? '#f87171' : te?.top10 != null && te.top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
-                        <DataRow label="Top 20 concentration" value={te?.top20 != null ? `${te.top20.toFixed(2)}%` : '—'} valueStyle={{ color: te?.top20 != null && te.top20 > 70 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Linked-wallet supply" value={result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}%` : 'Unverified'} valueStyle={{ color: result.supplyControlled != null && result.supplyControlled > 20 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Dev cluster supply"   value={result.holderDataAvailable ? (result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}% (linked wallets)` : 'Data available — no cluster match') : 'Unverified'} />
+                        <DataRow label="Top 1 concentration"  value={te?.top1  != null ? `${te.top1.toFixed(2)}%`  : percentUnavailableLabel} valueStyle={{ color: te?.top1 != null && te.top1 > 15 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 10 concentration" value={te?.top10 != null ? `${te.top10.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: te?.top10 != null && te.top10 > 50 ? '#f87171' : te?.top10 != null && te.top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
+                        <DataRow label="Top 20 concentration" value={te?.top20 != null ? `${te.top20.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: te?.top20 != null && te.top20 > 70 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Linked-wallet supply" value={linkedSupply != null ? `${linkedSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} valueStyle={{ color: linkedSupply != null && linkedSupply > 20 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Dev cluster supply"   value={devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} />
 
                         {supplyBarPct != null && (
                           <div style={{ marginTop:'14px' }}>

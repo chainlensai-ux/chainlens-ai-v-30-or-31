@@ -81,6 +81,13 @@ const INFRA_EXCLUSIONS = new Set([
 ])
 
 interface PlanResolution {
+  rawPlan: 'free' | 'pro' | 'elite'
+  effectivePlan: 'free' | 'pro' | 'elite'
+  trialActive: boolean
+  trialEndsAt: string | null
+  isProOrElite: boolean
+  gateDecision: 'allow' | 'deny'
+  authSource: 'bearer' | 'none'
   plan: 'free' | 'pro' | 'elite'
   hasBearer: boolean
   userPresent: boolean
@@ -91,13 +98,32 @@ interface PlanResolution {
 async function resolveServerPlan(req: Request): Promise<PlanResolution> {
   const auth = req.headers.get('authorization') ?? ''
   const hasBearer = auth.toLowerCase().startsWith('bearer ') && auth.slice(7).trim().length > 0
-  if (!hasBearer) return { plan: 'free', hasBearer: false, userPresent: false, settingsRowFound: false, planSource: 'fallback' }
+  if (!hasBearer) return {
+    rawPlan: 'free',
+    effectivePlan: 'free',
+    trialActive: false,
+    trialEndsAt: null,
+    isProOrElite: false,
+    gateDecision: 'deny',
+    authSource: 'none',
+    plan: 'free',
+    hasBearer: false,
+    userPresent: false,
+    settingsRowFound: false,
+    planSource: 'fallback',
+  }
   const token = auth.slice(7).trim()
   try {
-    const startedAt = Date.now()
-    const debug = new URL(req.url).searchParams.get('debug') === 'true'
     const result = await getCurrentUserPlanFromBearerToken(token)
+    const isProOrElite = result.plan === 'pro' || result.plan === 'elite'
     return {
+      rawPlan: result.rawPlan,
+      effectivePlan: result.plan,
+      trialActive: result.trialActive,
+      trialEndsAt: result.trialEndsAt,
+      isProOrElite,
+      gateDecision: isProOrElite ? 'allow' : 'deny',
+      authSource: 'bearer',
       plan: result.plan,
       hasBearer: true,
       userPresent: result.userId !== null,
@@ -105,7 +131,20 @@ async function resolveServerPlan(req: Request): Promise<PlanResolution> {
       planSource: result.settingsRowFound ? 'user_settings' : 'fallback',
     }
   } catch {
-    return { plan: 'free', hasBearer: true, userPresent: false, settingsRowFound: false, planSource: 'fallback' }
+    return {
+      rawPlan: 'free',
+      effectivePlan: 'free',
+      trialActive: false,
+      trialEndsAt: null,
+      isProOrElite: false,
+      gateDecision: 'deny',
+      authSource: 'bearer',
+      plan: 'free',
+      hasBearer: true,
+      userPresent: false,
+      settingsRowFound: false,
+      planSource: 'fallback',
+    }
   }
 }
 
@@ -261,10 +300,57 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
   const key = `${activeChainConfig.chain}:${contract}`
   const cached = metaCache.get(key)
   if (cached && cached.exp > Date.now()) return { ...cached.data, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(cached.data.name), symbolFound: Boolean(cached.data.symbol), source: 'cache', cacheHit: true, reason: 'ok' } }
-  let name = typeof marketData?.name === 'string' ? marketData.name : null
-  let symbol = typeof marketData?.symbol === 'string' ? marketData.symbol : null
+  const sectionMeta = (marketData?.sections as Record<string, unknown> | undefined)?.metadata as Record<string, unknown> | undefined
+  let name =
+    (typeof marketData?.name === 'string' ? marketData.name : null) ??
+    (typeof sectionMeta?.name === 'string' ? sectionMeta.name : null)
+  let symbol =
+    (typeof marketData?.symbol === 'string' ? marketData.symbol : null) ??
+    (typeof sectionMeta?.symbol === 'string' ? sectionMeta.symbol : null)
   let decimals: number | null = null
+  const providersCalled: string[] = []
+  const providersFailed: string[] = []
   let source = name || symbol ? 'token_api' : 'rpc'
+  if (name || symbol) providersCalled.push('token_api')
+  if (activeChainConfig.chain === 'base') {
+    providersCalled.push('dexscreener')
+    try {
+      const res = await fetch(`https://api.dexscreener.com/token-pairs/v1/base/${contract}`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+      if (res.ok) {
+        const json = await res.json() as Array<Record<string, unknown>>
+        const pair = Array.isArray(json) ? json.find((p) => {
+          const bt = (p.baseToken as Record<string, unknown> | undefined)?.address
+          const qt = (p.quoteToken as Record<string, unknown> | undefined)?.address
+          const c = contract.toLowerCase()
+          return String(bt ?? '').toLowerCase() === c || String(qt ?? '').toLowerCase() === c
+        }) : null
+        const bt = pair?.baseToken as Record<string, unknown> | undefined
+        if (!name && typeof bt?.name === 'string' && bt.name.trim()) name = bt.name.trim()
+        if (!symbol && typeof bt?.symbol === 'string' && bt.symbol.trim()) symbol = bt.symbol.trim()
+        if ((name || symbol) && source === 'rpc') source = 'dexscreener'
+      } else providersFailed.push(`dexscreener_http_${res.status}`)
+    } catch {
+      providersFailed.push('dexscreener_error')
+    }
+    if (!name || !symbol) {
+      providersCalled.push('basescan')
+      const scanKey = process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY
+      if (scanKey) {
+        try {
+          const scanRes = await fetch(`https://api.basescan.org/api?module=token&action=tokeninfo&contractaddress=${contract}&apikey=${scanKey}`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+          if (scanRes.ok) {
+            const scanJson = await scanRes.json() as { result?: Array<Record<string, unknown>> }
+            const t = scanJson?.result?.[0]
+            if (!name && typeof t?.tokenName === 'string' && t.tokenName.trim()) name = t.tokenName.trim()
+            if (!symbol && typeof t?.symbol === 'string' && t.symbol.trim()) symbol = t.symbol.trim()
+            if ((name || symbol) && source === 'rpc') source = 'basescan'
+          } else providersFailed.push(`basescan_http_${scanRes.status}`)
+        } catch {
+          providersFailed.push('basescan_error')
+        }
+      } else providersFailed.push('basescan_missing_key')
+    }
+  }
   try {
     const [n, s, d] = await Promise.all([
       alchemyRpc('eth_call', [{ to: contract, data: '0x06fdde03' }, 'latest']) as Promise<string>,
@@ -275,10 +361,31 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
     symbol = symbol ?? decodeHexStringResult(s)
     if (d && d !== '0x') decimals = parseInt(d, 16)
   } catch {}
-  if (!name) name = `${contract.slice(0, 6)}…${contract.slice(-4)}`
+  if (!name || !symbol) {
+    providersCalled.push('goldrush_metadata')
+    const grKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
+    if (grKey) {
+      try {
+        const grRes = await fetch(`https://api.covalenthq.com/v1/${activeChainConfig.covalentChain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`, {
+          headers: { Authorization: `Bearer ${grKey}` },
+          cache: 'no-store',
+          signal: AbortSignal.timeout(6000),
+        })
+        if (grRes.ok) {
+          const grJson = await grRes.json() as { data?: { items?: Array<Record<string, unknown>> } }
+          const first = grJson?.data?.items?.[0]
+          if (!name && typeof first?.contract_name === 'string' && first.contract_name.trim()) name = first.contract_name.trim()
+          if (!symbol && typeof first?.contract_ticker_symbol === 'string' && first.contract_ticker_symbol.trim()) symbol = first.contract_ticker_symbol.trim()
+          if ((name || symbol) && source === 'rpc') source = 'goldrush'
+        } else providersFailed.push(`goldrush_http_${grRes.status}`)
+      } catch {
+        providersFailed.push('goldrush_error')
+      }
+    } else providersFailed.push('goldrush_missing_key')
+  }
   const out = { name, symbol, decimals }
   metaCache.set(key, { exp: Date.now() + META_CACHE_TTL_MS, data: out })
-  return { ...out, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(name), symbolFound: Boolean(symbol), source, cacheHit: false, reason: 'ok' } }
+  return { ...out, diag: { chain: activeChainConfig.chain, attempted: true, nameFound: Boolean(name), symbolFound: Boolean(symbol), source, cacheHit: false, reason: 'ok', metadataSource: source, providersCalled, providersFailed, finalResolvedName: name, finalResolvedSymbol: symbol } }
 }
 
 async function getAssetTransfers(params: Record<string, unknown>): Promise<AlchemyTransfer[]> {
@@ -600,17 +707,17 @@ async function getSupplyData(
     }
   }
 
-  const apiKey = process.env.COVALENT_API_KEY
+  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
   if (!apiKey) {
-    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: false, hasApiKey: false, reason: 'missing_api_key' } }
+    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: false, hasApiKey: false, holderRowsCount: 0, percentAvailable: false, creatorRowFound: false, linkedWalletComputed: false, devClusterComputed: false, reason: 'missing_api_key' } }
   }
 
   try {
     const res = await fetch(
-      `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/tokens/${contract}/token_holders_v2/?page-size=50&key=${apiKey}`,
-      { cache: 'no-store', signal: AbortSignal.timeout(9000) }
+      `${COVALENT_BASE_URL}/${activeChainConfig.covalentChain}/tokens/${contract}/token_holders_v2/?page-size=50`,
+      { cache: 'no-store', signal: AbortSignal.timeout(9000), headers: { Authorization: `Bearer ${apiKey}` } }
     )
-    if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, reason: 'http_error' } }
+    if (!res.ok) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, holderRowsCount: 0, percentAvailable: false, creatorRowFound: false, linkedWalletComputed: false, devClusterComputed: false, reason: 'http_error' } }
 
     const json = await res.json() as {
       data?: {
@@ -619,7 +726,7 @@ async function getSupplyData(
     }
 
     const items = json?.data?.items ?? []
-    if (items.length === 0) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, rawItemCount: 0, reason: 'no_items' } }
+    if (items.length === 0) return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, holderRowsCount: 0, rawItemCount: 0, percentAvailable: false, creatorRowFound: false, linkedWalletComputed: false, devClusterComputed: false, reason: 'no_items' } }
 
     const totalSupplyRaw = items[0]?.total_supply ?? '0'
     const totalSupply = BigInt(totalSupplyRaw === '' ? '0' : totalSupplyRaw)
@@ -652,10 +759,10 @@ async function getSupplyData(
         top1: pcts[0] ?? null, top10: pcts.slice(0, 10).reduce((a, b) => a + b, 0), top20: pcts.slice(0, 20).reduce((a, b) => a + b, 0), holderCount: items.length,
         creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: Math.round(controlled * 100) / 100,
       },
-      diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, rawItemCount: items.length, normalizedCount: items.length, percentSource: 'derived_from_total_supply', derivationAttempted: true, derivationSucceeded: totalSupply > BigInt(0), reason: 'ok' },
+      diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: true, statusCode: res.status, holderRowsCount: items.length, rawItemCount: items.length, normalizedCount: items.length, percentAvailable: totalSupply > BigInt(0), creatorRowFound: matched.some(m => m.isDeployer), linkedWalletComputed: true, devClusterComputed: true, percentSource: 'derived_from_total_supply', derivationAttempted: true, derivationSucceeded: totalSupply > BigInt(0), reason: 'ok' },
     }
   } catch {
-    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: Boolean(process.env.COVALENT_API_KEY), reason: 'fetch_error' } }
+    return { holderDataAvailable: false, supplyControlled: null, matchedHolderWallets: [], diag: { provider: 'goldrush', chainUsed: activeChainConfig.covalentChain, attempted: true, hasApiKey: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY), holderRowsCount: 0, percentAvailable: false, creatorRowFound: false, linkedWalletComputed: false, devClusterComputed: false, reason: 'fetch_error' } }
   }
 }
 
@@ -1377,6 +1484,18 @@ export async function POST(req: Request) {
           requiredPlan: 'pro',
         },
       },
+      ...(debug ? {
+        _debug: {
+          hasBearer: planRes.hasBearer,
+          userPresent: planRes.userPresent,
+          settingsRowFound: planRes.settingsRowFound,
+          rawPlan: planRes.rawPlan,
+          effectivePlan: planRes.effectivePlan,
+          trialActive: planRes.trialActive,
+          trialEndsAt: planRes.trialEndsAt,
+          gateDecision: planRes.gateDecision,
+        },
+      } : {}),
     }, { status: 403 })
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
     const now = Date.now()
@@ -1440,6 +1559,9 @@ export async function POST(req: Request) {
       holderCount?: number | null
       topHolders?: Array<{ address?: string; percent?: number | null }>
     } | null | undefined
+    const holderStatusRaw = (tokenEvidence?.holderDistributionStatus as Record<string, unknown> | null | undefined) ?? null
+    const tokenHolderStatus = typeof holderStatusRaw?.status === 'string' ? holderStatusRaw.status : null
+    const tokenHolderReason = typeof holderStatusRaw?.reason === 'string' ? holderStatusRaw.reason : null
     const liqEv = (sections.liquidity as Record<string, unknown> | undefined) ?? {}
     const secEv = (sections.security as Record<string, unknown> | undefined) ?? {}
     const liquidityDataAvailable = typeof liqEv.liquidityDepth === 'number' || typeof tokenEvidence?.liquidityUsd === 'number'
@@ -1520,6 +1642,14 @@ export async function POST(req: Request) {
     const meta = await fetchTokenMetadata(normalizedAddress, tokenEvidence)
     const tokenName = meta.name
     const tokenSymbol = meta.symbol
+    const tokenNameResolved = Boolean(tokenName && tokenName.trim().length > 0)
+    const tokenSymbolResolved = Boolean(tokenSymbol && tokenSymbol.trim().length > 0)
+    const tokenScannerMetadataUsed = Boolean(
+      (typeof tokenEvidence?.name === 'string' && tokenEvidence.name.trim()) ||
+      (typeof (sections.metadata as Record<string, unknown> | undefined)?.name === 'string' && String((sections.metadata as Record<string, unknown>).name).trim()) ||
+      (typeof tokenEvidence?.symbol === 'string' && tokenEvidence.symbol.trim()) ||
+      (typeof (sections.metadata as Record<string, unknown> | undefined)?.symbol === 'string' && String((sections.metadata as Record<string, unknown>).symbol).trim())
+    )
     const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : (holderStats?.top10 ?? null)
     const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1 : (holderStats?.top1 ?? null)
     const holderTop20 = typeof holderDistributionRaw?.top20 === 'number' ? holderDistributionRaw.top20 : (holderStats?.top20 ?? null)
@@ -1608,12 +1738,13 @@ export async function POST(req: Request) {
       clarkVerdict,
       tokenEvidence: tokenEvidence ? {
         name: tokenName, symbol: tokenSymbol,
+        metadataSource: (meta.diag?.metadataSource as string | undefined) ?? (meta.diag?.source as string | undefined) ?? 'unknown',
         price: market.price ?? null,
         volume24h: market.volume24h ?? null,
         liquidity: liqEv.liquidityDepth ?? tokenEvidence.liquidityUsd ?? market.liquidity ?? null,
         fdv: market.fdv ?? null,
         marketValue: market.marketCap ?? market.fdv ?? null,
-        top1: holderDistributionRaw?.top1 ?? null,
+        top1: holderTop1,
         top10: holderTop10,
         top20: holderTop20,
         holderCount,
@@ -1631,7 +1762,7 @@ export async function POST(req: Request) {
       originReason,
       supplyControlStatus,
       linkedWalletsStatus: linkedWalletsCheckStatus,
-      holderStatus: holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'partial',
+      holderStatus: tokenHolderStatus === 'ok' || tokenHolderStatus === 'partial' || tokenHolderStatus === 'unavailable' ? tokenHolderStatus : (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
       verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)
@@ -1641,7 +1772,8 @@ export async function POST(req: Request) {
           : 'UNKNOWN',
       confidence: (tokenEvidence || holderDataAvailable) ? 'medium' : 'low',
       reasons: [
-        !deployerAddress && (tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'Creator link not confirmed; token evidence still indicates watchlist-level signal.' : '',
+        !deployerAddress && (tokenEvidence || holderDataAvailable || liquidityDataAvailable) ? 'Creator not confirmed from current checks; token evidence still indicates watchlist-level signal.' : '',
+        deployerAddress && !holderDataAvailable ? 'Origin wallet was likely found, but holder distribution could not confirm supply control.' : '',
         holderTop10 != null && holderTop10 >= 70 ? `Very high holder concentration — top 10 hold ${parseFloat(holderTop10.toFixed(2))}%.` : holderTop10 != null && holderTop10 >= 50 ? `High holder concentration — top 10 hold ${parseFloat(holderTop10.toFixed(2))}%.` : '',
         liqLpLocked === false ? 'LP appears team-controlled.' : '',
       ].filter(Boolean),
@@ -1653,6 +1785,17 @@ export async function POST(req: Request) {
           rpcStatus,
           providerUsed,
           tokenEvidenceDiag: { attempted: tokenEvidenceResult.attempted, ok: tokenEvidenceResult.ok, httpStatus: tokenEvidenceResult.httpStatus, reason: tokenEvidenceResult.reason },
+          metadataSource: (meta.diag?.metadataSource as string | undefined) ?? (meta.diag?.source as string | undefined) ?? 'unknown',
+          tokenNameResolved,
+          tokenSymbolResolved,
+          tokenScannerMetadataUsed,
+          holderSource: holderDataFromToken ? 'token_scanner_holder_distribution' : (holderDataFromCovalent ? 'covalent_fallback' : 'none'),
+          holderRowsCount: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
+          holderPercentAvailable: holderTop1 != null || holderTop10 != null || holderTop20 != null,
+          holderDistributionStatus: tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
+          creatorLookupAttempted: Boolean(originDiag && originDiag.optional_creation_lookup?.attempted),
+          creatorStatus: deployerStatus,
+          supplySurfaceState: supplyControlStatus,
           origin_discovery: originDiag ?? { skipped: true },
           post_deployer_intelligence: {
             linked_wallets: {
@@ -1699,12 +1842,19 @@ export async function POST(req: Request) {
           },
           metadataDiagnostics: meta.diag,
           holderDiagnostics: holderDiag ?? { chainUsed: activeChainConfig.covalentChain, attempted: false, reason: 'no_holder_diag' },
+          holderLookupAttempted: Boolean(holderDataFromToken || holderDiag?.attempted),
+          holderStatus: holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'open_check',
+          topHolderRows: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
+          topPercentAvailable: holderTop1 != null || holderTop10 != null || holderTop20 != null,
         },
       } : {}),
       fetchedAt: new Date().toISOString(),
     }
     if (debug) {
       ;(responsePayload as any)._debug = {
+        hasBearer: planRes.hasBearer,
+        userPresent: planRes.userPresent,
+        settingsRowFound: planRes.settingsRowFound,
         routeName: '/api/dev-wallet',
         cacheHit: false,
         alchemyConfigured: Boolean(activeChainConfig.rpcUrl),
@@ -1715,6 +1865,11 @@ export async function POST(req: Request) {
         skippedReason: activeChainConfig.rpcUrl ? null : 'rpc_not_configured',
         fallbackUsed: tokenEvidenceResult.ok === false || linkedWalletsCheckStatus !== 'ok',
         requestDurationMs: Date.now() - startedAt,
+        rawPlan: planRes.rawPlan,
+        effectivePlan: planRes.effectivePlan,
+        trialActive: planRes.trialActive,
+        trialEndsAt: planRes.trialEndsAt,
+        gateDecision: planRes.gateDecision,
       }
     }
     devCache.set(cacheKey, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })

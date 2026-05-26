@@ -888,28 +888,18 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
             onClick={async () => {
               reconnectButtonUsedRef.current = true
               reconnectResultRef.current = 'idle'
-              if (hasSavedConnector && isWalletConnect(hasSavedConnector.id)) {
-                const wcConnector = getWalletConnectConnector()
-                if (wcConnector) {
-                  try {
-                    await connectAsync({ connector: wcConnector })
-                    reconnectResultRef.current = 'restored'
-                    return
-                  } catch {
-                    reconnectResultRef.current = 'failed'
-                  }
-                }
-                if (walletConnectEnabled && openWeb3ModalRef.current) {
-                  openWeb3ModalRef.current()
-                  reconnectResultRef.current = 'modal_opened'
-                  return
-                }
-              }
+              setConnecting(false)
+              setSelected(null)
+              setErrorMsg(null)
+
               if (hasSavedConnector) {
                 await handleConnector(hasSavedConnector)
+                reconnectResultRef.current = 'restored'
                 return
               }
+
               await openModal()
+              reconnectResultRef.current = 'modal_opened'
             }}
             style={baseStyle}
           >

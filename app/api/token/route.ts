@@ -407,6 +407,25 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
+// Chain-aware LP locker contract registry.
+// Only add verified on-chain locker contract addresses. Addresses must be lowercase.
+// An empty list for a chain means "locked" will never fire on that chain —
+// intentional: no false-positive locked claims without proof.
+const LOCKER_REGISTRY: Partial<Record<ChainKey, string[]>> = {
+  eth: [
+    "0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", // UNCX / UniCrypt V2 LP Locker
+    "0x71b5759d73262fbb223956913ecf4ecc51057641", // PinkLock (PinkSale)
+    "0xe2fe530c047f2d85298b07d9333c05737f1435fb", // Team Finance LP Locker
+    "0xdba68f07d1b7ca219f78ae8582c213d975c25caf", // UniCrypt V3 LP Locker
+    "0xf6c7282943dc5ea13461ef77dd3a24e5d01e5e1a", // DxLock
+    "0x0be46842df45f36a19bea0de0fd6e34da00fd8a5", // Mudra Locker
+  ],
+  // Base mainnet: intentionally empty until locker contract addresses are
+  // confirmed on-chain. "locked" status cannot fire for Base V2 pools until
+  // verified addresses are added here.
+  base: [],
+};
+
 // Resolves honeypot + tax simulation for a given chain and token address.
 // Wraps fetchHoneypotSecurity and returns the canonical simulation object or null on failure.
 async function resolveSimulation(chain: string, address: string): Promise<{
@@ -761,6 +780,12 @@ type LpDiagnostics = {
   holderProofAttempted: boolean;
   holderRawItemCount: number;
   lpProofUnavailableReason: string | null;
+  // Chain-aware locker registry diagnostics
+  lockerRegistryChain: string;
+  lockerAddressesCheckedCount: number;
+  lockerRegistryEmpty: boolean;
+  rpcConfigured: boolean;
+  rpcSkippedReason: string | null;
 };
 
 type LpControlRead = {
@@ -1755,14 +1780,13 @@ export async function POST(req: Request) {
       `DEX metadata: ${lpVerifyPoolObj?.hasDexMeta ? (lpVerifyPoolObj.dexId ?? lpVerifyPoolObj.dexName ?? "available") : "unavailable"}`,
     ];
     const DEAD = new Set(["0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"]);
-    const KNOWN_LOCKERS = new Set<string>([
-      "0x663a5c229c09b049e36dcca11a9d0d4a0f33f3f9", // UNCX / UniCrypt
-      "0x71b5759d73262fbb223956913ecf4ecc51057641", // PinkLock
-      "0xe2fe530c047f2d85298b07d9333c05737f1435fb", // Team Finance
-      "0xdba68f07d1b7ca219f78ae8582c213d975c25caf", // UniCrypt V3
-      "0xf6c7282943dc5ea13461ef77dd3a24e5d01e5e1a", // DxLock
-      "0x0be46842df45f36a19bea0de0fd6e34da00fd8a5", // Mudra
-    ]);
+    const KNOWN_LOCKERS = new Set<string>(LOCKER_REGISTRY[chain as ChainKey] ?? []);
+    const _lockerRegistryEmpty = KNOWN_LOCKERS.size === 0;
+    const _rpcConfigured = Boolean(getAlchemyRpcUrl(chain as ChainKey));
+    const _rpcSkippedReason: string | null = _rpcConfigured ? null
+      : chain === 'base' ? 'missing_base_rpc_env'
+      : chain === 'eth' ? 'missing_eth_rpc_env'
+      : 'missing_rpc_env';
     const confidenceFor = (pct: number): "high" | "medium" | "low" => pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
     let lpDiagnostics: LpDiagnostics = {
       attempted: _lpProofPresent,
@@ -1819,6 +1843,11 @@ export async function POST(req: Request) {
       holderProofAttempted: needsLpHolderFetch,
       holderRawItemCount: 0,
       lpProofUnavailableReason: null,
+      lockerRegistryChain: chain,
+      lockerAddressesCheckedCount: KNOWN_LOCKERS.size,
+      lockerRegistryEmpty: _lockerRegistryEmpty,
+      rpcConfigured: _rpcConfigured,
+      rpcSkippedReason: _rpcSkippedReason,
     };
     let lpControl: LpControlResult = {
       status: "unverified",
@@ -3370,6 +3399,11 @@ export async function POST(req: Request) {
           lpProofAttempted: lpDiagnostics.lpProofAttempted,
           holderProofAttempted: lpDiagnostics.holderProofAttempted,
           holderRawItemCount: lpDiagnostics.holderRawItemCount,
+          lockerRegistryChain: lpDiagnostics.lockerRegistryChain,
+          lockerAddressesCheckedCount: lpDiagnostics.lockerAddressesCheckedCount,
+          lockerRegistryEmpty: lpDiagnostics.lockerRegistryEmpty,
+          rpcConfigured: lpDiagnostics.rpcConfigured,
+          rpcSkippedReason: lpDiagnostics.rpcSkippedReason,
           rpcAttempted: lpDiagnostics.rpcAttempted,
           totalSupplyChecked: lpDiagnostics.totalSupplyChecked,
           burnAddressesChecked: lpDiagnostics.burnAddressesChecked,
