@@ -10,11 +10,20 @@ const anthropic = new Anthropic({
 
 type ChainKey = "eth" | "base" | "polygon" | "bnb";
 function getAlchemyRpcUrl(chain: ChainKey): string | null {
+  if (chain === "eth") {
+    const explicitEth = process.env.ETH_RPC_URL
+    if (explicitEth && /^https?:\/\//.test(explicitEth)) return explicitEth
+    const key = process.env.ALCHEMY_ETHEREUM_KEY
+    if (key) return `https://eth-mainnet.g.alchemy.com/v2/${key}`
+  }
   if (chain === "base") {
+    const explicitBase = process.env.BASE_RPC_URL
+    if (explicitBase && /^https?:\/\//.test(explicitBase)) return explicitBase
     const explicit = process.env.ALCHEMY_BASE_RPC_URL
     if (explicit && /^https?:\/\//.test(explicit)) return explicit
     const key = process.env.ALCHEMY_BASE_KEY
-    return key ? `https://base-mainnet.g.alchemy.com/v2/${key}` : null
+    if (key) return `https://base-mainnet.g.alchemy.com/v2/${key}`
+    return "https://mainnet.base.org"
   }
   const keyMap: Record<Exclude<ChainKey, "base">, string | undefined> = {
     eth: process.env.ALCHEMY_ETHEREUM_KEY,
@@ -28,6 +37,25 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
   }
   const key = keyMap[chain as Exclude<ChainKey, "base">]
   return key ? `https://${domainMap[chain as Exclude<ChainKey, "base">]}.g.alchemy.com/v2/${key}` : null
+}
+async function checkRpcHealth(chain: ChainKey): Promise<{ ok: boolean; providerUrl: string | null; reason: string | null }> {
+  const providerUrl = getAlchemyRpcUrl(chain)
+  if (!providerUrl) return { ok: false, providerUrl: null, reason: "missing_rpc_url" }
+  try {
+    const res = await fetch(providerUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return { ok: false, providerUrl, reason: `http_${res.status}` }
+    const json = await res.json()
+    return typeof json?.result === "string"
+      ? { ok: true, providerUrl, reason: null }
+      : { ok: false, providerUrl, reason: "invalid_blocknumber_response" }
+  } catch {
+    return { ok: false, providerUrl, reason: "rpc_health_timeout_or_network_error" }
+  }
 }
 
 const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
@@ -1476,7 +1504,8 @@ export async function POST(req: Request) {
     // GoldRush, Moralis, Alchemy RPC, and DexScreener are gated to these chains.
     const SUPPORTED_FULL_SCAN_CHAINS: ChainKey[] = ['eth', 'base']
     const isFullScanChain = SUPPORTED_FULL_SCAN_CHAINS.includes(chain)
-    const alchemyConfigured = isFullScanChain && Boolean(getAlchemyRpcUrl(chain))
+    const rpcHealth = isFullScanChain ? await checkRpcHealth(chain) : { ok: false, providerUrl: null, reason: 'chain_not_supported' as string | null }
+    const alchemyConfigured = isFullScanChain && rpcHealth.ok
     const goldrushEnabled = isFullScanChain && Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY)
     const moralisEnabled = isFullScanChain && Boolean(process.env.MORALIS_API_KEY)
     const ownerSelectors = ['0x8da5cb5b', '0x893d20e8', '0xf851a440', '0x245a7bfc', '0x5c60da1b']
@@ -3330,6 +3359,14 @@ export async function POST(req: Request) {
         alchemyCallsFailed: rpcCallsFailed,
         rpcMethodsUsed: rpcCallsAttempted > 0 ? ['eth_call'] : [],
         skippedReason: rpcCallsAttempted > 0 ? null : (alchemyConfigured ? 'no_rpc_path_needed' : 'alchemy_not_configured'),
+        rpc: {
+          chain,
+          rpcConfigured: Boolean(rpcHealth.providerUrl),
+          rpcAttempted: rpcCallsAttempted > 0 || isFullScanChain,
+          rpcSkippedReason: isFullScanChain ? (alchemyConfigured ? null : (rpcHealth.reason ?? 'rpc_health_failed')) : 'chain_not_supported',
+          providerUrl: rpcHealth.providerUrl,
+          healthOk: rpcHealth.ok,
+        },
         fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
         requestDurationMs: Date.now() - _t0,
         checks: rpcCheckDiagnostics,
