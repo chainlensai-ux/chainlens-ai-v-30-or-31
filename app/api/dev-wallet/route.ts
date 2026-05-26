@@ -96,6 +96,24 @@ interface PlanResolution {
 }
 
 async function resolveServerPlan(req: Request): Promise<PlanResolution> {
+  // Local dev bypass — only active when DEV_PLAN_BYPASS env var is set (never set in production)
+  const devBypass = process.env.DEV_PLAN_BYPASS
+  if (devBypass === 'pro' || devBypass === 'elite') {
+    return {
+      rawPlan: devBypass,
+      effectivePlan: devBypass,
+      trialActive: false,
+      trialEndsAt: null,
+      isProOrElite: true,
+      gateDecision: 'allow',
+      authSource: 'dev_bypass',
+      plan: devBypass,
+      hasBearer: true,
+      userPresent: true,
+      settingsRowFound: true,
+      planSource: 'dev_bypass',
+    }
+  }
   const auth = req.headers.get('authorization') ?? ''
   const hasBearer = auth.toLowerCase().startsWith('bearer ') && auth.slice(7).trim().length > 0
   if (!hasBearer) return {
