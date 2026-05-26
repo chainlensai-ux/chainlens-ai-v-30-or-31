@@ -187,6 +187,25 @@ interface MatchedHolder {
   isDeployer: boolean
   isLinked: boolean
 }
+interface HolderRowInput {
+  address?: string
+  percent?: number | null
+  amount?: string | number | null
+  balance?: string | number | null
+}
+interface HolderPercentDerivationResult {
+  holderDistribution: {
+    top1: number | null
+    top10: number | null
+    top20: number | null
+    holderCount: number | null
+    topHolders: Array<{ address: string; percent: number | null }>
+  } | null
+  holderDistributionStatus: 'ok' | 'partial' | 'unavailable'
+  holderPercentAvailable: boolean
+  holderPercentSource: string | null
+  debug: Record<string, unknown>
+}
 
 interface PreviousProject {
   contractAddress: string
@@ -860,6 +879,69 @@ async function getPreviousActivity(deployer: string | null, excludeContract?: st
     previousProjects: [...byContract.values()].slice(0, 10),
     previousActivityStatus: 'limited_check',
     warning: null,
+  }
+}
+
+function toBigIntSafe(value: unknown): bigint | null {
+  if (value == null) return null
+  const s = String(value).trim()
+  if (!s || s.includes('.') || /[eE]/.test(s)) return null
+  try { return BigInt(s) } catch { return null }
+}
+
+async function deriveHolderPercentages(contract: string, holderRows: HolderRowInput[] | null | undefined, scannerTop: { top1?: number | null; top10?: number | null; top20?: number | null } | null | undefined): Promise<HolderPercentDerivationResult> {
+  const rows = Array.isArray(holderRows) ? holderRows : []
+  const holderRowsCount = rows.length
+  const holderRowsHaveBalances = rows.some(r => toBigIntSafe(r.balance ?? r.amount) != null)
+  const scannerHasTop = typeof scannerTop?.top1 === 'number' || typeof scannerTop?.top10 === 'number' || typeof scannerTop?.top20 === 'number'
+  if (holderRowsCount === 0) return { holderDistribution: null, holderDistributionStatus: 'unavailable', holderPercentAvailable: false, holderPercentSource: null, debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved: null, totalSupplyResolved: false, totalSupplySource: null, percentDerivationAttempted: false, percentDerivationReason: 'no_holder_rows', top1: null, top10: null, top20: null } }
+  if (scannerHasTop) return {
+    holderDistribution: { top1: scannerTop?.top1 ?? null, top10: scannerTop?.top10 ?? null, top20: scannerTop?.top20 ?? null, holderCount: holderRowsCount, topHolders: rows.map(r => ({ address: String(r.address ?? '').toLowerCase(), percent: typeof r.percent === 'number' ? r.percent : null })) },
+    holderDistributionStatus: 'ok',
+    holderPercentAvailable: true,
+    holderPercentSource: 'token_scanner_precalculated',
+    debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved: null, totalSupplyResolved: true, totalSupplySource: 'token_scanner_precalculated', percentDerivationAttempted: false, percentDerivationReason: 'scanner_top_values_present', top1: scannerTop?.top1 ?? null, top10: scannerTop?.top10 ?? null, top20: scannerTop?.top20 ?? null },
+  }
+  let totalSupply: bigint | null = null
+  let totalSupplySource: string | null = null
+  let tokenDecimalsResolved: number | null = null
+  try {
+    const [supplyHex, decHex] = await Promise.all([
+      alchemyRpc('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest']) as Promise<string>,
+      alchemyRpc('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest']) as Promise<string>,
+    ])
+    if (typeof supplyHex === 'string' && /^0x[0-9a-fA-F]+$/.test(supplyHex) && supplyHex !== '0x' && supplyHex !== '0x0') totalSupply = BigInt(supplyHex)
+    if (typeof decHex === 'string' && /^0x[0-9a-fA-F]+$/.test(decHex)) tokenDecimalsResolved = Number.parseInt(decHex, 16)
+    if (totalSupply && totalSupply > BigInt(0)) totalSupplySource = 'rpc_totalSupply'
+  } catch { /* ignore */ }
+  if (!totalSupply || totalSupply <= BigInt(0)) {
+    const providerSupply = rows.map(r => toBigIntSafe((r as Record<string, unknown>).total_supply)).find(v => v != null) ?? null
+    if (providerSupply && providerSupply > BigInt(0)) { totalSupply = providerSupply; totalSupplySource = 'provider_total_supply' }
+  }
+  if (!totalSupply || totalSupply <= BigInt(0)) {
+    let sum = BigInt(0)
+    for (const r of rows) { const b = toBigIntSafe(r.balance ?? r.amount); if (b != null) sum += b }
+    if (sum > BigInt(0)) { totalSupply = sum; totalSupplySource = 'summed_returned_rows' }
+  }
+  const percentDerivationAttempted = true
+  if (!totalSupply || totalSupply <= BigInt(0)) return { holderDistribution: null, holderDistributionStatus: 'partial', holderPercentAvailable: false, holderPercentSource: null, debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved, totalSupplyResolved: false, totalSupplySource, percentDerivationAttempted, percentDerivationReason: 'total_supply_unresolved', top1: null, top10: null, top20: null } }
+  const ranked = rows.map(r => {
+    const bal = toBigIntSafe(r.balance ?? r.amount) ?? BigInt(0)
+    const pct = Number((bal * BigInt(1000000)) / totalSupply) / 10000
+    return { address: String(r.address ?? '').toLowerCase(), percent: Number.isFinite(pct) ? pct : null }
+  })
+  const sorted = ranked.sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))
+  const sum = (n: number) => sorted.slice(0, n).reduce((acc, h) => acc + (h.percent ?? 0), 0)
+  const top1 = sorted[0]?.percent ?? null
+  const top10 = sum(10)
+  const top20 = sum(20)
+  const partial = totalSupplySource === 'summed_returned_rows'
+  return {
+    holderDistribution: { top1, top10, top20, holderCount: holderRowsCount, topHolders: sorted },
+    holderDistributionStatus: partial ? 'partial' : 'ok',
+    holderPercentAvailable: true,
+    holderPercentSource: totalSupplySource,
+    debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved, totalSupplyResolved: true, totalSupplySource, percentDerivationAttempted, percentDerivationReason: 'derived_from_balances_and_supply', top1, top10, top20 },
   }
 }
 
@@ -1634,10 +1716,11 @@ export async function POST(req: Request) {
       (typeof tokenEvidence?.symbol === 'string' && tokenEvidence.symbol.trim()) ||
       (typeof (sections.metadata as Record<string, unknown> | undefined)?.symbol === 'string' && String((sections.metadata as Record<string, unknown>).symbol).trim())
     )
-    const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : (holderStats?.top10 ?? null)
-    const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1 : (holderStats?.top1 ?? null)
-    const holderTop20 = typeof holderDistributionRaw?.top20 === 'number' ? holderDistributionRaw.top20 : (holderStats?.top20 ?? null)
-    const holderCount = typeof holderDistributionRaw?.holderCount === 'number' ? holderDistributionRaw.holderCount : (holderStats?.holderCount ?? null)
+    const holderPercentDerived = await deriveHolderPercentages(normalizedAddress, holderDistributionRaw?.topHolders, { top1: holderDistributionRaw?.top1, top10: holderDistributionRaw?.top10, top20: holderDistributionRaw?.top20 })
+    const holderTop10 = holderPercentDerived.holderDistribution?.top10 ?? (holderStats?.top10 ?? null)
+    const holderTop1  = holderPercentDerived.holderDistribution?.top1 ?? (holderStats?.top1 ?? null)
+    const holderTop20 = holderPercentDerived.holderDistribution?.top20 ?? (holderStats?.top20 ?? null)
+    const holderCount = holderPercentDerived.holderDistribution?.holderCount ?? (holderStats?.holderCount ?? null)
     const secHoneypot: boolean | null = typeof secEv.honeypot === 'boolean' ? secEv.honeypot : null
     const secBuyTax: number | null = typeof secEv.buyTax === 'number' ? secEv.buyTax : null
     const secSellTax: number | null = typeof secEv.sellTax === 'number' ? secEv.sellTax : null
@@ -1713,9 +1796,11 @@ export async function POST(req: Request) {
       deployerConfidence,
       methodUsed,
       linkedWallets,
-      holderDistribution: holderDistributionRaw ?? null,
-      holderDistributionStatus: tokenHolderStatus ?? 'partial',
-      topHolders: holderDistributionRaw?.topHolders ?? [],
+      holderDistribution: holderPercentDerived.holderDistribution ?? holderDistributionRaw ?? null,
+      holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? 'partial',
+      holderPercentAvailable: holderPercentDerived.holderPercentAvailable,
+      holderPercentSource: holderPercentDerived.holderPercentSource,
+      topHolders: holderPercentDerived.holderDistribution?.topHolders ?? holderDistributionRaw?.topHolders ?? [],
       top1: holderTop1 ?? null,
       top10: holderTop10 ?? null,
       top20: holderTop20 ?? null,
@@ -1767,8 +1852,10 @@ export async function POST(req: Request) {
           tokenScannerMetadataUsed,
           holderSource: holderDataFromToken ? 'token_scanner_holder_distribution' : (holderDataFromCovalent ? 'covalent_fallback' : 'none'),
           holderRowsCount: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
-          holderPercentAvailable: holderTop1 != null || holderTop10 != null || holderTop20 != null,
-          holderDistributionStatus: tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
+          holderPercentAvailable: holderPercentDerived.holderPercentAvailable,
+          holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
+          holderPercentSource: holderPercentDerived.holderPercentSource,
+          holderPercentDebug: holderPercentDerived.debug,
           creatorLookupAttempted: Boolean(originDiag && originDiag.optional_creation_lookup?.attempted),
           creatorStatus: deployerStatus,
           supplySurfaceState: supplyControlStatus,
