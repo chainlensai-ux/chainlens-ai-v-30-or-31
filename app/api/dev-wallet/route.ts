@@ -1894,3 +1894,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
+
+// GET handler: reads contractAddress/address and chain from query params and delegates to POST.
+// Supports: GET /api/dev-wallet?address=0x...&chain=base
+export async function GET(req: Request): Promise<Response> {
+  const url = new URL(req.url)
+  const contractAddress = url.searchParams.get('contractAddress') || url.searchParams.get('address') || ''
+  const chain = url.searchParams.get('chain') || 'base'
+  const syntheticReq = new Request(req.url, {
+    method: 'POST',
+    headers: req.headers,
+    body: JSON.stringify({ contractAddress, chain }),
+  })
+  return POST(syntheticReq)
+}
