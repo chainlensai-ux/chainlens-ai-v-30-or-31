@@ -1355,7 +1355,11 @@ export default function TerminalTokenScanner() {
   async function handleScan(override?: string, chainOverride?: 'base' | 'eth') {
     const q             = (override ?? input).trim()
     const effectiveChain = chainOverride ?? chain
-    if (!q || loading) return
+    if (!q) {
+      setError('Please enter a token contract address before scanning.')
+      return
+    }
+    if (loading) return
     setLoading(true)
     setClarkLoading(true)
     setError(null)
@@ -1375,9 +1379,14 @@ export default function TerminalTokenScanner() {
         body: JSON.stringify({ contract: q, chain: effectiveChain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       const json = await res.json()
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[scanner] /api/token response', json)
+      }
       if (!res.ok || json.error) {
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
+        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${effectiveChain === 'eth' ? 'Ethereum' : 'Base'}. Try switching chains.`)
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
+        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${effectiveChain === 'eth' ? 'Ethereum' : 'Base'} for this token.`)
         else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
