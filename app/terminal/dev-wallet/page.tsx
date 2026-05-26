@@ -120,7 +120,8 @@ type DevControlScore = {
 }
 
 function calculateDevControl(result: DevWalletResult): DevControlScore {
-  const hasAnything = result.deployerAddress || result.linkedWallets.length > 0 || result.holderDataAvailable
+  const holderUsable = result.holderDistributionStatus === 'ok' || result.holderDistributionStatus === 'partial'
+  const hasAnything = result.deployerAddress || result.linkedWallets.length > 0 || holderUsable
   if (!hasAnything) {
     return {
       score: 0, risk: 'UNKNOWN', confidence: 'Low',
@@ -184,7 +185,6 @@ function calculateDevControl(result: DevWalletResult): DevControlScore {
   }
 
   const usableHoldersForConf =
-    result.holderDataAvailable ||
     result.holderDistributionStatus === 'ok' ||
     result.holderDistributionStatus === 'partial'
 
@@ -384,7 +384,7 @@ export default function DevWalletPage() {
       `Confidence: ${result.deployerConfidence}`,
       `Linked wallets: ${result.linkedWallets.length}`,
       `Suspicious reasons: ${result.suspiciousTransferReasons.join('; ') || 'none'}`,
-      `Holder data available: ${result.holderDataAvailable}`,
+      `Holder data available: ${result.holderDistributionStatus === 'ok' || result.holderDistributionStatus === 'partial'}`,
       `Verdict: ${result.clarkVerdict?.label ?? 'UNKNOWN'}`,
     ].join('\n')
     return `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`
@@ -497,10 +497,10 @@ export default function DevWalletPage() {
           {result && (() => {
             const dc = calculateDevControl(result)
             const rugCount = result.previousProjects.filter(p => p.rugFlag === true).length
-            const resolvedTokenName = result.name?.trim() || result.tokenEvidence?.name?.trim() || null
-            const resolvedTokenSymbol = result.symbol?.trim() || result.tokenEvidence?.symbol?.trim() || null
-            const tokenTitle = resolvedTokenName ?? shortAddr(result.contractAddress, 8, 6)
-            const hasTokenTitleFallback = !resolvedTokenName && !resolvedTokenSymbol
+            const resolvedTokenName = result.name || result.tokenEvidence?.name?.trim() || 'Unknown'
+            const resolvedTokenSymbol = result.symbol || result.tokenEvidence?.symbol?.trim() || '?'
+            const tokenTitle = resolvedTokenName !== 'Unknown' ? resolvedTokenName : shortAddr(result.contractAddress, 8, 6)
+            const hasTokenTitleFallback = resolvedTokenName === 'Unknown' && resolvedTokenSymbol === '?'
 
             return (
               <div>
