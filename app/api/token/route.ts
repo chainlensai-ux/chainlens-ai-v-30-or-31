@@ -122,6 +122,7 @@ type RiskEngine = {
   verifiedSignals: string[]
   riskDrivers: string[]
   openChecks: string[]
+  dataFillScore: number
   lpRisk: {
     status: "not_applicable" | "verified" | "partial" | "unverified"
     confidence: "high" | "medium" | "low"
@@ -1775,14 +1776,39 @@ export async function POST(req: Request) {
     const needsAI = !noActivePools || hasSecurityData
     const needsOnchainMc = _mcEarly == null && _priceEarly != null
 
-    // Compact AI prompt (key fields only — reduces token count and latency)
+    // ── Phase 1 data extraction for AI summary prompt ──────────────────────────
+    // Extract early holder concentration estimate from raw GoldRush data
+    const _holderItemsEarly: any[] = holdersRaw?.data?.items ?? holdersRaw?.data?.data?.items ?? holdersRaw?.items ?? []
+    const _top1Early = _holderItemsEarly[0]?.percentage ?? _holderItemsEarly[0]?.percent ?? null
+    const _top10EarlyPct = _holderItemsEarly.slice(0, 10).reduce((s: number, h: any) => {
+      const p = parseFloat(h?.percentage ?? h?.percent ?? 0)
+      return s + (Number.isFinite(p) ? p : 0)
+    }, 0)
+    // Extract early owner status from RPC mandatory reads
+    const _ownerHexEarly = alchemyMandatoryReads[0] ?? alchemyMandatoryReads[1] ?? alchemyMandatoryReads[2] ?? null
+    const _ownerEarlyAddr = _ownerHexEarly && _ownerHexEarly.length >= 42 ? `0x${_ownerHexEarly.slice(-40).toLowerCase()}` : null
+    const _isRenouncedEarly = _ownerEarlyAddr === '0x0000000000000000000000000000000000000000'
+    const _ownerStatusEarly = _isRenouncedEarly ? 'renounced' : (_ownerEarlyAddr ? 'held' : 'unverified')
+    // Build rich AI summary prompt with all Phase 1 signals
     const _aiPrompt = [
-      `Summarize this ${chain === 'eth' ? 'Ethereum' : 'Base'} token risk in 3-4 sentences. Cover liquidity, security, and ownership. Plain text only, no markdown.`,
-      `CONTRACT: ${contract} PRICE: ${_priceEarly ?? 'unknown'} LIQUIDITY: $${_liqEarly?.toFixed(0) ?? 'unknown'} POOLS: ${matchingPools.length}`,
-      `SECURITY: ${hpResult.ok ? `honeypot=${hpResult.honeypot} buyTax=${hpResult.buyTax ?? '?'}% sellTax=${hpResult.sellTax ?? '?'}%` : 'simulation unavailable'}`,
-      `SUSPICIOUS_BYTECODE: ${analysis.suspiciousFunctions.length ? analysis.suspiciousFunctions.join(', ') : 'none detected'}`,
-      noActivePools ? 'NO ACTIVE POOLS FOUND.' : '',
-      'If critical data missing, state token is unverified.',
+      `You are a concise onchain risk analyst. Summarize this ${chain === 'eth' ? 'Ethereum' : 'Base'} token risk in 3-4 sentences. Be specific about detected risks. Plain text only, no markdown, no disclaimers.`,
+      `CONTRACT: ${contract} | CHAIN: ${chain === 'eth' ? 'Ethereum' : 'Base'}`,
+      `MARKET: price=${_priceEarly != null ? `$${_priceEarly}` : 'unknown'} liquidity=${_liqEarly != null ? `$${(_liqEarly / 1000).toFixed(0)}K` : 'unknown'} pools=${matchingPools.length}`,
+      hpResult.ok
+        ? `SIMULATION: honeypot=${hpResult.honeypot} buyTax=${hpResult.buyTax ?? '?'}% sellTax=${hpResult.sellTax ?? '?'}%`
+        : `SIMULATION: unavailable`,
+      analysis.suspiciousFunctions.length > 0
+        ? `BYTECODE_FLAGS: ${analysis.suspiciousFunctions.join(', ')}`
+        : `BYTECODE: no suspicious functions`,
+      grContractIntel?.mint ? `CONTRACT_FLAGS: mint=detected` : null,
+      grContractIntel?.blacklist ? `CONTRACT_FLAGS: blacklist=detected` : null,
+      (grContractIntel?.proxy || grContractIntel?.upgradeable) ? `CONTRACT_FLAGS: upgradeable=detected` : null,
+      grContractIntel?.pause ? `CONTRACT_FLAGS: pause=detected` : null,
+      _top10EarlyPct > 0 ? `HOLDERS: top1=${_top1Early != null ? _top1Early.toFixed(1) + '%' : '?'} top10=${_top10EarlyPct.toFixed(1)}% count=${_holderItemsEarly.length > 0 ? _holderItemsEarly.length + '+' : 'unknown'}` : `HOLDERS: data unavailable`,
+      `OWNERSHIP: ${_ownerStatusEarly}`,
+      `LP_POOL_TYPE: ${_lpProofType ?? lpPoolType ?? 'unknown'}`,
+      noActivePools ? 'NO_ACTIVE_POOLS: true — high risk of illiquidity' : null,
+      'Lead with the most critical risk. If a key check is unavailable, note it briefly. Be direct.',
     ].filter(Boolean).join('\n')
 
     // Phase 2: LP holder fetch + AI summary + onchain supply all in parallel
@@ -2799,30 +2825,56 @@ export async function POST(req: Request) {
       else rugRiskLabel = majorMissingCount >= 2 ? 'watch' : 'low_visible_risk'
     }
     const riskConfidence: RiskEngine["confidence"] = majorMissingCount >= 3 ? 'low' : majorMissingCount >= 2 ? 'medium' : 'high'
-    const sniperStatus: RiskEngine["sniperActivity"]["status"] = transactions24h == null ? 'unverified' : transactions24h > 800 ? 'high' : transactions24h > 250 ? 'watch' : 'low_signal'
+
+    // ── Sniper Activity — multi-signal (pool age + volume pressure + holder concentration) ──
+    const _pairAgeMs = pairCreatedAt ? (() => { try { return Date.now() - new Date(pairCreatedAt).getTime() } catch { return null } })() : null
+    const _pairAgeHrs = _pairAgeMs != null ? _pairAgeMs / 3_600_000 : null
+    const _pairAgeDays = _pairAgeMs != null ? _pairAgeMs / 86_400_000 : null
+    const _buyPressure = buys24h != null && sells24h != null && sells24h > 0 ? buys24h / sells24h : null
+    const sniperReasons: string[] = []
+    let sniperSigCount = 0
+    if (_pairAgeHrs != null && _pairAgeHrs < 24) { sniperReasons.push(`Pool launched ${_pairAgeHrs < 1 ? '<1h' : `~${Math.floor(_pairAgeHrs)}h`} ago — very new`); sniperSigCount += 2 }
+    else if (_pairAgeDays != null && _pairAgeDays < 7) { sniperReasons.push(`Pool launched ~${Math.floor(_pairAgeDays)}d ago — early phase`); sniperSigCount++ }
+    if (transactions24h != null && transactions24h > 800 && _pairAgeHrs != null && _pairAgeHrs < 24) { sniperReasons.push(`${transactions24h} transactions in <24h — abnormal early volume`); sniperSigCount++ }
+    if (_buyPressure != null && _buyPressure > 3 && _pairAgeDays != null && _pairAgeDays < 7) { sniperReasons.push(`Buy/sell ratio ${_buyPressure.toFixed(1)}x — concentrated buying pressure`); sniperSigCount++ }
+    if (holderDistribution.top1 != null && holderDistribution.top1 > 20 && _pairAgeDays != null && _pairAgeDays < 14) { sniperReasons.push(`Top wallet holds ${holderDistribution.top1.toFixed(1)}% — early accumulation`); sniperSigCount++ }
+    if (holderDistribution.top5 != null && holderDistribution.top5 > 40 && _pairAgeDays != null && _pairAgeDays < 14) { sniperReasons.push(`Top 5 wallets hold ${holderDistribution.top5.toFixed(1)}% — concentrated early ownership`); sniperSigCount++ }
+    if (holderCount != null && holderCount < 50 && _pairAgeDays != null && _pairAgeDays < 7) { sniperReasons.push(`Only ${holderCount} holders — highly concentrated entry`); sniperSigCount++ }
+    const _sniperDataAvailable = _pairAgeHrs != null || transactions24h != null
+    const sniperStatus: RiskEngine["sniperActivity"]["status"] = !_sniperDataAvailable ? 'unverified' : sniperSigCount >= 3 ? 'high' : sniperSigCount >= 1 ? 'watch' : 'low_signal'
+    if (!_sniperDataAvailable && sniperReasons.length === 0) sniperReasons.push('Pool age and transaction telemetry unavailable — sniper activity not assessable.')
+    else if (_sniperDataAvailable && sniperReasons.length === 0) sniperReasons.push(_pairAgeHrs != null ? `Pool age confirmed. No abnormal early-entry signals detected.` : 'No abnormal transaction patterns detected in available data.')
     const sniperActivity: RiskEngine["sniperActivity"] = {
       status: sniperStatus,
-      confidence: transactions24h == null ? 'low' : 'medium',
-      reasons: transactions24h == null
-        ? ['No early-wallet or trade-cluster telemetry is available in this scan.']
-        : [`24h transaction count observed: ${transactions24h}.`, 'No direct sniper-wallet attribution is available; this is a market-activity signal only.'],
+      confidence: !_sniperDataAvailable ? 'low' : sniperSigCount >= 2 ? 'high' : 'medium',
+      reasons: sniperReasons,
     }
+
+    // ── Data Fill Score: 0-100 tracking how complete Phase 1 + Phase 2 data was ──
+    const _fillMarket = (liquidityUsd != null || marketCapFromGt != null || fdv != null) ? 20 : 0
+    const _fillHolder = holderDistributionStatus.status === 'ok' ? 20 : holderDistributionStatus.status === 'partial' ? 10 : 0
+    const _fillLp = (lpState === 'burned' || lpState === 'locked' || lpState === 'team_controlled' || lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 20 : lpState === 'partial' ? 8 : 0
+    const _fillSim = hpResult.ok ? 20 : 0
+    const _fillContract = (cortexContractFlags.bytecodeChecked || _grCI != null) ? 20 : 0
+    const dataFillScore = _fillMarket + _fillHolder + _fillLp + _fillSim + _fillContract
+
     const riskEngine: RiskEngine = {
       rugRiskScore,
       rugRiskLabel,
       confidence: riskConfidence,
       cortexRead: rugRiskScore == null
-        ? 'CORTEX Risk Engine is unverified because multiple core checks are missing in this scan.'
+        ? `CORTEX scan is incomplete — ${majorMissingCount} core checks are missing. Increase data coverage before making a risk call.`
         : rugRiskLabel === 'critical'
-          ? 'CORTEX Risk Engine flags critical rug risk from combined control and concentration signals.'
+          ? `CORTEX flags critical risk. Multiple rug vectors confirmed: ${riskDrivers.slice(0, 2).join('; ') || 'see risk drivers'}.`
           : rugRiskLabel === 'high'
-            ? 'CORTEX Risk Engine flags high risk and recommends a strict watch stance.'
+            ? `CORTEX flags high risk. Key concerns: ${riskDrivers.slice(0, 2).join('; ') || 'see risk drivers'}. Verify before exposure.`
             : rugRiskLabel === 'watch'
-              ? 'CORTEX Risk Engine shows watch conditions due to active risks or incomplete checks.'
-              : 'CORTEX Risk Engine shows low visible risk with currently verified signals.',
+              ? `CORTEX shows watch conditions. ${openChecks.length > 0 ? `Open: ${openChecks[0]}` : 'Active risk signals present'}.`
+              : `CORTEX shows low visible risk across verified checks. ${openChecks.length > 0 ? `${openChecks.length} check(s) still open.` : 'All major checks passed.'}`,
       verifiedSignals: riskVerifiedSignals,
       riskDrivers,
       openChecks,
+      dataFillScore,
       lpRisk: {
         status: lpProofStatus,
         confidence: lpProofStatus === 'not_applicable' ? 'medium' :
