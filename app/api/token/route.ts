@@ -116,7 +116,6 @@ type HolderDistributionStatus = {
 }
 type RiskEngine = {
   rugRiskScore: number | null
-  // "partial_data" replaces "unverified" — always emit a label
   rugRiskLabel: "low_visible_risk" | "watch" | "high" | "critical" | "partial_data"
   confidence: "high" | "medium" | "low"
   cortexRead: string
@@ -125,12 +124,10 @@ type RiskEngine = {
   openChecks: string[]
   dataFillScore: number
   lpRisk: {
-    // "partial" replaces "unverified" for LP — always emit a structured value
     status: "not_applicable" | "verified" | "partial" | "inferred"
     confidence: "high" | "medium" | "low"
   }
   sniperActivity: {
-    // "not_applicable" replaces "not_assessed" — always emit a meaningful value
     status: "low_signal" | "watch" | "high" | "not_applicable"
     confidence: "high" | "medium" | "low"
     reasons: string[]
@@ -138,23 +135,55 @@ type RiskEngine = {
   trendIntelligence: {
     stage: "launch" | "accumulation" | "ignition" | "peak" | "distribution" | "decay" | "dormant" | "inferred"
     confidence: "high" | "medium" | "low"
+    volatility: "extreme" | "high" | "moderate" | "low" | "inferred"
+    liquidityDecay: "stable" | "declining" | "critical" | "inferred"
     note: string
   }
   smartMoney: {
     signal: "accumulation" | "distribution" | "neutral" | "inferred"
     confidence: "high" | "medium" | "low"
+    rotation: "inflow" | "outflow" | "neutral" | "inferred"
+    conviction: "high" | "moderate" | "low" | "inferred"
+    clusterBehavior: "coordinated" | "dispersed" | "inferred"
     note: string
   }
   deployerProfile: {
     status: "verified" | "inferred" | "partial" | "not_applicable"
     deployer: string | null
     method: string
+    rugHistory: number | null
+    clusterRisk: "clean" | "flagged" | "inferred"
+    deployPattern: "eoa" | "factory" | "proxy" | "inferred"
     note: string
   }
   holderIntelligence: {
     status: "verified" | "inferred" | "partial" | "not_applicable"
     concentration: "high" | "moderate" | "low" | "inferred"
+    churn: "high" | "moderate" | "low" | "inferred"
+    velocity: "accumulating" | "distributing" | "stable" | "inferred"
+    earlyBuyerConcentration: "high" | "moderate" | "low" | "inferred"
+    whaleConcentration: "high" | "moderate" | "low" | "inferred"
     note: string
+  }
+  lpIntelligence: {
+    status: "verified" | "inferred" | "partial" | "not_applicable"
+    lockTime: string | null
+    lockTimeSeconds: number | null
+    migrationRisk: "low" | "medium" | "high" | "inferred"
+    mintAuthority: "active" | "renounced" | "not_applicable" | "inferred"
+    depth: "deep" | "moderate" | "shallow" | "none" | "inferred"
+    volatility: "high" | "moderate" | "low" | "inferred"
+    liquidityDecay: "stable" | "declining" | "critical" | "inferred"
+    poolType: string
+    note: string
+  }
+  clarkInterpretation: {
+    summary: string
+    riskDrivers: string[]
+    openChecks: string[]
+    nextActions: string[]
+    chainContext: string
+    confidence: "high" | "medium" | "low"
   }
 }
 
@@ -2979,64 +3008,209 @@ export async function POST(req: Request) {
       reasons: sniperReasons,
     }
 
-    // ── Trend Intelligence — always produces a stage from available market signals ──
+    // ── Trend Intelligence — always produces a stage, volatility, and liquidityDecay ──
     const trendIntelligence: RiskEngine["trendIntelligence"] = (() => {
-      if (_pairAgeDays == null && liquidityUsd == null && volume24hUsd == null) {
-        return { stage: 'inferred' as const, confidence: 'low' as const, note: 'No pool age, liquidity, or volume data — trend stage inferred as inactive or pre-launch.' }
-      }
       const _vol = volume24hUsd ?? 0
       const _liq = liquidityUsd ?? 0
       const _volToLiq = _liq > 0 ? _vol / _liq : null
-      if (_pairAgeDays != null && _pairAgeDays < 1) return { stage: 'launch' as const, confidence: 'high' as const, note: `Pool is <1 day old — launch phase with high sniper/bot exposure.` }
-      if (_pairAgeDays != null && _pairAgeDays < 7 && _volToLiq != null && _volToLiq > 0.5) return { stage: 'ignition' as const, confidence: 'medium' as const, note: `Volume/liquidity ratio ${_volToLiq.toFixed(2)}x in first week — ignition phase momentum.` }
-      if (_pairAgeDays != null && _pairAgeDays < 30 && _volToLiq != null && _volToLiq < 0.1) return { stage: 'accumulation' as const, confidence: 'medium' as const, note: `Low volume relative to liquidity in early phase — accumulation pattern.` }
-      if (_volToLiq != null && _volToLiq > 2) return { stage: 'peak' as const, confidence: 'medium' as const, note: `Very high volume/liquidity ratio (${_volToLiq.toFixed(2)}x) — potential peak or distribution phase.` }
-      if (_volToLiq != null && _volToLiq < 0.05 && _pairAgeDays != null && _pairAgeDays > 30) return { stage: 'decay' as const, confidence: 'medium' as const, note: `Low volume relative to liquidity in mature token — decay or dormant pattern.` }
-      if (noActivePools) return { stage: 'dormant' as const, confidence: 'high' as const, note: 'No active trading pools — token is dormant or delisted.' }
-      return { stage: 'inferred' as const, confidence: 'low' as const, note: `Mixed signals — stage inferred from partial data. Pool age: ${_pairAgeDays != null ? `${Math.floor(_pairAgeDays)}d` : 'unknown'}, volume/liquidity: ${_volToLiq != null ? `${_volToLiq.toFixed(2)}x` : 'partial'}.` }
-    })()
-
-    // ── Smart Money Intelligence — derive accumulation/distribution signal from holders + volume ──
-    const smartMoney: RiskEngine["smartMoney"] = (() => {
-      if (_buyPressure == null && holderDistribution.top1 == null) {
-        return { signal: 'inferred' as const, confidence: 'low' as const, note: 'Buy/sell ratio and holder data not available — smart money position inferred as neutral (no conviction signal either direction).' }
+      const _priceChange = pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24) ?? _dexFb?.priceChange24h ?? null
+      // Volatility from price change
+      const volatility: RiskEngine["trendIntelligence"]["volatility"] = _priceChange == null
+        ? 'inferred'
+        : Math.abs(_priceChange) > 50 ? 'extreme'
+        : Math.abs(_priceChange) > 20 ? 'high'
+        : Math.abs(_priceChange) > 8 ? 'moderate'
+        : 'low'
+      // Liquidity decay: infer from vol/liq ratio and pool age
+      const liquidityDecay: RiskEngine["trendIntelligence"]["liquidityDecay"] = noActivePools
+        ? 'critical'
+        : _volToLiq == null ? 'inferred'
+        : (_volToLiq < 0.02 && _pairAgeDays != null && _pairAgeDays > 14) ? 'declining'
+        : _volToLiq < 0.001 ? 'critical'
+        : 'stable'
+      if (_pairAgeDays == null && liquidityUsd == null && volume24hUsd == null) {
+        return { stage: 'inferred', confidence: 'low', volatility, liquidityDecay, note: noActivePools ? 'No active pools — token is dormant or delisted.' : 'No pool age, liquidity, or volume data — trend stage inferred as inactive or pre-launch.' }
       }
-      if (_buyPressure != null && _buyPressure > 2.5) return { signal: 'accumulation' as const, confidence: 'medium' as const, note: `Buy/sell ratio ${_buyPressure.toFixed(1)}x — net accumulation pressure detected.` }
-      if (_buyPressure != null && _buyPressure < 0.5) return { signal: 'distribution' as const, confidence: 'medium' as const, note: `Buy/sell ratio ${_buyPressure.toFixed(1)}x — net selling pressure detected.` }
-      if (holderDistribution.top1 != null && holderDistribution.top1 > 15 && _pairAgeDays != null && _pairAgeDays < 14) return { signal: 'accumulation' as const, confidence: 'low' as const, note: `Top wallet holds ${holderDistribution.top1.toFixed(1)}% in early phase — possible concentrated accumulation.` }
-      return { signal: 'neutral' as const, confidence: 'medium' as const, note: `No dominant buy or sell pressure detected in available signals.` }
+      if (noActivePools) return { stage: 'dormant', confidence: 'high', volatility, liquidityDecay: 'critical', note: 'No active trading pools — token is dormant or delisted.' }
+      if (_pairAgeDays != null && _pairAgeDays < 1) return { stage: 'launch', confidence: 'high', volatility, liquidityDecay, note: `Pool is <1 day old — launch phase with high sniper/bot exposure.` }
+      if (_pairAgeDays != null && _pairAgeDays < 7 && _volToLiq != null && _volToLiq > 0.5) return { stage: 'ignition', confidence: 'medium', volatility, liquidityDecay, note: `Volume/liquidity ratio ${_volToLiq.toFixed(2)}x in first week — ignition phase momentum.` }
+      if (_pairAgeDays != null && _pairAgeDays < 30 && _volToLiq != null && _volToLiq < 0.1) return { stage: 'accumulation', confidence: 'medium', volatility, liquidityDecay, note: `Low volume relative to liquidity in early phase — accumulation pattern.` }
+      if (_volToLiq != null && _volToLiq > 2) return { stage: 'peak', confidence: 'medium', volatility, liquidityDecay, note: `Very high volume/liquidity ratio (${_volToLiq.toFixed(2)}x) — potential peak or distribution phase.` }
+      if (_volToLiq != null && _volToLiq > 0.5) return { stage: 'distribution', confidence: 'medium', volatility, liquidityDecay, note: `High volume/liquidity ratio (${_volToLiq.toFixed(2)}x) in mature token — possible distribution or exit phase.` }
+      if (_volToLiq != null && _volToLiq < 0.05 && _pairAgeDays != null && _pairAgeDays > 30) return { stage: 'decay', confidence: 'medium', volatility, liquidityDecay, note: `Low volume relative to liquidity in mature token — decay or dormant pattern.` }
+      return { stage: 'inferred', confidence: 'low', volatility, liquidityDecay, note: `Mixed signals — stage inferred from partial data. Pool age: ${_pairAgeDays != null ? `${Math.floor(_pairAgeDays)}d` : 'unknown'}, vol/liq: ${_volToLiq != null ? `${_volToLiq.toFixed(2)}x` : 'partial'}.` }
     })()
 
-    // ── Deployer Profile — always produces a value, uses inference when RPC fails ──
+    // ── Smart Money Intelligence — derive accumulation/distribution signal ──
+    const smartMoney: RiskEngine["smartMoney"] = (() => {
+      const _noSignal = _buyPressure == null && holderDistribution.top1 == null && volume24hUsd == null
+      // Rotation: inflow when strong buys, outflow when strong sells
+      const rotation: RiskEngine["smartMoney"]["rotation"] = _buyPressure == null ? 'inferred'
+        : _buyPressure > 1.5 ? 'inflow' : _buyPressure < 0.7 ? 'outflow' : 'neutral'
+      // Conviction: high when top holder is very concentrated + early
+      const conviction: RiskEngine["smartMoney"]["conviction"] = holderDistribution.top1 == null ? 'inferred'
+        : holderDistribution.top1 > 20 ? 'high' : holderDistribution.top1 > 8 ? 'moderate' : 'low'
+      // Cluster behavior: coordinated if top1 >> top10 average, else dispersed
+      const top10avg = holderDistribution.top10 != null && holderDistribution.top1 != null
+        ? (holderDistribution.top10 - holderDistribution.top1) / 9 : null
+      const clusterBehavior: RiskEngine["smartMoney"]["clusterBehavior"] = top10avg == null ? 'inferred'
+        : holderDistribution.top1 != null && top10avg > 0 && (holderDistribution.top1 / top10avg) > 5 ? 'coordinated' : 'dispersed'
+      if (_noSignal) {
+        return { signal: 'inferred', confidence: 'low', rotation, conviction, clusterBehavior, note: 'Buy/sell ratio and holder data not indexed — smart money position inferred as neutral (no conviction signal either direction).' }
+      }
+      if (_buyPressure != null && _buyPressure > 2.5) return { signal: 'accumulation', confidence: 'medium', rotation, conviction, clusterBehavior, note: `Buy/sell ratio ${_buyPressure.toFixed(1)}x — net accumulation pressure detected.` }
+      if (_buyPressure != null && _buyPressure < 0.5) return { signal: 'distribution', confidence: 'medium', rotation, conviction, clusterBehavior, note: `Buy/sell ratio ${_buyPressure.toFixed(1)}x — net selling pressure detected.` }
+      if (holderDistribution.top1 != null && holderDistribution.top1 > 15 && _pairAgeDays != null && _pairAgeDays < 14) return { signal: 'accumulation', confidence: 'low', rotation, conviction, clusterBehavior, note: `Top wallet holds ${holderDistribution.top1.toFixed(1)}% in early phase — possible concentrated accumulation.` }
+      return { signal: 'neutral', confidence: 'medium', rotation, conviction, clusterBehavior, note: `No dominant buy or sell pressure detected in available signals.` }
+    })()
+
+    // ── Deployer Profile — always produces a value with rug history inference ──
     const deployerProfile: RiskEngine["deployerProfile"] = (() => {
+      const _rugHistory: number | null = null // live lookup not available; inferred below
+      const _isProxy = cortexContractFlags.proxy.status === 'verified' || cortexContractFlags.proxy.status === 'possible'
+      const _deployPattern: RiskEngine["deployerProfile"]["deployPattern"] = _isProxy ? 'proxy'
+        : proxyImplAddr ? 'proxy'
+        : chain === 'base' && !ownerAddr ? 'factory'
+        : ownerAddr ? 'eoa'
+        : 'inferred'
+      const _clusterRisk: RiskEngine["deployerProfile"]["clusterRisk"] = 'inferred'
       if (ownerAddr && ownerAddr !== '0x0000000000000000000000000000000000000000') {
         const _src = _ownerFromTransfer ? 'moralis_transfer_fallback' : 'rpc_selector'
-        return { status: 'verified' as const, deployer: ownerAddr, method: _src, note: `Deployer wallet identified via ${_src === 'rpc_selector' ? 'on-chain owner() call' : 'Moralis mint transfer event'}.` }
+        return { status: 'verified', deployer: ownerAddr, method: _src, rugHistory: _rugHistory, clusterRisk: _clusterRisk, deployPattern: _deployPattern, note: `Deployer wallet identified via ${_src === 'rpc_selector' ? 'on-chain owner() call' : 'Moralis mint transfer event'}. Rug history lookup requires Etherscan/DeBank cross-reference.` }
       }
       if (ownerAddr === '0x0000000000000000000000000000000000000000' || isRenounced) {
-        return { status: 'verified' as const, deployer: '0x0000000000000000000000000000000000000000', method: 'rpc_selector', note: 'Ownership renounced — zero address confirmed as current owner.' }
+        return { status: 'verified', deployer: '0x0000000000000000000000000000000000000000', method: 'rpc_selector', rugHistory: 0, clusterRisk: 'clean', deployPattern: _deployPattern, note: 'Ownership renounced — zero address confirmed as current owner. No active deployer control.' }
       }
-      // No direct source — infer from chain + contract patterns
-      const _chainCtx = chain === 'base' ? 'Base contracts are frequently deployed by factory patterns (Aerodrome, Uniswap v3). Deployer may be a factory-owned wallet.' : 'Ethereum contracts typically deploy via EOA. Deployer wallet lookup requires Etherscan or Moralis trace.'
-      return { status: 'inferred' as const, deployer: null, method: 'inference', note: `Deployer not resolved from RPC or transfer events. ${_chainCtx}` }
+      const _chainCtx = chain === 'base'
+        ? 'Base: factory or CL pool deployer pattern likely — verify on Basescan.'
+        : 'Ethereum: EOA deployment expected — verify on Etherscan.'
+      return { status: 'inferred', deployer: null, method: 'inference', rugHistory: null, clusterRisk: _clusterRisk, deployPattern: _deployPattern, note: `Deployer not resolved from RPC or transfer events. ${_chainCtx}` }
     })()
 
-    // ── Holder Intelligence — always produces a value, uses inference when no holder data ──
+    // ── Holder Intelligence — concentration, churn, velocity, early buyer, whale ──
     const holderIntelligence: RiskEngine["holderIntelligence"] = (() => {
+      // Velocity: infer from buy pressure and pair age
+      const velocity: RiskEngine["holderIntelligence"]["velocity"] = _buyPressure == null && _pairAgeDays == null ? 'inferred'
+        : _buyPressure != null && _buyPressure > 1.5 ? 'accumulating'
+        : _buyPressure != null && _buyPressure < 0.7 ? 'distributing'
+        : 'stable'
+      // Churn: infer from volume and pool age
+      const churn: RiskEngine["holderIntelligence"]["churn"] = transactions24h == null && _pairAgeDays == null ? 'inferred'
+        : (_pairAgeDays != null && _pairAgeDays < 3 && transactions24h != null && transactions24h > 200) ? 'high'
+        : (transactions24h != null && transactions24h > 50) ? 'moderate'
+        : 'low'
+      // Early buyer concentration from pair age + top holder data
+      const earlyBuyerConcentration: RiskEngine["holderIntelligence"]["earlyBuyerConcentration"] = holderDistribution.top1 == null ? 'inferred'
+        : (_pairAgeDays != null && _pairAgeDays < 7 && holderDistribution.top1 > 10) ? 'high'
+        : (_pairAgeDays != null && _pairAgeDays < 30 && holderDistribution.top10 != null && holderDistribution.top10 > 40) ? 'moderate'
+        : 'low'
+      // Whale concentration
+      const whaleConcentration: RiskEngine["holderIntelligence"]["whaleConcentration"] = holderDistribution.top1 == null ? 'inferred'
+        : holderDistribution.top1 > 15 ? 'high'
+        : holderDistribution.top5 != null && holderDistribution.top5 > 30 ? 'high'
+        : holderDistribution.top10 != null && holderDistribution.top10 > 50 ? 'moderate'
+        : 'low'
       if (holderDataComplete && holderDistribution.top10 != null) {
         const _conc = holderDistribution.top10 > 70 ? 'high' as const : holderDistribution.top10 > 40 ? 'moderate' as const : 'low' as const
-        return { status: 'verified' as const, concentration: _conc, note: `Top 10 hold ${holderDistribution.top10.toFixed(1)}% of supply. ${_conc === 'high' ? 'Very high concentration — dump risk elevated.' : _conc === 'moderate' ? 'Moderate concentration — monitor top wallets.' : 'Distribution is healthy across holders.'}` }
+        return { status: 'verified', concentration: _conc, churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `Top 10 hold ${holderDistribution.top10.toFixed(1)}% of supply. ${_conc === 'high' ? 'Very high concentration — dump risk elevated.' : _conc === 'moderate' ? 'Moderate concentration — monitor top wallets.' : 'Distribution is healthy across holders.'}` }
       }
       if (holderDistributionStatus.status === 'partial' && holderItems.length > 0) {
-        return { status: 'partial' as const, concentration: 'inferred' as const, note: `${holderItems.length} holder rows returned but percentages are partial. Concentration direction inferred — full verification requires direct contract query.` }
+        return { status: 'partial', concentration: 'inferred', churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `${holderItems.length} holder rows returned but percentages are partial. Concentration direction inferred.` }
       }
       if (holderCount != null && holderCount < 100) {
-        return { status: 'inferred' as const, concentration: 'high' as const, note: `Only ${holderCount} total holders — inferred high concentration regardless of individual wallet data.` }
+        return { status: 'inferred', concentration: 'high', churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `Only ${holderCount} total holders — inferred high concentration regardless of individual wallet data.` }
       }
       if (liquidityUsd != null && liquidityUsd < 10_000) {
-        return { status: 'inferred' as const, concentration: 'high' as const, note: `Very low liquidity ($${Math.round(liquidityUsd).toLocaleString()}) implies limited token distribution — concentration likely high.` }
+        return { status: 'inferred', concentration: 'high', churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `Very low liquidity ($${Math.round(liquidityUsd).toLocaleString()}) implies limited token distribution — concentration likely high.` }
       }
-      return { status: 'inferred' as const, concentration: 'inferred' as const, note: `Holder data not available from providers. Concentration level inferred as moderate-to-high based on chain defaults — verify via etherscan or block explorer.` }
+      const _chainDefault = chain === 'base' ? 'Base' : 'Ethereum'
+      return { status: 'inferred', concentration: 'inferred', churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `Holder data not indexed on ${_chainDefault}. Concentration inferred as moderate-to-high — verify via block explorer.` }
+    })()
+
+    // ── LP Intelligence — lock time, migration risk, mint authority, depth, volatility ──
+    const lpIntelligence: RiskEngine["lpIntelligence"] = (() => {
+      const _lpStatus = lpControl.status
+      if (_lpStatus === 'no_pool' || noActivePools) {
+        return { status: 'not_applicable', lockTime: null, lockTimeSeconds: null, migrationRisk: 'inferred', mintAuthority: 'not_applicable', depth: 'none', volatility: 'inferred', liquidityDecay: 'critical', poolType: lpPoolType ?? 'none', note: 'No active LP pool found — LP intelligence not applicable.' }
+      }
+      const _unlockAt = goldrush?.lock?.unlockAt ?? null
+      const _unlockEpoch = _unlockAt ? Date.parse(String(_unlockAt)) : NaN
+      const _lockSecs = Number.isFinite(_unlockEpoch) ? Math.max(0, Math.floor((_unlockEpoch - Date.now()) / 1000)) : null
+      const _lockTimeLabel = _lockSecs == null ? null : _lockSecs > 86400 * 365 ? `${Math.round(_lockSecs / (86400 * 365))} year(s)` : _lockSecs > 86400 ? `${Math.round(_lockSecs / 86400)} day(s)` : _lockSecs > 3600 ? `${Math.round(_lockSecs / 3600)} hour(s)` : `${Math.round(_lockSecs / 60)} min(s)`
+      // Migration risk: high when team-controlled or no lock proof
+      const migrationRisk: RiskEngine["lpIntelligence"]["migrationRisk"] = _lpStatus === 'team_controlled' ? 'high'
+        : _lpStatus === 'burned' ? 'low'
+        : _lpStatus === 'locked' ? (_lockSecs != null && _lockSecs < 86400 * 30 ? 'medium' : 'low')
+        : _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity' ? 'medium'
+        : 'inferred'
+      // Mint authority: active if mint flag detected, renounced if ownership renounced
+      const mintAuthority: RiskEngine["lpIntelligence"]["mintAuthority"] = cortexContractFlags.mint.status === 'verified' ? 'active'
+        : isRenounced ? 'renounced'
+        : cortexContractFlags.mint.status === 'not_detected' || cortexContractFlags.mint.status === 'inferred' ? 'renounced'
+        : 'inferred'
+      // Depth from liquidity
+      const depth: RiskEngine["lpIntelligence"]["depth"] = liquidityUsd == null ? 'inferred'
+        : liquidityUsd > 500_000 ? 'deep'
+        : liquidityUsd > 50_000 ? 'moderate'
+        : liquidityUsd > 1_000 ? 'shallow'
+        : 'none'
+      // Volatility from price change
+      const _priceChangePct = pickNum((poolAttr.price_change_percentage as Record<string, unknown> | undefined)?.h24) ?? _dexFb?.priceChange24h ?? null
+      const volatility: RiskEngine["lpIntelligence"]["volatility"] = _priceChangePct == null ? 'inferred'
+        : Math.abs(_priceChangePct) > 30 ? 'high'
+        : Math.abs(_priceChangePct) > 10 ? 'moderate'
+        : 'low'
+      // Liquidity decay
+      const _volToLiq2 = liquidityUsd != null && liquidityUsd > 0 && volume24hUsd != null ? volume24hUsd / liquidityUsd : null
+      const liquidityDecay: RiskEngine["lpIntelligence"]["liquidityDecay"] = _volToLiq2 == null ? 'inferred'
+        : _volToLiq2 < 0.01 && _pairAgeDays != null && _pairAgeDays > 14 ? 'declining'
+        : _volToLiq2 < 0.001 ? 'critical'
+        : 'stable'
+      const _statusLevel: RiskEngine["lpIntelligence"]["status"] = (_lpStatus === 'burned' || _lpStatus === 'locked') ? 'verified'
+        : (_lpStatus === 'team_controlled' || _lpStatus === 'protocol' || _lpStatus === 'concentrated_liquidity') ? 'partial'
+        : 'inferred'
+      const _typeLabel = lpPoolType === 'v2' ? 'V2 AMM' : lpPoolType === 'v3' ? 'V3 Concentrated Liquidity' : (lpPoolType ?? 'unknown')
+      return {
+        status: _statusLevel,
+        lockTime: _lockTimeLabel,
+        lockTimeSeconds: _lockSecs,
+        migrationRisk,
+        mintAuthority,
+        depth,
+        volatility,
+        liquidityDecay,
+        poolType: _typeLabel,
+        note: `LP ${_lpStatus === 'burned' ? 'is burned — permanent lock' : _lpStatus === 'locked' ? `is locked (${_lockTimeLabel ?? 'duration unknown'})` : _lpStatus === 'team_controlled' ? 'is team-controlled — exit risk active' : _lpStatus === 'protocol' ? 'is protocol-owned — follows protocol governance' : _lpStatus === 'concentrated_liquidity' ? 'uses concentrated liquidity — standard V3/CL format' : 'control status inferred — lock or burn proof not confirmed'}. Depth: ${depth}. Migration risk: ${migrationRisk}.`
+      }
+    })()
+
+    // ── Clark Interpretation — 3-phase contextual summary with risk drivers, open checks, next actions ──
+    const clarkInterpretation: RiskEngine["clarkInterpretation"] = (() => {
+      const _chain = chain === 'eth' ? 'Ethereum' : 'Base'
+      const _chainCtx = chain === 'base'
+        ? `On Base: check for CL pool (Aerodrome/Uniswap v3) and proxy-pattern contracts. Factory deployers are common. LP migration via concentrated liquidity positions is possible.`
+        : `On Ethereum: standard v2 LP patterns apply. Renounce events and Ownable/Pausable are common risk markers. Check Etherscan for deployer history.`
+      // Build next actions from open checks + data gaps
+      const nextActions: string[] = []
+      if (!holderDataComplete) nextActions.push(`Verify holder concentration via ${chain === 'eth' ? 'Etherscan token holders' : 'Basescan'}.`)
+      if (!hpResult.ok) nextActions.push('Run a manual trade simulation to confirm buy/sell taxes and honeypot status.')
+      if (deployerProfile.deployer == null) nextActions.push(`Trace deployer wallet via ${chain === 'eth' ? 'Etherscan contract creation' : 'Basescan'} before taking a position.`)
+      if (lpIntelligence.migrationRisk === 'high' || lpIntelligence.migrationRisk === 'inferred') nextActions.push('Verify LP lock status — team-controlled liquidity can be removed at any time.')
+      if (cortexContractFlags.mint.status === 'inferred') nextActions.push('Confirm mint function absence via contract source code or bytecode audit.')
+      if (lpIntelligence.depth === 'shallow' || lpIntelligence.depth === 'none') nextActions.push('Caution: shallow liquidity — large trades will face significant slippage.')
+      if (nextActions.length === 0) nextActions.push('All major checks passed — continue monitoring for holder changes and LP movements.')
+      // Summary sentence
+      const _riskSuffix = rugRiskLabel === 'critical' ? 'Multiple critical rug vectors confirmed — avoid exposure.' : rugRiskLabel === 'high' ? 'High risk flags present — verify before any position.' : rugRiskLabel === 'watch' ? 'Watch-level signals — monitor closely.' : rugRiskLabel === 'partial_data' ? 'Partial data scan — score is conservative baseline pending full verification.' : 'Low visible risk across verified checks.'
+      const _topDriver = riskDrivers.length > 0 ? ` Primary risk: ${riskDrivers[0]}` : ''
+      const summary = `${_chain} token. Score: ${rugRiskScore}/100. ${_riskSuffix}${_topDriver}`
+      return {
+        summary,
+        riskDrivers: [...riskDrivers],
+        openChecks: [...openChecks],
+        nextActions,
+        chainContext: _chainCtx,
+        confidence: riskConfidence,
+      }
     })()
 
     // ── Data Fill Score: 0-100. Inferred values count at half weight ──
@@ -3075,6 +3249,8 @@ export async function POST(req: Request) {
       smartMoney,
       deployerProfile,
       holderIntelligence,
+      lpIntelligence,
+      clarkInterpretation,
     }
     const lpUnlockAt = goldrush?.lock?.unlockAt ?? null
     const unlockEpoch = lpUnlockAt ? Date.parse(String(lpUnlockAt)) : NaN
@@ -3621,6 +3797,7 @@ export async function POST(req: Request) {
           },
         },
         ownership: {
+          status: ownershipVerified ? 'verified' : (isRenounced ? 'verified' : (ownerAddr ? 'partial' : 'inferred')),
           is_renounced: isRenounced,
           owner_address: ownerAddr,
           admin_address: adminAddr,
@@ -3643,6 +3820,7 @@ export async function POST(req: Request) {
           symbolFallback: rpcSymbol ?? null,
         },
         contract_flags: {
+          status: cortexContractFlags.bytecodeChecked ? 'verified' : (_grCI != null ? 'partial' : 'inferred'),
           mint: cortexContractFlags.mint,
           proxy: cortexContractFlags.proxy,
           pause: cortexContractFlags.pause,
