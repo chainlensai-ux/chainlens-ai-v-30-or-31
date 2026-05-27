@@ -261,6 +261,25 @@ type VerdictInput = {
   supports: Array<'verdict'|'marketRead'|'securityRead'|'holderSupplyRead'|'liquidityPoolsRead'|'bullCase'|'bearCase'|'missingChecks'|'nextAction'>
 }
 
+const formatSignalStateLabel = (state: SignalState): string => {
+  switch (state) {
+    case 'needs_holder_confirmation':
+      return 'Needs holder confirmation'
+    case 'no_signal_from_available_data':
+      return 'No signal from available data'
+    case 'not_applicable':
+      return 'Not applicable'
+    case 'partial':
+      return 'Partial'
+    case 'inferred':
+      return 'Inferred'
+    case 'verified':
+      return 'Verified'
+    default:
+      return 'No signal from available data'
+  }
+}
+
 // ─── Formatters ───────────────────────────────────────────────────────────
 
 function fmtPrice(v: number | null | undefined): string {
@@ -2782,15 +2801,19 @@ export default function TerminalTokenScanner() {
                   ? 'verified · creator appears in top holders'
                   : creatorInTop === false
                     ? 'verified · creator not in top holders'
-                    : 'needs_holder_confirmation'
+                    : formatSignalStateLabel('needs_holder_confirmation')
                 const devClusterLabel = devClusterSupply != null
                   ? `verified · ${devClusterSupply.toFixed(1)}% cluster supply detected`
                   : holderState.kind === 'rowsWithPercent'
-                    ? 'no_signal_from_available_data'
-                    : 'needs_holder_confirmation'
+                    ? formatSignalStateLabel('no_signal_from_available_data')
+                    : formatSignalStateLabel('needs_holder_confirmation')
                 const suspiciousLabel = suspiciousTransferPattern === true
                   ? 'inferred · suspicious transfer pattern detected'
-                  : 'no_signal_from_available_data'
+                  : formatSignalStateLabel('no_signal_from_available_data')
+                const top1 = devIntel?.holderDistribution?.top1 ?? result.holderDistribution?.top1 ?? null
+                const top10 = devIntel?.holderDistribution?.top10 ?? result.holderDistribution?.top10 ?? null
+                const top20 = devIntel?.holderDistribution?.top20 ?? result.holderDistribution?.top20 ?? null
+                const hasTopHolderConcentration = top1 != null && top10 != null && top20 != null
                 const confirmedSignals = [
                   creatorStatus === 'confirmed' ? 'Creator confirmed.' : creatorStatus === 'likely' ? 'Creator likely found.' : null,
                   linkedWalletCount != null ? `${linkedWalletCount} linked wallet${linkedWalletCount === 1 ? '' : 's'} detected.` : null,
@@ -2803,7 +2826,7 @@ export default function TerminalTokenScanner() {
                   ...(holderState.kind !== 'rowsWithPercent' ? ['Holder distribution partial · Linked-wallet supply needs confirmation.'] : []),
                   ...(creatorInTop == null ? ['Creator top-holder visibility not confirmed.'] : []),
                 ]
-                const cortexDevRead = `${creatorState} creator signal${linkedWalletCount != null ? ` · verified linked wallets: ${linkedWalletCount}` : ' · partial linked-wallet mapping'}. ${devClusterSupply == null ? 'needs_holder_confirmation for dev-cluster supply.' : `verified dev-cluster supply near ${devClusterSupply.toFixed(1)}%.`} ${next}`
+                const cortexDevRead = `${formatSignalStateLabel(creatorState)} creator signal${linkedWalletCount != null ? ` · verified linked wallets: ${linkedWalletCount}` : ' · partial linked-wallet mapping'}. ${devClusterSupply == null ? `${formatSignalStateLabel('needs_holder_confirmation')} for dev-cluster supply.` : `verified dev-cluster supply near ${devClusterSupply.toFixed(1)}%.`} ${next}`
                 return(
                   <>
                     <div style={{ marginBottom:'18px' }}>
@@ -2815,14 +2838,14 @@ export default function TerminalTokenScanner() {
                         { label:'Creator / Origin Wallet', value: `${creatorStateLabel}${creatorAddress ? ` · ${shorten(creatorAddress)}` : ''}`, color: creatorState === 'verified' ? '#34d399' : creatorState === 'inferred' ? '#fbbf24' : '#94a3b8' },
                         { label:'Linked Wallets', value: linkedWalletLabel, color: linkedWalletState === 'verified' ? (linkedWalletCount && linkedWalletCount > 0 ? '#fbbf24' : '#34d399') : '#94a3b8' },
                         { label:'Creator in Top Holders', value: creatorTopHolderLabel, color: creatorInTop === true ? '#fbbf24' : creatorInTop === false ? '#34d399' : '#94a3b8' },
-                        { label:'Top Holder Concentration', value: `Top1 ${devIntel?.holderDistribution?.top1?.toFixed?.(1) ?? result.holderDistribution?.top1?.toFixed?.(1) ?? 'partial'}% · Top10 ${devIntel?.holderDistribution?.top10?.toFixed?.(1) ?? result.holderDistribution?.top10?.toFixed?.(1) ?? 'partial'}% · Top20 ${devIntel?.holderDistribution?.top20?.toFixed?.(1) ?? result.holderDistribution?.top20?.toFixed?.(1) ?? 'partial'}%`, color:'#a78bfa' },
-                        { label:'Linked-wallet Supply', value: linkedWalletSupply != null ? `${linkedWalletSupply.toFixed(1)}% linked-wallet supply` : 'needs_holder_confirmation', color: linkedWalletSupply != null ? '#fbbf24' : '#94a3b8' },
+                        { label:'Top Holder Concentration', value: hasTopHolderConcentration ? `Top 1: ${top1.toFixed(1)}%\nTop 10: ${top10.toFixed(1)}%\nTop 20: ${top20.toFixed(1)}%` : 'Needs holder confirmation.', color:'#a78bfa' },
+                        { label:'Linked-wallet Supply', value: linkedWalletSupply != null ? `${linkedWalletSupply.toFixed(1)}% linked-wallet supply` : formatSignalStateLabel('needs_holder_confirmation'), color: linkedWalletSupply != null ? '#fbbf24' : '#94a3b8' },
                         { label:'Dev Cluster Supply', value: devClusterLabel, color: devClusterSupply != null && devClusterSupply > 20 ? '#f87171' : devClusterSupply != null ? '#fbbf24' : '#94a3b8' },
-                        { label:'Transfer Pattern', value: suspiciousTransferPattern === true ? 'suspicious' : 'no_signal_from_available_data', color: suspiciousTransferPattern === true ? '#f87171' : '#34d399' },
+                        { label:'Transfer Pattern', value: suspiciousTransferPattern === true ? 'Suspicious transfer pattern detected' : 'No suspicious transfer pattern found', color: suspiciousTransferPattern === true ? '#f87171' : '#34d399' },
                       ].map((card) => (
                         <div key={card.label} style={{ padding:'12px 13px', borderRadius:'12px', border:`1px solid ${card.color}33`, background:'rgba(8,14,28,0.72)' }}>
                           <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#64748b', textTransform:'uppercase', fontFamily:'var(--font-plex-mono)' }}>{card.label}</p>
-                          <p style={{ margin:0, fontSize:'12px', color:card.color, lineHeight:1.5, fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>{card.value}</p>
+                          <p style={{ margin:0, fontSize:'12px', color:card.color, lineHeight:1.5, fontFamily:'var(--font-plex-mono)', fontWeight:700, whiteSpace:'pre-line' }}>{card.value}</p>
                         </div>
                       ))}
                     </div>
