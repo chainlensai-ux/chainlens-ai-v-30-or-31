@@ -394,7 +394,7 @@ function humanizeReasonCode(reason?: string): string {
     no_active_liquidity_pool_found:                   'No active liquidity pool was found.',
     partial_market_fields_from_provider:              'Some market fields unavailable.',
     partial_market_data:                              'Some market fields unavailable.',
-    holder_data_unavailable:                          'Holder data unavailable for this scan.',
+    holder_data_unavailable:                          'Holder data partial — limited data available.',
   }
   if (map[reason]) return map[reason]
   if (/^[a-z0-9_]+$/.test(reason)) return reason.replace(/_/g, ' ')
@@ -446,9 +446,10 @@ function holderSafeReason(
   hasRows: boolean
 ): string {
   if (hasRows) return 'Holder data available.'
-  if (providerStatus === 'unavailable') return 'Holder data unavailable for this scan.'
+  if (providerStatus === 'unavailable') return 'Holder data partial — API key required for full detail.'
+  if (providerStatus === 'partial') return 'Holder data partial — limited data available.'
   if (providerStatus === 'error') return 'Holder data returned no usable rows.'
-  if (providerStatus === 'empty') return 'Holder data unavailable for this token.'
+  if (providerStatus === 'empty') return 'Holder data partial — no rows returned.'
   return 'Holder concentration currently unverified.'
 }
 
@@ -1355,7 +1356,11 @@ export default function TerminalTokenScanner() {
   async function handleScan(override?: string, chainOverride?: 'base' | 'eth') {
     const q             = (override ?? input).trim()
     const effectiveChain = chainOverride ?? chain
-    if (!q || loading) return
+    if (!q) {
+      setError('Please enter a token contract address before scanning.')
+      return
+    }
+    if (loading) return
     setLoading(true)
     setClarkLoading(true)
     setError(null)
@@ -1375,9 +1380,14 @@ export default function TerminalTokenScanner() {
         body: JSON.stringify({ contract: q, chain: effectiveChain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       const json = await res.json()
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[scanner] /api/token response', json)
+      }
       if (!res.ok || json.error) {
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
+        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${effectiveChain === 'eth' ? 'Ethereum' : 'Base'}. Try switching chains.`)
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
+        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${effectiveChain === 'eth' ? 'Ethereum' : 'Base'} for this token.`)
         else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
@@ -1689,6 +1699,11 @@ export default function TerminalTokenScanner() {
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Unverified' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
                 const lpProofLabel = lpMode === 'protocol' ? 'Not Applicable' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Team Controlled' : lpStatus === 'partial' ? 'Partial' : lpStatus === 'no_pool' ? 'No Pool' : lpStatus === 'unverified' ? 'Unverified' : lpMode === 'unknown' ? 'Unknown model' : 'Unverified'
                 const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Unverified'
+                const degradedBadges = [
+                  result.lpControl?.status === 'unverified' ? 'Unverified LP' : null,
+                  result.holderDistributionStatus?.status === 'partial' ? 'Partial Holders' : null,
+                  (result.noActivePools || result.marketCapStatus === 'unavailable') ? 'Market Data Unavailable' : null,
+                ].filter(Boolean) as string[]
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
                   { label: 'Liquidity', ok: (result.liquidity ?? 0) > 1000, reason: (result.liquidity ?? 0) > 1000 ? `${fmtLarge(result.liquidity)} depth detected.` : 'Liquidity too thin or missing.' },
@@ -1742,6 +1757,13 @@ export default function TerminalTokenScanner() {
                         </div>
                       ))}
                     </div>
+                    {degradedBadges.length > 0 && (
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '0 0 14px' }}>
+                        {degradedBadges.map((badge) => (
+                          <span key={badge} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', color: '#fbbf24', border: '1px solid rgba(251,191,36,.45)', borderRadius: '999px', padding: '4px 9px', background: 'rgba(146,64,14,.24)' }}>{badge}</span>
+                        ))}
+                      </div>
+                    )}
                     <div style={{ marginBottom:'20px', padding:'14px 16px', borderRadius:'12px', border:'1px solid rgba(125,211,252,0.18)', background:'rgba(8,14,28,0.65)' }}>
                       <p style={{ margin:'0 0 10px', fontSize:'10px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
                       <div style={{ display:'grid', gap:'7px' }}>

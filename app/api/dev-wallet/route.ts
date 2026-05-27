@@ -91,6 +91,7 @@ interface PlanResolution {
   plan: 'free' | 'pro' | 'elite'
   hasBearer: boolean
   userPresent: boolean
+  userId: string | null
   settingsRowFound: boolean
   planSource: 'user_settings' | 'fallback'
 }
@@ -99,51 +100,27 @@ async function resolveServerPlan(req: Request): Promise<PlanResolution> {
   const auth = req.headers.get('authorization') ?? ''
   const hasBearer = auth.toLowerCase().startsWith('bearer ') && auth.slice(7).trim().length > 0
   if (!hasBearer) return {
-    rawPlan: 'free',
-    effectivePlan: 'free',
-    trialActive: false,
-    trialEndsAt: null,
-    isProOrElite: false,
-    gateDecision: 'deny',
-    authSource: 'none',
-    plan: 'free',
-    hasBearer: false,
-    userPresent: false,
-    settingsRowFound: false,
-    planSource: 'fallback',
+    rawPlan: 'free', effectivePlan: 'free', trialActive: false, trialEndsAt: null,
+    isProOrElite: false, gateDecision: 'deny', authSource: 'none', plan: 'free',
+    hasBearer: false, userPresent: false, userId: null, settingsRowFound: false, planSource: 'fallback',
   }
   const token = auth.slice(7).trim()
   try {
     const result = await getCurrentUserPlanFromBearerToken(token)
     const isProOrElite = result.plan === 'pro' || result.plan === 'elite'
     return {
-      rawPlan: result.rawPlan,
-      effectivePlan: result.plan,
-      trialActive: result.trialActive,
-      trialEndsAt: result.trialEndsAt,
-      isProOrElite,
-      gateDecision: isProOrElite ? 'allow' : 'deny',
-      authSource: 'bearer',
-      plan: result.plan,
-      hasBearer: true,
-      userPresent: result.userId !== null,
+      rawPlan: result.rawPlan, effectivePlan: result.plan, trialActive: result.trialActive,
+      trialEndsAt: result.trialEndsAt, isProOrElite, gateDecision: isProOrElite ? 'allow' : 'deny',
+      authSource: 'bearer', plan: result.plan, hasBearer: true,
+      userPresent: result.userId !== null, userId: result.userId ?? null,
       settingsRowFound: result.settingsRowFound,
       planSource: result.settingsRowFound ? 'user_settings' : 'fallback',
     }
   } catch {
     return {
-      rawPlan: 'free',
-      effectivePlan: 'free',
-      trialActive: false,
-      trialEndsAt: null,
-      isProOrElite: false,
-      gateDecision: 'deny',
-      authSource: 'bearer',
-      plan: 'free',
-      hasBearer: true,
-      userPresent: false,
-      settingsRowFound: false,
-      planSource: 'fallback',
+      rawPlan: 'free', effectivePlan: 'free', trialActive: false, trialEndsAt: null,
+      isProOrElite: false, gateDecision: 'deny', authSource: 'bearer', plan: 'free',
+      hasBearer: true, userPresent: false, userId: null, settingsRowFound: false, planSource: 'fallback',
     }
   }
 }
@@ -186,6 +163,25 @@ interface MatchedHolder {
   supplyPct: number
   isDeployer: boolean
   isLinked: boolean
+}
+interface HolderRowInput {
+  address?: string
+  percent?: number | null
+  amount?: string | number | null
+  balance?: string | number | null
+}
+interface HolderPercentDerivationResult {
+  holderDistribution: {
+    top1: number | null
+    top10: number | null
+    top20: number | null
+    holderCount: number | null
+    topHolders: Array<{ address: string; percent: number | null }>
+  } | null
+  holderDistributionStatus: 'ok' | 'partial' | 'unavailable'
+  holderPercentAvailable: boolean
+  holderPercentSource: string | null
+  debug: Record<string, unknown>
 }
 
 interface PreviousProject {
@@ -670,6 +666,7 @@ async function getSupplyData(
   deployer: string | null,
   linkedWallets: LinkedWallet[],
   preloadedTopHolders?: Array<{ address?: string; percent?: number | null }>,
+  scannerDataProvided?: boolean,
 ): Promise<{
   holderDataAvailable: boolean
   supplyControlled: number | null
@@ -679,13 +676,16 @@ async function getSupplyData(
 }> {
   const linkedSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
 
-  if (preloadedTopHolders && preloadedTopHolders.length > 0) {
+  // When scanner explicitly provided holder data (even an empty array), use it directly
+  // and skip the GoldRush API fallback to avoid redundant calls that also fail without a key.
+  if (scannerDataProvided || (preloadedTopHolders && preloadedTopHolders.length > 0)) {
+    const holders = preloadedTopHolders ?? []
     if (!deployer && linkedSet.size === 0) {
-      return { holderDataAvailable: true, supplyControlled: null, matchedHolderWallets: [], holderStats: { top1: null, top10: null, top20: null, holderCount: preloadedTopHolders.length, creatorInTopHolders: false, linkedWalletSupply: null, devClusterSupply: null } }
+      return { holderDataAvailable: holders.length > 0, supplyControlled: null, matchedHolderWallets: [], holderStats: { top1: null, top10: null, top20: null, holderCount: holders.length, creatorInTopHolders: false, linkedWalletSupply: null, devClusterSupply: null } }
     }
     const matched: MatchedHolder[] = []
     let controlled = 0
-    for (const h of preloadedTopHolders) {
+    for (const h of holders) {
       const addr = (h.address ?? '').toLowerCase()
       if (!addr) continue
       const isDeployer = deployer ? addr === deployer.toLowerCase() : false
@@ -695,14 +695,14 @@ async function getSupplyData(
       controlled += pct
       matched.push({ address: addr, supplyPct: pct, isDeployer, isLinked })
     }
-    const top = preloadedTopHolders.map(h => (typeof h.percent === 'number' ? h.percent : 0))
+    const top = holders.map(h => (typeof h.percent === 'number' ? h.percent : 0))
     return {
-      holderDataAvailable: true,
-      supplyControlled: Math.round(controlled * 100) / 100,
+      holderDataAvailable: holders.length > 0,
+      supplyControlled: matched.length > 0 ? Math.round(controlled * 100) / 100 : null,
       matchedHolderWallets: matched.sort((a, b) => b.supplyPct - a.supplyPct),
       holderStats: {
         top1: top[0] ?? null, top10: top.slice(0, 10).reduce((a, b) => a + b, 0) || null, top20: top.slice(0, 20).reduce((a, b) => a + b, 0) || null,
-        holderCount: preloadedTopHolders.length, creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: Math.round(controlled * 100) / 100,
+        holderCount: holders.length, creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: matched.length > 0 ? Math.round(controlled * 100) / 100 : null,
       },
     }
   }
@@ -856,6 +856,69 @@ async function getPreviousActivity(deployer: string | null, excludeContract?: st
     previousProjects: [...byContract.values()].slice(0, 10),
     previousActivityStatus: 'limited_check',
     warning: null,
+  }
+}
+
+function toBigIntSafe(value: unknown): bigint | null {
+  if (value == null) return null
+  const s = String(value).trim()
+  if (!s || s.includes('.') || /[eE]/.test(s)) return null
+  try { return BigInt(s) } catch { return null }
+}
+
+async function deriveHolderPercentages(contract: string, holderRows: HolderRowInput[] | null | undefined, scannerTop: { top1?: number | null; top10?: number | null; top20?: number | null } | null | undefined): Promise<HolderPercentDerivationResult> {
+  const rows = Array.isArray(holderRows) ? holderRows : []
+  const holderRowsCount = rows.length
+  const holderRowsHaveBalances = rows.some(r => toBigIntSafe(r.balance ?? r.amount) != null)
+  const scannerHasTop = typeof scannerTop?.top1 === 'number' || typeof scannerTop?.top10 === 'number' || typeof scannerTop?.top20 === 'number'
+  if (holderRowsCount === 0) return { holderDistribution: null, holderDistributionStatus: 'unavailable', holderPercentAvailable: false, holderPercentSource: null, debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved: null, totalSupplyResolved: false, totalSupplySource: null, percentDerivationAttempted: false, percentDerivationReason: 'no_holder_rows', top1: null, top10: null, top20: null } }
+  if (scannerHasTop) return {
+    holderDistribution: { top1: scannerTop?.top1 ?? null, top10: scannerTop?.top10 ?? null, top20: scannerTop?.top20 ?? null, holderCount: holderRowsCount, topHolders: rows.map(r => ({ address: String(r.address ?? '').toLowerCase(), percent: typeof r.percent === 'number' ? r.percent : null })) },
+    holderDistributionStatus: 'ok',
+    holderPercentAvailable: true,
+    holderPercentSource: 'token_scanner_precalculated',
+    debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved: null, totalSupplyResolved: true, totalSupplySource: 'token_scanner_precalculated', percentDerivationAttempted: false, percentDerivationReason: 'scanner_top_values_present', top1: scannerTop?.top1 ?? null, top10: scannerTop?.top10 ?? null, top20: scannerTop?.top20 ?? null },
+  }
+  let totalSupply: bigint | null = null
+  let totalSupplySource: string | null = null
+  let tokenDecimalsResolved: number | null = null
+  try {
+    const [supplyHex, decHex] = await Promise.all([
+      alchemyRpc('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest']) as Promise<string>,
+      alchemyRpc('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest']) as Promise<string>,
+    ])
+    if (typeof supplyHex === 'string' && /^0x[0-9a-fA-F]+$/.test(supplyHex) && supplyHex !== '0x' && supplyHex !== '0x0') totalSupply = BigInt(supplyHex)
+    if (typeof decHex === 'string' && /^0x[0-9a-fA-F]+$/.test(decHex)) tokenDecimalsResolved = Number.parseInt(decHex, 16)
+    if (totalSupply && totalSupply > BigInt(0)) totalSupplySource = 'rpc_totalSupply'
+  } catch { /* ignore */ }
+  if (!totalSupply || totalSupply <= BigInt(0)) {
+    const providerSupply = rows.map(r => toBigIntSafe((r as Record<string, unknown>).total_supply)).find(v => v != null) ?? null
+    if (providerSupply && providerSupply > BigInt(0)) { totalSupply = providerSupply; totalSupplySource = 'provider_total_supply' }
+  }
+  if (!totalSupply || totalSupply <= BigInt(0)) {
+    let sum = BigInt(0)
+    for (const r of rows) { const b = toBigIntSafe(r.balance ?? r.amount); if (b != null) sum += b }
+    if (sum > BigInt(0)) { totalSupply = sum; totalSupplySource = 'summed_returned_rows' }
+  }
+  const percentDerivationAttempted = true
+  if (!totalSupply || totalSupply <= BigInt(0)) return { holderDistribution: null, holderDistributionStatus: 'partial', holderPercentAvailable: false, holderPercentSource: null, debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved, totalSupplyResolved: false, totalSupplySource, percentDerivationAttempted, percentDerivationReason: 'total_supply_unresolved', top1: null, top10: null, top20: null } }
+  const ranked = rows.map(r => {
+    const bal = toBigIntSafe(r.balance ?? r.amount) ?? BigInt(0)
+    const pct = Number((bal * BigInt(1000000)) / totalSupply) / 10000
+    return { address: String(r.address ?? '').toLowerCase(), percent: Number.isFinite(pct) ? pct : null }
+  })
+  const sorted = ranked.sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))
+  const sum = (n: number) => sorted.slice(0, n).reduce((acc, h) => acc + (h.percent ?? 0), 0)
+  const top1 = sorted[0]?.percent ?? null
+  const top10 = sum(10)
+  const top20 = sum(20)
+  const partial = totalSupplySource === 'summed_returned_rows'
+  return {
+    holderDistribution: { top1, top10, top20, holderCount: holderRowsCount, topHolders: sorted },
+    holderDistributionStatus: partial ? 'partial' : 'ok',
+    holderPercentAvailable: true,
+    holderPercentSource: totalSupplySource,
+    debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved, totalSupplyResolved: true, totalSupplySource, percentDerivationAttempted, percentDerivationReason: 'derived_from_balances_and_supply', top1, top10, top20 },
   }
 }
 
@@ -1435,7 +1498,7 @@ interface TokenEvidenceResult {
   reason: string
 }
 
-async function fetchTokenEvidence(origin: string, contractAddress: string, authHeader?: string): Promise<TokenEvidenceResult> {
+async function fetchTokenEvidence(origin: string, contractAddress: string, chain: string, authHeader?: string): Promise<TokenEvidenceResult> {
   const result: TokenEvidenceResult = { data: null, attempted: true, ok: false, httpStatus: null, reason: '' }
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', 'x-user-plan': 'pro' }
@@ -1443,7 +1506,7 @@ async function fetchTokenEvidence(origin: string, contractAddress: string, authH
     const res = await fetch(`${origin}/api/token`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ contract: contractAddress }),
+      body: JSON.stringify({ contract: contractAddress, chain }),
       cache: 'no-store',
       signal: AbortSignal.timeout(14000),
     })
@@ -1468,54 +1531,56 @@ export async function POST(req: Request) {
   try {
     const startedAt = Date.now()
     const debug = new URL(req.url).searchParams.get('debug') === 'true'
-    const planRes = await resolveServerPlan(req)
-    const { plan } = planRes
-    if (plan === 'free') return NextResponse.json({
-      error: 'Dev Wallet Detector is included in Pro and Elite.',
-      rateLimited: false,
-      _diagnostics: {
-        planGate: {
-          route: '/api/dev-wallet',
-          verifiedPlan: plan,
-          hasBearer: planRes.hasBearer,
-          userPresent: planRes.userPresent,
-          settingsRowFound: planRes.settingsRowFound,
-          planSource: planRes.planSource,
-          requiredPlan: 'pro',
-        },
-      },
-      ...(debug ? {
-        _debug: {
-          hasBearer: planRes.hasBearer,
-          userPresent: planRes.userPresent,
-          settingsRowFound: planRes.settingsRowFound,
-          rawPlan: planRes.rawPlan,
-          effectivePlan: planRes.effectivePlan,
-          trialActive: planRes.trialActive,
-          trialEndsAt: planRes.trialEndsAt,
-          gateDecision: planRes.gateDecision,
-        },
-      } : {}),
-    }, { status: 403 })
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
-    const now = Date.now()
-    const rateKey = `${ip}:${plan}`
-    const rr = devRate.get(rateKey)
-    if (!rr || rr.resetAt <= now) devRate.set(rateKey, { count: 1, resetAt: now + 60_000, lastAt: now })
-    else if (now - rr.lastAt < DEV_COOLDOWN_MS[plan]) return NextResponse.json({ error: 'Cooldown active. Please retry shortly.', rateLimited: true }, { status: 429 })
-    else if (rr.count >= DEV_RATE_LIMIT[plan]) return NextResponse.json({ error: 'Rate limit reached. Try again shortly.', rateLimited: true }, { status: 429 })
-    else { rr.count += 1; rr.lastAt = now }
+
+    // ── 1. Parse + validate input BEFORE rate limiting so invalid requests never consume quota ──
     const body = await req.json() as { contractAddress?: string; chain?: string }
     const { contractAddress } = body
     const normalizedChain = body.chain === 'eth' ? 'eth' : body.chain === 'base' || body.chain == null ? 'base' : null
     if (!normalizedChain) return NextResponse.json({ error: 'Unsupported chain. Use base or eth.' }, { status: 400 })
-    activeChainConfig = getChainConfig(normalizedChain)
-
     if (!contractAddress || !/^0x[a-fA-F0-9]{40}$/.test(contractAddress)) {
       return NextResponse.json(
         { error: 'Invalid contract address — must be a valid EVM address (0x + 40 hex chars)' },
         { status: 400 }
       )
+    }
+    activeChainConfig = getChainConfig(normalizedChain)
+
+    // ── 2. Resolve plan (needed for rate-limit tier) ──
+    const planRes = await resolveServerPlan(req)
+    const { plan } = planRes
+
+    // ── 3. Rate limit — key by userId when authenticated, else by IP (per-plan tier) ──
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+    const rateLimitKeyType: 'user' | 'ip' = planRes.userId ? 'user' : 'ip'
+    // Hash userId to avoid storing PII in memory key; use first 16 hex chars of a simple hash
+    const rateIdentity = planRes.userId
+      ? `u:${planRes.userId.replace(/-/g, '').slice(0, 16)}`
+      : `i:${ip}`
+    const rateKey = `dw:${plan}:${rateIdentity}`
+    const now = Date.now()
+    const rr = devRate.get(rateKey)
+    if (!rr || rr.resetAt <= now) {
+      devRate.set(rateKey, { count: 1, resetAt: now + 60_000, lastAt: now })
+    } else if (now - rr.lastAt < DEV_COOLDOWN_MS[plan]) {
+      const retryAfterSeconds = Math.ceil((rr.lastAt + DEV_COOLDOWN_MS[plan] - now) / 1000)
+      return NextResponse.json({
+        error: 'Cooldown active. Please retry shortly.',
+        rateLimited: true,
+        retryAfterSeconds,
+        cooldownKeyType: rateLimitKeyType,
+        ...(debug ? { _debug: { rateLimitChecked: true, rateLimitKeyType, retryAfterSeconds, invalidRequestSkippedRateLimit: false, userPresent: planRes.userPresent, hasBearer: planRes.hasBearer } } : {}),
+      }, { status: 429 })
+    } else if (rr.count >= DEV_RATE_LIMIT[plan]) {
+      const retryAfterSeconds = Math.ceil((rr.resetAt - now) / 1000)
+      return NextResponse.json({
+        error: 'Rate limit reached. Try again shortly.',
+        rateLimited: true,
+        retryAfterSeconds,
+        cooldownKeyType: rateLimitKeyType,
+        ...(debug ? { _debug: { rateLimitChecked: true, rateLimitKeyType, retryAfterSeconds, invalidRequestSkippedRateLimit: false, userPresent: planRes.userPresent, hasBearer: planRes.hasBearer } } : {}),
+      }, { status: 429 })
+    } else {
+      rr.count += 1; rr.lastAt = now
     }
 
     const normalizedAddress = contractAddress.toLowerCase()
@@ -1546,7 +1611,7 @@ export async function POST(req: Request) {
     const origin = new URL(req.url).origin
     const reqAuthHeader = req.headers.get('authorization') ?? undefined
     const debugMode = debug
-    const tokenEvidenceResult = await fetchTokenEvidence(origin, normalizedAddress, reqAuthHeader)
+    const tokenEvidenceResult = await fetchTokenEvidence(origin, normalizedAddress, activeChainConfig.chain, reqAuthHeader)
     const tokenEvidence = tokenEvidenceResult.data
 
     const sections = (tokenEvidence?.sections as Record<string, unknown> | undefined) ?? {}
@@ -1562,10 +1627,13 @@ export async function POST(req: Request) {
     const holderStatusRaw = (tokenEvidence?.holderDistributionStatus as Record<string, unknown> | null | undefined) ?? null
     const tokenHolderStatus = typeof holderStatusRaw?.status === 'string' ? holderStatusRaw.status : null
     const tokenHolderReason = typeof holderStatusRaw?.reason === 'string' ? holderStatusRaw.reason : null
+    const tokenHolderPercentSource = typeof holderStatusRaw?.percentSource === 'string' ? holderStatusRaw.percentSource : null
+    const usableHolders = tokenHolderStatus === 'ok' || tokenHolderStatus === 'partial'
     const liqEv = (sections.liquidity as Record<string, unknown> | undefined) ?? {}
     const secEv = (sections.security as Record<string, unknown> | undefined) ?? {}
     const liquidityDataAvailable = typeof liqEv.liquidityDepth === 'number' || typeof tokenEvidence?.liquidityUsd === 'number'
-    const holderDataFromToken = holderDistributionRaw != null
+    // holderDataFromToken is true whenever scanner returned usable holder status (ok|partial)
+    const holderDataFromToken = usableHolders
     const securityDataAvailable = typeof secEv.honeypot === 'boolean' || secEv.status === 'ok' || secEv.status === 'partial' || Object.keys(secEv).length > 0
     if (!tokenEvidence) warnings.push('Market and security context limited in this release view.')
 
@@ -1610,8 +1678,10 @@ export async function POST(req: Request) {
       linkedWalletsDiag = lwResult.diag
     }
 
+    // Pass scannerDataProvided=true when the scanner returned usable holder status so
+    // getSupplyData skips the redundant GoldRush API call (which also fails without a key).
     const { holderDataAvailable: holderDataFromCovalent, supplyControlled, matchedHolderWallets, holderStats, diag: holderDiag } =
-      await getSupplyData(normalizedAddress, deployerAddress, linkedWallets, holderDistributionRaw?.topHolders)
+      await getSupplyData(normalizedAddress, deployerAddress, linkedWallets, holderDistributionRaw?.topHolders, usableHolders)
     const holderDataAvailable = holderDataFromToken || holderDataFromCovalent
     if (!holderDataAvailable) {
       warnings.push('Holder distribution needs deeper confirmation.')
@@ -1640,8 +1710,11 @@ export async function POST(req: Request) {
     if (activityWarning) warnings.push(activityWarning)
 
     const meta = await fetchTokenMetadata(normalizedAddress, tokenEvidence)
-    const tokenName = meta.name
-    const tokenSymbol = meta.symbol
+    // Prefer scanner top-level name/symbol fields (set by our hardened rpcTokenString + fallback chain)
+    const scannerName = typeof tokenEvidence?.name === 'string' && tokenEvidence.name.trim() && tokenEvidence.name !== 'Unknown' ? tokenEvidence.name.trim() : null
+    const scannerSymbol = typeof tokenEvidence?.symbol === 'string' && tokenEvidence.symbol.trim() && tokenEvidence.symbol !== '?' ? tokenEvidence.symbol.trim() : null
+    const tokenName = scannerName ?? meta.name
+    const tokenSymbol = scannerSymbol ?? meta.symbol
     const tokenNameResolved = Boolean(tokenName && tokenName.trim().length > 0)
     const tokenSymbolResolved = Boolean(tokenSymbol && tokenSymbol.trim().length > 0)
     const tokenScannerMetadataUsed = Boolean(
@@ -1650,10 +1723,11 @@ export async function POST(req: Request) {
       (typeof tokenEvidence?.symbol === 'string' && tokenEvidence.symbol.trim()) ||
       (typeof (sections.metadata as Record<string, unknown> | undefined)?.symbol === 'string' && String((sections.metadata as Record<string, unknown>).symbol).trim())
     )
-    const holderTop10 = typeof holderDistributionRaw?.top10 === 'number' ? holderDistributionRaw.top10 : (holderStats?.top10 ?? null)
-    const holderTop1  = typeof holderDistributionRaw?.top1  === 'number' ? holderDistributionRaw.top1 : (holderStats?.top1 ?? null)
-    const holderTop20 = typeof holderDistributionRaw?.top20 === 'number' ? holderDistributionRaw.top20 : (holderStats?.top20 ?? null)
-    const holderCount = typeof holderDistributionRaw?.holderCount === 'number' ? holderDistributionRaw.holderCount : (holderStats?.holderCount ?? null)
+    const holderPercentDerived = await deriveHolderPercentages(normalizedAddress, holderDistributionRaw?.topHolders, { top1: holderDistributionRaw?.top1, top10: holderDistributionRaw?.top10, top20: holderDistributionRaw?.top20 })
+    const holderTop10 = holderPercentDerived.holderDistribution?.top10 ?? (holderStats?.top10 ?? null)
+    const holderTop1  = holderPercentDerived.holderDistribution?.top1 ?? (holderStats?.top1 ?? null)
+    const holderTop20 = holderPercentDerived.holderDistribution?.top20 ?? (holderStats?.top20 ?? null)
+    const holderCount = holderPercentDerived.holderDistribution?.holderCount ?? (holderStats?.holderCount ?? null)
     const secHoneypot: boolean | null = typeof secEv.honeypot === 'boolean' ? secEv.honeypot : null
     const secBuyTax: number | null = typeof secEv.buyTax === 'number' ? secEv.buyTax : null
     const secSellTax: number | null = typeof secEv.sellTax === 'number' ? secEv.sellTax : null
@@ -1723,12 +1797,26 @@ export async function POST(req: Request) {
       contractAddress: normalizedAddress,
       chain: activeChainConfig.chain,
       chainLabel: activeChainConfig.chainLabel,
+      name: tokenName ?? null,
+      symbol: tokenSymbol ?? null,
       deployerAddress,
       deployerConfidence,
       methodUsed,
       linkedWallets,
-      holderDataAvailable,
-      supplyControlled,
+      holderDistribution: holderPercentDerived.holderDistribution ?? holderDistributionRaw ?? null,
+      holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? 'partial',
+      holderPercentAvailable: holderPercentDerived.holderPercentAvailable,
+      holderPercentSource: holderPercentDerived.holderPercentSource,
+      topHolders: holderPercentDerived.holderDistribution?.topHolders ?? holderDistributionRaw?.topHolders ?? [],
+      top1: holderTop1 ?? null,
+      top10: holderTop10 ?? null,
+      top20: holderTop20 ?? null,
+      holderCount: holderCount ?? null,
+      creatorInTopHolders: holderStats?.creatorInTopHolders ?? false,
+      linkedWalletSupply: holderStats?.linkedWalletSupply ?? null,
+      devClusterSupply: holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      liquidity: liquidityUsd ?? null,
+      volume24h: typeof market.volume24h === 'number' ? (market.volume24h as number) : null,
       matchedHolderWallets,
       previousActivityAvailable,
       previousActivityStatus,
@@ -1736,25 +1824,6 @@ export async function POST(req: Request) {
       suspiciousTransfers,
       suspiciousTransferReasons,
       clarkVerdict,
-      tokenEvidence: tokenEvidence ? {
-        name: tokenName, symbol: tokenSymbol,
-        metadataSource: (meta.diag?.metadataSource as string | undefined) ?? (meta.diag?.source as string | undefined) ?? 'unknown',
-        price: market.price ?? null,
-        volume24h: market.volume24h ?? null,
-        liquidity: liqEv.liquidityDepth ?? tokenEvidence.liquidityUsd ?? market.liquidity ?? null,
-        fdv: market.fdv ?? null,
-        marketValue: market.marketCap ?? market.fdv ?? null,
-        top1: holderTop1,
-        top10: holderTop10,
-        top20: holderTop20,
-        holderCount,
-        creatorInTopHolders: holderStats?.creatorInTopHolders ?? false,
-        linkedWalletSupply: holderStats?.linkedWalletSupply ?? null,
-        devClusterSupply: holderStats?.devClusterSupply ?? null,
-        lpControl: liqEv.lpControl ?? null,
-        lpControlStatus,
-        security: secEv ?? null,
-      } : null,
       tokenStatus: tokenEvidence ? 'ok' : (bytecode && bytecode !== '0x' ? 'partial' : 'limited_check'),
       marketStatus: tokenEvidence && market && Object.keys(market).length ? 'ok' : 'partial',
       deployerStatus,
@@ -1762,7 +1831,6 @@ export async function POST(req: Request) {
       originReason,
       supplyControlStatus,
       linkedWalletsStatus: linkedWalletsCheckStatus,
-      holderStatus: tokenHolderStatus === 'ok' || tokenHolderStatus === 'partial' || tokenHolderStatus === 'unavailable' ? tokenHolderStatus : (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
       verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)
@@ -1791,8 +1859,10 @@ export async function POST(req: Request) {
           tokenScannerMetadataUsed,
           holderSource: holderDataFromToken ? 'token_scanner_holder_distribution' : (holderDataFromCovalent ? 'covalent_fallback' : 'none'),
           holderRowsCount: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
-          holderPercentAvailable: holderTop1 != null || holderTop10 != null || holderTop20 != null,
-          holderDistributionStatus: tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
+          holderPercentAvailable: holderPercentDerived.holderPercentAvailable,
+          holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
+          holderPercentSource: holderPercentDerived.holderPercentSource,
+          holderPercentDebug: holderPercentDerived.debug,
           creatorLookupAttempted: Boolean(originDiag && originDiag.optional_creation_lookup?.attempted),
           creatorStatus: deployerStatus,
           supplySurfaceState: supplyControlStatus,
@@ -1870,6 +1940,15 @@ export async function POST(req: Request) {
         trialActive: planRes.trialActive,
         trialEndsAt: planRes.trialEndsAt,
         gateDecision: planRes.gateDecision,
+        holderRowsCount: holderDistributionRaw?.topHolders?.length ?? 0,
+        holderRowsHaveBalances: (holderDistributionRaw?.topHolders?.length ?? 0) > 0,
+        totalSupplyResolved: holderTop1 != null || holderTop10 != null,
+        totalSupplySource: tokenHolderPercentSource,
+        percentDerivationAttempted: tokenHolderStatus !== null,
+        percentDerivationReason: typeof holderStatusRaw?.reason === 'string' ? holderStatusRaw.reason : null,
+        top1: holderTop1 ?? null,
+        top10: holderTop10 ?? null,
+        top20: holderTop20 ?? null,
       }
     }
     devCache.set(cacheKey, { exp: Date.now() + DEV_CACHE_TTL_MS, payload: responsePayload })
@@ -1878,4 +1957,18 @@ export async function POST(req: Request) {
     console.error('[dev-wallet] fatal:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
+}
+
+// GET handler: reads contractAddress/address and chain from query params and delegates to POST.
+// Supports: GET /api/dev-wallet?address=0x...&chain=base
+export async function GET(req: Request): Promise<Response> {
+  const url = new URL(req.url)
+  const contractAddress = url.searchParams.get('contractAddress') || url.searchParams.get('address') || ''
+  const chain = url.searchParams.get('chain') || 'base'
+  const syntheticReq = new Request(req.url, {
+    method: 'POST',
+    headers: req.headers,
+    body: JSON.stringify({ contractAddress, chain }),
+  })
+  return POST(syntheticReq)
 }

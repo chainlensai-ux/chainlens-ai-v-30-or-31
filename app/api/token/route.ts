@@ -10,24 +10,50 @@ const anthropic = new Anthropic({
 
 type ChainKey = "eth" | "base" | "polygon" | "bnb";
 function getAlchemyRpcUrl(chain: ChainKey): string | null {
+  if (chain === "eth") {
+    const explicitEth = process.env.ETH_RPC_URL
+    if (explicitEth && /^https?:\/\//.test(explicitEth)) return explicitEth
+    const key = process.env.ALCHEMY_ETHEREUM_KEY
+    if (key) return `https://eth-mainnet.g.alchemy.com/v2/${key}`
+  }
   if (chain === "base") {
+    const explicitBase = process.env.BASE_RPC_URL
+    if (explicitBase && /^https?:\/\//.test(explicitBase)) return explicitBase
     const explicit = process.env.ALCHEMY_BASE_RPC_URL
     if (explicit && /^https?:\/\//.test(explicit)) return explicit
     const key = process.env.ALCHEMY_BASE_KEY
-    return key ? `https://base-mainnet.g.alchemy.com/v2/${key}` : null
+    if (key) return `https://base-mainnet.g.alchemy.com/v2/${key}`
+    return "https://mainnet.base.org"
   }
-  const keyMap: Record<Exclude<ChainKey, "base">, string | undefined> = {
-    eth: process.env.ALCHEMY_ETHEREUM_KEY,
+  const keyMap: Record<Exclude<ChainKey, "base" | "eth">, string | undefined> = {
     polygon: process.env.ALCHEMY_POLYGON_KEY,
     bnb: process.env.ALCHEMY_BNB_KEY,
   }
-  const domainMap: Record<Exclude<ChainKey, "base">, string> = {
-    eth: "eth-mainnet",
+  const domainMap: Record<Exclude<ChainKey, "base" | "eth">, string> = {
     polygon: "polygon-mainnet",
     bnb: "bnb-mainnet",
   }
-  const key = keyMap[chain as Exclude<ChainKey, "base">]
-  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base">]}.g.alchemy.com/v2/${key}` : null
+  const key = keyMap[chain as Exclude<ChainKey, "base" | "eth">]
+  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base" | "eth">]}.g.alchemy.com/v2/${key}` : null
+}
+async function checkRpcHealth(chain: ChainKey): Promise<{ ok: boolean; providerUrl: string | null; reason: string | null }> {
+  const providerUrl = getAlchemyRpcUrl(chain)
+  if (!providerUrl) return { ok: false, providerUrl: null, reason: "missing_rpc_url" }
+  try {
+    const res = await fetch(providerUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return { ok: false, providerUrl, reason: `http_${res.status}` }
+    const json = await res.json()
+    return typeof json?.result === "string"
+      ? { ok: true, providerUrl, reason: null }
+      : { ok: false, providerUrl, reason: "invalid_blocknumber_response" }
+  } catch {
+    return { ok: false, providerUrl, reason: "rpc_health_timeout_or_network_error" }
+  }
 }
 
 const TOKEN_CACHE_TTL_MS = 3 * 60 * 1000
@@ -198,9 +224,22 @@ async function rpcTokenString(chain: ChainKey, contract: string, selector: strin
   try {
     const body = hex.startsWith('0x') ? hex.slice(2) : hex
     if (body.length >= 128) {
+      // ABI-encoded dynamic string: offset(32) + length(32) + data
+      const strLen = parseInt(body.slice(64, 128), 16)
+      if (strLen > 0 && strLen <= 256) {
+        const strHex = body.slice(128, 128 + strLen * 2)
+        const text = Buffer.from(strHex, 'hex').toString('utf8').replace(/\u0000/g, '').trim()
+        if (text) return text
+      }
+      // Fallback: trim trailing nulls from blob
       const strHex = body.slice(128).replace(/00+$/, '')
       const text = Buffer.from(strHex, 'hex').toString('utf8').replace(/\u0000/g, '').trim()
-      return text || null
+      if (text) return text
+    }
+    if (body.length === 64) {
+      // bytes32-encoded name (MKR-style): fixed 32-byte value, trim null bytes
+      const text = Buffer.from(body, 'hex').toString('utf8').replace(/\u0000/g, '').trim()
+      if (text) return text
     }
   } catch {}
   return null
@@ -1429,7 +1468,7 @@ export async function POST(req: Request) {
     if (rawChain !== 'base' && rawChain !== 'eth') {
       return NextResponse.json({ error: 'Unsupported chain. Use chain=base or chain=eth.' }, { status: 400 })
     }
-    const chain: ChainKey = rawChain as ChainKey
+    let chain: ChainKey = rawChain as ChainKey
     const forceDexFallback = debugMode === true && _forceDexFallback === true
     const originalInput = String(contractInput ?? '').trim()
     const normalizedInput = originalInput.toUpperCase()
@@ -1440,6 +1479,7 @@ export async function POST(req: Request) {
       original: originalInput,
       type: (isAddressInput ? 'address' : 'alias') as 'address' | 'alias' | 'live_search',
       resolvedAddress,
+      requestedChain: rawChain as ChainKey,
       symbol: aliasHit?.symbol,
       confidence: (isAddressInput ? 'high' : 'high') as 'high' | 'medium' | 'low',
     } : null
@@ -1469,6 +1509,20 @@ export async function POST(req: Request) {
       }, { status: 404 })
     }
     const contract = resolvedAddress
+    // Chain auto-detection for address inputs: if selected chain has no pools,
+    // try the opposite chain before continuing full scan.
+    if (isAddressInput) {
+      const selectedPools = await fetchGeckoTerminal(contract, chain)
+      const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
+      if (selectedCount === 0) {
+        const altChain: ChainKey = chain === 'eth' ? 'base' : 'eth'
+        const altPools = await fetchGeckoTerminal(contract, altChain)
+        const altCount = Array.isArray(altPools?.data) ? altPools.data.length : 0
+        if (altCount > 0) {
+          chain = altChain
+        }
+      }
+    }
 
     console.log("Incoming scan request:", contract);
 
@@ -1476,7 +1530,8 @@ export async function POST(req: Request) {
     // GoldRush, Moralis, Alchemy RPC, and DexScreener are gated to these chains.
     const SUPPORTED_FULL_SCAN_CHAINS: ChainKey[] = ['eth', 'base']
     const isFullScanChain = SUPPORTED_FULL_SCAN_CHAINS.includes(chain)
-    const alchemyConfigured = isFullScanChain && Boolean(getAlchemyRpcUrl(chain))
+    const rpcHealth = isFullScanChain ? await checkRpcHealth(chain) : { ok: false, providerUrl: null, reason: 'chain_not_supported' as string | null }
+    const alchemyConfigured = isFullScanChain && rpcHealth.ok
     const goldrushEnabled = isFullScanChain && Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY)
     const moralisEnabled = isFullScanChain && Boolean(process.env.MORALIS_API_KEY)
     const ownerSelectors = ['0x8da5cb5b', '0x893d20e8', '0xf851a440', '0x245a7bfc', '0x5c60da1b']
@@ -2199,17 +2254,75 @@ export async function POST(req: Request) {
     let top5 = hasPct ? sum(5) : null
     let top10 = hasPct ? sum(10) : null
     let top20 = hasPct ? sum(20) : null
+
+    // Fallback percent derivation: provider returned holder rows with raw balances but no percentage
+    // field. Try to derive from RPC totalSupply(), then summed returned balances as last resort.
+    let _holderPctDerived = false
+    let _holderPctDerivedFromSummedRows = false
+    let _holderPctTotalSupplySource: string | null = null
+    if (!hasPct && topHolders.length > 0 && rawBalanceByAddress.size > 0) {
+      const _onchainVal = _onchainSettled.status === 'fulfilled'
+        ? (_onchainSettled.value as Awaited<ReturnType<typeof fetchOnchainSupply>> | null)
+        : null
+      let totalSupplyBig: bigint | null = _onchainVal?.totalSupply ?? null
+      if (totalSupplyBig != null && totalSupplyBig > BigInt(0)) {
+        _holderPctTotalSupplySource = 'rpc_onchain'
+      } else {
+        const tsHex = alchemyMandatoryReads[5]
+        if (tsHex && tsHex !== '0x' && tsHex !== '0x0') {
+          try { totalSupplyBig = BigInt(tsHex); _holderPctTotalSupplySource = 'rpc_phase1' } catch {}
+        }
+      }
+      if ((totalSupplyBig == null || totalSupplyBig <= BigInt(0)) && rawBalanceByAddress.size > 0) {
+        let sumBig = BigInt(0)
+        for (const rawBal of rawBalanceByAddress.values()) {
+          try { sumBig += BigInt(String(rawBal)) } catch {}
+        }
+        if (sumBig > BigInt(0)) {
+          totalSupplyBig = sumBig
+          _holderPctDerivedFromSummedRows = true
+          _holderPctTotalSupplySource = 'summed_returned_rows'
+        }
+      }
+      if (totalSupplyBig != null && totalSupplyBig > BigInt(0)) {
+        let anyDerived = false
+        for (const holder of topHolders as Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>) {
+          const rawBal = rawBalanceByAddress.get(holder.address.toLowerCase())
+          if (rawBal == null) continue
+          try {
+            const balBig = BigInt(String(rawBal))
+            holder.percent = Number(balBig * BigInt(10000) / totalSupplyBig) / 100
+            anyDerived = true
+          } catch {}
+        }
+        if (anyDerived) {
+          topHolders.sort((a: any, b: any) => (b.percent ?? 0) - (a.percent ?? 0))
+          hasPct = true
+          percentSource = 'calculated'
+          top1 = sum(1); top5 = sum(5); top10 = sum(10); top20 = sum(20)
+          _holderPctDerived = true
+        }
+      }
+    }
+
     const normalizedTop = topHolders.slice(0, 200)
     let holderDistribution: HolderDistribution = normalizedTop.length
       ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop }
       : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
-          ? { status: 'ok', reason: 'holder_percentages_verified', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource }
+          ? {
+              status: _holderPctDerivedFromSummedRows ? 'partial' : 'ok',
+              reason: _holderPctDerived
+                ? (_holderPctDerivedFromSummedRows ? 'percentages_estimated_from_returned_rows' : 'percentages_derived_from_rpc_supply')
+                : 'holder_percentages_verified',
+              itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource,
+            }
           : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource })
       : {
-          status: (holdersRaw?.__status === 'error' ? 'error' : (holdersRaw?.__status === 'unavailable' ? 'unavailable' : 'empty')) ,
-          reason: (holdersRaw?.__reason ?? 'no_rows'),
+          // Map unavailable/empty → partial so the UI always shows holder section
+          status: (holdersRaw?.__status === 'error' ? 'error' : 'partial'),
+          reason: (holdersRaw?.__reason ?? (holdersRaw?.__status === 'unavailable' ? 'api_key_missing' : 'no_rows')),
           itemCount: holderItems.length,
           normalizedCount: 0,
           percentSource,
@@ -2778,10 +2891,22 @@ export async function POST(req: Request) {
     // Guard: both values must be raw integer strings (no decimal point, no scientific notation).
     // Prefer RPC totalSupply; fall back to provider-supplied total_supply when RPC is unavailable (e.g. ETH without Alchemy key).
     const _holderProviderSupply = holderItems.find((h: any) => h?.total_supply != null)?.total_supply
+    // Compute sum of raw balances as last-resort supply estimate when both RPC and provider supply are unavailable
+    let _summedBalanceSupply: string | null = null
+    if (!rpcSupply && _holderProviderSupply == null && rawBalanceByAddress.size > 0) {
+      try {
+        let sum = BigInt(0)
+        for (const bal of rawBalanceByAddress.values()) {
+          const s = String(bal)
+          if (s && !s.includes('.') && !/[eE]/.test(s)) sum += BigInt(s)
+        }
+        if (sum > BigInt(0)) _summedBalanceSupply = '0x' + sum.toString(16)
+      } catch { /* ignore */ }
+    }
     const _derivationSupply: string | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0')
       ? rpcSupply
-      : (_holderProviderSupply != null ? String(_holderProviderSupply) : null)
-    const _derivationSupplySource: 'rpc' | 'provider' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_derivationSupply ? 'provider' : null)
+      : (_holderProviderSupply != null ? String(_holderProviderSupply) : _summedBalanceSupply)
+    const _derivationSupplySource: 'rpc' | 'provider' | 'summed' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_holderProviderSupply != null ? 'provider' : (_summedBalanceSupply ? 'summed' : null))
     if (!hasPct && normalizedTop.length > 0 && _derivationSupply != null) {
       holderDerivationAttempted = true
       let derivedCount = 0
@@ -2813,6 +2938,8 @@ export async function POST(req: Request) {
           status: 'ok',
           reason: _derivationSupplySource === 'provider'
             ? 'holder_percentages_derived_from_provider_supply'
+            : _derivationSupplySource === 'summed'
+            ? 'holder_percentages_derived_from_summed_balances'
             : 'holder_percentages_derived_from_rpc_supply',
           itemCount: holderItems.length,
           normalizedCount: normalizedTop.length,
@@ -2865,6 +2992,7 @@ export async function POST(req: Request) {
       holders: goldrush?.holders || null,
       holderDistribution,
       holderDistributionStatus,
+      holderStatus: holderDistributionStatus.status === 'ok' ? 'ok' : (holderDistributionStatus.status === 'partial' ? 'partial' : 'unavailable'),
       ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'unavailable',
@@ -3155,6 +3283,7 @@ export async function POST(req: Request) {
       // Contract analysis
       analysis,
       lpControl,
+      lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'unverified' : lpControl.status,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
       lpMeta: {
         v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
@@ -3330,6 +3459,14 @@ export async function POST(req: Request) {
         alchemyCallsFailed: rpcCallsFailed,
         rpcMethodsUsed: rpcCallsAttempted > 0 ? ['eth_call'] : [],
         skippedReason: rpcCallsAttempted > 0 ? null : (alchemyConfigured ? 'no_rpc_path_needed' : 'alchemy_not_configured'),
+        rpc: {
+          chain,
+          rpcConfigured: Boolean(rpcHealth.providerUrl),
+          rpcAttempted: rpcCallsAttempted > 0 || isFullScanChain,
+          rpcSkippedReason: isFullScanChain ? (alchemyConfigured ? null : (rpcHealth.reason ?? 'rpc_health_failed')) : 'chain_not_supported',
+          providerUrl: rpcHealth.providerUrl,
+          healthOk: rpcHealth.ok,
+        },
         fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
         requestDurationMs: Date.now() - _t0,
         checks: rpcCheckDiagnostics,

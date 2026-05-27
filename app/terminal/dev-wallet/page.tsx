@@ -1,9 +1,8 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import Link from 'next/link'
-import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -51,6 +50,8 @@ interface ClarkVerdict {
 interface DevWalletResult {
   contractAddress: string
   chain: string
+  name?: string | null
+  symbol?: string | null
   deployerAddress: string | null
   deployerConfidence: 'high' | 'medium' | 'low'
   deployerStatus?: 'confirmed' | 'possible_match' | 'not_confirmed'
@@ -58,8 +59,20 @@ interface DevWalletResult {
   creationTxHash?: string | null
   originReason?: string | null
   linkedWallets: LinkedWallet[]
-  holderDataAvailable: boolean
-  supplyControlled: number | null
+  holderDistribution?: { top1?: number | null; top10?: number | null; top20?: number | null; holderCount?: number | null; topHolders?: Array<{ address?: string; percent?: number | null }> } | null
+  holderDistributionStatus?: string | null
+  holderPercentAvailable?: boolean
+  holderPercentSource?: string | null
+  topHolders?: Array<{ address?: string; percent?: number | null }>
+  top1?: number | null
+  top10?: number | null
+  top20?: number | null
+  holderCount?: number | null
+  creatorInTopHolders?: boolean
+  linkedWalletSupply?: number | null
+  devClusterSupply?: number | null
+  liquidity?: number | null
+  volume24h?: number | null
   supplyControlStatus?: 'ok' | 'partial' | 'needs_confirmed_creator' | 'not_in_top_holders'
   previousActivityStatus?: string
   matchedHolderWallets: MatchedHolder[]
@@ -71,14 +84,12 @@ interface DevWalletResult {
   warnings: string[]
   tokenStatus?: string
   linkedWalletsStatus?: string
-  holderStatus?: string
   liquidityStatus?: string
   lpControlStatus?: string
   _diagnostics?: { modules?: unknown[]; rpcConfigured?: boolean; providerUsed?: string; tokenEvidenceDiag?: unknown; origin_discovery?: unknown }
   verdict?: VerdictLabel
   confidence?: string
   reasons?: string[]
-  tokenEvidence?: { name?: string | null; symbol?: string | null; price?: number | null; volume24h?: number | null; liquidity?: number | null; holderCount?: number | null; top1?: number | null; top10?: number | null; top20?: number | null; linkedWalletSupply?: number | null; devClusterSupply?: number | null } | null
   fetchedAt: string
 }
 
@@ -116,7 +127,8 @@ type DevControlScore = {
 }
 
 function calculateDevControl(result: DevWalletResult): DevControlScore {
-  const hasAnything = result.deployerAddress || result.linkedWallets.length > 0 || result.holderDataAvailable
+  const holderUsable = result.holderDistributionStatus === 'ok' || result.holderDistributionStatus === 'partial'
+  const hasAnything = result.deployerAddress || result.linkedWallets.length > 0 || holderUsable
   if (!hasAnything) {
     return {
       score: 0, risk: 'UNKNOWN', confidence: 'Low',
@@ -137,11 +149,11 @@ function calculateDevControl(result: DevWalletResult): DevControlScore {
   // Supply control
   if (result.supplyControlStatus === 'not_in_top_holders') {
     pts += 15
-  } else if (result.supplyControlled != null) {
-    if      (result.supplyControlled > 50) pts -= 25
-    else if (result.supplyControlled > 20) pts -= 15
-    else if (result.supplyControlled > 10) pts -= 8
-    else if (result.supplyControlled <= 5) pts += 8
+  } else if (result.devClusterSupply != null) {
+    if      (result.devClusterSupply > 50) pts -= 25
+    else if (result.devClusterSupply > 20) pts -= 15
+    else if (result.devClusterSupply > 10) pts -= 8
+    else if (result.devClusterSupply <= 5) pts += 8
   }
 
   // Linked wallets count — more wallets = higher potential cluster
@@ -158,7 +170,7 @@ function calculateDevControl(result: DevWalletResult): DevControlScore {
   else if (result.previousActivityAvailable) pts += 5
 
   // Token holder concentration from evidence
-  const top10 = result.tokenEvidence?.top10
+  const top10 = result.top10 ?? result.holderDistribution?.top10
   if (top10 != null && top10 > 60) pts -= 10
 
   const score = Math.min(100, Math.max(0, Math.round(pts)))
@@ -179,9 +191,13 @@ function calculateDevControl(result: DevWalletResult): DevControlScore {
     risk = 'CRITICAL'
   }
 
+  const usableHoldersForConf =
+    result.holderDistributionStatus === 'ok' ||
+    result.holderDistributionStatus === 'partial'
+
   const confidence: 'High' | 'Medium' | 'Low' =
-    result.deployerAddress && result.holderDataAvailable ? 'High' :
-    result.deployerAddress || result.holderDataAvailable ? 'Medium' : 'Low'
+    result.deployerAddress && usableHoldersForConf ? 'High' :
+    result.deployerAddress || usableHoldersForConf ? 'Medium' : 'Low'
 
   const summary =
     risk === 'CRITICAL' ? 'Critical dev control risk — multiple serious signals confirmed.' :
@@ -316,12 +332,13 @@ function WarningBanner({ warnings, deployerStatus }: { warnings: string[]; deplo
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function DevWalletPage() {
-  const { plan, loading: planLoading, elitePass } = usePlanWithLoading()
-  const [input,        setInput]        = useState('')
-  const [loading,      setLoading]      = useState(false)
-  const [result,       setResult]       = useState<DevWalletResult | null>(null)
-  const [error,        setError]        = useState<string | null>(null)
-  const [isTracking,   setIsTracking]   = useState(false)
+  const [input,          setInput]          = useState('')
+  const [loading,        setLoading]        = useState(false)
+  const [result,         setResult]         = useState<DevWalletResult | null>(null)
+  const [error,          setError]          = useState<string | null>(null)
+  const [cooldownSecs,   setCooldownSecs]   = useState<number>(0)
+  const cooldownTimer    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [isTracking,     setIsTracking]     = useState(false)
   const [showAllProj,  setShowAllProj]  = useState(false)
   const [copied,       setCopied]       = useState(false)
   const [activeTab,    setActiveTab]    = useState<DevMapSection>('dev-map')
@@ -330,16 +347,33 @@ export default function DevWalletPage() {
   const chainBadge = chain === 'eth' ? 'ETH' : 'BASE'
   const explorerBase = chain === 'eth' ? 'https://etherscan.io' : 'https://basescan.org'
 
+  // Cooldown countdown — auto-clears when it hits 0
+  useEffect(() => {
+    if (cooldownSecs <= 0) return
+    if (cooldownTimer.current) clearInterval(cooldownTimer.current)
+    cooldownTimer.current = setInterval(() => {
+      setCooldownSecs(s => {
+        if (s <= 1) {
+          clearInterval(cooldownTimer.current!)
+          cooldownTimer.current = null
+          setError(null)
+          return 0
+        }
+        return s - 1
+      })
+    }, 1000)
+    return () => { if (cooldownTimer.current) clearInterval(cooldownTimer.current) }
+  }, [cooldownSecs])
+
   async function handleScan() {
     const q = input.trim()
-    if (!q || loading) return
+    if (!q || loading || cooldownSecs > 0) return
     if (!/^0x[a-fA-F0-9]{40}$/.test(q)) {
       setError('Enter a valid contract address (0x followed by 40 hex characters)')
       return
     }
     setLoading(true)
     setError(null)
-    setResult(null)
     setShowAllProj(false)
     setIsTracking(false)
     setCopied(false)
@@ -353,11 +387,19 @@ export default function DevWalletPage() {
         credentials: 'include',
         body: JSON.stringify({ contractAddress: q, chain }),
       })
-      const json = await res.json() as DevWalletResult & { error?: string }
-      if (!res.ok || json.error) {
+      const json = await res.json() as DevWalletResult & { error?: string; rateLimited?: boolean; retryAfterSeconds?: number }
+      if (res.status === 429 && json.rateLimited) {
+        const secs = json.retryAfterSeconds ?? 25
+        setCooldownSecs(secs)
+        setError(`Cooldown active — try again in ${secs}s`)
+        // Do NOT wipe last successful result on rate limit
+      } else if (!res.ok || json.error) {
         setError((json.error ?? 'Scan failed — try again').replace('Upgrade required for dev wallet scan.', 'Full CORTEX dev-wallet analysis is included in Pro and Elite.'))
+        setResult(null)
       } else {
         setResult(json)
+        setError(null)
+        setCooldownSecs(0)
       }
     } catch {
       setError('Network error — check your connection')
@@ -375,21 +417,12 @@ export default function DevWalletPage() {
       `Confidence: ${result.deployerConfidence}`,
       `Linked wallets: ${result.linkedWallets.length}`,
       `Suspicious reasons: ${result.suspiciousTransferReasons.join('; ') || 'none'}`,
-      `Holder data available: ${result.holderDataAvailable}`,
+      `Holder data available: ${result.holderDistributionStatus === 'ok' || result.holderDistributionStatus === 'partial'}`,
       `Verdict: ${result.clarkVerdict?.label ?? 'UNKNOWN'}`,
     ].join('\n')
     return `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`
   }, [result])
 
-  if (planLoading) {
-    return (
-      <div style={{ display:'flex', flex:1, alignItems:'center', justifyContent:'center', minHeight:'80vh', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>
-        Loading plan access…
-      </div>
-    )
-  }
-  const effectivePlan = elitePass.active ? 'elite' : plan
-  if (!canAccessFeature(effectivePlan, 'dev-wallet')) return <LockedPanel feature="dev-wallet" />
 
   return (
     <>
@@ -456,8 +489,8 @@ export default function DevWalletPage() {
             />
             <button
               onClick={handleScan}
-              disabled={loading || !input.trim()}
-              style={{ padding:'14px 24px', borderRadius:'12px', background: loading || !input.trim() ? 'rgba(139,92,246,0.15)' : 'linear-gradient(135deg,#8b5cf6 0%,#7c3aed 55%,#4f46e5 100%)', border:'1px solid rgba(139,92,246,0.40)', color: loading || !input.trim() ? '#64748b' : '#fff', fontSize:'12px', fontWeight:700, letterSpacing:'0.08em', cursor: loading || !input.trim() ? 'not-allowed' : 'pointer', fontFamily:'var(--font-plex-mono)', whiteSpace:'nowrap', boxShadow: loading || !input.trim() ? 'none' : '0 8px 18px rgba(99,102,241,0.30)' }}
+              disabled={loading || !input.trim() || cooldownSecs > 0}
+              style={{ padding:'14px 24px', borderRadius:'12px', background: loading || !input.trim() || cooldownSecs > 0 ? 'rgba(139,92,246,0.15)' : 'linear-gradient(135deg,#8b5cf6 0%,#7c3aed 55%,#4f46e5 100%)', border:'1px solid rgba(139,92,246,0.40)', color: loading || !input.trim() || cooldownSecs > 0 ? '#64748b' : '#fff', fontSize:'12px', fontWeight:700, letterSpacing:'0.08em', cursor: loading || !input.trim() || cooldownSecs > 0 ? 'not-allowed' : 'pointer', fontFamily:'var(--font-plex-mono)', whiteSpace:'nowrap', boxShadow: loading || !input.trim() || cooldownSecs > 0 ? 'none' : '0 8px 18px rgba(99,102,241,0.30)' }}
             >
               {loading ? (
                 <span style={{ display:'flex', alignItems:'center', gap:'8px' }}>
@@ -465,14 +498,14 @@ export default function DevWalletPage() {
                     <span key={i} style={{ width:'5px', height:'5px', borderRadius:'50%', background:'#a78bfa', animation:'devDot 1.2s ease-in-out infinite', animationDelay:`${i*0.18}s` }} />
                   ))}
                 </span>
-              ) : 'SCAN'}
+              ) : cooldownSecs > 0 ? `WAIT ${cooldownSecs}s` : 'SCAN'}
             </button>
           </div>
 
           {/* Error */}
           {error && (
-            <div style={{ padding:'12px 16px', borderRadius:'10px', background:'rgba(248,113,113,0.08)', border:'1px solid rgba(248,113,113,0.20)', color:'#f87171', fontSize:'13px', fontFamily:'var(--font-plex-mono)', marginBottom:'24px' }}>
-              {error}
+            <div style={{ padding:'12px 16px', borderRadius:'10px', background: cooldownSecs > 0 ? 'rgba(251,191,36,0.08)' : 'rgba(248,113,113,0.08)', border:`1px solid ${cooldownSecs > 0 ? 'rgba(251,191,36,0.25)' : 'rgba(248,113,113,0.20)'}`, color: cooldownSecs > 0 ? '#fbbf24' : '#f87171', fontSize:'13px', fontFamily:'var(--font-plex-mono)', marginBottom:'24px' }}>
+              {cooldownSecs > 0 ? `Cooldown active — try again in ${cooldownSecs}s` : error}
             </div>
           )}
 
@@ -488,10 +521,10 @@ export default function DevWalletPage() {
           {result && (() => {
             const dc = calculateDevControl(result)
             const rugCount = result.previousProjects.filter(p => p.rugFlag === true).length
-            const resolvedTokenName = result.tokenEvidence?.name?.trim() || null
-            const resolvedTokenSymbol = result.tokenEvidence?.symbol?.trim() || null
-            const tokenTitle = resolvedTokenName ?? shortAddr(result.contractAddress, 8, 6)
-            const hasTokenTitleFallback = !resolvedTokenName && !resolvedTokenSymbol
+            const resolvedTokenName = result.name || 'Unknown'
+            const resolvedTokenSymbol = result.symbol || '?'
+            const tokenTitle = resolvedTokenName !== 'Unknown' ? resolvedTokenName : shortAddr(result.contractAddress, 8, 6)
+            const hasTokenTitleFallback = resolvedTokenName === 'Unknown' && resolvedTokenSymbol === '?'
 
             return (
               <div>
@@ -503,9 +536,9 @@ export default function DevWalletPage() {
                   </h2>
                   <p style={{ fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', margin:0 }}>
                     {shortAddr(result.contractAddress, 10, 8)} · {result.chain === 'eth' ? 'ETH' : 'BASE'}
-                    {result.tokenEvidence?.liquidity != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Liq {fmtUsd(result.tokenEvidence.liquidity)}</span>}
-                    {result.tokenEvidence?.volume24h != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Vol 24h {fmtUsd(result.tokenEvidence.volume24h)}</span>}
-                    {result.tokenEvidence?.holderCount != null && <span style={{ marginLeft:'12px', color:'#475569' }}>{result.tokenEvidence.holderCount.toLocaleString()} holders</span>}
+                    {result.liquidity != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Liq {fmtUsd(result.liquidity)}</span>}
+                    {result.volume24h != null && <span style={{ marginLeft:'12px', color:'#475569' }}>Vol 24h {fmtUsd(result.volume24h)}</span>}
+                    {result.holderCount != null && <span style={{ marginLeft:'12px', color:'#475569' }}>{result.holderCount.toLocaleString()} holders</span>}
                   </p>
                   {hasTokenTitleFallback && (
                     <p style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)', margin:'4px 0 0' }}>
@@ -560,8 +593,8 @@ export default function DevWalletPage() {
                         label: 'Supply Control',
                         ok: result.supplyControlStatus === 'not_in_top_holders',
                         partial: result.supplyControlStatus === 'partial',
-                        value: result.supplyControlStatus === 'not_in_top_holders' ? 'Not in top holders' : result.supplyControlled != null ? `${result.supplyControlled.toFixed(1)}% ctrl` : 'Unverified',
-                        color: result.supplyControlStatus === 'not_in_top_holders' ? '#34d399' : result.supplyControlled != null && result.supplyControlled > 20 ? '#f87171' : '#fbbf24',
+                        value: result.supplyControlStatus === 'not_in_top_holders' ? 'Not in top holders' : result.devClusterSupply != null ? `${result.devClusterSupply.toFixed(1)}% ctrl` : 'Unverified',
+                        color: result.supplyControlStatus === 'not_in_top_holders' ? '#34d399' : result.devClusterSupply != null && result.devClusterSupply > 20 ? '#f87171' : '#fbbf24',
                       },
                       {
                         label: 'Patterns',
@@ -800,46 +833,75 @@ export default function DevWalletPage() {
 
                 {/* ── SUPPLY CONTROL ──────────────────────────────────────── */}
                 {activeTab === 'supply' && (() => {
-                  const te = result.tokenEvidence
-                  const holderRowsCount = te?.holderCount ?? 0
-                  const hasHolderRows = holderRowsCount > 0
-                  const linkedSupply = te?.linkedWalletSupply ?? null
-                  const devClusterSupply = te?.devClusterSupply ?? result.supplyControlled ?? null
-                  const percentUnavailableLabel = hasHolderRows ? 'Partial — holder rows found, supply % unavailable.' : 'Open check — holder data unavailable after scan.'
+                  const usableHolders =
+                    result.holderDistributionStatus === 'ok' ||
+                    result.holderDistributionStatus === 'partial'
+
+                  // All supply variables computed from scanner holderDistribution fields when usable.
+                  // When not usable, every field stays null and the UI renders "Open check".
+                  let top1: number | null = null
+                  let top10: number | null = null
+                  let top20: number | null = null
+                  let topHolders: Array<{ address?: string; percent?: number | null }> = []
+                  let linkedSupply: number | null = null
+                  let devClusterSupply: number | null = null
+                  let creatorInTopHolders: boolean = false
+
+                  if (usableHolders) {
+                    top1 = result.holderDistribution?.top1 ?? null
+                    top10 = result.holderDistribution?.top10 ?? null
+                    top20 = result.holderDistribution?.top20 ?? null
+                    topHolders = result.holderDistribution?.topHolders ?? []
+                    const linkedAddrs = new Set(result.linkedWallets.map(w => w.address.toLowerCase()))
+                    const linkedTopHolders = topHolders.filter(h => h.address && linkedAddrs.has(h.address.toLowerCase()))
+                    linkedSupply = linkedTopHolders.length > 0
+                      ? linkedTopHolders.reduce((s, h) => s + (h.percent ?? 0), 0)
+                      : (result.linkedWalletSupply ?? null)
+                    devClusterSupply = result.devClusterSupply ?? null
+                    creatorInTopHolders = result.deployerAddress
+                      ? (topHolders.some(h => h.address?.toLowerCase() === result.deployerAddress?.toLowerCase()) ||
+                         result.matchedHolderWallets.some(h => h.isDeployer))
+                      : false
+                  }
+
+                  const openCheck = <span style={{ color:'#94a3b8' }}>Open check — holder data unavailable after scan.</span>
+                  const partialLabel = 'Partial — holder rows found, supply % unavailable.'
+                  const isEstimatedPartial = result.holderPercentSource === 'summed_returned_rows'
+                  const fmtPct = (v: number) => `${v.toFixed(2)}%${isEstimatedPartial ? ' (Partial estimate)' : ''}`
+                  const supplyBarPct = devClusterSupply != null ? Math.min(devClusterSupply, 100) : null
+                  const supplyBarColor = supplyBarPct != null ? (supplyBarPct > 50 ? '#f87171' : supplyBarPct > 20 ? '#fbbf24' : '#34d399') : '#3a5268'
+
                   const topHolderNote: string | null =
-                    result.deployerAddress && !hasHolderRows
+                    !usableHolders && result.deployerAddress
                       ? 'Origin wallet was likely found, but holder distribution could not confirm supply control.'
                       : result.supplyControlStatus === 'not_in_top_holders'
                       ? 'Creator wallet is not in the top-holder set. Supply concentration remains an open risk check since linked wallets are not fully verified.'
                       : result.supplyControlStatus === 'needs_confirmed_creator'
                         ? 'Creator-linked supply control cannot be confirmed — no verified creator address available.'
-                        : result.supplyControlled != null && result.supplyControlled > 20
-                          ? `Developer-linked supply detected at ${result.supplyControlled.toFixed(1)}% — monitor for exit or concentration risk.`
+                        : devClusterSupply != null && devClusterSupply > 20
+                          ? `Developer-linked supply detected at ${devClusterSupply.toFixed(1)}% — monitor for exit or concentration risk.`
                           : result.matchedHolderWallets.length > 0
                             ? `${result.matchedHolderWallets.length} creator/linked wallet${result.matchedHolderWallets.length !== 1 ? 's' : ''} found in top holders.`
                             : null
-
-                  const supplyBarPct = result.supplyControlled != null ? Math.min(result.supplyControlled, 100) : null
-                  const supplyBarColor = supplyBarPct != null ? (supplyBarPct > 50 ? '#f87171' : supplyBarPct > 20 ? '#fbbf24' : '#34d399') : '#3a5268'
 
                   return (
                     <>
                       <GlassCard style={{ marginBottom:'14px' }}>
                         <p style={{ margin:'0 0 12px', fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#34d399', fontFamily:'var(--font-plex-mono)' }}>SUPPLY CONTROL SURFACE</p>
                         <DataRow label="Creator in top holders" value={
-                          !hasHolderRows
-                            ? <span style={{ color:'#94a3b8' }}>Open check — holder data unavailable after scan.</span>
+                          !usableHolders
+                            ? openCheck
                             : !result.deployerAddress
                             ? <span style={{ color:'#94a3b8' }}>Open check — creator not confirmed from current checks.</span>
-                            : result.matchedHolderWallets.some(h => h.isDeployer)
+                            : creatorInTopHolders
                               ? <span style={{ color:'#f87171' }}>Confirmed — creator appears in top holders.</span>
                               : <span style={{ color:'#34d399' }}>Not detected</span>
                         } />
-                        <DataRow label="Top 1 concentration"  value={te?.top1  != null ? `${te.top1.toFixed(2)}%`  : percentUnavailableLabel} valueStyle={{ color: te?.top1 != null && te.top1 > 15 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Top 10 concentration" value={te?.top10 != null ? `${te.top10.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: te?.top10 != null && te.top10 > 50 ? '#f87171' : te?.top10 != null && te.top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
-                        <DataRow label="Top 20 concentration" value={te?.top20 != null ? `${te.top20.toFixed(2)}%` : percentUnavailableLabel} valueStyle={{ color: te?.top20 != null && te.top20 > 70 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Linked-wallet supply" value={linkedSupply != null ? `${linkedSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} valueStyle={{ color: linkedSupply != null && linkedSupply > 20 ? '#f87171' : '#e2e8f0' }} />
-                        <DataRow label="Dev cluster supply"   value={devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : (hasHolderRows ? 'Needs holder confirmation.' : 'Open check — holder data unavailable after scan.')} />
+                        <DataRow label="Top 1 concentration"  value={!usableHolders ? openCheck : top1  != null ? fmtPct(top1)  : partialLabel} valueStyle={{ color: top1 != null && top1 > 15 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Top 10 concentration" value={!usableHolders ? openCheck : top10 != null ? fmtPct(top10) : partialLabel} valueStyle={{ color: top10 != null && top10 > 50 ? '#f87171' : top10 != null && top10 > 30 ? '#fbbf24' : '#e2e8f0' }} />
+                        <DataRow label="Top 20 concentration" value={!usableHolders ? openCheck : top20 != null ? fmtPct(top20) : partialLabel} valueStyle={{ color: top20 != null && top20 > 70 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Linked-wallet supply" value={!usableHolders ? openCheck : linkedSupply != null && linkedSupply > 0 ? `${linkedSupply.toFixed(1)}%` : 'Needs holder confirmation.'} valueStyle={{ color: linkedSupply != null && linkedSupply > 20 ? '#f87171' : '#e2e8f0' }} />
+                        <DataRow label="Dev cluster supply"   value={!usableHolders ? openCheck : devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : 'Needs holder confirmation.'} />
 
                         {supplyBarPct != null && (
                           <div style={{ marginTop:'14px' }}>
