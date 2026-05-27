@@ -128,7 +128,7 @@ type RiskEngine = {
     confidence: "high" | "medium" | "low"
   }
   sniperActivity: {
-    status: "low_signal" | "watch" | "high" | "unverified"
+    status: "low_signal" | "watch" | "high" | "not_assessed"
     confidence: "high" | "medium" | "low"
     reasons: string[]
   }
@@ -1204,7 +1204,7 @@ function analyzeContract(bytecode: string | null): any {
 // ------------------------------
 // CORTEX Contract Flag Scanner — bytecode + RPC, no external APIs required
 // ------------------------------
-type ContractFlagStatus = 'verified' | 'possible' | 'not_detected' | 'unverified' | 'unavailable'
+type ContractFlagStatus = 'verified' | 'possible' | 'not_detected' | 'unverified' | 'not_checked'
 type ContractFlagEntry = { status: ContractFlagStatus; confidence: 'high' | 'medium' | 'low'; note: string | null }
 type CortexContractFlagsResult = {
   mint: ContractFlagEntry
@@ -1228,7 +1228,7 @@ type RiskEngineResult = {
   drivers: string[];
   missingChecks: string[];
   sniperActivity: {
-    status: 'low_signal' | 'watch' | 'high' | 'unverified';
+    status: 'low_signal' | 'watch' | 'high' | 'not_assessed';
     confidence: 'high' | 'medium' | 'low';
     reasons: string[];
   };
@@ -1429,9 +1429,9 @@ function computeRiskEngine(input: {
   let sniperStatus: RiskEngineResult['sniperActivity']['status'];
   let sniperConfidence: RiskEngineResult['sniperActivity']['confidence'];
   if (pairAgeHours == null && input.holderStatus !== 'ok') {
-    sniperStatus = 'unverified';
+    sniperStatus = 'not_assessed';
     sniperConfidence = 'low';
-    if (sniperReasons.length === 0) sniperReasons.push('Early wallet activity unavailable — pool age and holder data not confirmed');
+    if (sniperReasons.length === 0) sniperReasons.push('Early wallet activity not assessed — pool age and holder data not confirmed');
   } else if (sniperSignalCount >= 3) {
     sniperStatus = 'high';
     sniperConfidence = 'high';
@@ -1479,28 +1479,28 @@ function _buildDeterministicSummary(
       parts.push(`Trading simulation passed${taxNote ? ` (${taxNote})` : ''}.`)
     }
   } else {
-    gaps.push('trading simulation unavailable')
+    gaps.push('tax rates and honeypot status not confirmed — verify before transacting')
   }
   if (analysis.suspiciousFunctions.length > 0) {
     risks.push(`bytecode contains suspicious selectors: ${analysis.suspiciousFunctions.slice(0, 3).join(', ')}`)
   }
   if (holderItemsEarly.length === 0) {
-    gaps.push('holder concentration data unavailable')
+    gaps.push('holder distribution not assessed — concentration risk unquantified')
   }
   if (ownerStatus === 'renounced') {
     parts.push('Ownership is renounced.')
   } else if (ownerStatus === 'unverified') {
-    gaps.push('ownership unverified')
+    gaps.push('contract ownership not identified — treat as potentially active owner')
   }
   if (!lpPoolType || lpPoolType === 'unknown') {
-    gaps.push('LP lock or burn status unknown')
+    gaps.push('liquidity lock not confirmed — exit liquidity risk possible')
   }
 
   const summary: string[] = []
   if (risks.length > 0) summary.push(`Risk flags on ${chainName}: ${risks.join('; ')}.`)
   if (parts.length > 0) summary.push(...parts)
-  if (gaps.length > 0) summary.push(`Data gaps: ${gaps.join(', ')} — verdict requires additional verification.`)
-  if (summary.length === 0) summary.push(`This ${chainName} token could not be fully assessed — all data sources returned empty results.`)
+  if (gaps.length > 0) summary.push(`Manual verification needed: ${gaps.join('; ')}.`)
+  if (summary.length === 0) summary.push(`No risk signals detected on ${chainName}, but all data sources returned empty — verify on-chain before interacting.`)
   return summary.join(' ')
 }
 
@@ -2775,7 +2775,7 @@ export async function POST(req: Request) {
     const _grCI = grContractIntel  // GoldRush Contract Intel result
     const _grCIUsable = _grCI != null
     const _simImpliedClean = hpResult.ok === true && hpResult.honeypot === false && hpResult.simulationSuccess === true
-    type FlagStatus = { status: 'verified' | 'possible' | 'not_detected' | 'unverified' | 'unavailable'; confidence: 'high' | 'medium' | 'low'; note: string }
+    type FlagStatus = { status: 'verified' | 'possible' | 'not_detected' | 'unverified' | 'not_checked'; confidence: 'high' | 'medium' | 'low'; note: string }
     const _resolveFlag = (
       grValue: boolean | null | undefined,
       bytecodeSel: boolean,
@@ -2787,7 +2787,7 @@ export async function POST(req: Request) {
       if (grValue === false) return { status: 'not_detected', confidence: 'high', note: 'GoldRush Contract Intel: not present' }
       // GoldRush returned null — fall back to ABI/bytecode signature scan
       if (!_hasBytecode && _simImpliedClean) return { status: 'not_detected', confidence: 'low', note: 'Simulation confirmed trading — flag implied absent, not directly verified' }
-      if (!_hasBytecode) return { status: 'unavailable', confidence: 'low', note: 'Neither GoldRush nor bytecode available' }
+      if (!_hasBytecode) return { status: 'not_checked', confidence: 'low', note: 'Neither GoldRush nor bytecode available — verify manually' }
       if (bytecodeSel) return { status: 'verified', confidence: 'high', note: bytecodeNote }
       return { status: 'not_detected', confidence: 'medium', note: `ABI signature scan: not detected (GoldRush fallback)` }
     }
@@ -2797,7 +2797,7 @@ export async function POST(req: Request) {
         if (_isVerifiedProxy) return { status: 'verified' as const, confidence: 'high' as const, note: 'EIP-1967 implementation slot is non-zero (RPC confirmed)' }
         if (_grCI?.proxy === true || _grCI?.upgradeable === true) return { status: 'verified' as const, confidence: 'high' as const, note: 'GoldRush Contract Intel: proxy/upgradeable confirmed' }
         if (_grCI?.proxy === false && _grCI?.upgradeable === false) return { status: 'not_detected' as const, confidence: 'high' as const, note: 'GoldRush Contract Intel: not proxy' }
-        if (!_hasBytecode) return { status: 'unavailable' as const, confidence: 'low' as const, note: 'Neither GoldRush nor bytecode available' }
+        if (!_hasBytecode) return { status: 'not_checked' as const, confidence: 'low' as const, note: 'Neither GoldRush nor bytecode available — verify manually' }
         if (_cortexProxySel) return { status: 'possible' as const, confidence: 'medium' as const, note: 'Upgrade selector in ABI/bytecode; EIP-1967 slot not confirmed' }
         return { status: 'not_detected' as const, confidence: 'medium' as const, note: 'ABI signature scan: no proxy selector or EIP-1967 slot (GoldRush fallback)' }
       })(),
@@ -2855,8 +2855,8 @@ export async function POST(req: Request) {
     const riskOwnerStatus = isRenounced ? 'renounced' : (ownershipVerified ? 'held' : 'unverified')
     if (riskOwnerStatus === 'renounced') { riskVerifiedSignals.push('Dev Control: ownership appears renounced.'); riskScore -= 6 }
     else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
-    // Only flag ownership as unverified when RPC was attempted and all three methods (owner, admin, impl) returned nothing
-    else if (rpcOwnershipAttempted && !ownerAddr && !adminAddr && !proxyImplAddr) { openChecks.push('Dev Control ownership status is unverified.') }
+    // Only flag ownership when RPC was attempted and all three methods (owner, admin, impl) returned nothing
+    else if (rpcOwnershipAttempted && !ownerAddr && !adminAddr && !proxyImplAddr) { openChecks.push('Dev Control ownership not identified — treat as potentially active owner.') }
     if (proxyImplAddr && !isRenounced) { riskDrivers.push('Proxy contract with active owner — upgrade risk present.'); riskScore += 5 }
 
     const tradingSimConfigured = isFullScanChain
@@ -2866,8 +2866,7 @@ export async function POST(req: Request) {
       if ((hpResult.buyTax ?? 0) > 12 || (hpResult.sellTax ?? 0) > 12) { riskDrivers.push('Trading taxes are high (>12%).'); riskScore += 20 }
       else if ((hpResult.buyTax ?? 0) > 7 || (hpResult.sellTax ?? 0) > 7) { riskDrivers.push('Trading taxes are elevated (>7%).'); riskScore += 10 }
     } else if (tradingSimConfigured) {
-      // Provider was configured but failed — flag as open check
-      openChecks.push('Trading simulation is unavailable; tax behavior remains less certain.')
+      openChecks.push('Trading simulation not performed — tax rates and honeypot status not confirmed.')
       riskScore += 8
     }
 
@@ -2881,7 +2880,7 @@ export async function POST(req: Request) {
     else if (whalePressure === 'medium') { riskDrivers.push('Whale pressure is medium: notable top-holder concentration.'); riskScore += 4 }
     if (supplySpread === 'elevated') riskDrivers.push('Supply spread elevated: Top 10 hold more than 35% of supply.')
     // Holder data completeness — single authoritative check
-    if (!holderDataComplete) openChecks.push('Holder data is incomplete; concentration may be understated.')
+    if (!holderDataComplete) openChecks.push('Holder concentration not fully assessed — verify distribution before entering large positions.')
 
     const majorMissingCount = [
       marketCapFromGt == null,
@@ -2930,8 +2929,8 @@ export async function POST(req: Request) {
     if (holderDistribution.top5 != null && holderDistribution.top5 > 40 && _pairAgeDays != null && _pairAgeDays < 14) { sniperReasons.push(`Top 5 wallets hold ${holderDistribution.top5.toFixed(1)}% — concentrated early ownership`); sniperSigCount++ }
     if (holderCount != null && holderCount < 50 && _pairAgeDays != null && _pairAgeDays < 7) { sniperReasons.push(`Only ${holderCount} holders — highly concentrated entry`); sniperSigCount++ }
     const _sniperDataAvailable = _pairAgeHrs != null || transactions24h != null
-    const sniperStatus: RiskEngine["sniperActivity"]["status"] = !_sniperDataAvailable ? 'unverified' : sniperSigCount >= 3 ? 'high' : sniperSigCount >= 1 ? 'watch' : 'low_signal'
-    if (!_sniperDataAvailable && sniperReasons.length === 0) sniperReasons.push('Pool age and transaction telemetry unavailable — sniper activity not assessable.')
+    const sniperStatus: RiskEngine["sniperActivity"]["status"] = !_sniperDataAvailable ? 'not_assessed' : sniperSigCount >= 3 ? 'high' : sniperSigCount >= 1 ? 'watch' : 'low_signal'
+    if (!_sniperDataAvailable && sniperReasons.length === 0) sniperReasons.push('Pool age and transaction data not returned — early-entry patterns not assessed.')
     else if (_sniperDataAvailable && sniperReasons.length === 0) sniperReasons.push(_pairAgeHrs != null ? `Pool age confirmed. No abnormal early-entry signals detected.` : 'No abnormal transaction patterns detected in available data.')
     const sniperActivity: RiskEngine["sniperActivity"] = {
       status: sniperStatus,
@@ -3102,13 +3101,13 @@ export async function POST(req: Request) {
 
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'unavailable'
     const ownerStatus = ownerAddr ? 'ok' : 'unavailable'
-    const mintStatus = (cortexContractFlags.mint.status !== 'unverified' && cortexContractFlags.mint.status !== 'unavailable') ? 'ok' : 'unavailable'
-    const proxyStatus = (cortexContractFlags.proxy.status !== 'unverified' && cortexContractFlags.proxy.status !== 'unavailable') ? 'ok' : 'unavailable'
-    const transferControlStatus = hpResult.ok ? 'partial' : 'unavailable'
-    const contractChecksStatus: "ok" | "partial" | "unavailable" | "error" =
-      cortexContractFlags.bytecodeChecked ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'unavailable')
-    const contractChecksReason = contractChecksStatus === 'unavailable'
-      ? 'Unavailable from current checks.'
+    const mintStatus = (cortexContractFlags.mint.status !== 'unverified' && cortexContractFlags.mint.status !== 'not_checked') ? 'ok' : 'not_checked'
+    const proxyStatus = (cortexContractFlags.proxy.status !== 'unverified' && cortexContractFlags.proxy.status !== 'not_checked') ? 'ok' : 'not_checked'
+    const transferControlStatus = hpResult.ok ? 'partial' : 'not_checked'
+    const contractChecksStatus: "ok" | "partial" | "not_checked" | "error" =
+      cortexContractFlags.bytecodeChecked ? 'partial' : (bytecodeStatus === 'ok' ? 'partial' : 'not_checked')
+    const contractChecksReason = contractChecksStatus === 'not_checked'
+      ? 'Contract checks require bytecode or GoldRush data — verify manually.'
       : 'Contract bytecode, supply, owner, and CORTEX flag scan reviewed.'
 
     const responsePayload = {
