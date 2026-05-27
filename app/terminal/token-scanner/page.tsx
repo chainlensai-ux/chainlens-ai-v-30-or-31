@@ -224,6 +224,8 @@ type DevWalletIntel = {
   confidence?: string
 }
 
+type SignalState = 'verified' | 'inferred' | 'partial' | 'not_applicable' | 'needs_holder_confirmation' | 'no_signal_from_available_data'
+
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
 type HolderStateKind = 'rowsWithPercent' | 'rowsWithoutPercent' | 'noRowsFallback'
 type HolderProviderStatus = 'ok' | 'partial' | 'empty' | 'unavailable' | 'error' | 'unknown'
@@ -2767,28 +2769,28 @@ export default function TerminalTokenScanner() {
                 const suspiciousTransferPattern = devIntel?.suspiciousTransfers ?? (result.riskEngine?.riskDrivers?.some((r) => /transfer|wallet cluster|linked wallet|coordinated/i.test(r)) ?? false)
                 const missingChecks = getMissingChecks(result)
                 const next = getNextAction(result)
+                const creatorState: SignalState = creatorStatus === 'confirmed' ? 'verified' : creatorStatus === 'likely' ? 'inferred' : 'partial'
                 const creatorStateLabel =
-                  creatorStatus === 'confirmed'
-                    ? 'Creator confirmed'
-                    : creatorStatus === 'likely'
-                      ? 'Creator likely found'
-                      : 'Needs holder confirmation'
+                  creatorState === 'verified' ? 'verified · creator confirmed'
+                    : creatorState === 'inferred' ? 'inferred · creator likely found'
+                      : 'partial · creator signal limited'
+                const linkedWalletState: SignalState = linkedWalletCount != null ? 'verified' : 'partial'
                 const linkedWalletLabel = linkedWalletCount != null
-                  ? `${linkedWalletCount} linked wallets detected`
-                  : 'partial'
+                  ? `verified · ${linkedWalletCount} linked wallets detected`
+                  : 'partial · linked-wallet check limited'
                 const creatorTopHolderLabel = creatorInTop === true
-                  ? 'Creator appears in top holders'
+                  ? 'verified · creator appears in top holders'
                   : creatorInTop === false
-                    ? 'Creator not in top holders.'
-                    : 'Needs holder confirmation'
+                    ? 'verified · creator not in top holders'
+                    : 'needs_holder_confirmation'
                 const devClusterLabel = devClusterSupply != null
-                  ? `${devClusterSupply.toFixed(1)}% cluster supply detected`
+                  ? `verified · ${devClusterSupply.toFixed(1)}% cluster supply detected`
                   : holderState.kind === 'rowsWithPercent'
-                    ? 'No dev cluster supply detected'
-                    : 'Needs holder confirmation'
+                    ? 'no_signal_from_available_data'
+                    : 'needs_holder_confirmation'
                 const suspiciousLabel = suspiciousTransferPattern === true
-                  ? 'Suspicious transfer pattern detected'
-                  : 'No suspicious transfer pattern detected from available data'
+                  ? 'inferred · suspicious transfer pattern detected'
+                  : 'no_signal_from_available_data'
                 const confirmedSignals = [
                   creatorStatus === 'confirmed' ? 'Creator confirmed.' : creatorStatus === 'likely' ? 'Creator likely found.' : null,
                   linkedWalletCount != null ? `${linkedWalletCount} linked wallet${linkedWalletCount === 1 ? '' : 's'} detected.` : null,
@@ -2801,7 +2803,7 @@ export default function TerminalTokenScanner() {
                   ...(holderState.kind !== 'rowsWithPercent' ? ['Holder distribution partial · Linked-wallet supply needs confirmation.'] : []),
                   ...(creatorInTop == null ? ['Creator top-holder visibility not confirmed.'] : []),
                 ]
-                const cortexDevRead = `${creatorStatus === 'confirmed' ? 'Creator confirmed' : creatorStatus === 'likely' ? 'Creator likely found' : 'Creator status is partial'}${linkedWalletCount != null ? ` with ${linkedWalletCount} linked wallet${linkedWalletCount === 1 ? '' : 's'} detected` : ''}. ${devClusterSupply == null ? 'Dev-cluster supply needs holder confirmation.' : `Dev-cluster supply tracks near ${devClusterSupply.toFixed(1)}%.`} ${next}`
+                const cortexDevRead = `${creatorState} creator signal${linkedWalletCount != null ? ` · verified linked wallets: ${linkedWalletCount}` : ' · partial linked-wallet mapping'}. ${devClusterSupply == null ? 'needs_holder_confirmation for dev-cluster supply.' : `verified dev-cluster supply near ${devClusterSupply.toFixed(1)}%.`} ${next}`
                 return(
                   <>
                     <div style={{ marginBottom:'18px' }}>
@@ -2810,8 +2812,8 @@ export default function TerminalTokenScanner() {
                     </div>
                     <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))', gap:'10px', marginBottom:'12px' }}>
                       {[
-                        { label:'Creator / Origin Wallet', value: `${creatorStateLabel}${creatorAddress ? ` · ${shorten(creatorAddress)}` : ''}`, color: creatorStatus === 'confirmed' ? '#34d399' : creatorStatus === 'likely' ? '#fbbf24' : '#94a3b8' },
-                        { label:'Linked Wallets', value: linkedWalletLabel, color: linkedWalletCount != null ? (linkedWalletCount > 0 ? '#fbbf24' : '#34d399') : '#94a3b8' },
+                        { label:'Creator / Origin Wallet', value: `${creatorStateLabel}${creatorAddress ? ` · ${shorten(creatorAddress)}` : ''}`, color: creatorState === 'verified' ? '#34d399' : creatorState === 'inferred' ? '#fbbf24' : '#94a3b8' },
+                        { label:'Linked Wallets', value: linkedWalletLabel, color: linkedWalletState === 'verified' ? (linkedWalletCount && linkedWalletCount > 0 ? '#fbbf24' : '#34d399') : '#94a3b8' },
                         { label:'Creator in Top Holders', value: creatorTopHolderLabel, color: creatorInTop === true ? '#fbbf24' : creatorInTop === false ? '#34d399' : '#94a3b8' },
                         { label:'Top Holder Concentration', value: `Top1 ${devIntel?.holderDistribution?.top1?.toFixed?.(1) ?? result.holderDistribution?.top1?.toFixed?.(1) ?? 'partial'}% · Top10 ${devIntel?.holderDistribution?.top10?.toFixed?.(1) ?? result.holderDistribution?.top10?.toFixed?.(1) ?? 'partial'}% · Top20 ${devIntel?.holderDistribution?.top20?.toFixed?.(1) ?? result.holderDistribution?.top20?.toFixed?.(1) ?? 'partial'}%`, color:'#a78bfa' },
                         { label:'Linked-wallet Supply', value: linkedWalletSupply != null ? `${linkedWalletSupply.toFixed(1)}% linked-wallet supply` : 'needs_holder_confirmation', color: linkedWalletSupply != null ? '#fbbf24' : '#94a3b8' },
