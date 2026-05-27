@@ -1343,6 +1343,7 @@ export default function TerminalTokenScanner() {
   const [error, setError]       = useState<string | null>(null)
   const [lpExpanded, setLpExpanded] = useState(true)
   const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-safety'|'risk-engine'|'deployer-intel'>('cortex-read')
+  const [devControlTab, setDevControlTab] = useState<'dev-map'|'supply-control'|'history'|'watch-plan'>('dev-map')
   const [copiedHolderAddress, setCopiedHolderAddress] = useState<string | null>(null)
 
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
@@ -1410,6 +1411,7 @@ export default function TerminalTokenScanner() {
     setResult(null)
     setLpExpanded(true)
     setActiveSection('cortex-read')
+    setDevControlTab('dev-map')
     setClarkVerdict(null)
     setClarkError(null)
     setDevIntel(null)
@@ -2772,111 +2774,67 @@ export default function TerminalTokenScanner() {
               {activeSection === 'deployer-intel' && (() => {
                 const holderState = deriveHolderState(result)
                 const creatorAddress = devIntel?.deployerAddress ?? result.security?.devOwnership?.ownerAddress ?? result.security?.devOwnership?.adminAddress ?? null
-                const creatorStatus = devIntel?.deployerStatus === 'confirmed'
-                  ? 'confirmed'
-                  : devIntel?.deployerStatus === 'possible_match'
-                    ? 'likely'
-                    : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
-                const topHolders = result.holderDistribution?.topHolders ?? []
-                const creatorInTop = devIntel?.creatorInTopHolders ?? (creatorAddress ? topHolders.some((h) => typeof h.address === 'string' && h.address.toLowerCase() === creatorAddress.toLowerCase()) : null)
-                const linkedWallets = devIntel?.linkedWallets
-                const linkedWalletCount = linkedWallets?.length ?? null
+                const creatorStatus = devIntel?.deployerStatus === 'confirmed' ? 'confirmed' : devIntel?.deployerStatus === 'possible_match' ? 'likely' : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
+                const linkedWallets = devIntel?.linkedWallets ?? []
+                const linkedWalletCount = linkedWallets.length
                 const linkedWalletSupply = devIntel?.linkedWalletSupply ?? null
-                const devClusterSupply = devIntel?.devClusterSupply ?? (creatorInTop === true
-                  ? topHolders.find((h) => typeof h.address === 'string' && creatorAddress && h.address.toLowerCase() === creatorAddress.toLowerCase())?.percent ?? null
-                  : null)
-                const suspiciousTransferPattern = devIntel?.suspiciousTransfers ?? (result.riskEngine?.riskDrivers?.some((r) => /transfer|wallet cluster|linked wallet|coordinated/i.test(r)) ?? false)
-                const missingChecks = getMissingChecks(result)
-                const next = getNextAction(result)
-                const creatorState: SignalState = creatorStatus === 'confirmed' ? 'verified' : creatorStatus === 'likely' ? 'inferred' : 'partial'
-                const creatorStateLabel =
-                  creatorState === 'verified' ? 'verified · creator confirmed'
-                    : creatorState === 'inferred' ? 'inferred · creator likely found'
-                      : 'partial · creator signal limited'
-                const linkedWalletState: SignalState = linkedWalletCount != null ? 'verified' : 'partial'
-                const linkedWalletLabel = linkedWalletCount != null
-                  ? `verified · ${linkedWalletCount} linked wallets detected`
-                  : 'partial · linked-wallet check limited'
-                const creatorTopHolderLabel = creatorInTop === true
-                  ? 'verified · creator appears in top holders'
-                  : creatorInTop === false
-                    ? 'verified · creator not in top holders'
-                    : formatSignalStateLabel('needs_holder_confirmation')
-                const devClusterLabel = devClusterSupply != null
-                  ? `verified · ${devClusterSupply.toFixed(1)}% cluster supply detected`
-                  : holderState.kind === 'rowsWithPercent'
-                    ? formatSignalStateLabel('no_signal_from_available_data')
-                    : formatSignalStateLabel('needs_holder_confirmation')
-                const suspiciousLabel = suspiciousTransferPattern === true
-                  ? 'inferred · suspicious transfer pattern detected'
-                  : formatSignalStateLabel('no_signal_from_available_data')
                 const top1 = devIntel?.holderDistribution?.top1 ?? result.holderDistribution?.top1 ?? null
                 const top10 = devIntel?.holderDistribution?.top10 ?? result.holderDistribution?.top10 ?? null
                 const top20 = devIntel?.holderDistribution?.top20 ?? result.holderDistribution?.top20 ?? null
-                const hasTopHolderConcentration = top1 != null && top10 != null && top20 != null
-                const confirmedSignals = [
-                  creatorStatus === 'confirmed' ? 'Creator confirmed.' : creatorStatus === 'likely' ? 'Creator likely found.' : null,
-                  linkedWalletCount != null ? `${linkedWalletCount} linked wallet${linkedWalletCount === 1 ? '' : 's'} detected.` : null,
-                  creatorInTop != null ? (creatorInTop ? 'Creator appears in top holders.' : 'Creator not in top holders.') : null,
-                  devClusterSupply != null ? `Dev cluster supply tracked at ${devClusterSupply.toFixed(1)}%.` : null,
-                  suspiciousTransferPattern === true ? 'Suspicious transfer pattern detected.' : suspiciousTransferPattern === false ? 'No suspicious transfer pattern detected from available data.' : null,
-                ].filter((v): v is string => !!v)
+                const creatorInTop = devIntel?.creatorInTopHolders ?? null
+                const devClusterSupply = devIntel?.devClusterSupply ?? null
+                const suspiciousTransferPattern = devIntel?.suspiciousTransfers ?? false
+                const missingChecks = getMissingChecks(result)
                 const openChecks = [
-                  ...(linkedWalletCount == null ? ['Linked-wallet check is partial from available data.'] : []),
-                  ...(holderState.kind !== 'rowsWithPercent' ? ['Holder distribution partial · Linked-wallet supply needs confirmation.'] : []),
-                  ...(creatorInTop == null ? ['Creator top-holder visibility not confirmed.'] : []),
+                  ...(linkedWalletCount === 0 ? ['Linked wallet cluster still limited from available transfer evidence.'] : []),
+                  ...(holderState.kind !== 'rowsWithPercent' ? ['Holder concentration data remains partial.'] : []),
                 ]
-                const cortexDevRead = `${formatSignalStateLabel(creatorState)} creator signal${linkedWalletCount != null ? ` · verified linked wallets: ${linkedWalletCount}` : ' · partial linked-wallet mapping'}. ${devClusterSupply == null ? `${formatSignalStateLabel('needs_holder_confirmation')} for dev-cluster supply.` : `verified dev-cluster supply near ${devClusterSupply.toFixed(1)}%.`} ${next}`
-                return(
-                  <>
-                    <div style={{ marginBottom:'18px' }}>
-                      <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>DEV CONTROL</p>
-                      <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Creator, linked-wallet, and supply-control signals.</p>
-                    </div>
-                    <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))', gap:'10px', marginBottom:'12px' }}>
-                      {[
-                        { label:'Creator / Origin Wallet', value: `${creatorStateLabel}${creatorAddress ? ` · ${shorten(creatorAddress)}` : ''}`, color: creatorState === 'verified' ? '#34d399' : creatorState === 'inferred' ? '#fbbf24' : '#94a3b8' },
-                        { label:'Linked Wallets', value: linkedWalletLabel, color: linkedWalletState === 'verified' ? (linkedWalletCount && linkedWalletCount > 0 ? '#fbbf24' : '#34d399') : '#94a3b8' },
-                        { label:'Creator in Top Holders', value: creatorTopHolderLabel, color: creatorInTop === true ? '#fbbf24' : creatorInTop === false ? '#34d399' : '#94a3b8' },
-                        { label:'Top Holder Concentration', value: hasTopHolderConcentration ? `Top 1: ${top1.toFixed(1)}%\nTop 10: ${top10.toFixed(1)}%\nTop 20: ${top20.toFixed(1)}%` : 'Needs holder confirmation.', color:'#a78bfa' },
-                        { label:'Linked-wallet Supply', value: linkedWalletSupply != null ? `${linkedWalletSupply.toFixed(1)}% linked-wallet supply` : formatSignalStateLabel('needs_holder_confirmation'), color: linkedWalletSupply != null ? '#fbbf24' : '#94a3b8' },
-                        { label:'Dev Cluster Supply', value: devClusterLabel, color: devClusterSupply != null && devClusterSupply > 20 ? '#f87171' : devClusterSupply != null ? '#fbbf24' : '#94a3b8' },
-                        { label:'Transfer Pattern', value: suspiciousTransferPattern === true ? 'Suspicious transfer pattern detected' : 'No suspicious transfer pattern found', color: suspiciousTransferPattern === true ? '#f87171' : '#34d399' },
-                      ].map((card) => (
-                        <div key={card.label} style={{ padding:'12px 13px', borderRadius:'12px', border:`1px solid ${card.color}33`, background:'rgba(8,14,28,0.72)' }}>
-                          <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#64748b', textTransform:'uppercase', fontFamily:'var(--font-plex-mono)' }}>{card.label}</p>
-                          <p style={{ margin:0, fontSize:'12px', color:card.color, lineHeight:1.5, fontFamily:'var(--font-plex-mono)', fontWeight:700, whiteSpace:'pre-line' }}>{card.value}</p>
-                        </div>
-                      ))}
-                    </div>
-                    {devIntelLoading && (
-                      <div style={{ padding:'10px 12px', marginBottom:'10px', border:'1px solid rgba(125,211,252,0.26)', borderRadius:'10px', color:'#7dd3fc', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Loading dev intelligence…</div>
-                    )}
-                    {devIntelError && (
-                      <div style={{ padding:'10px 12px', marginBottom:'10px', border:'1px solid rgba(251,191,36,0.3)', borderRadius:'10px', color:'#fcd34d', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>{devIntelError}</div>
-                    )}
-                    <div style={{ padding:'14px 16px', background:'rgba(125,211,252,0.05)', border:'1px solid rgba(125,211,252,0.2)', borderRadius:'12px', marginBottom:'12px' }}>
-                      <p style={{ margin:'0 0 8px', fontSize:'10px', color:'#7dd3fc', letterSpacing:'.14em', textTransform:'uppercase', fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>CORTEX Dev Risk Read</p>
-                      <div style={{ display:'grid', gap:'8px' }}>
-                        <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}><span style={{ color:'#34d399' }}>Confirmed signals:</span> {confirmedSignals.length > 0 ? confirmedSignals.join(' ') : 'No confirmed dev signals yet.'}</p>
-                        <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}><span style={{ color:'#fbbf24' }}>Open checks:</span> {openChecks.length > 0 ? openChecks.join(' ') : 'None.'}</p>
-                        <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}><span style={{ color:'#2DD4BF' }}>Next action:</span> {next}</p>
-                      </div>
-                    </div>
-                    <div style={{ padding:'12px 14px', background:'rgba(8,14,28,0.56)', border:'1px solid rgba(148,163,184,0.18)', borderRadius:'12px', marginBottom:'10px' }}>
-                      <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', lineHeight:1.55, fontFamily:'var(--font-plex-mono)' }}>{cortexDevRead}</p>
-                    </div>
-                    {(missingChecks.length > 0 || openChecks.length > 0) && (
-                      <div style={{ padding:'12px 14px', borderRadius:'12px', border:'1px solid rgba(251,191,36,0.3)', background:'rgba(251,191,36,0.08)' }}>
-                        <p style={{ margin:'0 0 5px', fontSize:'10px', letterSpacing:'.14em', color:'#fbbf24', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>Open checks remain</p>
-                        <p style={{ margin:0, fontSize:'11px', color:'#fde68a', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{[...openChecks, ...missingChecks].slice(0, 3).join(' · ')}</p>
-                      </div>
-                    )}
-                  </>
-                )
-              })()}
+                const score = Math.max(10, Math.min(98, Math.round((creatorStatus === 'confirmed' ? 32 : creatorStatus === 'likely' ? 24 : 14) + (linkedWalletCount > 0 ? 18 : 8) + (devClusterSupply != null ? Math.max(0, 25 - Math.round(devClusterSupply / 2)) : 10) + (suspiciousTransferPattern ? 4 : 14))))
+                const riskLabel = score >= 76 ? 'LOW RISK' : score >= 56 ? 'WATCH' : score >= 35 ? 'HIGH RISK' : 'CRITICAL'
+                const confidenceLabel = creatorStatus && holderState.kind === 'rowsWithPercent' ? 'HIGH' : creatorStatus || linkedWalletCount > 0 ? 'MEDIUM' : 'LOW'
+                const next = getNextAction(result)
+                const safeError = devIntelError ? 'Dev intelligence is temporarily unavailable. Retry the scan to refresh this module.' : null
 
+                return (<>
+                  <div style={{ marginBottom:'12px', padding:'18px', borderRadius:'14px', border:'1px solid rgba(125,211,252,0.22)', background:'linear-gradient(165deg, rgba(14,24,43,0.95), rgba(8,14,26,0.95))', boxShadow:'0 10px 28px rgba(5,10,25,0.45)' }}>
+                    <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'12px',marginBottom:'12px' }}>
+                      <div>
+                        <p style={{ margin:'0 0 6px',fontSize:'10px',letterSpacing:'.14em',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>CORTEX Dev Control Read</p>
+                        <p style={{ margin:0,fontSize:'12px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Embedded deployer, wallet cluster, and supply influence read from current /api/dev-wallet evidence.</p>
+                      </div>
+                      <p style={{ margin:0,fontSize:'28px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>{score}<span style={{ fontSize:'12px',color:'#64748b' }}>/100</span></p>
+                    </div>
+                    <div style={{ display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'10px' }}>
+                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:riskLabel.includes('LOW') ? '#34d399' : riskLabel==='WATCH' ? '#fbbf24' : '#f87171',border:'1px solid rgba(255,255,255,0.18)',fontFamily:'var(--font-plex-mono)' }}>{riskLabel}</span>
+                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#7dd3fc',border:'1px solid rgba(125,211,252,0.26)',fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE {confidenceLabel}</span>
+                    </div>
+                    <div style={{ height:'8px',borderRadius:'999px',background:'rgba(15,23,42,0.9)',border:'1px solid rgba(255,255,255,0.08)',overflow:'hidden' }}><div style={{ width:`${score}%`,height:'100%',background:'linear-gradient(90deg, #2dd4bf, #7dd3fc)' }} /></div>
+                  </div>
+                  <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:'10px',marginBottom:'14px' }}>
+                    {[
+                      { k:'Deployer', v: creatorStatus === 'confirmed' ? 'Confirmed' : creatorStatus === 'likely' ? 'Likely matched' : 'Limited signal' },
+                      { k:'Linked Wallets', v: `${linkedWalletCount} mapped` },
+                      { k:'Supply Control', v: devClusterSupply != null ? `${devClusterSupply.toFixed(1)}% cluster` : 'Pending confirmation' },
+                      { k:'Patterns', v: suspiciousTransferPattern ? 'Suspicious transfers seen' : 'No major pattern flagged' },
+                    ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(148,163,184,0.2)',background:'rgba(9,15,29,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#64748b',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e2e8f0',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
+                  </div>
+                  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
+                    {[['dev-map','Dev Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']].map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id as any)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(125,211,252,0.45)':'1px solid rgba(148,163,184,0.2)', background:devControlTab===id?'rgba(14,29,47,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#7dd3fc':'#94a3b8', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
+                  </div>
+                  <div style={{ border:'1px solid rgba(148,163,184,0.2)', borderRadius:'14px', padding:'14px', background:'rgba(7,12,24,0.8)' }}>
+                    {devControlTab==='dev-map' && <div style={{ display:'grid',gap:'12px' }}><div style={{ display:'grid',gridTemplateColumns:'1fr auto 1fr auto 1fr',alignItems:'center',gap:'8px' }}><div style={{ padding:'10px',border:'1px solid rgba(125,211,252,.22)',borderRadius:'10px' }}>Token Contract</div><span style={{ color:'#7dd3fc' }}>→</span><div style={{ padding:'10px',border:'1px solid rgba(251,191,36,.24)',borderRadius:'10px' }}>Likely Origin Wallet</div><span style={{ color:'#7dd3fc' }}>→</span><div style={{ padding:'10px',border:'1px solid rgba(45,212,191,.24)',borderRadius:'10px' }}>Linked Wallets</div></div><div style={{ padding:'12px',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px' }}><p style={{ margin:'0 0 8px',fontSize:'10px',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Origin Wallet</p><p style={{ margin:'0 0 4px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Address: {creatorAddress ?? 'Not confirmed yet'}</p><p style={{ margin:'0 0 4px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Status: {creatorStatus ?? 'Limited'}</p><p style={{ margin:'0 0 4px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Detection method: {devIntel?.confidence ?? 'Evidence based inference'}</p><p style={{ margin:'0 0 4px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Chain: {result.chain?.toUpperCase() ?? chain.toUpperCase()}</p><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Scanned: {new Date().toLocaleDateString()}</p></div><div style={{ display:'grid', gap:'8px' }}>{linkedWallets.length ? linkedWallets.map((wallet, i)=><div key={wallet.address+i} style={{ padding:'10px',border:'1px solid rgba(148,163,184,0.2)',borderRadius:'10px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{wallet.address}</div>) : <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>Linked wallets are still being discovered from transfer evidence.</p>}</div></div>}
+                    {devControlTab==='supply-control' && <div style={{ overflowX:'auto' }}><table style={{ width:'100%',borderCollapse:'collapse',fontFamily:'var(--font-plex-mono)' }}><tbody>{[['Creator in top holders', creatorInTop==null?'Unconfirmed':creatorInTop?'Yes':'No'],['Top 1 concentration', top1!=null?`${top1.toFixed(1)}%`:'—'],['Top 10 concentration', top10!=null?`${top10.toFixed(1)}%`:'—'],['Top 20 concentration', top20!=null?`${top20.toFixed(1)}%`:'—'],['Linked-wallet supply', linkedWalletSupply!=null?`${linkedWalletSupply.toFixed(1)}%`:'—'],['Dev cluster supply', devClusterSupply!=null?`${devClusterSupply.toFixed(1)}%`:'—']].map(([k,v]) => <tr key={String(k)}><td style={{ padding:'10px',borderBottom:'1px solid rgba(148,163,184,.14)',color:'#94a3b8',fontSize:'11px' }}>{k}</td><td style={{ padding:'10px',borderBottom:'1px solid rgba(148,163,184,.14)',color:'#e2e8f0',fontSize:'12px',textAlign:'right' }}>{v}</td></tr>)}</tbody></table></div>}
+                    {devControlTab==='history' && <div style={{ display:'grid',gap:'10px' }}><div style={{ padding:'12px',border:'1px solid rgba(148,163,184,.2)',borderRadius:'10px' }}><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{(devIntel?.reasons && devIntel.reasons.length>0) ? devIntel.reasons.join(' ') : 'History signals are still being built from available deployer evidence.'}</p></div><div style={{ padding:'12px',border:'1px solid rgba(148,163,184,.2)',borderRadius:'10px' }}><p style={{ margin:'0 0 4px',fontSize:'10px',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)' }}>Creator behavior</p><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{creatorStatus==='confirmed'?'Creator identity is confirmed and linked to current deployment footprint.':'Creator identity is still partially inferred from available traces.'}</p></div><div style={{ padding:'12px',border:'1px solid rgba(148,163,184,.2)',borderRadius:'10px' }}><p style={{ margin:'0 0 4px',fontSize:'10px',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)' }}>Transfer pattern / suspicious actions</p><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{suspiciousTransferPattern ? 'Suspicious linked transfer behavior is flagged for closer follow-up.' : 'No suspicious transfer action confirmed from current traces.'}</p></div></div>}
+                    {devControlTab==='watch-plan' && <div style={{ display:'grid',gap:'10px' }}><div style={{ padding:'12px',border:'1px solid rgba(125,211,252,.22)',borderRadius:'10px' }}><p style={{ margin:'0 0 5px',fontSize:'10px',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Concise CORTEX read</p><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{`Creator ${creatorStatus ?? 'signal limited'}; linked wallets ${linkedWalletCount}; dev cluster ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : 'pending'}.`}</p></div><div style={{ padding:'12px',border:'1px solid rgba(52,211,153,.22)',borderRadius:'10px' }}><p style={{ margin:'0 0 5px',fontSize:'10px',color:'#34d399',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Confirmed signals</p><p style={{ margin:0,fontSize:'11px',color:'#86efac',fontFamily:'var(--font-plex-mono)' }}>{linkedWalletCount>0?`${linkedWalletCount} linked wallet connections confirmed.`:'No linked wallet confirmation yet.'}</p></div><div style={{ padding:'12px',border:'1px solid rgba(251,191,36,.22)',borderRadius:'10px' }}><p style={{ margin:'0 0 5px',fontSize:'10px',color:'#fbbf24',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Open checks</p><p style={{ margin:0,fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)' }}>{openChecks.length?openChecks.join(' '):'No additional open checks.'}</p></div><div style={{ padding:'12px',border:'1px solid rgba(45,212,191,.22)',borderRadius:'10px' }}><p style={{ margin:'0 0 5px',fontSize:'10px',color:'#2DD4BF',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Next action</p><p style={{ margin:0,fontSize:'11px',color:'#99f6e4',fontFamily:'var(--font-plex-mono)' }}>{next}</p></div></div>}
+                  </div>
+                  {devIntelLoading && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(125,211,252,0.22)', borderRadius:'10px', color:'#7dd3fc', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Loading dev intelligence…</div>}
+                  {safeError && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(251,191,36,0.28)', borderRadius:'10px', color:'#fcd34d', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>{safeError}</div>}
+                  {missingChecks.length > 0 && <p style={{ margin:'10px 2px 0',fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Open verification items: {missingChecks.slice(0,2).join(' · ')}</p>}
+                </>)
+              })()}
             </div>
+
+
           )}
         </div>
 
