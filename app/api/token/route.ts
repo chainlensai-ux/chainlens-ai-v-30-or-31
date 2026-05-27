@@ -1454,6 +1454,56 @@ function computeRiskEngine(input: {
   };
 }
 
+function _buildDeterministicSummary(
+  chainName: string,
+  noActivePools: boolean,
+  hpResult: { ok: boolean | null; honeypot?: boolean | null; buyTax?: number | null; sellTax?: number | null; simulationSuccess?: boolean | null },
+  analysis: { suspiciousFunctions: string[] },
+  holderItemsEarly: any[],
+  ownerStatus: string,
+  lpPoolType: string | null | undefined
+): string {
+  const parts: string[] = []
+  const risks: string[] = []
+  const gaps: string[] = []
+
+  if (noActivePools) {
+    risks.push(`no active trading pools detected on ${chainName}`)
+  }
+  if (hpResult.ok) {
+    if (hpResult.honeypot) risks.push('honeypot simulation triggered — sells may be blocked')
+    else {
+      const taxNote = (hpResult.buyTax != null && hpResult.sellTax != null)
+        ? `buy tax ${hpResult.buyTax}%, sell tax ${hpResult.sellTax}%`
+        : null
+      parts.push(`Trading simulation passed${taxNote ? ` (${taxNote})` : ''}.`)
+    }
+  } else {
+    gaps.push('trading simulation unavailable')
+  }
+  if (analysis.suspiciousFunctions.length > 0) {
+    risks.push(`bytecode contains suspicious selectors: ${analysis.suspiciousFunctions.slice(0, 3).join(', ')}`)
+  }
+  if (holderItemsEarly.length === 0) {
+    gaps.push('holder concentration data unavailable')
+  }
+  if (ownerStatus === 'renounced') {
+    parts.push('Ownership is renounced.')
+  } else if (ownerStatus === 'unverified') {
+    gaps.push('ownership unverified')
+  }
+  if (!lpPoolType || lpPoolType === 'unknown') {
+    gaps.push('LP lock or burn status unknown')
+  }
+
+  const summary: string[] = []
+  if (risks.length > 0) summary.push(`Risk flags on ${chainName}: ${risks.join('; ')}.`)
+  if (parts.length > 0) summary.push(...parts)
+  if (gaps.length > 0) summary.push(`Data gaps: ${gaps.join(', ')} — verdict requires additional verification.`)
+  if (summary.length === 0) summary.push(`This ${chainName} token could not be fully assessed — all data sources returned empty results.`)
+  return summary.join(' ')
+}
+
 // ------------------------------
 // POST handler
 // ------------------------------
@@ -1773,7 +1823,8 @@ export async function POST(req: Request) {
       }))
     }
     const needsLpHolderFetch = Boolean(_lpProofPresent && (_lpProofType === 'v2' || _lpProofType === 'unknown'))
-    const needsAI = !noActivePools || hasSecurityData
+    // Always run AI: the prompt handles missing data gracefully and prevents the fallback "insufficient data" message
+    const needsAI = true
     const needsOnchainMc = _mcEarly == null && _priceEarly != null
 
     // ── Phase 1 data extraction for AI summary prompt ──────────────────────────
@@ -2198,12 +2249,15 @@ export async function POST(req: Request) {
     ].filter(Boolean);
 
     // AI summary from parallel phase 2
-    let aiSummary = `Unverified on ${chain === 'eth' ? 'Ethereum' : 'Base'} — insufficient data for a risk verdict.`;
+    const _chainName = chain === 'eth' ? 'Ethereum' : 'Base'
     const _aiResult = _aiSettled.status === 'fulfilled' ? _aiSettled.value : null
+    let aiSummary: string
     if (_aiResult && typeof _aiResult === 'object' && 'content' in _aiResult) {
       const _aiContent = (_aiResult as { content: Array<{type: string; text?: string}> }).content
       const _aiText = _aiContent?.[0]
-      if (_aiText?.type === 'text' && _aiText.text) aiSummary = _aiText.text
+      aiSummary = (_aiText?.type === 'text' && _aiText.text) ? _aiText.text : _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, _holderItemsEarly, _ownerStatusEarly, lpPoolType ?? lpVerifyPoolType)
+    } else {
+      aiSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, _holderItemsEarly, _ownerStatusEarly, lpPoolType ?? lpVerifyPoolType)
     }
 
     // ------------------------------
@@ -2246,17 +2300,33 @@ export async function POST(req: Request) {
       18;
 
     
+    // Moralis holder fallback — normalise to common shape so downstream code is unaware of source
+    const _moralisHolderItems: any[] = Array.isArray(moralisHoldersRaw?.result)
+      ? (moralisHoldersRaw.result as any[]).map((h: any) => ({
+          address: h.owner_address ?? h.wallet_address ?? '',
+          percentage: h.percentage_relative_to_total_supply ?? null,
+          balance: h.balance ?? null,
+        })).filter((h: any) => h.address)
+      : []
     const holderCandidates = [
       holdersRaw?.data?.items,
       holdersRaw?.data?.data?.items,
       holdersRaw?.items,
       holdersRaw?.holders,
       holdersRaw?.token_holders,
+      // Moralis fallback — only used when every GoldRush candidate is empty
+      _moralisHolderItems.length > 0 ? _moralisHolderItems : null,
     ]
-    const holderItems: any[] = holderCandidates.find((x) => Array.isArray(x)) ?? []
-    console.log('[holders] items length', holderItems.length)
+    const holderItems: any[] = holderCandidates.find((x) => Array.isArray(x) && (x as any[]).length > 0) ?? []
+    const _holderSource: 'goldrush' | 'moralis' | 'none' = (() => {
+      const gCand = [holdersRaw?.data?.items, holdersRaw?.data?.data?.items, holdersRaw?.items, holdersRaw?.holders, holdersRaw?.token_holders]
+      if (gCand.some((c) => Array.isArray(c) && (c as any[]).length > 0)) return 'goldrush'
+      if (_moralisHolderItems.length > 0 && holderItems.length > 0) return 'moralis'
+      return 'none'
+    })()
+    console.log('[holders] items length', holderItems.length, 'source', _holderSource)
 
-    const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? null
+    const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? moralisHoldersRaw?.total ?? null
     const holderPctFromProvider: boolean[] = []
     const rawBalanceByAddress = new Map<string, unknown>()
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
@@ -2645,7 +2715,22 @@ export async function POST(req: Request) {
       mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "unavailable"));
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
     const ownerCall = _ownerHexForLp ?? alchemyMandatoryReads[0] ?? alchemyMandatoryReads[1] ?? alchemyMandatoryReads[2] ?? alchemyMandatoryReads[3] ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
-    const ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
+    let ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
+    // Deployer fallback: extract from Moralis mint transfer when RPC selectors all return null.
+    // A mint event (from=0x0) points to the initial recipient — the deployer's distribution wallet.
+    let _ownerFromTransfer: string | null = null
+    if (!ownerAddr && Array.isArray(moralisTransfersRaw?.result) && (moralisTransfersRaw.result as any[]).length > 0) {
+      const _ZERO = '0x0000000000000000000000000000000000000000'
+      const _mints = (moralisTransfersRaw.result as any[]).filter((t: any) =>
+        typeof t.from_address === 'string' && t.from_address.toLowerCase() === _ZERO &&
+        typeof t.to_address === 'string' && /^0x[a-f0-9]{40}$/i.test(t.to_address) && t.to_address.toLowerCase() !== _ZERO
+      )
+      if (_mints.length > 0) {
+        const _earliest = _mints.sort((a: any, b: any) => parseInt(a.block_number ?? '0') - parseInt(b.block_number ?? '0'))[0]
+        _ownerFromTransfer = _earliest.to_address?.toLowerCase() ?? null
+        ownerAddr = _ownerFromTransfer
+      }
+    }
     // Ownership / control derivation — RPC-sourced admin and proxy implementation
     const _adminHex = alchemyMandatoryReads[2] ?? alchemyMandatoryReads[3] ?? null
     const adminAddr = _adminHex && _adminHex.length >= 42 && _adminHex !== '0x' ? `0x${_adminHex.slice(-40)}`.toLowerCase() : null
@@ -2685,8 +2770,11 @@ export async function POST(req: Request) {
     // Contract flag resolution: GoldRush Contract Intel is primary source.
     // ABI/bytecode selector scan (PUSH4 opcode pattern) is fallback when GoldRush returns null.
     // RPC probes (EIP-1967 proxy slot, paused() call) supplement both sources.
+    // Simulation fallback: when no bytecode AND no GoldRush AND simulation confirmed trading works,
+    // upgrade 'unavailable' to 'not_detected' with low confidence — trading implies no active trap.
     const _grCI = grContractIntel  // GoldRush Contract Intel result
     const _grCIUsable = _grCI != null
+    const _simImpliedClean = hpResult.ok === true && hpResult.honeypot === false && hpResult.simulationSuccess === true
     type FlagStatus = { status: 'verified' | 'possible' | 'not_detected' | 'unverified' | 'unavailable'; confidence: 'high' | 'medium' | 'low'; note: string }
     const _resolveFlag = (
       grValue: boolean | null | undefined,
@@ -2698,6 +2786,7 @@ export async function POST(req: Request) {
       if (grValue === true) return { status: 'verified', confidence: 'high', note: 'GoldRush Contract Intel confirmed' }
       if (grValue === false) return { status: 'not_detected', confidence: 'high', note: 'GoldRush Contract Intel: not present' }
       // GoldRush returned null — fall back to ABI/bytecode signature scan
+      if (!_hasBytecode && _simImpliedClean) return { status: 'not_detected', confidence: 'low', note: 'Simulation confirmed trading — flag implied absent, not directly verified' }
       if (!_hasBytecode) return { status: 'unavailable', confidence: 'low', note: 'Neither GoldRush nor bytecode available' }
       if (bytecodeSel) return { status: 'verified', confidence: 'high', note: bytecodeNote }
       return { status: 'not_detected', confidence: 'medium', note: `ABI signature scan: not detected (GoldRush fallback)` }
@@ -3551,6 +3640,9 @@ export async function POST(req: Request) {
           firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : undefined,
           reason: holderDistributionStatus.reason,
           percentSource,
+          holderDataSource: _holderSource,
+          moralisFallbackUsed: _holderSource === 'moralis',
+          moralisHolderCount: _moralisHolderItems.length,
           totalSupplyAvailable: Boolean(rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0'),
           providerTotalSupplyAvailable: _holderProviderSupply != null,
           derivationSupplySource: _derivationSupplySource,
@@ -3730,6 +3822,7 @@ export async function POST(req: Request) {
           ownershipFlow: {
             rpcAttempted: alchemyConfigured,
             ownerFound: Boolean(ownerAddr),
+            ownerSource: _ownerFromTransfer ? 'moralis_transfer_fallback' : (ownerAddr ? 'rpc_selector' : 'none'),
             adminFound: Boolean(adminAddr),
             proxyImplFound: Boolean(proxyImplAddr),
             is_renounced: isRenounced,
