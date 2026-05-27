@@ -2709,7 +2709,7 @@ export default function TerminalTokenScanner() {
                 const creatorTopHolderLabel = creatorInTop === true
                   ? 'Creator appears in top holders'
                   : creatorInTop === false
-                    ? 'Creator not seen in top holders'
+                    ? 'Creator not in top holders.'
                     : 'Needs holder confirmation'
                 const devClusterLabel = devClusterSupply != null
                   ? `${devClusterSupply.toFixed(1)}% cluster supply detected`
@@ -2722,16 +2722,16 @@ export default function TerminalTokenScanner() {
                 const confirmedSignals = [
                   creatorStatus === 'confirmed' ? 'Creator confirmed.' : creatorStatus === 'likely' ? 'Creator likely found.' : null,
                   linkedWallets != null ? `${linkedWallets} linked wallet${linkedWallets === 1 ? '' : 's'} detected.` : null,
-                  creatorInTop != null ? (creatorInTop ? 'Creator appears in top holders.' : 'Creator not seen in top holders.') : null,
+                  creatorInTop != null ? (creatorInTop ? 'Creator appears in top holders.' : 'Creator not in top holders.') : null,
                   devClusterSupply != null ? `Dev cluster supply tracked at ${devClusterSupply.toFixed(1)}%.` : null,
                   suspiciousTransferPattern === true ? 'Suspicious transfer pattern detected.' : suspiciousTransferPattern === false ? 'No suspicious transfer pattern detected from available data.' : null,
                 ].filter((v): v is string => !!v)
                 const openChecks = [
                   ...(linkedWallets == null ? ['Linked wallet mapping incomplete.'] : []),
-                  ...(holderState.kind !== 'rowsWithPercent' ? ['Holder percentages missing — supply cluster needs confirmation.'] : []),
+                  ...(holderState.kind !== 'rowsWithPercent' ? ['Holder distribution partial · Linked-wallet supply needs confirmation.'] : []),
                   ...(creatorInTop == null ? ['Creator top-holder visibility not confirmed.'] : []),
                 ]
-                const cortexDevRead = `${creatorStatus === 'confirmed' ? 'Creator was confirmed' : creatorStatus === 'likely' ? 'Creator was likely found' : 'Creator was not confirmed'}${linkedWallets != null ? ` and ${linkedWallets} linked wallet${linkedWallets === 1 ? ' was' : 's were'} detected` : ''}. ${devClusterSupply == null ? 'Holder distribution could not fully confirm dev cluster supply.' : `Dev cluster supply is currently estimated at ${devClusterSupply.toFixed(1)}%.`} ${suspiciousTransferPattern === true ? 'Suspicious transfer flow appeared in recent data.' : 'No suspicious transfer pattern detected from available data.'} ${next}`
+                const cortexDevRead = `${creatorStatus === 'confirmed' ? 'Creator confirmed' : creatorStatus === 'likely' ? 'Creator likely found' : 'Creator status still open'}${linkedWallets != null ? ` with ${linkedWallets} linked wallet${linkedWallets === 1 ? '' : 's'} detected` : ''}. ${devClusterSupply == null ? 'Dev-cluster supply still needs holder confirmation.' : `Dev-cluster supply currently tracks near ${devClusterSupply.toFixed(1)}%.`} ${next}`
                 return(
                   <>
                     <div style={{ marginBottom:'18px' }}>
