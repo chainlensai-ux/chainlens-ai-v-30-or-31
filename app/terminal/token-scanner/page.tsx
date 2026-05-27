@@ -1618,7 +1618,7 @@ export default function TerminalTokenScanner() {
                   { id: 'holder-map',   label: 'Holder Map',    dot: '#a78bfa' },
                   { id: 'lp-safety',    label: 'LP Safety Analyzer', dot: '#34d399' },
                   { id: 'risk-engine',  label: 'CORTEX Risk Engine', dot: '#f87171' },
-                  { id: 'deployer-intel', label: 'Deployer Intelligence', dot: '#fbbf24' },
+                  { id: 'deployer-intel', label: 'Dev Control', dot: '#fbbf24' },
                 ]
                 return (
                   <div style={{ display: 'flex', gap: '3px', marginBottom: '22px', overflowX: 'auto', paddingBottom: '6px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -2683,146 +2683,92 @@ export default function TerminalTokenScanner() {
                 </>
               )}
 
-              {/* ── DEPLOYER INTELLIGENCE ─────────────────────────────── */}
+              {/* ── DEV CONTROL ─────────────────────────────────────── */}
               {activeSection === 'deployer-intel' && (() => {
                 const holderState = deriveHolderState(result)
-                const lpStatus = result.lpControl?.status
-                const lpVerified = lpStatus==='locked'||lpStatus==='burned'
-                const missing = getMissingChecks(result)
+                const creatorAddress = result.security?.devOwnership?.ownerAddress ?? result.security?.devOwnership?.adminAddress ?? null
+                const creatorStatus = creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null
+                const topHolders = result.holderDistribution?.topHolders ?? []
+                const creatorInTop = creatorAddress ? topHolders.some((h) => typeof h.address === 'string' && h.address.toLowerCase() === creatorAddress.toLowerCase()) : null
+                const linkedWallets = null
+                const devClusterSupply = creatorInTop === true
+                  ? topHolders.find((h) => typeof h.address === 'string' && creatorAddress && h.address.toLowerCase() === creatorAddress.toLowerCase())?.percent ?? null
+                  : null
+                const suspiciousTransferPattern = result.riskEngine?.riskDrivers?.some((r) => /transfer|wallet cluster|linked wallet|coordinated/i.test(r)) ?? false
+                const missingChecks = getMissingChecks(result)
                 const next = getNextAction(result)
-                const monitorItems = [
-                  !lpVerified?{label:'LP Lock / Burn',detail:'Verify LP is locked or burned before assuming liquidity is safe.'}:null,
-                  holderState.kind!=='rowsWithPercent'?{label:'Holder Concentration',detail:'Rescan or check holder data when available. Top holders not confirmed.'}:null,
-                  result.marketCapUsd==null?{label:'Market Cap',detail:'Circulating supply not confirmed — FDV is not market cap.'}:null,
-                  (result.liquidity??0)>0&&(result.liquidity??0)<100000?{label:'Thin Liquidity',detail:`${fmtLarge(result.liquidity)} pool depth — monitor for exit risk and slippage.`}:null,
-                  result.honeypot?.isHoneypot!==false?{label:'Honeypot Status',detail:'Security simulation not completed or inconclusive.'}:null,
-                ].filter((x):x is{label:string;detail:string}=>x!=null)
-                const st={margin:'0 0 4px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
-                // Build priority checklist
-                const priorityItems: Array<{num:number;label:string;detail:string;urgent:boolean}> = [
-                  ...(!lpVerified ? [{ num:1, label:'Verify LP Lock or Burn', detail:'Confirm liquidity is locked or burned before assuming exits are safe.', urgent:true }] : []),
-                  ...(holderState.kind!=='rowsWithPercent' ? [{ num:lpVerified?1:2, label:'Confirm Holder Concentration', detail:'Top holders not confirmed. Check supply spread before forming conviction.', urgent:holderState.kind==='noRowsFallback' }] : []),
-                  ...(result.marketCapUsd==null ? [{ num:(lpVerified?0:1)+(holderState.kind!=='rowsWithPercent'?1:0)+1, label:'Verify Market Cap', detail:'Circulating supply not confirmed — FDV is not equivalent to market cap.', urgent:false }] : []),
-                  ...(!result.honeypot?.simulationSuccess ? [{ num:(lpVerified?0:1)+(holderState.kind!=='rowsWithPercent'?1:0)+(result.marketCapUsd==null?1:0)+1, label:'Check Security Simulation', detail:'Tax and honeypot status were not fully simulated this scan. Verify independently.', urgent:false }] : []),
-                ].map((item,i)=>({...item,num:i+1}))
+                const creatorStateLabel =
+                  creatorStatus === 'confirmed'
+                    ? 'Creator confirmed'
+                    : creatorStatus === 'likely'
+                      ? 'Creator likely found'
+                      : 'Needs holder confirmation'
+                const linkedWalletLabel = linkedWallets != null
+                  ? `${linkedWallets} linked wallets detected`
+                  : 'Needs holder confirmation'
+                const creatorTopHolderLabel = creatorInTop === true
+                  ? 'Creator appears in top holders'
+                  : creatorInTop === false
+                    ? 'Creator not seen in top holders'
+                    : 'Needs holder confirmation'
+                const devClusterLabel = devClusterSupply != null
+                  ? `${devClusterSupply.toFixed(1)}% cluster supply detected`
+                  : holderState.kind === 'rowsWithPercent'
+                    ? 'No dev cluster supply detected'
+                    : 'Needs holder confirmation'
+                const suspiciousLabel = suspiciousTransferPattern === true
+                  ? 'Suspicious transfer pattern detected'
+                  : 'No suspicious transfer pattern detected from available data'
+                const confirmedSignals = [
+                  creatorStatus === 'confirmed' ? 'Creator confirmed.' : creatorStatus === 'likely' ? 'Creator likely found.' : null,
+                  linkedWallets != null ? `${linkedWallets} linked wallet${linkedWallets === 1 ? '' : 's'} detected.` : null,
+                  creatorInTop != null ? (creatorInTop ? 'Creator appears in top holders.' : 'Creator not seen in top holders.') : null,
+                  devClusterSupply != null ? `Dev cluster supply tracked at ${devClusterSupply.toFixed(1)}%.` : null,
+                  suspiciousTransferPattern === true ? 'Suspicious transfer pattern detected.' : suspiciousTransferPattern === false ? 'No suspicious transfer pattern detected from available data.' : null,
+                ].filter((v): v is string => !!v)
+                const openChecks = [
+                  ...(linkedWallets == null ? ['Linked wallet mapping incomplete.'] : []),
+                  ...(holderState.kind !== 'rowsWithPercent' ? ['Holder percentages missing — supply cluster needs confirmation.'] : []),
+                  ...(creatorInTop == null ? ['Creator top-holder visibility not confirmed.'] : []),
+                ]
+                const cortexDevRead = `${creatorStatus === 'confirmed' ? 'Creator was confirmed' : creatorStatus === 'likely' ? 'Creator was likely found' : 'Creator was not confirmed'}${linkedWallets != null ? ` and ${linkedWallets} linked wallet${linkedWallets === 1 ? ' was' : 's were'} detected` : ''}. ${devClusterSupply == null ? 'Holder distribution could not fully confirm dev cluster supply.' : `Dev cluster supply is currently estimated at ${devClusterSupply.toFixed(1)}%.`} ${suspiciousTransferPattern === true ? 'Suspicious transfer flow appeared in recent data.' : 'No suspicious transfer pattern detected from available data.'} ${next}`
                 return(
                   <>
                     <div style={{ marginBottom:'18px' }}>
-                      <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>DEPLOYER INTELLIGENCE</p>
-                      <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Deployer and behavior intelligence derived from deployer_layer risk signals.</p>
+                      <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>DEV CONTROL</p>
+                      <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Creator, linked-wallet, and supply-control signals.</p>
                     </div>
-                    {/* Next Action */}
-                    <div style={{ marginBottom:'16px',padding:'16px 18px',background:'rgba(45,212,191,0.06)',border:'1px solid rgba(45,212,191,0.24)',borderRadius:'14px' }}>
-                      <p style={{ ...st,color:'#2DD4BF' }}>Next Action</p>
-                      <p style={{ margin:0,fontSize:'12px',color:'#67e8f9',lineHeight:1.65,fontFamily:'var(--font-plex-mono)' }}>{next}</p>
-                    </div>
-                    {/* Priority checklist */}
-                    {priorityItems.length>0&&(
-                      <div style={{ marginBottom:'18px' }}>
-                        <p style={{ ...st,color:'#3a5268',margin:'0 0 10px' }}>Priority Track</p>
-                        <div style={{ display:'flex',flexDirection:'column',gap:'8px' }}>
-                          {priorityItems.map(item=>(
-                            <div key={item.label} style={{ display:'flex',gap:'12px',padding:'12px 14px',background:'rgba(8,14,28,.72)',border:`1px solid ${item.urgent?'rgba(248,113,113,0.20)':'rgba(251,191,36,0.16)'}`,borderRadius:'12px',alignItems:'flex-start' }}>
-                              <div style={{ width:'20px',height:'20px',borderRadius:'50%',background:item.urgent?'rgba(248,113,113,0.14)':'rgba(251,191,36,0.12)',border:`1px solid ${item.urgent?'rgba(248,113,113,0.35)':'rgba(251,191,36,0.30)'}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,marginTop:'1px' }}>
-                                <span style={{ fontSize:'9px',fontWeight:800,color:item.urgent?'#f87171':'#fbbf24',fontFamily:'var(--font-plex-mono)' }}>{item.num}</span>
-                              </div>
-                              <div>
-                                <p style={{ margin:'0 0 3px',fontSize:'11px',fontWeight:700,color:item.urgent?'#fca5a5':'#fde68a',fontFamily:'var(--font-plex-mono)' }}>{item.label}</p>
-                                <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{item.detail}</p>
-                              </div>
-                            </div>
-                          ))}
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))', gap:'10px', marginBottom:'12px' }}>
+                      {[
+                        { label:'Creator / Origin Wallet', value: creatorStateLabel, color: creatorStatus === 'confirmed' ? '#34d399' : creatorStatus === 'likely' ? '#fbbf24' : '#94a3b8' },
+                        { label:'Linked Wallets', value: linkedWalletLabel, color: linkedWallets != null ? (linkedWallets > 0 ? '#fbbf24' : '#34d399') : '#94a3b8' },
+                        { label:'Creator in Top Holders', value: creatorTopHolderLabel, color: creatorInTop === true ? '#fbbf24' : creatorInTop === false ? '#34d399' : '#94a3b8' },
+                        { label:'Dev Cluster Supply', value: devClusterLabel, color: devClusterSupply != null && devClusterSupply > 20 ? '#f87171' : devClusterSupply != null ? '#fbbf24' : '#94a3b8' },
+                        { label:'Suspicious Transfers', value: suspiciousLabel, color: suspiciousTransferPattern === true ? '#f87171' : '#34d399' },
+                      ].map((card) => (
+                        <div key={card.label} style={{ padding:'12px 13px', borderRadius:'12px', border:`1px solid ${card.color}33`, background:'rgba(8,14,28,0.72)' }}>
+                          <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#64748b', textTransform:'uppercase', fontFamily:'var(--font-plex-mono)' }}>{card.label}</p>
+                          <p style={{ margin:0, fontSize:'12px', color:card.color, lineHeight:1.5, fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>{card.value}</p>
                         </div>
+                      ))}
+                    </div>
+                    <div style={{ padding:'14px 16px', background:'rgba(125,211,252,0.05)', border:'1px solid rgba(125,211,252,0.2)', borderRadius:'12px', marginBottom:'12px' }}>
+                      <p style={{ margin:'0 0 8px', fontSize:'10px', color:'#7dd3fc', letterSpacing:'.14em', textTransform:'uppercase', fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>CORTEX Dev Risk Read</p>
+                      <div style={{ display:'grid', gap:'8px' }}>
+                        <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}><span style={{ color:'#34d399' }}>Confirmed signals:</span> {confirmedSignals.length > 0 ? confirmedSignals.join(' ') : 'No confirmed dev signals yet.'}</p>
+                        <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}><span style={{ color:'#fbbf24' }}>Open checks:</span> {openChecks.length > 0 ? openChecks.join(' ') : 'None.'}</p>
+                        <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}><span style={{ color:'#2DD4BF' }}>Next action:</span> {next}</p>
+                      </div>
+                    </div>
+                    <div style={{ padding:'12px 14px', background:'rgba(8,14,28,0.56)', border:'1px solid rgba(148,163,184,0.18)', borderRadius:'12px', marginBottom:'10px' }}>
+                      <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', lineHeight:1.55, fontFamily:'var(--font-plex-mono)' }}>{cortexDevRead}</p>
+                    </div>
+                    {(missingChecks.length > 0 || openChecks.length > 0) && (
+                      <div style={{ padding:'12px 14px', borderRadius:'12px', border:'1px solid rgba(251,191,36,0.3)', background:'rgba(251,191,36,0.08)' }}>
+                        <p style={{ margin:'0 0 5px', fontSize:'10px', letterSpacing:'.14em', color:'#fbbf24', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>Open checks remain</p>
+                        <p style={{ margin:0, fontSize:'11px', color:'#fde68a', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{[...openChecks, ...missingChecks].slice(0, 3).join(' · ')}</p>
                       </div>
                     )}
-                    {/* CORTEX Watch Triggers */}
-                    {(() => {
-                      const cx2 = calculateCortexScore(result)
-                      const lpVerifiedTrig = lpVerified
-                      const holderVerifiedTrig = holderState.kind === 'rowsWithPercent'
-                      const simVerifiedTrig = result.honeypot?.simulationSuccess === true && result.honeypot?.isHoneypot === false
-                      const mcVerifiedTrig = result.marketCapUsd != null
-                      const liq2 = result.liquidity ?? 0
-                      const top10Trig = result.holderDistribution?.top10 ?? null
-                      const triggers: Array<{label: string; detail: string; color: string}> = [
-                        !lpVerifiedTrig ? { label: 'Verify LP Lock / Burn', detail: 'LP lock or burn proof missing. Confirm before trusting exit liquidity.', color: '#f87171' } : null,
-                        !holderVerifiedTrig ? { label: 'Confirm Holder Distribution', detail: 'Rescan when holder data is indexed. Supply concentration is an open risk.', color: '#fbbf24' } : null,
-                        !simVerifiedTrig ? { label: 'Check Security Simulation', detail: 'Honeypot and tax simulation incomplete. Verify on an independent checker.', color: '#fbbf24' } : null,
-                        !mcVerifiedTrig ? { label: 'Confirm Market Cap', detail: 'Circulating supply not confirmed. FDV is not market cap — do not substitute.', color: '#a78bfa' } : null,
-                        liq2 > 0 && liq2 < 100_000 ? { label: 'Monitor Liquidity Depth', detail: `${fmtLarge(liq2)} pool depth is thin. Watch for removal or rug conditions.`, color: '#fb923c' } : null,
-                        top10Trig != null && top10Trig > 50 ? { label: 'Track Top Holder Movement', detail: `Top 10 hold ${top10Trig.toFixed(1)}% of supply. Large sells can collapse price rapidly.`, color: '#f87171' } : null,
-                      ].filter((x): x is {label: string; detail: string; color: string} => x != null).slice(0, 3)
-                      if (triggers.length === 0) return null
-                      return (
-                        <div style={{ marginBottom:'18px' }}>
-                          <p style={{ ...st, color:'#fbbf24', margin:'0 0 10px' }}>CORTEX Watch Triggers</p>
-                          <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
-                            {triggers.map((trig, i) => (
-                              <div key={i} style={{ display:'flex', gap:'12px', padding:'11px 14px', background:'rgba(8,14,28,.72)', border:`1px solid ${trig.color}22`, borderRadius:'10px', alignItems:'flex-start' }}>
-                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background:trig.color, flexShrink:0, marginTop:'4px', boxShadow:`0 0 6px ${trig.color}` }} />
-                                <div>
-                                  <p style={{ margin:'0 0 2px', fontSize:'11px', fontWeight:700, color:trig.color, fontFamily:'var(--font-plex-mono)' }}>{trig.label}</p>
-                                  <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{trig.detail}</p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })()}
-                    {/* Open checks */}
-                    {missing.length>0&&(
-                      <div style={{ marginBottom:'16px' }}>
-                        <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>Open Checks</p>
-                        <div style={{ display:'flex',flexWrap:'wrap',gap:'6px' }}>
-                          {missing.map(m=>(
-                            <span key={m} style={{ padding:'4px 11px',borderRadius:'999px',fontSize:'10px',fontWeight:600,color:'#fbbf24',background:'rgba(251,191,36,0.07)',border:'1px solid rgba(251,191,36,0.25)',fontFamily:'var(--font-plex-mono)',whiteSpace:'nowrap' }}>{m}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {/* What to monitor */}
-                    {monitorItems.length>0&&(
-                      <div style={{ marginBottom:'18px' }}>
-                        <p style={{ ...st,color:'#3a5268',margin:'0 0 8px' }}>What to Monitor Next</p>
-                        <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:'8px' }}>
-                          {monitorItems.map(item=>(
-                            <div key={item.label} style={{ padding:'11px 14px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(125,211,252,0.12)',borderRadius:'10px' }}>
-                              <p style={{ margin:'0 0 3px',fontSize:'10px',fontWeight:700,color:'#7dd3fc',fontFamily:'var(--font-plex-mono)' }}>{item.label}</p>
-                              <p style={{ margin:0,fontSize:'11px',color:'#64748b',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{item.detail}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {/* Rescan triggers */}
-                    <div style={{ marginBottom:'16px',padding:'14px 16px',background:'rgba(8,14,28,.65)',border:'1px solid rgba(125,211,252,0.16)',borderRadius:'12px' }}>
-                      <p style={{ ...st,color:'#7dd3fc' }}>Rescan Triggers</p>
-                      <div style={{ display:'flex',flexDirection:'column',gap:'5px',marginTop:'2px' }}>
-                        {[
-                          holderState.kind==='noRowsFallback'?'Holder indexing may catch up — rescan in a few minutes.':null,
-                          'Rescan after significant liquidity changes or pool movement.',
-                          'Rescan before entering a position to verify current market state.',
-                          'Rescan if new pool creation or holder movement is reported.',
-                        ].filter(Boolean).map((t,i)=>(
-                          <div key={i} style={{ display:'flex',gap:'7px',alignItems:'flex-start' }}>
-                            <span style={{ color:'#7dd3fc',fontSize:'11px',flexShrink:0,lineHeight:'16px' }}>·</span>
-                            <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{t}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    <div style={{ padding:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'12px',textAlign:'center' }}>
-                      <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#1e3a44',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>CORTEX Scan History</p>
-                      <p style={{ margin:0,fontSize:'11px',color:'#1e3a44',fontFamily:'var(--font-plex-mono)' }}>CORTEX watch history will appear after repeated scans.</p>
-                    </div>
-                    <div style={{ marginTop:'10px', padding:'14px 16px', border:'1px dashed rgba(148,163,184,0.32)', borderRadius:'12px', background:'rgba(8,14,28,0.48)', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
-                      <div>
-                        <p style={{ margin:'0 0 3px', fontSize:'10px', color:'#94a3b8', letterSpacing:'.1em', fontFamily:'var(--font-plex-mono)' }}>COMING SOON</p>
-                        <p style={{ margin:0, fontSize:'12px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)' }}>Save to Watchlist</p>
-                      </div>
-                      <button type="button" disabled style={{ padding:'8px 14px', borderRadius:'999px', border:'1px solid rgba(148,163,184,0.35)', background:'rgba(148,163,184,0.15)', color:'#94a3b8', fontWeight:700, fontFamily:'var(--font-plex-mono)', cursor:'not-allowed' }}>Save</button>
-                    </div>
                   </>
                 )
               })()}
