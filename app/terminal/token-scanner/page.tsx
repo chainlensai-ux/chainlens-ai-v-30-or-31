@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -204,6 +204,24 @@ type ScanResult = {
       ownershipVerified: boolean
     } | null
   } | null
+}
+
+type DevWalletIntel = {
+  deployerAddress?: string | null
+  deployerStatus?: 'confirmed' | 'possible_match' | 'not_confirmed' | string
+  linkedWallets?: Array<{ address: string; reason?: string | null; confidence?: string | null }>
+  linkedWalletSupply?: number | null
+  devClusterSupply?: number | null
+  creatorInTopHolders?: boolean | null
+  holderDistribution?: { top1?: number | null; top10?: number | null; top20?: number | null } | null
+  holderDistributionStatus?: string | null
+  holderPercentAvailable?: boolean
+  holderPercentSource?: string | null
+  suspiciousTransfers?: boolean
+  suspiciousTransferReasons?: string[]
+  clarkVerdict?: { bullets?: string[]; summary?: string } | null
+  reasons?: string[]
+  confidence?: string
 }
 
 type HolderRow = { rank:number;address:string;amount:string|number|null;percent:number|null }
@@ -1309,6 +1327,10 @@ export default function TerminalTokenScanner() {
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkError, setClarkError]     = useState<string | null>(null)
+  const [devIntelLoading, setDevIntelLoading] = useState(false)
+  const [devIntelError, setDevIntelError] = useState<string | null>(null)
+  const [devIntel, setDevIntel] = useState<DevWalletIntel | null>(null)
+  const devIntelCacheRef = useRef<Record<string, DevWalletIntel>>({})
 
   const isValidHolderAddress = (value: string | null | undefined) => typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
 
@@ -1369,6 +1391,8 @@ export default function TerminalTokenScanner() {
     setActiveSection('cortex-read')
     setClarkVerdict(null)
     setClarkError(null)
+    setDevIntel(null)
+    setDevIntelError(null)
     try {
       const debugHolder = typeof window !== 'undefined'
         && new URLSearchParams(window.location.search).get('debugHolder') === 'true'
@@ -1468,6 +1492,46 @@ export default function TerminalTokenScanner() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (activeSection !== 'deployer-intel') return
+    const contract = result?.contract
+    if (!contract) return
+    const chainKey = (result?.chain === 'eth' ? 'eth' : (result?.chain === 'base' ? 'base' : chain))
+    const cacheKey = `${chainKey}:${contract.toLowerCase()}`
+    const cached = devIntelCacheRef.current[cacheKey]
+    if (cached) {
+      setDevIntel(cached)
+      setDevIntelError(null)
+      return
+    }
+    let aborted = false
+    const run = async () => {
+      setDevIntelLoading(true)
+      setDevIntelError(null)
+      try {
+        const res = await fetch(`/api/dev-wallet?address=${encodeURIComponent(contract)}&chain=${encodeURIComponent(chainKey)}`)
+        const json = await res.json()
+        if (aborted) return
+        if (res.status === 429) {
+          setDevIntelError('Dev intelligence cooldown active. Showing scanner-derived signals.')
+          return
+        }
+        if (!res.ok || json?.error) {
+          setDevIntelError('Dev intelligence temporarily partial. Showing scanner-derived signals.')
+          return
+        }
+        devIntelCacheRef.current[cacheKey] = json as DevWalletIntel
+        setDevIntel(json as DevWalletIntel)
+      } catch {
+        if (!aborted) setDevIntelError('Dev intelligence temporarily partial. Showing scanner-derived signals.')
+      } finally {
+        if (!aborted) setDevIntelLoading(false)
+      }
+    }
+    run()
+    return () => { aborted = true }
+  }, [activeSection, result?.contract, result?.chain, chain])
 
   return (
     <>
@@ -2686,15 +2750,21 @@ export default function TerminalTokenScanner() {
               {/* ── DEV CONTROL ─────────────────────────────────────── */}
               {activeSection === 'deployer-intel' && (() => {
                 const holderState = deriveHolderState(result)
-                const creatorAddress = result.security?.devOwnership?.ownerAddress ?? result.security?.devOwnership?.adminAddress ?? null
-                const creatorStatus = creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null
+                const creatorAddress = devIntel?.deployerAddress ?? result.security?.devOwnership?.ownerAddress ?? result.security?.devOwnership?.adminAddress ?? null
+                const creatorStatus = devIntel?.deployerStatus === 'confirmed'
+                  ? 'confirmed'
+                  : devIntel?.deployerStatus === 'possible_match'
+                    ? 'likely'
+                    : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
                 const topHolders = result.holderDistribution?.topHolders ?? []
-                const creatorInTop = creatorAddress ? topHolders.some((h) => typeof h.address === 'string' && h.address.toLowerCase() === creatorAddress.toLowerCase()) : null
-                const linkedWallets = null
-                const devClusterSupply = creatorInTop === true
+                const creatorInTop = devIntel?.creatorInTopHolders ?? (creatorAddress ? topHolders.some((h) => typeof h.address === 'string' && h.address.toLowerCase() === creatorAddress.toLowerCase()) : null)
+                const linkedWallets = devIntel?.linkedWallets
+                const linkedWalletCount = linkedWallets?.length ?? null
+                const linkedWalletSupply = devIntel?.linkedWalletSupply ?? null
+                const devClusterSupply = devIntel?.devClusterSupply ?? (creatorInTop === true
                   ? topHolders.find((h) => typeof h.address === 'string' && creatorAddress && h.address.toLowerCase() === creatorAddress.toLowerCase())?.percent ?? null
-                  : null
-                const suspiciousTransferPattern = result.riskEngine?.riskDrivers?.some((r) => /transfer|wallet cluster|linked wallet|coordinated/i.test(r)) ?? false
+                  : null)
+                const suspiciousTransferPattern = devIntel?.suspiciousTransfers ?? (result.riskEngine?.riskDrivers?.some((r) => /transfer|wallet cluster|linked wallet|coordinated/i.test(r)) ?? false)
                 const missingChecks = getMissingChecks(result)
                 const next = getNextAction(result)
                 const creatorStateLabel =
@@ -2703,9 +2773,9 @@ export default function TerminalTokenScanner() {
                     : creatorStatus === 'likely'
                       ? 'Creator likely found'
                       : 'Needs holder confirmation'
-                const linkedWalletLabel = linkedWallets != null
-                  ? `${linkedWallets} linked wallets detected`
-                  : 'Needs holder confirmation'
+                const linkedWalletLabel = linkedWalletCount != null
+                  ? `${linkedWalletCount} linked wallets detected`
+                  : 'partial'
                 const creatorTopHolderLabel = creatorInTop === true
                   ? 'Creator appears in top holders'
                   : creatorInTop === false
@@ -2721,17 +2791,17 @@ export default function TerminalTokenScanner() {
                   : 'No suspicious transfer pattern detected from available data'
                 const confirmedSignals = [
                   creatorStatus === 'confirmed' ? 'Creator confirmed.' : creatorStatus === 'likely' ? 'Creator likely found.' : null,
-                  linkedWallets != null ? `${linkedWallets} linked wallet${linkedWallets === 1 ? '' : 's'} detected.` : null,
+                  linkedWalletCount != null ? `${linkedWalletCount} linked wallet${linkedWalletCount === 1 ? '' : 's'} detected.` : null,
                   creatorInTop != null ? (creatorInTop ? 'Creator appears in top holders.' : 'Creator not in top holders.') : null,
                   devClusterSupply != null ? `Dev cluster supply tracked at ${devClusterSupply.toFixed(1)}%.` : null,
                   suspiciousTransferPattern === true ? 'Suspicious transfer pattern detected.' : suspiciousTransferPattern === false ? 'No suspicious transfer pattern detected from available data.' : null,
                 ].filter((v): v is string => !!v)
                 const openChecks = [
-                  ...(linkedWallets == null ? ['Linked wallet mapping incomplete.'] : []),
+                  ...(linkedWalletCount == null ? ['Linked-wallet check is partial from available data.'] : []),
                   ...(holderState.kind !== 'rowsWithPercent' ? ['Holder distribution partial · Linked-wallet supply needs confirmation.'] : []),
                   ...(creatorInTop == null ? ['Creator top-holder visibility not confirmed.'] : []),
                 ]
-                const cortexDevRead = `${creatorStatus === 'confirmed' ? 'Creator confirmed' : creatorStatus === 'likely' ? 'Creator likely found' : 'Creator status still open'}${linkedWallets != null ? ` with ${linkedWallets} linked wallet${linkedWallets === 1 ? '' : 's'} detected` : ''}. ${devClusterSupply == null ? 'Dev-cluster supply still needs holder confirmation.' : `Dev-cluster supply currently tracks near ${devClusterSupply.toFixed(1)}%.`} ${next}`
+                const cortexDevRead = `${creatorStatus === 'confirmed' ? 'Creator confirmed' : creatorStatus === 'likely' ? 'Creator likely found' : 'Creator status is partial'}${linkedWalletCount != null ? ` with ${linkedWalletCount} linked wallet${linkedWalletCount === 1 ? '' : 's'} detected` : ''}. ${devClusterSupply == null ? 'Dev-cluster supply needs holder confirmation.' : `Dev-cluster supply tracks near ${devClusterSupply.toFixed(1)}%.`} ${next}`
                 return(
                   <>
                     <div style={{ marginBottom:'18px' }}>
@@ -2740,11 +2810,13 @@ export default function TerminalTokenScanner() {
                     </div>
                     <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))', gap:'10px', marginBottom:'12px' }}>
                       {[
-                        { label:'Creator / Origin Wallet', value: creatorStateLabel, color: creatorStatus === 'confirmed' ? '#34d399' : creatorStatus === 'likely' ? '#fbbf24' : '#94a3b8' },
-                        { label:'Linked Wallets', value: linkedWalletLabel, color: linkedWallets != null ? (linkedWallets > 0 ? '#fbbf24' : '#34d399') : '#94a3b8' },
+                        { label:'Creator / Origin Wallet', value: `${creatorStateLabel}${creatorAddress ? ` · ${shorten(creatorAddress)}` : ''}`, color: creatorStatus === 'confirmed' ? '#34d399' : creatorStatus === 'likely' ? '#fbbf24' : '#94a3b8' },
+                        { label:'Linked Wallets', value: linkedWalletLabel, color: linkedWalletCount != null ? (linkedWalletCount > 0 ? '#fbbf24' : '#34d399') : '#94a3b8' },
                         { label:'Creator in Top Holders', value: creatorTopHolderLabel, color: creatorInTop === true ? '#fbbf24' : creatorInTop === false ? '#34d399' : '#94a3b8' },
+                        { label:'Top Holder Concentration', value: `Top1 ${devIntel?.holderDistribution?.top1?.toFixed?.(1) ?? result.holderDistribution?.top1?.toFixed?.(1) ?? 'partial'}% · Top10 ${devIntel?.holderDistribution?.top10?.toFixed?.(1) ?? result.holderDistribution?.top10?.toFixed?.(1) ?? 'partial'}% · Top20 ${devIntel?.holderDistribution?.top20?.toFixed?.(1) ?? result.holderDistribution?.top20?.toFixed?.(1) ?? 'partial'}%`, color:'#a78bfa' },
+                        { label:'Linked-wallet Supply', value: linkedWalletSupply != null ? `${linkedWalletSupply.toFixed(1)}% linked-wallet supply` : 'needs_holder_confirmation', color: linkedWalletSupply != null ? '#fbbf24' : '#94a3b8' },
                         { label:'Dev Cluster Supply', value: devClusterLabel, color: devClusterSupply != null && devClusterSupply > 20 ? '#f87171' : devClusterSupply != null ? '#fbbf24' : '#94a3b8' },
-                        { label:'Suspicious Transfers', value: suspiciousLabel, color: suspiciousTransferPattern === true ? '#f87171' : '#34d399' },
+                        { label:'Transfer Pattern', value: suspiciousTransferPattern === true ? 'suspicious' : 'no_signal_from_available_data', color: suspiciousTransferPattern === true ? '#f87171' : '#34d399' },
                       ].map((card) => (
                         <div key={card.label} style={{ padding:'12px 13px', borderRadius:'12px', border:`1px solid ${card.color}33`, background:'rgba(8,14,28,0.72)' }}>
                           <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#64748b', textTransform:'uppercase', fontFamily:'var(--font-plex-mono)' }}>{card.label}</p>
@@ -2752,6 +2824,12 @@ export default function TerminalTokenScanner() {
                         </div>
                       ))}
                     </div>
+                    {devIntelLoading && (
+                      <div style={{ padding:'10px 12px', marginBottom:'10px', border:'1px solid rgba(125,211,252,0.26)', borderRadius:'10px', color:'#7dd3fc', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Loading dev intelligence…</div>
+                    )}
+                    {devIntelError && (
+                      <div style={{ padding:'10px 12px', marginBottom:'10px', border:'1px solid rgba(251,191,36,0.3)', borderRadius:'10px', color:'#fcd34d', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>{devIntelError}</div>
+                    )}
                     <div style={{ padding:'14px 16px', background:'rgba(125,211,252,0.05)', border:'1px solid rgba(125,211,252,0.2)', borderRadius:'12px', marginBottom:'12px' }}>
                       <p style={{ margin:'0 0 8px', fontSize:'10px', color:'#7dd3fc', letterSpacing:'.14em', textTransform:'uppercase', fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>CORTEX Dev Risk Read</p>
                       <div style={{ display:'grid', gap:'8px' }}>
