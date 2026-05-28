@@ -1726,6 +1726,68 @@ export async function POST(req: Request) {
       (typeof (sections.metadata as Record<string, unknown> | undefined)?.symbol === 'string' && String((sections.metadata as Record<string, unknown>).symbol).trim())
     )
     const holderPercentDerived = await deriveHolderPercentages(normalizedAddress, holderDistributionRaw?.topHolders, { top1: holderDistributionRaw?.top1, top10: holderDistributionRaw?.top10, top20: holderDistributionRaw?.top20 })
+
+    // Compute supply control using derived holder rows (which have proper percent values).
+    const derivedHolderRows = holderPercentDerived.holderDistribution?.topHolders ?? []
+    const deployerLower = deployerAddress?.toLowerCase() ?? null
+    const linkedAddrSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
+    let scLinkedPct = 0
+    let scClusterPct = 0
+    let scCreatorInTop = false
+    let scCreatorRank: number | null = null
+    let scCreatorPct: number | null = null
+    const scMatchedLinked: Array<{ address: string; rank: number; percent: number }> = []
+    const scSeen = new Set<string>()
+    if (derivedHolderRows.length > 0) {
+      for (let i = 0; i < derivedHolderRows.length; i++) {
+        const h = derivedHolderRows[i]
+        const addr = (h.address ?? '').toLowerCase()
+        if (!addr || scSeen.has(addr)) continue
+        const pct = typeof h.percent === 'number' ? h.percent : 0
+        const isDep = deployerLower ? addr === deployerLower : false
+        const isLnk = linkedAddrSet.has(addr)
+        if (isDep) {
+          scCreatorInTop = true
+          scCreatorRank = i + 1
+          scCreatorPct = pct
+          scClusterPct += pct
+          scSeen.add(addr)
+        }
+        if (isLnk && !scSeen.has(addr)) {
+          scLinkedPct += pct
+          scClusterPct += pct
+          scMatchedLinked.push({ address: addr, rank: i + 1, percent: pct })
+          scSeen.add(addr)
+        }
+      }
+    }
+    const scHasActors = Boolean(deployerLower || linkedAddrSet.size > 0)
+    const scHasData = derivedHolderRows.length > 0
+    const scLinkedStatus: CanonicalStatus =
+      linkedAddrSet.size === 0 ? 'not_applicable'
+      : !scHasData ? 'unavailable_with_reason'
+      : scMatchedLinked.length > 0 && scMatchedLinked.length >= linkedAddrSet.size ? 'verified'
+      : scMatchedLinked.length > 0 ? 'partial'
+      : 'unavailable_with_reason'
+    const scClusterStatus: CanonicalStatus =
+      !scHasActors ? 'unavailable_with_reason'
+      : !scHasData ? 'unavailable_with_reason'
+      : scSeen.size > 0 ? 'verified'
+      : 'unavailable_with_reason'
+    const supplyControl = {
+      creatorInTopHolders: scCreatorInTop,
+      creatorHolderRank: scCreatorRank,
+      creatorHolderPercent: scCreatorPct !== null ? Math.round(scCreatorPct * 100) / 100 : null,
+      linkedWalletSupplyPercent: linkedAddrSet.size > 0 ? Math.round(scLinkedPct * 100) / 100 : null,
+      linkedWalletSupplyStatus: scLinkedStatus,
+      devClusterSupplyPercent: scHasActors && scHasData ? Math.round(scClusterPct * 100) / 100 : null,
+      devClusterSupplyStatus: scClusterStatus,
+      devClusterSupplyReason: scClusterStatus === 'unavailable_with_reason'
+        ? (!scHasActors ? 'no_deployer_or_linked_wallets' : 'no_holder_data')
+        : null,
+      matchedLinkedWallets: scMatchedLinked,
+    }
+
     const holderTop10 = holderPercentDerived.holderDistribution?.top10 ?? (holderStats?.top10 ?? null)
     const holderTop1  = holderPercentDerived.holderDistribution?.top1 ?? (holderStats?.top1 ?? null)
     const holderTop20 = holderPercentDerived.holderDistribution?.top20 ?? (holderStats?.top20 ?? null)
@@ -1814,9 +1876,10 @@ export async function POST(req: Request) {
       top10: holderTop10 ?? null,
       top20: holderTop20 ?? null,
       holderCount: holderCount ?? null,
-      creatorInTopHolders: holderStats?.creatorInTopHolders ?? false,
-      linkedWalletSupply: holderStats?.linkedWalletSupply ?? null,
-      devClusterSupply: holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      creatorInTopHolders: supplyControl.creatorInTopHolders || (holderStats?.creatorInTopHolders ?? false),
+      linkedWalletSupply: supplyControl.linkedWalletSupplyPercent ?? holderStats?.linkedWalletSupply ?? null,
+      devClusterSupply: supplyControl.devClusterSupplyPercent ?? holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      supplyControl,
       liquidity: liquidityUsd ?? null,
       volume24h: typeof market.volume24h === 'number' ? (market.volume24h as number) : null,
       matchedHolderWallets,

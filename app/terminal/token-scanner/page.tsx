@@ -242,6 +242,17 @@ type DevWalletIntel = {
   clarkVerdict?: { bullets?: string[]; summary?: string } | null
   reasons?: string[]
   confidence?: string
+  supplyControl?: {
+    creatorInTopHolders: boolean
+    creatorHolderRank: number | null
+    creatorHolderPercent: number | null
+    linkedWalletSupplyPercent: number | null
+    linkedWalletSupplyStatus: string
+    devClusterSupplyPercent: number | null
+    devClusterSupplyStatus: string
+    devClusterSupplyReason: string | null
+    matchedLinkedWallets: Array<{ address: string; rank: number; percent: number }>
+  } | null
 }
 
 type SignalState = 'verified' | 'inferred' | 'partial' | 'not_applicable' | 'needs_holder_confirmation' | 'no_signal_from_available_data'
@@ -2800,12 +2811,13 @@ export default function TerminalTokenScanner() {
                 const creatorStatus = devIntel?.deployerStatus === 'confirmed' ? 'confirmed' : devIntel?.deployerStatus === 'possible_match' ? 'likely' : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
                 const linkedWallets = devIntel?.linkedWallets ?? []
                 const linkedWalletCount = linkedWallets.length
-                const linkedWalletSupply = devIntel?.linkedWalletSupply ?? null
+                const sc = devIntel?.supplyControl ?? null
+                const linkedWalletSupply = sc?.linkedWalletSupplyPercent ?? devIntel?.linkedWalletSupply ?? null
                 const top1 = devIntel?.holderDistribution?.top1 ?? result.holderDistribution?.top1 ?? null
                 const top10 = devIntel?.holderDistribution?.top10 ?? result.holderDistribution?.top10 ?? null
                 const top20 = devIntel?.holderDistribution?.top20 ?? result.holderDistribution?.top20 ?? null
-                const creatorInTop = devIntel?.creatorInTopHolders ?? null
-                const devClusterSupply = devIntel?.devClusterSupply ?? null
+                const creatorInTop = sc?.creatorInTopHolders ?? devIntel?.creatorInTopHolders ?? null
+                const devClusterSupply = sc?.devClusterSupplyPercent ?? devIntel?.devClusterSupply ?? null
                 const suspiciousTransferPattern = devIntel?.suspiciousTransfers ?? false
                 const missingChecks = getMissingChecks(result)
                 const openChecks = [
