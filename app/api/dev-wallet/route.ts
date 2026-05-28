@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
+import { buildClusterMap } from '@/lib/clusterMap'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 function resolveBaseRpcUrl(): string | null {
@@ -1589,8 +1590,8 @@ export async function POST(req: Request) {
     const cacheKey = `${activeChainConfig.chain}:${normalizedAddress}`
     const cached = devCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) {
-      const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload
-      if (debug && cp && typeof cp === 'object') cp._debug = { routeName: '/api/dev-wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
+      const cp: unknown = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as Record<string, unknown>) } : cached.payload
+      if (debug && cp && typeof cp === 'object') (cp as Record<string, unknown>)._debug = { routeName: '/api/dev-wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
       return NextResponse.json(cp)
     }
 
@@ -1857,6 +1858,19 @@ export async function POST(req: Request) {
     const { suspiciousTransfers, suspiciousTransferReasons } =
       detectSuspiciousTransfers(linkedWallets, supplyControlled, matchedHolderWallets)
 
+    const clusterMap = buildClusterMap({
+      deployerAddress,
+      deployerStatus,
+      linkedWallets,
+      matchedLinkedWallets: supplyControl.matchedLinkedWallets,
+      supplyControl,
+      holderDistribution: holderPercentDerived.holderDistribution ?? holderDistributionRaw ?? null,
+      topHolders: holderPercentDerived.holderDistribution?.topHolders ?? holderDistributionRaw?.topHolders ?? [],
+      suspiciousTransfers,
+      suspiciousTransferReasons,
+      holderRowsAvailable: holderDataAvailable,
+    })
+
     const { verdict: clarkVerdict, clarkError } = await getClarkVerdict(origin, {
       contractAddress: normalizedAddress,
       deployerAddress,
@@ -1903,12 +1917,35 @@ export async function POST(req: Request) {
       { name: 'clark_input_summary', ok: clarkVerdict !== null, detail: clarkVerdict ? `${clarkVerdict.label} (${clarkVerdict.confidence})` : (clarkError ?? 'failed') },
     ]
 
+    const devIntel = {
+      deployerAddress,
+      deployerStatus,
+      linkedWallets,
+      creatorInTopHolders: supplyControl.creatorInTopHolders || (holderStats?.creatorInTopHolders ?? false),
+      linkedWalletSupply: supplyControl.linkedWalletSupplyPercent ?? holderStats?.linkedWalletSupply ?? null,
+      linkedWalletSupplyPercent: supplyControl.linkedWalletSupplyPercent ?? holderStats?.linkedWalletSupply ?? null,
+      devClusterSupply: supplyControl.devClusterSupplyPercent ?? holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      devClusterSupplyPercent: supplyControl.devClusterSupplyPercent ?? holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      matchedLinkedWallets: supplyControl.matchedLinkedWallets,
+      holderDistribution: holderPercentDerived.holderDistribution ?? holderDistributionRaw ?? null,
+      holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? 'partial',
+      holderPercentAvailable: holderPercentDerived.holderPercentAvailable,
+      holderPercentSource: holderPercentDerived.holderPercentSource,
+      suspiciousTransfers,
+      suspiciousTransferReasons,
+      reasons: [originReason, ...warnings].filter((reason): reason is string => Boolean(reason)),
+      confidence: (tokenEvidence || holderDataAvailable) ? 'medium' : 'low',
+      supplyControl,
+      clusterMap,
+    }
+
     const responsePayload = {
       contractAddress: normalizedAddress,
       chain: activeChainConfig.chain,
       chainLabel: activeChainConfig.chainLabel,
       name: tokenName ?? null,
       symbol: tokenSymbol ?? null,
+      devIntel,
       deployerAddress,
       deployerConfidence,
       methodUsed,
@@ -1926,6 +1963,7 @@ export async function POST(req: Request) {
       linkedWalletSupply: supplyControl.linkedWalletSupplyPercent ?? holderStats?.linkedWalletSupply ?? null,
       devClusterSupply: supplyControl.devClusterSupplyPercent ?? holderStats?.devClusterSupply ?? supplyControlled ?? null,
       supplyControl,
+      clusterMap,
       liquidity: liquidityUsd ?? null,
       volume24h: typeof market.volume24h === 'number' ? (market.volume24h as number) : null,
       matchedHolderWallets,
@@ -2039,7 +2077,7 @@ export async function POST(req: Request) {
       fetchedAt: new Date().toISOString(),
     }
     if (debug) {
-      ;(responsePayload as any)._debug = {
+      ;(responsePayload as Record<string, unknown>)._debug = {
         hasBearer: planRes.hasBearer,
         userPresent: planRes.userPresent,
         settingsRowFound: planRes.settingsRowFound,
