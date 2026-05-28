@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
+import { buildClusterMap } from '@/lib/clusterMap'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -114,6 +115,33 @@ type HolderDistributionStatus = {
   itemCount: number
   normalizedCount: number
   percentSource: "provider" | "calculated" | "inferred"
+}
+
+type ClusterInfluence = {
+  clusterSupplyPercent: number | null
+  clusterDominance: "none" | "low" | "medium" | "high" | "critical" | "unknown"
+  clusterRiskScore: number | null
+  clusterRiskLabel: "low" | "watch" | "elevated" | "high" | "critical" | "open_check"
+  reason: string
+  signals: string[]
+}
+
+type SupplyControl = {
+  creatorInTopHolders: boolean | null
+  creatorHolderRank: number | null
+  creatorHolderPercent: number | null
+  linkedWalletSupplyPercent: number | null
+  linkedWalletSupplyStatus: CanonicalStatus
+  devClusterSupplyPercent: number | null
+  devClusterSupplyStatus: CanonicalStatus
+  devClusterSupplyReason: string
+  matchedLinkedWallets: Array<{
+    address: string
+    percent: number | null
+    rank: number | null
+    confidence: string
+  }>
+  clusterInfluence: ClusterInfluence
 }
 type RiskEngine = {
   rugRiskScore: number | null
@@ -234,9 +262,113 @@ function pickNum(...vals: unknown[]): number | null {
 
 function normalizeHolderPercent(v: unknown): number | null {
   const n = toNum(v)
-  if (n == null || n <= 0 || n > 100) return null
+  if (n == null || n < 0 || n > 100) return null
   if (n > 0 && n <= 1) return n * 100
   return n
+}
+
+function getClusterInfluenceDominance(clusterSupplyPercent: number | null): ClusterInfluence["clusterDominance"] {
+  if (clusterSupplyPercent == null) return "unknown"
+  if (clusterSupplyPercent === 0) return "none"
+  if (clusterSupplyPercent < 5) return "low"
+  if (clusterSupplyPercent < 10) return "medium"
+  if (clusterSupplyPercent < 20) return "high"
+  return "critical"
+}
+
+function getClusterInfluenceBaseScore(clusterSupplyPercent: number): number {
+  if (clusterSupplyPercent === 0) return 5
+  if (clusterSupplyPercent <= 1) return 15
+  if (clusterSupplyPercent < 5) return 30
+  if (clusterSupplyPercent < 10) return 50
+  if (clusterSupplyPercent < 20) return 70
+  return 90
+}
+
+function getClusterInfluenceRiskLabel(score: number): ClusterInfluence["clusterRiskLabel"] {
+  if (score >= 85) return "critical"
+  if (score >= 65) return "high"
+  if (score >= 45) return "elevated"
+  if (score >= 25) return "watch"
+  return "low"
+}
+
+function buildClusterInfluence(params: {
+  clusterSupplyPercent: number | null
+  creatorInTopHolders: boolean | null
+  matchedLinkedWallets: SupplyControl["matchedLinkedWallets"]
+  suspiciousTransfers: boolean
+  holderEvidenceAvailable: boolean
+  holderEvidencePartial: boolean
+}): ClusterInfluence {
+  const {
+    clusterSupplyPercent,
+    creatorInTopHolders,
+    matchedLinkedWallets,
+    suspiciousTransfers,
+    holderEvidenceAvailable,
+    holderEvidencePartial,
+  } = params
+
+  if (!holderEvidenceAvailable || clusterSupplyPercent == null) {
+    return {
+      clusterSupplyPercent: null,
+      clusterDominance: "unknown",
+      clusterRiskScore: null,
+      clusterRiskLabel: "open_check",
+      reason: "CORTEX needs more holder evidence before confirming cluster influence.",
+      signals: [
+        "Holder evidence is not complete enough to confirm cluster influence.",
+        "Open check until indexed holder percentages are available.",
+      ],
+    }
+  }
+
+  let score = getClusterInfluenceBaseScore(clusterSupplyPercent)
+  const signals: string[] = [
+    clusterSupplyPercent === 0
+      ? "No cluster supply found in indexed holders."
+      : `${clusterSupplyPercent.toFixed(1)}% cluster supply found in indexed holders.`,
+  ]
+
+  if (creatorInTopHolders === true) {
+    score += 5
+    signals.push("Creator wallet appears in indexed top holders.")
+  } else if (creatorInTopHolders === false) {
+    signals.push("Creator wallet was not found in indexed top holders.")
+  }
+
+  if (matchedLinkedWallets.length >= 2) {
+    score += 5
+    signals.push(`${matchedLinkedWallets.length} linked wallets matched indexed holder rows.`)
+  } else if (matchedLinkedWallets.length === 1) {
+    signals.push("1 linked wallet matched indexed holder rows.")
+  }
+
+  if (suspiciousTransfers) {
+    score += 10
+    signals.push("Suspicious transfer pattern is present in dev intelligence.")
+  }
+
+  if (holderEvidencePartial) {
+    score = Math.max(getClusterInfluenceBaseScore(0), score - 10)
+    signals.push("Holder evidence is partial, so scoring is conservatively reduced.")
+  }
+
+  const clusterRiskScore = Math.max(0, Math.min(100, Math.round(score)))
+  const clusterDominance = getClusterInfluenceDominance(clusterSupplyPercent)
+  const dominanceText = clusterDominance === "none" ? "No" : `${clusterDominance.charAt(0).toUpperCase()}${clusterDominance.slice(1)}`
+
+  return {
+    clusterSupplyPercent,
+    clusterDominance,
+    clusterRiskScore,
+    clusterRiskLabel: getClusterInfluenceRiskLabel(clusterRiskScore),
+    reason: clusterSupplyPercent === 0
+      ? "No cluster supply found in indexed holders."
+      : `${dominanceText} cluster dominance from indexed holder evidence.`,
+    signals: signals.slice(0, 4),
+  }
 }
 
 // BigInt-safe percentage: avoids float precision loss on 18-decimal ERC-20 balances.
@@ -2984,7 +3116,7 @@ export async function POST(req: Request) {
     ].filter(Boolean).length >= 3
     // Always emit a score — use inference penalties when blind (never null unless truly zero providers responded)
     // When all providers return null, still score at 50 with low confidence (unknown = risk)
-    let rugRiskScore: number | null = anyProviderData ? Math.max(0, Math.min(100, Math.round(riskScore))) : 50
+    const rugRiskScore: number | null = anyProviderData ? Math.max(0, Math.min(100, Math.round(riskScore))) : 50
     let rugRiskLabel: RiskEngine["rugRiskLabel"] = 'partial_data'
     if (rugRiskScore >= 85) rugRiskLabel = 'critical'
     else if (rugRiskScore >= 65) rugRiskLabel = 'high'
@@ -3393,6 +3525,165 @@ export async function POST(req: Request) {
     const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
     const finalResolvedSymbol = (resolvedSymbol && resolvedSymbol !== '?') ? resolvedSymbol : (rpcSymbol ?? '?')
 
+    const roundSupplyPct = (value: number): number => Math.round(value * 100) / 100
+    const normalizeActorAddress = (value: string | null | undefined): string | null => {
+      if (typeof value !== 'string') return null
+      const trimmed = value.trim().toLowerCase()
+      return /^0x[a-f0-9]{40}$/.test(trimmed) && trimmed !== _ZERO_ADDR ? trimmed : null
+    }
+    const deployerAddress = normalizeActorAddress(ownerAddr)
+    const linkedWallets = [adminAddr]
+      .map(normalizeActorAddress)
+      .filter((address): address is string => Boolean(address && address !== deployerAddress))
+      .filter((address, index, arr) => arr.indexOf(address) === index)
+      .map((address) => ({ address, reason: 'admin_or_proxy_control_wallet', confidence: 'medium' }))
+    const linkedAddressSet = new Set(linkedWallets.map((wallet) => wallet.address))
+    const holderRows = holderDistribution.topHolders ?? []
+    const holderRowsHaveUsablePercents = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
+    const holderRowsConfirmed = holderRowsHaveUsablePercents
+    const supplyRowsArePartial = holderDistributionStatus.status === 'partial' || holderDistributionStatus.percentSource === 'calculated'
+    let creatorHolderRank: number | null = null
+    let creatorHolderPercent: number | null = null
+    let linkedWalletSupplyAccumulator = 0
+    const matchedLinkedWallets: SupplyControl['matchedLinkedWallets'] = []
+    const matchedActorAddresses = new Set<string>()
+
+    if (holderRowsHaveUsablePercents) {
+      for (const holder of holderRows) {
+        const address = normalizeActorAddress(holder.address)
+        const percent = typeof holder.percent === 'number' && Number.isFinite(holder.percent) ? holder.percent : null
+        if (!address || percent == null) continue
+        if (deployerAddress && address === deployerAddress && !matchedActorAddresses.has(address)) {
+          creatorHolderRank = holder.rank ?? null
+          creatorHolderPercent = percent
+          matchedActorAddresses.add(address)
+          continue
+        }
+        if (linkedAddressSet.has(address) && !matchedActorAddresses.has(address)) {
+          linkedWalletSupplyAccumulator += percent
+          matchedLinkedWallets.push({
+            address,
+            percent: roundSupplyPct(percent),
+            rank: holder.rank ?? null,
+            confidence: linkedWallets.find((wallet) => wallet.address === address)?.confidence ?? 'medium',
+          })
+          matchedActorAddresses.add(address)
+        }
+      }
+    }
+
+    const linkedWalletSupplyPercent = holderRowsConfirmed ? roundSupplyPct(linkedWalletSupplyAccumulator) : null
+    const devClusterSupplyPercent = (deployerAddress || linkedWallets.length > 0) && holderRowsConfirmed
+      ? roundSupplyPct((creatorHolderPercent ?? 0) + linkedWalletSupplyAccumulator)
+      : null
+    const creatorInTopHolders = deployerAddress && holderRowsConfirmed ? creatorHolderPercent != null : null
+    const linkedWalletSupplyStatus: CanonicalStatus = linkedWallets.length === 0
+      ? 'not_applicable'
+      : !holderRowsConfirmed
+        ? 'unavailable_with_reason'
+        : matchedLinkedWallets.length > 0
+          ? 'verified'
+          : supplyRowsArePartial
+            ? 'partial'
+            : 'verified'
+    const devClusterSupplyStatus: CanonicalStatus = !(deployerAddress || linkedWallets.length > 0)
+      ? 'unavailable_with_reason'
+      : !holderRowsConfirmed
+        ? 'unavailable_with_reason'
+        : matchedActorAddresses.size > 0
+          ? 'verified'
+          : supplyRowsArePartial
+            ? 'partial'
+            : 'verified'
+    const devClusterSupplyReason = !(deployerAddress || linkedWallets.length > 0)
+      ? 'no_deployer_or_linked_wallets'
+      : !holderRowsConfirmed
+        ? 'no_usable_holder_rows_or_percents'
+        : matchedActorAddresses.size === 0
+          ? 'creator_and_linked_wallets_checked_against_available_holder_rows_no_supply_found'
+          : 'matched_holder_rows_with_percent_values'
+    const clusterInfluence = buildClusterInfluence({
+      clusterSupplyPercent: devClusterSupplyPercent,
+      creatorInTopHolders,
+      matchedLinkedWallets,
+      suspiciousTransfers: false,
+      holderEvidenceAvailable: holderRowsConfirmed,
+      holderEvidencePartial: supplyRowsArePartial,
+    })
+    const supplyControl: SupplyControl = {
+      creatorInTopHolders,
+      creatorHolderRank,
+      creatorHolderPercent: creatorHolderPercent != null ? roundSupplyPct(creatorHolderPercent) : null,
+      linkedWalletSupplyPercent,
+      linkedWalletSupplyStatus,
+      devClusterSupplyPercent,
+      devClusterSupplyStatus,
+      devClusterSupplyReason,
+      matchedLinkedWallets,
+      clusterInfluence,
+    }
+    const clusterMap = buildClusterMap({
+      deployerAddress,
+      deployerStatus: deployerAddress ? 'confirmed' : 'not_confirmed',
+      linkedWallets,
+      matchedLinkedWallets,
+      supplyControl,
+      holderDistribution,
+      suspiciousTransfers: false,
+      suspiciousTransferReasons: [],
+      holderRowsAvailable: holderRowsConfirmed,
+    })
+    if (clusterMap.summary.clusterSupplyPercent != null && clusterMap.summary.clusterSupplyPercent >= 20) {
+      const driver = `Dev cluster supply is elevated at ${clusterMap.summary.clusterSupplyPercent.toFixed(1)}% from matched holder evidence.`
+      if (!riskEngine.riskDrivers.includes(driver)) riskEngine.riskDrivers.push(driver)
+      if (!riskEngine.clarkInterpretation.riskDrivers.includes(driver)) riskEngine.clarkInterpretation.riskDrivers.push(driver)
+    }
+    if (supplyControl.creatorInTopHolders) {
+      const driver = 'Deployer appears in top-holder rows.'
+      if (!riskEngine.riskDrivers.includes(driver)) riskEngine.riskDrivers.push(driver)
+      if (!riskEngine.clarkInterpretation.riskDrivers.includes(driver)) riskEngine.clarkInterpretation.riskDrivers.push(driver)
+    }
+    if (supplyControl.linkedWalletSupplyPercent != null && supplyControl.linkedWalletSupplyPercent > 0) {
+      const driver = `Linked wallet supply found (${supplyControl.linkedWalletSupplyPercent.toFixed(1)}%).`
+      if (!riskEngine.riskDrivers.includes(driver)) riskEngine.riskDrivers.push(driver)
+      if (!riskEngine.clarkInterpretation.riskDrivers.includes(driver)) riskEngine.clarkInterpretation.riskDrivers.push(driver)
+    }
+    if (clusterMap.edges.length === 0) {
+      const openCheck = 'Cluster Map: no cluster edges confirmed from current transfer and holder evidence.'
+      if (!riskEngine.openChecks.includes(openCheck)) riskEngine.openChecks.push(openCheck)
+      if (!riskEngine.clarkInterpretation.openChecks.includes(openCheck)) riskEngine.clarkInterpretation.openChecks.push(openCheck)
+    }
+    if (!holderRowsConfirmed) {
+      const openCheck = 'Cluster Map: holder rows are missing or partial, so cluster supply is not confirmed.'
+      if (!riskEngine.openChecks.includes(openCheck)) riskEngine.openChecks.push(openCheck)
+      if (!riskEngine.clarkInterpretation.openChecks.includes(openCheck)) riskEngine.clarkInterpretation.openChecks.push(openCheck)
+    }
+    for (const action of ['Monitor linked wallets for new receives or sells.', 'Rescan after holder index updates to compare cluster supply.', 'Watch for large transfers involving confirmed cluster wallets.']) {
+      if (!riskEngine.clarkInterpretation.nextActions.includes(action)) riskEngine.clarkInterpretation.nextActions.push(action)
+    }
+    const devIntel = {
+      deployerAddress,
+      deployerStatus: deployerAddress ? 'confirmed' : 'not_confirmed',
+      linkedWallets,
+      creatorInTopHolders,
+      linkedWalletSupply: linkedWalletSupplyPercent,
+      linkedWalletSupplyPercent,
+      devClusterSupply: devClusterSupplyPercent,
+      devClusterSupplyPercent,
+      matchedLinkedWallets,
+      holderDistribution: { top1: holderDistribution.top1, top10: holderDistribution.top10, top20: holderDistribution.top20, topHolders: holderDistribution.topHolders },
+      holderDistributionStatus: holderDistributionStatus.status,
+      holderPercentAvailable: holderRowsHaveUsablePercents,
+      holderPercentSource: holderDistributionStatus.percentSource,
+      suspiciousTransfers: false,
+      suspiciousTransferReasons: [],
+      clusterInfluence,
+      reasons: [deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.'],
+      confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
+      supplyControl,
+      clusterMap,
+    }
+
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'inferred'
     const ownerStatus = ownerAddr ? 'ok' : 'inferred'
     // mint/proxy status: always 'ok' now since we always return inferred/not_detected/verified
@@ -3428,6 +3719,12 @@ export async function POST(req: Request) {
       holderDistribution,
       holderDistributionStatus,
       holderStatus: holdersStatus,
+      devIntel,
+      supplyControl,
+      linkedWalletSupplyPercent,
+      devClusterSupplyPercent,
+      matchedLinkedWallets,
+      creatorInTopHolders,
       ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'not_configured',

@@ -180,7 +180,7 @@ interface ClusterMapProps {
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-export function ClusterMapPanel({
+export function ClusterForceGraph({
   deployerAddress, deployerStatus, linkedWallets = [], topHolders = [],
   supplyControl, suspiciousTransfers = false, suspiciousTransferReasons = [],
 }: ClusterMapProps) {
