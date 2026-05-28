@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 function resolveBaseRpcUrl(): string | null {
@@ -178,7 +179,8 @@ interface HolderPercentDerivationResult {
     holderCount: number | null
     topHolders: Array<{ address: string; percent: number | null }>
   } | null
-  holderDistributionStatus: 'ok' | 'partial' | 'unavailable'
+  holderDistributionStatus: 'ok' | 'partial' | 'unavailable_with_reason'
+  holderStatusReason?: string
   holderPercentAvailable: boolean
   holderPercentSource: string | null
   debug: Record<string, unknown>
@@ -871,7 +873,7 @@ async function deriveHolderPercentages(contract: string, holderRows: HolderRowIn
   const holderRowsCount = rows.length
   const holderRowsHaveBalances = rows.some(r => toBigIntSafe(r.balance ?? r.amount) != null)
   const scannerHasTop = typeof scannerTop?.top1 === 'number' || typeof scannerTop?.top10 === 'number' || typeof scannerTop?.top20 === 'number'
-  if (holderRowsCount === 0) return { holderDistribution: null, holderDistributionStatus: 'unavailable', holderPercentAvailable: false, holderPercentSource: null, debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved: null, totalSupplyResolved: false, totalSupplySource: null, percentDerivationAttempted: false, percentDerivationReason: 'no_holder_rows', top1: null, top10: null, top20: null } }
+  if (holderRowsCount === 0) return { holderDistribution: null, holderDistributionStatus: 'unavailable_with_reason', holderPercentAvailable: false, holderPercentSource: null, holderStatusReason: 'no_holder_rows_returned', debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved: null, totalSupplyResolved: false, totalSupplySource: null, percentDerivationAttempted: false, percentDerivationReason: 'no_holder_rows', top1: null, top10: null, top20: null } }
   if (scannerHasTop) return {
     holderDistribution: { top1: scannerTop?.top1 ?? null, top10: scannerTop?.top10 ?? null, top20: scannerTop?.top20 ?? null, holderCount: holderRowsCount, topHolders: rows.map(r => ({ address: String(r.address ?? '').toLowerCase(), percent: typeof r.percent === 'number' ? r.percent : null })) },
     holderDistributionStatus: 'ok',
@@ -1833,6 +1835,11 @@ export async function POST(req: Request) {
       linkedWalletsStatus: linkedWalletsCheckStatus,
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
+      lpControl: {
+        status: toCanonical(lpControlStatus) as CanonicalStatus,
+        rawState: lpControlStatus ?? 'unknown',
+        reason: (lpControlObj as Record<string, unknown> | null)?.reason as string | null ?? null,
+      },
       verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)
         ? 'CAUTION'
         : (tokenEvidence || holderDataAvailable || liquidityDataAvailable || Boolean(bytecode && bytecode !== '0x'))
@@ -1860,7 +1867,7 @@ export async function POST(req: Request) {
           holderSource: holderDataFromToken ? 'token_scanner_holder_distribution' : (holderDataFromCovalent ? 'covalent_fallback' : 'none'),
           holderRowsCount: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
           holderPercentAvailable: holderPercentDerived.holderPercentAvailable,
-          holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
+          holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable_with_reason'),
           holderPercentSource: holderPercentDerived.holderPercentSource,
           holderPercentDebug: holderPercentDerived.debug,
           creatorLookupAttempted: Boolean(originDiag && originDiag.optional_creation_lookup?.attempted),

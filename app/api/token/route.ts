@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -108,7 +109,7 @@ type HolderDistribution = {
   topHolders: Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>
 }
 type HolderDistributionStatus = {
-  status: "ok" | "partial" | "empty" | "inferred" | "error"
+  status: "ok" | "partial" | "unavailable_with_reason" | "inferred" | "error"
   reason: string
   itemCount: number
   normalizedCount: number
@@ -2470,9 +2471,9 @@ export async function POST(req: Request) {
             }
           : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource })
       : {
-          // Map unavailable/empty → partial so the UI always shows holder section
-          status: (holdersRaw?.__status === 'error' ? 'error' : 'partial'),
-          reason: (holdersRaw?.__reason ?? (holdersRaw?.__status === 'not_configured' ? 'api_key_missing' : 'no_rows')),
+          // No holder rows returned — use unavailable_with_reason, not partial (partial requires real evidence)
+          status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable_with_reason') as HolderDistributionStatus['status'],
+          reason: (holdersRaw?.__reason ?? (holdersRaw?.__status === 'not_configured' ? 'api_key_missing' : 'no_holder_rows_returned')),
           itemCount: holderItems.length,
           normalizedCount: 0,
           percentSource,
@@ -2762,12 +2763,14 @@ export async function POST(req: Request) {
     const securityStatus: "ok" | "partial" | "inferred" | "error" =
       hpResult.ok ? "ok" : _simImpliedClean ? "partial" : "inferred";
     const securityReason = hpResult.ok ? null : _simImpliedClean ? "simulation_implied_clean" : "simulation_not_performed";
-    const holdersStatus: "ok" | "partial" | "inferred" | "error" =
-      holderDistributionStatus.status === 'ok' ? 'ok' :
+    const holdersStatus: CanonicalStatus =
+      holderDistributionStatus.status === 'ok' ? 'verified' :
       holderDistributionStatus.status === 'partial' ? 'partial' :
-      holderDistributionStatus.status === 'error' ? 'error' :
+      holderDistributionStatus.status === 'unavailable_with_reason' ? 'unavailable_with_reason' :
+      holderDistributionStatus.status === 'error' ? 'unavailable_with_reason' :
       'inferred';
-    const holdersReason = holdersStatus === "ok" ? null : safeHolderReason(holderDistributionStatus?.reason ?? "holder_data_not_indexed_for_chain");
+    const holdersRawStatus = holderDistributionStatus.status
+    const holdersReason = holdersStatus === "verified" ? null : safeHolderReason(holderDistributionStatus?.reason ?? "holder_data_not_indexed_for_chain");
     const liquidityStatus: "ok" | "partial" | "inferred" | "error" =
       mainPool ? "ok" : (_dexFb?.liquidityUsd != null ? "partial" : (matchingPools.length > 0 ? "partial" : "inferred"));
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
@@ -3417,7 +3420,7 @@ export async function POST(req: Request) {
       holders: goldrush?.holders || null,
       holderDistribution,
       holderDistributionStatus,
-      holderStatus: holderDistributionStatus.status === 'ok' ? 'ok' : (holderDistributionStatus.status === 'partial' ? 'partial' : 'inferred'),
+      holderStatus: holdersStatus,
       ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'not_configured',
@@ -3708,7 +3711,7 @@ export async function POST(req: Request) {
 
       // Contract analysis
       analysis,
-      lpControl,
+      lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status },
       lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'partial' : lpControl.status,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
       lpMeta: {
@@ -3750,7 +3753,8 @@ export async function POST(req: Request) {
           mcVsFdvStatus: marketCapFromGt != null ? 'verified' : (fdv != null ? 'fdv_only' : 'partial'),
         },
         security: {
-          status: securityStatus,
+          status: toCanonical(securityStatus),
+          rawStatus: securityStatus,
           reason: securityReason,
           source: hpResult.ok ? "risk_layer" : "inferred",
           honeypot: hpResult.ok ? hpResult.honeypot : null,
@@ -3759,7 +3763,8 @@ export async function POST(req: Request) {
           simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : null,
         },
         holders: {
-          status: holderDataComplete ? 'verified' : holdersStatus,
+          status: holdersStatus,
+          rawStatus: holdersRawStatus,
           reason: holdersReason,
           source: "holders_layer",
           holderCount: holderCount ?? null,
@@ -3770,7 +3775,8 @@ export async function POST(req: Request) {
           holderDataComplete,
         },
         liquidity: {
-          status: liquidityStatus,
+          status: toCanonical(liquidityStatus),
+          rawStatus: liquidityStatus,
           reason: liquidityReason,
           source: "lp_layer",
           poolCount: matchingPools.length,
@@ -3784,7 +3790,11 @@ export async function POST(req: Request) {
           lpOwnershipVerified,
           lpProofStatus,
           lpOwnershipStatus: (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' : (lpOwnershipVerified ? 'verified' : 'inferred'),
-          lpControl,
+          lpControl: {
+            ...lpControl,
+            canonicalStatus: toCanonical(lpControl.status),
+            rawLpState: lpControl.status,
+          },
           lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
           lpMeta: {
             v2PoolCandidatesCount: lpDiagnostics.v2PoolCandidatesCount,
@@ -3841,7 +3851,7 @@ export async function POST(req: Request) {
     if (debugMode) {
       const skippedChecks: string[] = []
       if (!alchemyConfigured) skippedChecks.push('rpc_checks_missing_configuration')
-      if (holdersStatus !== 'ok') skippedChecks.push('holder_verification_incomplete')
+      if (holdersStatus !== 'verified') skippedChecks.push('holder_verification_incomplete')
       if (lpControl.status === 'insufficient_data' || lpControl.status === 'error' || lpControl.status === 'partial' || lpControl.status === 'no_pool') skippedChecks.push('lp_proof_incomplete')
       if (!hpResult.ok) skippedChecks.push('trading_simulation_incomplete')
       const chainReasons = [
