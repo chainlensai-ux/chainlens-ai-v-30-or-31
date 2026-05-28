@@ -2823,12 +2823,12 @@ export default function TerminalTokenScanner() {
                     <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'12px',marginBottom:'12px' }}>
                       <div>
                         <p style={{ margin:'0 0 6px',fontSize:'10px',letterSpacing:'.14em',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>CORTEX Dev Control Read</p>
-                        <p style={{ margin:0,fontSize:'12px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Embedded deployer, wallet cluster, and supply influence read from current /api/dev-wallet evidence.</p>
+                        <p style={{ margin:0,fontSize:'12px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Deployer identity, wallet cluster connections, and on-chain supply influence — CORTEX dev intelligence layer.</p>
                       </div>
                       <p style={{ margin:0,fontSize:'28px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>{score}<span style={{ fontSize:'12px',color:'#64748b' }}>/100</span></p>
                     </div>
                     <div style={{ display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'10px' }}>
-                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:riskLabel.includes('LOW') ? '#34d399' : riskLabel==='WATCH' ? '#fbbf24' : '#f87171',border:'1px solid rgba(255,255,255,0.18)',fontFamily:'var(--font-plex-mono)' }}>{riskLabel}</span>
+                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:riskLabel.includes('LOW') ? '#34d399' : riskLabel==='WATCH' ? '#fbbf24' : '#f87171',background:riskLabel.includes('LOW')?'rgba(52,211,153,.1)':riskLabel==='WATCH'?'rgba(251,191,36,.1)':'rgba(248,113,113,.1)',border:riskLabel.includes('LOW')?'1px solid rgba(52,211,153,.35)':riskLabel==='WATCH'?'1px solid rgba(251,191,36,.35)':'1px solid rgba(248,113,113,.35)',fontFamily:'var(--font-plex-mono)' }}>{riskLabel}</span>
                       <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#7dd3fc',border:'1px solid rgba(125,211,252,0.26)',fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE {confidenceLabel}</span>
                     </div>
                     <div style={{ height:'8px',borderRadius:'999px',background:'rgba(15,23,42,0.9)',border:'1px solid rgba(255,255,255,0.08)',overflow:'hidden' }}><div style={{ width:`${score}%`,height:'100%',background:'linear-gradient(90deg, #2dd4bf, #7dd3fc)' }} /></div>
@@ -2845,10 +2845,234 @@ export default function TerminalTokenScanner() {
                     {[['dev-map','Dev Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']].map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id as any)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(125,211,252,0.45)':'1px solid rgba(148,163,184,0.2)', background:devControlTab===id?'rgba(14,29,47,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#7dd3fc':'#94a3b8', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
                   </div>
                   <div style={{ border:'1px solid rgba(148,163,184,0.2)', borderRadius:'14px', padding:'14px', background:'rgba(7,12,24,0.8)' }}>
-                    {devControlTab==='dev-map' && <div style={{ display:'grid',gap:'12px' }}><div style={{ display:'grid',gridTemplateColumns:'1fr auto 1fr auto 1fr',alignItems:'center',gap:'8px' }}><div style={{ padding:'10px',border:'1px solid rgba(125,211,252,.22)',borderRadius:'10px' }}>Token Contract</div><span style={{ color:'#7dd3fc' }}>→</span><div style={{ padding:'10px',border:'1px solid rgba(251,191,36,.24)',borderRadius:'10px' }}>Likely Origin Wallet</div><span style={{ color:'#7dd3fc' }}>→</span><div style={{ padding:'10px',border:'1px solid rgba(45,212,191,.24)',borderRadius:'10px' }}>Linked Wallets</div></div><div style={{ padding:'12px',border:'1px solid rgba(148,163,184,.2)',borderRadius:'12px' }}><p style={{ margin:'0 0 8px',fontSize:'10px',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Origin Wallet</p><p style={{ margin:'0 0 4px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Address: {creatorAddress ?? 'Not confirmed yet'}</p><p style={{ margin:'0 0 4px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Status: {creatorStatus ?? 'Limited'}</p><p style={{ margin:'0 0 4px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Detection method: {devIntel?.confidence ?? 'Evidence based inference'}</p><p style={{ margin:'0 0 4px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Chain: {result.chain?.toUpperCase() ?? chain.toUpperCase()}</p><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Scanned: {new Date().toLocaleDateString()}</p></div><div style={{ display:'grid', gap:'8px' }}>{linkedWallets.length ? linkedWallets.map((wallet, i)=><div key={wallet.address+i} style={{ padding:'10px',border:'1px solid rgba(148,163,184,0.2)',borderRadius:'10px',fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{wallet.address}</div>) : <p style={{ margin:0,fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>Linked wallets are still being discovered from transfer evidence.</p>}</div></div>}
-                    {devControlTab==='supply-control' && <div style={{ overflowX:'auto' }}><table style={{ width:'100%',borderCollapse:'collapse',fontFamily:'var(--font-plex-mono)' }}><tbody>{[['Creator in top holders', creatorInTop==null?'Unconfirmed':creatorInTop?'Yes':'No'],['Top 1 concentration', top1!=null?`${top1.toFixed(1)}%`:'—'],['Top 10 concentration', top10!=null?`${top10.toFixed(1)}%`:'—'],['Top 20 concentration', top20!=null?`${top20.toFixed(1)}%`:'—'],['Linked-wallet supply', linkedWalletSupply!=null?`${linkedWalletSupply.toFixed(1)}%`:'—'],['Dev cluster supply', devClusterSupply!=null?`${devClusterSupply.toFixed(1)}%`:'—']].map(([k,v]) => <tr key={String(k)}><td style={{ padding:'10px',borderBottom:'1px solid rgba(148,163,184,.14)',color:'#94a3b8',fontSize:'11px' }}>{k}</td><td style={{ padding:'10px',borderBottom:'1px solid rgba(148,163,184,.14)',color:'#e2e8f0',fontSize:'12px',textAlign:'right' }}>{v}</td></tr>)}</tbody></table></div>}
-                    {devControlTab==='history' && <div style={{ display:'grid',gap:'10px' }}><div style={{ padding:'12px',border:'1px solid rgba(148,163,184,.2)',borderRadius:'10px' }}><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{(devIntel?.reasons && devIntel.reasons.length>0) ? devIntel.reasons.join(' ') : 'History signals are still being built from available deployer evidence.'}</p></div><div style={{ padding:'12px',border:'1px solid rgba(148,163,184,.2)',borderRadius:'10px' }}><p style={{ margin:'0 0 4px',fontSize:'10px',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)' }}>Creator behavior</p><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{creatorStatus==='confirmed'?'Creator identity is confirmed and linked to current deployment footprint.':'Creator identity is still partially inferred from available traces.'}</p></div><div style={{ padding:'12px',border:'1px solid rgba(148,163,184,.2)',borderRadius:'10px' }}><p style={{ margin:'0 0 4px',fontSize:'10px',color:'#7dd3fc',fontFamily:'var(--font-plex-mono)' }}>Transfer pattern / suspicious actions</p><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{suspiciousTransferPattern ? 'Suspicious linked transfer behavior is flagged for closer follow-up.' : 'No suspicious transfer action confirmed from current traces.'}</p></div></div>}
-                    {devControlTab==='watch-plan' && <div style={{ display:'grid',gap:'10px' }}><div style={{ padding:'12px',border:'1px solid rgba(125,211,252,.22)',borderRadius:'10px' }}><p style={{ margin:'0 0 5px',fontSize:'10px',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Concise CORTEX read</p><p style={{ margin:0,fontSize:'11px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>{`Creator ${creatorStatus ?? 'signal limited'}; linked wallets ${linkedWalletCount}; dev cluster ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : 'pending'}.`}</p></div><div style={{ padding:'12px',border:'1px solid rgba(52,211,153,.22)',borderRadius:'10px' }}><p style={{ margin:'0 0 5px',fontSize:'10px',color:'#34d399',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Confirmed signals</p><p style={{ margin:0,fontSize:'11px',color:'#86efac',fontFamily:'var(--font-plex-mono)' }}>{linkedWalletCount>0?`${linkedWalletCount} linked wallet connections confirmed.`:'No linked wallet confirmation yet.'}</p></div><div style={{ padding:'12px',border:'1px solid rgba(251,191,36,.22)',borderRadius:'10px' }}><p style={{ margin:'0 0 5px',fontSize:'10px',color:'#fbbf24',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Open checks</p><p style={{ margin:0,fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)' }}>{openChecks.length?openChecks.join(' '):'No additional open checks.'}</p></div><div style={{ padding:'12px',border:'1px solid rgba(45,212,191,.22)',borderRadius:'10px' }}><p style={{ margin:'0 0 5px',fontSize:'10px',color:'#2DD4BF',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>Next action</p><p style={{ margin:0,fontSize:'11px',color:'#99f6e4',fontFamily:'var(--font-plex-mono)' }}>{next}</p></div></div>}
+                    {devControlTab==='dev-map' && (() => {
+                      const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0,6)}…${addr.slice(-4)}` : null
+                      const contractAddr = result.contract ?? null
+                      const originAddr = creatorAddress
+                      const originLabel = creatorStatus === 'confirmed' ? 'Confirmed deployer' : creatorStatus === 'likely' ? 'Likely deployer' : 'Origin wallet'
+                      const originChip = creatorStatus === 'confirmed' ? { label: 'Confirmed', color: '#34d399', bg: 'rgba(52,211,153,.12)', border: 'rgba(52,211,153,.3)' } : creatorStatus === 'likely' ? { label: 'Likely matched', color: '#fbbf24', bg: 'rgba(251,191,36,.1)', border: 'rgba(251,191,36,.3)' } : { label: 'Open check', color: '#94a3b8', bg: 'rgba(148,163,184,.08)', border: 'rgba(148,163,184,.25)' }
+                      const confLabel = devIntel?.confidence === 'high' ? 'High confidence' : devIntel?.confidence === 'medium' ? 'Medium confidence' : devIntel?.confidence === 'low' ? 'Low confidence' : 'Evidence-based inference'
+                      const chainLabel = (result.chain ?? chain ?? 'unknown').toUpperCase()
+                      return (
+                        <div style={{ display:'grid', gap:'16px' }}>
+                          {/* Intelligence flow: three node cards */}
+                          <div style={{ display:'grid', gridTemplateColumns:'1fr auto 1fr auto 1fr', alignItems:'stretch', gap:'6px' }}>
+                            {/* Token Contract node */}
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(14,24,43,.9),rgba(8,16,32,.85))', border:'1px solid rgba(125,211,252,.28)', display:'flex', flexDirection:'column', gap:'6px' }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#7dd3fc', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>TOKEN CONTRACT</span>
+                              </div>
+                              {contractAddr ? (
+                                <span title={contractAddr} style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', background:'rgba(125,211,252,.08)', border:'1px solid rgba(125,211,252,.18)', borderRadius:'6px', padding:'3px 7px', cursor:'default' }}>{fmt(contractAddr)}</span>
+                              ) : (
+                                <span style={{ fontSize:'10px', color:'#3a5268', fontFamily:'var(--font-plex-mono)' }}>Address not resolved</span>
+                              )}
+                              <span style={{ fontSize:'9px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>{chainLabel} mainnet</span>
+                            </div>
+                            {/* Arrow */}
+                            <div style={{ display:'flex', alignItems:'center', justifyContent:'center', paddingTop:'6px' }}>
+                              <span style={{ color:'#2dd4bf', fontSize:'14px', lineHeight:1 }}>→</span>
+                            </div>
+                            {/* Origin Wallet node */}
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(30,20,10,.85),rgba(18,14,6,.9))', border:`1px solid ${originAddr ? 'rgba(251,191,36,.32)' : 'rgba(148,163,184,.18)'}`, display:'flex', flexDirection:'column', gap:'6px' }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: originAddr ? '#fbbf24' : '#475569', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color: originAddr ? '#fbbf24' : '#64748b', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>ORIGIN WALLET</span>
+                              </div>
+                              {originAddr ? (
+                                <span title={originAddr} style={{ fontSize:'10px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', background:'rgba(251,191,36,.08)', border:'1px solid rgba(251,191,36,.2)', borderRadius:'6px', padding:'3px 7px', cursor:'default' }}>{fmt(originAddr)}</span>
+                              ) : (
+                                <span style={{ fontSize:'10px', color:'#3a5268', fontFamily:'var(--font-plex-mono)' }}>Pending confirmation</span>
+                              )}
+                              <span style={{ display:'inline-flex', alignSelf:'flex-start', padding:'2px 7px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:originChip.color, background:originChip.bg, border:`1px solid ${originChip.border}`, fontFamily:'var(--font-plex-mono)' }}>{originChip.label}</span>
+                            </div>
+                            {/* Arrow */}
+                            <div style={{ display:'flex', alignItems:'center', justifyContent:'center', paddingTop:'6px' }}>
+                              <span style={{ color:linkedWallets.length > 0 ? '#2dd4bf' : '#1e3a44', fontSize:'14px', lineHeight:1 }}>→</span>
+                            </div>
+                            {/* Linked Wallets node */}
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(6,20,18,.85),rgba(4,14,14,.9))', border:`1px solid ${linkedWallets.length > 0 ? 'rgba(45,212,191,.28)' : 'rgba(148,163,184,.14)'}`, display:'flex', flexDirection:'column', gap:'6px' }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: linkedWallets.length > 0 ? '#2dd4bf' : '#1e3a44', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color: linkedWallets.length > 0 ? '#2dd4bf' : '#3a5268', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>LINKED WALLETS</span>
+                              </div>
+                              <span style={{ fontSize:'13px', fontWeight:800, color: linkedWallets.length > 0 ? '#99f6e4' : '#475569', fontFamily:'var(--font-plex-mono)' }}>{linkedWallets.length > 0 ? linkedWallets.length : '—'}</span>
+                              <span style={{ fontSize:'9px', color: linkedWallets.length > 0 ? '#2dd4bf80' : '#1e3a44', fontFamily:'var(--font-plex-mono)' }}>{linkedWallets.length > 0 ? `${linkedWallets.length} wallet${linkedWallets.length !== 1 ? 's' : ''} mapped` : 'Not confirmed yet'}</span>
+                            </div>
+                          </div>
+
+                          {/* Origin Wallet detail card */}
+                          <div style={{ padding:'14px 16px', borderRadius:'12px', background:'rgba(10,16,30,.7)', border:'1px solid rgba(251,191,36,.18)' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', flexWrap:'wrap' }}>
+                              <p style={{ margin:0, fontSize:'10px', letterSpacing:'.14em', fontWeight:700, color:'#fbbf24', fontFamily:'var(--font-plex-mono)' }}>{originLabel.toUpperCase()}</p>
+                              <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:originChip.color, background:originChip.bg, border:`1px solid ${originChip.border}`, fontFamily:'var(--font-plex-mono)' }}>{originChip.label}</span>
+                            </div>
+                            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))', gap:'8px' }}>
+                              {[
+                                { label: 'Address', value: originAddr ? fmt(originAddr) : 'Not confirmed', title: originAddr ?? undefined },
+                                { label: 'Detection confidence', value: confLabel },
+                                { label: 'Evidence source', value: devIntel?.reasons?.[0] ?? (originAddr ? 'Transfer trace' : 'No direct evidence') },
+                                { label: 'Network', value: chainLabel },
+                              ].map(({ label, value, title }) => (
+                                <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,.5)', border:'1px solid rgba(148,163,184,.1)' }}>
+                                  <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{label.toUpperCase()}</div>
+                                  <div title={title} style={{ fontSize:'11px', color:'#cbd5e1', fontWeight:600, fontFamily:'var(--font-plex-mono)', cursor: title ? 'default' : undefined }}>{value ?? '—'}</div>
+                                </div>
+                              ))}
+                            </div>
+                            {!originAddr && (
+                              <p style={{ margin:'10px 0 0', fontSize:'11px', color:'#475569', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>
+                                Origin wallet has not been confirmed in this pass. CORTEX needs additional transfer evidence to resolve the deployer identity.
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Linked Wallets list */}
+                          <div style={{ padding:'14px 16px', borderRadius:'12px', background:'rgba(6,14,22,.7)', border:'1px solid rgba(45,212,191,.18)' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', flexWrap:'wrap' }}>
+                              <p style={{ margin:0, fontSize:'10px', letterSpacing:'.14em', fontWeight:700, color:'#2dd4bf', fontFamily:'var(--font-plex-mono)' }}>LINKED WALLET CLUSTER</p>
+                              {linkedWallets.length > 0 && (
+                                <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:'#2dd4bf', background:'rgba(45,212,191,.1)', border:'1px solid rgba(45,212,191,.28)', fontFamily:'var(--font-plex-mono)' }}>{linkedWallets.length} mapped</span>
+                              )}
+                            </div>
+                            {linkedWallets.length > 0 ? (
+                              <div style={{ display:'grid', gap:'7px' }}>
+                                {linkedWallets.map((wallet, i) => {
+                                  const confColor = wallet.confidence === 'high' ? '#34d399' : wallet.confidence === 'medium' ? '#fbbf24' : '#94a3b8'
+                                  return (
+                                    <div key={wallet.address + i} style={{ display:'flex', alignItems:'center', gap:'10px', padding:'9px 12px', borderRadius:'9px', background:'rgba(15,23,42,.55)', border:'1px solid rgba(45,212,191,.14)', flexWrap:'wrap' }}>
+                                      <span title={wallet.address} style={{ fontSize:'11px', color:'#99f6e4', fontFamily:'var(--font-plex-mono)', fontWeight:600, cursor:'default', letterSpacing:'.04em' }}>{fmt(wallet.address)}</span>
+                                      {wallet.confidence && (
+                                        <span style={{ padding:'1px 6px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:confColor, background:`${confColor}14`, border:`1px solid ${confColor}38`, fontFamily:'var(--font-plex-mono)' }}>{wallet.confidence}</span>
+                                      )}
+                                      {wallet.reason && (
+                                        <span style={{ fontSize:'10px', color:'#475569', fontFamily:'var(--font-plex-mono)', flex:1, minWidth:'120px' }}>{wallet.reason}</span>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            ) : (
+                              <div style={{ padding:'14px', borderRadius:'10px', background:'rgba(15,23,42,.4)', border:'1px solid rgba(148,163,184,.1)', textAlign:'center' }}>
+                                <p style={{ margin:'0 0 4px', fontSize:'11px', color:'#475569', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>No linked wallets confirmed in this pass</p>
+                                <p style={{ margin:0, fontSize:'10px', color:'#2d3f50', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>CORTEX needs more transfer evidence to confirm wallet cluster connections.</p>
+                              </div>
+                            )}
+                            {linkedWalletSupply != null && (
+                              <div style={{ marginTop:'10px', padding:'8px 12px', borderRadius:'8px', background:'rgba(45,212,191,.06)', border:'1px solid rgba(45,212,191,.15)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                                <span style={{ fontSize:'10px', color:'#2dd4bf80', fontFamily:'var(--font-plex-mono)' }}>Cluster supply influence</span>
+                                <span style={{ fontSize:'12px', fontWeight:700, color:'#2dd4bf', fontFamily:'var(--font-plex-mono)' }}>{linkedWalletSupply.toFixed(1)}%</span>
+                              </div>
+                            )}
+                            {linkedWalletSupply == null && linkedWallets.length === 0 && (
+                              <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#1e3a44', fontFamily:'var(--font-plex-mono)' }}>Supply influence still needs confirmation — rescan when holder data is available.</p>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })()}
+                    {devControlTab==='supply-control' && (
+                      <div style={{ display:'grid', gap:'10px' }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:'8px' }}>
+                          {[
+                            { label:'Creator in top holders', value: creatorInTop==null ? 'Open check' : creatorInTop ? 'Yes' : 'No', accent: creatorInTop==null ? '#64748b' : creatorInTop ? '#fbbf24' : '#34d399' },
+                            { label:'Top 1 concentration',   value: top1!=null ? `${top1.toFixed(1)}%` : '—', accent: top1!=null && top1>20 ? '#f87171' : '#94a3b8' },
+                            { label:'Top 10 concentration',  value: top10!=null ? `${top10.toFixed(1)}%` : '—', accent: top10!=null ? (top10>50?'#f87171':top10>30?'#fbbf24':'#34d399') : '#94a3b8' },
+                            { label:'Top 20 concentration',  value: top20!=null ? `${top20.toFixed(1)}%` : '—', accent: top20!=null ? (top20>60?'#f87171':top20>40?'#fbbf24':'#34d399') : '#94a3b8' },
+                            { label:'Linked-wallet supply',  value: linkedWalletSupply!=null ? `${linkedWalletSupply.toFixed(1)}%` : '—', accent:'#2dd4bf' },
+                            { label:'Dev cluster supply',    value: devClusterSupply!=null ? `${devClusterSupply.toFixed(1)}%` : 'Pending', accent: devClusterSupply!=null ? (devClusterSupply>30?'#f87171':devClusterSupply>15?'#fbbf24':'#34d399') : '#64748b' },
+                          ].map(({ label, value, accent }) => (
+                            <div key={label} style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(9,15,29,.8)', border:'1px solid rgba(148,163,184,.14)' }}>
+                              <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', marginBottom:'5px', textTransform:'uppercase' }}>{label}</div>
+                              <div style={{ fontSize:'13px', fontWeight:700, color:accent, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {devClusterSupply == null && (
+                          <div style={{ padding:'11px 14px', borderRadius:'10px', background:'rgba(251,191,36,.04)', border:'1px solid rgba(251,191,36,.14)' }}>
+                            <p style={{ margin:0, fontSize:'11px', color:'#78716c', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Supply influence still needs confirmation. CORTEX needs more holder evidence before confirming cluster control.</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {devControlTab==='history' && (
+                      <div style={{ display:'grid', gap:'10px' }}>
+                        {devIntel?.reasons && devIntel.reasons.length > 0 ? (
+                          <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(125,211,252,.04)', border:'1px solid rgba(125,211,252,.16)' }}>
+                            <p style={{ margin:'0 0 7px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE TRACES</p>
+                            <div style={{ display:'grid', gap:'5px' }}>
+                              {devIntel.reasons.map((r, i) => (
+                                <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                                  <span style={{ color:'#2dd4bf', flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
+                                  <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{r}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(148,163,184,.04)', border:'1px solid rgba(148,163,184,.14)' }}>
+                            <p style={{ margin:0, fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Evidence traces are still being built from available deployer activity. Rescan to refresh.</p>
+                          </div>
+                        )}
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'8px' }}>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(9,15,29,.8)', border:'1px solid rgba(148,163,184,.14)' }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Deployer identity</p>
+                            <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                              {creatorStatus === 'confirmed'
+                                ? 'Deployer identity confirmed — wallet linked to this deployment.'
+                                : creatorStatus === 'likely'
+                                  ? 'Likely deployer identified from transfer traces — pending direct confirmation.'
+                                  : 'Deployer identity is an open check — limited transfer evidence available.'}
+                            </p>
+                          </div>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(9,15,29,.8)', border:`1px solid ${suspiciousTransferPattern ? 'rgba(248,113,113,.22)' : 'rgba(148,163,184,.14)'}` }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color: suspiciousTransferPattern ? '#f87171' : '#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Transfer patterns</p>
+                            <p style={{ margin:0, fontSize:'11px', color: suspiciousTransferPattern ? '#fca5a5' : '#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                              {suspiciousTransferPattern
+                                ? 'Suspicious transfer activity flagged — review linked wallet flows before sizing a position.'
+                                : 'No suspicious transfer patterns confirmed from current traces.'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {devControlTab==='watch-plan' && (
+                      <div style={{ display:'grid', gap:'10px' }}>
+                        <div style={{ padding:'13px 16px', borderRadius:'12px', background:'rgba(125,211,252,.04)', border:'1px solid rgba(125,211,252,.2)' }}>
+                          <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
+                          <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.6 }}>
+                            {`Deployer ${creatorStatus === 'confirmed' ? 'confirmed' : creatorStatus === 'likely' ? 'likely matched' : 'open check'}. ${linkedWalletCount > 0 ? `${linkedWalletCount} linked wallet${linkedWalletCount !== 1 ? 's' : ''} mapped.` : 'No linked wallets confirmed.'} Dev cluster supply ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}% of circulating.` : 'pending confirmation.'}`}
+                          </p>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'8px' }}>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(52,211,153,.04)', border:'1px solid rgba(52,211,153,.18)' }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#34d399', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CONFIRMED SIGNALS</p>
+                            {linkedWalletCount > 0 ? (
+                              <p style={{ margin:0, fontSize:'11px', color:'#86efac', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{linkedWalletCount} linked wallet connection{linkedWalletCount !== 1 ? 's' : ''} mapped from transfer evidence.</p>
+                            ) : creatorStatus ? (
+                              <p style={{ margin:0, fontSize:'11px', color:'#86efac', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Deployer {creatorStatus === 'confirmed' ? 'identity confirmed' : 'likely matched'} from on-chain traces.</p>
+                            ) : (
+                              <p style={{ margin:0, fontSize:'11px', color:'#374151', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>No confirmed signals from available data this pass.</p>
+                            )}
+                          </div>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(251,191,36,.04)', border:'1px solid rgba(251,191,36,.18)' }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#fbbf24', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>OPEN CHECKS</p>
+                            {openChecks.length > 0 ? (
+                              <div style={{ display:'grid', gap:'4px' }}>
+                                {openChecks.map((c, i) => <p key={i} style={{ margin:0, fontSize:'11px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{c}</p>)}
+                              </div>
+                            ) : (
+                              <p style={{ margin:0, fontSize:'11px', color:'#374151', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>No additional open checks.</p>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(45,212,191,.04)', border:'1px solid rgba(45,212,191,.18)' }}>
+                          <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#2dd4bf', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>NEXT ACTION</p>
+                          <p style={{ margin:0, fontSize:'11px', color:'#99f6e4', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{next}</p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                   {devIntelLoading && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(125,211,252,0.22)', borderRadius:'10px', color:'#7dd3fc', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Loading dev intelligence…</div>}
                   {safeError && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(251,191,36,0.28)', borderRadius:'10px', color:'#fcd34d', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>{safeError}</div>}
