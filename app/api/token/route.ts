@@ -38,6 +38,163 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
   const key = keyMap[chain as Exclude<ChainKey, "base" | "eth">]
   return key ? `https://${domainMap[chain as Exclude<ChainKey, "base" | "eth">]}.g.alchemy.com/v2/${key}` : null
 }
+
+const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
+const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
+const COVALENT_CHAIN_SLUG: Record<Extract<ChainKey, 'eth' | 'base'>, string> = {
+  eth: 'eth-mainnet',
+  base: 'base-mainnet',
+}
+const CREATOR_LOOKUP_CHAIN_ID: Record<Extract<ChainKey, 'eth' | 'base'>, string> = {
+  eth: '1',
+  base: '8453',
+}
+
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+const DEAD_ADDRESS = '0x000000000000000000000000000000000000dead'
+const COMMON_INFRA_EXCLUSIONS = new Set([
+  ZERO_ADDRESS,
+  DEAD_ADDRESS,
+  '0x0000000000000000000000000000000000000001',
+])
+const BASE_INFRA_EXCLUSIONS = new Set([
+  '0x4200000000000000000000000000000000000006',
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad',
+  '0x2626664c2603336e57b271c5c0b26f421741e481',
+  '0x03a520b32c04bf3beef7beb72e919cf822ed34f1',
+  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43',
+  '0x420dd381b31aef6683db6b902084cb0ffece40da',
+])
+const ETH_INFRA_EXCLUSIONS = new Set([
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d',
+  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b',
+  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45',
+  '0xe592427a0aece92de3edee1f18e0157c05861564',
+  '0xc36442b4a4522e871399cd717abdd847ab11fe88',
+  '0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f',
+  '0x1f98431c8ad98523631ae4a59f267346ea31f984',
+  '0x000000000022d473030f116ddee9f6b43ac78ba3',
+])
+
+function chainInfraExclusions(chain: ChainKey): Set<string> {
+  return new Set([
+    ...COMMON_INFRA_EXCLUSIONS,
+    ...(chain === 'eth' ? ETH_INFRA_EXCLUSIONS : BASE_INFRA_EXCLUSIONS),
+  ])
+}
+
+function normalizeEvidenceAddress(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  return /^0x[a-f0-9]{40}$/.test(normalized) ? normalized : null
+}
+
+function isRejectedEvidenceAddress(value: string | null | undefined, tokenContract?: string | null): boolean {
+  const normalized = normalizeEvidenceAddress(value)
+  if (!normalized) return true
+  const tokenLow = normalizeEvidenceAddress(tokenContract ?? null)
+  return normalized === tokenLow || COMMON_INFRA_EXCLUSIONS.has(normalized) || ETH_INFRA_EXCLUSIONS.has(normalized) || BASE_INFRA_EXCLUSIONS.has(normalized)
+}
+
+function isValidOriginCandidate(value: string | null | undefined, tokenContract: string): value is string {
+  return !isRejectedEvidenceAddress(value, tokenContract)
+}
+
+
+interface AlchemyTransfer {
+  blockNum: string
+  hash: string
+  from: string
+  to: string | null
+  value: number | null
+  asset: string | null
+  category: string
+  metadata?: { blockTimestamp?: string }
+  rawContract?: { address?: string | null }
+}
+
+interface LinkedWallet {
+  address: string
+  amountReceived: number | null
+  asset: string | null
+  txHash: string | null
+  firstSeen: string | null
+  confidence?: 'high' | 'medium' | 'low'
+  reason?: string
+  overlapTopHolderRank?: number | null
+  overlapTopHolderPercent?: number | null
+}
+
+interface LinkedWalletDiag {
+  attempted: boolean
+  ok: boolean
+  tokenTransfersFound: number
+  ethTransfersFound: number
+  totalCandidates: number
+  reason: string
+}
+
+type TokenOriginCandidate = {
+  address: string | null
+  confidence: 'high' | 'medium' | 'low'
+  deployerStatus: 'confirmed' | 'possible_match' | 'not_confirmed'
+  methodUsed: string
+  creationTxHash: string | null
+  reason: string
+}
+
+type TokenOriginDiscoveryDiag = {
+  optional_creation_lookup: {
+    attempted: boolean
+    ok: boolean
+    reason: string
+    httpStatus?: number | null
+    candidateAddress?: string | null
+    txHashPresent?: boolean
+    confidence?: 'high' | 'medium' | 'low'
+  }
+  contract_transaction_history: {
+    attempted: boolean
+    ok: boolean
+    reason: string
+    httpStatus?: number | null
+    itemCount?: number
+    candidateAddress?: string | null
+    txHashPresent?: boolean
+    confidence?: 'high' | 'medium' | 'low'
+  }
+  initial_token_flow_signal: {
+    attempted: boolean
+    ok: boolean
+    reason: string
+    tokenTransfersFound?: number
+    candidateAddress?: string | null
+    confidence?: 'high' | 'medium' | 'low'
+  }
+  rpc_fallback: {
+    attempted: boolean
+    ok: boolean
+    reason: string
+    candidateAddress?: string | null
+    confidence?: 'high' | 'medium' | 'low'
+  }
+  selected_origin_candidate: {
+    methodUsed: string
+    address: string | null
+    confidence: 'high' | 'medium' | 'low'
+    deployerStatus: 'confirmed' | 'possible_match' | 'not_confirmed'
+  }
+}
+
+type CovalentTxItem = {
+  successful?: boolean
+  from_address?: string | null
+  to_address?: string | null
+  tx_hash?: string | null
+}
+
 async function checkRpcHealth(chain: ChainKey): Promise<{ ok: boolean; providerUrl: string | null; reason: string | null }> {
   const providerUrl = getAlchemyRpcUrl(chain)
   if (!providerUrl) return { ok: false, providerUrl: null, reason: "missing_rpc_url" }
@@ -488,6 +645,305 @@ async function fetchBytecode(chain: ChainKey, contract: string): Promise<string 
   } catch {
     return null;
   }
+}
+
+
+async function rpcJson(chain: ChainKey, method: string, params: unknown[], timeoutMs = 6000): Promise<any | null> {
+  const rpcUrl = getAlchemyRpcUrl(chain)
+  if (!rpcUrl) return null
+  try {
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) return null
+    const json = await res.json()
+    return json?.result ?? null
+  } catch {
+    return null
+  }
+}
+
+async function getTokenAssetTransfers(chain: ChainKey, params: Record<string, unknown>): Promise<AlchemyTransfer[]> {
+  const transfers: AlchemyTransfer[] = []
+  let pageKey: string | undefined
+  for (let page = 0; page < 3; page++) {
+    try {
+      const pageParams = pageKey ? { ...params, pageKey } : params
+      const result = await rpcJson(chain, 'alchemy_getAssetTransfers', [pageParams], 8000) as { transfers?: AlchemyTransfer[]; pageKey?: string } | null
+      transfers.push(...(result?.transfers ?? []))
+      if (transfers.length >= 300) return transfers.slice(0, 300)
+      pageKey = typeof result?.pageKey === 'string' && result.pageKey ? result.pageKey : undefined
+      if (!pageKey) break
+    } catch {
+      break
+    }
+  }
+  return transfers
+}
+
+async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
+  candidate: TokenOriginCandidate
+  diag: TokenOriginDiscoveryDiag
+}> {
+  const diag: TokenOriginDiscoveryDiag = {
+    optional_creation_lookup: { attempted: false, ok: false, reason: 'skipped' },
+    contract_transaction_history: { attempted: false, ok: false, reason: 'skipped' },
+    initial_token_flow_signal: { attempted: false, ok: false, reason: 'skipped' },
+    rpc_fallback: { attempted: false, ok: false, reason: 'skipped' },
+    selected_origin_candidate: { methodUsed: 'unknown', address: null, confidence: 'low', deployerStatus: 'not_confirmed' },
+  }
+
+  function finalize(candidate: TokenOriginCandidate): { candidate: TokenOriginCandidate; diag: TokenOriginDiscoveryDiag } {
+    diag.selected_origin_candidate = {
+      methodUsed: candidate.methodUsed,
+      address: candidate.address,
+      confidence: candidate.confidence,
+      deployerStatus: candidate.deployerStatus,
+    }
+    return { candidate, diag }
+  }
+
+  if (chain === 'eth' || chain === 'base') {
+    const scanKey = chain === 'eth'
+      ? process.env.ETHERSCAN_API_KEY
+      : (process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY)
+    if (scanKey) {
+      diag.optional_creation_lookup.attempted = true
+      try {
+        const scanUrl = chain === 'eth'
+          ? `${CREATOR_LOOKUP_BASE_URL}?chainid=${CREATOR_LOOKUP_CHAIN_ID.eth}&module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
+          : `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
+        const scanRes = await fetch(scanUrl, { cache: 'no-store', signal: AbortSignal.timeout(6000) })
+        diag.optional_creation_lookup.httpStatus = scanRes.status
+        if (scanRes.ok) {
+          const scanJson = await scanRes.json() as { status?: string; result?: Array<{ contractCreator?: string; txHash?: string }> }
+          const r = scanJson?.result?.[0]
+          if (scanJson.status === '1' && r?.contractCreator) {
+            const creator = normalizeEvidenceAddress(r.contractCreator)
+            if (isValidOriginCandidate(creator, contract)) {
+              diag.optional_creation_lookup.ok = true
+              diag.optional_creation_lookup.reason = 'contract_creation_record'
+              diag.optional_creation_lookup.candidateAddress = creator
+              diag.optional_creation_lookup.txHashPresent = Boolean(r.txHash)
+              diag.optional_creation_lookup.confidence = 'high'
+              return finalize({ address: creator, confidence: 'high', deployerStatus: 'confirmed', methodUsed: 'transaction_creation_record', creationTxHash: r.txHash ?? null, reason: 'Creation record from indexed transactions' })
+            }
+            diag.optional_creation_lookup.reason = 'rejected_infra_or_zero_candidate'
+            diag.optional_creation_lookup.candidateAddress = creator
+          } else {
+            diag.optional_creation_lookup.reason = scanJson.status === '0' ? 'api_no_result' : 'unexpected_shape'
+          }
+        } else {
+          diag.optional_creation_lookup.reason = `http_${scanRes.status}`
+        }
+      } catch (e) {
+        diag.optional_creation_lookup.reason = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError') ? 'timeout' : 'fetch_error'
+      }
+    }
+  }
+
+  const covalentChain = chain === 'eth' || chain === 'base' ? COVALENT_CHAIN_SLUG[chain] : null
+  const covalentKey = process.env.COVALENT_API_KEY
+  if (covalentChain && covalentKey) {
+    diag.contract_transaction_history.attempted = true
+    try {
+      const txRes = await fetch(
+        `${COVALENT_BASE_URL}/${covalentChain}/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
+        { cache: 'no-store', signal: AbortSignal.timeout(10000) },
+      )
+      diag.contract_transaction_history.httpStatus = txRes.status
+      if (txRes.ok) {
+        const txJson = await txRes.json() as { data?: { items?: CovalentTxItem[] } }
+        const txItems = txJson?.data?.items ?? []
+        diag.contract_transaction_history.itemCount = txItems.length
+        const creationTx = txItems.find(t => t.successful && (t.to_address === null || t.to_address === ''))
+        if (creationTx?.from_address && isValidOriginCandidate(creationTx.from_address, contract)) {
+          const creator = creationTx.from_address.toLowerCase()
+          diag.contract_transaction_history.ok = true
+          diag.contract_transaction_history.reason = 'creation_tx_found'
+          diag.contract_transaction_history.candidateAddress = creator
+          diag.contract_transaction_history.txHashPresent = Boolean(creationTx.tx_hash)
+          diag.contract_transaction_history.confidence = 'high'
+          return finalize({ address: creator, confidence: 'high', deployerStatus: 'confirmed', methodUsed: 'creation_transaction_history', creationTxHash: creationTx.tx_hash ?? null, reason: 'Creation transaction from indexed contract history' })
+        }
+        const earliestExternal = txItems.find(t => t.successful && t.from_address && isValidOriginCandidate(t.from_address, contract))
+        if (earliestExternal?.from_address) {
+          const creator = earliestExternal.from_address.toLowerCase()
+          diag.contract_transaction_history.ok = true
+          diag.contract_transaction_history.reason = 'earliest_contract_activity'
+          diag.contract_transaction_history.candidateAddress = creator
+          diag.contract_transaction_history.txHashPresent = Boolean(earliestExternal.tx_hash)
+          diag.contract_transaction_history.confidence = 'medium'
+          return finalize({ address: creator, confidence: 'medium', deployerStatus: 'possible_match', methodUsed: 'earliest_contract_activity', creationTxHash: earliestExternal.tx_hash ?? null, reason: 'Earliest indexed contract activity; not confirmed creator' })
+        }
+        diag.contract_transaction_history.reason = 'no_creation_or_external_sender'
+      } else {
+        diag.contract_transaction_history.reason = `http_${txRes.status}`
+      }
+    } catch (e) {
+      diag.contract_transaction_history.reason = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError') ? 'timeout' : 'fetch_error'
+    }
+  }
+
+  diag.initial_token_flow_signal.attempted = true
+  const mintTransfers = await getTokenAssetTransfers(chain, {
+    fromBlock: '0x0', toBlock: 'latest',
+    fromAddress: ZERO_ADDRESS,
+    category: ['erc20'], contractAddresses: [contract],
+    order: 'asc', maxCount: '0x32', withMetadata: true,
+  })
+  diag.initial_token_flow_signal.tokenTransfersFound = mintTransfers.length
+  const firstMint = mintTransfers.find(t => t.to && isValidOriginCandidate(t.to, contract))
+  if (firstMint?.to) {
+    const addr = firstMint.to.toLowerCase()
+    diag.initial_token_flow_signal.ok = true
+    diag.initial_token_flow_signal.reason = 'mint_recipient_found'
+    diag.initial_token_flow_signal.candidateAddress = addr
+    diag.initial_token_flow_signal.confidence = 'medium'
+    return finalize({ address: addr, confidence: 'medium', deployerStatus: 'possible_match', methodUsed: 'initial_mint_recipient', creationTxHash: firstMint.hash ?? null, reason: 'Initial mint recipient; likely deployer/distribution wallet, not confirmed creator' })
+  }
+  diag.initial_token_flow_signal.reason = 'no_mint_transfers'
+
+  diag.rpc_fallback.attempted = true
+  const earliestErc20 = await getTokenAssetTransfers(chain, {
+    fromBlock: '0x0', toBlock: 'latest',
+    category: ['erc20'], contractAddresses: [contract],
+    order: 'asc', maxCount: '0x32', withMetadata: true,
+  })
+  const firstErc20 = earliestErc20.find(t => isValidOriginCandidate(t.from, contract) || isValidOriginCandidate(t.to, contract))
+  if (firstErc20) {
+    const addr = (isValidOriginCandidate(firstErc20.from, contract) ? firstErc20.from : firstErc20.to) ?? null
+    if (isValidOriginCandidate(addr, contract)) {
+      const normalized = addr.toLowerCase()
+      diag.rpc_fallback.ok = true
+      diag.rpc_fallback.reason = 'earliest_erc20_transfer'
+      diag.rpc_fallback.candidateAddress = normalized
+      diag.rpc_fallback.confidence = 'low'
+      return finalize({ address: normalized, confidence: 'low', deployerStatus: 'possible_match', methodUsed: 'earliest_transfer', creationTxHash: null, reason: 'Earliest ERC-20 transfer participant; not confirmed creator' })
+    }
+  }
+
+  const incomingExt = await getTokenAssetTransfers(chain, {
+    fromBlock: '0x0', toBlock: 'latest', toAddress: contract,
+    category: ['external'], order: 'asc', maxCount: '0x5', withMetadata: true,
+  })
+  const firstExt = incomingExt.find(t => t.from && isValidOriginCandidate(t.from, contract))
+  if (firstExt?.from) {
+    const normalized = firstExt.from.toLowerCase()
+    diag.rpc_fallback.ok = true
+    diag.rpc_fallback.reason = 'first_incoming_external'
+    diag.rpc_fallback.candidateAddress = normalized
+    diag.rpc_fallback.confidence = 'low'
+    return finalize({ address: normalized, confidence: 'low', deployerStatus: 'possible_match', methodUsed: 'earliest_external_activity', creationTxHash: null, reason: 'First external transfer to contract; not confirmed creator' })
+  }
+
+  diag.rpc_fallback.reason = 'no_transfers_found'
+  return finalize({ address: null, confidence: 'low', deployerStatus: 'not_confirmed', methodUsed: 'unknown', creationTxHash: null, reason: 'No origin candidate found from available sources' })
+}
+
+async function findTokenLinkedWallets(
+  chain: ChainKey,
+  deployer: string,
+  tokenContract: string,
+): Promise<{
+  wallets: LinkedWallet[]
+  status: 'ok' | 'none_found' | 'limited_check' | 'skipped'
+  diag: LinkedWalletDiag
+}> {
+  const deployerLow = deployer.toLowerCase()
+  const tokenLow = tokenContract.toLowerCase()
+  const excluded = new Set([...chainInfraExclusions(chain), deployerLow, tokenLow])
+  const diag: LinkedWalletDiag = {
+    attempted: true,
+    ok: false,
+    tokenTransfersFound: 0,
+    ethTransfersFound: 0,
+    totalCandidates: 0,
+    reason: '',
+  }
+  if (!getAlchemyRpcUrl(chain)) {
+    diag.reason = 'rpc_not_configured'
+    return { wallets: [], status: 'limited_check', diag }
+  }
+
+  const [tokenTransfers, ethTransfers] = await Promise.all([
+    getTokenAssetTransfers(chain, {
+      fromBlock: '0x0', toBlock: 'latest',
+      fromAddress: deployer,
+      category: ['erc20'],
+      contractAddresses: [tokenContract],
+      order: 'asc',
+      maxCount: '0x64',
+      withMetadata: true,
+    }),
+    getTokenAssetTransfers(chain, {
+      fromBlock: '0x0', toBlock: 'latest',
+      fromAddress: deployer,
+      category: ['external'],
+      order: 'asc',
+      maxCount: '0x64',
+      withMetadata: true,
+    }),
+  ])
+
+  diag.tokenTransfersFound = tokenTransfers.length
+  diag.ethTransfersFound = ethTransfers.length
+  const walletMap = new Map<string, LinkedWallet>()
+
+  for (const t of tokenTransfers) {
+    const to = t.to?.toLowerCase()
+    if (!to || excluded.has(to) || !normalizeEvidenceAddress(to)) continue
+    const existing = walletMap.get(to)
+    if (!existing) {
+      walletMap.set(to, {
+        address: to,
+        amountReceived: t.value,
+        asset: t.asset,
+        txHash: t.hash,
+        firstSeen: t.metadata?.blockTimestamp ?? null,
+        confidence: 'medium',
+        reason: 'token_supply_transfer',
+      })
+    } else {
+      existing.amountReceived = (existing.amountReceived ?? 0) + (t.value ?? 0)
+      const existingTs = existing.firstSeen ? new Date(existing.firstSeen).getTime() : Infinity
+      const nextTs = t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).getTime() : Infinity
+      if (nextTs < existingTs) {
+        existing.firstSeen = t.metadata?.blockTimestamp ?? existing.firstSeen
+        existing.txHash = t.hash ?? existing.txHash
+      }
+    }
+  }
+
+  for (const t of ethTransfers) {
+    const to = t.to?.toLowerCase()
+    if (!to || excluded.has(to) || !normalizeEvidenceAddress(to)) continue
+    if (!walletMap.has(to)) {
+      walletMap.set(to, {
+        address: to,
+        amountReceived: t.value,
+        asset: 'ETH',
+        txHash: t.hash,
+        firstSeen: t.metadata?.blockTimestamp ?? null,
+        confidence: 'low',
+        reason: 'eth_funding_transfer',
+      })
+    }
+  }
+
+  diag.totalCandidates = walletMap.size
+  const wallets = [...walletMap.values()].slice(0, 20)
+  if (tokenTransfers.length === 0 && ethTransfers.length === 0) {
+    diag.reason = 'no_transfers_found'
+    return { wallets: [], status: 'limited_check', diag }
+  }
+  diag.ok = true
+  diag.reason = wallets.length > 0 ? 'wallets_found' : 'transfers_checked_none_qualify'
+  return { wallets, status: wallets.length > 0 ? 'ok' : 'none_found', diag }
 }
 
 async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
@@ -3525,18 +3981,40 @@ export async function POST(req: Request) {
     const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
     const finalResolvedSymbol = (resolvedSymbol && resolvedSymbol !== '?') ? resolvedSymbol : (rpcSymbol ?? '?')
 
+    const ethOriginDiscovery = chain === 'eth' ? await discoverTokenOrigin(chain, contract) : null
+
     const roundSupplyPct = (value: number): number => Math.round(value * 100) / 100
     const normalizeActorAddress = (value: string | null | undefined): string | null => {
       if (typeof value !== 'string') return null
       const trimmed = value.trim().toLowerCase()
       return /^0x[a-f0-9]{40}$/.test(trimmed) && trimmed !== _ZERO_ADDR ? trimmed : null
     }
-    const deployerAddress = normalizeActorAddress(ownerAddr)
-    const linkedWallets = [adminAddr]
-      .map(normalizeActorAddress)
-      .filter((address): address is string => Boolean(address && address !== deployerAddress))
-      .filter((address, index, arr) => arr.indexOf(address) === index)
-      .map((address) => ({ address, reason: 'admin_or_proxy_control_wallet', confidence: 'medium' }))
+    const ethOriginCandidate = normalizeActorAddress(ethOriginDiscovery?.candidate.address ?? null)
+    const deployerAddress = chain === 'eth' ? ethOriginCandidate : normalizeActorAddress(ownerAddr)
+    const ethLinkedWalletResult = chain === 'eth' && deployerAddress
+      ? await findTokenLinkedWallets(chain, deployerAddress, contract)
+      : null
+    const linkedWallets: LinkedWallet[] = chain === 'eth'
+      ? (ethLinkedWalletResult?.wallets ?? [])
+      : [adminAddr]
+        .map(normalizeActorAddress)
+        .filter((address): address is string => Boolean(address && address !== deployerAddress))
+        .filter((address, index, arr) => arr.indexOf(address) === index)
+        .map((address) => ({ address, amountReceived: null, asset: null, txHash: null, firstSeen: null, reason: 'admin_or_proxy_control_wallet', confidence: 'medium' as const }))
+    const ethOrigin = ethOriginDiscovery?.candidate ?? null
+    const devDeployerStatus = chain === 'eth'
+      ? (deployerAddress ? (ethOrigin?.deployerStatus ?? 'possible_match') : 'not_confirmed')
+      : (deployerAddress ? 'confirmed' : 'not_confirmed')
+    const devDeployerConfidence = chain === 'eth'
+      ? (deployerAddress ? (ethOrigin?.confidence ?? 'medium') : 'low')
+      : (deployerAddress ? 'high' : 'low')
+    const devMethodUsed = chain === 'eth'
+      ? (ethOrigin?.methodUsed ?? 'unknown')
+      : (deployerAddress ? (_ownerFromTransfer ? 'moralis_transfer_fallback' : 'rpc_selector') : 'unknown')
+    const devCreationTxHash = chain === 'eth' ? (ethOrigin?.creationTxHash ?? null) : null
+    const devOriginReason = chain === 'eth'
+      ? (ethOrigin?.reason ?? 'No ETH origin candidate found from Token Scanner checks')
+      : (deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.')
     const linkedAddressSet = new Set(linkedWallets.map((wallet) => wallet.address))
     const holderRows = holderDistribution.topHolders ?? []
     const holderRowsHaveUsablePercents = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
@@ -3624,7 +4102,7 @@ export async function POST(req: Request) {
     }
     const clusterMap = buildClusterMap({
       deployerAddress,
-      deployerStatus: deployerAddress ? 'confirmed' : 'not_confirmed',
+      deployerStatus: devDeployerStatus,
       linkedWallets,
       matchedLinkedWallets,
       supplyControl,
@@ -3663,7 +4141,10 @@ export async function POST(req: Request) {
     }
     const devIntel = {
       deployerAddress,
-      deployerStatus: deployerAddress ? 'confirmed' : 'not_confirmed',
+      deployerStatus: devDeployerStatus,
+      deployerConfidence: devDeployerConfidence,
+      methodUsed: devMethodUsed,
+      creationTxHash: devCreationTxHash,
       linkedWallets,
       creatorInTopHolders,
       linkedWalletSupply: linkedWalletSupplyPercent,
@@ -3678,7 +4159,7 @@ export async function POST(req: Request) {
       suspiciousTransfers: false,
       suspiciousTransferReasons: [],
       clusterInfluence,
-      reasons: [deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.'],
+      reasons: [devOriginReason],
       confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
       supplyControl,
       clusterMap,
@@ -3720,6 +4201,12 @@ export async function POST(req: Request) {
       holderDistributionStatus,
       holderStatus: holdersStatus,
       devIntel,
+      deployerAddress,
+      deployerStatus: devDeployerStatus,
+      deployerConfidence: devDeployerConfidence,
+      methodUsed: devMethodUsed,
+      creationTxHash: devCreationTxHash,
+      linkedWallets,
       supplyControl,
       linkedWalletSupplyPercent,
       devClusterSupplyPercent,
@@ -4213,6 +4700,15 @@ export async function POST(req: Request) {
         fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
         requestDurationMs: Date.now() - _t0,
         checks: rpcCheckDiagnostics,
+        devIntelDiagnostics: {
+          originDiscovery: ethOriginDiscovery?.diag ?? null,
+          linkedWallets: ethLinkedWalletResult?.diag ?? null,
+          linkedWalletsStatus: ethLinkedWalletResult?.status ?? (chain === 'eth' && !deployerAddress ? 'skipped' : null),
+          deployerStatus: devDeployerStatus,
+          methodUsed: devMethodUsed,
+          originReason: devOriginReason,
+          supplyControlReason: devClusterSupplyReason,
+        },
         dexFallbackTest: forceDexFallback ? {
           forced: true,
           primaryMarketAvailable: _primaryHasMarket,
