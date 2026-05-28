@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
+import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 
 // ─── Canonical status ─────────────────────────────────────────────────────
 type CanonicalStatus =
@@ -1918,6 +1919,9 @@ export default function TerminalTokenScanner() {
   const [devIntel, setDevIntel] = useState<DevWalletIntel | null>(null)
   const devIntelCacheRef = useRef<Record<string, DevWalletIntel>>({})
 
+  const [resolving, setResolving]               = useState(false)
+  const [resolverResult, setResolverResult]     = useState<ResolverResult | null>(null)
+
   const isValidHolderAddress = (value: string | null | undefined) => typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
 
   async function copyHolderAddress(address: string) {
@@ -1965,10 +1969,37 @@ export default function TerminalTokenScanner() {
     const q             = (override ?? input).trim()
     const effectiveChain = chainOverride ?? chain
     if (!q) {
-      setError('Please enter a token contract address before scanning.')
+      setError('Please enter a token address or ticker before scanning.')
       return
     }
-    if (loading) return
+    if (loading || resolving) return
+
+    // ── Ticker resolver ─────────────────────────────────────────────────────
+    // Skip if: CA provided directly, or override from URL auto-scan
+    let scanContract = q
+    let scanChain: 'base' | 'eth' = effectiveChain
+    if (!override && !isContractAddress(q)) {
+      setResolving(true)
+      setResolverResult(null)
+      setError(null)
+      try {
+        const resolved = await resolveTokenQuery(q, effectiveChain)
+        setResolverResult(resolved)
+        setResolving(false)
+        if (resolved.status === 'not_found' || !resolved.contractAddress) {
+          setError(resolved.reason || 'No matching token found. Try pasting the contract address.')
+          return
+        }
+        scanContract = resolved.contractAddress
+        scanChain    = (resolved.chain === 'eth' ? 'eth' : 'base') as 'base' | 'eth'
+      } catch {
+        setResolving(false)
+        setError("Couldn't resolve that ticker. Try pasting the contract address.")
+        return
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     setLoading(true)
     setClarkLoading(true)
     setError(null)
@@ -1988,7 +2019,7 @@ export default function TerminalTokenScanner() {
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-        body: JSON.stringify({ contract: q, chain: effectiveChain, ...(debugHolder ? { debugHolder: true } : {}) }),
+        body: JSON.stringify({ contract: scanContract, chain: scanChain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       const json = await res.json()
       if (process.env.NODE_ENV !== 'production') {
@@ -2130,6 +2161,7 @@ export default function TerminalTokenScanner() {
   return (
     <>
       <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes clarkDot {
           0%, 80%, 100% { opacity: 0.25; transform: scale(0.75); }
           40% { opacity: 1; transform: scale(1); }
@@ -2184,10 +2216,10 @@ export default function TerminalTokenScanner() {
           <div className="token-input-row glass-card" style={{ display: 'flex', gap: '10px', maxWidth: '820px', marginBottom: '24px', padding: '10px' }}>
             <input
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={e => { setInput(e.target.value); setResolverResult(null) }}
               onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
               disabled={loading}
-              placeholder={chain === 'eth' ? 'Paste Ethereum contract address' : 'Paste Base contract, symbol, or token name'}
+              placeholder={chain === 'eth' ? 'Paste Ethereum contract, symbol, or token name' : 'Paste Base contract, symbol, or token name'}
               style={{
                 flex: 1, padding: '12px 16px',
                 background: 'rgba(255,255,255,0.04)',
@@ -2204,22 +2236,76 @@ export default function TerminalTokenScanner() {
             />
             <button
               onClick={() => handleScan()}
-              disabled={loading || !input.trim()}
+              disabled={loading || resolving || !input.trim()}
               style={{
                 padding: '12px 28px', borderRadius: '10px', border: 'none',
-                background: loading || !input.trim()
+                background: loading || resolving || !input.trim()
                   ? 'rgba(45,212,191,0.12)'
                   : 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
-                color: loading || !input.trim() ? 'rgba(255,255,255,0.25)' : '#06060a',
+                color: loading || resolving || !input.trim() ? 'rgba(255,255,255,0.25)' : '#06060a',
                 fontSize: '12px', fontWeight: 700,
                 fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em',
-                cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
+                cursor: loading || resolving || !input.trim() ? 'not-allowed' : 'pointer',
                 flexShrink: 0, transition: 'all 0.15s',
               }}
             >
-              {loading ? 'SCANNING…' : 'SCAN TOKEN'}
+              {resolving ? 'RESOLVING…' : loading ? 'SCANNING…' : 'SCAN TOKEN'}
             </button>
           </div>
+
+          {/* Resolver status */}
+          {resolving && (
+            <div style={{ maxWidth:'680px', marginBottom:'12px', padding:'10px 14px', borderRadius:'10px', background:'rgba(45,212,191,0.06)', border:'1px solid rgba(45,212,191,0.2)', display:'flex', alignItems:'center', gap:'10px', fontFamily:'var(--font-plex-mono)', fontSize:'11px', color:'#2dd4bf' }}>
+              <span style={{ display:'inline-block', width:10, height:10, borderRadius:'50%', border:'2px solid #2dd4bf', borderTopColor:'transparent', animation:'spin 0.7s linear infinite', flexShrink:0 }} />
+              Resolving ticker…
+            </div>
+          )}
+
+          {/* Resolver result banner */}
+          {!resolving && resolverResult && resolverResult.status !== 'not_found' && resolverResult.bestCandidate && (
+            <div style={{ maxWidth:'680px', marginBottom:'12px' }}>
+              <div style={{ padding:'10px 14px', borderRadius:'10px', background:'rgba(45,212,191,0.06)', border:`1px solid ${resolverResult.status === 'ambiguous' ? 'rgba(250,204,21,0.35)' : 'rgba(45,212,191,0.2)'}`, fontFamily:'var(--font-plex-mono)', fontSize:'11px' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                  <span style={{ color: resolverResult.confidence === 'high' ? '#2dd4bf' : resolverResult.confidence === 'medium' ? '#facc15' : '#94a3b8', fontWeight:700 }}>
+                    {resolverResult.status === 'ambiguous' ? '⚠ Multiple matches' : '✓ Resolved'}
+                  </span>
+                  <span style={{ color:'#e2e8f0', fontWeight:700 }}>
+                    {resolverResult.bestCandidate.symbol ?? resolverResult.bestCandidate.name ?? '—'}
+                  </span>
+                  {resolverResult.bestCandidate.name && resolverResult.bestCandidate.name !== resolverResult.bestCandidate.symbol && (
+                    <span style={{ color:'#64748b' }}>{resolverResult.bestCandidate.name}</span>
+                  )}
+                  <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainLabel}</span>
+                  {resolverResult.bestCandidate.liquidityUsd != null && (
+                    <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(resolverResult.bestCandidate.liquidityUsd)}</span>
+                  )}
+                  <span style={{ color:'#334155', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.contractAddress?.slice(0,8)}…{resolverResult.contractAddress?.slice(-4)}</span>
+                </div>
+              </div>
+
+              {/* Alternates picker */}
+              {resolverResult.alternates.length > 0 && (
+                <div style={{ marginTop:'6px', display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                  <span style={{ color:'#334155', fontSize:'9px', fontFamily:'var(--font-plex-mono)', alignSelf:'center' }}>Other matches:</span>
+                  {resolverResult.alternates.slice(0, 4).map((alt: ResolverCandidate) => (
+                    <button
+                      key={alt.contractAddress + alt.chainId}
+                      onClick={() => {
+                        const altChain: 'base' | 'eth' = alt.chainId === 'ethereum' ? 'eth' : alt.chainId === 'base' ? 'base' : 'base'
+                        setChain(altChain)
+                        handleScan(alt.contractAddress, altChain)
+                      }}
+                      style={{ padding:'4px 10px', borderRadius:'999px', background:'rgba(100,116,139,0.12)', border:'1px solid rgba(100,116,139,0.25)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px' }}
+                    >
+                      <span style={{ fontWeight:700 }}>{alt.symbol ?? alt.name ?? alt.contractAddress.slice(0,6)}</span>
+                      <span style={{ opacity:0.6 }}>{alt.chainLabel}</span>
+                      {alt.liquidityUsd != null && <span style={{ opacity:0.5 }}>{fmtLiquidity(alt.liquidityUsd)}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Error */}
           {error && (
@@ -2236,7 +2322,7 @@ export default function TerminalTokenScanner() {
           )}
 
           {/* Empty state */}
-          {!loading && !result && !error && (
+          {!loading && !resolving && !result && !error && (
             <div style={{ maxWidth: '680px', padding: '48px 0', textAlign: 'center' }}>
               <p style={{
                 fontFamily: 'var(--font-plex-mono)', fontSize: '12px',
