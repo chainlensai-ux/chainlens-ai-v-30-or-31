@@ -2279,14 +2279,21 @@ export default function TerminalTokenScanner() {
     }
     if (loading || resolving) return
 
+    // ── Stale-state reset — runs on every new scan regardless of path ────────
+    setResolverResult(null)
+    setResult(null)
+    setError(null)
+    setDevIntel(null)
+    setDevIntelError(null)
+    devIntelCacheRef.current = {}  // clear cached devIntel so no stale data bleeds across scans
+    // ────────────────────────────────────────────────────────────────────────
+
     // ── Ticker resolver ─────────────────────────────────────────────────────
-    // Skip if: CA provided directly, or override from URL auto-scan
+    // Skip if: CA provided directly, or override from URL auto-scan / alternate picker
     let scanContract = q
     let scanChain: 'base' | 'eth' = effectiveChain
     if (!override && !isContractAddress(q)) {
       setResolving(true)
-      setResolverResult(null)
-      setError(null)
       try {
         const resolved = await resolveTokenQuery(q, effectiveChain)
         setResolverResult(resolved)
@@ -2305,17 +2312,23 @@ export default function TerminalTokenScanner() {
     }
     // ────────────────────────────────────────────────────────────────────────
 
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[scanner] scan start', {
+        originalInput: q,
+        resolvedAddress: scanContract,
+        resolvedChain: scanChain,
+        isCA: isContractAddress(q),
+        hasOverride: !!override,
+      })
+    }
+
     setLoading(true)
     setClarkLoading(true)
-    setError(null)
-    setResult(null)
     setLpExpanded(true)
     setActiveSection('cortex-read')
     setDevControlTab('dev-map')
     setClarkVerdict(null)
     setClarkError(null)
-    setDevIntel(null)
-    setDevIntelError(null)
     try {
       const debugHolder = typeof window !== 'undefined'
         && new URLSearchParams(window.location.search).get('debugHolder') === 'true'
@@ -2328,13 +2341,19 @@ export default function TerminalTokenScanner() {
       })
       const json = await res.json()
       if (process.env.NODE_ENV !== 'production') {
-        console.log('[scanner] /api/token response', json)
+        console.log('[scanner] /api/token response', {
+          scanRequestAddress: scanContract,
+          scanRequestChain: scanChain,
+          returnedContract: json.contract,
+          hasDevIntel: !!json.devIntel,
+          deployerAddress: (json.devIntel as Record<string, unknown> | undefined)?.deployerAddress ?? null,
+        })
       }
       if (!res.ok || json.error) {
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
-        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${effectiveChain === 'eth' ? 'Ethereum' : 'Base'}. Try switching chains.`)
+        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${scanChain === 'eth' ? 'Ethereum' : 'Base'}. Try switching chains.`)
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
-        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${effectiveChain === 'eth' ? 'Ethereum' : 'Base'} for this token.`)
+        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${scanChain === 'eth' ? 'Ethereum' : 'Base'} for this token.`)
         else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
@@ -2402,7 +2421,7 @@ export default function TerminalTokenScanner() {
         if (json.devIntel) {
           const tokenDevIntel = json.devIntel as DevWalletIntel
           setDevIntel(tokenDevIntel)
-          const devCacheChain = (mapped.chain === 'eth' ? 'eth' : (mapped.chain === 'base' ? 'base' : effectiveChain))
+          const devCacheChain = (mapped.chain === 'eth' ? 'eth' : (mapped.chain === 'base' ? 'base' : scanChain))
           if (mapped.contract) devIntelCacheRef.current[`${devCacheChain}:${mapped.contract.toLowerCase()}`] = tokenDevIntel
         }
         if (typeof window !== 'undefined' && json._debug) {
