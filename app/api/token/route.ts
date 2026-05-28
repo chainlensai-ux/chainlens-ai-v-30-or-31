@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
+import { buildClusterMap } from '@/lib/clusterMap'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -3115,7 +3116,7 @@ export async function POST(req: Request) {
     ].filter(Boolean).length >= 3
     // Always emit a score — use inference penalties when blind (never null unless truly zero providers responded)
     // When all providers return null, still score at 50 with low confidence (unknown = risk)
-    let rugRiskScore: number | null = anyProviderData ? Math.max(0, Math.min(100, Math.round(riskScore))) : 50
+    const rugRiskScore: number | null = anyProviderData ? Math.max(0, Math.min(100, Math.round(riskScore))) : 50
     let rugRiskLabel: RiskEngine["rugRiskLabel"] = 'partial_data'
     if (rugRiskScore >= 85) rugRiskLabel = 'critical'
     else if (rugRiskScore >= 65) rugRiskLabel = 'high'
@@ -3621,6 +3622,45 @@ export async function POST(req: Request) {
       matchedLinkedWallets,
       clusterInfluence,
     }
+    const clusterMap = buildClusterMap({
+      deployerAddress,
+      deployerStatus: deployerAddress ? 'confirmed' : 'not_confirmed',
+      linkedWallets,
+      matchedLinkedWallets,
+      supplyControl,
+      holderDistribution,
+      suspiciousTransfers: false,
+      suspiciousTransferReasons: [],
+      holderRowsAvailable: holderRowsConfirmed,
+    })
+    if (clusterMap.summary.clusterSupplyPercent != null && clusterMap.summary.clusterSupplyPercent >= 20) {
+      const driver = `Dev cluster supply is elevated at ${clusterMap.summary.clusterSupplyPercent.toFixed(1)}% from matched holder evidence.`
+      if (!riskEngine.riskDrivers.includes(driver)) riskEngine.riskDrivers.push(driver)
+      if (!riskEngine.clarkInterpretation.riskDrivers.includes(driver)) riskEngine.clarkInterpretation.riskDrivers.push(driver)
+    }
+    if (supplyControl.creatorInTopHolders) {
+      const driver = 'Deployer appears in top-holder rows.'
+      if (!riskEngine.riskDrivers.includes(driver)) riskEngine.riskDrivers.push(driver)
+      if (!riskEngine.clarkInterpretation.riskDrivers.includes(driver)) riskEngine.clarkInterpretation.riskDrivers.push(driver)
+    }
+    if (supplyControl.linkedWalletSupplyPercent != null && supplyControl.linkedWalletSupplyPercent > 0) {
+      const driver = `Linked wallet supply found (${supplyControl.linkedWalletSupplyPercent.toFixed(1)}%).`
+      if (!riskEngine.riskDrivers.includes(driver)) riskEngine.riskDrivers.push(driver)
+      if (!riskEngine.clarkInterpretation.riskDrivers.includes(driver)) riskEngine.clarkInterpretation.riskDrivers.push(driver)
+    }
+    if (clusterMap.edges.length === 0) {
+      const openCheck = 'Cluster Map: no cluster edges confirmed from current transfer and holder evidence.'
+      if (!riskEngine.openChecks.includes(openCheck)) riskEngine.openChecks.push(openCheck)
+      if (!riskEngine.clarkInterpretation.openChecks.includes(openCheck)) riskEngine.clarkInterpretation.openChecks.push(openCheck)
+    }
+    if (!holderRowsConfirmed) {
+      const openCheck = 'Cluster Map: holder rows are missing or partial, so cluster supply is not confirmed.'
+      if (!riskEngine.openChecks.includes(openCheck)) riskEngine.openChecks.push(openCheck)
+      if (!riskEngine.clarkInterpretation.openChecks.includes(openCheck)) riskEngine.clarkInterpretation.openChecks.push(openCheck)
+    }
+    for (const action of ['Monitor linked wallets for new receives or sells.', 'Rescan after holder index updates to compare cluster supply.', 'Watch for large transfers involving confirmed cluster wallets.']) {
+      if (!riskEngine.clarkInterpretation.nextActions.includes(action)) riskEngine.clarkInterpretation.nextActions.push(action)
+    }
     const devIntel = {
       deployerAddress,
       deployerStatus: deployerAddress ? 'confirmed' : 'not_confirmed',
@@ -3631,7 +3671,7 @@ export async function POST(req: Request) {
       devClusterSupply: devClusterSupplyPercent,
       devClusterSupplyPercent,
       matchedLinkedWallets,
-      holderDistribution: { top1: holderDistribution.top1, top10: holderDistribution.top10, top20: holderDistribution.top20 },
+      holderDistribution: { top1: holderDistribution.top1, top10: holderDistribution.top10, top20: holderDistribution.top20, topHolders: holderDistribution.topHolders },
       holderDistributionStatus: holderDistributionStatus.status,
       holderPercentAvailable: holderRowsHaveUsablePercents,
       holderPercentSource: holderDistributionStatus.percentSource,
@@ -3641,6 +3681,7 @@ export async function POST(req: Request) {
       reasons: [deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.'],
       confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
       supplyControl,
+      clusterMap,
     }
 
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'inferred'
