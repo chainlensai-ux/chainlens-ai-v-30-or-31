@@ -266,6 +266,153 @@ type GraphEdge = {
   width: number
 }
 
+
+type WalletBehaviorLabel = 'accumulator' | 'distributor' | 'wash-pattern' | 'funding-relay' | 'cluster-feeder' | 'neutral' | 'open-check'
+type BehaviorConfidence = 'high' | 'medium' | 'low' | 'open_check'
+type WalletBehavior = { label: WalletBehaviorLabel; confidence: BehaviorConfidence; reasons: string[] }
+type ClusterTimelineEvent = {
+  id: string
+  label: string
+  description: string
+  timestamp: string | null
+  order: number
+  type: 'deployer_resolved' | 'linked_wallet_detected' | 'supply_confirmed' | 'cluster_edge_detected' | 'suspicious_burst' | 'open_check'
+  severity: 'low' | 'medium' | 'high' | 'open_check'
+  relatedWallets: string[]
+}
+type ClusterTimeline = { status: CanonicalStatus; mode: 'timestamped' | 'ordered' | 'open_check'; events: ClusterTimelineEvent[] }
+type DeployerLineage = {
+  status: CanonicalStatus
+  deployer: ClusterNode | null
+  directLinkedWallets: ClusterNode[]
+  secondLayerWallets: ClusterNode[]
+  relatedHolderWallets: ClusterNode[]
+  lineageEdges: GraphEdge[]
+  summary: {
+    directLinks: number
+    secondLayerLinks: number
+    suspiciousLinks: number
+    linkedSupplyPercent: number | null
+    clusterSupplyPercent: number | null
+    riskLabel: string
+    reason: string
+  }
+}
+
+const SUSPICIOUS_EDGE_TERMS = /suspicious|repeated|same-?size|funding|relay|wash|control|cluster|burst/i
+const TRANSFER_TERMS = /transfer|fund|sent|received|inbound|outbound|distributed|relay|source|passed through/i
+const WASH_TERMS = /back-and-forth|repeated|same-?size|loop|wash/i
+const DISTRIBUTOR_TERMS = /outbound|distributed|sent|transfer out|funded wallets/i
+const ACCUMULATOR_TERMS = /receive|inbound|accumulation|funded|received/i
+const FEEDER_TERMS = /feed|funded|distributed|split/i
+
+function isSuspiciousGraphEdge(edge: Pick<GraphEdge, 'type' | 'reason'>): boolean {
+  const type = (edge.type ?? '').toLowerCase()
+  return /suspicious|transfer|shared_pattern|shared-pattern/.test(type) || SUSPICIOUS_EDGE_TERMS.test(edge.reason ?? '')
+}
+
+function behaviorTitle(label: WalletBehaviorLabel): string {
+  switch (label) {
+    case 'wash-pattern': return 'Wash-pattern signal'
+    case 'funding-relay': return 'Funding relay'
+    case 'cluster-feeder': return 'Cluster feeder'
+    case 'open-check': return 'Open check'
+    default: return label.charAt(0).toUpperCase() + label.slice(1)
+  }
+}
+
+function behaviorBadgeMeta(label: WalletBehaviorLabel): { badge: string; color: string; bg: string } | null {
+  switch (label) {
+    case 'accumulator': return { badge: 'A', color: '#34d399', bg: 'rgba(52,211,153,.18)' }
+    case 'distributor': return { badge: 'D', color: '#60a5fa', bg: 'rgba(96,165,250,.18)' }
+    case 'wash-pattern': return { badge: 'W', color: '#fb7185', bg: 'rgba(251,113,133,.2)' }
+    case 'funding-relay': return { badge: 'R', color: '#fbbf24', bg: 'rgba(251,191,36,.18)' }
+    case 'cluster-feeder': return { badge: 'F', color: '#c084fc', bg: 'rgba(192,132,252,.18)' }
+    case 'open-check': return { badge: '?', color: '#a78bfa', bg: 'rgba(167,139,250,.16)' }
+    default: return null
+  }
+}
+
+function confidenceRank(confidence: GraphEdge['confidence'] | ClusterNode['confidence']): number {
+  return confidence === 'high' ? 3 : confidence === 'medium' ? 2 : confidence === 'low' ? 1 : 0
+}
+
+function confidenceLabel(confidence: BehaviorConfidence): string {
+  return confidence === 'open_check' ? 'Open check' : confidence.charAt(0).toUpperCase() + confidence.slice(1)
+}
+
+function edgeSeverity(edge: GraphEdge): ClusterTimelineEvent['severity'] {
+  if (isSuspiciousGraphEdge(edge) && (edge.weight >= 61 || edge.confidence === 'high')) return 'high'
+  if (edge.weight >= 61 || edge.confidence === 'high') return 'medium'
+  if (edge.weight >= 31 || edge.confidence === 'medium') return 'medium'
+  return 'low'
+}
+
+function eventSeverityColor(severity: ClusterTimelineEvent['severity']): string {
+  return severity === 'high' ? '#fb7185' : severity === 'medium' ? '#fbbf24' : severity === 'low' ? '#7dd3fc' : '#a78bfa'
+}
+
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  return Array.from(new Map(items.map((item) => [item.id, item])).values())
+}
+
+function deriveWalletBehavior(node: ClusterNode, relatedEdges: GraphEdge[], allNodes: ClusterNode[], suspiciousTransferPattern: boolean, influenceSignals: string[]): WalletBehavior {
+  const reasons = [...(node.reasons ?? []), ...relatedEdges.map((edge) => edge.reason), ...influenceSignals]
+  const reasonText = reasons.join(' ').toLowerCase()
+  const strongEdges = relatedEdges.filter((edge) => edge.weight >= 60 || edge.confidence === 'high')
+  const suspiciousEdges = relatedEdges.filter(isSuspiciousGraphEdge)
+  const repeatedEdges = relatedEdges.filter((edge) => WASH_TERMS.test(edge.reason))
+  const neighborNodes = relatedEdges.map((edge) => allNodes.find((candidate) => candidate.id === (edge.source === node.id ? edge.target : edge.source))).filter(Boolean) as ClusterNode[]
+  const deployerEdge = relatedEdges.some((edge) => neighborNodes.some((neighbor) => neighbor.type === 'deployer' && (edge.source === neighbor.id || edge.target === neighbor.id)))
+  const clusterOrHolderEdge = neighborNodes.some((neighbor) => neighbor.type === 'cluster_wallet' || neighbor.type === 'holder_wallet' || neighbor.isCluster)
+  const linkedOrClusterEdges = relatedEdges.filter((edge) => {
+    const other = allNodes.find((candidate) => candidate.id === (edge.source === node.id ? edge.target : edge.source))
+    return other?.type === 'linked_wallet' || other?.type === 'cluster_wallet' || other?.isCluster
+  })
+  const outgoingStyle = relatedEdges.filter((edge) => edge.source === node.id || DISTRIBUTOR_TERMS.test(edge.reason))
+  const incomingStyle = relatedEdges.filter((edge) => edge.target === node.id || ACCUMULATOR_TERMS.test(edge.reason))
+
+  if ((suspiciousTransferPattern && repeatedEdges.length > 0) || repeatedEdges.length >= 2 || (suspiciousEdges.length >= 2 && WASH_TERMS.test(reasonText))) {
+    return {
+      label: 'wash-pattern',
+      confidence: suspiciousTransferPattern && repeatedEdges.some((edge) => /repeated|same-?size/i.test(edge.reason)) ? 'high' : repeatedEdges.length > 0 ? 'medium' : 'low',
+      reasons: ['Wash-pattern signal only: repeated or same-size transfer wording appears in existing evidence.', ...(suspiciousTransferPattern ? ['Suspicious transfer pattern is present in this pass.'] : []), ...(repeatedEdges[0]?.reason ? [repeatedEdges[0].reason] : [])].slice(0, 3),
+    }
+  }
+  if ((node.type === 'linked_wallet' || node.isLinked) && ((deployerEdge && clusterOrHolderEdge) || /funding|relay|source|passed through/i.test(reasonText))) {
+    return {
+      label: 'funding-relay',
+      confidence: deployerEdge && clusterOrHolderEdge && strongEdges.some((edge) => TRANSFER_TERMS.test(edge.reason) || /transfer|deployer_to_linked/.test(edge.type)) ? 'high' : deployerEdge && clusterOrHolderEdge ? 'medium' : 'low',
+      reasons: ['Funding relay pattern: wallet sits between deployer and cluster/holder evidence.', ...(relatedEdges.find((edge) => /funding|relay|source|passed through|transfer/i.test(edge.reason))?.reason ? [relatedEdges.find((edge) => /funding|relay|source|passed through|transfer/i.test(edge.reason))!.reason] : []), 'No new backend data was used.'].slice(0, 3),
+    }
+  }
+  if (linkedOrClusterEdges.length >= 2 && (FEEDER_TERMS.test(reasonText) || outgoingStyle.length >= 2)) {
+    return {
+      label: 'cluster-feeder',
+      confidence: linkedOrClusterEdges.length >= 3 && strongEdges.length >= 2 ? 'high' : linkedOrClusterEdges.length >= 2 ? 'medium' : 'low',
+      reasons: ['Cluster feeder signal: wallet connects to multiple linked or cluster wallets.', ...(relatedEdges.find((edge) => FEEDER_TERMS.test(edge.reason))?.reason ? [relatedEdges.find((edge) => FEEDER_TERMS.test(edge.reason))!.reason] : []), `${linkedOrClusterEdges.length} linked/cluster-style edges touch this wallet.`].slice(0, 3),
+    }
+  }
+  if (DISTRIBUTOR_TERMS.test(reasonText) || (node.type === 'deployer' && outgoingStyle.length >= 2) || outgoingStyle.length >= 3) {
+    return {
+      label: 'distributor',
+      confidence: strongEdges.length >= 2 ? 'high' : strongEdges.length >= 1 || outgoingStyle.length >= 2 ? 'medium' : 'low',
+      reasons: ['Distributor signal: wallet shows outbound-style transfer links to one or more wallets.', ...(relatedEdges.find((edge) => DISTRIBUTOR_TERMS.test(edge.reason))?.reason ? [relatedEdges.find((edge) => DISTRIBUTOR_TERMS.test(edge.reason))!.reason] : []), ...(node.type === 'deployer' ? ['Deployer/origin wallet has linked wallet edges in this pass.'] : [])].slice(0, 3),
+    }
+  }
+  if ((node.supplyPercent ?? 0) > 0 || ACCUMULATOR_TERMS.test(reasonText) || incomingStyle.length > 0) {
+    return {
+      label: 'accumulator',
+      confidence: incomingStyle.some((edge) => edge.confidence === 'high') ? 'high' : ACCUMULATOR_TERMS.test(reasonText) || incomingStyle.length > 0 ? 'medium' : 'low',
+      reasons: [(node.supplyPercent ?? 0) > 0 ? `Accumulator signal: wallet holds ${node.supplyPercent?.toFixed(1)}% of supply in indexed holder data.` : 'Accumulator signal: inbound/received wording appears in existing edge evidence.', ...(relatedEdges.find((edge) => ACCUMULATOR_TERMS.test(edge.reason))?.reason ? [relatedEdges.find((edge) => ACCUMULATOR_TERMS.test(edge.reason))!.reason] : []), 'Holding alone is not treated as suspicious.'].slice(0, 3),
+    }
+  }
+  if (relatedEdges.length === 0 && (node.supplyPercent == null || node.confidence === 'open_check')) {
+    return { label: 'open-check', confidence: 'open_check', reasons: ['No edges, supply position, or behavior pattern confirmed in this pass.'] }
+  }
+  return { label: 'neutral', confidence: node.confidence === 'open_check' ? 'open_check' : 'low', reasons: ['Neutral holder — no transfer behavior confirmed in this pass.'] }
+}
+
 type ClusterMap = {
   status: CanonicalStatus
   nodes: ClusterNode[]
@@ -874,6 +1021,12 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
   const confidenceOpacity = (confidence: GraphEdge['confidence']) => confidence === 'high' ? 0.9 : confidence === 'medium' ? 0.65 : 0.38
   const edgeWidthFor = (weight: number) => clamp(1 + (weight / 100) * 3, 1, 4.5)
   const nodeIds = new Set(nodes.map((node) => node.id))
+  const linked = nodes.filter((node) => node.type === 'linked_wallet')
+  const cluster = nodes.filter((node) => node.type === 'cluster_wallet')
+  const holders = nodes.filter((node) => node.type === 'holder_wallet')
+  const deployer = nodes.find((node) => node.type === 'deployer')
+  const ordered = deployer ? [deployer, ...linked, ...cluster, ...holders] : [...linked, ...cluster, ...holders]
+  const holderRows = holderDistribution?.topHolders ?? devIntel?.holderDistribution?.topHolders ?? []
   const graphEdges: GraphEdge[] = edges.flatMap((edge, index) => {
     const source = edge.source ?? edge.from ?? null
     const target = edge.target ?? edge.to ?? null
@@ -983,12 +1136,6 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
     )
   }
 
-  const linked = nodes.filter((node) => node.type === 'linked_wallet')
-  const cluster = nodes.filter((node) => node.type === 'cluster_wallet')
-  const holders = nodes.filter((node) => node.type === 'holder_wallet')
-  const deployer = nodes.find((node) => node.type === 'deployer')
-  const ordered = deployer ? [deployer, ...linked, ...cluster, ...holders] : [...linked, ...cluster, ...holders]
-  const holderRows = holderDistribution?.topHolders ?? devIntel?.holderDistribution?.topHolders ?? []
   const positionFor = (node: ClusterNode, index: number) => {
     if (node.type === 'deployer') return { x: 50, y: 48 }
     const group = node.type === 'linked_wallet' ? linked : node.type === 'cluster_wallet' ? cluster : holders
@@ -1042,6 +1189,95 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
     if (edge.type === 'shared_pattern' || edge.type === 'weak_heuristic') return 'Shared pattern'
     return edgeLabel(edge.type)
   }
+  const suspiciousGraphEdges = graphEdges.filter(isSuspiciousGraphEdge).sort((a, b) => (confidenceRank(b.confidence) * 100 + b.weight) - (confidenceRank(a.confidence) * 100 + a.weight))
+  const animatedSuspiciousEdgeIds = new Set(suspiciousGraphEdges.slice(0, 12).map((edge) => edge.id))
+  const clusterBehaviorSignals = [...(clusterInfluence?.signals ?? []), ...(map.signals ?? [])]
+  const walletBehaviorByNodeId = (() => {
+    const entries = nodes.map((node) => {
+      const nodeEdges = graphEdges.filter((edge) => edge.source === node.id || edge.target === node.id)
+      return [node.id, deriveWalletBehavior(node, nodeEdges, nodes, Boolean(devIntel?.suspiciousTransfers), clusterBehaviorSignals)] as const
+    })
+    return new Map(entries)
+  })()
+  const selectedWalletBehavior = selectedClusterNode ? walletBehaviorByNodeId.get(selectedClusterNode.id) ?? null : null
+
+  const deployerLineage: DeployerLineage = (() => {
+    const deployerNode = nodes.find((node) => node.type === 'deployer' || node.isCreator) ?? null
+    if (!deployerNode) {
+      return { status: 'unavailable_with_reason', deployer: null, directLinkedWallets: [], secondLayerWallets: [], relatedHolderWallets: [], lineageEdges: [], summary: { directLinks: 0, secondLayerLinks: 0, suspiciousLinks: 0, linkedSupplyPercent: null, clusterSupplyPercent: summary?.clusterSupplyPercent ?? null, riskLabel: 'Open check', reason: 'No deployer wallet is available in this pass.' } }
+    }
+    const directlyTouchedIds = new Set(graphEdges.filter((edge) => edge.source === deployerNode.id || edge.target === deployerNode.id).flatMap((edge) => [edge.source, edge.target]).filter((id) => id !== deployerNode.id))
+    const directLinkedWallets = uniqueById(nodes.filter((node) => node.id !== deployerNode.id && (directlyTouchedIds.has(node.id) || node.isLinked || node.type === 'linked_wallet')))
+    const directIds = new Set(directLinkedWallets.map((node) => node.id))
+    const secondLayerWallets = uniqueById(graphEdges.flatMap((edge) => {
+      const touchesDirect = directIds.has(edge.source) || directIds.has(edge.target)
+      if (!touchesDirect) return []
+      const otherId = directIds.has(edge.source) ? edge.target : edge.source
+      const other = nodes.find((node) => node.id === otherId)
+      return other && other.id !== deployerNode.id && !directIds.has(other.id) && (other.type === 'cluster_wallet' || other.type === 'linked_wallet') ? [other] : []
+    }))
+    const lineageCoreIds = new Set([deployerNode.id, ...directLinkedWallets.map((node) => node.id), ...secondLayerWallets.map((node) => node.id)])
+    const relatedHolderWallets = uniqueById(graphEdges.flatMap((edge) => {
+      const source = nodes.find((node) => node.id === edge.source)
+      const target = nodes.find((node) => node.id === edge.target)
+      if (source?.type === 'holder_wallet' && lineageCoreIds.has(edge.target)) return [source]
+      if (target?.type === 'holder_wallet' && lineageCoreIds.has(edge.source)) return [target]
+      return []
+    }))
+    const lineageIds = new Set([...lineageCoreIds, ...relatedHolderWallets.map((node) => node.id)])
+    const lineageEdges = graphEdges.filter((edge) => lineageIds.has(edge.source) && lineageIds.has(edge.target))
+    const linkedSupply = directLinkedWallets.reduce((sum, node) => sum + (node.supplyPercent ?? 0), 0)
+    const suspiciousLinks = lineageEdges.filter(isSuspiciousGraphEdge).length
+    return {
+      status: lineageEdges.length > 0 ? map.status : 'partial',
+      deployer: deployerNode,
+      directLinkedWallets,
+      secondLayerWallets,
+      relatedHolderWallets,
+      lineageEdges,
+      summary: {
+        directLinks: directLinkedWallets.length,
+        secondLayerLinks: secondLayerWallets.length,
+        suspiciousLinks,
+        linkedSupplyPercent: directLinkedWallets.some((node) => node.supplyPercent != null) ? linkedSupply : null,
+        clusterSupplyPercent: summary?.clusterSupplyPercent ?? null,
+        riskLabel: suspiciousLinks > 0 || (summary?.clusterRiskLabel === 'critical' || summary?.clusterRiskLabel === 'high') ? 'Elevated lineage watch' : lineageEdges.length > 0 ? 'Lineage mapped' : 'Open check',
+        reason: lineageEdges.length > 0 ? 'Lineage uses only deployer, linked-wallet, cluster-wallet, holder, and edge evidence already in the cluster map.' : 'No lineage edges confirmed in this pass. Other contracts not available in this pass.',
+      },
+    }
+  })()
+
+  const clusterTimeline: ClusterTimeline = (() => {
+    type Timestamped = { timestamp?: unknown; createdAt?: unknown; firstSeenAt?: unknown }
+    const readTimestamp = (item: Timestamped): string | null => {
+      const raw = item.timestamp ?? item.createdAt ?? item.firstSeenAt
+      return typeof raw === 'string' && raw.trim() ? raw : null
+    }
+    const events: ClusterTimelineEvent[] = []
+    const deployerNode = nodes.find((node) => node.type === 'deployer' || node.isCreator) ?? null
+    if (deployerNode) events.push({ id: `timeline:${deployerNode.id}:deployer`, label: 'Deployer resolved', description: 'Origin wallet identified from Dev Control evidence.', timestamp: readTimestamp(deployerNode as Timestamped), order: 1, type: 'deployer_resolved', severity: deployerNode.confidence === 'high' ? 'low' : 'medium', relatedWallets: [deployerNode.address] })
+    nodes.filter((node) => node.isLinked || node.type === 'linked_wallet').slice(0, 8).forEach((node, index) => events.push({ id: `timeline:${node.id}:linked`, label: 'Linked wallet detected', description: 'Wallet linked to deployer/cluster evidence.', timestamp: readTimestamp(node as Timestamped), order: 20 + index, type: 'linked_wallet_detected', severity: node.confidence === 'medium' || node.confidence === 'high' ? 'medium' : 'low', relatedWallets: [node.address] }))
+    if (summary?.clusterSupplyPercent != null) events.push({ id: 'timeline:supply-confirmed', label: 'Cluster supply checked', description: summary.clusterSupplyPercent > 0 ? `Cluster supply detected at ${summary.clusterSupplyPercent.toFixed(1)}%.` : 'No cluster supply found in indexed holders.', timestamp: null, order: 40, type: 'supply_confirmed', severity: summary.clusterSupplyPercent >= 20 ? 'high' : summary.clusterSupplyPercent > 0 ? 'medium' : 'low', relatedWallets: [] })
+    graphEdges.slice(0, 10).forEach((edge, index) => {
+      const source = nodes.find((node) => node.id === edge.source)
+      const target = nodes.find((node) => node.id === edge.target)
+      events.push({ id: `timeline:${edge.id}:edge`, label: edgeLabel(edge.type), description: edge.reason, timestamp: readTimestamp(edge as Timestamped), order: 60 + index, type: 'cluster_edge_detected', severity: edgeSeverity(edge), relatedWallets: [source?.address, target?.address].filter((value): value is string => Boolean(value)) })
+    })
+    const suspiciousEdge = suspiciousGraphEdges[0]
+    if (devIntel?.suspiciousTransfers || suspiciousEdge) events.push({ id: 'timeline:suspicious-burst', label: 'Suspicious transfer burst', description: suspiciousEdge?.reason ?? devIntel?.suspiciousTransferReasons?.[0] ?? 'Suspicious transfer pattern detected from existing Dev Control evidence.', timestamp: suspiciousEdge ? readTimestamp(suspiciousEdge as Timestamped) : null, order: 90, type: 'suspicious_burst', severity: 'high', relatedWallets: suspiciousEdge ? [nodes.find((node) => node.id === suspiciousEdge.source)?.address, nodes.find((node) => node.id === suspiciousEdge.target)?.address].filter((value): value is string => Boolean(value)) : [] })
+    if (events.length === 0) events.push({ id: 'timeline:open-check', label: 'More evidence needed', description: 'CORTEX needs more deployer, transfer, or holder evidence before building a behavior timeline.', timestamp: null, order: 99, type: 'open_check', severity: 'open_check', relatedWallets: [] })
+    const hasTimestamp = events.some((event) => event.timestamp)
+    const sorted = [...events].sort((a, b) => {
+      if (hasTimestamp) {
+        if (a.timestamp && b.timestamp) return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        if (a.timestamp) return -1
+        if (b.timestamp) return 1
+      }
+      return a.order - b.order
+    })
+    return { status: events[0]?.type === 'open_check' ? 'unavailable_with_reason' : map.status, mode: hasTimestamp ? 'timestamped' : events[0]?.type === 'open_check' ? 'open_check' : 'ordered', events: sorted.slice(0, 14) }
+  })()
+
   const handleEdgePointer = (edgeId: string, event: MouseEvent<SVGPathElement>) => {
     event.stopPropagation()
     const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect()
@@ -1104,11 +1340,19 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
               const controlX = midX - (dy / length) * curve
               const controlY = midY + (dx / length) * curve
               const path = `M ${source.x} ${source.y} Q ${controlX} ${controlY} ${target.x} ${target.y}`
-              const strokeOpacity = selectedClusterNodeId ? (isConnected ? 1 : 0.12) : hoveredClusterNodeId ? (isHoverConn ? 0.85 : 0.15) : edge.opacity
-              const strokeWidth = clamp(edge.width + (isConnected || isHoverConn ? 1 : 0), 1, 4.5)
+              const suspiciousEdge = isSuspiciousGraphEdge(edge)
+              const isAnimatedSuspiciousEdge = suspiciousEdge && animatedSuspiciousEdgeIds.has(edge.id)
+              const isSuspiciousUnrelatedSelection = Boolean(selectedClusterNodeId && !isConnected)
+              const suspiciousBaseOpacity = edge.confidence === 'high' ? 1 : edge.confidence === 'medium' ? 0.65 : 0.35
+              const strokeOpacity = selectedClusterNodeId ? (isConnected ? Math.max(suspiciousBaseOpacity, 0.72) : 0.12) : hoveredClusterNodeId ? (isHoverConn ? 0.85 : 0.15) : suspiciousEdge ? suspiciousBaseOpacity : edge.opacity
+              const strokeWidth = clamp(edge.width + (isConnected || isHoverConn || isEdgeHovered ? 1 : 0), 1, 5.5)
+              const dashClass = edge.weight >= 61 ? 'cluster-flow-strong' : edge.weight >= 31 ? 'cluster-flow-medium' : 'cluster-flow-faint'
               return (
                 <g key={edge.id}>
-                  <path d={path} fill="none" stroke={isConnected || isEdgeHovered ? '#e0f2fe' : edge.color} strokeWidth={strokeWidth} strokeOpacity={strokeOpacity} strokeLinecap="round" style={{ filter: isConnected || isEdgeHovered ? `drop-shadow(0 0 7px ${edge.color})` : undefined }} />
+                  <path d={path} fill="none" stroke={suspiciousEdge ? '#fb7185' : isConnected || isEdgeHovered ? '#e0f2fe' : edge.color} strokeWidth={strokeWidth} strokeOpacity={strokeOpacity} strokeLinecap="round" strokeDasharray={edge.type === 'weak_heuristic' ? '2 2' : undefined} style={{ filter: suspiciousEdge || isConnected || isEdgeHovered ? `drop-shadow(0 0 ${isEdgeHovered ? 12 : edge.weight >= 61 ? 9 : 5}px ${suspiciousEdge ? 'rgba(251,113,133,.55)' : edge.color})` : undefined }} />
+                  {isAnimatedSuspiciousEdge && (
+                    <path d={path} className={`cluster-suspicious-flow ${dashClass}`} fill="none" stroke="#fb7185" strokeWidth={clamp(strokeWidth + 0.8, 1.5, 6)} strokeOpacity={isSuspiciousUnrelatedSelection ? 0.12 : isEdgeHovered ? 0.95 : strokeOpacity} strokeLinecap="round" strokeDasharray={edge.weight >= 61 ? '5 8' : edge.weight >= 31 ? '4 10' : '2 14'} style={{ animationPlayState: isSuspiciousUnrelatedSelection ? 'paused' : undefined }} />
+                  )}
                   <path d={path} fill="none" stroke="transparent" strokeWidth={12} strokeLinecap="round" style={{ pointerEvents:'stroke', cursor:'help' }} onMouseEnter={(event) => handleEdgePointer(edge.id, event)} onMouseMove={(event) => handleEdgePointer(edge.id, event)} onMouseLeave={clearEdgeHover} onClick={(event) => event.stopPropagation()} />
                 </g>
               )
@@ -1119,7 +1363,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
               {edges.length === 0 ? 'No transfer edges confirmed in this pass.' : 'Cluster edge data could not be matched to visible nodes.'}
             </div>
           )}
-          {hoveredClusterNodeId && clusterTooltipPos && !clusterIsTouch.current && (() => {
+          {hoveredClusterNodeId && clusterTooltipPos && (() => {
             const hNode = nodes.find(n => n.id === hoveredClusterNodeId)
             if (!hNode) return null
             const risk = deriveClusterNodeRisk(hNode, riskContextScore)
@@ -1163,6 +1407,8 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
             const isDimmed = (selectedClusterNodeId != null && !isSelected && !selectedEdgeNodeIds.has(node.id)) || (hoveredClusterNodeId != null && !isHovered && !selectedEdgeNodeIds.has(node.id) && selectedClusterNodeId == null)
             const risk = deriveClusterNodeRisk(node, riskContextScore)
             const riskBorderColor = nodeBorderColor(node, isSelected)
+            const behavior = walletBehaviorByNodeId.get(node.id)
+            const badge = behavior ? behaviorBadgeMeta(behavior.label) : null
             return (
               <button key={node.id} type="button"
                 onClick={(event) => { event.stopPropagation(); setSelectedClusterNodeId(node.id); setHoveredClusterNodeId(null); setClusterTooltipPos(null) }}
@@ -1171,6 +1417,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
                 title={`${node.address} — ${node.reasons.join(' ')}`}
                 style={{ position:'absolute', left:`${pos.x}%`, top:`${pos.y}%`, transform:'translate(-50%,-50%)', display:'grid', placeItems:'center', gap:'4px', zIndex:isHovered||isSelected?4:2, opacity:isDimmed ? 0.28 : 1, background:'transparent', border:0, padding:0, cursor:'pointer', textAlign:'center' }}>
                 <div style={{ width:size, height:size, borderRadius:'999px', background:nodeBg(node), border:`${isSelected?3:isHovered?2.5:2}px solid ${riskBorderColor}`, boxShadow:isSelected?`0 0 0 5px ${CMAP_RISK_COLOR[risk]}22, 0 0 26px ${CMAP_RISK_COLOR[risk]}aa`:isHovered?`0 0 0 3px ${CMAP_RISK_COLOR[risk]}22, 0 0 14px ${CMAP_RISK_COLOR[risk]}77`:risk==='high'?`0 0 14px ${CMAP_RISK_COLOR.high}66`:'none', display:'grid', placeItems:'center', color, fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{node.type === 'deployer' ? 'D' : node.type === 'linked_wallet' ? 'L' : node.type === 'cluster_wallet' ? 'C' : 'H'}</div>
+                {badge && <span title={behaviorTitle(behavior?.label ?? 'neutral')} style={{ position:'absolute', top:-5, right:-5, width:18, height:18, borderRadius:'999px', display:'grid', placeItems:'center', background:badge.bg, border:`1px solid ${badge.color}88`, color:badge.color, fontSize:'9px', fontWeight:900, fontFamily:'var(--font-plex-mono)', boxShadow:`0 0 12px ${badge.color}44` }}>{badge.badge}</span>}
                 <div style={{ padding:'2px 6px', borderRadius:'999px', background:'rgba(2,6,23,.86)', border:`1px solid ${CMAP_RISK_COLOR[risk]}44`, color:'#cbd5e1', fontSize:'9px', fontWeight:700, fontFamily:'var(--font-plex-mono)', whiteSpace:'nowrap' }}>{node.label === 'Deployer' ? 'Deployer' : fmt(node.address)}</div>
                 {node.supplyPercent != null && <div style={{ color:CMAP_RISK_COLOR[risk], fontSize:'9px', fontFamily:'var(--font-plex-mono)', fontWeight:800 }}>{node.supplyPercent.toFixed(1)}%</div>}
               </button>
@@ -1240,6 +1487,18 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
                   </div>
                 </section>
                 <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
+                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>BEHAVIOR PATTERN</p>
+                  {selectedWalletBehavior ? (
+                    <div style={{ display:'grid', gap:'7px', padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.58)', border:`1px solid ${(behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#94a3b8')}44` }}>
+                      <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
+                        <span style={{ padding:'4px 7px', borderRadius:'999px', background:behaviorBadgeMeta(selectedWalletBehavior.label)?.bg ?? 'rgba(148,163,184,.08)', border:`1px solid ${(behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#94a3b8')}66`, color:behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#cbd5e1', fontSize:'9px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{behaviorTitle(selectedWalletBehavior.label)}</span>
+                        <span style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(148,163,184,.08)', border:'1px solid rgba(148,163,184,.16)', color:'#cbd5e1', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{confidenceLabel(selectedWalletBehavior.confidence)}</span>
+                      </div>
+                      {selectedWalletBehavior.reasons.slice(0, 3).map((reason, index) => <p key={reason + index} style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {reason}</p>)}
+                    </div>
+                  ) : <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No wallet behavior pattern confirmed in this pass.</p>}
+                </section>
+                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>TRANSFER LINKS</p>
                   {relatedEdges.length === 0 ? <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No transfer links found in this pass.</p> : relatedEdges.map((edge) => {
                     const otherNodeId = edge.source === selectedClusterNode.id ? edge.target : edge.source
@@ -1271,6 +1530,52 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
           </aside>
         )}
       </div>
+      <section style={{ display:'grid', gap:'12px', padding:'14px', borderRadius:'16px', background:'rgba(8,14,28,.78)', border:'1px solid rgba(125,211,252,.14)' }}>
+        <div>
+          <p style={{ margin:'0 0 5px', fontSize:'12px', color:'#e2e8f0', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>Behavior Intelligence</p>
+          <p style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>Derived from the current cluster map only: no new backend calls, no invented timestamps, and no unrelated holder expansion.</p>
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,260px),1fr))', gap:'10px', alignItems:'start' }}>
+          <details open style={{ padding:'12px', borderRadius:'13px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(251,191,36,.18)' }}>
+            <summary style={{ cursor:'pointer', color:'#fbbf24', fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)', letterSpacing:'.1em' }}>DEPLOYER LINEAGE</summary>
+            <div style={{ display:'grid', gap:'8px', marginTop:'10px' }}>
+              {[
+                ['Deployer', fmt(deployerLineage.deployer?.address)],
+                ['Direct links', String(deployerLineage.summary.directLinks)],
+                ['Second layer', String(deployerLineage.summary.secondLayerLinks)],
+                ['Suspicious links', String(deployerLineage.summary.suspiciousLinks)],
+                ['Linked supply', deployerLineage.summary.linkedSupplyPercent == null ? 'Open check' : `${deployerLineage.summary.linkedSupplyPercent.toFixed(1)}%`],
+                ['Cluster supply', deployerLineage.summary.clusterSupplyPercent == null ? 'Open check' : `${deployerLineage.summary.clusterSupplyPercent.toFixed(1)}%`],
+              ].map(([label, value]) => <div key={label} style={{ display:'flex', justifyContent:'space-between', gap:'8px', padding:'5px 0', borderTop:'1px solid rgba(148,163,184,.08)' }}><span style={{ color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{label}</span><span style={{ color:'#e2e8f0', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{value}</span></div>)}
+              <p style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{deployerLineage.summary.reason}</p>
+              <p style={{ margin:0, color:'#94a3b8', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>Other contracts not available in this pass.</p>
+            </div>
+          </details>
+          <details open style={{ padding:'12px', borderRadius:'13px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(125,211,252,.16)' }}>
+            <summary style={{ cursor:'pointer', color:'#7dd3fc', fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)', letterSpacing:'.1em' }}>CLUSTER TIMELINE · {clusterTimeline.mode === 'timestamped' ? 'TIMESTAMPED' : clusterTimeline.mode === 'ordered' ? 'ORDERED' : 'OPEN CHECK'}</summary>
+            <div style={{ display:'grid', gap:'8px', marginTop:'10px' }}>
+              {clusterTimeline.events.map((event) => {
+                const color = eventSeverityColor(event.severity)
+                return <div key={event.id} style={{ display:'grid', gridTemplateColumns:'12px 1fr', gap:'8px', alignItems:'start' }}>
+                  <span style={{ width:9, height:9, marginTop:3, borderRadius:'999px', background:color, boxShadow:`0 0 12px ${color}66` }} />
+                  <div style={{ padding:'8px 9px', borderRadius:'10px', background:'rgba(2,6,23,.4)', border:`1px solid ${color}33` }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginBottom:'4px' }}><span style={{ color:'#e2e8f0', fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{event.label}</span><span style={{ color, fontSize:'8px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{event.timestamp ? new Date(event.timestamp).toLocaleString() : `Order ${event.order}`}</span></div>
+                    <p style={{ margin:0, color:'#94a3b8', fontSize:'9px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{event.description}</p>
+                  </div>
+                </div>
+              })}
+            </div>
+          </details>
+        </div>
+      </section>
+      <style>{`
+        @keyframes clusterSuspiciousFlow { to { stroke-dashoffset: -44; } }
+        .cluster-suspicious-flow { animation: clusterSuspiciousFlow 3.8s linear infinite; filter: drop-shadow(0 0 8px rgba(251,113,133,.45)); }
+        .cluster-flow-strong { animation-duration: 2.7s; }
+        .cluster-flow-medium { animation-duration: 4s; }
+        .cluster-flow-faint { animation-duration: 5.6s; }
+        @media (prefers-reduced-motion: reduce) { .cluster-suspicious-flow { animation: none; } }
+      `}</style>
     </div>
   )
 }
