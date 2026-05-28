@@ -804,6 +804,34 @@ function getNextAction(result: ScanResult): string {
 }
 
 
+type CMapRisk = 'low' | 'medium' | 'high' | 'open_check' | 'neutral'
+const CMAP_RISK_COLOR: Record<CMapRisk, string> = { low:'#34d399', medium:'#facc15', high:'#fb7185', open_check:'#a855f7', neutral:'#64748b' }
+const CMAP_RISK_BG: Record<CMapRisk, string> = { low:'rgba(52,211,153,0.12)', medium:'rgba(250,204,21,0.12)', high:'rgba(251,113,133,0.14)', open_check:'rgba(168,85,247,0.11)', neutral:'rgba(100,116,139,0.10)' }
+function deriveClusterNodeRisk(node: ClusterNode, clusterRiskScore: number | null): CMapRisk {
+  if (node.type === 'holder_wallet' && !node.isLinked && !node.isCluster) {
+    const pct = node.supplyPercent ?? 0
+    if (node.confidence === 'open_check') return 'open_check'
+    return pct >= 10 ? 'medium' : pct >= 1 ? 'low' : 'neutral'
+  }
+  const hasSusp = (node.reasons ?? []).some((r: string) => /suspicious|repeated|same.?size|funding|control/i.test(r))
+  if (hasSusp) return 'high'
+  if ((clusterRiskScore ?? 0) > 60) return 'high'
+  const pct = node.supplyPercent ?? 0
+  if (pct >= 10 && (node.isCreator || node.isLinked)) return 'high'
+  if (pct >= 5 || (clusterRiskScore ?? 0) >= 21) return 'medium'
+  if (node.confidence === 'open_check') return 'open_check'
+  if (pct >= 1) return 'medium'
+  return 'low'
+}
+function deriveClusterEdgeColor(edge: ClusterEdge): string {
+  if ((edge.reason ?? '').toLowerCase().includes('suspicious') || (edge.reason ?? '').toLowerCase().includes('same-size') || (edge.reason ?? '').toLowerCase().includes('repeated')) return '#fb7185'
+  if (edge.type === 'shared_pattern') return '#facc15'
+  if (edge.type === 'transfer_signal' || edge.type === 'deployer_to_linked') return '#38bdf8'
+  if (edge.type === 'linked_to_cluster' || edge.type === 'holder_overlap') return '#a855f7'
+  if (edge.type === 'weak_heuristic') return '#334155'
+  return edge.confidence === 'high' ? '#2dd4bf' : edge.confidence === 'medium' ? '#7dd3fc' : '#475569'
+}
+
 function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null }) {
   const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—'
   const map = clusterMap
@@ -811,6 +839,55 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
   const edges = map?.edges ?? []
   const summary = map?.summary ?? null
   const [selectedClusterNodeId, setSelectedClusterNodeId] = useState<string | null>(null)
+  const [hoveredClusterNodeId, setHoveredClusterNodeId] = useState<string | null>(null)
+  const [clusterTooltipPos, setClusterTooltipPos] = useState<{x:number;y:number}|null>(null)
+  const [simPositions, setSimPositions] = useState<Map<string,{x:number;y:number}>>(() => new Map())
+  const clusterGraphRef = useRef<HTMLDivElement>(null)
+  const clusterIsTouch = useRef(false)
+  useEffect(() => { clusterIsTouch.current = typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches }, [])
+  useEffect(() => {
+    if (!nodes.length) { setSimPositions(new Map()); return }
+    const n = nodes.length
+    type SN = {id:string;x:number;y:number;vx:number;vy:number;mass:number;radius:number;fx:number|null;fy:number|null}
+    const sn: SN[] = ordered.map((node, i) => {
+      const pct = node.supplyPercent ?? 0
+      const mass = Math.max(1, Math.min(8, 1 + Math.sqrt(pct) * 1.5))
+      const radius = Math.max(4, Math.min(9, 4 + Math.sqrt(pct) * 0.8))
+      const angle = (i / Math.max(1,n)) * 2 * Math.PI
+      const ring = Math.max(18, n * 7)
+      const isFixed = node.type === 'deployer'
+      return { id:node.id, x:isFixed?50:50+Math.cos(angle)*ring, y:isFixed?42:48+Math.sin(angle)*ring, vx:0, vy:0, mass, radius, fx:isFixed?50:null, fy:isFixed?42:null }
+    })
+    const ea = edges.map(e => ({ si:sn.findIndex(nd=>nd.id===e.source), ti:sn.findIndex(nd=>nd.id===e.target), w:e.weight??60 })).filter(e=>e.si>=0&&e.ti>=0)
+    let alpha=1
+    for (let iter=0; iter<280&&alpha>0.001; iter++) {
+      for (const nd of sn){if(nd.fx!==null)continue;nd.vx+=(50-nd.x)*0.04*alpha;nd.vy+=(48-nd.y)*0.04*alpha}
+      for (let i=0;i<n;i++) for (let j=i+1;j<n;j++){
+        const a=sn[i],b=sn[j],dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy+0.01,invD=1/Math.sqrt(d2),f=-38*alpha/d2,fx=dx*invD*f,fy=dy*invD*f
+        if(a.fx===null){a.vx-=fx/a.mass;a.vy-=fy/a.mass}
+        if(b.fx===null){b.vx+=fx/b.mass;b.vy+=fy/b.mass}
+      }
+      for (const e of ea){
+        const s=sn[e.si],t=sn[e.ti],dx=t.x-s.x,dy=t.y-s.y,d=Math.sqrt(dx*dx+dy*dy)||0.01
+        const tgt=16+(100-e.w)*0.14,str=Math.max(0.08,Math.min(1,e.w/100))*alpha,delta=(d-tgt)/d*str*0.5,fx=dx*delta,fy=dy*delta
+        if(s.fx===null){s.vx+=fx/s.mass;s.vy+=fy/s.mass}
+        if(t.fx===null){t.vx-=fx/t.mass;t.vy-=fy/t.mass}
+      }
+      for (let i=0;i<n;i++) for (let j=i+1;j<n;j++){
+        const a=sn[i],b=sn[j],minD=a.radius+b.radius+2,dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||0.01
+        if(d<minD){const ovlp=(minD-d)/d*0.5;if(a.fx===null){a.x-=dx*ovlp;a.y-=dy*ovlp}if(b.fx===null){b.x+=dx*ovlp;b.y+=dy*ovlp}}
+      }
+      for (const nd of sn){
+        if(nd.fx!==null){nd.x=nd.fx;nd.y=nd.fy!;continue}
+        nd.vx*=0.52;nd.vy*=0.52;nd.x+=nd.vx;nd.y+=nd.vy
+        nd.x=Math.max(nd.radius+1,Math.min(99-nd.radius,nd.x));nd.y=Math.max(nd.radius+1,Math.min(99-nd.radius,nd.y))
+      }
+      alpha-=alpha*0.055
+    }
+    const m=new Map<string,{x:number,y:number}>()
+    sn.forEach(nd=>m.set(nd.id,{x:nd.x,y:nd.y}))
+    setSimPositions(m)
+  }, [nodes, edges]) // eslint-disable-line react-hooks/exhaustive-deps
   const selectedClusterNode = nodes.find((node) => node.id === selectedClusterNodeId) ?? null
   const relatedEdges = selectedClusterNode ? edges.filter((edge) => edge.source === selectedClusterNode.id || edge.target === selectedClusterNode.id) : []
   const selectedEdgeNodeIds = new Set(relatedEdges.flatMap((edge) => [edge.source, edge.target]))
@@ -868,11 +945,13 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
     const centerY = deployer ? 48 : 50
     return { x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius + (node.type === 'holder_wallet' ? 2 : 0) + (index % 2 ? 0 : 0) }
   }
-  const positions = new Map(ordered.map((node, index) => [node.id, positionFor(node, index)]))
+  const staticPositions = new Map(ordered.map((node, index) => [node.id, positionFor(node, index)]))
+  const positions = simPositions.size > 0 ? simPositions : staticPositions
   const nodeColor = (node: ClusterNode) => node.type === 'deployer' ? '#fbbf24' : node.type === 'linked_wallet' ? '#2dd4bf' : node.type === 'cluster_wallet' ? '#e879f9' : '#64748b'
-  const nodeBg = (node: ClusterNode) => node.type === 'deployer' ? 'rgba(251,191,36,.16)' : node.type === 'linked_wallet' ? 'rgba(45,212,191,.14)' : node.type === 'cluster_wallet' ? 'rgba(232,121,249,.14)' : 'rgba(100,116,139,.14)'
+  const nodeBg = (node: ClusterNode) => { const risk = deriveClusterNodeRisk(node, riskContextScore); return CMAP_RISK_BG[risk] }
   const nodeSize = (node: ClusterNode) => Math.min(64, 24 + Math.max(0, node.supplyPercent ?? 0) * 1.1)
-  const edgeColor = (edge: ClusterEdge) => edge.type === 'shared_pattern' || edge.type === 'transfer_signal' ? '#f59e0b' : edge.confidence === 'high' ? '#2dd4bf' : edge.confidence === 'medium' ? '#7dd3fc' : '#475569'
+  const nodeBorderColor = (node: ClusterNode, isSelected: boolean) => { const risk = deriveClusterNodeRisk(node, riskContextScore); return node.confidence === 'open_check' ? '#64748b' : (isSelected ? CMAP_RISK_COLOR[risk] : nodeColor(node)) }
+  const edgeColor = (edge: ClusterEdge) => deriveClusterEdgeColor(edge)
   const roleLabel = (node: ClusterNode | null) => !node ? 'Unknown wallet' : node.type === 'deployer' ? 'Deployer / origin wallet' : node.type === 'linked_wallet' ? 'Linked wallet' : node.type === 'cluster_wallet' ? 'Cluster wallet' : 'Indexed holder'
   const edgeLabel = (type: ClusterEdge['type']) => type === 'deployer_to_linked' ? 'Deployer transfer link' : type === 'linked_to_cluster' ? 'Linked cluster path' : type === 'holder_overlap' ? 'Holder overlap' : type === 'transfer_signal' ? 'Transfer signal' : type === 'shared_pattern' ? 'Shared pattern' : 'Weak heuristic'
   const confidenceCopy = (confidence?: ClusterNode['confidence']) => confidence === 'high'
@@ -930,34 +1009,60 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
         <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Wallet relationship graph across deployer, linked wallets, and indexed holders. Click a node to inspect wallet-level evidence.</p>
       </div>
       <div style={{ display:'grid', gridTemplateColumns:selectedClusterNodeId ? 'repeat(auto-fit,minmax(min(100%,280px),1fr))' : 'repeat(auto-fit,minmax(min(100%,280px),1fr))', gap:'12px', alignItems:'start' }}>
-        <div onClick={() => setSelectedClusterNodeId(null)} style={{ position:'relative', minHeight:'390px', borderRadius:'16px', overflow:'hidden', background:`radial-gradient(circle at 50% 48%, ${riskTint}, transparent 42%), linear-gradient(145deg, rgba(3,10,24,.98), rgba(8,16,32,.95))`, border:'1px solid rgba(125,211,252,.16)' }}>
+        <div ref={clusterGraphRef} onClick={() => { setSelectedClusterNodeId(null); setHoveredClusterNodeId(null); setClusterTooltipPos(null) }} onMouseMove={e => { if (!clusterIsTouch.current && hoveredClusterNodeId) { const r = clusterGraphRef.current?.getBoundingClientRect(); if (r) setClusterTooltipPos({x:e.clientX-r.left,y:e.clientY-r.top}) } }} style={{ position:'relative', minHeight:'390px', borderRadius:'16px', overflow:'hidden', background:`radial-gradient(circle at 50% 48%, ${riskTint}, transparent 42%), linear-gradient(145deg, rgba(3,10,24,.98), rgba(8,16,32,.95))`, border:'1px solid rgba(125,211,252,.16)' }}>
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position:'absolute', inset:0, width:'100%', height:'100%' }}>
             {edges.map((edge) => {
               const source = positions.get(edge.source)
               const target = positions.get(edge.target)
               if (!source || !target) return null
               const isConnected = selectedClusterNodeId != null && (edge.source === selectedClusterNodeId || edge.target === selectedClusterNodeId)
-              return <line key={edge.id} x1={source.x} y1={source.y} x2={target.x} y2={target.y} stroke={isConnected ? '#67e8f9' : edgeColor(edge)} strokeWidth={isConnected ? Math.max(1.2, edge.weight / 52) : Math.max(0.55, edge.weight / 70)} strokeOpacity={selectedClusterNodeId ? (isConnected ? 0.9 : 0.18) : (edge.confidence === 'low' ? 0.32 : 0.58)} style={{ filter: isConnected ? 'drop-shadow(0 0 7px rgba(103,232,249,.9))' : edge.type === 'shared_pattern' || edge.type === 'transfer_signal' ? 'drop-shadow(0 0 4px rgba(245,158,11,.65))' : undefined }} />
+              const isHoverConn = hoveredClusterNodeId != null && (edge.source === hoveredClusterNodeId || edge.target === hoveredClusterNodeId)
+              const eColor = deriveClusterEdgeColor(edge)
+              const isSusp = eColor === '#fb7185'
+              return <line key={edge.id} x1={source.x} y1={source.y} x2={target.x} y2={target.y} stroke={isConnected ? '#67e8f9' : isHoverConn ? eColor : eColor} strokeWidth={isConnected ? Math.max(1.2, edge.weight / 52) : isHoverConn ? Math.max(1,edge.weight/52) : Math.max(0.55, edge.weight / 70)} strokeOpacity={selectedClusterNodeId ? (isConnected ? 0.9 : 0.1) : hoveredClusterNodeId ? (isHoverConn ? 0.85 : 0.15) : (edge.confidence === 'low' ? 0.32 : 0.58)} strokeDasharray={isSusp ? '2,2' : undefined} style={{ filter: isConnected ? 'drop-shadow(0 0 7px rgba(103,232,249,.9))' : isSusp ? 'drop-shadow(0 0 4px rgba(251,113,133,.65))' : edge.type === 'shared_pattern' ? 'drop-shadow(0 0 4px rgba(250,204,21,.6))' : undefined }} />
             })}
           </svg>
+          {hoveredClusterNodeId && clusterTooltipPos && !clusterIsTouch.current && (() => {
+            const hNode = nodes.find(n => n.id === hoveredClusterNodeId)
+            if (!hNode) return null
+            const risk = deriveClusterNodeRisk(hNode, riskContextScore)
+            const hSupply = supplyFor(hNode)
+            return (
+              <div style={{ position:'absolute', left:Math.min(clusterTooltipPos.x+14,240), top:Math.max(clusterTooltipPos.y-96,8), pointerEvents:'none', zIndex:20, padding:'10px 13px', borderRadius:'10px', background:'rgba(6,11,22,0.97)', border:`1px solid ${nodeColor(hNode)}40`, minWidth:'162px', boxShadow:'0 4px 18px rgba(0,0,0,.55)' }}>
+                <div style={{ fontSize:'8px', letterSpacing:'.14em', fontWeight:700, color:nodeColor(hNode), fontFamily:'var(--font-plex-mono)', marginBottom:'8px' }}>{(roleLabel(hNode)).toUpperCase()}</div>
+                <div style={{ marginBottom:'5px' }}><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Address</div><div style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{fmt(hNode.address)}</div></div>
+                <div style={{ marginBottom:'5px' }}><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Supply</div><div style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hSupply!=null?`${hSupply.toFixed(1)}%`:'Not indexed in this pass'}</div></div>
+                <div style={{ display:'flex', gap:'12px' }}>
+                  <div><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Risk</div><div style={{ fontSize:'10px', color:CMAP_RISK_COLOR[risk], fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>{risk==='open_check'?'Open check':risk.charAt(0).toUpperCase()+risk.slice(1)}</div></div>
+                  <div><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Confidence</div><div style={{ fontSize:'10px', color:hNode.confidence==='high'?'#34d399':hNode.confidence==='medium'?'#fbbf24':'#94a3b8', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hNode.confidence==='open_check'?'Open check':hNode.confidence.charAt(0).toUpperCase()+hNode.confidence.slice(1)}</div></div>
+                </div>
+              </div>
+            )
+          })()}
           {ordered.map((node) => {
             const pos = positions.get(node.id) ?? { x: 50, y: 50 }
             const size = nodeSize(node)
             const color = nodeColor(node)
             const isSelected = node.id === selectedClusterNodeId
-            const isDimmed = selectedClusterNodeId != null && !isSelected && !selectedEdgeNodeIds.has(node.id)
+            const isHovered = node.id === hoveredClusterNodeId
+            const isDimmed = (selectedClusterNodeId != null && !isSelected && !selectedEdgeNodeIds.has(node.id)) || (hoveredClusterNodeId != null && !isHovered && !selectedEdgeNodeIds.has(node.id) && selectedClusterNodeId == null)
+            const risk = deriveClusterNodeRisk(node, riskContextScore)
+            const riskBorderColor = nodeBorderColor(node, isSelected)
             return (
-              <button key={node.id} type="button" onClick={(event) => { event.stopPropagation(); setSelectedClusterNodeId(node.id) }} title={`${node.address} — ${node.reasons.join(' ')}`} style={{ position:'absolute', left:`${pos.x}%`, top:`${pos.y}%`, transform:'translate(-50%,-50%)', display:'grid', placeItems:'center', gap:'4px', zIndex:2, opacity:isDimmed ? 0.42 : 1, background:'transparent', border:0, padding:0, cursor:'pointer', textAlign:'center' }}>
-                <div style={{ width:size, height:size, borderRadius:'999px', background:nodeBg(node), border:`${isSelected ? 3 : 2}px solid ${node.confidence === 'open_check' ? '#64748b' : color}`, boxShadow:isSelected ? `0 0 0 5px ${color}22, 0 0 26px ${color}aa` : node.confidence === 'open_check' ? 'none' : `0 0 18px ${color}55`, display:'grid', placeItems:'center', color, fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{node.type === 'deployer' ? 'D' : node.type === 'linked_wallet' ? 'L' : node.type === 'cluster_wallet' ? 'C' : 'H'}</div>
-                <div style={{ padding:'2px 6px', borderRadius:'999px', background:'rgba(2,6,23,.86)', border:`1px solid ${color}44`, color:'#cbd5e1', fontSize:'9px', fontWeight:700, fontFamily:'var(--font-plex-mono)', whiteSpace:'nowrap' }}>{node.label === 'Deployer' ? 'Deployer' : fmt(node.address)}</div>
-                {node.supplyPercent != null && <div style={{ color, fontSize:'9px', fontFamily:'var(--font-plex-mono)', fontWeight:800 }}>{node.supplyPercent.toFixed(1)}%</div>}
+              <button key={node.id} type="button"
+                onClick={(event) => { event.stopPropagation(); setSelectedClusterNodeId(node.id); setHoveredClusterNodeId(null); setClusterTooltipPos(null) }}
+                onMouseEnter={e => { if (clusterIsTouch.current) return; setHoveredClusterNodeId(node.id); const r=clusterGraphRef.current?.getBoundingClientRect(); if(r) setClusterTooltipPos({x:e.clientX-r.left,y:e.clientY-r.top}) }}
+                onMouseLeave={() => { setHoveredClusterNodeId(null); setClusterTooltipPos(null) }}
+                title={`${node.address} — ${node.reasons.join(' ')}`}
+                style={{ position:'absolute', left:`${pos.x}%`, top:`${pos.y}%`, transform:'translate(-50%,-50%)', display:'grid', placeItems:'center', gap:'4px', zIndex:isHovered||isSelected?4:2, opacity:isDimmed ? 0.28 : 1, background:'transparent', border:0, padding:0, cursor:'pointer', textAlign:'center' }}>
+                <div style={{ width:size, height:size, borderRadius:'999px', background:nodeBg(node), border:`${isSelected?3:isHovered?2.5:2}px solid ${riskBorderColor}`, boxShadow:isSelected?`0 0 0 5px ${CMAP_RISK_COLOR[risk]}22, 0 0 26px ${CMAP_RISK_COLOR[risk]}aa`:isHovered?`0 0 0 3px ${CMAP_RISK_COLOR[risk]}22, 0 0 14px ${CMAP_RISK_COLOR[risk]}77`:risk==='high'?`0 0 14px ${CMAP_RISK_COLOR.high}66`:'none', display:'grid', placeItems:'center', color, fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{node.type === 'deployer' ? 'D' : node.type === 'linked_wallet' ? 'L' : node.type === 'cluster_wallet' ? 'C' : 'H'}</div>
+                <div style={{ padding:'2px 6px', borderRadius:'999px', background:'rgba(2,6,23,.86)', border:`1px solid ${CMAP_RISK_COLOR[risk]}44`, color:'#cbd5e1', fontSize:'9px', fontWeight:700, fontFamily:'var(--font-plex-mono)', whiteSpace:'nowrap' }}>{node.label === 'Deployer' ? 'Deployer' : fmt(node.address)}</div>
+                {node.supplyPercent != null && <div style={{ color:CMAP_RISK_COLOR[risk], fontSize:'9px', fontFamily:'var(--font-plex-mono)', fontWeight:800 }}>{node.supplyPercent.toFixed(1)}%</div>}
               </button>
             )
           })}
-          <div style={{ position:'absolute', left:'12px', bottom:'12px', display:'flex', flexWrap:'wrap', gap:'6px', zIndex:3 }}>
-            {[
-              ['#fbbf24','Deployer'], ['#2dd4bf','Linked wallet'], ['#e879f9','Cluster wallet'], ['#64748b','Holder wallet'], ['#94a3b8','Open check'],
-            ].map(([color, label]) => <span key={label} style={{ display:'inline-flex', alignItems:'center', gap:'5px', padding:'4px 7px', borderRadius:'999px', background:'rgba(2,6,23,.72)', border:'1px solid rgba(148,163,184,.16)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}><i style={{ width:7, height:7, borderRadius:'50%', background:color }} />{label}</span>)}
+          <div style={{ position:'absolute', left:'12px', bottom:'12px', display:'flex', flexWrap:'wrap', gap:'5px', zIndex:3 }}>
+            {([['#34d399','Low risk'],['#facc15','Medium'],['#fb7185','High risk'],['#a855f7','Open check'],['#fbbf24','Deployer'],['#2dd4bf','Linked'],['#e879f9','Cluster']] as [string,string][]).map(([color,label]) => <span key={label} style={{ display:'inline-flex', alignItems:'center', gap:'4px', padding:'3px 6px', borderRadius:'999px', background:'rgba(2,6,23,.82)', border:'1px solid rgba(148,163,184,.12)', color:'#94a3b8', fontSize:'8px', fontFamily:'var(--font-plex-mono)' }}><i style={{ width:6, height:6, borderRadius:'50%', background:color, display:'inline-block', flexShrink:0 }} />{label}</span>)}
           </div>
         </div>
         <div style={{ display:'grid', gap:'10px', alignContent:'start' }}>
@@ -1686,7 +1791,7 @@ export default function TerminalTokenScanner() {
   const [error, setError]       = useState<string | null>(null)
   const [lpExpanded, setLpExpanded] = useState(true)
   const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-safety'|'risk-engine'|'deployer-intel'>('cortex-read')
-  const [devControlTab, setDevControlTab] = useState<'dev-map'|'supply-control'|'cluster-map'|'history'|'watch-plan'>('dev-map')
+  const [devControlTab, setDevControlTab] = useState<'dev-map'|'cluster-map'|'supply-control'|'history'|'watch-plan'>('dev-map')
   const [copiedHolderAddress, setCopiedHolderAddress] = useState<string | null>(null)
 
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
@@ -3182,7 +3287,7 @@ export default function TerminalTokenScanner() {
                     ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(148,163,184,0.2)',background:'rgba(9,15,29,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#64748b',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e2e8f0',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
                   </div>
                   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
-                    {([['dev-map','Dev Map'],['supply-control','Supply Control'],['cluster-map','Cluster Map'],['history','History'],['watch-plan','Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(125,211,252,0.45)':'1px solid rgba(148,163,184,0.2)', background:devControlTab===id?'rgba(14,29,47,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#7dd3fc':'#94a3b8', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
+                    {([['dev-map','Dev Map'],['cluster-map','Cluster Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(125,211,252,0.45)':'1px solid rgba(148,163,184,0.2)', background:devControlTab===id?'rgba(14,29,47,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#7dd3fc':'#94a3b8', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
                   </div>
                   <div style={{ border:'1px solid rgba(148,163,184,0.2)', borderRadius:'14px', padding:'14px', background:'rgba(7,12,24,0.8)' }}>
                     {devControlTab==='dev-map' && (() => {
