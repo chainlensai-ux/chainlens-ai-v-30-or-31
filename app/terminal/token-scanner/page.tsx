@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
@@ -242,13 +242,28 @@ type ClusterNode = {
 }
 
 type ClusterEdge = {
+  id?: string
+  source?: string | null
+  target?: string | null
+  from?: string | null
+  to?: string | null
+  type?: string | null
+  weight?: number | string | null
+  confidence?: 'high' | 'medium' | 'low' | string | null
+  reason?: string | null
+}
+
+type GraphEdge = {
   id: string
   source: string
   target: string
-  type: 'deployer_to_linked' | 'linked_to_cluster' | 'holder_overlap' | 'transfer_signal' | 'shared_pattern' | 'weak_heuristic'
+  type: string
   weight: number
   confidence: 'high' | 'medium' | 'low'
   reason: string
+  color: string
+  opacity: number
+  width: number
 }
 
 type ClusterMap = {
@@ -844,6 +859,46 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
   const [simPositions, setSimPositions] = useState<Map<string,{x:number;y:number}>>(() => new Map())
   const clusterGraphRef = useRef<HTMLDivElement>(null)
   const clusterIsTouch = useRef(false)
+  const [hoveredClusterEdgeId, setHoveredClusterEdgeId] = useState<string | null>(null)
+  const [edgeTooltipPosition, setEdgeTooltipPosition] = useState<{ x: number; y: number } | null>(null)
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+  const edgeColorFor = (type: string, reason: string) => {
+    const lowerType = type.toLowerCase()
+    const lowerReason = reason.toLowerCase()
+    if (lowerType.includes('suspicious') || /suspicious|repeated|same-size|funding/i.test(lowerReason)) return '#fb7185'
+    if (type === 'transfer_signal' || type === 'deployer_to_linked') return '#38bdf8'
+    if (type === 'linked_to_cluster' || type === 'holder_overlap') return '#a855f7'
+    if (type === 'shared_pattern' || type === 'weak_heuristic') return '#facc15'
+    return '#64748b'
+  }
+  const confidenceOpacity = (confidence: GraphEdge['confidence']) => confidence === 'high' ? 0.9 : confidence === 'medium' ? 0.65 : 0.38
+  const edgeWidthFor = (weight: number) => clamp(1 + (weight / 100) * 3, 1, 4.5)
+  const nodeIds = new Set(nodes.map((node) => node.id))
+  const graphEdges: GraphEdge[] = edges.flatMap((edge, index) => {
+    const source = edge.source ?? edge.from ?? null
+    const target = edge.target ?? edge.to ?? null
+    const reason = edge.reason ?? 'Relationship signal detected'
+    const rawWeight = edge.weight == null ? 25 : Number(edge.weight)
+    if (!source || !target || source === target) return []
+    if ((!Number.isFinite(rawWeight) || rawWeight <= 0) && !edge.reason) return []
+    if (!nodeIds.has(source) || !nodeIds.has(target)) return []
+    const weight = clamp(Number.isFinite(rawWeight) && rawWeight > 0 ? rawWeight : 25, 1, 100)
+    const normalizedConfidence = typeof edge.confidence === 'string' ? edge.confidence.toLowerCase() : ''
+    const confidence: GraphEdge['confidence'] = normalizedConfidence === 'high' || normalizedConfidence === 'medium' || normalizedConfidence === 'low' ? normalizedConfidence : 'low'
+    const type = edge.type ?? 'weak_heuristic'
+    return [{
+      id: edge.id ?? `${source}-${target}-${index}`,
+      source,
+      target,
+      type,
+      weight,
+      confidence,
+      reason,
+      color: edgeColorFor(type, reason),
+      opacity: clamp(confidenceOpacity(confidence), 0.1, 1),
+      width: edgeWidthFor(weight),
+    }]
+  })
   useEffect(() => { clusterIsTouch.current = typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches }, [])
   useEffect(() => {
     if (!nodes.length) { setSimPositions(new Map()); return }
@@ -858,7 +913,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
       const isFixed = node.type === 'deployer'
       return { id:node.id, x:isFixed?50:50+Math.cos(angle)*ring, y:isFixed?42:48+Math.sin(angle)*ring, vx:0, vy:0, mass, radius, fx:isFixed?50:null, fy:isFixed?42:null }
     })
-    const ea = edges.map(e => ({ si:sn.findIndex(nd=>nd.id===e.source), ti:sn.findIndex(nd=>nd.id===e.target), w:e.weight??60 })).filter(e=>e.si>=0&&e.ti>=0)
+    const ea = graphEdges.map(e => ({ si:sn.findIndex(nd=>nd.id===e.source), ti:sn.findIndex(nd=>nd.id===e.target), w:e.weight??60 })).filter(e=>e.si>=0&&e.ti>=0)
     let alpha=1
     for (let iter=0; iter<280&&alpha>0.001; iter++) {
       for (const nd of sn){if(nd.fx!==null)continue;nd.vx+=(50-nd.x)*0.04*alpha;nd.vy+=(48-nd.y)*0.04*alpha}
@@ -887,10 +942,11 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
     const m=new Map<string,{x:number,y:number}>()
     sn.forEach(nd=>m.set(nd.id,{x:nd.x,y:nd.y}))
     setSimPositions(m)
-  }, [nodes, edges]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [nodes, graphEdges]) // eslint-disable-line react-hooks/exhaustive-deps
   const selectedClusterNode = nodes.find((node) => node.id === selectedClusterNodeId) ?? null
-  const relatedEdges = selectedClusterNode ? edges.filter((edge) => edge.source === selectedClusterNode.id || edge.target === selectedClusterNode.id) : []
+  const relatedEdges = selectedClusterNode ? graphEdges.filter((edge) => edge.source === selectedClusterNode.id || edge.target === selectedClusterNode.id) : []
   const selectedEdgeNodeIds = new Set(relatedEdges.flatMap((edge) => [edge.source, edge.target]))
+  const hoveredClusterEdge = graphEdges.find((edge) => edge.id === hoveredClusterEdgeId) ?? null
   const riskTint = summary?.clusterRiskScore == null
     ? 'rgba(148,163,184,.12)'
     : summary.clusterRiskScore <= 20 ? 'rgba(52,211,153,.12)'
@@ -951,9 +1007,8 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
   const nodeBg = (node: ClusterNode) => { const risk = deriveClusterNodeRisk(node, riskContextScore); return CMAP_RISK_BG[risk] }
   const nodeSize = (node: ClusterNode) => Math.min(64, 24 + Math.max(0, node.supplyPercent ?? 0) * 1.1)
   const nodeBorderColor = (node: ClusterNode, isSelected: boolean) => { const risk = deriveClusterNodeRisk(node, riskContextScore); return node.confidence === 'open_check' ? '#64748b' : (isSelected ? CMAP_RISK_COLOR[risk] : nodeColor(node)) }
-  const edgeColor = (edge: ClusterEdge) => deriveClusterEdgeColor(edge)
   const roleLabel = (node: ClusterNode | null) => !node ? 'Unknown wallet' : node.type === 'deployer' ? 'Deployer / origin wallet' : node.type === 'linked_wallet' ? 'Linked wallet' : node.type === 'cluster_wallet' ? 'Cluster wallet' : 'Indexed holder'
-  const edgeLabel = (type: ClusterEdge['type']) => type === 'deployer_to_linked' ? 'Deployer transfer link' : type === 'linked_to_cluster' ? 'Linked cluster path' : type === 'holder_overlap' ? 'Holder overlap' : type === 'transfer_signal' ? 'Transfer signal' : type === 'shared_pattern' ? 'Shared pattern' : 'Weak heuristic'
+  const edgeLabel = (type: string) => type === 'deployer_to_linked' ? 'Deployer transfer link' : type === 'linked_to_cluster' ? 'Linked cluster path' : type === 'holder_overlap' ? 'Holder overlap' : type === 'transfer_signal' ? 'Transfer signal' : type === 'shared_pattern' ? 'Shared pattern' : type === 'weak_heuristic' ? 'Weak heuristic' : type.replace(/_/g, ' ')
   const confidenceCopy = (confidence?: ClusterNode['confidence']) => confidence === 'high'
     ? 'High confidence — this wallet is supported by direct holder, deployer, or transfer evidence.'
     : confidence === 'medium'
@@ -974,6 +1029,28 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
     if (node.rank != null) return node.rank
     const match = holderRows.find((holder) => holder.address?.toLowerCase() === node.address.toLowerCase())
     return match?.rank ?? null
+  }
+  const supplyLabelForNodeId = (nodeId: string) => {
+    const node = nodes.find((candidate) => candidate.id === nodeId) ?? null
+    const supply = supplyFor(node)
+    return supply == null ? 'Not indexed' : `${supply.toFixed(1)}%`
+  }
+  const relationshipLabel = (edge: GraphEdge) => {
+    if (edge.color === '#fb7185') return 'Suspicious link'
+    if (edge.type === 'transfer_signal' || edge.type === 'deployer_to_linked') return 'Transfer signal'
+    if (edge.type === 'linked_to_cluster' || edge.type === 'holder_overlap') return 'Cluster link'
+    if (edge.type === 'shared_pattern' || edge.type === 'weak_heuristic') return 'Shared pattern'
+    return edgeLabel(edge.type)
+  }
+  const handleEdgePointer = (edgeId: string, event: MouseEvent<SVGPathElement>) => {
+    event.stopPropagation()
+    const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect()
+    setHoveredClusterEdgeId(edgeId)
+    setEdgeTooltipPosition(rect ? { x: event.clientX - rect.left + 12, y: event.clientY - rect.top + 12 } : null)
+  }
+  const clearEdgeHover = () => {
+    setHoveredClusterEdgeId(null)
+    setEdgeTooltipPosition(null)
   }
   const walletSignalMatches = (node: ClusterNode, signal: string) => {
     const lower = signal.toLowerCase()
@@ -1009,19 +1086,39 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
         <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Wallet relationship graph across deployer, linked wallets, and indexed holders. Click a node to inspect wallet-level evidence.</p>
       </div>
       <div style={{ display:'grid', gridTemplateColumns:selectedClusterNodeId ? 'repeat(auto-fit,minmax(min(100%,280px),1fr))' : 'repeat(auto-fit,minmax(min(100%,280px),1fr))', gap:'12px', alignItems:'start' }}>
-        <div ref={clusterGraphRef} onClick={() => { setSelectedClusterNodeId(null); setHoveredClusterNodeId(null); setClusterTooltipPos(null) }} onMouseMove={e => { if (!clusterIsTouch.current && hoveredClusterNodeId) { const r = clusterGraphRef.current?.getBoundingClientRect(); if (r) setClusterTooltipPos({x:e.clientX-r.left,y:e.clientY-r.top}) } }} style={{ position:'relative', minHeight:'390px', borderRadius:'16px', overflow:'hidden', background:`radial-gradient(circle at 50% 48%, ${riskTint}, transparent 42%), linear-gradient(145deg, rgba(3,10,24,.98), rgba(8,16,32,.95))`, border:'1px solid rgba(125,211,252,.16)' }}>
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position:'absolute', inset:0, width:'100%', height:'100%' }}>
-            {edges.map((edge) => {
+        <div ref={clusterGraphRef} onClick={() => { setSelectedClusterNodeId(null); setHoveredClusterNodeId(null); setClusterTooltipPos(null); clearEdgeHover() }} onMouseMove={e => { if (!clusterIsTouch.current && hoveredClusterNodeId) { const r = clusterGraphRef.current?.getBoundingClientRect(); if (r) setClusterTooltipPos({x:e.clientX-r.left,y:e.clientY-r.top}) } }} style={{ position:'relative', minHeight:'390px', borderRadius:'16px', overflow:'hidden', background:`radial-gradient(circle at 50% 48%, ${riskTint}, transparent 42%), linear-gradient(145deg, rgba(3,10,24,.98), rgba(8,16,32,.95))`, border:'1px solid rgba(125,211,252,.16)' }}>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position:'absolute', inset:0, width:'100%', height:'100%', zIndex:1 }}>
+            {graphEdges.map((edge) => {
               const source = positions.get(edge.source)
               const target = positions.get(edge.target)
               if (!source || !target) return null
               const isConnected = selectedClusterNodeId != null && (edge.source === selectedClusterNodeId || edge.target === selectedClusterNodeId)
               const isHoverConn = hoveredClusterNodeId != null && (edge.source === hoveredClusterNodeId || edge.target === hoveredClusterNodeId)
-              const eColor = deriveClusterEdgeColor(edge)
-              const isSusp = eColor === '#fb7185'
-              return <line key={edge.id} x1={source.x} y1={source.y} x2={target.x} y2={target.y} stroke={isConnected ? '#67e8f9' : isHoverConn ? eColor : eColor} strokeWidth={isConnected ? Math.max(1.2, edge.weight / 52) : isHoverConn ? Math.max(1,edge.weight/52) : Math.max(0.55, edge.weight / 70)} strokeOpacity={selectedClusterNodeId ? (isConnected ? 0.9 : 0.1) : hoveredClusterNodeId ? (isHoverConn ? 0.85 : 0.15) : (edge.confidence === 'low' ? 0.32 : 0.58)} strokeDasharray={isSusp ? '2,2' : undefined} style={{ filter: isConnected ? 'drop-shadow(0 0 7px rgba(103,232,249,.9))' : isSusp ? 'drop-shadow(0 0 4px rgba(251,113,133,.65))' : edge.type === 'shared_pattern' ? 'drop-shadow(0 0 4px rgba(250,204,21,.6))' : undefined }} />
+              const isEdgeHovered = hoveredClusterEdgeId === edge.id
+              const midX = (source.x + target.x) / 2
+              const midY = (source.y + target.y) / 2
+              const dx = target.x - source.x
+              const dy = target.y - source.y
+              const length = Math.max(1, Math.sqrt(dx * dx + dy * dy))
+              const curve = Math.min(8, Math.max(3, length * 0.08))
+              const controlX = midX - (dy / length) * curve
+              const controlY = midY + (dx / length) * curve
+              const path = `M ${source.x} ${source.y} Q ${controlX} ${controlY} ${target.x} ${target.y}`
+              const strokeOpacity = selectedClusterNodeId ? (isConnected ? 1 : 0.12) : hoveredClusterNodeId ? (isHoverConn ? 0.85 : 0.15) : edge.opacity
+              const strokeWidth = clamp(edge.width + (isConnected || isHoverConn ? 1 : 0), 1, 4.5)
+              return (
+                <g key={edge.id}>
+                  <path d={path} fill="none" stroke={isConnected || isEdgeHovered ? '#e0f2fe' : edge.color} strokeWidth={strokeWidth} strokeOpacity={strokeOpacity} strokeLinecap="round" style={{ filter: isConnected || isEdgeHovered ? `drop-shadow(0 0 7px ${edge.color})` : undefined }} />
+                  <path d={path} fill="none" stroke="transparent" strokeWidth={12} strokeLinecap="round" style={{ pointerEvents:'stroke', cursor:'help' }} onMouseEnter={(event) => handleEdgePointer(edge.id, event)} onMouseMove={(event) => handleEdgePointer(edge.id, event)} onMouseLeave={clearEdgeHover} onClick={(event) => event.stopPropagation()} />
+                </g>
+              )
             })}
           </svg>
+          {(edges.length === 0 || graphEdges.length === 0) && (
+            <div style={{ position:'absolute', top:'12px', left:'12px', zIndex:4, maxWidth:'260px', padding:'8px 10px', borderRadius:'11px', background:'rgba(2,6,23,.78)', border:'1px solid rgba(148,163,184,.18)', color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>
+              {edges.length === 0 ? 'No transfer edges confirmed in this pass.' : 'Cluster edge data could not be matched to visible nodes.'}
+            </div>
+          )}
           {hoveredClusterNodeId && clusterTooltipPos && !clusterIsTouch.current && (() => {
             const hNode = nodes.find(n => n.id === hoveredClusterNodeId)
             if (!hNode) return null
@@ -1039,6 +1136,24 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
               </div>
             )
           })()}
+          {hoveredClusterEdge && edgeTooltipPosition && (
+            <div style={{ position:'absolute', left:edgeTooltipPosition.x, top:edgeTooltipPosition.y, zIndex:5, width:'min(280px, calc(100% - 24px))', padding:'10px 11px', borderRadius:'12px', background:'rgba(3,10,24,.96)', border:`1px solid ${hoveredClusterEdge.color}55`, boxShadow:'0 16px 38px rgba(0,0,0,.45)', pointerEvents:'none', fontFamily:'var(--font-plex-mono)' }}>
+              <p style={{ margin:'0 0 8px', color:'#e2e8f0', fontSize:'10px', fontWeight:900 }}>{fmt(nodes.find((node) => node.id === hoveredClusterEdge.source)?.address)} → {fmt(nodes.find((node) => node.id === hoveredClusterEdge.target)?.address)}</p>
+              {[
+                ['Relationship', relationshipLabel(hoveredClusterEdge)],
+                ['Reason', hoveredClusterEdge.reason],
+                ['Weight', `${Math.round(hoveredClusterEdge.weight)}/100`],
+                ['Confidence', hoveredClusterEdge.confidence.charAt(0).toUpperCase() + hoveredClusterEdge.confidence.slice(1)],
+                ['Source supply', supplyLabelForNodeId(hoveredClusterEdge.source)],
+                ['Target supply', supplyLabelForNodeId(hoveredClusterEdge.target)],
+              ].map(([label, value]) => (
+                <div key={label} style={{ display:'grid', gridTemplateColumns:'88px 1fr', gap:'8px', padding:'3px 0', borderTop:'1px solid rgba(148,163,184,.08)' }}>
+                  <span style={{ color:'#64748b', fontSize:'9px' }}>{label}</span>
+                  <span style={{ color:'#cbd5e1', fontSize:'9px', lineHeight:1.35 }}>{value}</span>
+                </div>
+              ))}
+            </div>
+          )}
           {ordered.map((node) => {
             const pos = positions.get(node.id) ?? { x: 50, y: 50 }
             const size = nodeSize(node)
@@ -1061,8 +1176,8 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
               </button>
             )
           })}
-          <div style={{ position:'absolute', left:'12px', bottom:'12px', display:'flex', flexWrap:'wrap', gap:'5px', zIndex:3 }}>
-            {([['#34d399','Low risk'],['#facc15','Medium'],['#fb7185','High risk'],['#a855f7','Open check'],['#fbbf24','Deployer'],['#2dd4bf','Linked'],['#e879f9','Cluster']] as [string,string][]).map(([color,label]) => <span key={label} style={{ display:'inline-flex', alignItems:'center', gap:'4px', padding:'3px 6px', borderRadius:'999px', background:'rgba(2,6,23,.82)', border:'1px solid rgba(148,163,184,.12)', color:'#94a3b8', fontSize:'8px', fontFamily:'var(--font-plex-mono)' }}><i style={{ width:6, height:6, borderRadius:'50%', background:color, display:'inline-block', flexShrink:0 }} />{label}</span>)}
+          <div style={{ position:'absolute', left:'12px', bottom:'12px', display:'flex', flexWrap:'wrap', gap:'6px', zIndex:3 }}>
+            {([['#34d399','Low risk'],['#facc15','Med/pattern'],['#fb7185','High/susp'],['#a855f7','Open check'],['#fbbf24','Deployer'],['#2dd4bf','Linked'],['#e879f9','Cluster'],['#38bdf8','Transfer edge']] as [string,string][]).map(([color,label]) => <span key={label} style={{ display:'inline-flex', alignItems:'center', gap:'5px', padding:'4px 7px', borderRadius:'999px', background:'rgba(2,6,23,.72)', border:'1px solid rgba(148,163,184,.16)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}><i style={{ width:7, height:7, borderRadius:'50%', background:color }} />{label}</span>)}
           </div>
         </div>
         <div style={{ display:'grid', gap:'10px', alignContent:'start' }}>
@@ -1072,10 +1187,11 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
               ['Cluster supply', summary?.clusterSupplyPercent != null ? `${summary.clusterSupplyPercent.toFixed(1)}%` : 'Open check'],
               ['Dominance', summary?.clusterDominance ?? 'unknown'],
               ['Risk score', summary?.clusterRiskScore != null ? `${summary.clusterRiskScore}/100` : 'Open check'],
-              ['Nodes / Edges', `${summary?.totalNodes ?? nodes.length} / ${summary?.totalEdges ?? edges.length}`],
+              ['Nodes / Edges', `${summary?.totalNodes ?? nodes.length} / ${graphEdges.length}`],
               ['Confidence', canonicalLabel(map.status)],
             ].map(([label, value]) => <div key={label} style={{ display:'flex', justifyContent:'space-between', gap:'10px', padding:'6px 0', borderBottom:'1px solid rgba(148,163,184,.08)' }}><span style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)' }}>{label}</span><span style={{ fontSize:'10px', color:'#e2e8f0', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:label === 'Dominance' ? 'uppercase' : undefined }}>{value}</span></div>)}
             <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{summary?.reason}</p>
+            {(edges.length === 0 || graphEdges.length === 0) && <p style={{ margin:'8px 0 0', fontSize:'10px', color:'#7dd3fc', fontFamily:'var(--font-plex-mono)', lineHeight:1.45 }}>{edges.length === 0 ? 'No transfer edges confirmed in this pass.' : 'Cluster edge data could not be matched to visible nodes.'}</p>}
           </div>
           <div style={{ padding:'13px 14px', borderRadius:'13px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(125,211,252,.14)' }}>
             <p style={{ margin:'0 0 8px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>SIGNALS</p>
