@@ -10,7 +10,7 @@ const PATH_TO_KEY: Record<string, string> = {
   '/terminal/portfolio':        'portfolio',
   '/terminal/token-scanner':    'token-scanner',
   '/terminal/wallet-scanner':   'wallet-scanner',
-  '/terminal/dev-wallet':       'dev-wallet-detector',
+  '/terminal/dev-wallet':       'token-scanner',
   '/terminal/liquidity':        'liquidity-safety',
   '/terminal/whale-alerts':     'whale-alerts',
   '/terminal/pump-alerts':      'pump-alerts',

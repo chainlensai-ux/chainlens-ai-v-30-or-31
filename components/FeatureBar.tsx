@@ -137,7 +137,6 @@ const MAIN_NAV: Item[] = [
 const TOOLS: Item[] = [
   { key: 'token-scanner',       label: 'Token Scanner',       icon: <IcTokenScanner />,       accent: MINT,   iconColor: MINT,   href: '/terminal/token-scanner'  },
   { key: 'wallet-scanner',      label: 'Wallet Scanner',      icon: <IcWalletScanner />,      accent: MINT,   iconColor: MINT,   href: '/terminal/wallet-scanner' },
-  { key: 'dev-wallet-detector', label: 'Dev Wallet Detector', icon: <IcDevWalletDetector />,  accent: PURPLE, iconColor: PURPLE, href: '/terminal/dev-wallet'     },
   { key: 'liquidity-safety',    label: 'Liquidity Safety',    icon: <IcLiquiditySafety />,    accent: MINT,   iconColor: MINT,   href: '/terminal/liquidity'      },
   { key: 'whale-alerts',        label: 'Whale Alerts',        icon: <IcWhaleAlerts />,        accent: PINK,   iconColor: PINK,   href: '/terminal/whale-alerts'   },
   { key: 'pump-alerts',         label: 'Pump Alerts',         icon: <IcPumpAlerts />,         accent: PINK,   iconColor: PINK,   href: '/terminal/pump-alerts'    },
@@ -147,7 +146,6 @@ const TOOLS: Item[] = [
 
 const TOOL_PLAN_FEATURE: Record<string, string> = {
   'wallet-scanner':      'wallet-scanner',
-  'dev-wallet-detector': 'dev-wallet',
   'liquidity-safety':    'liquidity-safety',
   'whale-alerts':        'whale-alerts',
   'pump-alerts':         'pump-alerts',
