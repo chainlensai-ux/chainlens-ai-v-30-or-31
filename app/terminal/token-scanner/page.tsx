@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
+import { ClusterMapPanel } from './ClusterMapPanel'
 
 // ─── Canonical status ─────────────────────────────────────────────────────
 type CanonicalStatus =
@@ -1375,7 +1376,7 @@ export default function TerminalTokenScanner() {
   const [error, setError]       = useState<string | null>(null)
   const [lpExpanded, setLpExpanded] = useState(true)
   const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-safety'|'risk-engine'|'deployer-intel'>('cortex-read')
-  const [devControlTab, setDevControlTab] = useState<'dev-map'|'supply-control'|'history'|'watch-plan'>('dev-map')
+  const [devControlTab, setDevControlTab] = useState<'dev-map'|'cluster-map'|'supply-control'|'history'|'watch-plan'>('dev-map')
   const [copiedHolderAddress, setCopiedHolderAddress] = useState<string | null>(null)
 
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
@@ -2854,7 +2855,7 @@ export default function TerminalTokenScanner() {
                     ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(148,163,184,0.2)',background:'rgba(9,15,29,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#64748b',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e2e8f0',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
                   </div>
                   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
-                    {[['dev-map','Dev Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']].map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id as any)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(125,211,252,0.45)':'1px solid rgba(148,163,184,0.2)', background:devControlTab===id?'rgba(14,29,47,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#7dd3fc':'#94a3b8', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
+                    {[['dev-map','Dev Map'],['cluster-map','Cluster Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']].map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id as any)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(125,211,252,0.45)':'1px solid rgba(148,163,184,0.2)', background:devControlTab===id?'rgba(14,29,47,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#7dd3fc':'#94a3b8', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
                   </div>
                   <div style={{ border:'1px solid rgba(148,163,184,0.2)', borderRadius:'14px', padding:'14px', background:'rgba(7,12,24,0.8)' }}>
                     {devControlTab==='dev-map' && (() => {
@@ -2984,6 +2985,17 @@ export default function TerminalTokenScanner() {
                         </div>
                       )
                     })()}
+                    {devControlTab==='cluster-map' && (
+                      <ClusterMapPanel
+                        deployerAddress={creatorAddress}
+                        deployerStatus={devIntel?.deployerStatus ?? null}
+                        linkedWallets={linkedWallets.map(w => ({ address: w.address, confidence: w.confidence ?? null, reason: w.reason ?? null }))}
+                        topHolders={(result.holderDistribution?.topHolders ?? []).map(h => ({ address: h.address, percent: h.percent }))}
+                        supplyControl={sc}
+                        suspiciousTransfers={devIntel?.suspiciousTransfers ?? false}
+                        suspiciousTransferReasons={devIntel?.suspiciousTransferReasons ?? []}
+                      />
+                    )}
                     {devControlTab==='supply-control' && (
                       <div style={{ display:'grid', gap:'10px' }}>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:'8px' }}>
