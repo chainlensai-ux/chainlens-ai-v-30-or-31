@@ -287,6 +287,7 @@ type DevWalletIntel = {
   holderPercentSource?: string | null
   suspiciousTransfers?: boolean
   suspiciousTransferReasons?: string[]
+  clusterInfluence?: ClusterInfluence | null
   clarkVerdict?: { bullets?: string[]; summary?: string } | null
   reasons?: string[]
   confidence?: string
@@ -301,6 +302,7 @@ type DevWalletIntel = {
     devClusterSupplyStatus: string
     devClusterSupplyReason: string
     matchedLinkedWallets: Array<{ address: string; percent: number | null; rank: number | null; confidence: string }>
+    clusterInfluence?: ClusterInfluence | null
   } | null
 }
 
@@ -2988,6 +2990,14 @@ export default function TerminalTokenScanner() {
                 const top20 = activeDevIntel?.holderDistribution?.top20 ?? result.holderDistribution?.top20 ?? null
                 const creatorInTop = sc?.creatorInTopHolders ?? activeDevIntel?.creatorInTopHolders ?? null
                 const devClusterSupply = sc?.devClusterSupplyPercent ?? activeDevIntel?.devClusterSupplyPercent ?? activeDevIntel?.devClusterSupply ?? null
+                const clusterInfluence = sc?.clusterInfluence ?? activeDevIntel?.clusterInfluence ?? null
+                const clusterSupplyPercent = clusterInfluence?.clusterSupplyPercent ?? devClusterSupply
+                const clusterDominance = clusterInfluence?.clusterDominance ?? (clusterSupplyPercent == null ? 'unknown' : clusterSupplyPercent === 0 ? 'none' : clusterSupplyPercent < 5 ? 'low' : clusterSupplyPercent < 10 ? 'medium' : clusterSupplyPercent < 20 ? 'high' : 'critical')
+                const clusterRiskScore = clusterInfluence?.clusterRiskScore ?? null
+                const clusterRiskLabel = clusterInfluence?.clusterRiskLabel ?? (clusterSupplyPercent == null ? 'open_check' : 'low')
+                const clusterDominanceLabel = clusterDominance === 'unknown' ? 'Open check' : clusterDominance === 'none' ? 'No dominance' : `${clusterDominance.charAt(0).toUpperCase()}${clusterDominance.slice(1)} dominance`
+                const clusterRiskAccent = clusterRiskLabel === 'critical' || clusterRiskLabel === 'high' ? '#f87171' : clusterRiskLabel === 'elevated' || clusterRiskLabel === 'watch' ? '#fbbf24' : clusterRiskLabel === 'open_check' ? '#94a3b8' : '#34d399'
+                const clusterSignals = (clusterInfluence?.signals?.length ? clusterInfluence.signals : ([clusterInfluence?.reason].filter(Boolean) as string[])).slice(0, 3)
                 const suspiciousTransferPattern = activeDevIntel?.suspiciousTransfers ?? false
                 const missingChecks = getMissingChecks(result)
                 const openChecks = [
@@ -3019,7 +3029,7 @@ export default function TerminalTokenScanner() {
                     {[
                       { k:'Deployer', v: creatorStatus === 'confirmed' ? 'Confirmed' : creatorStatus === 'likely' ? 'Likely matched' : 'Limited signal' },
                       { k:'Linked Wallets', v: `${linkedWalletCount} mapped` },
-                      { k:'Supply Control', v: devClusterSupply != null ? `${devClusterSupply.toFixed(1)}% cluster` : 'Pending confirmation' },
+                      { k:'Supply Control', v: clusterSupplyPercent != null ? `${clusterSupplyPercent.toFixed(1)}% cluster` : 'Open check' },
                       { k:'Patterns', v: suspiciousTransferPattern ? 'Suspicious transfers seen' : 'No major pattern flagged' },
                     ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(148,163,184,0.2)',background:'rgba(9,15,29,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#64748b',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e2e8f0',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
                   </div>
@@ -3170,6 +3180,40 @@ export default function TerminalTokenScanner() {
                               <div style={{ fontSize:'13px', fontWeight:700, color:accent, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
                             </div>
                           ))}
+                        </div>
+                        <div style={{ padding:'14px 16px', borderRadius:'13px', background:'linear-gradient(145deg, rgba(13,27,43,.92), rgba(6,13,25,.94))', border:`1px solid ${clusterRiskLabel === 'open_check' ? 'rgba(148,163,184,.16)' : 'rgba(45,212,191,.22)'}`, boxShadow:'inset 0 1px 0 rgba(255,255,255,.03)' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start', marginBottom:'12px' }}>
+                            <div>
+                              <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#2dd4bf', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dev Cluster Influence</p>
+                              <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                                {clusterSupplyPercent == null ? 'Open check' : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}
+                                {' · '}
+                                {clusterSupplyPercent == null ? 'CORTEX needs more holder evidence before confirming cluster influence.' : clusterInfluence?.reason ?? clusterDominanceLabel}
+                              </p>
+                            </div>
+                            <div style={{ textAlign:'right', flexShrink:0 }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'18px', fontWeight:800, color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)' }}>{clusterRiskScore != null ? clusterRiskScore : '—'}<span style={{ fontSize:'10px', color:'#64748b' }}>/100</span></p>
+                              <p style={{ margin:0, fontSize:'9px', letterSpacing:'.1em', color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{clusterRiskScore != null ? `Risk score ${clusterRiskScore}/100` : 'Open check'}</p>
+                            </div>
+                          </div>
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px', marginBottom:'10px' }}>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Cluster supply</p>
+                              <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#94a3b8' : '#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? 'Open check' : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
+                            </div>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dominance</p>
+                              <p style={{ margin:0, fontSize:'12px', color:clusterRiskAccent, fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterDominanceLabel}</p>
+                            </div>
+                          </div>
+                          <div style={{ display:'grid', gap:'5px' }}>
+                            {(clusterSupplyPercent == null ? ['CORTEX needs more holder evidence before confirming cluster influence.'] : clusterSignals.length > 0 ? clusterSignals : ['No cluster supply found in indexed holders.']).slice(0, 3).map((signal, i) => (
+                              <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                                <span style={{ color:clusterRiskAccent, flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
+                                <p style={{ margin:0, fontSize:'10px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{signal}</p>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                         {devClusterSupply == null && (
                           <div style={{ padding:'11px 14px', borderRadius:'10px', background:'rgba(251,191,36,.04)', border:'1px solid rgba(251,191,36,.14)' }}>
