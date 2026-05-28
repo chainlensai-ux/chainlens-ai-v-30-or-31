@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
+import { buildClusterMap } from '@/lib/clusterMap'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 function resolveBaseRpcUrl(): string | null {
@@ -68,10 +70,18 @@ const creatorLookupRateWindow: number[] = []
 const DEV_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 4, pro: 15, elite: 30 }
 const DEV_COOLDOWN_MS: Record<'free' | 'pro' | 'elite', number> = { free: 25_000, pro: 8_000, elite: 4_000 }
 
-// Known DEX routers, WETH, and pool factories on Base — excluded from linked-wallet detection
-const INFRA_EXCLUSIONS = new Set([
-  '0x0000000000000000000000000000000000000000',
-  '0x000000000000000000000000000000000000dead',
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+const DEAD_ADDRESS = '0x000000000000000000000000000000000000dead'
+
+// Known burn wallets, DEX routers, WETH, and pool factories excluded from
+// deployer/linked-wallet evidence. Keep chain-specific infra separate so ETH
+// checks do not inherit Base-only assumptions.
+const COMMON_INFRA_EXCLUSIONS = new Set([
+  ZERO_ADDRESS,
+  DEAD_ADDRESS,
+  '0x0000000000000000000000000000000000000001',
+])
+const BASE_INFRA_EXCLUSIONS = new Set([
   '0x4200000000000000000000000000000000000006', // WETH Base
   '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad', // Uniswap Universal Router
   '0x2626664c2603336e57b271c5c0b26f421741e481', // Uniswap SwapRouter02
@@ -79,6 +89,41 @@ const INFRA_EXCLUSIONS = new Set([
   '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43', // Aerodrome Router
   '0x420dd381b31aef6683db6b902084cb0ffece40da', // Aerodrome Factory
 ])
+const ETH_INFRA_EXCLUSIONS = new Set([
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH Ethereum
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2 Router02
+  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b', // Uniswap Universal Router
+  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45', // Uniswap SwapRouter02
+  '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3 SwapRouter
+  '0xc36442b4a4522e871399cd717abdd847ab11fe88', // Uniswap V3 Position Manager
+  '0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f', // Uniswap V2 Factory
+  '0x1f98431c8ad98523631ae4a59f267346ea31f984', // Uniswap V3 Factory
+  '0x000000000022d473030f116ddee9f6b43ac78ba3', // Permit2
+])
+
+function chainInfraExclusions(): Set<string> {
+  return new Set([
+    ...COMMON_INFRA_EXCLUSIONS,
+    ...(activeChainConfig.chain === 'eth' ? ETH_INFRA_EXCLUSIONS : BASE_INFRA_EXCLUSIONS),
+  ])
+}
+
+function normalizeEvidenceAddress(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  return /^0x[a-f0-9]{40}$/.test(normalized) ? normalized : null
+}
+
+function isRejectedEvidenceAddress(value: string | null | undefined, tokenContract?: string | null): boolean {
+  const normalized = normalizeEvidenceAddress(value)
+  if (!normalized) return true
+  const tokenLow = normalizeEvidenceAddress(tokenContract ?? null)
+  return normalized === tokenLow || chainInfraExclusions().has(normalized)
+}
+
+function isValidOriginCandidate(value: string | null | undefined, tokenContract: string): value is string {
+  return !isRejectedEvidenceAddress(value, tokenContract)
+}
 
 interface PlanResolution {
   rawPlan: 'free' | 'pro' | 'elite'
@@ -178,7 +223,8 @@ interface HolderPercentDerivationResult {
     holderCount: number | null
     topHolders: Array<{ address: string; percent: number | null }>
   } | null
-  holderDistributionStatus: 'ok' | 'partial' | 'unavailable'
+  holderDistributionStatus: 'ok' | 'partial' | 'unavailable_with_reason'
+  holderStatusReason?: string
   holderPercentAvailable: boolean
   holderPercentSource: string | null
   debug: Record<string, unknown>
@@ -385,12 +431,22 @@ async function fetchTokenMetadata(contract: string, marketData?: Record<string, 
 }
 
 async function getAssetTransfers(params: Record<string, unknown>): Promise<AlchemyTransfer[]> {
-  try {
-    const result = await alchemyRpc('alchemy_getAssetTransfers', [params]) as { transfers?: AlchemyTransfer[] }
-    return result?.transfers ?? []
-  } catch {
-    return []
+  if (!activeChainConfig.rpcUrl) return []
+  const transfers: AlchemyTransfer[] = []
+  let pageKey: string | undefined
+  for (let page = 0; page < 3; page++) {
+    try {
+      const pageParams = pageKey ? { ...params, pageKey } : params
+      const result = await alchemyRpc('alchemy_getAssetTransfers', [pageParams]) as { transfers?: AlchemyTransfer[]; pageKey?: string }
+      transfers.push(...(result?.transfers ?? []))
+      if (transfers.length >= 300) return transfers.slice(0, 300)
+      pageKey = typeof result?.pageKey === 'string' && result.pageKey ? result.pageKey : undefined
+      if (!pageKey) break
+    } catch {
+      break
+    }
   }
+  return transfers
 }
 
 async function getContractAddressFromTx(txHash: string): Promise<string | null> {
@@ -414,36 +470,43 @@ async function discoverOrigin(contract: string): Promise<{
     rpc_fallback: { attempted: false, ok: false, reason: 'skipped' },
     selected_origin_candidate: { methodUsed: 'unknown', address: null, confidence: 'low', deployerStatus: 'not_confirmed' },
   }
-  const ZERO = '0x0000000000000000000000000000000000000000'
+  const ZERO = ZERO_ADDRESS
 
   function finalize(c: OriginCandidate): { candidate: OriginCandidate; diag: OriginDiscoveryDiag } {
     diag.selected_origin_candidate = { methodUsed: c.methodUsed, address: c.address, confidence: c.confidence, deployerStatus: c.deployerStatus }
     return { candidate: c, diag }
   }
 
-  // 1. Optional paid creation lookup (Basescan/Etherscan key optional)
-  const scanKey = process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY
+  // 1. Optional paid creation lookup (Basescan for Base, Etherscan v2 for ETH)
+  const scanKey = activeChainConfig.chain === 'eth'
+    ? process.env.ETHERSCAN_API_KEY
+    : (process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY)
   if (scanKey) {
     diag.optional_creation_lookup.attempted = true
     try {
-      const scanRes = await fetch(
-        `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`,
-        { cache: 'no-store', signal: AbortSignal.timeout(6000) }
-      )
+      const scanUrl = activeChainConfig.chain === 'eth'
+        ? `${CREATOR_LOOKUP_BASE_URL}?chainid=${CREATOR_LOOKUP_CHAIN_ID()}&module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
+        : `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
+      const scanRes = await fetch(scanUrl, { cache: 'no-store', signal: AbortSignal.timeout(6000) })
       diag.optional_creation_lookup.httpStatus = scanRes.status
       if (scanRes.ok) {
         const scanJson = await scanRes.json() as { status?: string; result?: Array<{ contractCreator?: string; txHash?: string }> }
         const r = scanJson?.result?.[0]
         if (scanJson.status === '1' && r?.contractCreator) {
-          const creator = r.contractCreator.toLowerCase()
-          diag.optional_creation_lookup.ok = true
-          diag.optional_creation_lookup.reason = 'contract_creation_record'
+          const creator = normalizeEvidenceAddress(r.contractCreator)
+          if (isValidOriginCandidate(creator, contract)) {
+            diag.optional_creation_lookup.ok = true
+            diag.optional_creation_lookup.reason = 'contract_creation_record'
+            diag.optional_creation_lookup.candidateAddress = creator
+            diag.optional_creation_lookup.txHashPresent = Boolean(r.txHash)
+            diag.optional_creation_lookup.confidence = 'high'
+            return finalize({ address: creator, confidence: 'high', deployerStatus: 'confirmed', methodUsed: 'transaction_creation_record', creationTxHash: r.txHash ?? null, reason: 'Creation record from indexed transactions' })
+          }
+          diag.optional_creation_lookup.reason = 'rejected_infra_or_zero_candidate'
           diag.optional_creation_lookup.candidateAddress = creator
-          diag.optional_creation_lookup.txHashPresent = Boolean(r.txHash)
-          diag.optional_creation_lookup.confidence = 'high'
-          return finalize({ address: creator, confidence: 'high', deployerStatus: 'confirmed', methodUsed: 'transaction_creation_record', creationTxHash: r.txHash ?? null, reason: 'Creation record from indexed transactions' })
+        } else {
+          diag.optional_creation_lookup.reason = scanJson.status === '0' ? 'api_no_result' : 'unexpected_shape'
         }
-        diag.optional_creation_lookup.reason = scanJson.status === '0' ? 'api_no_result' : 'unexpected_shape'
       } else {
         diag.optional_creation_lookup.reason = `http_${scanRes.status}`
       }
@@ -469,7 +532,7 @@ async function discoverOrigin(contract: string): Promise<{
 
         // Contract creation tx: to_address is null or empty string
         const creationTx = txItems.find(t => t.successful && (t.to_address === null || t.to_address === ''))
-        if (creationTx?.from_address) {
+        if (creationTx?.from_address && isValidOriginCandidate(creationTx.from_address, contract)) {
           const creator = creationTx.from_address.toLowerCase()
           diag.contract_transaction_history.ok = true
           diag.contract_transaction_history.reason = 'creation_tx_found'
@@ -481,7 +544,7 @@ async function discoverOrigin(contract: string): Promise<{
 
         // Earliest successful tx from a valid external sender
         const earliestTx = txItems.find(
-          t => t.successful && t.from_address && t.from_address.toLowerCase() !== contract.toLowerCase() && t.from_address.toLowerCase() !== ZERO
+          t => t.successful && t.from_address && isValidOriginCandidate(t.from_address, contract)
         )
         if (earliestTx?.from_address) {
           const origin = earliestTx.from_address.toLowerCase()
@@ -508,7 +571,7 @@ async function discoverOrigin(contract: string): Promise<{
     category: ['erc20'], contractAddresses: [contract],
     fromAddress: ZERO, order: 'asc', maxCount: '0x64', withMetadata: true,
   })
-  const firstMint = mintTransfers.find(t => t.to && t.to !== ZERO)
+  const firstMint = mintTransfers.find(t => t.to && isValidOriginCandidate(t.to, contract))
   if (firstMint?.to) {
     diag.initial_token_flow_signal.ok = true
     diag.initial_token_flow_signal.reason = 'first_mint_recipient'
@@ -525,10 +588,10 @@ async function discoverOrigin(contract: string): Promise<{
     category: ['erc20'], contractAddresses: [contract],
     order: 'asc', maxCount: '0x32', withMetadata: true,
   })
-  const firstErc20 = earliestErc20.find(t => t.from || t.to)
+  const firstErc20 = earliestErc20.find(t => isValidOriginCandidate(t.from, contract) || isValidOriginCandidate(t.to, contract))
   if (firstErc20) {
-    const addr = (firstErc20.from && firstErc20.from !== ZERO ? firstErc20.from : firstErc20.to) ?? null
-    if (addr) {
+    const addr = (isValidOriginCandidate(firstErc20.from, contract) ? firstErc20.from : firstErc20.to) ?? null
+    if (isValidOriginCandidate(addr, contract)) {
       diag.rpc_fallback.ok = true
       diag.rpc_fallback.reason = 'earliest_erc20_transfer'
       diag.rpc_fallback.candidateAddress = addr.toLowerCase()
@@ -541,7 +604,7 @@ async function discoverOrigin(contract: string): Promise<{
     fromBlock: '0x0', toBlock: 'latest', toAddress: contract,
     category: ['external'], order: 'asc', maxCount: '0x5', withMetadata: true,
   })
-  const firstExt = incomingExt.find(t => t.from && t.from !== ZERO)
+  const firstExt = incomingExt.find(t => t.from && isValidOriginCandidate(t.from, contract))
   if (firstExt?.from) {
     diag.rpc_fallback.ok = true
     diag.rpc_fallback.reason = 'first_incoming_external'
@@ -564,12 +627,16 @@ async function findLinkedWallets(
 }> {
   const deployerLow = deployer.toLowerCase()
   const tokenLow = tokenContract.toLowerCase()
-  const excluded = new Set([...INFRA_EXCLUSIONS, deployerLow, tokenLow])
+  const excluded = new Set([...chainInfraExclusions(), deployerLow, tokenLow])
 
   const diag: LinkedWalletDiag = {
     attempted: true, ok: false,
     tokenTransfersFound: 0, ethTransfersFound: 0,
     totalCandidates: 0, reason: '',
+  }
+  if (!activeChainConfig.rpcUrl) {
+    diag.reason = 'rpc_not_configured'
+    return { wallets: [], status: 'limited_check', diag }
   }
 
   // Run both queries concurrently: token-specific supply transfers + ETH funding transfers
@@ -603,7 +670,7 @@ async function findLinkedWallets(
   // Token supply transfers → medium confidence (upgraded to high after top-holder overlap check)
   for (const t of tokenTransfers) {
     const to = t.to?.toLowerCase()
-    if (!to || excluded.has(to)) continue
+    if (!to || excluded.has(to) || !normalizeEvidenceAddress(to)) continue
     if (!walletMap.has(to)) {
       walletMap.set(to, {
         address: to,
@@ -629,7 +696,7 @@ async function findLinkedWallets(
   // ETH funding transfers → low confidence (only added if not already found via token)
   for (const t of ethTransfers) {
     const to = t.to?.toLowerCase()
-    if (!to || excluded.has(to)) continue
+    if (!to || excluded.has(to) || !normalizeEvidenceAddress(to)) continue
     if (!walletMap.has(to)) {
       walletMap.set(to, {
         address: to,
@@ -696,13 +763,15 @@ async function getSupplyData(
       matched.push({ address: addr, supplyPct: pct, isDeployer, isLinked })
     }
     const top = holders.map(h => (typeof h.percent === 'number' ? h.percent : 0))
+    const actorsChecked = Boolean(deployer || linkedSet.size > 0)
+    const roundedControlled = Math.round(controlled * 100) / 100
     return {
       holderDataAvailable: holders.length > 0,
-      supplyControlled: matched.length > 0 ? Math.round(controlled * 100) / 100 : null,
+      supplyControlled: actorsChecked && holders.length > 0 ? roundedControlled : null,
       matchedHolderWallets: matched.sort((a, b) => b.supplyPct - a.supplyPct),
       holderStats: {
         top1: top[0] ?? null, top10: top.slice(0, 10).reduce((a, b) => a + b, 0) || null, top20: top.slice(0, 20).reduce((a, b) => a + b, 0) || null,
-        holderCount: holders.length, creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0), devClusterSupply: matched.length > 0 ? Math.round(controlled * 100) / 100 : null,
+        holderCount: holders.length, creatorInTopHolders: matched.some(m => m.isDeployer), linkedWalletSupply: actorsChecked && holders.length > 0 ? matched.filter(m => m.isLinked).reduce((a, b) => a + b.supplyPct, 0) : null, devClusterSupply: actorsChecked && holders.length > 0 ? roundedControlled : null,
       },
     }
   }
@@ -871,7 +940,7 @@ async function deriveHolderPercentages(contract: string, holderRows: HolderRowIn
   const holderRowsCount = rows.length
   const holderRowsHaveBalances = rows.some(r => toBigIntSafe(r.balance ?? r.amount) != null)
   const scannerHasTop = typeof scannerTop?.top1 === 'number' || typeof scannerTop?.top10 === 'number' || typeof scannerTop?.top20 === 'number'
-  if (holderRowsCount === 0) return { holderDistribution: null, holderDistributionStatus: 'unavailable', holderPercentAvailable: false, holderPercentSource: null, debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved: null, totalSupplyResolved: false, totalSupplySource: null, percentDerivationAttempted: false, percentDerivationReason: 'no_holder_rows', top1: null, top10: null, top20: null } }
+  if (holderRowsCount === 0) return { holderDistribution: null, holderDistributionStatus: 'unavailable_with_reason', holderPercentAvailable: false, holderPercentSource: null, holderStatusReason: 'no_holder_rows_returned', debug: { holderRowsCount, holderRowsHaveBalances, tokenDecimalsResolved: null, totalSupplyResolved: false, totalSupplySource: null, percentDerivationAttempted: false, percentDerivationReason: 'no_holder_rows', top1: null, top10: null, top20: null } }
   if (scannerHasTop) return {
     holderDistribution: { top1: scannerTop?.top1 ?? null, top10: scannerTop?.top10 ?? null, top20: scannerTop?.top20 ?? null, holderCount: holderRowsCount, topHolders: rows.map(r => ({ address: String(r.address ?? '').toLowerCase(), percent: typeof r.percent === 'number' ? r.percent : null })) },
     holderDistributionStatus: 'ok',
@@ -1587,8 +1656,8 @@ export async function POST(req: Request) {
     const cacheKey = `${activeChainConfig.chain}:${normalizedAddress}`
     const cached = devCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) {
-      const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any) } : cached.payload
-      if (debug && cp && typeof cp === 'object') cp._debug = { routeName: '/api/dev-wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
+      const cp: unknown = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as Record<string, unknown>) } : cached.payload
+      if (debug && cp && typeof cp === 'object') (cp as Record<string, unknown>)._debug = { routeName: '/api/dev-wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt }
       return NextResponse.json(cp)
     }
 
@@ -1724,6 +1793,115 @@ export async function POST(req: Request) {
       (typeof (sections.metadata as Record<string, unknown> | undefined)?.symbol === 'string' && String((sections.metadata as Record<string, unknown>).symbol).trim())
     )
     const holderPercentDerived = await deriveHolderPercentages(normalizedAddress, holderDistributionRaw?.topHolders, { top1: holderDistributionRaw?.top1, top10: holderDistributionRaw?.top10, top20: holderDistributionRaw?.top20 })
+
+    // Compute supply control from holder rows with real percent values only. If the
+    // scanner could not expose rows but the holder fallback confirmed no actor
+    // matches, preserve that confirmed zero instead of treating 0 as pending.
+    const derivedHolderRows = holderPercentDerived.holderDistribution?.topHolders ?? []
+    const rawHolderRows = holderDistributionRaw?.topHolders ?? []
+    const supplyRowsSource = derivedHolderRows.some(h => typeof h.percent === 'number' && Number.isFinite(h.percent))
+      ? derivedHolderRows
+      : rawHolderRows.some(h => typeof h.percent === 'number' && Number.isFinite(h.percent))
+        ? rawHolderRows.map(h => ({ address: String(h.address ?? '').toLowerCase(), percent: typeof h.percent === 'number' ? h.percent : null }))
+        : []
+    const holderRowsChecked = supplyRowsSource.length > 0 ? supplyRowsSource.length : (holderStats?.holderCount ?? 0)
+    const holderRowsHaveUsablePercents = supplyRowsSource.some(h => typeof h.percent === 'number' && Number.isFinite(h.percent))
+    const holderRowsConfirmed = holderRowsHaveUsablePercents || (holderRowsChecked > 0 && supplyControlled !== null)
+    const deployerLower = deployerAddress?.toLowerCase() ?? null
+    const linkedAddrSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
+    let scLinkedPct = 0
+    let scClusterPct = 0
+    let scCreatorInTop = false
+    let scCreatorRank: number | null = null
+    let scCreatorPct: number | null = null
+    let scDeployerMatched = false
+    const scMatchedLinked: Array<{ address: string; rank: number; percent: number }> = []
+    const scSeen = new Set<string>()
+    const roundSupplyPct = (value: number): number => Math.round(value * 100) / 100
+
+    if (holderRowsHaveUsablePercents) {
+      for (let i = 0; i < supplyRowsSource.length; i++) {
+        const h = supplyRowsSource[i]
+        const addr = (h.address ?? '').toLowerCase()
+        const pct = typeof h.percent === 'number' && Number.isFinite(h.percent) ? h.percent : null
+        if (!addr || pct === null || scSeen.has(addr)) continue
+        const isDep = deployerLower ? addr === deployerLower : false
+        const isLnk = linkedAddrSet.has(addr)
+        if (isDep) {
+          scCreatorInTop = true
+          scCreatorRank = i + 1
+          scCreatorPct = pct
+          scDeployerMatched = true
+          scSeen.add(addr)
+        }
+        if (isLnk && !isDep) {
+          scLinkedPct += pct
+          scMatchedLinked.push({ address: addr, rank: i + 1, percent: pct })
+          scSeen.add(addr)
+        }
+      }
+      scClusterPct = (scCreatorPct ?? 0) + scLinkedPct
+    } else if (holderRowsConfirmed && supplyControlled !== null) {
+      scDeployerMatched = matchedHolderWallets.some(h => h.isDeployer)
+      scCreatorInTop = scDeployerMatched
+      const deployerPctSum = matchedHolderWallets.filter(h => h.isDeployer).reduce((sum, h) => sum + h.supplyPct, 0)
+      scCreatorPct = scDeployerMatched ? deployerPctSum : null
+      scLinkedPct = matchedHolderWallets.filter(h => h.isLinked).reduce((sum, h) => sum + h.supplyPct, 0)
+      scClusterPct = supplyControlled
+      for (const h of matchedHolderWallets.filter(h => h.isLinked)) {
+        scMatchedLinked.push({ address: h.address, rank: 0, percent: h.supplyPct })
+      }
+    }
+
+    const scHasActors = Boolean(deployerLower || linkedAddrSet.size > 0)
+    const scHasData = holderRowsConfirmed
+    const supplyRowsArePartial = holderPercentDerived.holderDistributionStatus === 'partial' || holderPercentDerived.holderPercentSource === 'token_scanner_precalculated'
+    const linkedWalletSupplyPercent = linkedAddrSet.size > 0 && scHasData ? roundSupplyPct(scLinkedPct) : null
+    const devClusterSupplyPercent = scHasActors && scHasData ? roundSupplyPct((scCreatorPct ?? 0) + scLinkedPct) : null
+    const scLinkedStatus: CanonicalStatus =
+      linkedAddrSet.size === 0 ? 'not_applicable'
+      : !scHasData ? 'unavailable_with_reason'
+      : scMatchedLinked.length > 0 ? 'verified'
+      : supplyRowsArePartial ? 'partial'
+      : 'verified'
+    const scClusterStatus: CanonicalStatus =
+      !scHasActors ? 'unavailable_with_reason'
+      : !scHasData ? 'unavailable_with_reason'
+      : scSeen.size > 0 || matchedHolderWallets.length > 0 ? 'verified'
+      : supplyRowsArePartial ? 'partial'
+      : 'verified'
+    const supplyControlReason = !scHasActors
+      ? 'no_deployer_or_linked_wallets'
+      : !scHasData
+        ? 'no_usable_holder_rows_or_percents'
+        : scMatchedLinked.length === 0 && linkedAddrSet.size > 0 && !scDeployerMatched
+          ? 'linked_wallets_and_creator_checked_against_available_holder_rows_no_supply_found'
+          : scMatchedLinked.length === 0 && linkedAddrSet.size > 0
+            ? 'linked_wallets_checked_against_available_holder_rows_no_supply_found'
+            : 'matched_holder_rows_with_percent_values'
+    const supplyControlDebug = {
+      holderRowsChecked,
+      linkedWalletsChecked: linkedAddrSet.size,
+      linkedWalletsMatched: scMatchedLinked.length,
+      deployerChecked: Boolean(deployerLower && scHasData),
+      deployerMatched: scDeployerMatched,
+      creatorPercentFound: scCreatorPct !== null ? roundSupplyPct(scCreatorPct) : null,
+      linkedPercentSum: linkedWalletSupplyPercent,
+      clusterPercentComputed: devClusterSupplyPercent,
+      reason: supplyControlReason,
+    }
+    const supplyControl = {
+      creatorInTopHolders: scCreatorInTop,
+      creatorHolderRank: scCreatorRank,
+      creatorHolderPercent: scCreatorPct !== null ? roundSupplyPct(scCreatorPct) : null,
+      linkedWalletSupplyPercent,
+      linkedWalletSupplyStatus: scLinkedStatus,
+      devClusterSupplyPercent,
+      devClusterSupplyStatus: scClusterStatus,
+      devClusterSupplyReason: scClusterStatus === 'unavailable_with_reason' ? supplyControlReason : null,
+      matchedLinkedWallets: scMatchedLinked,
+    }
+
     const holderTop10 = holderPercentDerived.holderDistribution?.top10 ?? (holderStats?.top10 ?? null)
     const holderTop1  = holderPercentDerived.holderDistribution?.top1 ?? (holderStats?.top1 ?? null)
     const holderTop20 = holderPercentDerived.holderDistribution?.top20 ?? (holderStats?.top20 ?? null)
@@ -1746,6 +1924,19 @@ export async function POST(req: Request) {
 
     const { suspiciousTransfers, suspiciousTransferReasons } =
       detectSuspiciousTransfers(linkedWallets, supplyControlled, matchedHolderWallets)
+
+    const clusterMap = buildClusterMap({
+      deployerAddress,
+      deployerStatus,
+      linkedWallets,
+      matchedLinkedWallets: supplyControl.matchedLinkedWallets,
+      supplyControl,
+      holderDistribution: holderPercentDerived.holderDistribution ?? holderDistributionRaw ?? null,
+      topHolders: holderPercentDerived.holderDistribution?.topHolders ?? holderDistributionRaw?.topHolders ?? [],
+      suspiciousTransfers,
+      suspiciousTransferReasons,
+      holderRowsAvailable: holderDataAvailable,
+    })
 
     const { verdict: clarkVerdict, clarkError } = await getClarkVerdict(origin, {
       contractAddress: normalizedAddress,
@@ -1793,12 +1984,35 @@ export async function POST(req: Request) {
       { name: 'clark_input_summary', ok: clarkVerdict !== null, detail: clarkVerdict ? `${clarkVerdict.label} (${clarkVerdict.confidence})` : (clarkError ?? 'failed') },
     ]
 
+    const devIntel = {
+      deployerAddress,
+      deployerStatus,
+      linkedWallets,
+      creatorInTopHolders: supplyControl.creatorInTopHolders || (holderStats?.creatorInTopHolders ?? false),
+      linkedWalletSupply: supplyControl.linkedWalletSupplyPercent ?? holderStats?.linkedWalletSupply ?? null,
+      linkedWalletSupplyPercent: supplyControl.linkedWalletSupplyPercent ?? holderStats?.linkedWalletSupply ?? null,
+      devClusterSupply: supplyControl.devClusterSupplyPercent ?? holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      devClusterSupplyPercent: supplyControl.devClusterSupplyPercent ?? holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      matchedLinkedWallets: supplyControl.matchedLinkedWallets,
+      holderDistribution: holderPercentDerived.holderDistribution ?? holderDistributionRaw ?? null,
+      holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? 'partial',
+      holderPercentAvailable: holderPercentDerived.holderPercentAvailable,
+      holderPercentSource: holderPercentDerived.holderPercentSource,
+      suspiciousTransfers,
+      suspiciousTransferReasons,
+      reasons: [originReason, ...warnings].filter((reason): reason is string => Boolean(reason)),
+      confidence: (tokenEvidence || holderDataAvailable) ? 'medium' : 'low',
+      supplyControl,
+      clusterMap,
+    }
+
     const responsePayload = {
       contractAddress: normalizedAddress,
       chain: activeChainConfig.chain,
       chainLabel: activeChainConfig.chainLabel,
       name: tokenName ?? null,
       symbol: tokenSymbol ?? null,
+      devIntel,
       deployerAddress,
       deployerConfidence,
       methodUsed,
@@ -1812,9 +2026,11 @@ export async function POST(req: Request) {
       top10: holderTop10 ?? null,
       top20: holderTop20 ?? null,
       holderCount: holderCount ?? null,
-      creatorInTopHolders: holderStats?.creatorInTopHolders ?? false,
-      linkedWalletSupply: holderStats?.linkedWalletSupply ?? null,
-      devClusterSupply: holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      creatorInTopHolders: supplyControl.creatorInTopHolders || (holderStats?.creatorInTopHolders ?? false),
+      linkedWalletSupply: supplyControl.linkedWalletSupplyPercent ?? holderStats?.linkedWalletSupply ?? null,
+      devClusterSupply: supplyControl.devClusterSupplyPercent ?? holderStats?.devClusterSupply ?? supplyControlled ?? null,
+      supplyControl,
+      clusterMap,
       liquidity: liquidityUsd ?? null,
       volume24h: typeof market.volume24h === 'number' ? (market.volume24h as number) : null,
       matchedHolderWallets,
@@ -1833,6 +2049,12 @@ export async function POST(req: Request) {
       linkedWalletsStatus: linkedWalletsCheckStatus,
       liquidityStatus: liquidityDataAvailable ? 'ok' : 'partial',
       lpControlStatus: lpControlStatus ? 'ok' : 'partial',
+      lpControl: {
+        status: toCanonical(lpControlStatus) as CanonicalStatus,
+        rawState: lpControlStatus ?? 'unknown',
+        rawLpState: lpControlStatus ?? 'unknown',
+        reason: (lpControlObj as Record<string, unknown> | null)?.reason as string | null ?? null,
+      },
       verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)
         ? 'CAUTION'
         : (tokenEvidence || holderDataAvailable || liquidityDataAvailable || Boolean(bytecode && bytecode !== '0x'))
@@ -1860,9 +2082,10 @@ export async function POST(req: Request) {
           holderSource: holderDataFromToken ? 'token_scanner_holder_distribution' : (holderDataFromCovalent ? 'covalent_fallback' : 'none'),
           holderRowsCount: holderDistributionRaw?.topHolders?.length ?? holderStats?.holderCount ?? 0,
           holderPercentAvailable: holderPercentDerived.holderPercentAvailable,
-          holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable'),
+          holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable_with_reason'),
           holderPercentSource: holderPercentDerived.holderPercentSource,
           holderPercentDebug: holderPercentDerived.debug,
+          supplyControlDebug,
           creatorLookupAttempted: Boolean(originDiag && originDiag.optional_creation_lookup?.attempted),
           creatorStatus: deployerStatus,
           supplySurfaceState: supplyControlStatus,
@@ -1921,7 +2144,7 @@ export async function POST(req: Request) {
       fetchedAt: new Date().toISOString(),
     }
     if (debug) {
-      ;(responsePayload as any)._debug = {
+      ;(responsePayload as Record<string, unknown>)._debug = {
         hasBearer: planRes.hasBearer,
         userPresent: planRes.userPresent,
         settingsRowFound: planRes.settingsRowFound,
