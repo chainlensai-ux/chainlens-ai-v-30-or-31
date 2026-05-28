@@ -115,6 +115,23 @@ type HolderDistributionStatus = {
   normalizedCount: number
   percentSource: "provider" | "calculated" | "inferred"
 }
+
+type SupplyControl = {
+  creatorInTopHolders: boolean | null
+  creatorHolderRank: number | null
+  creatorHolderPercent: number | null
+  linkedWalletSupplyPercent: number | null
+  linkedWalletSupplyStatus: CanonicalStatus
+  devClusterSupplyPercent: number | null
+  devClusterSupplyStatus: CanonicalStatus
+  devClusterSupplyReason: string
+  matchedLinkedWallets: Array<{
+    address: string
+    percent: number | null
+    rank: number | null
+    confidence: string
+  }>
+}
 type RiskEngine = {
   rugRiskScore: number | null
   rugRiskLabel: "low_visible_risk" | "watch" | "high" | "critical" | "partial_data"
@@ -234,7 +251,7 @@ function pickNum(...vals: unknown[]): number | null {
 
 function normalizeHolderPercent(v: unknown): number | null {
   const n = toNum(v)
-  if (n == null || n <= 0 || n > 100) return null
+  if (n == null || n < 0 || n > 100) return null
   if (n > 0 && n <= 1) return n * 100
   return n
 }
@@ -3393,6 +3410,115 @@ export async function POST(req: Request) {
     const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
     const finalResolvedSymbol = (resolvedSymbol && resolvedSymbol !== '?') ? resolvedSymbol : (rpcSymbol ?? '?')
 
+    const roundSupplyPct = (value: number): number => Math.round(value * 100) / 100
+    const normalizeActorAddress = (value: string | null | undefined): string | null => {
+      if (typeof value !== 'string') return null
+      const trimmed = value.trim().toLowerCase()
+      return /^0x[a-f0-9]{40}$/.test(trimmed) && trimmed !== _ZERO_ADDR ? trimmed : null
+    }
+    const deployerAddress = normalizeActorAddress(ownerAddr)
+    const linkedWallets = [adminAddr]
+      .map(normalizeActorAddress)
+      .filter((address): address is string => Boolean(address && address !== deployerAddress))
+      .filter((address, index, arr) => arr.indexOf(address) === index)
+      .map((address) => ({ address, reason: 'admin_or_proxy_control_wallet', confidence: 'medium' }))
+    const linkedAddressSet = new Set(linkedWallets.map((wallet) => wallet.address))
+    const holderRows = holderDistribution.topHolders ?? []
+    const holderRowsHaveUsablePercents = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
+    const holderRowsConfirmed = holderRowsHaveUsablePercents
+    const supplyRowsArePartial = holderDistributionStatus.status === 'partial' || holderDistributionStatus.percentSource === 'calculated'
+    let creatorHolderRank: number | null = null
+    let creatorHolderPercent: number | null = null
+    let linkedWalletSupplyAccumulator = 0
+    const matchedLinkedWallets: SupplyControl['matchedLinkedWallets'] = []
+    const matchedActorAddresses = new Set<string>()
+
+    if (holderRowsHaveUsablePercents) {
+      for (const holder of holderRows) {
+        const address = normalizeActorAddress(holder.address)
+        const percent = typeof holder.percent === 'number' && Number.isFinite(holder.percent) ? holder.percent : null
+        if (!address || percent == null) continue
+        if (deployerAddress && address === deployerAddress && !matchedActorAddresses.has(address)) {
+          creatorHolderRank = holder.rank ?? null
+          creatorHolderPercent = percent
+          matchedActorAddresses.add(address)
+          continue
+        }
+        if (linkedAddressSet.has(address) && !matchedActorAddresses.has(address)) {
+          linkedWalletSupplyAccumulator += percent
+          matchedLinkedWallets.push({
+            address,
+            percent: roundSupplyPct(percent),
+            rank: holder.rank ?? null,
+            confidence: linkedWallets.find((wallet) => wallet.address === address)?.confidence ?? 'medium',
+          })
+          matchedActorAddresses.add(address)
+        }
+      }
+    }
+
+    const linkedWalletSupplyPercent = holderRowsConfirmed ? roundSupplyPct(linkedWalletSupplyAccumulator) : null
+    const devClusterSupplyPercent = (deployerAddress || linkedWallets.length > 0) && holderRowsConfirmed
+      ? roundSupplyPct((creatorHolderPercent ?? 0) + linkedWalletSupplyAccumulator)
+      : null
+    const creatorInTopHolders = deployerAddress && holderRowsConfirmed ? creatorHolderPercent != null : null
+    const linkedWalletSupplyStatus: CanonicalStatus = linkedWallets.length === 0
+      ? 'not_applicable'
+      : !holderRowsConfirmed
+        ? 'unavailable_with_reason'
+        : matchedLinkedWallets.length > 0
+          ? 'verified'
+          : supplyRowsArePartial
+            ? 'partial'
+            : 'verified'
+    const devClusterSupplyStatus: CanonicalStatus = !(deployerAddress || linkedWallets.length > 0)
+      ? 'unavailable_with_reason'
+      : !holderRowsConfirmed
+        ? 'unavailable_with_reason'
+        : matchedActorAddresses.size > 0
+          ? 'verified'
+          : supplyRowsArePartial
+            ? 'partial'
+            : 'verified'
+    const devClusterSupplyReason = !(deployerAddress || linkedWallets.length > 0)
+      ? 'no_deployer_or_linked_wallets'
+      : !holderRowsConfirmed
+        ? 'no_usable_holder_rows_or_percents'
+        : matchedActorAddresses.size === 0
+          ? 'creator_and_linked_wallets_checked_against_available_holder_rows_no_supply_found'
+          : 'matched_holder_rows_with_percent_values'
+    const supplyControl: SupplyControl = {
+      creatorInTopHolders,
+      creatorHolderRank,
+      creatorHolderPercent: creatorHolderPercent != null ? roundSupplyPct(creatorHolderPercent) : null,
+      linkedWalletSupplyPercent,
+      linkedWalletSupplyStatus,
+      devClusterSupplyPercent,
+      devClusterSupplyStatus,
+      devClusterSupplyReason,
+      matchedLinkedWallets,
+    }
+    const devIntel = {
+      deployerAddress,
+      deployerStatus: deployerAddress ? 'confirmed' : 'not_confirmed',
+      linkedWallets,
+      creatorInTopHolders,
+      linkedWalletSupply: linkedWalletSupplyPercent,
+      linkedWalletSupplyPercent,
+      devClusterSupply: devClusterSupplyPercent,
+      devClusterSupplyPercent,
+      matchedLinkedWallets,
+      holderDistribution: { top1: holderDistribution.top1, top10: holderDistribution.top10, top20: holderDistribution.top20 },
+      holderDistributionStatus: holderDistributionStatus.status,
+      holderPercentAvailable: holderRowsHaveUsablePercents,
+      holderPercentSource: holderDistributionStatus.percentSource,
+      suspiciousTransfers: false,
+      suspiciousTransferReasons: [],
+      reasons: [deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.'],
+      confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
+      supplyControl,
+    }
+
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'inferred'
     const ownerStatus = ownerAddr ? 'ok' : 'inferred'
     // mint/proxy status: always 'ok' now since we always return inferred/not_detected/verified
@@ -3428,6 +3554,12 @@ export async function POST(req: Request) {
       holderDistribution,
       holderDistributionStatus,
       holderStatus: holdersStatus,
+      devIntel,
+      supplyControl,
+      linkedWalletSupplyPercent,
+      devClusterSupplyPercent,
+      matchedLinkedWallets,
+      creatorInTopHolders,
       ...(process.env.NODE_ENV !== 'production' || debugHolder === true ? {
         debugHolderStatus: {
           providerCalled: holdersRaw?.__status !== 'not_configured',

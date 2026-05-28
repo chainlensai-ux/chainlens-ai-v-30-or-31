@@ -200,6 +200,7 @@ type ScanResult = {
     lpVerificationPoolSelected?: boolean | null
     proofStatus?: string | null
   } | null
+  devIntel?: DevWalletIntel | null
   security?: {
     simulation?: {
       honeypot: boolean | null
@@ -231,7 +232,10 @@ type DevWalletIntel = {
   deployerStatus?: 'confirmed' | 'possible_match' | 'not_confirmed' | string
   linkedWallets?: Array<{ address: string; reason?: string | null; confidence?: string | null }>
   linkedWalletSupply?: number | null
+  linkedWalletSupplyPercent?: number | null
   devClusterSupply?: number | null
+  devClusterSupplyPercent?: number | null
+  matchedLinkedWallets?: Array<{ address: string; percent: number | null; rank: number | null; confidence: string }>
   creatorInTopHolders?: boolean | null
   holderDistribution?: { top1?: number | null; top10?: number | null; top20?: number | null } | null
   holderDistributionStatus?: string | null
@@ -243,15 +247,15 @@ type DevWalletIntel = {
   reasons?: string[]
   confidence?: string
   supplyControl?: {
-    creatorInTopHolders: boolean
+    creatorInTopHolders: boolean | null
     creatorHolderRank: number | null
     creatorHolderPercent: number | null
     linkedWalletSupplyPercent: number | null
     linkedWalletSupplyStatus: string
     devClusterSupplyPercent: number | null
     devClusterSupplyStatus: string
-    devClusterSupplyReason: string | null
-    matchedLinkedWallets: Array<{ address: string; rank: number; percent: number }>
+    devClusterSupplyReason: string
+    matchedLinkedWallets: Array<{ address: string; percent: number | null; rank: number | null; confidence: string }>
   } | null
 }
 
@@ -1527,9 +1531,16 @@ export default function TerminalTokenScanner() {
           riskEngine: json.riskEngine ?? null,
           rugRisk: json.rugRisk ?? null,
           contractFlags: json.contractFlags ?? null,
+          devIntel: json.devIntel ?? null,
           security: json.security ?? null,
         }
         setResult(mapped)
+        if (json.devIntel) {
+          const tokenDevIntel = json.devIntel as DevWalletIntel
+          setDevIntel(tokenDevIntel)
+          const devCacheChain = (mapped.chain === 'eth' ? 'eth' : (mapped.chain === 'base' ? 'base' : effectiveChain))
+          if (mapped.contract) devIntelCacheRef.current[`${devCacheChain}:${mapped.contract.toLowerCase()}`] = tokenDevIntel
+        }
         if (typeof window !== 'undefined' && json._debug) {
           (window as unknown as Record<string, unknown>).__CL_DEBUG__ = json._debug
         }
@@ -2807,18 +2818,19 @@ export default function TerminalTokenScanner() {
               {/* ── DEV CONTROL ─────────────────────────────────────── */}
               {activeSection === 'deployer-intel' && (() => {
                 const holderState = deriveHolderState(result)
-                const creatorAddress = devIntel?.deployerAddress ?? result.security?.devOwnership?.ownerAddress ?? result.security?.devOwnership?.adminAddress ?? null
-                const creatorStatus = devIntel?.deployerStatus === 'confirmed' ? 'confirmed' : devIntel?.deployerStatus === 'possible_match' ? 'likely' : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
-                const linkedWallets = devIntel?.linkedWallets ?? []
+                const activeDevIntel = devIntel ?? result.devIntel ?? null
+                const creatorAddress = activeDevIntel?.deployerAddress ?? result.security?.devOwnership?.ownerAddress ?? result.security?.devOwnership?.adminAddress ?? null
+                const creatorStatus = activeDevIntel?.deployerStatus === 'confirmed' ? 'confirmed' : activeDevIntel?.deployerStatus === 'possible_match' ? 'likely' : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
+                const linkedWallets = activeDevIntel?.linkedWallets ?? []
                 const linkedWalletCount = linkedWallets.length
-                const sc = devIntel?.supplyControl ?? null
-                const linkedWalletSupply = sc?.linkedWalletSupplyPercent ?? devIntel?.linkedWalletSupply ?? null
-                const top1 = devIntel?.holderDistribution?.top1 ?? result.holderDistribution?.top1 ?? null
-                const top10 = devIntel?.holderDistribution?.top10 ?? result.holderDistribution?.top10 ?? null
-                const top20 = devIntel?.holderDistribution?.top20 ?? result.holderDistribution?.top20 ?? null
-                const creatorInTop = sc?.creatorInTopHolders ?? devIntel?.creatorInTopHolders ?? null
-                const devClusterSupply = sc?.devClusterSupplyPercent ?? devIntel?.devClusterSupply ?? null
-                const suspiciousTransferPattern = devIntel?.suspiciousTransfers ?? false
+                const sc = activeDevIntel?.supplyControl ?? null
+                const linkedWalletSupply = sc?.linkedWalletSupplyPercent ?? activeDevIntel?.linkedWalletSupplyPercent ?? activeDevIntel?.linkedWalletSupply ?? null
+                const top1 = activeDevIntel?.holderDistribution?.top1 ?? result.holderDistribution?.top1 ?? null
+                const top10 = activeDevIntel?.holderDistribution?.top10 ?? result.holderDistribution?.top10 ?? null
+                const top20 = activeDevIntel?.holderDistribution?.top20 ?? result.holderDistribution?.top20 ?? null
+                const creatorInTop = sc?.creatorInTopHolders ?? activeDevIntel?.creatorInTopHolders ?? null
+                const devClusterSupply = sc?.devClusterSupplyPercent ?? activeDevIntel?.devClusterSupplyPercent ?? activeDevIntel?.devClusterSupply ?? null
+                const suspiciousTransferPattern = activeDevIntel?.suspiciousTransfers ?? false
                 const missingChecks = getMissingChecks(result)
                 const openChecks = [
                   ...(linkedWalletCount === 0 ? ['Linked wallet cluster still limited from available transfer evidence.'] : []),
@@ -2863,7 +2875,7 @@ export default function TerminalTokenScanner() {
                       const originAddr = creatorAddress
                       const originLabel = creatorStatus === 'confirmed' ? 'Confirmed deployer' : creatorStatus === 'likely' ? 'Likely deployer' : 'Origin wallet'
                       const originChip = creatorStatus === 'confirmed' ? { label: 'Confirmed', color: '#34d399', bg: 'rgba(52,211,153,.12)', border: 'rgba(52,211,153,.3)' } : creatorStatus === 'likely' ? { label: 'Likely matched', color: '#fbbf24', bg: 'rgba(251,191,36,.1)', border: 'rgba(251,191,36,.3)' } : { label: 'Open check', color: '#94a3b8', bg: 'rgba(148,163,184,.08)', border: 'rgba(148,163,184,.25)' }
-                      const confLabel = devIntel?.confidence === 'high' ? 'High confidence' : devIntel?.confidence === 'medium' ? 'Medium confidence' : devIntel?.confidence === 'low' ? 'Low confidence' : 'Evidence-based inference'
+                      const confLabel = activeDevIntel?.confidence === 'high' ? 'High confidence' : activeDevIntel?.confidence === 'medium' ? 'Medium confidence' : activeDevIntel?.confidence === 'low' ? 'Low confidence' : 'Evidence-based inference'
                       const chainLabel = (result.chain ?? chain ?? 'unknown').toUpperCase()
                       return (
                         <div style={{ display:'grid', gap:'16px' }}>
@@ -2924,7 +2936,7 @@ export default function TerminalTokenScanner() {
                               {[
                                 { label: 'Address', value: originAddr ? fmt(originAddr) : 'Not confirmed', title: originAddr ?? undefined },
                                 { label: 'Detection confidence', value: confLabel },
-                                { label: 'Evidence source', value: devIntel?.reasons?.[0] ?? (originAddr ? 'Transfer trace' : 'No direct evidence') },
+                                { label: 'Evidence source', value: activeDevIntel?.reasons?.[0] ?? (originAddr ? 'Transfer trace' : 'No direct evidence') },
                                 { label: 'Network', value: chainLabel },
                               ].map(({ label, value, title }) => (
                                 <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,.5)', border:'1px solid rgba(148,163,184,.1)' }}>
@@ -3010,11 +3022,11 @@ export default function TerminalTokenScanner() {
                     )}
                     {devControlTab==='history' && (
                       <div style={{ display:'grid', gap:'10px' }}>
-                        {devIntel?.reasons && devIntel.reasons.length > 0 ? (
+                        {activeDevIntel?.reasons && activeDevIntel.reasons.length > 0 ? (
                           <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(125,211,252,.04)', border:'1px solid rgba(125,211,252,.16)' }}>
                             <p style={{ margin:'0 0 7px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE TRACES</p>
                             <div style={{ display:'grid', gap:'5px' }}>
-                              {devIntel.reasons.map((r, i) => (
+                              {activeDevIntel.reasons.map((r, i) => (
                                 <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
                                   <span style={{ color:'#2dd4bf', flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
                                   <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{r}</p>
