@@ -271,6 +271,15 @@ type ClusterMap = {
   signals: string[]
 }
 
+type ClusterInfluence = {
+  clusterSupplyPercent?: number | null
+  clusterDominance?: "none" | "low" | "medium" | "high" | "critical" | "unknown"
+  clusterRiskScore?: number | null
+  clusterRiskLabel?: "low" | "watch" | "elevated" | "high" | "critical" | "open_check"
+  reason?: string | null
+  signals?: string[]
+}
+
 type DevWalletIntel = {
   deployerAddress?: string | null
   deployerStatus?: 'confirmed' | 'possible_match' | 'not_confirmed' | string
