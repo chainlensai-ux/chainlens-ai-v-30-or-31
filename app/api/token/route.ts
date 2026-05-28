@@ -116,6 +116,15 @@ type HolderDistributionStatus = {
   percentSource: "provider" | "calculated" | "inferred"
 }
 
+type ClusterInfluence = {
+  clusterSupplyPercent: number | null
+  clusterDominance: "none" | "low" | "medium" | "high" | "critical" | "unknown"
+  clusterRiskScore: number | null
+  clusterRiskLabel: "low" | "watch" | "elevated" | "high" | "critical" | "open_check"
+  reason: string
+  signals: string[]
+}
+
 type SupplyControl = {
   creatorInTopHolders: boolean | null
   creatorHolderRank: number | null
@@ -131,6 +140,7 @@ type SupplyControl = {
     rank: number | null
     confidence: string
   }>
+  clusterInfluence: ClusterInfluence
 }
 type RiskEngine = {
   rugRiskScore: number | null
@@ -254,6 +264,110 @@ function normalizeHolderPercent(v: unknown): number | null {
   if (n == null || n < 0 || n > 100) return null
   if (n > 0 && n <= 1) return n * 100
   return n
+}
+
+function getClusterInfluenceDominance(clusterSupplyPercent: number | null): ClusterInfluence["clusterDominance"] {
+  if (clusterSupplyPercent == null) return "unknown"
+  if (clusterSupplyPercent === 0) return "none"
+  if (clusterSupplyPercent < 5) return "low"
+  if (clusterSupplyPercent < 10) return "medium"
+  if (clusterSupplyPercent < 20) return "high"
+  return "critical"
+}
+
+function getClusterInfluenceBaseScore(clusterSupplyPercent: number): number {
+  if (clusterSupplyPercent === 0) return 5
+  if (clusterSupplyPercent <= 1) return 15
+  if (clusterSupplyPercent < 5) return 30
+  if (clusterSupplyPercent < 10) return 50
+  if (clusterSupplyPercent < 20) return 70
+  return 90
+}
+
+function getClusterInfluenceRiskLabel(score: number): ClusterInfluence["clusterRiskLabel"] {
+  if (score >= 85) return "critical"
+  if (score >= 65) return "high"
+  if (score >= 45) return "elevated"
+  if (score >= 25) return "watch"
+  return "low"
+}
+
+function buildClusterInfluence(params: {
+  clusterSupplyPercent: number | null
+  creatorInTopHolders: boolean | null
+  matchedLinkedWallets: SupplyControl["matchedLinkedWallets"]
+  suspiciousTransfers: boolean
+  holderEvidenceAvailable: boolean
+  holderEvidencePartial: boolean
+}): ClusterInfluence {
+  const {
+    clusterSupplyPercent,
+    creatorInTopHolders,
+    matchedLinkedWallets,
+    suspiciousTransfers,
+    holderEvidenceAvailable,
+    holderEvidencePartial,
+  } = params
+
+  if (!holderEvidenceAvailable || clusterSupplyPercent == null) {
+    return {
+      clusterSupplyPercent: null,
+      clusterDominance: "unknown",
+      clusterRiskScore: null,
+      clusterRiskLabel: "open_check",
+      reason: "CORTEX needs more holder evidence before confirming cluster influence.",
+      signals: [
+        "Holder evidence is not complete enough to confirm cluster influence.",
+        "Open check until indexed holder percentages are available.",
+      ],
+    }
+  }
+
+  let score = getClusterInfluenceBaseScore(clusterSupplyPercent)
+  const signals: string[] = [
+    clusterSupplyPercent === 0
+      ? "No cluster supply found in indexed holders."
+      : `${clusterSupplyPercent.toFixed(1)}% cluster supply found in indexed holders.`,
+  ]
+
+  if (creatorInTopHolders === true) {
+    score += 5
+    signals.push("Creator wallet appears in indexed top holders.")
+  } else if (creatorInTopHolders === false) {
+    signals.push("Creator wallet was not found in indexed top holders.")
+  }
+
+  if (matchedLinkedWallets.length >= 2) {
+    score += 5
+    signals.push(`${matchedLinkedWallets.length} linked wallets matched indexed holder rows.`)
+  } else if (matchedLinkedWallets.length === 1) {
+    signals.push("1 linked wallet matched indexed holder rows.")
+  }
+
+  if (suspiciousTransfers) {
+    score += 10
+    signals.push("Suspicious transfer pattern is present in dev intelligence.")
+  }
+
+  if (holderEvidencePartial) {
+    score = Math.max(getClusterInfluenceBaseScore(0), score - 10)
+    signals.push("Holder evidence is partial, so scoring is conservatively reduced.")
+  }
+
+  const clusterRiskScore = Math.max(0, Math.min(100, Math.round(score)))
+  const clusterDominance = getClusterInfluenceDominance(clusterSupplyPercent)
+  const dominanceText = clusterDominance === "none" ? "No" : `${clusterDominance.charAt(0).toUpperCase()}${clusterDominance.slice(1)}`
+
+  return {
+    clusterSupplyPercent,
+    clusterDominance,
+    clusterRiskScore,
+    clusterRiskLabel: getClusterInfluenceRiskLabel(clusterRiskScore),
+    reason: clusterSupplyPercent === 0
+      ? "No cluster supply found in indexed holders."
+      : `${dominanceText} cluster dominance from indexed holder evidence.`,
+    signals: signals.slice(0, 4),
+  }
 }
 
 // BigInt-safe percentage: avoids float precision loss on 18-decimal ERC-20 balances.
@@ -3487,6 +3601,14 @@ export async function POST(req: Request) {
         : matchedActorAddresses.size === 0
           ? 'creator_and_linked_wallets_checked_against_available_holder_rows_no_supply_found'
           : 'matched_holder_rows_with_percent_values'
+    const clusterInfluence = buildClusterInfluence({
+      clusterSupplyPercent: devClusterSupplyPercent,
+      creatorInTopHolders,
+      matchedLinkedWallets,
+      suspiciousTransfers: false,
+      holderEvidenceAvailable: holderRowsConfirmed,
+      holderEvidencePartial: supplyRowsArePartial,
+    })
     const supplyControl: SupplyControl = {
       creatorInTopHolders,
       creatorHolderRank,
@@ -3497,6 +3619,7 @@ export async function POST(req: Request) {
       devClusterSupplyStatus,
       devClusterSupplyReason,
       matchedLinkedWallets,
+      clusterInfluence,
     }
     const devIntel = {
       deployerAddress,
@@ -3514,6 +3637,7 @@ export async function POST(req: Request) {
       holderPercentSource: holderDistributionStatus.percentSource,
       suspiciousTransfers: false,
       suspiciousTransferReasons: [],
+      clusterInfluence,
       reasons: [deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.'],
       confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
       supplyControl,
