@@ -2952,7 +2952,14 @@ export async function POST(req: Request) {
     else if (whalePressure === 'medium') { riskDrivers.push('Whale pressure is medium: notable top-holder concentration.'); riskScore += 4 }
     if (supplySpread === 'elevated') riskDrivers.push('Supply spread elevated: Top 10 hold more than 35% of supply.')
     // Holder completeness — reframe as next action, not empty gap
-    if (!holderDataComplete) openChecks.push('Holder concentration: partial data available — cross-check top wallets before sizing a position.')
+    if (!holderDataComplete) {
+      const holderItemCount = holderDistributionStatus.itemCount ?? 0
+      if (holderDistributionStatus.status === 'unavailable_with_reason' || holderItemCount === 0) {
+        openChecks.push('Holder concentration: not indexed in this pass — verify via block explorer before sizing a position.')
+      } else {
+        openChecks.push('Holder concentration: partial data available — cross-check top wallets before sizing a position.')
+      }
+    }
 
     const majorMissingCount = [
       marketCapFromGt == null,
@@ -3711,7 +3718,7 @@ export async function POST(req: Request) {
 
       // Contract analysis
       analysis,
-      lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status },
+      lpControl: { ...lpControl, canonicalStatus: toCanonical(lpControl.status), rawLpState: lpControl.status, rawState: lpControl.status },
       lpStatus: (lpControl.status === 'error' || lpControl.status === 'insufficient_data') ? 'partial' : lpControl.status,
       lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
       lpMeta: {
@@ -3794,6 +3801,7 @@ export async function POST(req: Request) {
             ...lpControl,
             canonicalStatus: toCanonical(lpControl.status),
             rawLpState: lpControl.status,
+            rawState: lpControl.status,
           },
           lpControlRead: computeLpControlRead(lpControl, String(lpPool?.pairName ?? "")),
           lpMeta: {

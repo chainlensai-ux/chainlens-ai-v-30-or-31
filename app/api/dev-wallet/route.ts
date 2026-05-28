@@ -1838,6 +1838,7 @@ export async function POST(req: Request) {
       lpControl: {
         status: toCanonical(lpControlStatus) as CanonicalStatus,
         rawState: lpControlStatus ?? 'unknown',
+        rawLpState: lpControlStatus ?? 'unknown',
         reason: (lpControlObj as Record<string, unknown> | null)?.reason as string | null ?? null,
       },
       verdict: (suspiciousTransfers || (holderTop10 != null && holderTop10 > 50) || liqLpLocked === false || secHoneypot === true)

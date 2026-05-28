@@ -670,7 +670,7 @@ function getSummaryReasons(result: ScanResult): string[] {
   const holderState = deriveHolderState(result)
   const reasons: string[] = []
   if (result.price != null && liq > 0) {
-    const mcStr = result.marketCapUsd != null ? `MC ${fmtLarge(result.marketCapUsd)} verified` : 'market cap unverified'
+    const mcStr = result.marketCapUsd != null ? `MC ${fmtLarge(result.marketCapUsd)} verified` : 'market cap not confirmed'
     reasons.push(`Market is live — price ${fmtPrice(result.price)}, liquidity ${fmtLarge(liq)}, ${mcStr}.`)
   } else if (result.noActivePools) {
     reasons.push(`No active liquidity pool found for this token on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`)
@@ -683,7 +683,7 @@ function getSummaryReasons(result: ScanResult): string[] {
   } else if (hp?.isHoneypot === true) {
     reasons.push('Honeypot flagged — blocked sells detected in simulation.')
   } else {
-    reasons.push('Security simulation unavailable — treat status as unverified.')
+    reasons.push('Security simulation unavailable — treat as an open check.')
   }
   if (holderState.kind === 'rowsWithPercent' && result.holderDistribution?.top10 != null) {
     const t = result.holderDistribution.top10
@@ -807,7 +807,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
     if (result.marketCapUsd != null) {
       marketPts += 6; marketStatus = 'ok'; marketReason = 'Live price, liquidity, and verified market cap available.'
     } else {
-      marketPts -= 8; marketStatus = 'partial'; marketReason = 'Market data present but market cap unverified.'
+      marketPts -= 8; marketStatus = 'partial'; marketReason = 'Market data present but market cap not confirmed.'
     }
     if (result.price == null && result.liquidity == null) {
       marketStatus = 'unavailable'; marketReason = 'No price or liquidity data returned.'
@@ -933,7 +933,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   }
   // Holder concentration unavailable
   if (holderState.kind === 'noRowsFallback') {
-    setCapIfLower(75, 'Score capped by unverified holder data.')
+    setCapIfLower(75, 'Score capped — holder data not confirmed.')
   }
   // Holder concentration partial (rows present, percentages missing)
   if (holderState.kind === 'rowsWithoutPercent') {
@@ -949,7 +949,7 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   }
   // Market cap unverified (but some market data exists)
   if (!mcVerified2 && (result.price != null || result.liquidity != null)) {
-    setCapIfLower(82, 'Score capped by unverified market cap.')
+    setCapIfLower(82, 'Score capped — market cap not confirmed.')
   }
   // Low market cap — microcap tokens need all checks verified to score high
   if (mc != null && mc < 1_000_000 && !allMajorVerified) {
@@ -1058,7 +1058,7 @@ function getMarketRead(result: ScanResult): string {
   const mc = result.marketCapUsd != null
     ? `Market cap ${fmtLarge(result.marketCapUsd)} — verified live.`
     : result.fdvUsd != null
-      ? `Market cap unverified — FDV ${fmtLarge(result.fdvUsd)} shown as context.`
+      ? `Market cap not confirmed — FDV ${fmtLarge(result.fdvUsd)} shown as context.`
       : 'Market cap not verified.'
   return parts.length ? `${parts.join(', ')}. ${mc}` : 'Market data unavailable.'
 }
@@ -1066,7 +1066,7 @@ function getMarketRead(result: ScanResult): string {
 function getSecurityRead(result: ScanResult): string {
   const hp = result.honeypot
   if (hp?.isHoneypot === true) return 'Honeypot flagged — sell simulation detected blocked transaction.'
-  if (!hp?.simulationSuccess) return 'Security simulation did not complete — status is unverified in this pass.'
+  if (!hp?.simulationSuccess) return 'Security simulation did not complete — status is an open check this pass.'
   const parts = [
     'Honeypot: not flagged',
     hp.buyTax != null ? `buy tax ${hp.buyTax.toFixed(1)}%` : null,
@@ -1078,8 +1078,8 @@ function getSecurityRead(result: ScanResult): string {
 
 function getHolderRead(result: ScanResult): string {
   const holderState = deriveHolderState(result)
-  if (holderState.kind === 'noRowsFallback') return 'Holder distribution was not returned this scan. Treat supply spread as unverified.'
-  if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Treat concentration as partially unverified.'
+  if (holderState.kind === 'noRowsFallback') return 'Holder distribution was not returned this scan. Supply spread is an open check.'
+  if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Concentration is an open check.'
   const top10 = result.holderDistribution?.top10
   const count = result.holderDistribution?.holderCount
   const parts = [
@@ -1247,7 +1247,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         fontSize: '11px', color: '#3a5268',
         fontFamily: 'var(--font-plex-mono)',
       }}>
-        No security simulation data surfaced — status is unverified.
+        No security simulation data surfaced — status is an open check.
       </div>
     </div>
   )
@@ -1792,7 +1792,7 @@ export default function TerminalTokenScanner() {
                   liq2 > 0 && liq2 < 10000 ? 'Very thin liquidity — extreme slippage and exit risk.' : liq2 > 0 && liq2 < 50000 ? `Thin liquidity — ${fmtLarge(liq2)} depth, slippage risk.` : '',
                   holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed — open risk check.' : holderState.kind === 'rowsWithoutPercent' ? 'Holder wallets found but percentages not confirmed.' : '',
                   result.marketCapUsd == null ? 'Market cap not verified — supply unconfirmed.' : '',
-                  !hp2?.simulationSuccess ? 'Tax simulation unavailable — status unverified.' : '',
+                  !hp2?.simulationSuccess ? 'Tax simulation unavailable — status is an open check.' : '',
                   result.noActivePools ? `No active liquidity pool detected on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.` : '',
                 ].filter(Boolean).slice(0, 4) as string[]
                 const missing2 = getMissingChecks(result)
@@ -1815,7 +1815,7 @@ export default function TerminalTokenScanner() {
                 const scoreBreakdown = [
                   { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
                   { label: 'Liquidity', ok: (result.liquidity ?? 0) > 1000, reason: (result.liquidity ?? 0) > 1000 ? `${fmtLarge(result.liquidity)} depth detected.` : 'Liquidity too thin or missing.' },
-                  { label: 'Holders', ok: holderState.kind === 'rowsWithPercent', reason: holderState.kind === 'rowsWithPercent' ? 'Top holder percentages verified.' : 'Holder percentages unverified.' },
+                  { label: 'Holders', ok: holderState.kind === 'rowsWithPercent', reason: holderState.kind === 'rowsWithPercent' ? 'Top holder percentages verified.' : 'Holder percentages not confirmed.' },
                   { label: 'Security', ok: riskChipOk, reason: riskChipOk ? 'Simulation passed with no honeypot flag.' : simUnavailable ? 'Simulation unavailable this pass.' : 'Security risk detected.' },
                   { label: 'LP Proof', ok: lpVerified, reason: lpVerified ? `LP ${lpStatus}.` : lpStatus === 'team_controlled' ? 'LP appears team-controlled.' : 'No lock/burn proof confirmed.' },
                   { label: 'Missing Checks', ok: missing2.length === 0, reason: missing2.length === 0 ? 'No open checks.' : `${missing2.length} open checks remain.` },
@@ -2089,7 +2089,7 @@ export default function TerminalTokenScanner() {
                     </>
                   )}
                   {result.marketCapStatus !== 'verified' && !result.noActivePools && (
-                    <p style={{ marginTop: '-14px', marginBottom: '16px', color: '#94a3b8', fontSize: '12px' }}>Market cap unverified. FDV is shown separately.</p>
+                    <p style={{ marginTop: '-14px', marginBottom: '16px', color: '#94a3b8', fontSize: '12px' }}>Market cap not confirmed. FDV is shown separately.</p>
                   )}
                   {result.fdvUsd != null && result.marketCapUsd != null && result.marketCapUsd !== result.fdvUsd && (
                     <div style={{ marginBottom: '16px', padding: '10px 14px', background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)', borderRadius: '10px', fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
@@ -2456,10 +2456,10 @@ export default function TerminalTokenScanner() {
                     const unresolved = _lpIsProtocol
                       ? [
                           'Protocol-specific LP proof required',
-                          ...(_holderState2.kind !== 'rowsWithPercent' ? ['Holder concentration unverified'] : []),
+                          ...(_holderState2.kind !== 'rowsWithPercent' ? ['Holder concentration open check'] : []),
                           ...(_ownerStatus2 === 'Open check' ? ['Contract ownership open check'] : []),
                         ]
-                      : (read?.couldNotVerify?.length ? read.couldNotVerify : ['Holder concentration unverified','Contract ownership unverified','LP lock or burn proof'])
+                      : (read?.couldNotVerify?.length ? read.couldNotVerify : ['Holder concentration open check','Contract ownership open check','LP lock or burn proof'])
                     const riskRead = read?.meaning??(lp.status==='protocol' || lp.status==='concentrated_liquidity'?'Protocol liquidity detected — requires protocol-specific verification.':lp.poolAddressPresent?'Liquidity exists, but LP lock/control could not be proven from current checks.':'No active liquidity pool found.')
                     const nextAction = read?.nextAction??(lp.status==='team_controlled'?'LP appears controlled by a normal wallet. Treat exit liquidity as team-controlled until lock/burn proof is found.':lp.status==='no_pool'?'No usable liquidity pool found — verify the contract is live and has active trading pairs.':'LP control is an open check — locker, burn-address, or protocol-specific proof not yet confirmed.')
                     return (
@@ -2982,7 +2982,7 @@ export default function TerminalTokenScanner() {
               taxesHigh ? `High taxes — buy ${buyTax?.toFixed(1)}% / sell ${sellTax?.toFixed(1)}%.` : null,
               result.noActivePools ? 'No active liquidity pool found.' : null,
               liq > 0 && liq < 10000 ? `Very thin liquidity — ${fmtLarge(liq)}.` : liq > 0 && liq < 50000 ? `Thin liquidity — ${fmtLarge(liq)}.` : null,
-              d.holderState.kind === 'noRowsFallback' ? 'Holder concentration unverified.' : null,
+              d.holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed.' : null,
               !hp?.simulationSuccess ? 'Tax simulation unavailable.' : null,
             ].filter((x):x is string=>x!=null).slice(0,3)
             const ss = {padding:'10px 12px',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'10px',background:'rgba(8,14,28,.65)'}
