@@ -1727,8 +1727,19 @@ export async function POST(req: Request) {
     )
     const holderPercentDerived = await deriveHolderPercentages(normalizedAddress, holderDistributionRaw?.topHolders, { top1: holderDistributionRaw?.top1, top10: holderDistributionRaw?.top10, top20: holderDistributionRaw?.top20 })
 
-    // Compute supply control using derived holder rows (which have proper percent values).
+    // Compute supply control from holder rows with real percent values only. If the
+    // scanner could not expose rows but the holder fallback confirmed no actor
+    // matches, preserve that confirmed zero instead of treating 0 as pending.
     const derivedHolderRows = holderPercentDerived.holderDistribution?.topHolders ?? []
+    const rawHolderRows = holderDistributionRaw?.topHolders ?? []
+    const supplyRowsSource = derivedHolderRows.some(h => typeof h.percent === 'number' && Number.isFinite(h.percent))
+      ? derivedHolderRows
+      : rawHolderRows.some(h => typeof h.percent === 'number' && Number.isFinite(h.percent))
+        ? rawHolderRows.map(h => ({ address: String(h.address ?? '').toLowerCase(), percent: typeof h.percent === 'number' ? h.percent : null }))
+        : []
+    const holderRowsChecked = supplyRowsSource.length > 0 ? supplyRowsSource.length : (holderStats?.holderCount ?? 0)
+    const holderRowsHaveUsablePercents = supplyRowsSource.some(h => typeof h.percent === 'number' && Number.isFinite(h.percent))
+    const holderRowsConfirmed = holderRowsHaveUsablePercents || (holderRowsChecked > 0 && supplyControlled !== null)
     const deployerLower = deployerAddress?.toLowerCase() ?? null
     const linkedAddrSet = new Set(linkedWallets.map(w => w.address.toLowerCase()))
     let scLinkedPct = 0
@@ -1736,55 +1747,90 @@ export async function POST(req: Request) {
     let scCreatorInTop = false
     let scCreatorRank: number | null = null
     let scCreatorPct: number | null = null
+    let scDeployerMatched = false
     const scMatchedLinked: Array<{ address: string; rank: number; percent: number }> = []
     const scSeen = new Set<string>()
-    if (derivedHolderRows.length > 0) {
-      for (let i = 0; i < derivedHolderRows.length; i++) {
-        const h = derivedHolderRows[i]
+    const roundSupplyPct = (value: number): number => Math.round(value * 100) / 100
+
+    if (holderRowsHaveUsablePercents) {
+      for (let i = 0; i < supplyRowsSource.length; i++) {
+        const h = supplyRowsSource[i]
         const addr = (h.address ?? '').toLowerCase()
-        if (!addr || scSeen.has(addr)) continue
-        const pct = typeof h.percent === 'number' ? h.percent : 0
+        const pct = typeof h.percent === 'number' && Number.isFinite(h.percent) ? h.percent : null
+        if (!addr || pct === null || scSeen.has(addr)) continue
         const isDep = deployerLower ? addr === deployerLower : false
         const isLnk = linkedAddrSet.has(addr)
         if (isDep) {
           scCreatorInTop = true
           scCreatorRank = i + 1
           scCreatorPct = pct
-          scClusterPct += pct
+          scDeployerMatched = true
           scSeen.add(addr)
         }
-        if (isLnk && !scSeen.has(addr)) {
+        if (isLnk && !isDep) {
           scLinkedPct += pct
-          scClusterPct += pct
           scMatchedLinked.push({ address: addr, rank: i + 1, percent: pct })
           scSeen.add(addr)
         }
       }
+      scClusterPct = (scCreatorPct ?? 0) + scLinkedPct
+    } else if (holderRowsConfirmed && supplyControlled !== null) {
+      scDeployerMatched = matchedHolderWallets.some(h => h.isDeployer)
+      scCreatorInTop = scDeployerMatched
+      scCreatorPct = matchedHolderWallets.filter(h => h.isDeployer).reduce((sum, h) => sum + h.supplyPct, 0) || null
+      scLinkedPct = matchedHolderWallets.filter(h => h.isLinked).reduce((sum, h) => sum + h.supplyPct, 0)
+      scClusterPct = supplyControlled
+      for (const h of matchedHolderWallets.filter(h => h.isLinked)) {
+        scMatchedLinked.push({ address: h.address, rank: 0, percent: h.supplyPct })
+      }
     }
+
     const scHasActors = Boolean(deployerLower || linkedAddrSet.size > 0)
-    const scHasData = derivedHolderRows.length > 0
+    const scHasData = holderRowsConfirmed
+    const supplyRowsArePartial = holderPercentDerived.holderDistributionStatus === 'partial' || holderPercentDerived.holderPercentSource === 'token_scanner_precalculated'
+    const linkedWalletSupplyPercent = linkedAddrSet.size > 0 && scHasData ? roundSupplyPct(scLinkedPct) : null
+    const devClusterSupplyPercent = scHasActors && scHasData ? roundSupplyPct((scCreatorPct ?? 0) + scLinkedPct) : null
     const scLinkedStatus: CanonicalStatus =
       linkedAddrSet.size === 0 ? 'not_applicable'
       : !scHasData ? 'unavailable_with_reason'
-      : scMatchedLinked.length > 0 && scMatchedLinked.length >= linkedAddrSet.size ? 'verified'
-      : scMatchedLinked.length > 0 ? 'partial'
-      : 'unavailable_with_reason'
+      : scMatchedLinked.length > 0 ? 'verified'
+      : supplyRowsArePartial ? 'partial'
+      : 'verified'
     const scClusterStatus: CanonicalStatus =
       !scHasActors ? 'unavailable_with_reason'
       : !scHasData ? 'unavailable_with_reason'
-      : scSeen.size > 0 ? 'verified'
-      : 'unavailable_with_reason'
+      : scSeen.size > 0 || matchedHolderWallets.length > 0 ? 'verified'
+      : supplyRowsArePartial ? 'partial'
+      : 'verified'
+    const supplyControlReason = !scHasActors
+      ? 'no_deployer_or_linked_wallets'
+      : !scHasData
+        ? 'no_usable_holder_rows_or_percents'
+        : scMatchedLinked.length === 0 && linkedAddrSet.size > 0 && !scDeployerMatched
+          ? 'linked_wallets_and_creator_checked_against_available_holder_rows_no_supply_found'
+          : scMatchedLinked.length === 0 && linkedAddrSet.size > 0
+            ? 'linked_wallets_checked_against_available_holder_rows_no_supply_found'
+            : 'matched_holder_rows_with_percent_values'
+    const supplyControlDebug = {
+      holderRowsChecked,
+      linkedWalletsChecked: linkedAddrSet.size,
+      linkedWalletsMatched: scMatchedLinked.length,
+      deployerChecked: Boolean(deployerLower && scHasData),
+      deployerMatched: scDeployerMatched,
+      creatorPercentFound: scCreatorPct !== null ? roundSupplyPct(scCreatorPct) : null,
+      linkedPercentSum: linkedWalletSupplyPercent,
+      clusterPercentComputed: devClusterSupplyPercent,
+      reason: supplyControlReason,
+    }
     const supplyControl = {
       creatorInTopHolders: scCreatorInTop,
       creatorHolderRank: scCreatorRank,
-      creatorHolderPercent: scCreatorPct !== null ? Math.round(scCreatorPct * 100) / 100 : null,
-      linkedWalletSupplyPercent: linkedAddrSet.size > 0 ? Math.round(scLinkedPct * 100) / 100 : null,
+      creatorHolderPercent: scCreatorPct !== null ? roundSupplyPct(scCreatorPct) : null,
+      linkedWalletSupplyPercent,
       linkedWalletSupplyStatus: scLinkedStatus,
-      devClusterSupplyPercent: scHasActors && scHasData ? Math.round(scClusterPct * 100) / 100 : null,
+      devClusterSupplyPercent,
       devClusterSupplyStatus: scClusterStatus,
-      devClusterSupplyReason: scClusterStatus === 'unavailable_with_reason'
-        ? (!scHasActors ? 'no_deployer_or_linked_wallets' : 'no_holder_data')
-        : null,
+      devClusterSupplyReason: scClusterStatus === 'unavailable_with_reason' ? supplyControlReason : null,
       matchedLinkedWallets: scMatchedLinked,
     }
 
@@ -1934,6 +1980,7 @@ export async function POST(req: Request) {
           holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? (holderDataAvailable ? ((holderTop10 != null || holderTop1 != null || holderTop20 != null) ? 'ok' : 'partial') : 'unavailable_with_reason'),
           holderPercentSource: holderPercentDerived.holderPercentSource,
           holderPercentDebug: holderPercentDerived.debug,
+          supplyControlDebug,
           creatorLookupAttempted: Boolean(originDiag && originDiag.optional_creation_lookup?.attempted),
           creatorStatus: deployerStatus,
           supplySurfaceState: supplyControlStatus,
