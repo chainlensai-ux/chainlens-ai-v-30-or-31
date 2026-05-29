@@ -4004,12 +4004,27 @@ export async function POST(req: Request) {
     }
 
     // Effective market values:
-    // - Normal scan: primary wins, fallback fills only when primary is null
+    // - Normal scan: price priority DS > CG > GT pool > FDV-derived (last resort only)
     // - forceDexFallback (debug only): fallback values override primary
-    const _ep   = forceDexFallback ? (_dexFb?.priceUsd ?? null)      : (priceUsd ?? _dexFb?.priceUsd ?? null)
+    const _cgMarketData = (coingeckoRaw as Record<string, unknown> | null | undefined)?.market_data as Record<string, unknown> | null | undefined
+    const _geckoPrice = pickNum((_cgMarketData?.current_price as Record<string, unknown> | null | undefined)?.usd) ?? null
+    const _efdv = forceDexFallback ? (_dexFb?.fdv ?? null) : (fdv ?? _dexFb?.fdv ?? null)
+    // FDV-derived price: approximate price = FDV ÷ total supply in token units.
+    // Only fires when no real price source (DS, CG, GT) is available.
+    const _gtSupplyForFdv = pickNum(gtToken?.total_supply) ?? pickNum(gtToken?.circulating_supply) ?? circulatingSupply
+    const _fdvDerivedPrice = (_efdv != null && _gtSupplyForFdv != null && _gtSupplyForFdv > 0 && priceUsd == null && (_dexFb?.priceUsd ?? null) == null && _geckoPrice == null)
+      ? _efdv / _gtSupplyForFdv
+      : null
+    const _ep   = forceDexFallback ? (_dexFb?.priceUsd ?? null) : (_dexFb?.priceUsd ?? _geckoPrice ?? priceUsd ?? _fdvDerivedPrice ?? null)
     const _el   = forceDexFallback ? (_dexFb?.liquidityUsd ?? null)   : (liquidityUsd ?? _dexFb?.liquidityUsd ?? null)
     const _ev   = forceDexFallback ? (_dexFb?.volume24h ?? null)      : (resolvedVolume24hUsd ?? _dexFb?.volume24h ?? null)
-    const _efdv = forceDexFallback ? (_dexFb?.fdv ?? null)            : (fdv ?? _dexFb?.fdv ?? null)
+    const _priceSource: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null =
+      forceDexFallback ? (_dexFb?.priceUsd != null ? 'dexscreener' : null) :
+      _dexFb?.priceUsd != null ? 'dexscreener' :
+      _geckoPrice != null ? 'coingecko' :
+      priceUsd != null ? 'geckoterminal' :
+      _fdvDerivedPrice != null ? 'fdv_derived' :
+      null
     // If fallback has FDV and primary displayMarketValue is null, show fallback FDV
     if (_dexFb?.fdv != null && displayMarketValue == null) {
       displayMarketValue = _dexFb.fdv
@@ -5384,6 +5399,7 @@ export async function POST(req: Request) {
       } : {}),
       // Normalized top-level market fields
       priceUsd: _ep,
+      priceSource: _priceSource,
       liquidityUsd: _el,
       volume24hUsd: _ev,
       poolCount,

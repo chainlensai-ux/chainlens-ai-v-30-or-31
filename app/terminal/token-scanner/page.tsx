@@ -91,6 +91,7 @@ type ScanResult = {
   primaryDexName?: string | null
   marketDataSource?: 'primary' | 'fallback' | 'none'
   marketConfidence?: 'high' | 'medium' | 'low'
+  priceSource?: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null
   decimals?: number
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'partial'|'unavailable_with_reason'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
@@ -2627,6 +2628,7 @@ export default function TerminalTokenScanner() {
           primaryDexName:   json.primaryDexName ?? null,
           marketDataSource: json.marketDataSource ?? 'none',
           marketConfidence: json.marketConfidence ?? 'low',
+          priceSource: json.priceSource ?? null,
           // Use effective values from server (include fallback market read when primary has no pool)
           price:          num(json.priceUsd) ?? (mainPool ? num(attr(mainPool).base_token_price_usd) : null),
           liquidity:      num(json.liquidityUsd) ?? (mainPool ? num(attr(mainPool).reserve_in_usd) : null),
@@ -3195,7 +3197,21 @@ export default function TerminalTokenScanner() {
                   {!result.noActivePools && (result.price != null || result.liquidity != null) && (
                     <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'linear-gradient(135deg,rgba(103,232,249,0.05),rgba(45,212,191,0.03))', border: '1px solid rgba(103,232,249,0.18)', borderRadius: '14px', display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'center' }}>
                       <div style={{ flexShrink: 0 }}>
-                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>LIVE PRICE</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>LIVE PRICE</div>
+                          {result.priceSource === 'fdv_derived' && (
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Estimated from FDV</span>
+                          )}
+                          {result.priceSource === 'coingecko' && (
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>CoinGecko</span>
+                          )}
+                          {result.priceSource === 'dexscreener' && (
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>DexScreener</span>
+                          )}
+                          {result.price != null && result.priceSource == null && (
+                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Unverified price</span>
+                          )}
+                        </div>
                         <div style={{ fontSize: '22px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(result.price)}</div>
                       </div>
                       <div style={{ width: '1px', height: '32px', background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
