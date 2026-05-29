@@ -4069,6 +4069,30 @@ export async function POST(req: Request) {
     const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
     const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
+
+    // marketTrendSnapshot — real market change fields, never fake candles.
+    // Built from indexed pool price_change_percentage and existing market fields.
+    // Returned whenever OHLCV candles are unavailable so the UI can render a
+    // useful chart-area panel instead of a blank placeholder.
+    const _pcPct = mainPoolAttr.price_change_percentage as Record<string, unknown> | null | undefined
+    const _mtsChanges = [
+      { label: '5m',  value: pickNum(_pcPct?.m5)  ?? null },
+      { label: '1h',  value: pickNum(_pcPct?.h1)  ?? null },
+      { label: '6h',  value: pickNum(_pcPct?.h6)  ?? null },
+      { label: '24h', value: pickNum(_pcPct?.h24) ?? _dexFb?.priceChange24h ?? null },
+    ] as Array<{ label: string; value: number | null }>
+    const marketTrendSnapshot = {
+      status: (_ep != null || _el != null || _mtsChanges.some(c => c.value != null)) ? 'ok' as const : 'unavailable' as const,
+      source: 'market_change_fields' as const,
+      price: _ep ?? null,
+      changes: _mtsChanges,
+      liquidity: _el ?? null,
+      volume24h: _ev ?? null,
+      transactions24h: transactions24h ?? null,
+      buys24h: buys24h ?? null,
+      sells24h: sells24h ?? null,
+      pairAge: pairAgeLabel ?? null,
+    }
     if (process.env.NODE_ENV === "development") {
       console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] tokenEndpointMarketCapPresent', tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0, '[gt-market] poolEndpointMarketCapPresent', poolEndpointMarketCapPresent, '[gt-market] marketCap available', marketCapFromGt != null, '[gt-market] fdv available', fdv != null)
     }
@@ -5107,6 +5131,7 @@ export async function POST(req: Request) {
       chartSource,
       chartReason,
       chartDataSource,
+      marketTrendSnapshot,
 
       pairs: matchingPools,
       gtPools: matchingPools,
