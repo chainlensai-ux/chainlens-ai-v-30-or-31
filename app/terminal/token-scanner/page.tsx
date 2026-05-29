@@ -148,6 +148,7 @@ type ScanResult = {
     fallbackUsed?: boolean
   } | null
   chartStatus?: 'ok' | 'snapshot_only' | 'unavailable_with_reason' | 'no_candles' | 'fallback_snapshot_only' | 'partial' | null
+  chartSource?: string | null
   chartReason?: string | null
   chartDataSource?: 'primary' | 'fallback' | 'none' | null
   resolvedInput?: {
@@ -2578,6 +2579,7 @@ export default function TerminalTokenScanner() {
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
           chartStatus: json.chartStatus ?? null,
+          chartSource: json.chartSource ?? null,
           chartReason: json.chartReason ?? null,
           chartDataSource: json.chartDataSource ?? null,
           resolvedInput: json.resolvedInput ?? null,
@@ -3229,9 +3231,16 @@ export default function TerminalTokenScanner() {
                   )}
                   {result.chartStatus === 'ok' && result.priceChart && result.priceChart.points.length >= 2 && (
                     <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
                         <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                        <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          {result.chartSource === 'trade_reconstructed' && (
+                            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', textTransform: 'uppercase' }}>
+                              Reconstructed from recent swaps
+                            </span>
+                          )}
+                          <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
+                        </div>
                       </div>
                       <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
                         {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : result.priceChart.timeframe === '7d' ? '7D' : '30D'}
@@ -3239,25 +3248,22 @@ export default function TerminalTokenScanner() {
                       <CandlestickChart candles={result.priceChart.points} timeframe={result.priceChart.timeframe} />
                     </div>
                   )}
-                  {(result.chartStatus === 'snapshot_only' || result.chartStatus === 'no_candles') && result.marketDataSource !== 'fallback' && (
+                  {(result.chartStatus === 'snapshot_only' || result.chartStatus === 'no_candles' || result.chartStatus === 'fallback_snapshot_only') && (
                     <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                      <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not indexed for this pool yet. Current price and market data are live.</p>
-                    </div>
-                  )}
-                  {(result.chartStatus === 'snapshot_only' || result.chartStatus === 'fallback_snapshot_only') && result.marketDataSource === 'fallback' && (
-                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', marginBottom: '12px' }}>
                         <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#2DD4BF', textTransform: 'uppercase' }}>Live Market Snapshot</p>
-                        <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)' }}>CORTEX MARKET READ</span>
+                        {result.marketDataSource === 'fallback' && (
+                          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)', flexShrink: 0 }}>CORTEX MARKET READ</span>
+                        )}
                       </div>
                       <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not indexed for this pool yet. Current price and market data are live.</p>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '10px' }}>
-                        <StatCard label="Price" value={fmtPrice(result.price)} />
+                        <StatCard label="Price" value={fmtPrice(result.price)} accent="#2DD4BF" />
                         <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} />
                         <StatCard label="24H Volume" value={fmtLarge(result.volume24h)} />
                         <StatCard label="24H Change" value={fmtPct(result.priceChange24h)} accent={result.priceChange24h != null ? (result.priceChange24h >= 0 ? '#34d399' : '#f87171') : undefined} />
                         {result.poolActivity?.pairAgeLabel != null && <StatCard label="Pair Age" value={result.poolActivity.pairAgeLabel} />}
+                        {result.primaryDexName != null && <StatCard label="Protocol" value={result.primaryDexName} />}
                         {result.fdv != null && <StatCard label="FDV" value={fmtLarge(result.fdv)} helper="Fully diluted valuation" />}
                       </div>
                     </div>
