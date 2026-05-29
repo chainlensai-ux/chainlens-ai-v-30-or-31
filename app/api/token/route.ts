@@ -1799,6 +1799,7 @@ interface _ChartCacheSlot {
   chartUsedTokenLevelOhlcv: boolean
   chartUsedDexScreener: boolean
   chartUsedSyntheticCandles: boolean
+  chartUsedFlatSynthetic: boolean
   dexScreenerChartAttempted: boolean
   dexScreenerChartSuccess: boolean
   chartTradeReconstructionAttempted: boolean
@@ -4078,6 +4079,7 @@ export async function POST(req: Request) {
     let chartTradeReconstructionAttempted = false
     let chartReconstructedCandleCount = 0
     let chartUsedSyntheticCandles = false
+    let chartUsedFlatSynthetic = false
     let chartAttemptedTimeframes: string[] = []
     let _totalChartHttpCalls = 0
     let _ohlcvRateLimited = false
@@ -4101,6 +4103,7 @@ export async function POST(req: Request) {
       chartUsedTokenLevelOhlcv = cv.chartUsedTokenLevelOhlcv
       chartUsedDexScreener = cv.chartUsedDexScreener
       chartUsedSyntheticCandles = cv.chartUsedSyntheticCandles
+      chartUsedFlatSynthetic = cv.chartUsedFlatSynthetic
       dexScreenerChartAttempted = cv.dexScreenerChartAttempted
       dexScreenerChartSuccess = cv.dexScreenerChartSuccess
       chartTradeReconstructionAttempted = cv.chartTradeReconstructionAttempted
@@ -4252,28 +4255,29 @@ export async function POST(req: Request) {
         }
       }
 
-      // Phase 6: Synthetic micro-candles built from real indexed price-change percentages.
-      // Uses actual provider % changes (h24/h6/h1/m5) to back-calculate historical anchor prices.
-      // Each candle spans between two adjacent anchors — no randomness, no fabricated spread.
-      // Only fires when priceUsd is known and all real candle sources failed.
-      if (priceChart.sourceStatus !== 'ok' && priceUsd != null && priceUsd > 0) {
+      // Phase 6: Synthetic micro-candles — final fallback that always fires when a live price exists.
+      // Uses real indexed % changes (h24/h6/h1/m5) to back-calculate historical anchor prices.
+      // When no % changes are available, falls back to a flat 24h series at the current price.
+      // No randomness, no fabricated spread. Each candle spans two adjacent anchors only.
+      const _synthLivePrice = _ep ?? priceUsd
+      if (priceChart.sourceStatus !== 'ok' && _synthLivePrice != null && _synthLivePrice > 0) {
         const _pcPctSynth = mainPoolAttr.price_change_percentage as Record<string, unknown> | null | undefined
         const _synthH24 = pickNum(_pcPctSynth?.h24) ?? _dexFb?.priceChange24h ?? null
         const _synthH6  = pickNum(_pcPctSynth?.h6)  ?? null
         const _synthH1  = pickNum(_pcPctSynth?.h1)  ?? null
         const _synthM5  = pickNum(_pcPctSynth?.m5)  ?? null
+        const _synthUsedPctChanges = _synthH24 != null || _synthH6 != null || _synthH1 != null || _synthM5 != null
         const _nowSec = Math.floor(Date.now() / 1000)
-        const _synthAnchors: Array<{ ts: number; price: number }> = [{ ts: _nowSec, price: priceUsd }]
-        if (_synthH24 != null) _synthAnchors.push({ ts: _nowSec - 86400, price: priceUsd / (1 + _synthH24 / 100) })
-        if (_synthH6  != null) _synthAnchors.push({ ts: _nowSec - 21600, price: priceUsd / (1 + _synthH6  / 100) })
-        if (_synthH1  != null) _synthAnchors.push({ ts: _nowSec -  3600, price: priceUsd / (1 + _synthH1  / 100) })
-        if (_synthM5  != null) _synthAnchors.push({ ts: _nowSec -   300, price: priceUsd / (1 + _synthM5  / 100) })
+        const _synthAnchors: Array<{ ts: number; price: number }> = [{ ts: _nowSec, price: _synthLivePrice }]
+        if (_synthH24 != null) _synthAnchors.push({ ts: _nowSec - 86400, price: _synthLivePrice / (1 + _synthH24 / 100) })
+        if (_synthH6  != null) _synthAnchors.push({ ts: _nowSec - 21600, price: _synthLivePrice / (1 + _synthH6  / 100) })
+        if (_synthH1  != null) _synthAnchors.push({ ts: _nowSec -  3600, price: _synthLivePrice / (1 + _synthH1  / 100) })
+        if (_synthM5  != null) _synthAnchors.push({ ts: _nowSec -   300, price: _synthLivePrice / (1 + _synthM5  / 100) })
         _synthAnchors.sort((a, b) => a.ts - b.ts)
         const _validAnchors = _synthAnchors.filter((p) => p.price > 0)
-        // If only the current-price anchor survived (no % change fields available),
-        // add a flat 24h-ago anchor at the same price so the chart always renders.
-        // This produces a zero-change flat line — honest: we know the price, not the history.
-        if (_validAnchors.length === 1) _validAnchors.unshift({ ts: _nowSec - 86400, price: _validAnchors[0].price })
+        // Guarantee at least 2 anchors: if only current price is known, prepend a flat 24h-ago
+        // anchor at the same price. Result is a zero-change flat line — honest with no history.
+        if (_validAnchors.length < 2) _validAnchors.unshift({ ts: _nowSec - 86400, price: _synthLivePrice })
         if (_validAnchors.length >= 2) {
           const _synthPoints = _validAnchors.map((p, i, arr) => {
             const prevPrice = i > 0 ? arr[i - 1].price : p.price
@@ -4291,6 +4295,7 @@ export async function POST(req: Request) {
           priceChart = { timeframe: '24h', points: _synthPoints, sourceStatus: 'ok' }
           chartFailureReason = null
           chartUsedSyntheticCandles = true
+          chartUsedFlatSynthetic = !_synthUsedPctChanges
         }
       }
 
@@ -4309,6 +4314,7 @@ export async function POST(req: Request) {
           chartUsedTokenLevelOhlcv,
           chartUsedDexScreener,
           chartUsedSyntheticCandles,
+          chartUsedFlatSynthetic,
           dexScreenerChartAttempted,
           dexScreenerChartSuccess,
           chartTradeReconstructionAttempted,
@@ -4346,13 +4352,14 @@ export async function POST(req: Request) {
       chartUsedTradeReconstruction ? 'trade_reconstructed' :
       chartUsedDexScreener ? 'dexscreener_ohlcv' :
       chartUsedTokenLevelOhlcv ? 'token_level_ohlcv' :
-      chartUsedSyntheticCandles ? 'synthetic_price_estimate' :
+      chartUsedSyntheticCandles ? (chartUsedFlatSynthetic ? 'synthetic_flat_series' : 'synthetic_price_estimate') :
       'pool_ohlcv'
     const chartReason: string | null =
       chartStatus === 'ok'
         ? (chartUsedTradeReconstruction ? 'trade_reconstructed_from_recent_swaps'
            : chartUsedDexScreener ? 'dexscreener_ohlcv_used'
            : chartUsedTokenLevelOhlcv ? 'token_level_ohlcv_used'
+           : chartUsedFlatSynthetic ? 'synthetic_flat_series_no_history'
            : chartUsedSyntheticCandles ? 'synthetic_from_indexed_changes'
            : chartFallbackUsed ? 'alternate_pool_used'
            : null)
@@ -5649,6 +5656,7 @@ export async function POST(req: Request) {
               tokenLevelSuccess: chartUsedTokenLevelOhlcv,
               tradeReconstructionSuccess: chartUsedTradeReconstruction,
               syntheticCandlesUsed: chartUsedSyntheticCandles,
+              syntheticFlatSeries: chartUsedFlatSynthetic,
               totalChartHttpCalls: _totalChartHttpCalls,
               rateLimited: _ohlcvRateLimited,
               rateLimitedAt: _ohlcvRateLimitedAt,
