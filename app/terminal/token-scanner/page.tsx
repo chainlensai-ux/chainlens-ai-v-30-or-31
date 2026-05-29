@@ -702,7 +702,7 @@ function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUs
 
 type OhlcCandle = { timestamp: string; open: number; high: number; low: number; close: number; volume?: number | null; priceUsd: number }
 
-function CandlestickChart({ candles, timeframe }: { candles: OhlcCandle[]; timeframe: string }) {
+function CandlestickChart({ candles, timeframe, isFlatSeries = false }: { candles: OhlcCandle[]; timeframe: string; isFlatSeries?: boolean }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
 
   const MAX_CANDLES = 80
@@ -755,6 +755,9 @@ function CandlestickChart({ candles, timeframe }: { candles: OhlcCandle[]; timef
     setHoverIdx(Math.max(0, Math.min(n - 1, Math.floor((svgX - padX) / slotW))))
   }
 
+  const flatLinePath = isFlatSeries ? data.map((c, i) => `${i === 0 ? 'M' : 'L'}${xC(i).toFixed(1)},${yP(c.close).toFixed(1)}`).join(' ') : ''
+  const flatAreaPath = isFlatSeries ? `${flatLinePath} L${xC(n - 1).toFixed(1)},${priceBot} L${xC(0).toFixed(1)},${priceBot} Z` : ''
+
   const fmtTs = (ts: string) => {
     const d = new Date(ts)
     if (timeframe === '24h') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -776,34 +779,73 @@ function CandlestickChart({ candles, timeframe }: { candles: OhlcCandle[]; timef
         <defs>
           <clipPath id="ccPriceClip"><rect x={padX} y={priceTop} width={W - padX * 2} height={priceAreaH} /></clipPath>
           <clipPath id="ccVolClip"><rect x={padX} y={volTop} width={W - padX * 2} height={volAreaH} /></clipPath>
+          {isFlatSeries && (
+            <linearGradient id="fsGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgba(0,255,255,0.18)" />
+              <stop offset="60%" stopColor="rgba(0,255,255,0.06)" />
+              <stop offset="100%" stopColor="rgba(0,255,255,0.00)" />
+            </linearGradient>
+          )}
+          {isFlatSeries && (
+            <filter id="fsGlow" x="-8%" y="-200%" width="116%" height="500%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur" />
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+            </filter>
+          )}
         </defs>
+        {isFlatSeries && (
+          <style>{`@keyframes fsBreath{0%,100%{opacity:.45}50%{opacity:.78}}`}</style>
+        )}
 
         {/* Horizontal grid */}
-        {guideYs.map((y, i) => (
-          <line key={i} x1={padX} y1={y} x2={W - padX} y2={y} stroke="rgba(148,163,184,0.12)" strokeWidth="1" />
+        {isFlatSeries
+          ? [0.12, 0.5, 0.88].map((r, i) => (
+              <line key={i} x1={padX} y1={priceTop + r * priceAreaH} x2={W - padX} y2={priceTop + r * priceAreaH} stroke="rgba(45,212,191,0.08)" strokeWidth="1" />
+            ))
+          : guideYs.map((y, i) => (
+              <line key={i} x1={padX} y1={y} x2={W - padX} y2={y} stroke="rgba(148,163,184,0.12)" strokeWidth="1" />
+            ))
+        }
+        {isFlatSeries && [1 / 3, 2 / 3].map((r, i) => (
+          <line key={i} x1={padX + r * (W - padX * 2)} y1={priceTop} x2={padX + r * (W - padX * 2)} y2={priceBot} stroke="rgba(45,212,191,0.06)" strokeWidth="1" />
         ))}
 
-        {/* Candles + volume */}
-        <g clipPath="url(#ccPriceClip)">
-          {data.map((c, i) => {
-            const x     = xC(i)
-            const bull  = c.close >= c.open
-            const clr   = bull ? '#2dd4bf' : '#f87171'
-            const yH    = yP(c.high)
-            const yL    = yP(c.low)
-            const yO    = yP(c.open)
-            const yCl   = yP(c.close)
-            const bTop  = Math.min(yO, yCl)
-            const bBot  = Math.max(yO, yCl)
-            const bH    = Math.max(2, bBot - bTop)
-            return (
-              <g key={i} opacity={hoverIdx != null && i !== hoverIdx ? 0.55 : 1}>
-                <line x1={x} y1={yH} x2={x} y2={yL} stroke={clr} strokeWidth={wickW} />
-                <rect x={x - bodyW / 2} y={bTop} width={bodyW} height={bH} fill={clr} opacity={bull ? 0.88 : 0.82} rx={slotW > 10 ? 1 : 0} />
-              </g>
-            )
-          })}
-        </g>
+        {/* Candles (normal) or flat-series area+line */}
+        {isFlatSeries ? (
+          <g clipPath="url(#ccPriceClip)">
+            <path d={flatAreaPath} fill="url(#fsGrad)" style={{ animation: 'fsBreath 1.5s ease-in-out infinite' }} />
+            <path d={flatLinePath} fill="none" stroke="rgba(0,255,255,0.72)" strokeWidth="2" filter="url(#fsGlow)" style={{ animation: 'fsBreath 1.5s ease-in-out infinite' }} />
+            {/* Watermark */}
+            <text x={padX + 8} y={priceBot - 12} fill="rgba(45,212,191,0.20)" style={{ fontSize: 11, letterSpacing: '0.04em', fontFamily: 'sans-serif' }}>
+              No verified price history — showing live price only
+            </text>
+            {/* Hover highlight dot */}
+            {hoverIdx != null && (
+              <circle cx={xC(hoverIdx)} cy={yP(data[hoverIdx].close)} r="4" fill="rgba(0,255,255,0.8)" filter="url(#fsGlow)" />
+            )}
+          </g>
+        ) : (
+          <g clipPath="url(#ccPriceClip)">
+            {data.map((c, i) => {
+              const x     = xC(i)
+              const bull  = c.close >= c.open
+              const clr   = bull ? '#2dd4bf' : '#f87171'
+              const yH    = yP(c.high)
+              const yL    = yP(c.low)
+              const yO    = yP(c.open)
+              const yCl   = yP(c.close)
+              const bTop  = Math.min(yO, yCl)
+              const bBot  = Math.max(yO, yCl)
+              const bH    = Math.max(2, bBot - bTop)
+              return (
+                <g key={i} opacity={hoverIdx != null && i !== hoverIdx ? 0.55 : 1}>
+                  <line x1={x} y1={yH} x2={x} y2={yL} stroke={clr} strokeWidth={wickW} />
+                  <rect x={x - bodyW / 2} y={bTop} width={bodyW} height={bH} fill={clr} opacity={bull ? 0.88 : 0.82} rx={slotW > 10 ? 1 : 0} />
+                </g>
+              )
+            })}
+          </g>
+        )}
 
         {/* Hover crosshairs */}
         {hoverIdx != null && (() => {
@@ -814,8 +856,8 @@ function CandlestickChart({ candles, timeframe }: { candles: OhlcCandle[]; timef
           </>
         })()}
 
-        {/* Volume bars */}
-        {hasVolume && (
+        {/* Volume bars (hidden for flat-series) */}
+        {!isFlatSeries && hasVolume && (
           <g clipPath="url(#ccVolClip)">
             {data.map((c, i) => {
               const vol = c.volume ?? 0
@@ -840,19 +882,26 @@ function CandlestickChart({ candles, timeframe }: { candles: OhlcCandle[]; timef
         {fmtPrice(last.close)}
       </div>
 
-      {/* OHLCV hover tooltip */}
+      {/* Hover tooltip */}
       {hoverCandle && (
-        <div style={{ position: 'absolute', left: '10px', bottom: '28px', border: '1px solid rgba(45,212,191,0.32)', background: 'rgba(2,6,23,0.92)', borderRadius: '10px', padding: '8px 11px', pointerEvents: 'none', zIndex: 2, minWidth: '130px' }}>
+        <div style={{ position: 'absolute', left: '10px', bottom: '28px', border: `1px solid ${isFlatSeries ? 'rgba(0,255,255,0.28)' : 'rgba(45,212,191,0.32)'}`, background: 'rgba(2,6,23,0.92)', borderRadius: '10px', padding: '8px 11px', pointerEvents: 'none', zIndex: 2, minWidth: '130px' }}>
           <div style={{ color: '#64748b', fontSize: '10px', marginBottom: '5px' }}>{fmtTs(hoverCandle.timestamp)}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 8px', fontSize: '11px', color: '#cbd5e1' }}>
-            <span style={{ color: '#475569' }}>O</span><span>{fmtPrice(hoverCandle.open)}</span>
-            <span style={{ color: '#475569' }}>H</span><span style={{ color: '#2dd4bf' }}>{fmtPrice(hoverCandle.high)}</span>
-            <span style={{ color: '#475569' }}>L</span><span style={{ color: '#f87171' }}>{fmtPrice(hoverCandle.low)}</span>
-            <span style={{ color: '#475569' }}>C</span><span style={{ color: hoverCandle.close >= hoverCandle.open ? '#2dd4bf' : '#f87171', fontWeight: 700 }}>{fmtPrice(hoverCandle.close)}</span>
-            {(hoverCandle.volume ?? 0) > 0 && (
-              <><span style={{ color: '#475569' }}>V</span><span style={{ color: '#94a3b8' }}>{fmtLarge(hoverCandle.volume!)}</span></>
-            )}
-          </div>
+          {isFlatSeries ? (
+            <>
+              <div style={{ fontSize: '11px', color: 'rgba(0,255,255,0.8)', fontWeight: 700 }}>{fmtPrice(hoverCandle.close)}</div>
+              <div style={{ fontSize: '9px', color: '#475569', marginTop: '4px', letterSpacing: '0.06em' }}>Live price only (synthetic flat series)</div>
+            </>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 8px', fontSize: '11px', color: '#cbd5e1' }}>
+              <span style={{ color: '#475569' }}>O</span><span>{fmtPrice(hoverCandle.open)}</span>
+              <span style={{ color: '#475569' }}>H</span><span style={{ color: '#2dd4bf' }}>{fmtPrice(hoverCandle.high)}</span>
+              <span style={{ color: '#475569' }}>L</span><span style={{ color: '#f87171' }}>{fmtPrice(hoverCandle.low)}</span>
+              <span style={{ color: '#475569' }}>C</span><span style={{ color: hoverCandle.close >= hoverCandle.open ? '#2dd4bf' : '#f87171', fontWeight: 700 }}>{fmtPrice(hoverCandle.close)}</span>
+              {(hoverCandle.volume ?? 0) > 0 && (
+                <><span style={{ color: '#475569' }}>V</span><span style={{ color: '#94a3b8' }}>{fmtLarge(hoverCandle.volume!)}</span></>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -3199,6 +3248,18 @@ export default function TerminalTokenScanner() {
                       <div style={{ flexShrink: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>LIVE PRICE</div>
+                          {result.chartSource === 'synthetic_flat_series' && (
+                            <svg width="32" height="16" viewBox="0 0 32 16" style={{ display: 'inline-block', verticalAlign: 'middle' }}>
+                              <defs>
+                                <filter id="spkGlow" x="-20%" y="-100%" width="140%" height="300%">
+                                  <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="b" />
+                                  <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+                                </filter>
+                              </defs>
+                              <line x1="2" y1="8" x2="30" y2="8" stroke="rgba(0,255,255,0.65)" strokeWidth="1.5" filter="url(#spkGlow)" />
+                              <circle cx="30" cy="8" r="2" fill="rgba(0,255,255,0.8)" filter="url(#spkGlow)" />
+                            </svg>
+                          )}
                           {result.priceSource === 'fdv_derived' && (
                             <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Estimated from FDV</span>
                           )}
@@ -3363,8 +3424,8 @@ export default function TerminalTokenScanner() {
                                 </span>
                               )}
                               {result.chartSource === 'synthetic_flat_series' && (
-                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>
-                                  Synthetic flat series (no % change data)
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: 'rgba(0,255,255,0.75)', background: 'rgba(0,255,255,0.06)', border: '1px solid rgba(0,255,255,0.20)', textTransform: 'uppercase' }}>
+                                  Flat synthetic chart — no historical data
                                 </span>
                               )}
                               <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
@@ -3375,7 +3436,7 @@ export default function TerminalTokenScanner() {
                           <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
                             {result.priceChart!.timeframe === '24h' ? '24H' : result.priceChart!.timeframe === '48h' ? '48H' : result.priceChart!.timeframe === '7d' ? '7D' : '30D'}
                           </div>
-                          <CandlestickChart candles={result.priceChart!.points} timeframe={result.priceChart!.timeframe} />
+                          <CandlestickChart candles={result.priceChart!.points} timeframe={result.priceChart!.timeframe} isFlatSeries={result.chartSource === 'synthetic_flat_series'} />
                         </div>
                       )
                     }
