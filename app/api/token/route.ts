@@ -4270,6 +4270,10 @@ export async function POST(req: Request) {
         if (_synthM5  != null) _synthAnchors.push({ ts: _nowSec -   300, price: priceUsd / (1 + _synthM5  / 100) })
         _synthAnchors.sort((a, b) => a.ts - b.ts)
         const _validAnchors = _synthAnchors.filter((p) => p.price > 0)
+        // If only the current-price anchor survived (no % change fields available),
+        // add a flat 24h-ago anchor at the same price so the chart always renders.
+        // This produces a zero-change flat line — honest: we know the price, not the history.
+        if (_validAnchors.length === 1) _validAnchors.unshift({ ts: _nowSec - 86400, price: _validAnchors[0].price })
         if (_validAnchors.length >= 2) {
           const _synthPoints = _validAnchors.map((p, i, arr) => {
             const prevPrice = i > 0 ? arr[i - 1].price : p.price
