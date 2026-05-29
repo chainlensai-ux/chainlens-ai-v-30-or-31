@@ -1881,6 +1881,51 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
   }
 }
 
+// Attempts to fetch OHLCV candle data from DexScreener for a known pair address.
+// DexScreener's current public API does not expose historical OHLCV through documented endpoints.
+// This function checks the single-pair endpoint for any chart/ohlcv fields that may appear in
+// future API versions, and returns null cleanly if none are found. The trade reconstruction
+// fallback runs immediately after if this returns null.
+async function fetchDexScreenerPairChart(
+  pairAddress: string,
+  chain: ChainKey,
+): Promise<ChartPoint[] | null> {
+  if (!pairAddress) return null
+  const dexChainIdMap: Record<ChainKey, string> = { eth: 'ethereum', base: 'base', polygon: 'polygon', bnb: 'bsc' }
+  const dexChainId = dexChainIdMap[chain] ?? 'base'
+  const _dsBase = (process.env.DEXSCREENER_BASE_URL ?? 'https://api.dexscreener.com').replace(/\/$/, '')
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 4000)
+    let res: Response
+    try {
+      res = await fetch(
+        `${_dsBase}/latest/dex/pairs/${dexChainId}/${pairAddress}`,
+        { signal: ctrl.signal, cache: 'no-store' }
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+    if (!res.ok) return null
+    const ct = res.headers.get('content-type') ?? ''
+    if (!ct.includes('json')) return null
+    const json: unknown = await res.json().catch(() => null)
+    if (!json) return null
+    const raw = json as Record<string, unknown>
+    const pair = (Array.isArray(raw.pairs) && raw.pairs.length > 0
+      ? raw.pairs[0]
+      : (raw.pair ?? null)) as Record<string, unknown> | null
+    if (!pair) return null
+    // Check for OHLCV/chart history fields (forward-compatible with future DS API versions)
+    const ohlcv = pair.ohlcv ?? pair.chartData ?? pair.priceHistory ?? pair.candles
+    if (!Array.isArray(ohlcv) || ohlcv.length < 2) return null
+    const normalized = normalizeOhlcvRows(ohlcv)
+    return normalized.points.length >= 2 ? normalized.points : null
+  } catch {
+    return null
+  }
+}
+
 async function fetchCoinGeckoToken(chain: ChainKey, contract: string): Promise<any> {
   try {
     const platform = chain === 'eth' ? 'ethereum' : chain === 'base' ? 'base' : chain
@@ -3980,7 +4025,7 @@ export async function POST(req: Request) {
       return 0
     })
     const uniqueChartPools = chartPoolCandidates.filter((c, i, arr) => arr.findIndex((x) => x.address.toLowerCase() === c.address.toLowerCase()) === i)
-    const maxAttempts = Math.min(uniqueChartPools.length, 4)
+    const maxAttempts = Math.min(uniqueChartPools.length, 5)
     const chartAttemptedTimeframes: string[] = []
     const timeframeAttempts: Array<{ key: '24h'|'48h'|'7d'|'30d'; resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }> = [
       { key: '24h', resolution: 'minute', aggregate: 15, limit: 96 },
@@ -4057,8 +4102,24 @@ export async function POST(req: Request) {
         chartFailureReason = normalized.rejectedReason ? `token_${normalized.rejectedReason}` : 'token_ohlcv_insufficient_points'
       }
     }
+    // DexScreener chart fallback — checks the best-known pair for real OHLCV history fields.
+    // The public DexScreener API currently does not expose candles; this step runs cleanly and
+    // returns null. If a future DS API version includes chart data, it will be used here.
+    let chartUsedDexScreener = false
+    let dexScreenerChartAttempted = false
+    let dexScreenerChartSuccess = false
+    if (priceChart.sourceStatus !== 'ok' && _dexFb?.pairAddress) {
+      dexScreenerChartAttempted = true
+      const _dsCandles = await fetchDexScreenerPairChart(_dexFb.pairAddress, chain)
+      if (_dsCandles && _dsCandles.length >= 2) {
+        priceChart = { timeframe: '24h', points: _dsCandles, sourceStatus: 'ok' }
+        chartFailureReason = null
+        chartUsedDexScreener = true
+        dexScreenerChartSuccess = true
+      }
+    }
     // Trade-reconstruction fallback — fetches real GeckoTerminal pool trade events and groups them
-    // into time-bucketed candles. Only runs when all OHLCV attempts fail. Caps to 2 pools.
+    // into time-bucketed candles. Only runs when all OHLCV attempts fail. Caps to 3 pools.
     // Requires >= 3 valid priced trades spanning >= 2 time buckets; does not run otherwise.
     let chartUsedTradeReconstruction = false
     let chartTradeReconstructionAttempted = false
@@ -4066,7 +4127,7 @@ export async function POST(req: Request) {
     let chartReconstructedCandleCount = 0
     if (priceChart.sourceStatus !== 'ok') {
       chartTradeReconstructionAttempted = true
-      for (const poolCandidate of uniqueChartPools.slice(0, 2)) {
+      for (const poolCandidate of uniqueChartPools.slice(0, 3)) {
         chartAttemptedTimeframes.push(`trade_recon:${poolCandidate.address.slice(0, 10)}`)
         tradePoolsAttempted.push(poolCandidate.address)
         const tradesRaw = await fetchGeckoTerminalPoolTrades(poolCandidate.address, chain)
@@ -4090,11 +4151,11 @@ export async function POST(req: Request) {
         chartFailureReason = chartFailureReason ?? 'trade_reconstruction_insufficient'
       }
     }
-    if (priceChart.sourceStatus !== 'ok' && (maxAttempts > 0 || chartUsedTokenLevelOhlcv || chartTradeReconstructionAttempted)) {
+    if (priceChart.sourceStatus !== 'ok' && (maxAttempts > 0 || chartUsedTokenLevelOhlcv || dexScreenerChartAttempted || chartTradeReconstructionAttempted)) {
       priceChart = { timeframe: '24h', points: [], sourceStatus: 'partial', reason: chartFailureReason ?? 'all_chart_sources_empty' }
     }
-    const chartAttempted = chartAttemptedPools.length > 0 || chartUsedTokenLevelOhlcv || chartTradeReconstructionAttempted
-    const chartFallbackUsed = (chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr) || chartUsedTokenLevelOhlcv || chartUsedTradeReconstruction
+    const chartAttempted = chartAttemptedPools.length > 0 || chartUsedTokenLevelOhlcv || dexScreenerChartAttempted || chartTradeReconstructionAttempted
+    const chartFallbackUsed = (chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr) || chartUsedTokenLevelOhlcv || chartUsedDexScreener || chartUsedTradeReconstruction
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
     const chartStatus: 'ok' | 'snapshot_only' | 'unavailable_with_reason' =
       priceChart.sourceStatus === 'ok' ? 'ok' :
@@ -4103,11 +4164,13 @@ export async function POST(req: Request) {
     const chartSource: string | null =
       chartStatus !== 'ok' ? null :
       chartUsedTradeReconstruction ? 'trade_reconstructed' :
+      chartUsedDexScreener ? 'dexscreener_ohlcv' :
       chartUsedTokenLevelOhlcv ? 'token_level_ohlcv' :
       'pool_ohlcv'
     const chartReason: string | null =
       chartStatus === 'ok'
         ? (chartUsedTradeReconstruction ? 'trade_reconstructed_from_recent_swaps'
+           : chartUsedDexScreener ? 'dexscreener_ohlcv_used'
            : chartUsedTokenLevelOhlcv ? 'token_level_ohlcv_used'
            : chartFallbackUsed ? 'alternate_pool_used'
            : null)
@@ -5720,6 +5783,8 @@ export async function POST(req: Request) {
         chartDebug: {
           poolOhlcvAttempts,
           tokenOhlcvAttempts,
+          dexScreenerChartAttempted,
+          dexScreenerChartSuccess,
           rawTradeCount,
           validTradePriceCount,
           reconstructedCandleCount: chartReconstructedCandleCount,
