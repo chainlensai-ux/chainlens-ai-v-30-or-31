@@ -3316,136 +3316,113 @@ export default function TerminalTokenScanner() {
                       {`Market cap ${fmtLarge(result.marketCapUsd)} reflects circulating supply. FDV ${fmtLarge(result.fdvUsd)} covers all tokens including locked and unvested. ${result.marketCapUsd / result.fdvUsd < 0.7 ? 'Significant unlock pressure possible.' : 'Low unlock pressure from current ratio.'}`}
                     </div>
                   )}
-                  {result.chartStatus === 'ok' && result.priceChart && result.priceChart.points.length >= 2 && (
-                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
-                        <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                          {result.chartSource === 'trade_reconstructed' && (
-                            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', textTransform: 'uppercase' }}>
-                              Reconstructed from recent swaps
-                            </span>
-                          )}
-                          <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
-                        </div>
-                      </div>
-                      <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
-                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : result.priceChart.timeframe === '7d' ? '7D' : '30D'}
-                      </div>
-                      <CandlestickChart candles={result.priceChart.points} timeframe={result.priceChart.timeframe} />
-                    </div>
-                  )}
-                  {(result.chartStatus === 'snapshot_only' || result.chartStatus === 'no_candles' || result.chartStatus === 'fallback_snapshot_only') && (() => {
+                  {(() => {
+                    // Priority: A) CandlestickChart if valid candles exist
+                    //           B) Market Trend panel if no candles but trend data is available
+                    //           C) Minimal snapshot if no candles and no trend data
+                    const _hasValidCandles = result.chartStatus === 'ok' && (result.priceChart?.points.length ?? 0) >= 2
+                    const _hasMarketTrend = result.marketTrendSnapshot?.status === 'ok'
                     const mts = result.marketTrendSnapshot
-                    const hasMarketData = mts?.status === 'ok'
-                    const visibleChanges = (mts?.changes ?? []).filter(c => c.value != null)
                     const pctColor = (v: number | null) => v == null ? '#94a3b8' : v >= 0 ? '#34d399' : '#f87171'
-                    return (
-                      <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '18px 20px' }}>
-                        {/* Header */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#2DD4BF', flexShrink: 0, boxShadow: '0 0 6px #2DD4BF' }} />
-                            <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Market Trend</span>
-                          </div>
-                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
-                            {result.marketDataSource === 'fallback' && (
-                              <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>CORTEX MARKET READ</span>
-                            )}
-                          </div>
-                        </div>
 
-                        {hasMarketData ? (
-                          <>
-                            {/* Live price row */}
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'flex-end', marginBottom: '16px' }}>
-                              <div>
-                                <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px', textTransform: 'uppercase' }}>Live Price</div>
-                                <div style={{ fontSize: '26px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(mts!.price)}</div>
-                              </div>
-                              {/* Change pills */}
-                              {visibleChanges.length > 0 && (
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', paddingBottom: '2px' }}>
-                                  {visibleChanges.map(c => (
-                                    <div key={c.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '5px 10px', borderRadius: '10px', background: `${pctColor(c.value)}10`, border: `1px solid ${pctColor(c.value)}28` }}>
-                                      <span style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '2px' }}>{c.label}</span>
-                                      <span style={{ fontSize: '12px', fontWeight: 800, color: pctColor(c.value), fontFamily: 'var(--font-plex-mono)' }}>{fmtPct(c.value)}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Market metrics row */}
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px', marginBottom: '14px' }}>
-                              {mts!.liquidity != null && (
-                                <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                  <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Liquidity</div>
-                                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.liquidity)}</div>
-                                </div>
-                              )}
-                              {mts!.volume24h != null && (
-                                <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                  <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Volume 24H</div>
-                                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.volume24h)}</div>
-                                </div>
-                              )}
-                              {(mts!.buys24h != null && mts!.sells24h != null) ? (
-                                <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                  <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Buys / Sells</div>
-                                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{mts!.buys24h!.toLocaleString()} <span style={{ color: '#3a5268' }}>/</span> {mts!.sells24h!.toLocaleString()}</div>
-                                </div>
-                              ) : mts!.transactions24h != null ? (
-                                <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                  <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Transactions 24H</div>
-                                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{mts!.transactions24h!.toLocaleString()}</div>
-                                </div>
-                              ) : null}
-                              {mts!.pairAge != null && (
-                                <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                  <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Pair Age</div>
-                                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{mts!.pairAge}</div>
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Caption */}
-                            <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                              Historical candles are not indexed for this pool yet. Live market movement is shown from indexed pool data.
-                            </p>
-                          </>
-                        ) : (
-                          <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                            Live market snapshot only. Historical candles are not indexed for this pool yet.
-                          </p>
-                        )}
-                      </div>
-                    )
-                  })()}
-                  {(result.chartStatus === 'unavailable_with_reason' || result.chartStatus === 'partial') && (() => {
-                    const mts = result.marketTrendSnapshot
-                    const hasMarketData = mts?.status === 'ok'
-                    if (!hasMarketData) {
+                    if (_hasValidCandles) {
                       return (
                         <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                          <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
-                          <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Chart data unavailable — no active indexed pools found for this token.</p>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+                            <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              {result.chartSource === 'trade_reconstructed' && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', textTransform: 'uppercase' }}>
+                                  Reconstructed from recent swaps
+                                </span>
+                              )}
+                              <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart!.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
+                            </div>
+                          </div>
+                          <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
+                            {result.priceChart!.timeframe === '24h' ? '24H' : result.priceChart!.timeframe === '48h' ? '48H' : result.priceChart!.timeframe === '7d' ? '7D' : '30D'}
+                          </div>
+                          <CandlestickChart candles={result.priceChart!.points} timeframe={result.priceChart!.timeframe} />
                         </div>
                       )
                     }
-                    // Has market data even though pool is unavailable — show condensed snapshot
-                    const pctColor = (v: number | null) => v == null ? '#94a3b8' : v >= 0 ? '#34d399' : '#f87171'
-                    const change24h = mts!.changes.find(c => c.label === '24h')?.value ?? null
+
+                    if (_hasMarketTrend) {
+                      const visibleChanges = (mts?.changes ?? []).filter(c => c.value != null)
+                      return (
+                        <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '18px 20px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#2DD4BF', flexShrink: 0, boxShadow: '0 0 6px #2DD4BF' }} />
+                              <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Market Trend</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                              {result.marketDataSource === 'fallback' && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>CORTEX MARKET READ</span>
+                              )}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'flex-end', marginBottom: '16px' }}>
+                            <div>
+                              <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px', textTransform: 'uppercase' }}>Live Price</div>
+                              <div style={{ fontSize: '26px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(mts!.price)}</div>
+                            </div>
+                            {visibleChanges.length > 0 && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', paddingBottom: '2px' }}>
+                                {visibleChanges.map(c => (
+                                  <div key={c.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '5px 10px', borderRadius: '10px', background: `${pctColor(c.value)}10`, border: `1px solid ${pctColor(c.value)}28` }}>
+                                    <span style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '2px' }}>{c.label}</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 800, color: pctColor(c.value), fontFamily: 'var(--font-plex-mono)' }}>{fmtPct(c.value)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px', marginBottom: '14px' }}>
+                            {mts!.liquidity != null && (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Liquidity</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.liquidity)}</div>
+                              </div>
+                            )}
+                            {mts!.volume24h != null && (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Volume 24H</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.volume24h)}</div>
+                              </div>
+                            )}
+                            {(mts!.buys24h != null && mts!.sells24h != null) ? (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Buys / Sells</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{mts!.buys24h!.toLocaleString()} <span style={{ color: '#3a5268' }}>/</span> {mts!.sells24h!.toLocaleString()}</div>
+                              </div>
+                            ) : mts!.transactions24h != null ? (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Transactions 24H</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{mts!.transactions24h!.toLocaleString()}</div>
+                              </div>
+                            ) : null}
+                            {mts!.pairAge != null && (
+                              <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Pair Age</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{mts!.pairAge}</div>
+                              </div>
+                            )}
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                            Historical candles are not indexed for this pool yet. Live market movement is shown from indexed pool data.
+                          </p>
+                        </div>
+                      )
+                    }
+
+                    // Minimal snapshot — no candles, no market trend data
                     return (
                       <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                        <p style={{ margin: '0 0 12px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em', color: '#67e8f9', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Live Market Snapshot</p>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px' }}>
-                          {mts!.price != null && <StatCard label="Price" value={fmtPrice(mts!.price)} accent="#2DD4BF" />}
-                          {mts!.liquidity != null && <StatCard label="Liquidity" value={fmtLarge(mts!.liquidity)} />}
-                          {mts!.volume24h != null && <StatCard label="Volume 24H" value={fmtLarge(mts!.volume24h)} />}
-                          {change24h != null && <StatCard label="24H Change" value={fmtPct(change24h)} accent={pctColor(change24h)} />}
-                        </div>
-                        <p style={{ margin: '12px 0 0', fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>Live market snapshot only. Historical candles are not indexed for this pool yet.</p>
+                        <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
+                          {result.noActivePools ? 'Chart data unavailable — no active indexed pools found for this token.' : 'Historical candles are not indexed for this pool yet.'}
+                        </p>
                       </div>
                     )
                   })()}

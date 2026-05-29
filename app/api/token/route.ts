@@ -5717,6 +5717,19 @@ export async function POST(req: Request) {
           derivationSucceeded: holderDerivationSucceeded,
           derivationFailureReason: holderDerivationFailureReason,
         },
+        chartDebug: {
+          poolOhlcvAttempts,
+          tokenOhlcvAttempts,
+          rawTradeCount,
+          validTradePriceCount,
+          reconstructedCandleCount: chartReconstructedCandleCount,
+          finalChartStatus: chartStatus,
+          finalChartSource: chartSource,
+          finalChartReason: chartReason,
+          frontendExpectedRender: (chartStatus === 'ok' && priceChart.points.length >= 2)
+            ? 'candles' as const
+            : (marketTrendSnapshot.status === 'ok' ? 'market_trend' as const : 'snapshot' as const),
+        },
         lpDiagnostics: {
           chain: lpDiagnostics.chain,
           poolDetected: lpDiagnostics.poolDetected,
