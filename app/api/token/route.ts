@@ -324,6 +324,56 @@ function buildInsufficientEvidenceBlock(reason: string, fallbackUsed?: string) {
   }
 }
 
+type EvidenceConfidence = "high" | "medium" | "low"
+type NormalizedTransfer = {
+  txHash: string
+  blockNumber: number | null
+  timestamp: number | null
+  from: string
+  to: string
+  amountRaw: string | null
+  amountFormatted?: number | null
+  tokenAddress: string
+  isBuy?: boolean
+  isSell?: boolean
+  source?: string
+  confidence?: EvidenceConfidence
+}
+type TransferResolverResult = {
+  transfers: NormalizedTransfer[]
+  insufficientEvidence: boolean
+  sourceTrail: string[]
+  reason?: string
+  fallbackUsed?: string
+  confidence: EvidenceConfidence
+}
+type NormalizedHolderRow = {
+  address: string
+  balanceRaw: string | null
+  balanceFormatted?: number | null
+  pctOfSupply?: number | null
+  isContract?: boolean
+  source?: string
+  confidence?: EvidenceConfidence
+}
+type HolderResolverResult = {
+  holders: NormalizedHolderRow[]
+  insufficientEvidence: boolean
+  sourceTrail: string[]
+  reason?: string
+  fallbackUsed?: string
+  confidence: EvidenceConfidence
+}
+
+function buildInsufficientEvidenceBlock(reason: string, fallbackUsed?: string) {
+  return {
+    insufficientEvidence: true,
+    reason,
+    fallbackUsed: fallbackUsed ?? "none",
+    confidence: "low" as const,
+  }
+}
+
 type ClusterInfluence = {
   clusterSupplyPercent: number | null
   clusterDominance: "none" | "low" | "medium" | "high" | "critical" | "unknown"
@@ -3547,6 +3597,40 @@ export async function POST(req: Request) {
     let top10 = hasPct ? sum(10) : null
     let top20 = hasPct ? sum(20) : null
 
+    // ── Holder percentage sanity check ────────────────────────────────────
+    // Cumulative percentages must never exceed 100. If they do the provider
+    // mixed fraction-encoded values (≤1) with true percentages, causing
+    // normalizeHolderPercent to inflate them (0.67 → 67).
+    const _providerTop1  = top1
+    const _providerTop5  = top5
+    const _providerTop10 = top10
+    const _providerTop20 = top20
+    const _sanityThreshold = 100
+    const _holderSanityFailed = hasPct && (
+      (top20 != null && top20 > _sanityThreshold) ||
+      (top10 != null && top10 > _sanityThreshold) ||
+      (top5  != null && top5  > _sanityThreshold)
+    )
+    let _holderSanityFailedReason: string | null = null
+    let _holderSanityReconstructionAttempted = false
+    let _holderSanityReconstructionSucceeded = false
+
+    if (_holderSanityFailed) {
+      _holderSanityFailedReason = top20 != null && top20 > _sanityThreshold
+        ? `top20_exceeds_100pct:${top20.toFixed(2)}`
+        : top10 != null && top10 > _sanityThreshold
+          ? `top10_exceeds_100pct:${top10.toFixed(2)}`
+          : `top5_exceeds_100pct:${(top5 ?? 0).toFixed(2)}`
+      // Null out all provider percentages — they are corrupted
+      for (const holder of topHolders as Array<{ percent: number | null }>) {
+        holder.percent = null
+      }
+      hasPct = false
+      percentSource = 'inferred'
+      top1 = null; top5 = null; top10 = null; top20 = null
+      _holderSanityReconstructionAttempted = true
+    }
+
     // Fallback percent derivation: provider returned holder rows with raw balances but no percentage
     // field, or provider percentages failed sanity validation. Try real totalSupply() first.
     let _holderPctDerived = false
@@ -3595,6 +3679,11 @@ export async function POST(req: Request) {
           }
         }
       }
+    }
+
+    // Record whether sanity-triggered reconstruction succeeded
+    if (_holderSanityReconstructionAttempted) {
+      _holderSanityReconstructionSucceeded = hasPct && _holderPctDerived
     }
 
     const normalizedTop = topHolders.slice(0, 200)
@@ -4884,6 +4973,9 @@ export async function POST(req: Request) {
       ? 'Contract flags inferred from simulation and chain context — direct bytecode verification not available.'
       : 'Contract bytecode, supply, owner, and CORTEX flag scan reviewed.'
 
+    const { _foundKeys: _psFoundKeys, _rejectedCount: _psRejectedCount, ...projectSocials } =
+      extractProjectSocials(gtToken, coingeckoRaw, gmgnItem)
+
     const responsePayload = {
       chain,
       contract,
@@ -5295,6 +5387,10 @@ export async function POST(req: Request) {
         symbol: finalResolvedSymbol,
         decimals: resolvedDecimals,
       },
+
+      // Indexed project links — sourced from existing metadata only (GT / CoinGecko / GMGN)
+      projectSocials,
+
       sections: {
         market: {
           status: marketStatus,
@@ -5546,6 +5642,27 @@ export async function POST(req: Request) {
           derivationSucceeded: holderDerivationSucceeded,
           derivationFailureReason: holderDerivationFailureReason,
         },
+        holderSanityDebug: {
+          providerTop1: _providerTop1,
+          providerTop5: _providerTop5,
+          providerTop10: _providerTop10,
+          providerTop20: _providerTop20,
+          sanityFailed: _holderSanityFailed,
+          failedReason: _holderSanityFailedReason,
+          reconstructionAttempted: _holderSanityReconstructionAttempted,
+          reconstructionSucceeded: _holderSanityReconstructionSucceeded,
+          finalPercentSource: percentSource,
+        },
+        chartDebug: {
+          poolOhlcvAttempts,
+          tokenOhlcvAttempts,
+          rawTradeCount,
+          validTradePriceCount,
+          reconstructedCandleCount: chartReconstructedCandleCount,
+          finalChartStatus: chartStatus,
+          finalChartSource: chartSource,
+          finalChartReason: chartReason,
+        },
         lpDiagnostics: {
           chain: lpDiagnostics.chain,
           poolDetected: lpDiagnostics.poolDetected,
@@ -5724,6 +5841,19 @@ export async function POST(req: Request) {
             ownership_verified: ownershipVerified,
             owner_address: ownerAddr,
             admin_address: adminAddr,
+          },
+          projectSocialsDebug: {
+            sourceTrail: projectSocials.sourceTrail,
+            foundKeys: _psFoundKeys,
+            rejectedCount: _psRejectedCount,
+            status: projectSocials.status,
+            reason: projectSocials.reason ?? null,
+            gtTokenHasWebsites: Array.isArray(gtToken?.websites),
+            gtTokenHasTelegramHandle: Boolean(gtToken?.telegram_handle),
+            gtTokenHasTwitterHandle: Boolean(gtToken?.twitter_handle),
+            gtTokenHasDiscordUrl: Boolean(gtToken?.discord_url),
+            coingeckoUsable: Boolean(coingeckoRaw),
+            gmgnUsable: Boolean(gmgnItem),
           },
           riskFlow: {
             rugRiskScore: riskEngine.rugRiskScore,
