@@ -112,7 +112,7 @@ interface AlchemyTransfer {
   asset: string | null
   category: string
   metadata?: { blockTimestamp?: string }
-  rawContract?: { address?: string | null }
+  rawContract?: { address?: string | null; value?: string | null; decimal?: string | null }
 }
 
 interface LinkedWallet {
@@ -274,6 +274,56 @@ type HolderDistributionStatus = {
   percentSource: "provider" | "calculated" | "inferred"
 }
 
+type EvidenceConfidence = "high" | "medium" | "low"
+type NormalizedTransfer = {
+  txHash: string
+  blockNumber: number | null
+  timestamp: number | null
+  from: string
+  to: string
+  amountRaw: string | null
+  amountFormatted?: number | null
+  tokenAddress: string
+  isBuy?: boolean
+  isSell?: boolean
+  source?: string
+  confidence?: EvidenceConfidence
+}
+type TransferResolverResult = {
+  transfers: NormalizedTransfer[]
+  insufficientEvidence: boolean
+  sourceTrail: string[]
+  reason?: string
+  fallbackUsed?: string
+  confidence: EvidenceConfidence
+}
+type NormalizedHolderRow = {
+  address: string
+  balanceRaw: string | null
+  balanceFormatted?: number | null
+  pctOfSupply?: number | null
+  isContract?: boolean
+  source?: string
+  confidence?: EvidenceConfidence
+}
+type HolderResolverResult = {
+  holders: NormalizedHolderRow[]
+  insufficientEvidence: boolean
+  sourceTrail: string[]
+  reason?: string
+  fallbackUsed?: string
+  confidence: EvidenceConfidence
+}
+
+function buildInsufficientEvidenceBlock(reason: string, fallbackUsed?: string) {
+  return {
+    insufficientEvidence: true,
+    reason,
+    fallbackUsed: fallbackUsed ?? "none",
+    confidence: "low" as const,
+  }
+}
+
 type ClusterInfluence = {
   clusterSupplyPercent: number | null
   clusterDominance: "none" | "low" | "medium" | "high" | "critical" | "unknown"
@@ -299,6 +349,10 @@ type SupplyControl = {
     confidence: string
   }>
   clusterInfluence: ClusterInfluence
+  insufficientEvidence?: boolean
+  reason?: string
+  fallbackUsed?: string
+  confidence?: EvidenceConfidence
 }
 type RiskEngine = {
   rugRiskScore: number | null
@@ -683,6 +737,219 @@ async function getTokenAssetTransfers(chain: ChainKey, params: Record<string, un
     }
   }
   return transfers
+}
+
+function parseBlockNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const raw = value.trim()
+  const parsed = raw.startsWith('0x') ? parseInt(raw, 16) : Number(raw)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function parseTransferTimestamp(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value > 2_000_000_000 ? Math.floor(value / 1000) : Math.floor(value)
+  if (typeof value !== 'string' || !value) return null
+  const asNumber = Number(value)
+  if (Number.isFinite(asNumber)) return asNumber > 2_000_000_000 ? Math.floor(asNumber / 1000) : Math.floor(asNumber)
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null
+}
+
+function isUsableEvidenceAddress(chain: ChainKey, value: string | null | undefined, tokenContract: string): value is string {
+  const normalized = normalizeEvidenceAddress(value)
+  if (!normalized) return false
+  return normalized !== normalizeEvidenceAddress(tokenContract) && !chainInfraExclusions(chain).has(normalized)
+}
+
+function normalizeAlchemyTransferRow(chain: ChainKey, tokenAddress: string, row: AlchemyTransfer, source = 'alchemy_asset_transfers'): NormalizedTransfer | null {
+  const from = normalizeEvidenceAddress(row.from)
+  const to = normalizeEvidenceAddress(row.to ?? null)
+  const token = normalizeEvidenceAddress(row.rawContract?.address ?? tokenAddress)
+  if (!row.hash || !token || token !== normalizeEvidenceAddress(tokenAddress)) return null
+  if (!isUsableEvidenceAddress(chain, from, tokenAddress) || !isUsableEvidenceAddress(chain, to, tokenAddress)) return null
+  const normalizedToken = token
+  return {
+    txHash: row.hash,
+    blockNumber: parseBlockNumber(row.blockNum),
+    timestamp: parseTransferTimestamp(row.metadata?.blockTimestamp),
+    from,
+    to,
+    amountRaw: row.rawContract?.value ?? (row.value != null ? String(row.value) : null),
+    amountFormatted: row.value ?? null,
+    tokenAddress: normalizedToken,
+    source,
+    confidence: 'high',
+  }
+}
+
+function normalizeMoralisTransferRow(chain: ChainKey, tokenAddress: string, row: Record<string, unknown>): NormalizedTransfer | null {
+  const from = normalizeEvidenceAddress(String(row.from_address ?? row.from ?? ''))
+  const to = normalizeEvidenceAddress(String(row.to_address ?? row.to ?? ''))
+  const token = normalizeEvidenceAddress(String(row.address ?? row.token_address ?? row.contract_address ?? tokenAddress))
+  const hash = String(row.transaction_hash ?? row.tx_hash ?? row.hash ?? '')
+  if (!hash || !token || token !== normalizeEvidenceAddress(tokenAddress)) return null
+  if (!isUsableEvidenceAddress(chain, from, tokenAddress) || !isUsableEvidenceAddress(chain, to, tokenAddress)) return null
+  const normalizedToken = token
+  return {
+    txHash: hash,
+    blockNumber: parseBlockNumber(row.block_number),
+    timestamp: parseTransferTimestamp(row.block_timestamp),
+    from,
+    to,
+    amountRaw: row.value != null ? String(row.value) : (row.value_decimal != null ? String(row.value_decimal) : null),
+    amountFormatted: toNum(row.value_decimal),
+    tokenAddress: normalizedToken,
+    source: 'moralis_token_transfers',
+    confidence: 'medium',
+  }
+}
+
+function finalizeTransfers(transfers: NormalizedTransfer[], limit: number): NormalizedTransfer[] {
+  const seen = new Set<string>()
+  return transfers
+    .filter((t) => {
+      const key = [t.txHash.toLowerCase(), t.from, t.to, t.tokenAddress, t.amountRaw ?? ''].join(':')
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((a, b) => (a.blockNumber ?? Number.MAX_SAFE_INTEGER) - (b.blockNumber ?? Number.MAX_SAFE_INTEGER) || (a.timestamp ?? Number.MAX_SAFE_INTEGER) - (b.timestamp ?? Number.MAX_SAFE_INTEGER))
+    .slice(0, Math.max(1, limit))
+}
+
+async function resolveTokenTransfers(params: {
+  chain: ChainKey
+  chainId: number
+  tokenAddress: string
+  deployerAddress?: string | null
+  holderAddresses?: string[]
+  limit?: number
+  providerTransfersRaw?: any
+}): Promise<TransferResolverResult> {
+  const limit = params.limit ?? 200
+  const sourceTrail: string[] = []
+  let fallbackUsed = 'none'
+
+  if (Array.isArray(params.providerTransfersRaw?.result)) {
+    fallbackUsed = 'moralis_token_transfers'
+    sourceTrail.push('moralis_token_transfers:attempted')
+    const transfers = finalizeTransfers(
+      (params.providerTransfersRaw.result as Record<string, unknown>[]).map((row) => normalizeMoralisTransferRow(params.chain, params.tokenAddress, row)).filter(Boolean) as NormalizedTransfer[],
+      limit,
+    )
+    if (transfers.length > 0) return { transfers, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'moralis_token_transfers:succeeded'], fallbackUsed, confidence: 'medium' }
+    sourceTrail.push('moralis_token_transfers:no_usable_wallet_rows')
+  } else if (params.providerTransfersRaw?.__status === 'not_configured') {
+    sourceTrail.push('moralis_token_transfers:not_configured')
+  }
+
+  fallbackUsed = 'alchemy_asset_transfers'
+  sourceTrail.push('alchemy_asset_transfers:attempted')
+  const alchemyRows = await getTokenAssetTransfers(params.chain, {
+    fromBlock: '0x0',
+    toBlock: 'latest',
+    category: ['erc20'],
+    contractAddresses: [params.tokenAddress],
+    order: 'asc',
+    maxCount: `0x${Math.min(Math.max(limit, 50), 300).toString(16)}`,
+    withMetadata: true,
+  })
+  const alchemyTransfers = finalizeTransfers(
+    alchemyRows.map((row) => normalizeAlchemyTransferRow(params.chain, params.tokenAddress, row)).filter(Boolean) as NormalizedTransfer[],
+    limit,
+  )
+  if (alchemyTransfers.length > 0) return { transfers: alchemyTransfers, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'alchemy_asset_transfers:succeeded'], fallbackUsed, confidence: 'high' }
+  sourceTrail.push('alchemy_asset_transfers:no_usable_wallet_rows')
+
+  return {
+    transfers: [],
+    sourceTrail,
+    ...buildInsufficientEvidenceBlock('No usable transfer evidence found for this token in this pass.', fallbackUsed),
+  }
+}
+
+function holderRowsFromProvider(raw: any, source: string): NormalizedHolderRow[] {
+  const items: any[] = Array.isArray(raw?.data?.items) ? raw.data.items
+    : Array.isArray(raw?.data?.data?.items) ? raw.data.data.items
+    : Array.isArray(raw?.items) ? raw.items
+    : Array.isArray(raw?.holders) ? raw.holders
+    : Array.isArray(raw?.token_holders) ? raw.token_holders
+    : Array.isArray(raw?.result) ? raw.result
+    : []
+  return items.map((h: any) => {
+    const address = normalizeEvidenceAddress(h.address ?? h.holder_address ?? h.wallet_address ?? h.wallet ?? h.owner_address ?? h.contract_address ?? null)
+    if (!address) return null
+    const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
+    const pct = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.balancePercent) ?? normalizeHolderPercent(h.ownershipPercent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage) ?? normalizeHolderPercent(h.percentage_relative_to_total_supply)
+    return {
+      address,
+      balanceRaw: balanceRaw != null ? String(balanceRaw) : null,
+      balanceFormatted: toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null,
+      pctOfSupply: pct,
+      source,
+      confidence: pct != null ? 'high' as const : 'medium' as const,
+    }
+  }).filter(Boolean) as NormalizedHolderRow[]
+}
+
+function finalizeHolders(chain: ChainKey, tokenAddress: string, rows: NormalizedHolderRow[], limit: number): NormalizedHolderRow[] {
+  const merged = new Map<string, NormalizedHolderRow>()
+  for (const row of rows) {
+    if (!isUsableEvidenceAddress(chain, row.address, tokenAddress)) continue
+    const prev = merged.get(row.address)
+    if (!prev) { merged.set(row.address, row); continue }
+    merged.set(row.address, {
+      ...prev,
+      balanceRaw: prev.balanceRaw ?? row.balanceRaw,
+      balanceFormatted: prev.balanceFormatted ?? row.balanceFormatted,
+      pctOfSupply: prev.pctOfSupply ?? row.pctOfSupply,
+      confidence: prev.confidence === 'high' || row.confidence !== 'high' ? prev.confidence : row.confidence,
+    })
+  }
+  return [...merged.values()]
+    .sort((a, b) => (b.pctOfSupply ?? -1) - (a.pctOfSupply ?? -1) || (b.balanceFormatted ?? -1) - (a.balanceFormatted ?? -1))
+    .slice(0, Math.max(1, limit))
+}
+
+async function resolveTokenHolders(params: {
+  chain: ChainKey
+  chainId: number
+  tokenAddress: string
+  totalSupply?: string | bigint | null
+  limit?: number
+  providerHoldersRaw?: any
+  marketProviderHoldersRaw?: any
+}): Promise<HolderResolverResult> {
+  const sourceTrail: string[] = []
+  const limit = params.limit ?? 200
+  let fallbackUsed = 'none'
+
+  if (params.providerHoldersRaw && params.providerHoldersRaw.__status !== 'not_configured') {
+    fallbackUsed = 'goldrush_token_holders'
+    sourceTrail.push('goldrush_token_holders:attempted')
+    const holders = finalizeHolders(params.chain, params.tokenAddress, holderRowsFromProvider(params.providerHoldersRaw, 'goldrush_token_holders'), limit)
+    if (holders.length > 0) return { holders, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'goldrush_token_holders:succeeded'], fallbackUsed, confidence: holders.some((h) => h.pctOfSupply != null) ? 'high' : 'medium' }
+    sourceTrail.push('goldrush_token_holders:no_usable_holder_rows')
+  } else {
+    sourceTrail.push('goldrush_token_holders:not_configured')
+  }
+
+  if (params.marketProviderHoldersRaw && params.marketProviderHoldersRaw.__status !== 'not_configured') {
+    fallbackUsed = 'moralis_token_owners'
+    sourceTrail.push('moralis_token_owners:attempted')
+    const holders = finalizeHolders(params.chain, params.tokenAddress, holderRowsFromProvider(params.marketProviderHoldersRaw, 'moralis_token_owners'), limit)
+    if (holders.length > 0) return { holders, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'moralis_token_owners:succeeded'], fallbackUsed, confidence: holders.some((h) => h.pctOfSupply != null) ? 'medium' : 'low' }
+    sourceTrail.push('moralis_token_owners:no_usable_holder_rows')
+  } else {
+    sourceTrail.push('moralis_token_owners:not_configured')
+  }
+
+  return {
+    holders: [],
+    sourceTrail,
+    ...buildInsufficientEvidenceBlock('No usable holder evidence found for this token in this pass.', fallbackUsed),
+  }
 }
 
 async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
@@ -3068,22 +3335,27 @@ export async function POST(req: Request) {
           balance: h.balance ?? null,
         })).filter((h: any) => h.address)
       : []
-    const holderCandidates = [
-      holdersRaw?.data?.items,
-      holdersRaw?.data?.data?.items,
-      holdersRaw?.items,
-      holdersRaw?.holders,
-      holdersRaw?.token_holders,
-      // Moralis fallback — only used when every GoldRush candidate is empty
-      _moralisHolderItems.length > 0 ? _moralisHolderItems : null,
-    ]
-    const holderItems: any[] = holderCandidates.find((x) => Array.isArray(x) && (x as any[]).length > 0) ?? []
-    const _holderSource: 'goldrush' | 'moralis' | 'none' = (() => {
-      const gCand = [holdersRaw?.data?.items, holdersRaw?.data?.data?.items, holdersRaw?.items, holdersRaw?.holders, holdersRaw?.token_holders]
-      if (gCand.some((c) => Array.isArray(c) && (c as any[]).length > 0)) return 'goldrush'
-      if (_moralisHolderItems.length > 0 && holderItems.length > 0) return 'moralis'
-      return 'none'
-    })()
+    const holderResolverResult = await resolveTokenHolders({
+      chain,
+      chainId: CHAIN_ID_MAP[chain],
+      tokenAddress: contract,
+      limit: 200,
+      providerHoldersRaw: holdersRaw,
+      marketProviderHoldersRaw: moralisHoldersRaw,
+    })
+    const holderItems: any[] = holderResolverResult.holders.length > 0
+      ? holderResolverResult.holders.map((h) => ({
+          address: h.address,
+          percentage: h.pctOfSupply ?? null,
+          balance: h.balanceRaw,
+          source: h.source,
+        }))
+      : []
+    const _holderSource: 'goldrush' | 'moralis' | 'none' = holderResolverResult.holders.some((h) => h.source === 'goldrush_token_holders')
+      ? 'goldrush'
+      : holderResolverResult.holders.some((h) => h.source === 'moralis_token_owners')
+        ? 'moralis'
+        : 'none'
     console.log('[holders] items length', holderItems.length, 'source', _holderSource)
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? moralisHoldersRaw?.total ?? null
@@ -3178,7 +3450,7 @@ export async function POST(req: Request) {
       : {
           // No holder rows returned — use unavailable_with_reason, not partial (partial requires real evidence)
           status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable_with_reason') as HolderDistributionStatus['status'],
-          reason: (holdersRaw?.__reason ?? (holdersRaw?.__status === 'not_configured' ? 'api_key_missing' : 'no_holder_rows_returned')),
+          reason: (holderResolverResult.reason ?? holdersRaw?.__reason ?? (holdersRaw?.__status === 'not_configured' ? 'api_key_missing' : 'no_holder_rows_returned')),
           itemCount: holderItems.length,
           normalizedCount: 0,
           percentSource,
@@ -4226,6 +4498,15 @@ export async function POST(req: Request) {
       : (deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.')
     const linkedAddressSet = new Set(linkedWallets.map((wallet) => wallet.address))
     const holderRows = holderDistribution.topHolders ?? []
+    const transferResolverResult = await resolveTokenTransfers({
+      chain,
+      chainId: CHAIN_ID_MAP[chain],
+      tokenAddress: contract,
+      deployerAddress,
+      holderAddresses: holderRows.map((holder) => holder.address).filter(Boolean),
+      limit: 200,
+      providerTransfersRaw: moralisTransfersRaw,
+    })
     const holderRowsHaveUsablePercents = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
     const holderRowsConfirmed = holderRowsHaveUsablePercents
     const supplyRowsArePartial = holderDistributionStatus.status === 'partial' || holderDistributionStatus.percentSource === 'calculated'
@@ -4308,6 +4589,14 @@ export async function POST(req: Request) {
       devClusterSupplyReason,
       matchedLinkedWallets,
       clusterInfluence,
+      ...(holderResolverResult.insufficientEvidence || (!deployerAddress && linkedWallets.length === 0) ? {
+        insufficientEvidence: true,
+        reason: !deployerAddress && linkedWallets.length === 0
+          ? 'Supply control open check: no deployer or linked-wallet actors were resolved in this pass.'
+          : (holderResolverResult.reason ?? 'Holder evidence unavailable in this pass.'),
+        fallbackUsed: holderResolverResult.fallbackUsed ?? 'none',
+        confidence: 'low' as const,
+      } : {}),
     }
     const clusterMap = buildClusterMap({
       deployerAddress,
@@ -4367,6 +4656,24 @@ export async function POST(req: Request) {
       holderPercentSource: holderDistributionStatus.percentSource,
       suspiciousTransfers: false,
       suspiciousTransferReasons: [],
+      transferEvidence: {
+        transferCount: transferResolverResult.transfers.length,
+        insufficientEvidence: transferResolverResult.insufficientEvidence,
+        reason: transferResolverResult.reason ?? null,
+        fallbackUsed: transferResolverResult.fallbackUsed ?? null,
+        confidence: transferResolverResult.confidence,
+      },
+      holderEvidence: {
+        holderCount: holderResolverResult.holders.length,
+        insufficientEvidence: holderResolverResult.insufficientEvidence,
+        reason: holderResolverResult.reason ?? null,
+        fallbackUsed: holderResolverResult.fallbackUsed ?? null,
+        confidence: holderResolverResult.confidence,
+      },
+      insufficientEvidence: holderResolverResult.insufficientEvidence && transferResolverResult.insufficientEvidence,
+      reason: holderResolverResult.insufficientEvidence && transferResolverResult.insufficientEvidence
+        ? 'Dev Control open check: holder and transfer evidence were unavailable in this pass.'
+        : devOriginReason,
       clusterInfluence,
       reasons: [devOriginReason],
       confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
@@ -4409,6 +4716,34 @@ export async function POST(req: Request) {
       holderDistribution,
       holderDistributionStatus,
       holderStatus: holdersStatus,
+      holderResolver: {
+        holders: holderResolverResult.holders,
+        insufficientEvidence: holderResolverResult.insufficientEvidence,
+        reason: holderResolverResult.reason ?? null,
+        fallbackUsed: holderResolverResult.fallbackUsed ?? null,
+        confidence: holderResolverResult.confidence,
+      },
+      transferResolver: {
+        transfers: transferResolverResult.transfers,
+        insufficientEvidence: transferResolverResult.insufficientEvidence,
+        reason: transferResolverResult.reason ?? null,
+        fallbackUsed: transferResolverResult.fallbackUsed ?? null,
+        confidence: transferResolverResult.confidence,
+      },
+      suspiciousFlows: {
+        transfers: transferResolverResult.transfers,
+        insufficientEvidence: transferResolverResult.insufficientEvidence,
+        reason: transferResolverResult.insufficientEvidence ? (transferResolverResult.reason ?? 'Transfer evidence unavailable in this pass.') : 'Transfer evidence available from resolver.',
+        fallbackUsed: transferResolverResult.fallbackUsed ?? 'none',
+        confidence: transferResolverResult.confidence,
+      },
+      earlyBuyers: {
+        wallets: [],
+        insufficientEvidence: transferResolverResult.insufficientEvidence,
+        reason: transferResolverResult.insufficientEvidence ? (transferResolverResult.reason ?? 'Transfer evidence unavailable in this pass.') : 'Early-buyer labelling is not derived without trade records containing real wallet addresses.',
+        fallbackUsed: transferResolverResult.fallbackUsed ?? 'none',
+        confidence: transferResolverResult.insufficientEvidence ? 'low' : 'medium',
+      },
       devIntel,
       deployerAddress,
       deployerStatus: devDeployerStatus,
@@ -4932,6 +5267,23 @@ export async function POST(req: Request) {
         fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
         requestDurationMs: Date.now() - _t0,
         checks: rpcCheckDiagnostics,
+        transferResolverDebug: {
+          sourceTrail: transferResolverResult.sourceTrail,
+          sourcesAttempted: transferResolverResult.sourceTrail.filter((entry) => entry.endsWith(':attempted')).map((entry) => entry.replace(':attempted', '')),
+          sourcesSucceeded: transferResolverResult.sourceTrail.filter((entry) => entry.endsWith(':succeeded')).map((entry) => entry.replace(':succeeded', '')),
+          transferCount: transferResolverResult.transfers.length,
+          insufficientEvidence: transferResolverResult.insufficientEvidence,
+          reason: transferResolverResult.reason ?? null,
+        },
+        holderResolverDebug: {
+          sourceTrail: holderResolverResult.sourceTrail,
+          sourcesAttempted: holderResolverResult.sourceTrail.filter((entry) => entry.endsWith(':attempted')).map((entry) => entry.replace(':attempted', '')),
+          sourcesSucceeded: holderResolverResult.sourceTrail.filter((entry) => entry.endsWith(':succeeded')).map((entry) => entry.replace(':succeeded', '')),
+          holderCount: holderResolverResult.holders.length,
+          holdersWithPercent: holderResolverResult.holders.filter((holder) => holder.pctOfSupply != null).length,
+          insufficientEvidence: holderResolverResult.insufficientEvidence,
+          reason: holderResolverResult.reason ?? null,
+        },
         devIntelDiagnostics: {
           originDiscovery: ethOriginDiscovery?.diag ?? null,
           linkedWallets: ethLinkedWalletResult?.diag ?? null,
