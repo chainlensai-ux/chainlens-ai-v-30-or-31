@@ -141,13 +141,14 @@ type ScanResult = {
     pairAgeLabel: string | null
   } | null
   priceChart?: {
-    timeframe: '24h' | '48h' | '7d'
+    timeframe: '24h' | '48h' | '7d' | '30d'
     points: Array<{ timestamp: string; priceUsd: number }>
     sourceStatus: 'ok' | 'partial' | 'error'
     reason?: string
     fallbackUsed?: boolean
   } | null
-  chartStatus?: 'ok' | 'no_candles' | 'fallback_snapshot_only' | 'partial' | null
+  chartStatus?: 'ok' | 'snapshot_only' | 'unavailable_with_reason' | 'no_candles' | 'fallback_snapshot_only' | 'partial' | null
+  chartReason?: string | null
   chartDataSource?: 'primary' | 'fallback' | 'none' | null
   resolvedInput?: {
     original: string
@@ -2409,6 +2410,7 @@ export default function TerminalTokenScanner() {
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
           chartStatus: json.chartStatus ?? null,
+          chartReason: json.chartReason ?? null,
           chartDataSource: json.chartDataSource ?? null,
           resolvedInput: json.resolvedInput ?? null,
           riskEngine: json.riskEngine ?? null,
@@ -3064,18 +3066,18 @@ export default function TerminalTokenScanner() {
                         <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
                       </div>
                       <div style={{ display: 'inline-flex', marginBottom: '8px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
-                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : '7D'}
+                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : result.priceChart.timeframe === '7d' ? '7D' : '30D'}
                       </div>
                       <MiniPriceChart points={result.priceChart.points} />
                     </div>
                   )}
-                  {result.chartStatus === 'no_candles' && (
+                  {(result.chartStatus === 'snapshot_only' || result.chartStatus === 'no_candles') && result.marketDataSource !== 'fallback' && (
                     <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                       <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
                       <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not indexed for this pool yet. Current price and market data are live.</p>
                     </div>
                   )}
-                  {result.chartStatus === 'fallback_snapshot_only' && (
+                  {(result.chartStatus === 'snapshot_only' || result.chartStatus === 'fallback_snapshot_only') && result.marketDataSource === 'fallback' && (
                     <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '12px' }}>
                         <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#2DD4BF', textTransform: 'uppercase' }}>Live Market Snapshot</p>
@@ -3090,6 +3092,12 @@ export default function TerminalTokenScanner() {
                         {result.poolActivity?.pairAgeLabel != null && <StatCard label="Pair Age" value={result.poolActivity.pairAgeLabel} />}
                         {result.fdv != null && <StatCard label="FDV" value={fmtLarge(result.fdv)} helper="Fully diluted valuation" />}
                       </div>
+                    </div>
+                  )}
+                  {(result.chartStatus === 'unavailable_with_reason' || result.chartStatus === 'partial') && (
+                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                      <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Chart data unavailable — no active indexed pools found for this token.</p>
                     </div>
                   )}
                   {!result.noActivePools && result.marketDataSource !== 'fallback' && (

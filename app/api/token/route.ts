@@ -1066,7 +1066,7 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
   }
 }
 
-async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }): Promise<any> {
+async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }, tokenPosition: 'base' | 'quote' = 'base'): Promise<any> {
   try {
     const networkMap: Record<ChainKey, string> = {
       eth: 'eth',
@@ -1075,8 +1075,9 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
       bnb: 'bsc',
     }
     const network = networkMap[chain] ?? 'base'
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
     const res = await fetch(
-      `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe.resolution}?aggregate=${timeframe.aggregate}&limit=${timeframe.limit}&currency=usd&token=base`,
+      `${_gtBase}/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe.resolution}?aggregate=${timeframe.aggregate}&limit=${timeframe.limit}&currency=usd&token=${tokenPosition}`,
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
@@ -1104,6 +1105,26 @@ async function fetchGeckoTerminalTokenOhlcv(tokenAddress: string, chain: ChainKe
     )
     return res.ok ? await res.json() : null
   } catch { return null }
+}
+
+// Determines whether the scanned token is the 'base' or 'quote' token in a GeckoTerminal pool.
+// Uses the pool's relationship data (populated when pools are fetched with ?include=base_token,quote_token).
+// Falls back to 'base' when relationship data is absent — safe default for most pairs.
+function resolveTokenPositionInPool(
+  pool: Record<string, unknown>,
+  tokenAddress: string,
+  networkId: string,
+): 'base' | 'quote' {
+  const rel = (pool.relationships ?? {}) as Record<string, unknown>
+  const baseData = ((rel.base_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
+  const quoteData = ((rel.quote_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
+  const baseId = String(baseData?.id ?? '').toLowerCase()
+  const quoteId = String(quoteData?.id ?? '').toLowerCase()
+  const tokenNorm = tokenAddress.toLowerCase()
+  const expectedId = `${networkId}_${tokenNorm}`
+  if (baseId === expectedId || baseId.endsWith(`_${tokenNorm}`)) return 'base'
+  if (quoteId === expectedId || quoteId.endsWith(`_${tokenNorm}`)) return 'quote'
+  return 'base'
 }
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
@@ -3269,7 +3290,7 @@ export async function POST(req: Request) {
 
     const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
     const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
-    let priceChart: { timeframe: '24h'|'48h'|'7d'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean } = {
+    let priceChart: { timeframe: '24h'|'48h'|'7d'|'30d'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean } = {
       timeframe: '24h',
       points: [],
       sourceStatus: 'partial',
@@ -3295,20 +3316,24 @@ export async function POST(req: Request) {
     const uniqueChartPools = chartPoolCandidates.filter((c, i, arr) => arr.findIndex((x) => x.address.toLowerCase() === c.address.toLowerCase()) === i)
     const maxAttempts = Math.min(uniqueChartPools.length, 4)
     const chartAttemptedTimeframes: string[] = []
-    const timeframeAttempts: Array<{ key: '24h'|'48h'|'7d'; resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }> = [
+    const timeframeAttempts: Array<{ key: '24h'|'48h'|'7d'|'30d'; resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }> = [
       { key: '24h', resolution: 'minute', aggregate: 15, limit: 96 },
       { key: '48h', resolution: 'hour', aggregate: 1, limit: 48 },
       { key: '7d', resolution: 'day', aggregate: 1, limit: 7 },
+      { key: '30d', resolution: 'day', aggregate: 1, limit: 30 },
     ]
+    const _chartNetworkIdMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const _chartNetworkId = _chartNetworkIdMap[chain] ?? 'base'
     let chartFailureReason: string | null = maxAttempts > 0 ? null : 'primary_pool_missing'
     let chartSelectedPoolForChart: { address: string; name: string | null } | null = null
     for (let i = 0; i < maxAttempts; i += 1) {
       const candidate = uniqueChartPools[i]
+      const tokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
       chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
       for (let t = 0; t < timeframeAttempts.length; t += 1) {
         const tf = timeframeAttempts[t]
-        chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
-        const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf)
+        chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}:${tokenPos}`)
+        const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf, tokenPos)
         const list = chartRaw?.data?.attributes?.ohlcv_list
         if (!Array.isArray(list)) { chartFailureReason = 'ohlcv_not_exposed'; continue }
         const points = list.map((row: unknown) => {
@@ -3332,9 +3357,11 @@ export async function POST(req: Request) {
     }
     // Token-level OHLCV fallback — tries /tokens/{address}/ohlcv which aggregates across all pools.
     // Reliable for CL/V3 pools (Aerodrome CL, Uniswap V3) where individual pool OHLCV is not indexed.
-    // Only runs when all pool-level attempts failed. Capped to 3 calls (one per timeframe); breaks on first success.
+    // Only runs when all pool-level attempts failed. Capped to 4 calls (one per timeframe); breaks on first success.
     let chartUsedTokenLevelOhlcv = false
+    let chartTokenLevelAttempted = false
     if (priceChart.sourceStatus !== 'ok') {
+      chartTokenLevelAttempted = true
       for (const tf of timeframeAttempts) {
         chartAttemptedTimeframes.push(`token_level:${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
         const chartRaw = await fetchGeckoTerminalTokenOhlcv(contract, chain, tf)
@@ -3364,11 +3391,14 @@ export async function POST(req: Request) {
     const chartAttempted = chartAttemptedPools.length > 0 || chartUsedTokenLevelOhlcv
     const chartFallbackUsed = (chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr) || chartUsedTokenLevelOhlcv
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
-    const chartStatus: 'ok' | 'no_candles' | 'fallback_snapshot_only' | 'partial' =
+    const chartStatus: 'ok' | 'snapshot_only' | 'unavailable_with_reason' =
       priceChart.sourceStatus === 'ok' ? 'ok' :
-      marketDataSource === 'fallback' ? 'fallback_snapshot_only' :
-      noActivePools ? 'partial' :
-      'no_candles'
+      noActivePools ? 'unavailable_with_reason' :
+      'snapshot_only'
+    const chartReason: string | null =
+      chartStatus === 'ok'
+        ? (chartUsedTokenLevelOhlcv ? 'token_level_ohlcv_used' : chartFallbackUsed ? 'alternate_pool_used' : null)
+        : (chartFailureReason ?? 'all_chart_sources_empty')
     const chartDataSource: 'primary' | 'fallback' | 'none' =
       priceChart.sourceStatus === 'ok' ? (chartFallbackUsed ? 'fallback' : 'primary') :
       marketDataSource === 'fallback' ? 'fallback' :
@@ -4332,6 +4362,7 @@ export async function POST(req: Request) {
       },
       priceChart,
       chartStatus,
+      chartReason,
       chartDataSource,
 
       pairs: matchingPools,
@@ -4521,12 +4552,27 @@ export async function POST(req: Request) {
             chartSelectedPoolForChart,
             chartFallbackUsed,
             chartUsedTokenLevelOhlcv,
+            chartTokenLevelAttempted,
             chartTimeframe: priceChart.timeframe,
             chartSelectedPoolId: mp?.id ?? null,
             chartSelectedPoolAddress: mpAttr.address ?? null,
             chartFailureReason,
             chartFirstTimestamp: priceChart.points[0]?.timestamp ?? null,
             chartLastTimestamp: priceChart.points[priceChart.points.length - 1]?.timestamp ?? null,
+            chartDebug: {
+              chain,
+              networkId: _chartNetworkId,
+              tokenAddress: contract.toLowerCase(),
+              primaryPoolId: mp?.id ?? null,
+              primaryPoolAddress: mpAttr.address ?? null,
+              poolsAttempted: chartAttemptedPools,
+              timeframesAttempted: chartAttemptedTimeframes,
+              poolLevelSuccess: chartSelectedPoolForChart !== null && !chartUsedTokenLevelOhlcv,
+              tokenLevelAttempted: chartTokenLevelAttempted,
+              tokenLevelSuccess: chartUsedTokenLevelOhlcv,
+              finalChartStatus: chartStatus,
+              finalChartReason: chartReason,
+            },
             poolActivityExtractionReason: {
               transactions24hSource: _txnsH24Obj != null ? 'transactions.h24 (object)' : _txnsH24Total != null ? 'transactions.h24 (scalar)' : 'not_indexed',
               buys24hFound: buys24h != null,
