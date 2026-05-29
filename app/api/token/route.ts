@@ -1798,6 +1798,7 @@ interface _ChartCacheSlot {
   chartUsedTradeReconstruction: boolean
   chartUsedTokenLevelOhlcv: boolean
   chartUsedDexScreener: boolean
+  chartUsedSyntheticCandles: boolean
   dexScreenerChartAttempted: boolean
   dexScreenerChartSuccess: boolean
   chartTradeReconstructionAttempted: boolean
@@ -4076,6 +4077,7 @@ export async function POST(req: Request) {
     let chartUsedTradeReconstruction = false
     let chartTradeReconstructionAttempted = false
     let chartReconstructedCandleCount = 0
+    let chartUsedSyntheticCandles = false
     let chartAttemptedTimeframes: string[] = []
     let _totalChartHttpCalls = 0
     let _ohlcvRateLimited = false
@@ -4098,6 +4100,7 @@ export async function POST(req: Request) {
       chartUsedTradeReconstruction = cv.chartUsedTradeReconstruction
       chartUsedTokenLevelOhlcv = cv.chartUsedTokenLevelOhlcv
       chartUsedDexScreener = cv.chartUsedDexScreener
+      chartUsedSyntheticCandles = cv.chartUsedSyntheticCandles
       dexScreenerChartAttempted = cv.dexScreenerChartAttempted
       dexScreenerChartSuccess = cv.dexScreenerChartSuccess
       chartTradeReconstructionAttempted = cv.chartTradeReconstructionAttempted
@@ -4249,20 +4252,59 @@ export async function POST(req: Request) {
         }
       }
 
+      // Phase 6: Synthetic micro-candles built from real indexed price-change percentages.
+      // Uses actual provider % changes (h24/h6/h1/m5) to back-calculate historical anchor prices.
+      // Each candle spans between two adjacent anchors — no randomness, no fabricated spread.
+      // Only fires when priceUsd is known and all real candle sources failed.
+      if (priceChart.sourceStatus !== 'ok' && priceUsd != null && priceUsd > 0) {
+        const _pcPctSynth = mainPoolAttr.price_change_percentage as Record<string, unknown> | null | undefined
+        const _synthH24 = pickNum(_pcPctSynth?.h24) ?? _dexFb?.priceChange24h ?? null
+        const _synthH6  = pickNum(_pcPctSynth?.h6)  ?? null
+        const _synthH1  = pickNum(_pcPctSynth?.h1)  ?? null
+        const _synthM5  = pickNum(_pcPctSynth?.m5)  ?? null
+        const _nowSec = Math.floor(Date.now() / 1000)
+        const _synthAnchors: Array<{ ts: number; price: number }> = [{ ts: _nowSec, price: priceUsd }]
+        if (_synthH24 != null) _synthAnchors.push({ ts: _nowSec - 86400, price: priceUsd / (1 + _synthH24 / 100) })
+        if (_synthH6  != null) _synthAnchors.push({ ts: _nowSec - 21600, price: priceUsd / (1 + _synthH6  / 100) })
+        if (_synthH1  != null) _synthAnchors.push({ ts: _nowSec -  3600, price: priceUsd / (1 + _synthH1  / 100) })
+        if (_synthM5  != null) _synthAnchors.push({ ts: _nowSec -   300, price: priceUsd / (1 + _synthM5  / 100) })
+        _synthAnchors.sort((a, b) => a.ts - b.ts)
+        const _validAnchors = _synthAnchors.filter((p) => p.price > 0)
+        if (_validAnchors.length >= 2) {
+          const _synthPoints = _validAnchors.map((p, i, arr) => {
+            const prevPrice = i > 0 ? arr[i - 1].price : p.price
+            const price = p.price
+            return {
+              timestamp: new Date(p.ts * 1000).toISOString(),
+              open: prevPrice,
+              high: Math.max(prevPrice, price),
+              low: Math.min(prevPrice, price),
+              close: price,
+              volume: null as number | null,
+              priceUsd: price,
+            }
+          })
+          priceChart = { timeframe: '24h', points: _synthPoints, sourceStatus: 'ok' }
+          chartFailureReason = null
+          chartUsedSyntheticCandles = true
+        }
+      }
+
       // Finalize priceChart if still not ok
       const _anyChartAttempted = chartAttemptedPools.length > 0 || chartTokenLevelAttempted || dexScreenerChartAttempted || chartTradeReconstructionAttempted
       if (priceChart.sourceStatus !== 'ok' && _anyChartAttempted) {
         priceChart = { timeframe: '24h', points: [], sourceStatus: 'partial', reason: _ohlcvRateLimited ? 'chart_provider_rate_limited' : (chartFailureReason ?? 'all_chart_sources_empty') }
       }
 
-      // Store result in cache (TTL: 90s if rate-limited, 5min if candles ok, 60s otherwise)
-      const _chartTtl = _ohlcvRateLimited ? 90000 : (priceChart.sourceStatus === 'ok' ? 300000 : 60000)
+      // Store result in cache (TTL: 90s if rate-limited, 5min if real candles ok, 60s otherwise)
+      const _chartTtl = _ohlcvRateLimited ? 90000 : (priceChart.sourceStatus === 'ok' && !chartUsedSyntheticCandles ? 300000 : 60000)
       _chartOhlcvCache.set(_chartCacheKey, {
         v: {
           priceChart: { ...priceChart },
           chartUsedTradeReconstruction,
           chartUsedTokenLevelOhlcv,
           chartUsedDexScreener,
+          chartUsedSyntheticCandles,
           dexScreenerChartAttempted,
           dexScreenerChartSuccess,
           chartTradeReconstructionAttempted,
@@ -4300,12 +4342,14 @@ export async function POST(req: Request) {
       chartUsedTradeReconstruction ? 'trade_reconstructed' :
       chartUsedDexScreener ? 'dexscreener_ohlcv' :
       chartUsedTokenLevelOhlcv ? 'token_level_ohlcv' :
+      chartUsedSyntheticCandles ? 'synthetic_price_estimate' :
       'pool_ohlcv'
     const chartReason: string | null =
       chartStatus === 'ok'
         ? (chartUsedTradeReconstruction ? 'trade_reconstructed_from_recent_swaps'
            : chartUsedDexScreener ? 'dexscreener_ohlcv_used'
            : chartUsedTokenLevelOhlcv ? 'token_level_ohlcv_used'
+           : chartUsedSyntheticCandles ? 'synthetic_from_indexed_changes'
            : chartFallbackUsed ? 'alternate_pool_used'
            : null)
         : (_ohlcvRateLimited ? 'chart_provider_rate_limited' : (chartFailureReason ?? 'all_chart_sources_empty'))
@@ -5600,6 +5644,7 @@ export async function POST(req: Request) {
               tokenLevelAttempted: chartTokenLevelAttempted,
               tokenLevelSuccess: chartUsedTokenLevelOhlcv,
               tradeReconstructionSuccess: chartUsedTradeReconstruction,
+              syntheticCandlesUsed: chartUsedSyntheticCandles,
               totalChartHttpCalls: _totalChartHttpCalls,
               rateLimited: _ohlcvRateLimited,
               rateLimitedAt: _ohlcvRateLimitedAt,
@@ -5933,6 +5978,7 @@ export async function POST(req: Request) {
           frontendExpectedRender: (chartStatus === 'ok' && priceChart.points.length >= 2)
             ? 'candles' as const
             : (marketTrendSnapshot.status === 'ok' ? 'market_trend' as const : 'snapshot' as const),
+          syntheticCandlesUsed: chartUsedSyntheticCandles,
           totalChartHttpCalls: _totalChartHttpCalls,
           rateLimited: _ohlcvRateLimited,
           rateLimitedAt: _ohlcvRateLimitedAt,

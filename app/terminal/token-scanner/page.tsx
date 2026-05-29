@@ -3341,7 +3341,14 @@ export default function TerminalTokenScanner() {
                                   Indexed from fallback market candles
                                 </span>
                               )}
-                              <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart!.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
+                              {result.chartSource === 'synthetic_price_estimate' && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>
+                                  Estimated from indexed price changes
+                                </span>
+                              )}
+                              <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
+                                {result.chartSource === 'synthetic_price_estimate' ? 'No candle history — shape from % changes' : result.priceChart!.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}
+                              </p>
                             </div>
                           </div>
                           <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
