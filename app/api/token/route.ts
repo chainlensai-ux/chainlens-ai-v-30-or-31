@@ -1333,7 +1333,7 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
   }
 }
 
-async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }, tokenPosition: 'base' | 'quote' = 'base'): Promise<any> {
+async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }, tokenPosition: 'base' | 'quote' = 'base'): Promise<{ json: any | null; httpStatus: number | null }> {
   try {
     const networkMap: Record<ChainKey, string> = {
       eth: 'eth',
@@ -1351,13 +1351,13 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
         signal: withTimeout(5000),
       }
     )
-    return res.ok ? await res.json() : null
-  } catch { return null }
+    return { json: res.ok ? await res.json() : null, httpStatus: res.status }
+  } catch { return { json: null, httpStatus: null } }
 }
 
 // Token-level OHLCV — aggregates across all pools for the token.
 // More reliable than pool-level for CL/V3 pools where individual pool OHLCV is not indexed.
-async function fetchGeckoTerminalTokenOhlcv(tokenAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }): Promise<any> {
+async function fetchGeckoTerminalTokenOhlcv(tokenAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }): Promise<{ json: any | null; httpStatus: number | null }> {
   try {
     const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
     const network = networkMap[chain] ?? 'base'
@@ -1370,18 +1370,18 @@ async function fetchGeckoTerminalTokenOhlcv(tokenAddress: string, chain: ChainKe
         signal: withTimeout(5000),
       }
     )
-    return res.ok ? await res.json() : null
-  } catch { return null }
+    return { json: res.ok ? await res.json() : null, httpStatus: res.status }
+  } catch { return { json: null, httpStatus: null } }
 }
 
 // Determines whether the scanned token is the 'base' or 'quote' token in a GeckoTerminal pool.
 // Uses the pool's relationship data (populated when pools are fetched with ?include=base_token,quote_token).
-// Falls back to 'base' when relationship data is absent — safe default for most pairs.
+// Returns null when relationship data is absent so callers can safely try both sides.
 function resolveTokenPositionInPool(
   pool: Record<string, unknown>,
   tokenAddress: string,
   networkId: string,
-): 'base' | 'quote' {
+): 'base' | 'quote' | null {
   const rel = (pool.relationships ?? {}) as Record<string, unknown>
   const baseData = ((rel.base_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
   const quoteData = ((rel.quote_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
@@ -1391,11 +1391,32 @@ function resolveTokenPositionInPool(
   const expectedId = `${networkId}_${tokenNorm}`
   if (baseId === expectedId || baseId.endsWith(`_${tokenNorm}`)) return 'base'
   if (quoteId === expectedId || quoteId.endsWith(`_${tokenNorm}`)) return 'quote'
-  return 'base'
+  return null
+}
+
+function extractGeckoTerminalPoolAddress(pool: Record<string, unknown> | null | undefined): string | null {
+  const attrs = (pool?.attributes ?? {}) as Record<string, unknown>
+  const attrAddress = typeof attrs.address === 'string' ? attrs.address.trim().toLowerCase() : ''
+  if (/^0x[a-f0-9]{40}$/.test(attrAddress)) return attrAddress
+  const idAddress = String(pool?.id ?? '').match(/0x[a-fA-F0-9]{40}/)?.[0]?.toLowerCase() ?? null
+  return idAddress && /^0x[a-f0-9]{40}$/.test(idAddress) ? idAddress : null
+}
+
+function poolTokenRelationshipDebug(pool: Record<string, unknown>, tokenAddress: string, networkId: string) {
+  const rel = (pool.relationships ?? {}) as Record<string, unknown>
+  const baseData = ((rel.base_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
+  const quoteData = ((rel.quote_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
+  return {
+    poolId: String(pool.id ?? ''),
+    poolAddress: extractGeckoTerminalPoolAddress(pool),
+    baseTokenId: String(baseData?.id ?? '') || null,
+    quoteTokenId: String(quoteData?.id ?? '') || null,
+    tokenPosition: resolveTokenPositionInPool(pool, tokenAddress, networkId),
+  }
 }
 
 // Fetches recent trades for a pool — last-resort candle source when indexed OHLCV is unavailable.
-async function fetchGeckoTerminalPoolTrades(poolAddress: string, chain: ChainKey): Promise<any> {
+async function fetchGeckoTerminalPoolTrades(poolAddress: string, chain: ChainKey): Promise<{ json: any | null; httpStatus: number | null }> {
   try {
     const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
     const network = networkMap[chain] ?? 'base'
@@ -1404,48 +1425,96 @@ async function fetchGeckoTerminalPoolTrades(poolAddress: string, chain: ChainKey
       `${_gtBase}/api/v2/networks/${network}/pools/${poolAddress}/trades?trade_volume_in_usd_greater_than=0`,
       { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: withTimeout(5000) }
     )
-    return res.ok ? await res.json() : null
-  } catch { return null }
+    return { json: res.ok ? await res.json() : null, httpStatus: res.status }
+  } catch { return { json: null, httpStatus: null } }
 }
 
 // Reconstructs OHLCV candles from raw GeckoTerminal trade events.
 // Only uses real trade prices — no generated or interpolated values.
-// Requires >= 3 valid priced trades spanning >= 2 time buckets; returns null otherwise.
+// Requires >= 3 valid priced trades spanning >= 2 time buckets; returns empty candles otherwise.
+type ChartPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }
+
+function incrementReason(map: Record<string, number>, key: string) {
+  map[key] = (map[key] ?? 0) + 1
+}
+
+function normalizeOhlcvRows(list: unknown): { rawPointCount: number; validPointCount: number; rejectedReason?: string; points: ChartPoint[] } {
+  if (!Array.isArray(list)) return { rawPointCount: 0, validPointCount: 0, rejectedReason: 'ohlcv_list_missing', points: [] }
+  let invalidRows = 0
+  const points = list.map((row: unknown) => {
+    const arr = Array.isArray(row) ? row : null
+    const tsNum = toNum(arr?.[0])
+    const close = toNum(arr?.[4])
+    if (tsNum == null || close == null || close <= 0) { invalidRows += 1; return null }
+    const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
+    const rawOpen = toNum(arr?.[1]) ?? close
+    const rawHigh = toNum(arr?.[2]) ?? close
+    const rawLow  = toNum(arr?.[3]) ?? close
+    const open   = rawOpen > 0 ? rawOpen : close
+    const high   = Math.max(rawHigh > 0 ? rawHigh : close, open, close)
+    const low    = Math.min(rawLow  > 0 ? rawLow  : close, open, close)
+    const volume = toNum(arr?.[5]) ?? null
+    return { timestamp: new Date(ms).toISOString(), open, high, low, close, volume, priceUsd: close }
+  }).filter((point: ChartPoint | null): point is ChartPoint => point != null)
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+  return {
+    rawPointCount: list.length,
+    validPointCount: points.length,
+    rejectedReason: points.length >= 2 ? undefined : (invalidRows > 0 ? 'invalid_or_non_positive_ohlcv_rows' : 'insufficient_points'),
+    points,
+  }
+}
+
 function reconstructCandlesFromTrades(
   trades: unknown[],
   currentPriceUsd: number | null,
-): Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }> | null {
-  if (!Array.isArray(trades) || trades.length < 3) return null
+): { candles: ChartPoint[]; rawTradeCount: number; validTradePriceCount: number; rejectedTradeReasons: Record<string, number> } {
+  const rejectedTradeReasons: Record<string, number> = {}
+  if (!Array.isArray(trades) || trades.length < 3) {
+    if (!Array.isArray(trades) || trades.length === 0) incrementReason(rejectedTradeReasons, 'no_trades_returned')
+    else incrementReason(rejectedTradeReasons, 'fewer_than_three_trades')
+    return { candles: [], rawTradeCount: Array.isArray(trades) ? trades.length : 0, validTradePriceCount: 0, rejectedTradeReasons }
+  }
   type TradePoint = { tsMs: number; price: number; volUsd: number | null }
   const points: TradePoint[] = []
   for (const trade of trades) {
     const attrs = ((trade as Record<string, unknown>)?.attributes) as Record<string, unknown> | undefined
-    if (!attrs) continue
+    if (!attrs) { incrementReason(rejectedTradeReasons, 'missing_trade_attributes'); continue }
     const tsRaw = attrs.block_timestamp ?? attrs.timestamp
     const tsMs: number | null = tsRaw == null ? null
       : typeof tsRaw === 'number' ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000)
       : !isNaN(Date.parse(String(tsRaw))) ? new Date(String(tsRaw)).getTime()
       : null
-    if (!tsMs || isNaN(tsMs)) continue
-    const candidates = [toNum(attrs.price_in_usd), toNum(attrs.price_from_in_usd), toNum(attrs.price_to_in_usd)]
-      .filter((p): p is number => p != null && p > 0)
-    if (candidates.length === 0) continue
-    let price: number | null = null
+    if (!tsMs || isNaN(tsMs)) { incrementReason(rejectedTradeReasons, 'missing_trade_timestamp'); continue }
+    const candidates = [
+      toNum(attrs.price_in_usd),
+      toNum(attrs.price_from_in_usd),
+      toNum(attrs.price_to_in_usd),
+      toNum(attrs.base_token_price_usd),
+      toNum(attrs.quote_token_price_usd),
+    ].filter((candidate): candidate is number => candidate != null && candidate > 0)
+    if (candidates.length === 0) { incrementReason(rejectedTradeReasons, 'missing_positive_trade_price'); continue }
+    let price = candidates[0]
     if (currentPriceUsd != null && currentPriceUsd > 0) {
-      const eligible = candidates.filter(p => p >= currentPriceUsd * 0.05 && p <= currentPriceUsd * 20)
-      price = eligible.length > 0
-        ? eligible.reduce((best, p) => Math.abs(p - currentPriceUsd) < Math.abs(best - currentPriceUsd) ? p : best, eligible[0])
-        : null
-    } else {
-      price = candidates[0]
+      // Keep only obviously impossible unit mismatches out. Tiny tokens can vary by many orders
+      // across provider price fields, so prefer nearest real positive price instead of rejecting
+      // the whole trade on a tight 0.05x–20x band.
+      const eligible = candidates.filter(candidate => candidate >= currentPriceUsd * 1e-9 && candidate <= currentPriceUsd * 1e9)
+      if (eligible.length === 0) { incrementReason(rejectedTradeReasons, 'trade_price_extreme_outlier'); continue }
+      price = eligible.reduce((best, candidate) => Math.abs(Math.log(candidate / currentPriceUsd)) < Math.abs(Math.log(best / currentPriceUsd)) ? candidate : best, eligible[0])
     }
-    if (price == null) continue
     points.push({ tsMs, price, volUsd: toNum(attrs.volume_in_usd) ?? null })
   }
-  if (points.length < 3) return null
+  if (points.length < 3) {
+    incrementReason(rejectedTradeReasons, 'fewer_than_three_valid_trade_prices')
+    return { candles: [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
+  }
   points.sort((a, b) => a.tsMs - b.tsMs)
   const spanMs = points[points.length - 1].tsMs - points[0].tsMs
-  if (spanMs < 60000) return null
+  if (spanMs < 60000) {
+    incrementReason(rejectedTradeReasons, 'trade_span_under_one_minute')
+    return { candles: [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
+  }
   const bucketMs = Math.max(60000, Math.ceil(spanMs / 20))
   const buckets = new Map<number, TradePoint[]>()
   for (const pt of points) {
@@ -1453,7 +1522,10 @@ function reconstructCandlesFromTrades(
     if (!buckets.has(key)) buckets.set(key, [])
     buckets.get(key)!.push(pt)
   }
-  if (buckets.size < 2) return null
+  if (buckets.size < 2) {
+    incrementReason(rejectedTradeReasons, 'fewer_than_two_trade_buckets')
+    return { candles: [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
+  }
   const candles = Array.from(buckets.entries())
     .sort(([a], [b]) => a - b)
     .map(([bucketStart, pts]) => {
@@ -1465,8 +1537,10 @@ function reconstructCandlesFromTrades(
       const volSum = pts.reduce((s, p) => s + (p.volUsd ?? 0), 0)
       return { timestamp: new Date(bucketStart).toISOString(), open, high, low, close, volume: volSum > 0 ? volSum : null, priceUsd: close }
     })
-  return candles.length >= 2 ? candles : null
+  if (candles.length < 2) incrementReason(rejectedTradeReasons, 'fewer_than_two_reconstructed_candles')
+  return { candles: candles.length >= 2 ? candles : [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
 }
+
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
@@ -3643,17 +3717,27 @@ export async function POST(req: Request) {
       reason: 'primary_pool_missing',
     }
     const chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
+    const _chartNetworkIdMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const _chartNetworkId = _chartNetworkIdMap[chain] ?? 'base'
     const chartPoolCandidates = [mainPool, ...matchingPools.filter((p) => p !== mainPool)]
-      .filter((p): p is NonNullable<typeof mainPool> => Boolean(p?.attributes?.address))
-      .map((p) => ({
-        pool: p,
-        address: String(p.attributes.address),
-        name: typeof p.attributes.name === 'string' ? p.attributes.name : null,
-        liquidityUsd: toNum(p.attributes.reserve_in_usd),
-        volume24hUsd: toNum((p.attributes.volume_usd as Record<string, unknown> | undefined)?.h24),
-      }))
+      .map((p) => {
+        if (!p) return null
+        const address = extractGeckoTerminalPoolAddress(p as Record<string, unknown>)
+        if (!address) return null
+        return {
+          pool: p,
+          poolId: String(p.id ?? ''),
+          address,
+          name: typeof p.attributes.name === 'string' ? p.attributes.name : null,
+          dex: typeof p.attributes.dex_id === 'string' ? p.attributes.dex_id : null,
+          poolType: detectPoolType(p, typeof p.attributes.dex_id === 'string' ? p.attributes.dex_id : undefined),
+          liquidityUsd: toNum(p.attributes.reserve_in_usd),
+          volume24hUsd: toNum((p.attributes.volume_usd as Record<string, unknown> | undefined)?.h24),
+        }
+      })
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate != null)
       .sort((a, b) => ((b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1)) || ((b.volume24hUsd ?? -1) - (a.volume24hUsd ?? -1)))
-    const primaryAddr = String(mainPoolAttr.address ?? '').toLowerCase()
+    const primaryAddr = extractGeckoTerminalPoolAddress(mainPool as Record<string, unknown> | null)?.toLowerCase() ?? ''
     chartPoolCandidates.sort((a, b) => {
       if (a.address.toLowerCase() === primaryAddr) return -1
       if (b.address.toLowerCase() === primaryAddr) return 1
@@ -3668,43 +3752,45 @@ export async function POST(req: Request) {
       { key: '7d', resolution: 'day', aggregate: 1, limit: 7 },
       { key: '30d', resolution: 'day', aggregate: 1, limit: 30 },
     ]
-    const _chartNetworkIdMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
-    const _chartNetworkId = _chartNetworkIdMap[chain] ?? 'base'
+    const tokenPositionForEachPool = uniqueChartPools.map((candidate) => poolTokenRelationshipDebug(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId))
+    const poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base' | 'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
+    const tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
+    const tradePoolsAttempted: string[] = []
+    const rejectedTradeReasons: Record<string, number> = {}
+    let rawTradeCount = 0
+    let validTradePriceCount = 0
     let chartFailureReason: string | null = maxAttempts > 0 ? null : 'primary_pool_missing'
     let chartSelectedPoolForChart: { address: string; name: string | null } | null = null
     for (let i = 0; i < maxAttempts; i += 1) {
       const candidate = uniqueChartPools[i]
-      const tokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
+      const resolvedTokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
+      const tokenPositions: Array<'base' | 'quote'> = resolvedTokenPos ? [resolvedTokenPos] : ['base', 'quote']
       chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
-      for (let t = 0; t < timeframeAttempts.length; t += 1) {
-        const tf = timeframeAttempts[t]
-        chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}:${tokenPos}`)
-        const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf, tokenPos)
-        const list = chartRaw?.data?.attributes?.ohlcv_list
-        if (!Array.isArray(list)) { chartFailureReason = 'ohlcv_not_exposed'; continue }
-        const points = list.map((row: unknown) => {
-          const arr = Array.isArray(row) ? row : null
-          const tsNum = toNum(arr?.[0])
-          const close = toNum(arr?.[4])
-          if (tsNum == null || close == null || close <= 0) return null
-          const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
-          const rawOpen = toNum(arr?.[1]) ?? close
-          const rawHigh = toNum(arr?.[2]) ?? close
-          const rawLow  = toNum(arr?.[3]) ?? close
-          const open   = rawOpen > 0 ? rawOpen : close
-          const high   = Math.max(rawHigh > 0 ? rawHigh : close, open, close)
-          const low    = Math.min(rawLow  > 0 ? rawLow  : close, open, close)
-          const volume = toNum(arr?.[5]) ?? null
-          return { timestamp: new Date(ms).toISOString(), open, high, low, close, volume, priceUsd: close }
-        }).filter((p: { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number } | null): p is { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number } => p != null)
-          .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-        if (points.length >= 2) {
-          priceChart = { timeframe: tf.key, points, sourceStatus: 'ok' }
-          chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
-          chartFailureReason = null
-          break
+      for (const tokenPos of tokenPositions) {
+        for (let t = 0; t < timeframeAttempts.length; t += 1) {
+          const tf = timeframeAttempts[t]
+          chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}:${tokenPos}`)
+          const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf, tokenPos)
+          const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
+          poolOhlcvAttempts.push({
+            poolId: candidate.poolId,
+            poolAddress: candidate.address,
+            tokenPosition: tokenPos,
+            timeframe: tf.key,
+            ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}),
+            rawPointCount: normalized.rawPointCount,
+            validPointCount: normalized.validPointCount,
+            ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}),
+          })
+          if (normalized.points.length >= 2) {
+            priceChart = { timeframe: tf.key, points: normalized.points, sourceStatus: 'ok' }
+            chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
+            chartFailureReason = null
+            break
+          }
+          chartFailureReason = normalized.rejectedReason ?? 'insufficient_points'
         }
-        chartFailureReason = 'insufficient_points'
+        if (priceChart.sourceStatus === 'ok') break
       }
       if (priceChart.sourceStatus === 'ok') break
     }
@@ -3718,31 +3804,21 @@ export async function POST(req: Request) {
       for (const tf of timeframeAttempts) {
         chartAttemptedTimeframes.push(`token_level:${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
         const chartRaw = await fetchGeckoTerminalTokenOhlcv(contract, chain, tf)
-        const list = chartRaw?.data?.attributes?.ohlcv_list
-        if (!Array.isArray(list)) { chartFailureReason = 'token_ohlcv_not_exposed'; continue }
-        const points = list.map((row: unknown) => {
-          const arr = Array.isArray(row) ? row : null
-          const tsNum = toNum(arr?.[0])
-          const close = toNum(arr?.[4])
-          if (tsNum == null || close == null || close <= 0) return null
-          const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
-          const rawOpen = toNum(arr?.[1]) ?? close
-          const rawHigh = toNum(arr?.[2]) ?? close
-          const rawLow  = toNum(arr?.[3]) ?? close
-          const open   = rawOpen > 0 ? rawOpen : close
-          const high   = Math.max(rawHigh > 0 ? rawHigh : close, open, close)
-          const low    = Math.min(rawLow  > 0 ? rawLow  : close, open, close)
-          const volume = toNum(arr?.[5]) ?? null
-          return { timestamp: new Date(ms).toISOString(), open, high, low, close, volume, priceUsd: close }
-        }).filter((p: { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number } | null): p is { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number } => p != null)
-          .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-        if (points.length >= 2) {
-          priceChart = { timeframe: tf.key, points, sourceStatus: 'ok' }
+        const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
+        tokenOhlcvAttempts.push({
+          timeframe: tf.key,
+          ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}),
+          rawPointCount: normalized.rawPointCount,
+          validPointCount: normalized.validPointCount,
+          ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}),
+        })
+        if (normalized.points.length >= 2) {
+          priceChart = { timeframe: tf.key, points: normalized.points, sourceStatus: 'ok' }
           chartFailureReason = null
           chartUsedTokenLevelOhlcv = true
           break
         }
-        chartFailureReason = 'token_ohlcv_insufficient_points'
+        chartFailureReason = normalized.rejectedReason ? `token_${normalized.rejectedReason}` : 'token_ohlcv_insufficient_points'
       }
     }
     // Trade-reconstruction fallback — fetches real GeckoTerminal pool trade events and groups them
@@ -3756,13 +3832,19 @@ export async function POST(req: Request) {
       chartTradeReconstructionAttempted = true
       for (const poolCandidate of uniqueChartPools.slice(0, 2)) {
         chartAttemptedTimeframes.push(`trade_recon:${poolCandidate.address.slice(0, 10)}`)
+        tradePoolsAttempted.push(poolCandidate.address)
         const tradesRaw = await fetchGeckoTerminalPoolTrades(poolCandidate.address, chain)
-        const tradesArr: unknown[] = Array.isArray(tradesRaw?.data) ? tradesRaw.data : []
-        chartReconstructedTradeCount = Math.max(chartReconstructedTradeCount, tradesArr.length)
+        const tradesArr: unknown[] = Array.isArray(tradesRaw.json?.data) ? tradesRaw.json.data : []
         const reconstructed = reconstructCandlesFromTrades(tradesArr, priceUsd)
-        if (reconstructed && reconstructed.length >= 2) {
-          chartReconstructedCandleCount = reconstructed.length
-          priceChart = { timeframe: '24h', points: reconstructed, sourceStatus: 'ok' }
+        rawTradeCount = Math.max(rawTradeCount, reconstructed.rawTradeCount)
+        validTradePriceCount = Math.max(validTradePriceCount, reconstructed.validTradePriceCount)
+        for (const [reason, count] of Object.entries(reconstructed.rejectedTradeReasons)) {
+          rejectedTradeReasons[reason] = (rejectedTradeReasons[reason] ?? 0) + count
+        }
+        chartReconstructedTradeCount = Math.max(chartReconstructedTradeCount, reconstructed.rawTradeCount)
+        if (reconstructed.candles.length >= 2) {
+          chartReconstructedCandleCount = reconstructed.candles.length
+          priceChart = { timeframe: '24h', points: reconstructed.candles, sourceStatus: 'ok' }
           chartFailureReason = null
           chartUsedTradeReconstruction = true
           break
@@ -3786,8 +3868,7 @@ export async function POST(req: Request) {
       chartStatus !== 'ok' ? null :
       chartUsedTradeReconstruction ? 'trade_reconstructed' :
       chartUsedTokenLevelOhlcv ? 'token_level_ohlcv' :
-      chartFallbackUsed ? 'alternate_pool_ohlcv' :
-      'primary_pool_ohlcv'
+      'pool_ohlcv'
     const chartReason: string | null =
       chartStatus === 'ok'
         ? (chartUsedTradeReconstruction ? 'trade_reconstructed_from_recent_swaps'
@@ -4948,7 +5029,7 @@ export async function POST(req: Request) {
             totalPoolsReturned: matchingPools.length,
             selectedPoolIndex: 0,
             selectedPoolId: mp?.id ?? null,
-            selectedPoolAddress: mpAttr.address ?? null,
+            selectedPoolAddress: extractGeckoTerminalPoolAddress(mp as Record<string, unknown> | null),
             selectedPoolName: mpAttr.name ?? null,
             selectedPoolLiquidityUsd: mpAttr.reserve_in_usd ?? null,
             selectedPoolVolume24h: (mpAttr.volume_usd as Record<string, unknown> | undefined)?.h24 ?? null,
@@ -5015,7 +5096,7 @@ export async function POST(req: Request) {
             chartTokenLevelAttempted,
             chartTimeframe: priceChart.timeframe,
             chartSelectedPoolId: mp?.id ?? null,
-            chartSelectedPoolAddress: mpAttr.address ?? null,
+            chartSelectedPoolAddress: extractGeckoTerminalPoolAddress(mp as Record<string, unknown> | null),
             chartFailureReason,
             chartFirstTimestamp: priceChart.points[0]?.timestamp ?? null,
             chartLastTimestamp: priceChart.points[priceChart.points.length - 1]?.timestamp ?? null,
@@ -5023,20 +5104,28 @@ export async function POST(req: Request) {
               chain,
               networkId: _chartNetworkId,
               tokenAddress: contract.toLowerCase(),
-              primaryPoolId: mp?.id ?? null,
-              primaryPoolAddress: mpAttr.address ?? null,
+              selectedPoolId: mp?.id ?? null,
+              selectedPoolAddress: extractGeckoTerminalPoolAddress(mp as Record<string, unknown> | null),
+              selectedPoolDex: primaryDexName,
+              selectedPoolType: lpPoolType,
+              tokenPositionForEachPool,
               poolsAttempted: chartAttemptedPools,
-              timeframesAttempted: chartAttemptedTimeframes,
-              poolLevelSuccess: chartSelectedPoolForChart !== null && !chartUsedTokenLevelOhlcv && !chartUsedTradeReconstruction,
-              tokenLevelAttempted: chartTokenLevelAttempted,
-              tokenLevelSuccess: chartUsedTokenLevelOhlcv,
+              poolOhlcvAttempts,
+              tokenOhlcvAttempts,
               tradeReconstructionAttempted: chartTradeReconstructionAttempted,
-              tradeReconstructionSuccess: chartUsedTradeReconstruction,
-              reconstructedTradeCount: chartReconstructedTradeCount,
+              tradePoolsAttempted,
+              rawTradeCount,
+              validTradePriceCount,
+              rejectedTradeReasons,
               reconstructedCandleCount: chartReconstructedCandleCount,
               finalChartStatus: chartStatus,
               finalChartSource: chartSource,
               finalChartReason: chartReason,
+              timeframesAttempted: chartAttemptedTimeframes,
+              poolLevelSuccess: chartSelectedPoolForChart !== null && !chartUsedTokenLevelOhlcv && !chartUsedTradeReconstruction,
+              tokenLevelAttempted: chartTokenLevelAttempted,
+              tokenLevelSuccess: chartUsedTokenLevelOhlcv,
+              tradeReconstructionSuccess: chartUsedTradeReconstruction,
             },
             poolActivityExtractionReason: {
               transactions24hSource: _txnsH24Obj != null ? 'transactions.h24 (object)' : _txnsH24Total != null ? 'transactions.h24 (scalar)' : 'not_indexed',
