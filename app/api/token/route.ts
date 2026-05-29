@@ -1793,6 +1793,33 @@ interface DexFallbackResult {
 
 const _dexFbCache = new Map<string, { data: DexFallbackResult | null; ts: number }>()
 
+interface _ChartCacheSlot {
+  priceChart: { timeframe: '24h'|'48h'|'7d'|'30d'; points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean }
+  chartUsedTradeReconstruction: boolean
+  chartUsedTokenLevelOhlcv: boolean
+  chartUsedDexScreener: boolean
+  dexScreenerChartAttempted: boolean
+  dexScreenerChartSuccess: boolean
+  chartTradeReconstructionAttempted: boolean
+  chartTokenLevelAttempted: boolean
+  poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base'|'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }>
+  tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }>
+  rawTradeCount: number
+  validTradePriceCount: number
+  chartReconstructedCandleCount: number
+  tradePoolsAttempted: string[]
+  rejectedTradeReasons: Record<string, number>
+  chartAttemptedTimeframes: string[]
+  chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }>
+  chartSelectedPoolForChart: { address: string; name: string | null } | null
+  chartFailureReason: string | null
+  totalChartHttpCalls: number
+  rateLimited: boolean
+  rateLimitedAt: string | null
+  skippedDueToRateLimit: number
+}
+const _chartOhlcvCache = new Map<string, { v: _ChartCacheSlot; ts: number; ttl: number }>()
+
 async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 'base'): Promise<DexFallbackResult | null> {
   const dexChainIdMap: Record<ChainKey, string> = {
     eth: 'ethereum',
@@ -3991,13 +4018,6 @@ export async function POST(req: Request) {
 
     const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
     const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
-    let priceChart: { timeframe: '24h'|'48h'|'7d'|'30d'; points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean } = {
-      timeframe: '24h',
-      points: [],
-      sourceStatus: 'partial',
-      reason: 'primary_pool_missing',
-    }
-    const chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
     const _chartNetworkIdMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
     const _chartNetworkId = _chartNetworkIdMap[chain] ?? 'base'
     const chartPoolCandidates = [mainPool, ...matchingPools.filter((p) => p !== mainPool)]
@@ -4025,135 +4045,249 @@ export async function POST(req: Request) {
       return 0
     })
     const uniqueChartPools = chartPoolCandidates.filter((c, i, arr) => arr.findIndex((x) => x.address.toLowerCase() === c.address.toLowerCase()) === i)
-    const maxAttempts = Math.min(uniqueChartPools.length, 5)
-    const chartAttemptedTimeframes: string[] = []
-    const timeframeAttempts: Array<{ key: '24h'|'48h'|'7d'|'30d'; resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }> = [
-      { key: '24h', resolution: 'minute', aggregate: 15, limit: 96 },
-      { key: '48h', resolution: 'hour', aggregate: 1, limit: 48 },
-      { key: '7d', resolution: 'day', aggregate: 1, limit: 7 },
-      { key: '30d', resolution: 'day', aggregate: 1, limit: 30 },
-    ]
     const tokenPositionForEachPool = uniqueChartPools.map((candidate) => poolTokenRelationshipDebug(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId))
-    const poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base' | 'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
-    const tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
-    const tradePoolsAttempted: string[] = []
-    const rejectedTradeReasons: Record<string, number> = {}
+
+    // Cache check — keyed by chain + token + primary pool
+    const _chartCacheKey = `${chain}:${contract.toLowerCase()}:${primaryAddr || 'no_pool'}`
+    const _chartCachedEntryRaw = _chartOhlcvCache.get(_chartCacheKey)
+    const _chartCacheHit = _chartCachedEntryRaw != null && Date.now() - _chartCachedEntryRaw.ts < _chartCachedEntryRaw.ttl
+
+    // Mutable chart pipeline state (populated from cache or fresh fetch)
+    let priceChart: { timeframe: '24h'|'48h'|'7d'|'30d'; points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean } = {
+      timeframe: '24h',
+      points: [],
+      sourceStatus: 'partial',
+      reason: 'primary_pool_missing',
+    }
+    let chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
+    let poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base' | 'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
+    let tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
+    let tradePoolsAttempted: string[] = []
+    let rejectedTradeReasons: Record<string, number> = {}
     let rawTradeCount = 0
     let validTradePriceCount = 0
-    let chartFailureReason: string | null = maxAttempts > 0 ? null : 'primary_pool_missing'
+    let chartFailureReason: string | null = null
     let chartSelectedPoolForChart: { address: string; name: string | null } | null = null
-    for (let i = 0; i < maxAttempts; i += 1) {
-      const candidate = uniqueChartPools[i]
-      const resolvedTokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
-      const tokenPositions: Array<'base' | 'quote'> = resolvedTokenPos ? [resolvedTokenPos] : ['base', 'quote']
-      chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
-      for (const tokenPos of tokenPositions) {
-        for (let t = 0; t < timeframeAttempts.length; t += 1) {
-          const tf = timeframeAttempts[t]
-          chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}:${tokenPos}`)
-          const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf, tokenPos)
-          const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
-          poolOhlcvAttempts.push({
-            poolId: candidate.poolId,
-            poolAddress: candidate.address,
-            tokenPosition: tokenPos,
-            timeframe: tf.key,
-            ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}),
-            rawPointCount: normalized.rawPointCount,
-            validPointCount: normalized.validPointCount,
-            ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}),
-          })
-          if (normalized.points.length >= 2) {
-            priceChart = { timeframe: tf.key, points: normalized.points, sourceStatus: 'ok' }
-            chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
-            chartFailureReason = null
-            break
-          }
-          chartFailureReason = normalized.rejectedReason ?? 'insufficient_points'
-        }
-        if (priceChart.sourceStatus === 'ok') break
-      }
-      if (priceChart.sourceStatus === 'ok') break
-    }
-    // Token-level OHLCV fallback — tries /tokens/{address}/ohlcv which aggregates across all pools.
-    // Reliable for CL/V3 pools (Aerodrome CL, Uniswap V3) where individual pool OHLCV is not indexed.
-    // Only runs when all pool-level attempts failed. Capped to 4 calls (one per timeframe); breaks on first success.
     let chartUsedTokenLevelOhlcv = false
     let chartTokenLevelAttempted = false
-    if (priceChart.sourceStatus !== 'ok') {
-      chartTokenLevelAttempted = true
-      for (const tf of timeframeAttempts) {
-        chartAttemptedTimeframes.push(`token_level:${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
-        const chartRaw = await fetchGeckoTerminalTokenOhlcv(contract, chain, tf)
-        const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
-        tokenOhlcvAttempts.push({
-          timeframe: tf.key,
-          ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}),
-          rawPointCount: normalized.rawPointCount,
-          validPointCount: normalized.validPointCount,
-          ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}),
-        })
-        if (normalized.points.length >= 2) {
-          priceChart = { timeframe: tf.key, points: normalized.points, sourceStatus: 'ok' }
-          chartFailureReason = null
-          chartUsedTokenLevelOhlcv = true
-          break
-        }
-        chartFailureReason = normalized.rejectedReason ? `token_${normalized.rejectedReason}` : 'token_ohlcv_insufficient_points'
-      }
-    }
-    // DexScreener chart fallback — checks the best-known pair for real OHLCV history fields.
-    // The public DexScreener API currently does not expose candles; this step runs cleanly and
-    // returns null. If a future DS API version includes chart data, it will be used here.
     let chartUsedDexScreener = false
     let dexScreenerChartAttempted = false
     let dexScreenerChartSuccess = false
-    if (priceChart.sourceStatus !== 'ok' && _dexFb?.pairAddress) {
-      dexScreenerChartAttempted = true
-      const _dsCandles = await fetchDexScreenerPairChart(_dexFb.pairAddress, chain)
-      if (_dsCandles && _dsCandles.length >= 2) {
-        priceChart = { timeframe: '24h', points: _dsCandles, sourceStatus: 'ok' }
-        chartFailureReason = null
-        chartUsedDexScreener = true
-        dexScreenerChartSuccess = true
-      }
-    }
-    // Trade-reconstruction fallback — fetches real GeckoTerminal pool trade events and groups them
-    // into time-bucketed candles. Only runs when all OHLCV attempts fail. Caps to 3 pools.
-    // Requires >= 3 valid priced trades spanning >= 2 time buckets; does not run otherwise.
     let chartUsedTradeReconstruction = false
     let chartTradeReconstructionAttempted = false
-    let chartReconstructedTradeCount = 0
     let chartReconstructedCandleCount = 0
-    if (priceChart.sourceStatus !== 'ok') {
-      chartTradeReconstructionAttempted = true
-      for (const poolCandidate of uniqueChartPools.slice(0, 3)) {
-        chartAttemptedTimeframes.push(`trade_recon:${poolCandidate.address.slice(0, 10)}`)
-        tradePoolsAttempted.push(poolCandidate.address)
-        const tradesRaw = await fetchGeckoTerminalPoolTrades(poolCandidate.address, chain)
-        const tradesArr: unknown[] = Array.isArray(tradesRaw.json?.data) ? tradesRaw.json.data : []
-        const reconstructed = reconstructCandlesFromTrades(tradesArr, priceUsd)
-        rawTradeCount = Math.max(rawTradeCount, reconstructed.rawTradeCount)
-        validTradePriceCount = Math.max(validTradePriceCount, reconstructed.validTradePriceCount)
-        for (const [reason, count] of Object.entries(reconstructed.rejectedTradeReasons)) {
-          rejectedTradeReasons[reason] = (rejectedTradeReasons[reason] ?? 0) + count
+    let chartAttemptedTimeframes: string[] = []
+    let _totalChartHttpCalls = 0
+    let _ohlcvRateLimited = false
+    let _ohlcvRateLimitedAt: string | null = null
+    let _skippedDueToRateLimit = 0
+
+    if (_chartCacheHit && _chartCachedEntryRaw) {
+      const cv = _chartCachedEntryRaw.v
+      priceChart = { ...cv.priceChart }
+      chartAttemptedPools = [...cv.chartAttemptedPools]
+      poolOhlcvAttempts = [...cv.poolOhlcvAttempts]
+      tokenOhlcvAttempts = [...cv.tokenOhlcvAttempts]
+      tradePoolsAttempted = [...cv.tradePoolsAttempted]
+      rejectedTradeReasons = { ...cv.rejectedTradeReasons }
+      rawTradeCount = cv.rawTradeCount
+      validTradePriceCount = cv.validTradePriceCount
+      chartReconstructedCandleCount = cv.chartReconstructedCandleCount
+      chartSelectedPoolForChart = cv.chartSelectedPoolForChart
+      chartFailureReason = cv.chartFailureReason
+      chartUsedTradeReconstruction = cv.chartUsedTradeReconstruction
+      chartUsedTokenLevelOhlcv = cv.chartUsedTokenLevelOhlcv
+      chartUsedDexScreener = cv.chartUsedDexScreener
+      dexScreenerChartAttempted = cv.dexScreenerChartAttempted
+      dexScreenerChartSuccess = cv.dexScreenerChartSuccess
+      chartTradeReconstructionAttempted = cv.chartTradeReconstructionAttempted
+      chartTokenLevelAttempted = cv.chartTokenLevelAttempted
+      chartAttemptedTimeframes = [...cv.chartAttemptedTimeframes]
+      _totalChartHttpCalls = cv.totalChartHttpCalls
+      _ohlcvRateLimited = cv.rateLimited
+      _ohlcvRateLimitedAt = cv.rateLimitedAt
+      _skippedDueToRateLimit = cv.skippedDueToRateLimit
+    } else {
+      const _MAX_OHLCV_CALLS = 10
+      const _primaryTimeframes: Array<{ key: '24h'|'48h'|'7d'|'30d'; resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }> = [
+        { key: '24h', resolution: 'minute', aggregate: 15, limit: 96 },
+        { key: '48h', resolution: 'hour', aggregate: 1, limit: 48 },
+        { key: '7d', resolution: 'day', aggregate: 1, limit: 7 },
+      ]
+
+      // Phase 1: primary pool, up to 3 timeframes (stop on first success or 429)
+      if (uniqueChartPools.length > 0) {
+        const candidate = uniqueChartPools[0]
+        const resolvedTokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
+        const tokenPositions: Array<'base' | 'quote'> = resolvedTokenPos ? [resolvedTokenPos] : ['base', 'quote']
+        chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
+        phase1: for (const tokenPos of tokenPositions) {
+          for (const tf of _primaryTimeframes) {
+            if (_totalChartHttpCalls >= _MAX_OHLCV_CALLS || _ohlcvRateLimited) { _skippedDueToRateLimit++; break phase1 }
+            chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}:${tokenPos}`)
+            _totalChartHttpCalls++
+            const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf, tokenPos)
+            if (chartRaw.httpStatus === 429) {
+              _ohlcvRateLimited = true
+              _ohlcvRateLimitedAt = tf.key
+              poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: tokenPos, timeframe: tf.key, httpStatus: 429, rawPointCount: 0, validPointCount: 0, rejectedReason: 'rate_limited' })
+              break phase1
+            }
+            const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
+            poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: tokenPos, timeframe: tf.key, ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}), rawPointCount: normalized.rawPointCount, validPointCount: normalized.validPointCount, ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}) })
+            if (normalized.points.length >= 2) {
+              priceChart = { timeframe: tf.key, points: normalized.points, sourceStatus: 'ok' }
+              chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
+              chartFailureReason = null
+              break phase1
+            }
+            chartFailureReason = normalized.rejectedReason ?? 'insufficient_points'
+          }
+          if (priceChart.sourceStatus === 'ok') break
         }
-        chartReconstructedTradeCount = Math.max(chartReconstructedTradeCount, reconstructed.rawTradeCount)
-        if (reconstructed.candles.length >= 2) {
-          chartReconstructedCandleCount = reconstructed.candles.length
-          priceChart = { timeframe: '24h', points: reconstructed.candles, sourceStatus: 'ok' }
+      } else {
+        chartFailureReason = 'primary_pool_missing'
+      }
+
+      // Phase 2: token-level OHLCV, up to 3 timeframes (stop on first success or 429)
+      if (priceChart.sourceStatus !== 'ok' && !_ohlcvRateLimited) {
+        chartTokenLevelAttempted = true
+        for (const tf of _primaryTimeframes) {
+          if (_totalChartHttpCalls >= _MAX_OHLCV_CALLS || _ohlcvRateLimited) { _skippedDueToRateLimit++; break }
+          chartAttemptedTimeframes.push(`token_level:${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
+          _totalChartHttpCalls++
+          const chartRaw = await fetchGeckoTerminalTokenOhlcv(contract, chain, tf)
+          if (chartRaw.httpStatus === 429) {
+            _ohlcvRateLimited = true
+            _ohlcvRateLimitedAt = tf.key
+            tokenOhlcvAttempts.push({ timeframe: tf.key, httpStatus: 429, rawPointCount: 0, validPointCount: 0, rejectedReason: 'rate_limited' })
+            break
+          }
+          const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
+          tokenOhlcvAttempts.push({ timeframe: tf.key, ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}), rawPointCount: normalized.rawPointCount, validPointCount: normalized.validPointCount, ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}) })
+          if (normalized.points.length >= 2) {
+            priceChart = { timeframe: tf.key, points: normalized.points, sourceStatus: 'ok' }
+            chartFailureReason = null
+            chartUsedTokenLevelOhlcv = true
+            break
+          }
+          chartFailureReason = normalized.rejectedReason ? `token_${normalized.rejectedReason}` : 'token_ohlcv_insufficient_points'
+        }
+      }
+
+      // Phase 3: up to 2 alternate pools, 24h only (stop on first success or 429)
+      if (priceChart.sourceStatus !== 'ok' && !_ohlcvRateLimited && uniqueChartPools.length > 1) {
+        const _altTf = _primaryTimeframes[0]
+        for (const candidate of uniqueChartPools.slice(1, 3)) {
+          if (_totalChartHttpCalls >= _MAX_OHLCV_CALLS || _ohlcvRateLimited) { _skippedDueToRateLimit++; break }
+          const resolvedTokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
+          const tokenPositions: Array<'base' | 'quote'> = resolvedTokenPos ? [resolvedTokenPos] : ['base', 'quote']
+          chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
+          let _altPoolSuccess = false
+          phase3: for (const tokenPos of tokenPositions) {
+            if (_totalChartHttpCalls >= _MAX_OHLCV_CALLS || _ohlcvRateLimited) { _skippedDueToRateLimit++; break phase3 }
+            chartAttemptedTimeframes.push(`${_altTf.key}:${_altTf.resolution}/${_altTf.aggregate}x${_altTf.limit}:${tokenPos}`)
+            _totalChartHttpCalls++
+            const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, _altTf, tokenPos)
+            if (chartRaw.httpStatus === 429) {
+              _ohlcvRateLimited = true
+              _ohlcvRateLimitedAt = _altTf.key
+              poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: tokenPos, timeframe: _altTf.key, httpStatus: 429, rawPointCount: 0, validPointCount: 0, rejectedReason: 'rate_limited' })
+              break phase3
+            }
+            const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
+            poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: tokenPos, timeframe: _altTf.key, ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}), rawPointCount: normalized.rawPointCount, validPointCount: normalized.validPointCount, ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}) })
+            if (normalized.points.length >= 2) {
+              priceChart = { timeframe: _altTf.key, points: normalized.points, sourceStatus: 'ok' }
+              chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
+              chartFailureReason = null
+              _altPoolSuccess = true
+              break phase3
+            }
+            chartFailureReason = normalized.rejectedReason ?? 'insufficient_points'
+          }
+          if (_altPoolSuccess || priceChart.sourceStatus === 'ok') break
+        }
+      }
+
+      // Phase 4: DexScreener OHLCV (forward-compatible; currently returns null)
+      if (priceChart.sourceStatus !== 'ok' && _dexFb?.pairAddress) {
+        dexScreenerChartAttempted = true
+        const _dsCandles = await fetchDexScreenerPairChart(_dexFb.pairAddress, chain)
+        if (_dsCandles && _dsCandles.length >= 2) {
+          priceChart = { timeframe: '24h', points: _dsCandles, sourceStatus: 'ok' }
           chartFailureReason = null
-          chartUsedTradeReconstruction = true
-          break
+          chartUsedDexScreener = true
+          dexScreenerChartSuccess = true
         }
       }
-      if (!chartUsedTradeReconstruction) {
-        chartFailureReason = chartFailureReason ?? 'trade_reconstruction_insufficient'
+
+      // Phase 5: trade reconstruction, max 2 pools
+      if (priceChart.sourceStatus !== 'ok') {
+        chartTradeReconstructionAttempted = true
+        for (const poolCandidate of uniqueChartPools.slice(0, 2)) {
+          chartAttemptedTimeframes.push(`trade_recon:${poolCandidate.address.slice(0, 10)}`)
+          tradePoolsAttempted.push(poolCandidate.address)
+          const tradesRaw = await fetchGeckoTerminalPoolTrades(poolCandidate.address, chain)
+          const tradesArr: unknown[] = Array.isArray(tradesRaw.json?.data) ? tradesRaw.json.data : []
+          const reconstructed = reconstructCandlesFromTrades(tradesArr, priceUsd)
+          rawTradeCount = Math.max(rawTradeCount, reconstructed.rawTradeCount)
+          validTradePriceCount = Math.max(validTradePriceCount, reconstructed.validTradePriceCount)
+          for (const [reason, count] of Object.entries(reconstructed.rejectedTradeReasons)) {
+            rejectedTradeReasons[reason] = (rejectedTradeReasons[reason] ?? 0) + count
+          }
+          if (reconstructed.candles.length >= 2) {
+            chartReconstructedCandleCount = reconstructed.candles.length
+            priceChart = { timeframe: '24h', points: reconstructed.candles, sourceStatus: 'ok' }
+            chartFailureReason = null
+            chartUsedTradeReconstruction = true
+            break
+          }
+        }
+        if (!chartUsedTradeReconstruction) {
+          chartFailureReason = chartFailureReason ?? 'trade_reconstruction_insufficient'
+        }
       }
+
+      // Finalize priceChart if still not ok
+      const _anyChartAttempted = chartAttemptedPools.length > 0 || chartTokenLevelAttempted || dexScreenerChartAttempted || chartTradeReconstructionAttempted
+      if (priceChart.sourceStatus !== 'ok' && _anyChartAttempted) {
+        priceChart = { timeframe: '24h', points: [], sourceStatus: 'partial', reason: _ohlcvRateLimited ? 'chart_provider_rate_limited' : (chartFailureReason ?? 'all_chart_sources_empty') }
+      }
+
+      // Store result in cache (TTL: 90s if rate-limited, 5min if candles ok, 60s otherwise)
+      const _chartTtl = _ohlcvRateLimited ? 90000 : (priceChart.sourceStatus === 'ok' ? 300000 : 60000)
+      _chartOhlcvCache.set(_chartCacheKey, {
+        v: {
+          priceChart: { ...priceChart },
+          chartUsedTradeReconstruction,
+          chartUsedTokenLevelOhlcv,
+          chartUsedDexScreener,
+          dexScreenerChartAttempted,
+          dexScreenerChartSuccess,
+          chartTradeReconstructionAttempted,
+          chartTokenLevelAttempted,
+          poolOhlcvAttempts: [...poolOhlcvAttempts],
+          tokenOhlcvAttempts: [...tokenOhlcvAttempts],
+          rawTradeCount,
+          validTradePriceCount,
+          chartReconstructedCandleCount,
+          tradePoolsAttempted: [...tradePoolsAttempted],
+          rejectedTradeReasons: { ...rejectedTradeReasons },
+          chartAttemptedTimeframes: [...chartAttemptedTimeframes],
+          chartAttemptedPools: [...chartAttemptedPools],
+          chartSelectedPoolForChart,
+          chartFailureReason,
+          totalChartHttpCalls: _totalChartHttpCalls,
+          rateLimited: _ohlcvRateLimited,
+          rateLimitedAt: _ohlcvRateLimitedAt,
+          skippedDueToRateLimit: _skippedDueToRateLimit,
+        },
+        ts: Date.now(),
+        ttl: _chartTtl,
+      })
     }
-    if (priceChart.sourceStatus !== 'ok' && (maxAttempts > 0 || chartUsedTokenLevelOhlcv || dexScreenerChartAttempted || chartTradeReconstructionAttempted)) {
-      priceChart = { timeframe: '24h', points: [], sourceStatus: 'partial', reason: chartFailureReason ?? 'all_chart_sources_empty' }
-    }
+
     const chartAttempted = chartAttemptedPools.length > 0 || chartUsedTokenLevelOhlcv || dexScreenerChartAttempted || chartTradeReconstructionAttempted
     const chartFallbackUsed = (chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr) || chartUsedTokenLevelOhlcv || chartUsedDexScreener || chartUsedTradeReconstruction
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
@@ -4174,7 +4308,7 @@ export async function POST(req: Request) {
            : chartUsedTokenLevelOhlcv ? 'token_level_ohlcv_used'
            : chartFallbackUsed ? 'alternate_pool_used'
            : null)
-        : (chartFailureReason ?? 'all_chart_sources_empty')
+        : (_ohlcvRateLimited ? 'chart_provider_rate_limited' : (chartFailureReason ?? 'all_chart_sources_empty'))
     const chartDataSource: 'primary' | 'fallback' | 'none' =
       priceChart.sourceStatus === 'ok' ? (chartFallbackUsed ? 'fallback' : 'primary') :
       marketDataSource === 'fallback' ? 'fallback' :
@@ -5466,6 +5600,11 @@ export async function POST(req: Request) {
               tokenLevelAttempted: chartTokenLevelAttempted,
               tokenLevelSuccess: chartUsedTokenLevelOhlcv,
               tradeReconstructionSuccess: chartUsedTradeReconstruction,
+              totalChartHttpCalls: _totalChartHttpCalls,
+              rateLimited: _ohlcvRateLimited,
+              rateLimitedAt: _ohlcvRateLimitedAt,
+              cacheHit: _chartCacheHit,
+              skippedDueToRateLimit: _skippedDueToRateLimit,
             },
             poolActivityExtractionReason: {
               transactions24hSource: _txnsH24Obj != null ? 'transactions.h24 (object)' : _txnsH24Total != null ? 'transactions.h24 (scalar)' : 'not_indexed',
@@ -5794,6 +5933,11 @@ export async function POST(req: Request) {
           frontendExpectedRender: (chartStatus === 'ok' && priceChart.points.length >= 2)
             ? 'candles' as const
             : (marketTrendSnapshot.status === 'ok' ? 'market_trend' as const : 'snapshot' as const),
+          totalChartHttpCalls: _totalChartHttpCalls,
+          rateLimited: _ohlcvRateLimited,
+          rateLimitedAt: _ohlcvRateLimitedAt,
+          cacheHit: _chartCacheHit,
+          skippedDueToRateLimit: _skippedDueToRateLimit,
         },
         lpDiagnostics: {
           chain: lpDiagnostics.chain,
