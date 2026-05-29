@@ -228,6 +228,16 @@ type ScanResult = {
       ownershipVerified: boolean
     } | null
   } | null
+  projectSocials?: {
+    website: string | null
+    twitter: string | null
+    telegram: string | null
+    discord: string | null
+    github: string | null
+    sourceTrail: string[]
+    status: 'verified' | 'partial' | 'unavailable_with_reason'
+    reason?: string
+  } | null
 }
 
 type ClusterNode = {
@@ -1048,6 +1058,66 @@ function StatCard({ label, value, accent, helper }: { label: string; value: stri
         {value}
       </p>
       {helper && <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{helper}</p>}
+    </div>
+  )
+}
+
+// ─── Project Socials Card ─────────────────────────────────────────────────
+
+type SocialLink = { href: string; label: string; abbr: string; color: string }
+
+function ProjectSocialsCard({ socials }: { socials: ScanResult['projectSocials'] }) {
+  if (!socials) return null
+
+  const links: SocialLink[] = [
+    socials.website   ? { href: socials.website,   label: 'Website',  abbr: 'WEB',  color: '#2DD4BF' } : null,
+    socials.twitter   ? { href: socials.twitter,   label: 'X / Twitter', abbr: 'X', color: '#60a5fa' } : null,
+    socials.telegram  ? { href: socials.telegram,  label: 'Telegram', abbr: 'TG',   color: '#38bdf8' } : null,
+    socials.discord   ? { href: socials.discord,   label: 'Discord',  abbr: 'DC',   color: '#a78bfa' } : null,
+    socials.github    ? { href: socials.github,    label: 'GitHub',   abbr: 'GH',   color: '#94a3b8' } : null,
+  ].filter((l): l is SocialLink => l !== null)
+
+  return (
+    <div style={{
+      marginBottom: '22px', padding: '14px 16px',
+      background: 'linear-gradient(135deg,rgba(10,18,34,.95),rgba(3,8,19,.90))',
+      border: '1px solid rgba(45,212,191,0.14)', borderRadius: '14px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: links.length > 0 ? '12px' : 0 }}>
+        <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+          Indexed Project Links
+        </span>
+        {links.length === 0 && (
+          <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+            No official project links indexed in this pass.
+          </span>
+        )}
+      </div>
+      {links.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+          {links.map((lk) => (
+            <a
+              key={lk.label}
+              href={lk.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '5px',
+                padding: '5px 11px', borderRadius: '999px', textDecoration: 'none',
+                border: `1px solid ${lk.color}28`,
+                background: `${lk.color}0d`,
+                color: lk.color,
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
+                fontFamily: 'var(--font-plex-mono)',
+                transition: 'background 0.14s, border-color 0.14s',
+              }}
+            >
+              <span style={{ fontSize: '8px', opacity: 0.7 }}>{lk.abbr}</span>
+              {lk.label}
+            </a>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -3285,6 +3355,8 @@ export default function TerminalTokenScanner() {
                       </div>
                     </div>
                   )}
+                  {/* Project Socials — always rendered when scan returns projectSocials */}
+                  <ProjectSocialsCard socials={result.projectSocials} />
                 </>
               )}
 

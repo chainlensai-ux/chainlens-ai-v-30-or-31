@@ -1541,6 +1541,137 @@ function reconstructCandlesFromTrades(
   return { candles: candles.length >= 2 ? candles : [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
 }
 
+// ─── Project Socials Extractor ─────────────────────────────────────────────
+// Extracts indexed project links from existing metadata responses.
+// No new providers. No invented links. Handles only data already in scope.
+type ProjectSocialsResult = {
+  website: string | null
+  twitter: string | null
+  telegram: string | null
+  discord: string | null
+  github: string | null
+  sourceTrail: string[]
+  status: 'verified' | 'partial' | 'unavailable_with_reason'
+  reason?: string
+}
+
+function _isValidSocialUrl(raw: unknown): raw is string {
+  if (typeof raw !== 'string' || !raw.trim()) return false
+  try {
+    const u = new URL(raw.trim())
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch { return false }
+}
+
+function _toTwitterUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  const s = raw.trim()
+  if (s.startsWith('http')) return _isValidSocialUrl(s) ? s : null
+  const handle = s.replace(/^@/, '').replace(/[^a-zA-Z0-9_]/g, '')
+  return handle.length >= 1 && handle.length <= 50 ? `https://twitter.com/${handle}` : null
+}
+
+function _toTelegramUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  const s = raw.trim()
+  if (s.startsWith('http')) return _isValidSocialUrl(s) ? s : null
+  const handle = s.replace(/^@/, '').replace(/[^a-zA-Z0-9_]/g, '')
+  return handle.length >= 3 ? `https://t.me/${handle}` : null
+}
+
+function extractProjectSocials(
+  gtToken: Record<string, unknown> | null,
+  coingeckoRaw: Record<string, unknown> | null,
+  gmgnItem: Record<string, unknown> | null,
+): ProjectSocialsResult & { _foundKeys: string[]; _rejectedCount: number } {
+  const trail: string[] = []
+  const found: Record<'website' | 'twitter' | 'telegram' | 'discord' | 'github', string | null> = {
+    website: null, twitter: null, telegram: null, discord: null, github: null,
+  }
+  const foundKeys: string[] = []
+  let rejectedCount = 0
+
+  const trySet = (field: keyof typeof found, val: string | null, src: string) => {
+    if (!val || found[field]) return
+    found[field] = val
+    foundKeys.push(`${src}:${field}`)
+    if (!trail.includes(src)) trail.push(src)
+  }
+
+  // 1. GeckoTerminal token attributes
+  if (gtToken) {
+    const websites = gtToken.websites
+    if (Array.isArray(websites)) {
+      for (const w of websites) {
+        const url = typeof w === 'string' ? w : (typeof w === 'object' && w !== null ? (w as Record<string, unknown>).url : null)
+        if (_isValidSocialUrl(url)) { trySet('website', url as string, 'geckoterminal'); break }
+        else rejectedCount++
+      }
+    }
+    const disc = gtToken.discord_url
+    if (_isValidSocialUrl(disc) && String(disc).includes('discord')) trySet('discord', disc as string, 'geckoterminal')
+    else if (disc) rejectedCount++
+    const tg = _toTelegramUrl(gtToken.telegram_handle)
+    if (tg) trySet('telegram', tg, 'geckoterminal')
+    else if (gtToken.telegram_handle) rejectedCount++
+    const tw = _toTwitterUrl(gtToken.twitter_handle)
+    if (tw) trySet('twitter', tw, 'geckoterminal')
+    else if (gtToken.twitter_handle) rejectedCount++
+  }
+
+  // 2. CoinGecko
+  if (coingeckoRaw) {
+    const links = coingeckoRaw.links as Record<string, unknown> | null | undefined
+    if (links) {
+      const hp: unknown[] = Array.isArray(links.homepage) ? links.homepage as unknown[] : []
+      for (const h of hp) {
+        if (_isValidSocialUrl(h)) { trySet('website', h as string, 'coingecko'); break }
+        else if (h) rejectedCount++
+      }
+      const tws = _toTwitterUrl(links.twitter_screen_name)
+      if (tws) trySet('twitter', tws, 'coingecko')
+      else if (links.twitter_screen_name) rejectedCount++
+      const tgs = _toTelegramUrl(links.telegram_channel_identifier)
+      if (tgs) trySet('telegram', tgs, 'coingecko')
+      else if (links.telegram_channel_identifier) rejectedCount++
+      const chatUrls: unknown[] = Array.isArray(links.chat_url) ? links.chat_url as unknown[] : []
+      for (const c of chatUrls) {
+        if (_isValidSocialUrl(c) && String(c).includes('discord')) { trySet('discord', c as string, 'coingecko'); break }
+        else if (c) rejectedCount++
+      }
+      const reposUrl = links.repos_url as Record<string, unknown> | null | undefined
+      const ghArr: unknown[] = Array.isArray(reposUrl?.github) ? reposUrl!.github as unknown[] : []
+      for (const g of ghArr) {
+        if (_isValidSocialUrl(g) && String(g).includes('github')) { trySet('github', g as string, 'coingecko'); break }
+        else if (g) rejectedCount++
+      }
+    }
+  }
+
+  // 3. GMGN
+  if (gmgnItem) {
+    const pairs: Array<['website' | 'twitter' | 'telegram' | 'discord' | 'github', unknown, (v: unknown) => string | null]> = [
+      ['website', gmgnItem.website ?? gmgnItem.homepage, (v) => _isValidSocialUrl(v) ? v as string : null],
+      ['twitter', gmgnItem.twitter ?? gmgnItem.twitter_username ?? gmgnItem.twitter_handle, _toTwitterUrl],
+      ['telegram', gmgnItem.telegram ?? gmgnItem.telegram_handle ?? gmgnItem.telegram_url, _toTelegramUrl],
+      ['discord', gmgnItem.discord ?? gmgnItem.discord_url, (v) => (_isValidSocialUrl(v) && String(v).includes('discord')) ? v as string : null],
+      ['github', gmgnItem.github ?? gmgnItem.github_url, (v) => (_isValidSocialUrl(v) && String(v).includes('github')) ? v as string : null],
+    ]
+    for (const [field, raw, fn] of pairs) {
+      const val = fn(raw)
+      if (val) trySet(field, val, 'gmgn')
+      else if (raw) rejectedCount++
+    }
+  }
+
+  const anyFound = Object.values(found).some((v) => v !== null)
+  const status: ProjectSocialsResult['status'] = anyFound
+    ? (found.website != null ? 'verified' : 'partial')
+    : 'unavailable_with_reason'
+  const reason = !anyFound ? 'no_social_links_found_in_indexed_metadata' : undefined
+
+  return { ...found, sourceTrail: trail, status, reason, _foundKeys: foundKeys, _rejectedCount: rejectedCount }
+}
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
@@ -4774,6 +4905,9 @@ export async function POST(req: Request) {
       ? 'Contract flags inferred from simulation and chain context — direct bytecode verification not available.'
       : 'Contract bytecode, supply, owner, and CORTEX flag scan reviewed.'
 
+    const { _foundKeys: _psFoundKeys, _rejectedCount: _psRejectedCount, ...projectSocials } =
+      extractProjectSocials(gtToken, coingeckoRaw, gmgnItem)
+
     const responsePayload = {
       chain,
       contract,
@@ -5185,6 +5319,10 @@ export async function POST(req: Request) {
         symbol: finalResolvedSymbol,
         decimals: resolvedDecimals,
       },
+
+      // Indexed project links — sourced from existing metadata only (GT / CoinGecko / GMGN)
+      projectSocials,
+
       sections: {
         market: {
           status: marketStatus,
@@ -5613,6 +5751,19 @@ export async function POST(req: Request) {
             ownership_verified: ownershipVerified,
             owner_address: ownerAddr,
             admin_address: adminAddr,
+          },
+          projectSocialsDebug: {
+            sourceTrail: projectSocials.sourceTrail,
+            foundKeys: _psFoundKeys,
+            rejectedCount: _psRejectedCount,
+            status: projectSocials.status,
+            reason: projectSocials.reason ?? null,
+            gtTokenHasWebsites: Array.isArray(gtToken?.websites),
+            gtTokenHasTelegramHandle: Boolean(gtToken?.telegram_handle),
+            gtTokenHasTwitterHandle: Boolean(gtToken?.twitter_handle),
+            gtTokenHasDiscordUrl: Boolean(gtToken?.discord_url),
+            coingeckoUsable: Boolean(coingeckoRaw),
+            gmgnUsable: Boolean(gmgnItem),
           },
           riskFlow: {
             rugRiskScore: riskEngine.rugRiskScore,
