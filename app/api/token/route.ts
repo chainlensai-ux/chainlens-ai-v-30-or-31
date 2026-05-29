@@ -112,7 +112,7 @@ interface AlchemyTransfer {
   asset: string | null
   category: string
   metadata?: { blockTimestamp?: string }
-  rawContract?: { address?: string | null }
+  rawContract?: { address?: string | null; value?: string | null; decimal?: string | null }
 }
 
 interface LinkedWallet {
@@ -274,6 +274,56 @@ type HolderDistributionStatus = {
   percentSource: "provider" | "calculated" | "inferred"
 }
 
+type EvidenceConfidence = "high" | "medium" | "low"
+type NormalizedTransfer = {
+  txHash: string
+  blockNumber: number | null
+  timestamp: number | null
+  from: string
+  to: string
+  amountRaw: string | null
+  amountFormatted?: number | null
+  tokenAddress: string
+  isBuy?: boolean
+  isSell?: boolean
+  source?: string
+  confidence?: EvidenceConfidence
+}
+type TransferResolverResult = {
+  transfers: NormalizedTransfer[]
+  insufficientEvidence: boolean
+  sourceTrail: string[]
+  reason?: string
+  fallbackUsed?: string
+  confidence: EvidenceConfidence
+}
+type NormalizedHolderRow = {
+  address: string
+  balanceRaw: string | null
+  balanceFormatted?: number | null
+  pctOfSupply?: number | null
+  isContract?: boolean
+  source?: string
+  confidence?: EvidenceConfidence
+}
+type HolderResolverResult = {
+  holders: NormalizedHolderRow[]
+  insufficientEvidence: boolean
+  sourceTrail: string[]
+  reason?: string
+  fallbackUsed?: string
+  confidence: EvidenceConfidence
+}
+
+function buildInsufficientEvidenceBlock(reason: string, fallbackUsed?: string) {
+  return {
+    insufficientEvidence: true,
+    reason,
+    fallbackUsed: fallbackUsed ?? "none",
+    confidence: "low" as const,
+  }
+}
+
 type ClusterInfluence = {
   clusterSupplyPercent: number | null
   clusterDominance: "none" | "low" | "medium" | "high" | "critical" | "unknown"
@@ -299,6 +349,10 @@ type SupplyControl = {
     confidence: string
   }>
   clusterInfluence: ClusterInfluence
+  insufficientEvidence?: boolean
+  reason?: string
+  fallbackUsed?: string
+  confidence?: EvidenceConfidence
 }
 type RiskEngine = {
   rugRiskScore: number | null
@@ -685,6 +739,219 @@ async function getTokenAssetTransfers(chain: ChainKey, params: Record<string, un
   return transfers
 }
 
+function parseBlockNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const raw = value.trim()
+  const parsed = raw.startsWith('0x') ? parseInt(raw, 16) : Number(raw)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function parseTransferTimestamp(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value > 2_000_000_000 ? Math.floor(value / 1000) : Math.floor(value)
+  if (typeof value !== 'string' || !value) return null
+  const asNumber = Number(value)
+  if (Number.isFinite(asNumber)) return asNumber > 2_000_000_000 ? Math.floor(asNumber / 1000) : Math.floor(asNumber)
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null
+}
+
+function isUsableEvidenceAddress(chain: ChainKey, value: string | null | undefined, tokenContract: string): value is string {
+  const normalized = normalizeEvidenceAddress(value)
+  if (!normalized) return false
+  return normalized !== normalizeEvidenceAddress(tokenContract) && !chainInfraExclusions(chain).has(normalized)
+}
+
+function normalizeAlchemyTransferRow(chain: ChainKey, tokenAddress: string, row: AlchemyTransfer, source = 'alchemy_asset_transfers'): NormalizedTransfer | null {
+  const from = normalizeEvidenceAddress(row.from)
+  const to = normalizeEvidenceAddress(row.to ?? null)
+  const token = normalizeEvidenceAddress(row.rawContract?.address ?? tokenAddress)
+  if (!row.hash || !token || token !== normalizeEvidenceAddress(tokenAddress)) return null
+  if (!isUsableEvidenceAddress(chain, from, tokenAddress) || !isUsableEvidenceAddress(chain, to, tokenAddress)) return null
+  const normalizedToken = token
+  return {
+    txHash: row.hash,
+    blockNumber: parseBlockNumber(row.blockNum),
+    timestamp: parseTransferTimestamp(row.metadata?.blockTimestamp),
+    from,
+    to,
+    amountRaw: row.rawContract?.value ?? (row.value != null ? String(row.value) : null),
+    amountFormatted: row.value ?? null,
+    tokenAddress: normalizedToken,
+    source,
+    confidence: 'high',
+  }
+}
+
+function normalizeMoralisTransferRow(chain: ChainKey, tokenAddress: string, row: Record<string, unknown>): NormalizedTransfer | null {
+  const from = normalizeEvidenceAddress(String(row.from_address ?? row.from ?? ''))
+  const to = normalizeEvidenceAddress(String(row.to_address ?? row.to ?? ''))
+  const token = normalizeEvidenceAddress(String(row.address ?? row.token_address ?? row.contract_address ?? tokenAddress))
+  const hash = String(row.transaction_hash ?? row.tx_hash ?? row.hash ?? '')
+  if (!hash || !token || token !== normalizeEvidenceAddress(tokenAddress)) return null
+  if (!isUsableEvidenceAddress(chain, from, tokenAddress) || !isUsableEvidenceAddress(chain, to, tokenAddress)) return null
+  const normalizedToken = token
+  return {
+    txHash: hash,
+    blockNumber: parseBlockNumber(row.block_number),
+    timestamp: parseTransferTimestamp(row.block_timestamp),
+    from,
+    to,
+    amountRaw: row.value != null ? String(row.value) : (row.value_decimal != null ? String(row.value_decimal) : null),
+    amountFormatted: toNum(row.value_decimal),
+    tokenAddress: normalizedToken,
+    source: 'moralis_token_transfers',
+    confidence: 'medium',
+  }
+}
+
+function finalizeTransfers(transfers: NormalizedTransfer[], limit: number): NormalizedTransfer[] {
+  const seen = new Set<string>()
+  return transfers
+    .filter((t) => {
+      const key = [t.txHash.toLowerCase(), t.from, t.to, t.tokenAddress, t.amountRaw ?? ''].join(':')
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((a, b) => (a.blockNumber ?? Number.MAX_SAFE_INTEGER) - (b.blockNumber ?? Number.MAX_SAFE_INTEGER) || (a.timestamp ?? Number.MAX_SAFE_INTEGER) - (b.timestamp ?? Number.MAX_SAFE_INTEGER))
+    .slice(0, Math.max(1, limit))
+}
+
+async function resolveTokenTransfers(params: {
+  chain: ChainKey
+  chainId: number
+  tokenAddress: string
+  deployerAddress?: string | null
+  holderAddresses?: string[]
+  limit?: number
+  providerTransfersRaw?: any
+}): Promise<TransferResolverResult> {
+  const limit = params.limit ?? 200
+  const sourceTrail: string[] = []
+  let fallbackUsed = 'none'
+
+  if (Array.isArray(params.providerTransfersRaw?.result)) {
+    fallbackUsed = 'moralis_token_transfers'
+    sourceTrail.push('moralis_token_transfers:attempted')
+    const transfers = finalizeTransfers(
+      (params.providerTransfersRaw.result as Record<string, unknown>[]).map((row) => normalizeMoralisTransferRow(params.chain, params.tokenAddress, row)).filter(Boolean) as NormalizedTransfer[],
+      limit,
+    )
+    if (transfers.length > 0) return { transfers, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'moralis_token_transfers:succeeded'], fallbackUsed, confidence: 'medium' }
+    sourceTrail.push('moralis_token_transfers:no_usable_wallet_rows')
+  } else if (params.providerTransfersRaw?.__status === 'not_configured') {
+    sourceTrail.push('moralis_token_transfers:not_configured')
+  }
+
+  fallbackUsed = 'alchemy_asset_transfers'
+  sourceTrail.push('alchemy_asset_transfers:attempted')
+  const alchemyRows = await getTokenAssetTransfers(params.chain, {
+    fromBlock: '0x0',
+    toBlock: 'latest',
+    category: ['erc20'],
+    contractAddresses: [params.tokenAddress],
+    order: 'asc',
+    maxCount: `0x${Math.min(Math.max(limit, 50), 300).toString(16)}`,
+    withMetadata: true,
+  })
+  const alchemyTransfers = finalizeTransfers(
+    alchemyRows.map((row) => normalizeAlchemyTransferRow(params.chain, params.tokenAddress, row)).filter(Boolean) as NormalizedTransfer[],
+    limit,
+  )
+  if (alchemyTransfers.length > 0) return { transfers: alchemyTransfers, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'alchemy_asset_transfers:succeeded'], fallbackUsed, confidence: 'high' }
+  sourceTrail.push('alchemy_asset_transfers:no_usable_wallet_rows')
+
+  return {
+    transfers: [],
+    sourceTrail,
+    ...buildInsufficientEvidenceBlock('No usable transfer evidence found for this token in this pass.', fallbackUsed),
+  }
+}
+
+function holderRowsFromProvider(raw: any, source: string): NormalizedHolderRow[] {
+  const items: any[] = Array.isArray(raw?.data?.items) ? raw.data.items
+    : Array.isArray(raw?.data?.data?.items) ? raw.data.data.items
+    : Array.isArray(raw?.items) ? raw.items
+    : Array.isArray(raw?.holders) ? raw.holders
+    : Array.isArray(raw?.token_holders) ? raw.token_holders
+    : Array.isArray(raw?.result) ? raw.result
+    : []
+  return items.map((h: any) => {
+    const address = normalizeEvidenceAddress(h.address ?? h.holder_address ?? h.wallet_address ?? h.wallet ?? h.owner_address ?? h.contract_address ?? null)
+    if (!address) return null
+    const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
+    const pct = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.balancePercent) ?? normalizeHolderPercent(h.ownershipPercent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage) ?? normalizeHolderPercent(h.percentage_relative_to_total_supply)
+    return {
+      address,
+      balanceRaw: balanceRaw != null ? String(balanceRaw) : null,
+      balanceFormatted: toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null,
+      pctOfSupply: pct,
+      source,
+      confidence: pct != null ? 'high' as const : 'medium' as const,
+    }
+  }).filter(Boolean) as NormalizedHolderRow[]
+}
+
+function finalizeHolders(chain: ChainKey, tokenAddress: string, rows: NormalizedHolderRow[], limit: number): NormalizedHolderRow[] {
+  const merged = new Map<string, NormalizedHolderRow>()
+  for (const row of rows) {
+    if (!isUsableEvidenceAddress(chain, row.address, tokenAddress)) continue
+    const prev = merged.get(row.address)
+    if (!prev) { merged.set(row.address, row); continue }
+    merged.set(row.address, {
+      ...prev,
+      balanceRaw: prev.balanceRaw ?? row.balanceRaw,
+      balanceFormatted: prev.balanceFormatted ?? row.balanceFormatted,
+      pctOfSupply: prev.pctOfSupply ?? row.pctOfSupply,
+      confidence: prev.confidence === 'high' || row.confidence !== 'high' ? prev.confidence : row.confidence,
+    })
+  }
+  return [...merged.values()]
+    .sort((a, b) => (b.pctOfSupply ?? -1) - (a.pctOfSupply ?? -1) || (b.balanceFormatted ?? -1) - (a.balanceFormatted ?? -1))
+    .slice(0, Math.max(1, limit))
+}
+
+async function resolveTokenHolders(params: {
+  chain: ChainKey
+  chainId: number
+  tokenAddress: string
+  totalSupply?: string | bigint | null
+  limit?: number
+  providerHoldersRaw?: any
+  marketProviderHoldersRaw?: any
+}): Promise<HolderResolverResult> {
+  const sourceTrail: string[] = []
+  const limit = params.limit ?? 200
+  let fallbackUsed = 'none'
+
+  if (params.providerHoldersRaw && params.providerHoldersRaw.__status !== 'not_configured') {
+    fallbackUsed = 'goldrush_token_holders'
+    sourceTrail.push('goldrush_token_holders:attempted')
+    const holders = finalizeHolders(params.chain, params.tokenAddress, holderRowsFromProvider(params.providerHoldersRaw, 'goldrush_token_holders'), limit)
+    if (holders.length > 0) return { holders, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'goldrush_token_holders:succeeded'], fallbackUsed, confidence: holders.some((h) => h.pctOfSupply != null) ? 'high' : 'medium' }
+    sourceTrail.push('goldrush_token_holders:no_usable_holder_rows')
+  } else {
+    sourceTrail.push('goldrush_token_holders:not_configured')
+  }
+
+  if (params.marketProviderHoldersRaw && params.marketProviderHoldersRaw.__status !== 'not_configured') {
+    fallbackUsed = 'moralis_token_owners'
+    sourceTrail.push('moralis_token_owners:attempted')
+    const holders = finalizeHolders(params.chain, params.tokenAddress, holderRowsFromProvider(params.marketProviderHoldersRaw, 'moralis_token_owners'), limit)
+    if (holders.length > 0) return { holders, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'moralis_token_owners:succeeded'], fallbackUsed, confidence: holders.some((h) => h.pctOfSupply != null) ? 'medium' : 'low' }
+    sourceTrail.push('moralis_token_owners:no_usable_holder_rows')
+  } else {
+    sourceTrail.push('moralis_token_owners:not_configured')
+  }
+
+  return {
+    holders: [],
+    sourceTrail,
+    ...buildInsufficientEvidenceBlock('No usable holder evidence found for this token in this pass.', fallbackUsed),
+  }
+}
+
 async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
   candidate: TokenOriginCandidate
   diag: TokenOriginDiscoveryDiag
@@ -1066,7 +1333,7 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
   }
 }
 
-async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }): Promise<any> {
+async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }, tokenPosition: 'base' | 'quote' = 'base'): Promise<{ json: any | null; httpStatus: number | null }> {
   try {
     const networkMap: Record<ChainKey, string> = {
       eth: 'eth',
@@ -1075,16 +1342,335 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
       bnb: 'bsc',
     }
     const network = networkMap[chain] ?? 'base'
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
     const res = await fetch(
-      `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe.resolution}?aggregate=${timeframe.aggregate}&limit=${timeframe.limit}&currency=usd&token=base`,
+      `${_gtBase}/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe.resolution}?aggregate=${timeframe.aggregate}&limit=${timeframe.limit}&currency=usd&token=${tokenPosition}`,
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
         signal: withTimeout(5000),
       }
     )
-    return res.ok ? await res.json() : null
-  } catch { return null }
+    return { json: res.ok ? await res.json() : null, httpStatus: res.status }
+  } catch { return { json: null, httpStatus: null } }
+}
+
+// Token-level OHLCV — aggregates across all pools for the token.
+// More reliable than pool-level for CL/V3 pools where individual pool OHLCV is not indexed.
+async function fetchGeckoTerminalTokenOhlcv(tokenAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }): Promise<{ json: any | null; httpStatus: number | null }> {
+  try {
+    const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const network = networkMap[chain] ?? 'base'
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
+    const res = await fetch(
+      `${_gtBase}/api/v2/networks/${network}/tokens/${tokenAddress}/ohlcv/${timeframe.resolution}?aggregate=${timeframe.aggregate}&limit=${timeframe.limit}&currency=usd`,
+      {
+        headers: { Accept: 'application/json;version=20230302' },
+        cache: 'no-store',
+        signal: withTimeout(5000),
+      }
+    )
+    return { json: res.ok ? await res.json() : null, httpStatus: res.status }
+  } catch { return { json: null, httpStatus: null } }
+}
+
+// Determines whether the scanned token is the 'base' or 'quote' token in a GeckoTerminal pool.
+// Uses the pool's relationship data (populated when pools are fetched with ?include=base_token,quote_token).
+// Returns null when relationship data is absent so callers can safely try both sides.
+function resolveTokenPositionInPool(
+  pool: Record<string, unknown>,
+  tokenAddress: string,
+  networkId: string,
+): 'base' | 'quote' | null {
+  const rel = (pool.relationships ?? {}) as Record<string, unknown>
+  const baseData = ((rel.base_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
+  const quoteData = ((rel.quote_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
+  const baseId = String(baseData?.id ?? '').toLowerCase()
+  const quoteId = String(quoteData?.id ?? '').toLowerCase()
+  const tokenNorm = tokenAddress.toLowerCase()
+  const expectedId = `${networkId}_${tokenNorm}`
+  if (baseId === expectedId || baseId.endsWith(`_${tokenNorm}`)) return 'base'
+  if (quoteId === expectedId || quoteId.endsWith(`_${tokenNorm}`)) return 'quote'
+  return null
+}
+
+function extractGeckoTerminalPoolAddress(pool: Record<string, unknown> | null | undefined): string | null {
+  const attrs = (pool?.attributes ?? {}) as Record<string, unknown>
+  const attrAddress = typeof attrs.address === 'string' ? attrs.address.trim().toLowerCase() : ''
+  if (/^0x[a-f0-9]{40}$/.test(attrAddress)) return attrAddress
+  const idAddress = String(pool?.id ?? '').match(/0x[a-fA-F0-9]{40}/)?.[0]?.toLowerCase() ?? null
+  return idAddress && /^0x[a-f0-9]{40}$/.test(idAddress) ? idAddress : null
+}
+
+function poolTokenRelationshipDebug(pool: Record<string, unknown>, tokenAddress: string, networkId: string) {
+  const rel = (pool.relationships ?? {}) as Record<string, unknown>
+  const baseData = ((rel.base_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
+  const quoteData = ((rel.quote_token as Record<string, unknown> | undefined)?.data) as Record<string, unknown> | undefined
+  return {
+    poolId: String(pool.id ?? ''),
+    poolAddress: extractGeckoTerminalPoolAddress(pool),
+    baseTokenId: String(baseData?.id ?? '') || null,
+    quoteTokenId: String(quoteData?.id ?? '') || null,
+    tokenPosition: resolveTokenPositionInPool(pool, tokenAddress, networkId),
+  }
+}
+
+// Fetches recent trades for a pool — last-resort candle source when indexed OHLCV is unavailable.
+async function fetchGeckoTerminalPoolTrades(poolAddress: string, chain: ChainKey): Promise<{ json: any | null; httpStatus: number | null }> {
+  try {
+    const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const network = networkMap[chain] ?? 'base'
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
+    const res = await fetch(
+      `${_gtBase}/api/v2/networks/${network}/pools/${poolAddress}/trades?trade_volume_in_usd_greater_than=0`,
+      { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: withTimeout(5000) }
+    )
+    return { json: res.ok ? await res.json() : null, httpStatus: res.status }
+  } catch { return { json: null, httpStatus: null } }
+}
+
+// Reconstructs OHLCV candles from raw GeckoTerminal trade events.
+// Only uses real trade prices — no generated or interpolated values.
+// Requires >= 3 valid priced trades spanning >= 2 time buckets; returns empty candles otherwise.
+type ChartPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }
+
+function incrementReason(map: Record<string, number>, key: string) {
+  map[key] = (map[key] ?? 0) + 1
+}
+
+function normalizeOhlcvRows(list: unknown): { rawPointCount: number; validPointCount: number; rejectedReason?: string; points: ChartPoint[] } {
+  if (!Array.isArray(list)) return { rawPointCount: 0, validPointCount: 0, rejectedReason: 'ohlcv_list_missing', points: [] }
+  let invalidRows = 0
+  const points = list.map((row: unknown) => {
+    const arr = Array.isArray(row) ? row : null
+    const tsNum = toNum(arr?.[0])
+    const close = toNum(arr?.[4])
+    if (tsNum == null || close == null || close <= 0) { invalidRows += 1; return null }
+    const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
+    const rawOpen = toNum(arr?.[1]) ?? close
+    const rawHigh = toNum(arr?.[2]) ?? close
+    const rawLow  = toNum(arr?.[3]) ?? close
+    const open   = rawOpen > 0 ? rawOpen : close
+    const high   = Math.max(rawHigh > 0 ? rawHigh : close, open, close)
+    const low    = Math.min(rawLow  > 0 ? rawLow  : close, open, close)
+    const volume = toNum(arr?.[5]) ?? null
+    return { timestamp: new Date(ms).toISOString(), open, high, low, close, volume, priceUsd: close }
+  }).filter((point: ChartPoint | null): point is ChartPoint => point != null)
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+  return {
+    rawPointCount: list.length,
+    validPointCount: points.length,
+    rejectedReason: points.length >= 2 ? undefined : (invalidRows > 0 ? 'invalid_or_non_positive_ohlcv_rows' : 'insufficient_points'),
+    points,
+  }
+}
+
+function reconstructCandlesFromTrades(
+  trades: unknown[],
+  currentPriceUsd: number | null,
+): { candles: ChartPoint[]; rawTradeCount: number; validTradePriceCount: number; rejectedTradeReasons: Record<string, number> } {
+  const rejectedTradeReasons: Record<string, number> = {}
+  if (!Array.isArray(trades) || trades.length < 3) {
+    if (!Array.isArray(trades) || trades.length === 0) incrementReason(rejectedTradeReasons, 'no_trades_returned')
+    else incrementReason(rejectedTradeReasons, 'fewer_than_three_trades')
+    return { candles: [], rawTradeCount: Array.isArray(trades) ? trades.length : 0, validTradePriceCount: 0, rejectedTradeReasons }
+  }
+  type TradePoint = { tsMs: number; price: number; volUsd: number | null }
+  const points: TradePoint[] = []
+  for (const trade of trades) {
+    const attrs = ((trade as Record<string, unknown>)?.attributes) as Record<string, unknown> | undefined
+    if (!attrs) { incrementReason(rejectedTradeReasons, 'missing_trade_attributes'); continue }
+    const tsRaw = attrs.block_timestamp ?? attrs.timestamp
+    const tsMs: number | null = tsRaw == null ? null
+      : typeof tsRaw === 'number' ? (tsRaw > 1e12 ? tsRaw : tsRaw * 1000)
+      : !isNaN(Date.parse(String(tsRaw))) ? new Date(String(tsRaw)).getTime()
+      : null
+    if (!tsMs || isNaN(tsMs)) { incrementReason(rejectedTradeReasons, 'missing_trade_timestamp'); continue }
+    const candidates = [
+      toNum(attrs.price_in_usd),
+      toNum(attrs.price_from_in_usd),
+      toNum(attrs.price_to_in_usd),
+      toNum(attrs.base_token_price_usd),
+      toNum(attrs.quote_token_price_usd),
+    ].filter((candidate): candidate is number => candidate != null && candidate > 0)
+    if (candidates.length === 0) { incrementReason(rejectedTradeReasons, 'missing_positive_trade_price'); continue }
+    let price = candidates[0]
+    if (currentPriceUsd != null && currentPriceUsd > 0) {
+      // Keep only obviously impossible unit mismatches out. Tiny tokens can vary by many orders
+      // across provider price fields, so prefer nearest real positive price instead of rejecting
+      // the whole trade on a tight 0.05x–20x band.
+      const eligible = candidates.filter(candidate => candidate >= currentPriceUsd * 1e-9 && candidate <= currentPriceUsd * 1e9)
+      if (eligible.length === 0) { incrementReason(rejectedTradeReasons, 'trade_price_extreme_outlier'); continue }
+      price = eligible.reduce((best, candidate) => Math.abs(Math.log(candidate / currentPriceUsd)) < Math.abs(Math.log(best / currentPriceUsd)) ? candidate : best, eligible[0])
+    }
+    points.push({ tsMs, price, volUsd: toNum(attrs.volume_in_usd) ?? null })
+  }
+  if (points.length < 3) {
+    incrementReason(rejectedTradeReasons, 'fewer_than_three_valid_trade_prices')
+    return { candles: [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
+  }
+  points.sort((a, b) => a.tsMs - b.tsMs)
+  const spanMs = points[points.length - 1].tsMs - points[0].tsMs
+  if (spanMs < 60000) {
+    incrementReason(rejectedTradeReasons, 'trade_span_under_one_minute')
+    return { candles: [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
+  }
+  const bucketMs = Math.max(60000, Math.ceil(spanMs / 20))
+  const buckets = new Map<number, TradePoint[]>()
+  for (const pt of points) {
+    const key = Math.floor(pt.tsMs / bucketMs) * bucketMs
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key)!.push(pt)
+  }
+  if (buckets.size < 2) {
+    incrementReason(rejectedTradeReasons, 'fewer_than_two_trade_buckets')
+    return { candles: [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
+  }
+  const candles = Array.from(buckets.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([bucketStart, pts]) => {
+      const prices = pts.map(p => p.price)
+      const open = pts[0].price
+      const close = pts[pts.length - 1].price
+      const high = Math.max(...prices)
+      const low = Math.min(...prices)
+      const volSum = pts.reduce((s, p) => s + (p.volUsd ?? 0), 0)
+      return { timestamp: new Date(bucketStart).toISOString(), open, high, low, close, volume: volSum > 0 ? volSum : null, priceUsd: close }
+    })
+  if (candles.length < 2) incrementReason(rejectedTradeReasons, 'fewer_than_two_reconstructed_candles')
+  return { candles: candles.length >= 2 ? candles : [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
+}
+
+// ─── Project Socials Extractor ─────────────────────────────────────────────
+// Extracts indexed project links from existing metadata responses.
+// No new providers. No invented links. Handles only data already in scope.
+type ProjectSocialsResult = {
+  website: string | null
+  twitter: string | null
+  telegram: string | null
+  discord: string | null
+  github: string | null
+  sourceTrail: string[]
+  status: 'verified' | 'partial' | 'unavailable_with_reason'
+  reason?: string
+}
+
+function _isValidSocialUrl(raw: unknown): raw is string {
+  if (typeof raw !== 'string' || !raw.trim()) return false
+  try {
+    const u = new URL(raw.trim())
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch { return false }
+}
+
+function _toTwitterUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  const s = raw.trim()
+  if (s.startsWith('http')) return _isValidSocialUrl(s) ? s : null
+  const handle = s.replace(/^@/, '').replace(/[^a-zA-Z0-9_]/g, '')
+  return handle.length >= 1 && handle.length <= 50 ? `https://twitter.com/${handle}` : null
+}
+
+function _toTelegramUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  const s = raw.trim()
+  if (s.startsWith('http')) return _isValidSocialUrl(s) ? s : null
+  const handle = s.replace(/^@/, '').replace(/[^a-zA-Z0-9_]/g, '')
+  return handle.length >= 3 ? `https://t.me/${handle}` : null
+}
+
+function extractProjectSocials(
+  gtToken: Record<string, unknown> | null,
+  coingeckoRaw: Record<string, unknown> | null,
+  gmgnItem: Record<string, unknown> | null,
+): ProjectSocialsResult & { _foundKeys: string[]; _rejectedCount: number } {
+  const trail: string[] = []
+  const found: Record<'website' | 'twitter' | 'telegram' | 'discord' | 'github', string | null> = {
+    website: null, twitter: null, telegram: null, discord: null, github: null,
+  }
+  const foundKeys: string[] = []
+  let rejectedCount = 0
+
+  const trySet = (field: keyof typeof found, val: string | null, src: string) => {
+    if (!val || found[field]) return
+    found[field] = val
+    foundKeys.push(`${src}:${field}`)
+    if (!trail.includes(src)) trail.push(src)
+  }
+
+  // 1. GeckoTerminal token attributes
+  if (gtToken) {
+    const websites = gtToken.websites
+    if (Array.isArray(websites)) {
+      for (const w of websites) {
+        const url = typeof w === 'string' ? w : (typeof w === 'object' && w !== null ? (w as Record<string, unknown>).url : null)
+        if (_isValidSocialUrl(url)) { trySet('website', url as string, 'geckoterminal'); break }
+        else rejectedCount++
+      }
+    }
+    const disc = gtToken.discord_url
+    if (_isValidSocialUrl(disc) && String(disc).includes('discord')) trySet('discord', disc as string, 'geckoterminal')
+    else if (disc) rejectedCount++
+    const tg = _toTelegramUrl(gtToken.telegram_handle)
+    if (tg) trySet('telegram', tg, 'geckoterminal')
+    else if (gtToken.telegram_handle) rejectedCount++
+    const tw = _toTwitterUrl(gtToken.twitter_handle)
+    if (tw) trySet('twitter', tw, 'geckoterminal')
+    else if (gtToken.twitter_handle) rejectedCount++
+  }
+
+  // 2. CoinGecko
+  if (coingeckoRaw) {
+    const links = coingeckoRaw.links as Record<string, unknown> | null | undefined
+    if (links) {
+      const hp: unknown[] = Array.isArray(links.homepage) ? links.homepage as unknown[] : []
+      for (const h of hp) {
+        if (_isValidSocialUrl(h)) { trySet('website', h as string, 'coingecko'); break }
+        else if (h) rejectedCount++
+      }
+      const tws = _toTwitterUrl(links.twitter_screen_name)
+      if (tws) trySet('twitter', tws, 'coingecko')
+      else if (links.twitter_screen_name) rejectedCount++
+      const tgs = _toTelegramUrl(links.telegram_channel_identifier)
+      if (tgs) trySet('telegram', tgs, 'coingecko')
+      else if (links.telegram_channel_identifier) rejectedCount++
+      const chatUrls: unknown[] = Array.isArray(links.chat_url) ? links.chat_url as unknown[] : []
+      for (const c of chatUrls) {
+        if (_isValidSocialUrl(c) && String(c).includes('discord')) { trySet('discord', c as string, 'coingecko'); break }
+        else if (c) rejectedCount++
+      }
+      const reposUrl = links.repos_url as Record<string, unknown> | null | undefined
+      const ghArr: unknown[] = Array.isArray(reposUrl?.github) ? reposUrl!.github as unknown[] : []
+      for (const g of ghArr) {
+        if (_isValidSocialUrl(g) && String(g).includes('github')) { trySet('github', g as string, 'coingecko'); break }
+        else if (g) rejectedCount++
+      }
+    }
+  }
+
+  // 3. GMGN
+  if (gmgnItem) {
+    const pairs: Array<['website' | 'twitter' | 'telegram' | 'discord' | 'github', unknown, (v: unknown) => string | null]> = [
+      ['website', gmgnItem.website ?? gmgnItem.homepage, (v) => _isValidSocialUrl(v) ? v as string : null],
+      ['twitter', gmgnItem.twitter ?? gmgnItem.twitter_username ?? gmgnItem.twitter_handle, _toTwitterUrl],
+      ['telegram', gmgnItem.telegram ?? gmgnItem.telegram_handle ?? gmgnItem.telegram_url, _toTelegramUrl],
+      ['discord', gmgnItem.discord ?? gmgnItem.discord_url, (v) => (_isValidSocialUrl(v) && String(v).includes('discord')) ? v as string : null],
+      ['github', gmgnItem.github ?? gmgnItem.github_url, (v) => (_isValidSocialUrl(v) && String(v).includes('github')) ? v as string : null],
+    ]
+    for (const [field, raw, fn] of pairs) {
+      const val = fn(raw)
+      if (val) trySet(field, val, 'gmgn')
+      else if (raw) rejectedCount++
+    }
+  }
+
+  const anyFound = Object.values(found).some((v) => v !== null)
+  const status: ProjectSocialsResult['status'] = anyFound
+    ? (found.website != null ? 'verified' : 'partial')
+    : 'unavailable_with_reason'
+  const reason = !anyFound ? 'no_social_links_found_in_indexed_metadata' : undefined
+
+  return { ...found, sourceTrail: trail, status, reason, _foundKeys: foundKeys, _rejectedCount: rejectedCount }
 }
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
@@ -1290,7 +1876,10 @@ async function fetchMoralisTransfers(chain: ChainKey, contract: string): Promise
     const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc' }
     const key = process.env.MORALIS_API_KEY
     if (!key) return { __status: 'not_configured' }
-    const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/transfers?chain=${chainMap[chain]}&limit=50`, {
+    // order=ASC fetches the EARLIEST transfers — required to find the initial mint (from=0x0)
+    // which identifies the original deployer. Default DESC (latest) misses creation-era events
+    // for established tokens that were deployed months or years ago.
+    const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/transfers?chain=${chainMap[chain]}&limit=50&order=ASC`, {
       headers: { 'X-API-Key': key },
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
@@ -2951,32 +3540,37 @@ export async function POST(req: Request) {
           balance: h.balance ?? null,
         })).filter((h: any) => h.address)
       : []
-    const holderCandidates = [
-      holdersRaw?.data?.items,
-      holdersRaw?.data?.data?.items,
-      holdersRaw?.items,
-      holdersRaw?.holders,
-      holdersRaw?.token_holders,
-      // Moralis fallback — only used when every GoldRush candidate is empty
-      _moralisHolderItems.length > 0 ? _moralisHolderItems : null,
-    ]
-    const holderItems: any[] = holderCandidates.find((x) => Array.isArray(x) && (x as any[]).length > 0) ?? []
-    const _holderSource: 'goldrush' | 'moralis' | 'none' = (() => {
-      const gCand = [holdersRaw?.data?.items, holdersRaw?.data?.data?.items, holdersRaw?.items, holdersRaw?.holders, holdersRaw?.token_holders]
-      if (gCand.some((c) => Array.isArray(c) && (c as any[]).length > 0)) return 'goldrush'
-      if (_moralisHolderItems.length > 0 && holderItems.length > 0) return 'moralis'
-      return 'none'
-    })()
+    const holderResolverResult = await resolveTokenHolders({
+      chain,
+      chainId: CHAIN_ID_MAP[chain],
+      tokenAddress: contract,
+      limit: 200,
+      providerHoldersRaw: holdersRaw,
+      marketProviderHoldersRaw: moralisHoldersRaw,
+    })
+    const holderItems: any[] = holderResolverResult.holders.length > 0
+      ? holderResolverResult.holders.map((h) => ({
+          address: h.address,
+          percentage: h.pctOfSupply ?? null,
+          balance: h.balanceRaw,
+          source: h.source,
+        }))
+      : []
+    const _holderSource: 'goldrush' | 'moralis' | 'none' = holderResolverResult.holders.some((h) => h.source === 'goldrush_token_holders')
+      ? 'goldrush'
+      : holderResolverResult.holders.some((h) => h.source === 'moralis_token_owners')
+        ? 'moralis'
+        : 'none'
     console.log('[holders] items length', holderItems.length, 'source', _holderSource)
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? moralisHoldersRaw?.total ?? null
     const holderPctFromProvider: boolean[] = []
     const rawBalanceByAddress = new Map<string, unknown>()
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
-      const address = h.address || h.holder_address || h.wallet_address || h.owner_address || h.contract_address || ''
+      const address = h.address || h.holder_address || h.wallet_address || h.wallet || h.owner_address || h.contract_address || ''
       const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
       const amount = toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null
-      const pctRaw = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage)
+      const pctRaw = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.balancePercent) ?? normalizeHolderPercent(h.ownershipPercent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage)
       const percent = pctRaw
       holderPctFromProvider.push(percent != null)
       if (address && balanceRaw != null) rawBalanceByAddress.set(address.toLowerCase(), balanceRaw)
@@ -3061,7 +3655,7 @@ export async function POST(req: Request) {
       : {
           // No holder rows returned — use unavailable_with_reason, not partial (partial requires real evidence)
           status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable_with_reason') as HolderDistributionStatus['status'],
-          reason: (holdersRaw?.__reason ?? (holdersRaw?.__status === 'not_configured' ? 'api_key_missing' : 'no_holder_rows_returned')),
+          reason: (holderResolverResult.reason ?? holdersRaw?.__reason ?? (holdersRaw?.__status === 'not_configured' ? 'api_key_missing' : 'no_holder_rows_returned')),
           itemCount: holderItems.length,
           normalizedCount: 0,
           percentSource,
@@ -3247,24 +3841,34 @@ export async function POST(req: Request) {
 
     const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
     const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
-    let priceChart: { timeframe: '24h'|'48h'|'7d'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean } = {
+    let priceChart: { timeframe: '24h'|'48h'|'7d'|'30d'; points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean } = {
       timeframe: '24h',
       points: [],
       sourceStatus: 'partial',
       reason: 'primary_pool_missing',
     }
     const chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
+    const _chartNetworkIdMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const _chartNetworkId = _chartNetworkIdMap[chain] ?? 'base'
     const chartPoolCandidates = [mainPool, ...matchingPools.filter((p) => p !== mainPool)]
-      .filter((p): p is NonNullable<typeof mainPool> => Boolean(p?.attributes?.address))
-      .map((p) => ({
-        pool: p,
-        address: String(p.attributes.address),
-        name: typeof p.attributes.name === 'string' ? p.attributes.name : null,
-        liquidityUsd: toNum(p.attributes.reserve_in_usd),
-        volume24hUsd: toNum((p.attributes.volume_usd as Record<string, unknown> | undefined)?.h24),
-      }))
+      .map((p) => {
+        if (!p) return null
+        const address = extractGeckoTerminalPoolAddress(p as Record<string, unknown>)
+        if (!address) return null
+        return {
+          pool: p,
+          poolId: String(p.id ?? ''),
+          address,
+          name: typeof p.attributes.name === 'string' ? p.attributes.name : null,
+          dex: typeof p.attributes.dex_id === 'string' ? p.attributes.dex_id : null,
+          poolType: detectPoolType(p, typeof p.attributes.dex_id === 'string' ? p.attributes.dex_id : undefined),
+          liquidityUsd: toNum(p.attributes.reserve_in_usd),
+          volume24hUsd: toNum((p.attributes.volume_usd as Record<string, unknown> | undefined)?.h24),
+        }
+      })
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate != null)
       .sort((a, b) => ((b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1)) || ((b.volume24hUsd ?? -1) - (a.volume24hUsd ?? -1)))
-    const primaryAddr = String(mainPoolAttr.address ?? '').toLowerCase()
+    const primaryAddr = extractGeckoTerminalPoolAddress(mainPool as Record<string, unknown> | null)?.toLowerCase() ?? ''
     chartPoolCandidates.sort((a, b) => {
       if (a.address.toLowerCase() === primaryAddr) return -1
       if (b.address.toLowerCase() === primaryAddr) return 1
@@ -3273,52 +3877,136 @@ export async function POST(req: Request) {
     const uniqueChartPools = chartPoolCandidates.filter((c, i, arr) => arr.findIndex((x) => x.address.toLowerCase() === c.address.toLowerCase()) === i)
     const maxAttempts = Math.min(uniqueChartPools.length, 4)
     const chartAttemptedTimeframes: string[] = []
-    const timeframeAttempts: Array<{ key: '24h'|'48h'|'7d'; resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }> = [
+    const timeframeAttempts: Array<{ key: '24h'|'48h'|'7d'|'30d'; resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }> = [
       { key: '24h', resolution: 'minute', aggregate: 15, limit: 96 },
       { key: '48h', resolution: 'hour', aggregate: 1, limit: 48 },
       { key: '7d', resolution: 'day', aggregate: 1, limit: 7 },
+      { key: '30d', resolution: 'day', aggregate: 1, limit: 30 },
     ]
+    const tokenPositionForEachPool = uniqueChartPools.map((candidate) => poolTokenRelationshipDebug(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId))
+    const poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base' | 'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
+    const tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
+    const tradePoolsAttempted: string[] = []
+    const rejectedTradeReasons: Record<string, number> = {}
+    let rawTradeCount = 0
+    let validTradePriceCount = 0
     let chartFailureReason: string | null = maxAttempts > 0 ? null : 'primary_pool_missing'
     let chartSelectedPoolForChart: { address: string; name: string | null } | null = null
     for (let i = 0; i < maxAttempts; i += 1) {
       const candidate = uniqueChartPools[i]
+      const resolvedTokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
+      const tokenPositions: Array<'base' | 'quote'> = resolvedTokenPos ? [resolvedTokenPos] : ['base', 'quote']
       chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
-      for (let t = 0; t < Math.min(2, timeframeAttempts.length); t += 1) {
-        const tf = timeframeAttempts[t + (i > 1 ? 1 : 0)] ?? timeframeAttempts[t]
-        chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
-        const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf)
-        const list = chartRaw?.data?.attributes?.ohlcv_list
-        if (!Array.isArray(list)) { chartFailureReason = 'ohlcv_not_exposed'; continue }
-        const points = list.map((row: unknown) => {
-          const arr = Array.isArray(row) ? row : null
-          const tsNum = toNum(arr?.[0])
-          const close = toNum(arr?.[4])
-          if (tsNum == null || close == null || close <= 0) return null
-          const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
-          return { timestamp: new Date(ms).toISOString(), priceUsd: close }
-        }).filter((p: { timestamp: string; priceUsd: number } | null): p is { timestamp: string; priceUsd: number } => p != null)
-          .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-        if (points.length >= 2) {
-          priceChart = { timeframe: tf.key, points, sourceStatus: 'ok' }
-          chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
-          chartFailureReason = null
-          break
+      for (const tokenPos of tokenPositions) {
+        for (let t = 0; t < timeframeAttempts.length; t += 1) {
+          const tf = timeframeAttempts[t]
+          chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}:${tokenPos}`)
+          const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf, tokenPos)
+          const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
+          poolOhlcvAttempts.push({
+            poolId: candidate.poolId,
+            poolAddress: candidate.address,
+            tokenPosition: tokenPos,
+            timeframe: tf.key,
+            ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}),
+            rawPointCount: normalized.rawPointCount,
+            validPointCount: normalized.validPointCount,
+            ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}),
+          })
+          if (normalized.points.length >= 2) {
+            priceChart = { timeframe: tf.key, points: normalized.points, sourceStatus: 'ok' }
+            chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
+            chartFailureReason = null
+            break
+          }
+          chartFailureReason = normalized.rejectedReason ?? 'insufficient_points'
         }
-        chartFailureReason = 'insufficient_points'
+        if (priceChart.sourceStatus === 'ok') break
       }
       if (priceChart.sourceStatus === 'ok') break
     }
-    if (priceChart.sourceStatus !== 'ok' && maxAttempts > 0) {
-      priceChart = { timeframe: '24h', points: [], sourceStatus: 'partial', reason: chartFailureReason ?? 'ohlcv_not_exposed' }
+    // Token-level OHLCV fallback — tries /tokens/{address}/ohlcv which aggregates across all pools.
+    // Reliable for CL/V3 pools (Aerodrome CL, Uniswap V3) where individual pool OHLCV is not indexed.
+    // Only runs when all pool-level attempts failed. Capped to 4 calls (one per timeframe); breaks on first success.
+    let chartUsedTokenLevelOhlcv = false
+    let chartTokenLevelAttempted = false
+    if (priceChart.sourceStatus !== 'ok') {
+      chartTokenLevelAttempted = true
+      for (const tf of timeframeAttempts) {
+        chartAttemptedTimeframes.push(`token_level:${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
+        const chartRaw = await fetchGeckoTerminalTokenOhlcv(contract, chain, tf)
+        const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
+        tokenOhlcvAttempts.push({
+          timeframe: tf.key,
+          ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}),
+          rawPointCount: normalized.rawPointCount,
+          validPointCount: normalized.validPointCount,
+          ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}),
+        })
+        if (normalized.points.length >= 2) {
+          priceChart = { timeframe: tf.key, points: normalized.points, sourceStatus: 'ok' }
+          chartFailureReason = null
+          chartUsedTokenLevelOhlcv = true
+          break
+        }
+        chartFailureReason = normalized.rejectedReason ? `token_${normalized.rejectedReason}` : 'token_ohlcv_insufficient_points'
+      }
     }
-    const chartAttempted = chartAttemptedPools.length > 0
-    const chartFallbackUsed = chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr
+    // Trade-reconstruction fallback — fetches real GeckoTerminal pool trade events and groups them
+    // into time-bucketed candles. Only runs when all OHLCV attempts fail. Caps to 2 pools.
+    // Requires >= 3 valid priced trades spanning >= 2 time buckets; does not run otherwise.
+    let chartUsedTradeReconstruction = false
+    let chartTradeReconstructionAttempted = false
+    let chartReconstructedTradeCount = 0
+    let chartReconstructedCandleCount = 0
+    if (priceChart.sourceStatus !== 'ok') {
+      chartTradeReconstructionAttempted = true
+      for (const poolCandidate of uniqueChartPools.slice(0, 2)) {
+        chartAttemptedTimeframes.push(`trade_recon:${poolCandidate.address.slice(0, 10)}`)
+        tradePoolsAttempted.push(poolCandidate.address)
+        const tradesRaw = await fetchGeckoTerminalPoolTrades(poolCandidate.address, chain)
+        const tradesArr: unknown[] = Array.isArray(tradesRaw.json?.data) ? tradesRaw.json.data : []
+        const reconstructed = reconstructCandlesFromTrades(tradesArr, priceUsd)
+        rawTradeCount = Math.max(rawTradeCount, reconstructed.rawTradeCount)
+        validTradePriceCount = Math.max(validTradePriceCount, reconstructed.validTradePriceCount)
+        for (const [reason, count] of Object.entries(reconstructed.rejectedTradeReasons)) {
+          rejectedTradeReasons[reason] = (rejectedTradeReasons[reason] ?? 0) + count
+        }
+        chartReconstructedTradeCount = Math.max(chartReconstructedTradeCount, reconstructed.rawTradeCount)
+        if (reconstructed.candles.length >= 2) {
+          chartReconstructedCandleCount = reconstructed.candles.length
+          priceChart = { timeframe: '24h', points: reconstructed.candles, sourceStatus: 'ok' }
+          chartFailureReason = null
+          chartUsedTradeReconstruction = true
+          break
+        }
+      }
+      if (!chartUsedTradeReconstruction) {
+        chartFailureReason = chartFailureReason ?? 'trade_reconstruction_insufficient'
+      }
+    }
+    if (priceChart.sourceStatus !== 'ok' && (maxAttempts > 0 || chartUsedTokenLevelOhlcv || chartTradeReconstructionAttempted)) {
+      priceChart = { timeframe: '24h', points: [], sourceStatus: 'partial', reason: chartFailureReason ?? 'all_chart_sources_empty' }
+    }
+    const chartAttempted = chartAttemptedPools.length > 0 || chartUsedTokenLevelOhlcv || chartTradeReconstructionAttempted
+    const chartFallbackUsed = (chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr) || chartUsedTokenLevelOhlcv || chartUsedTradeReconstruction
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
-    const chartStatus: 'ok' | 'no_candles' | 'fallback_snapshot_only' | 'partial' =
+    const chartStatus: 'ok' | 'snapshot_only' | 'unavailable_with_reason' =
       priceChart.sourceStatus === 'ok' ? 'ok' :
-      marketDataSource === 'fallback' ? 'fallback_snapshot_only' :
-      noActivePools ? 'partial' :
-      'no_candles'
+      noActivePools ? 'unavailable_with_reason' :
+      'snapshot_only'
+    const chartSource: string | null =
+      chartStatus !== 'ok' ? null :
+      chartUsedTradeReconstruction ? 'trade_reconstructed' :
+      chartUsedTokenLevelOhlcv ? 'token_level_ohlcv' :
+      'pool_ohlcv'
+    const chartReason: string | null =
+      chartStatus === 'ok'
+        ? (chartUsedTradeReconstruction ? 'trade_reconstructed_from_recent_swaps'
+           : chartUsedTokenLevelOhlcv ? 'token_level_ohlcv_used'
+           : chartFallbackUsed ? 'alternate_pool_used'
+           : null)
+        : (chartFailureReason ?? 'all_chart_sources_empty')
     const chartDataSource: 'primary' | 'fallback' | 'none' =
       priceChart.sourceStatus === 'ok' ? (chartFallbackUsed ? 'fallback' : 'primary') :
       marketDataSource === 'fallback' ? 'fallback' :
@@ -3364,10 +4052,12 @@ export async function POST(req: Request) {
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
     const ownerCall = _ownerHexForLp ?? alchemyMandatoryReads[0] ?? alchemyMandatoryReads[1] ?? alchemyMandatoryReads[2] ?? alchemyMandatoryReads[3] ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     let ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
-    // Deployer fallback: extract from Moralis mint transfer when RPC selectors all return null.
-    // A mint event (from=0x0) points to the initial recipient — the deployer's distribution wallet.
+    // Deployer fallback: extract from Moralis mint transfer when RPC selectors all return null OR when
+    // owner() returned zero (renounced). A mint event (from=0x0) points to the initial recipient —
+    // the deployer's distribution wallet. When renounced (ownerAddr=zero), we still want Dev Control
+    // to identify the original deployer; we do NOT overwrite ownerAddr so isRenounced stays correct.
     let _ownerFromTransfer: string | null = null
-    if (!ownerAddr && Array.isArray(moralisTransfersRaw?.result) && (moralisTransfersRaw.result as any[]).length > 0) {
+    if ((!ownerAddr || ownerAddr === '0x0000000000000000000000000000000000000000') && Array.isArray(moralisTransfersRaw?.result) && (moralisTransfersRaw.result as any[]).length > 0) {
       const _ZERO = '0x0000000000000000000000000000000000000000'
       const _mints = (moralisTransfersRaw.result as any[]).filter((t: any) =>
         typeof t.from_address === 'string' && t.from_address.toLowerCase() === _ZERO &&
@@ -3376,7 +4066,7 @@ export async function POST(req: Request) {
       if (_mints.length > 0) {
         const _earliest = _mints.sort((a: any, b: any) => parseInt(a.block_number ?? '0') - parseInt(b.block_number ?? '0'))[0]
         _ownerFromTransfer = _earliest.to_address?.toLowerCase() ?? null
-        ownerAddr = _ownerFromTransfer
+        if (!ownerAddr) ownerAddr = _ownerFromTransfer // only set ownerAddr when truly null; zero stays zero to preserve isRenounced
       }
     }
     // Ownership / control derivation — RPC-sourced admin and proxy implementation
@@ -3389,7 +4079,8 @@ export async function POST(req: Request) {
     // If RPC wasn't configured, ownerAddr is null but we haven't verified anything.
     const rpcOwnershipAttempted = alchemyConfigured
     const isRenounced = rpcOwnershipAttempted && (!ownerAddr || ownerAddr === _ZERO_ADDR)
-    const ownershipVerified = rpcOwnershipAttempted && Boolean(ownerAddr || adminAddr)
+    // ownerAddr=zero (renounced) does not count as verified — a zero string is truthy but meaningless
+    const ownershipVerified = rpcOwnershipAttempted && Boolean((ownerAddr && ownerAddr !== _ZERO_ADDR) || adminAddr)
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
 
@@ -3987,10 +4678,12 @@ export async function POST(req: Request) {
     const normalizeActorAddress = (value: string | null | undefined): string | null => {
       if (typeof value !== 'string') return null
       const trimmed = value.trim().toLowerCase()
-      return /^0x[a-f0-9]{40}$/.test(trimmed) && trimmed !== _ZERO_ADDR ? trimmed : null
+      return /^0x[a-f0-9]{40}$/.test(trimmed) && trimmed !== _ZERO_ADDR && trimmed !== DEAD_ADDRESS ? trimmed : null
     }
     const ethOriginCandidate = normalizeActorAddress(ethOriginDiscovery?.candidate.address ?? null)
-    const deployerAddress = chain === 'eth' ? ethOriginCandidate : normalizeActorAddress(ownerAddr)
+    // For Base: prefer ownerAddr (current owner/control wallet); fall back to _ownerFromTransfer
+    // (initial mint recipient) when ownerAddr is null or zero (renounced).
+    const deployerAddress = chain === 'eth' ? ethOriginCandidate : (normalizeActorAddress(ownerAddr) ?? normalizeActorAddress(_ownerFromTransfer))
     const ethLinkedWalletResult = chain === 'eth' && deployerAddress
       ? await findTokenLinkedWallets(chain, deployerAddress, contract)
       : null
@@ -4017,6 +4710,15 @@ export async function POST(req: Request) {
       : (deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.')
     const linkedAddressSet = new Set(linkedWallets.map((wallet) => wallet.address))
     const holderRows = holderDistribution.topHolders ?? []
+    const transferResolverResult = await resolveTokenTransfers({
+      chain,
+      chainId: CHAIN_ID_MAP[chain],
+      tokenAddress: contract,
+      deployerAddress,
+      holderAddresses: holderRows.map((holder) => holder.address).filter(Boolean),
+      limit: 200,
+      providerTransfersRaw: moralisTransfersRaw,
+    })
     const holderRowsHaveUsablePercents = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
     const holderRowsConfirmed = holderRowsHaveUsablePercents
     const supplyRowsArePartial = holderDistributionStatus.status === 'partial' || holderDistributionStatus.percentSource === 'calculated'
@@ -4099,6 +4801,14 @@ export async function POST(req: Request) {
       devClusterSupplyReason,
       matchedLinkedWallets,
       clusterInfluence,
+      ...(holderResolverResult.insufficientEvidence || (!deployerAddress && linkedWallets.length === 0) ? {
+        insufficientEvidence: true,
+        reason: !deployerAddress && linkedWallets.length === 0
+          ? 'Supply control open check: no deployer or linked-wallet actors were resolved in this pass.'
+          : (holderResolverResult.reason ?? 'Holder evidence unavailable in this pass.'),
+        fallbackUsed: holderResolverResult.fallbackUsed ?? 'none',
+        confidence: 'low' as const,
+      } : {}),
     }
     const clusterMap = buildClusterMap({
       deployerAddress,
@@ -4158,6 +4868,24 @@ export async function POST(req: Request) {
       holderPercentSource: holderDistributionStatus.percentSource,
       suspiciousTransfers: false,
       suspiciousTransferReasons: [],
+      transferEvidence: {
+        transferCount: transferResolverResult.transfers.length,
+        insufficientEvidence: transferResolverResult.insufficientEvidence,
+        reason: transferResolverResult.reason ?? null,
+        fallbackUsed: transferResolverResult.fallbackUsed ?? null,
+        confidence: transferResolverResult.confidence,
+      },
+      holderEvidence: {
+        holderCount: holderResolverResult.holders.length,
+        insufficientEvidence: holderResolverResult.insufficientEvidence,
+        reason: holderResolverResult.reason ?? null,
+        fallbackUsed: holderResolverResult.fallbackUsed ?? null,
+        confidence: holderResolverResult.confidence,
+      },
+      insufficientEvidence: holderResolverResult.insufficientEvidence && transferResolverResult.insufficientEvidence,
+      reason: holderResolverResult.insufficientEvidence && transferResolverResult.insufficientEvidence
+        ? 'Dev Control open check: holder and transfer evidence were unavailable in this pass.'
+        : devOriginReason,
       clusterInfluence,
       reasons: [devOriginReason],
       confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
@@ -4176,6 +4904,9 @@ export async function POST(req: Request) {
     const contractChecksReason = contractChecksStatus === 'inferred'
       ? 'Contract flags inferred from simulation and chain context — direct bytecode verification not available.'
       : 'Contract bytecode, supply, owner, and CORTEX flag scan reviewed.'
+
+    const { _foundKeys: _psFoundKeys, _rejectedCount: _psRejectedCount, ...projectSocials } =
+      extractProjectSocials(gtToken, coingeckoRaw, gmgnItem)
 
     const responsePayload = {
       chain,
@@ -4200,6 +4931,34 @@ export async function POST(req: Request) {
       holderDistribution,
       holderDistributionStatus,
       holderStatus: holdersStatus,
+      holderResolver: {
+        holders: holderResolverResult.holders,
+        insufficientEvidence: holderResolverResult.insufficientEvidence,
+        reason: holderResolverResult.reason ?? null,
+        fallbackUsed: holderResolverResult.fallbackUsed ?? null,
+        confidence: holderResolverResult.confidence,
+      },
+      transferResolver: {
+        transfers: transferResolverResult.transfers,
+        insufficientEvidence: transferResolverResult.insufficientEvidence,
+        reason: transferResolverResult.reason ?? null,
+        fallbackUsed: transferResolverResult.fallbackUsed ?? null,
+        confidence: transferResolverResult.confidence,
+      },
+      suspiciousFlows: {
+        transfers: transferResolverResult.transfers,
+        insufficientEvidence: transferResolverResult.insufficientEvidence,
+        reason: transferResolverResult.insufficientEvidence ? (transferResolverResult.reason ?? 'Transfer evidence unavailable in this pass.') : 'Transfer evidence available from resolver.',
+        fallbackUsed: transferResolverResult.fallbackUsed ?? 'none',
+        confidence: transferResolverResult.confidence,
+      },
+      earlyBuyers: {
+        wallets: [],
+        insufficientEvidence: transferResolverResult.insufficientEvidence,
+        reason: transferResolverResult.insufficientEvidence ? (transferResolverResult.reason ?? 'Transfer evidence unavailable in this pass.') : 'Early-buyer labelling is not derived without trade records containing real wallet addresses.',
+        fallbackUsed: transferResolverResult.fallbackUsed ?? 'none',
+        confidence: transferResolverResult.insufficientEvidence ? 'low' : 'medium',
+      },
       devIntel,
       deployerAddress,
       deployerStatus: devDeployerStatus,
@@ -4277,6 +5036,8 @@ export async function POST(req: Request) {
       },
       priceChart,
       chartStatus,
+      chartSource,
+      chartReason,
       chartDataSource,
 
       pairs: matchingPools,
@@ -4293,7 +5054,7 @@ export async function POST(req: Request) {
         // resolveContractFlags: ABI scan (GoldRush) with bytecode fallback
         contractFlags: resolveContractFlags(grContractIntel, cortexContractFlags),
         devOwnership: {
-          ownerAddress: ownerAddr ?? null,
+          ownerAddress: (ownerAddr && ownerAddr !== _ZERO_ADDR) ? ownerAddr : null,
           adminAddress: adminAddr ?? null,
           isRenounced,
           ownershipVerified,
@@ -4402,7 +5163,7 @@ export async function POST(req: Request) {
             totalPoolsReturned: matchingPools.length,
             selectedPoolIndex: 0,
             selectedPoolId: mp?.id ?? null,
-            selectedPoolAddress: mpAttr.address ?? null,
+            selectedPoolAddress: extractGeckoTerminalPoolAddress(mp as Record<string, unknown> | null),
             selectedPoolName: mpAttr.name ?? null,
             selectedPoolLiquidityUsd: mpAttr.reserve_in_usd ?? null,
             selectedPoolVolume24h: (mpAttr.volume_usd as Record<string, unknown> | undefined)?.h24 ?? null,
@@ -4465,12 +5226,41 @@ export async function POST(req: Request) {
             chartAttemptedTimeframes,
             chartSelectedPoolForChart,
             chartFallbackUsed,
-            chartTimeframe: '24h',
+            chartUsedTokenLevelOhlcv,
+            chartTokenLevelAttempted,
+            chartTimeframe: priceChart.timeframe,
             chartSelectedPoolId: mp?.id ?? null,
-            chartSelectedPoolAddress: mpAttr.address ?? null,
+            chartSelectedPoolAddress: extractGeckoTerminalPoolAddress(mp as Record<string, unknown> | null),
             chartFailureReason,
             chartFirstTimestamp: priceChart.points[0]?.timestamp ?? null,
             chartLastTimestamp: priceChart.points[priceChart.points.length - 1]?.timestamp ?? null,
+            chartDebug: {
+              chain,
+              networkId: _chartNetworkId,
+              tokenAddress: contract.toLowerCase(),
+              selectedPoolId: mp?.id ?? null,
+              selectedPoolAddress: extractGeckoTerminalPoolAddress(mp as Record<string, unknown> | null),
+              selectedPoolDex: primaryDexName,
+              selectedPoolType: lpPoolType,
+              tokenPositionForEachPool,
+              poolsAttempted: chartAttemptedPools,
+              poolOhlcvAttempts,
+              tokenOhlcvAttempts,
+              tradeReconstructionAttempted: chartTradeReconstructionAttempted,
+              tradePoolsAttempted,
+              rawTradeCount,
+              validTradePriceCount,
+              rejectedTradeReasons,
+              reconstructedCandleCount: chartReconstructedCandleCount,
+              finalChartStatus: chartStatus,
+              finalChartSource: chartSource,
+              finalChartReason: chartReason,
+              timeframesAttempted: chartAttemptedTimeframes,
+              poolLevelSuccess: chartSelectedPoolForChart !== null && !chartUsedTokenLevelOhlcv && !chartUsedTradeReconstruction,
+              tokenLevelAttempted: chartTokenLevelAttempted,
+              tokenLevelSuccess: chartUsedTokenLevelOhlcv,
+              tradeReconstructionSuccess: chartUsedTradeReconstruction,
+            },
             poolActivityExtractionReason: {
               transactions24hSource: _txnsH24Obj != null ? 'transactions.h24 (object)' : _txnsH24Total != null ? 'transactions.h24 (scalar)' : 'not_indexed',
               buys24hFound: buys24h != null,
@@ -4529,6 +5319,10 @@ export async function POST(req: Request) {
         symbol: finalResolvedSymbol,
         decimals: resolvedDecimals,
       },
+
+      // Indexed project links — sourced from existing metadata only (GT / CoinGecko / GMGN)
+      projectSocials,
+
       sections: {
         market: {
           status: marketStatus,
@@ -4700,6 +5494,23 @@ export async function POST(req: Request) {
         fallbackUsed: rpcCallsSucceeded < rpcCallsAttempted,
         requestDurationMs: Date.now() - _t0,
         checks: rpcCheckDiagnostics,
+        transferResolverDebug: {
+          sourceTrail: transferResolverResult.sourceTrail,
+          sourcesAttempted: transferResolverResult.sourceTrail.filter((entry) => entry.endsWith(':attempted')).map((entry) => entry.replace(':attempted', '')),
+          sourcesSucceeded: transferResolverResult.sourceTrail.filter((entry) => entry.endsWith(':succeeded')).map((entry) => entry.replace(':succeeded', '')),
+          transferCount: transferResolverResult.transfers.length,
+          insufficientEvidence: transferResolverResult.insufficientEvidence,
+          reason: transferResolverResult.reason ?? null,
+        },
+        holderResolverDebug: {
+          sourceTrail: holderResolverResult.sourceTrail,
+          sourcesAttempted: holderResolverResult.sourceTrail.filter((entry) => entry.endsWith(':attempted')).map((entry) => entry.replace(':attempted', '')),
+          sourcesSucceeded: holderResolverResult.sourceTrail.filter((entry) => entry.endsWith(':succeeded')).map((entry) => entry.replace(':succeeded', '')),
+          holderCount: holderResolverResult.holders.length,
+          holdersWithPercent: holderResolverResult.holders.filter((holder) => holder.pctOfSupply != null).length,
+          insufficientEvidence: holderResolverResult.insufficientEvidence,
+          reason: holderResolverResult.reason ?? null,
+        },
         devIntelDiagnostics: {
           originDiscovery: ethOriginDiscovery?.diag ?? null,
           linkedWallets: ethLinkedWalletResult?.diag ?? null,
@@ -4708,6 +5519,19 @@ export async function POST(req: Request) {
           methodUsed: devMethodUsed,
           originReason: devOriginReason,
           supplyControlReason: devClusterSupplyReason,
+          // Dev Control canonical deployer tracing
+          devControlDeployerAddress: deployerAddress,
+          devControlDeployerSource: devMethodUsed,
+          devIntelDeployerAddress: deployerAddress,
+          clusterMapDeployerNodePresent: clusterMap.nodes.some((n) => n.type === 'deployer'),
+          supplyControlActorChecked: Boolean(deployerAddress || linkedWallets.length > 0),
+          holderRowsCount: holderRows.length,
+          holderRowsWithPercent: holderRows.filter((h) => typeof h.percent === 'number' && Number.isFinite(h.percent)).length,
+          holderRowsUsable: holderRowsConfirmed,
+          deployerMatchedHolder: creatorHolderPercent != null,
+          linkedWalletsChecked: linkedWallets.length,
+          devClusterSupplyPercent,
+          lineageHasDeployer: clusterMap.summary.deployerAddress !== null,
         },
         dexFallbackTest: forceDexFallback ? {
           forced: true,
@@ -4927,6 +5751,19 @@ export async function POST(req: Request) {
             ownership_verified: ownershipVerified,
             owner_address: ownerAddr,
             admin_address: adminAddr,
+          },
+          projectSocialsDebug: {
+            sourceTrail: projectSocials.sourceTrail,
+            foundKeys: _psFoundKeys,
+            rejectedCount: _psRejectedCount,
+            status: projectSocials.status,
+            reason: projectSocials.reason ?? null,
+            gtTokenHasWebsites: Array.isArray(gtToken?.websites),
+            gtTokenHasTelegramHandle: Boolean(gtToken?.telegram_handle),
+            gtTokenHasTwitterHandle: Boolean(gtToken?.twitter_handle),
+            gtTokenHasDiscordUrl: Boolean(gtToken?.discord_url),
+            coingeckoUsable: Boolean(coingeckoRaw),
+            gmgnUsable: Boolean(gmgnItem),
           },
           riskFlow: {
             rugRiskScore: riskEngine.rugRiskScore,

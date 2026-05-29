@@ -141,13 +141,15 @@ type ScanResult = {
     pairAgeLabel: string | null
   } | null
   priceChart?: {
-    timeframe: '24h' | '48h' | '7d'
-    points: Array<{ timestamp: string; priceUsd: number }>
+    timeframe: '24h' | '48h' | '7d' | '30d'
+    points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume?: number | null; priceUsd: number }>
     sourceStatus: 'ok' | 'partial' | 'error'
     reason?: string
     fallbackUsed?: boolean
   } | null
-  chartStatus?: 'ok' | 'no_candles' | 'fallback_snapshot_only' | 'partial' | null
+  chartStatus?: 'ok' | 'snapshot_only' | 'unavailable_with_reason' | 'no_candles' | 'fallback_snapshot_only' | 'partial' | null
+  chartSource?: string | null
+  chartReason?: string | null
   chartDataSource?: 'primary' | 'fallback' | 'none' | null
   resolvedInput?: {
     original: string
@@ -225,6 +227,16 @@ type ScanResult = {
       isRenounced: boolean
       ownershipVerified: boolean
     } | null
+  } | null
+  projectSocials?: {
+    website: string | null
+    twitter: string | null
+    telegram: string | null
+    discord: string | null
+    github: string | null
+    sourceTrail: string[]
+    status: 'verified' | 'partial' | 'unavailable_with_reason'
+    reason?: string
   } | null
 }
 
@@ -675,6 +687,174 @@ function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUs
   )
 }
 
+type OhlcCandle = { timestamp: string; open: number; high: number; low: number; close: number; volume?: number | null; priceUsd: number }
+
+function CandlestickChart({ candles, timeframe }: { candles: OhlcCandle[]; timeframe: string }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+
+  const MAX_CANDLES = 80
+  const raw = candles.filter(c => c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0 && c.high >= c.low)
+  const data = raw.slice(-MAX_CANDLES)
+  if (data.length < 2) return null
+
+  const W = 960
+  const padX = 8
+  const padTop = 26
+  const priceAreaH = 254
+  const volAreaH = 44
+  const volGap = 6
+  const priceTop = padTop
+  const priceBot = padTop + priceAreaH
+  const volTop = priceBot + volGap
+  const volBot = volTop + volAreaH
+  const H = volBot + 4   // 334
+
+  const allHighs = data.map(c => c.high)
+  const allLows  = data.map(c => c.low)
+  const priceMax = Math.max(...allHighs)
+  const priceMin = Math.min(...allLows)
+  const spread   = Math.max(priceMax - priceMin, priceMin * 0.001, 1e-12)
+  const pricePad  = spread * 0.06
+  const dispMax  = priceMax + pricePad
+  const dispMin  = priceMin - pricePad
+  const dispSpread = dispMax - dispMin
+  const yP = (v: number) => priceTop + ((dispMax - v) / dispSpread) * priceAreaH
+
+  const n      = data.length
+  const slotW  = (W - padX * 2) / n
+  const bodyW  = Math.max(2, slotW * 0.68)
+  const wickW  = Math.max(1, Math.min(1.5, slotW * 0.14))
+  const xC     = (i: number) => padX + (i + 0.5) * slotW
+
+  const hasVolume = data.some(c => (c.volume ?? 0) > 0)
+  const maxVol    = hasVolume ? Math.max(...data.map(c => c.volume ?? 0)) : 0
+
+  const first = data[0]
+  const last  = data[n - 1]
+  const deltaPct = first.close > 0 ? ((last.close - first.close) / first.close) * 100 : null
+
+  const hoverCandle = hoverIdx != null ? data[hoverIdx] : null
+
+  const guideYs = [0, 0.25, 0.5, 0.75, 1].map(r => priceTop + r * priceAreaH)
+
+  const onMove = (clientX: number, rect: DOMRect) => {
+    const svgX = (clientX - rect.left) * (W / rect.width)
+    setHoverIdx(Math.max(0, Math.min(n - 1, Math.floor((svgX - padX) / slotW))))
+  }
+
+  const fmtTs = (ts: string) => {
+    const d = new Date(ts)
+    if (timeframe === '24h') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    if (timeframe === '30d') return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+    const diffDays = (Date.now() - d.getTime()) / 86400000
+    return diffDays < 2
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  }
+
+  return (
+    <div style={{ position: 'relative' }}
+      onMouseLeave={() => setHoverIdx(null)}
+      onMouseMove={e => onMove(e.clientX, e.currentTarget.getBoundingClientRect())}
+      onTouchMove={e => onMove(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
+      onTouchStart={e => onMove(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
+    >
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'clamp(240px, 32vw, 340px)', display: 'block' }}>
+        <defs>
+          <clipPath id="ccPriceClip"><rect x={padX} y={priceTop} width={W - padX * 2} height={priceAreaH} /></clipPath>
+          <clipPath id="ccVolClip"><rect x={padX} y={volTop} width={W - padX * 2} height={volAreaH} /></clipPath>
+        </defs>
+
+        {/* Horizontal grid */}
+        {guideYs.map((y, i) => (
+          <line key={i} x1={padX} y1={y} x2={W - padX} y2={y} stroke="rgba(148,163,184,0.12)" strokeWidth="1" />
+        ))}
+
+        {/* Candles + volume */}
+        <g clipPath="url(#ccPriceClip)">
+          {data.map((c, i) => {
+            const x     = xC(i)
+            const bull  = c.close >= c.open
+            const clr   = bull ? '#2dd4bf' : '#f87171'
+            const yH    = yP(c.high)
+            const yL    = yP(c.low)
+            const yO    = yP(c.open)
+            const yCl   = yP(c.close)
+            const bTop  = Math.min(yO, yCl)
+            const bBot  = Math.max(yO, yCl)
+            const bH    = Math.max(2, bBot - bTop)
+            return (
+              <g key={i} opacity={hoverIdx != null && i !== hoverIdx ? 0.55 : 1}>
+                <line x1={x} y1={yH} x2={x} y2={yL} stroke={clr} strokeWidth={wickW} />
+                <rect x={x - bodyW / 2} y={bTop} width={bodyW} height={bH} fill={clr} opacity={bull ? 0.88 : 0.82} rx={slotW > 10 ? 1 : 0} />
+              </g>
+            )
+          })}
+        </g>
+
+        {/* Hover crosshairs */}
+        {hoverIdx != null && (() => {
+          const hx = xC(hoverIdx)
+          return <>
+            <line x1={hx} y1={priceTop} x2={hx} y2={priceBot} stroke="rgba(148,163,184,0.38)" strokeDasharray="3 3" strokeWidth="1" />
+            {hoverCandle && <line x1={padX} y1={yP(hoverCandle.close)} x2={W - padX} y2={yP(hoverCandle.close)} stroke="rgba(148,163,184,0.22)" strokeDasharray="3 3" strokeWidth="1" />}
+          </>
+        })()}
+
+        {/* Volume bars */}
+        {hasVolume && (
+          <g clipPath="url(#ccVolClip)">
+            {data.map((c, i) => {
+              const vol = c.volume ?? 0
+              if (!vol || !maxVol) return null
+              const bH = (vol / maxVol) * volAreaH
+              return (
+                <rect key={i} x={xC(i) - bodyW / 2} y={volBot - bH} width={bodyW} height={bH}
+                  fill={c.close >= c.open ? 'rgba(45,212,191,0.32)' : 'rgba(248,113,113,0.32)'} />
+              )
+            })}
+          </g>
+        )}
+
+        {/* Price labels */}
+        <text x={padX + 2} y={priceTop - 6} fill="#475569" style={{ fontSize: 11 }}>H {fmtPrice(priceMax)}</text>
+        <text x={W - padX - 2} y={priceTop - 6} textAnchor="end" fill="#475569" style={{ fontSize: 11 }}>L {fmtPrice(priceMin)}</text>
+        {hasVolume && <text x={padX + 2} y={volTop + 12} fill="#334155" style={{ fontSize: 9.5, letterSpacing: '0.08em' }}>VOL</text>}
+      </svg>
+
+      {/* Latest price badge */}
+      <div style={{ position: 'absolute', top: '8px', right: '10px', border: '1px solid rgba(167,139,250,0.46)', background: 'rgba(15,23,42,0.84)', borderRadius: '999px', padding: '4px 10px', color: '#e2e8f0', fontSize: '11px', fontWeight: 700, pointerEvents: 'none' }}>
+        {fmtPrice(last.close)}
+      </div>
+
+      {/* OHLCV hover tooltip */}
+      {hoverCandle && (
+        <div style={{ position: 'absolute', left: '10px', bottom: '28px', border: '1px solid rgba(45,212,191,0.32)', background: 'rgba(2,6,23,0.92)', borderRadius: '10px', padding: '8px 11px', pointerEvents: 'none', zIndex: 2, minWidth: '130px' }}>
+          <div style={{ color: '#64748b', fontSize: '10px', marginBottom: '5px' }}>{fmtTs(hoverCandle.timestamp)}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 8px', fontSize: '11px', color: '#cbd5e1' }}>
+            <span style={{ color: '#475569' }}>O</span><span>{fmtPrice(hoverCandle.open)}</span>
+            <span style={{ color: '#475569' }}>H</span><span style={{ color: '#2dd4bf' }}>{fmtPrice(hoverCandle.high)}</span>
+            <span style={{ color: '#475569' }}>L</span><span style={{ color: '#f87171' }}>{fmtPrice(hoverCandle.low)}</span>
+            <span style={{ color: '#475569' }}>C</span><span style={{ color: hoverCandle.close >= hoverCandle.open ? '#2dd4bf' : '#f87171', fontWeight: 700 }}>{fmtPrice(hoverCandle.close)}</span>
+            {(hoverCandle.volume ?? 0) > 0 && (
+              <><span style={{ color: '#475569' }}>V</span><span style={{ color: '#94a3b8' }}>{fmtLarge(hoverCandle.volume!)}</span></>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Bottom row: start time / delta / end time */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#94a3b8', marginTop: '5px' }}>
+        <span>{fmtTs(first.timestamp)}</span>
+        <span style={{ color: deltaPct == null ? '#94a3b8' : deltaPct >= 0 ? '#2dd4bf' : '#f87171' }}>
+          Δ {deltaPct == null ? 'N/A' : fmtPct(deltaPct)}
+        </span>
+        <span>{fmtTs(last.timestamp)}</span>
+      </div>
+    </div>
+  )
+}
+
 function humanizeReasonCode(reason?: string): string {
   if (!reason) return 'Additional verification is required.'
   const map: Record<string, string> = {
@@ -878,6 +1058,66 @@ function StatCard({ label, value, accent, helper }: { label: string; value: stri
         {value}
       </p>
       {helper && <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{helper}</p>}
+    </div>
+  )
+}
+
+// ─── Project Socials Card ─────────────────────────────────────────────────
+
+type SocialLink = { href: string; label: string; abbr: string; color: string }
+
+function ProjectSocialsCard({ socials }: { socials: ScanResult['projectSocials'] }) {
+  if (!socials) return null
+
+  const links: SocialLink[] = [
+    socials.website   ? { href: socials.website,   label: 'Website',  abbr: 'WEB',  color: '#2DD4BF' } : null,
+    socials.twitter   ? { href: socials.twitter,   label: 'X / Twitter', abbr: 'X', color: '#60a5fa' } : null,
+    socials.telegram  ? { href: socials.telegram,  label: 'Telegram', abbr: 'TG',   color: '#38bdf8' } : null,
+    socials.discord   ? { href: socials.discord,   label: 'Discord',  abbr: 'DC',   color: '#a78bfa' } : null,
+    socials.github    ? { href: socials.github,    label: 'GitHub',   abbr: 'GH',   color: '#94a3b8' } : null,
+  ].filter((l): l is SocialLink => l !== null)
+
+  return (
+    <div style={{
+      marginBottom: '22px', padding: '14px 16px',
+      background: 'linear-gradient(135deg,rgba(10,18,34,.95),rgba(3,8,19,.90))',
+      border: '1px solid rgba(45,212,191,0.14)', borderRadius: '14px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: links.length > 0 ? '12px' : 0 }}>
+        <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+          Indexed Project Links
+        </span>
+        {links.length === 0 && (
+          <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+            No official project links indexed in this pass.
+          </span>
+        )}
+      </div>
+      {links.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+          {links.map((lk) => (
+            <a
+              key={lk.label}
+              href={lk.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '5px',
+                padding: '5px 11px', borderRadius: '999px', textDecoration: 'none',
+                border: `1px solid ${lk.color}28`,
+                background: `${lk.color}0d`,
+                color: lk.color,
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
+                fontFamily: 'var(--font-plex-mono)',
+                transition: 'background 0.14s, border-color 0.14s',
+              }}
+            >
+              <span style={{ fontSize: '8px', opacity: 0.7 }}>{lk.abbr}</span>
+              {lk.label}
+            </a>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -2279,14 +2519,21 @@ export default function TerminalTokenScanner() {
     }
     if (loading || resolving) return
 
+    // ── Stale-state reset — runs on every new scan regardless of path ────────
+    setResolverResult(null)
+    setResult(null)
+    setError(null)
+    setDevIntel(null)
+    setDevIntelError(null)
+    devIntelCacheRef.current = {}  // clear cached devIntel so no stale data bleeds across scans
+    // ────────────────────────────────────────────────────────────────────────
+
     // ── Ticker resolver ─────────────────────────────────────────────────────
-    // Skip if: CA provided directly, or override from URL auto-scan
+    // Skip if: CA provided directly, or override from URL auto-scan / alternate picker
     let scanContract = q
     let scanChain: 'base' | 'eth' = effectiveChain
     if (!override && !isContractAddress(q)) {
       setResolving(true)
-      setResolverResult(null)
-      setError(null)
       try {
         const resolved = await resolveTokenQuery(q, effectiveChain)
         setResolverResult(resolved)
@@ -2305,17 +2552,23 @@ export default function TerminalTokenScanner() {
     }
     // ────────────────────────────────────────────────────────────────────────
 
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[scanner] scan start', {
+        originalInput: q,
+        resolvedAddress: scanContract,
+        resolvedChain: scanChain,
+        isCA: isContractAddress(q),
+        hasOverride: !!override,
+      })
+    }
+
     setLoading(true)
     setClarkLoading(true)
-    setError(null)
-    setResult(null)
     setLpExpanded(true)
     setActiveSection('cortex-read')
     setDevControlTab('dev-map')
     setClarkVerdict(null)
     setClarkError(null)
-    setDevIntel(null)
-    setDevIntelError(null)
     try {
       const debugHolder = typeof window !== 'undefined'
         && new URLSearchParams(window.location.search).get('debugHolder') === 'true'
@@ -2328,13 +2581,19 @@ export default function TerminalTokenScanner() {
       })
       const json = await res.json()
       if (process.env.NODE_ENV !== 'production') {
-        console.log('[scanner] /api/token response', json)
+        console.log('[scanner] /api/token response', {
+          scanRequestAddress: scanContract,
+          scanRequestChain: scanChain,
+          returnedContract: json.contract,
+          hasDevIntel: !!json.devIntel,
+          deployerAddress: (json.devIntel as Record<string, unknown> | undefined)?.deployerAddress ?? null,
+        })
       }
       if (!res.ok || json.error) {
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid address format. Expected 0x followed by 40 hex characters.')
-        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${effectiveChain === 'eth' ? 'Ethereum' : 'Base'}. Try switching chains.`)
+        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${scanChain === 'eth' ? 'Ethereum' : 'Base'}. Try switching chains.`)
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
-        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${effectiveChain === 'eth' ? 'Ethereum' : 'Base'} for this token.`)
+        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${scanChain === 'eth' ? 'Ethereum' : 'Base'} for this token.`)
         else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
         setClarkLoading(false)
       } else {
@@ -2390,6 +2649,8 @@ export default function TerminalTokenScanner() {
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
           chartStatus: json.chartStatus ?? null,
+          chartSource: json.chartSource ?? null,
+          chartReason: json.chartReason ?? null,
           chartDataSource: json.chartDataSource ?? null,
           resolvedInput: json.resolvedInput ?? null,
           riskEngine: json.riskEngine ?? null,
@@ -2402,7 +2663,7 @@ export default function TerminalTokenScanner() {
         if (json.devIntel) {
           const tokenDevIntel = json.devIntel as DevWalletIntel
           setDevIntel(tokenDevIntel)
-          const devCacheChain = (mapped.chain === 'eth' ? 'eth' : (mapped.chain === 'base' ? 'base' : effectiveChain))
+          const devCacheChain = (mapped.chain === 'eth' ? 'eth' : (mapped.chain === 'base' ? 'base' : scanChain))
           if (mapped.contract) devIntelCacheRef.current[`${devCacheChain}:${mapped.contract.toLowerCase()}`] = tokenDevIntel
         }
         if (typeof window !== 'undefined' && json._debug) {
@@ -3040,37 +3301,47 @@ export default function TerminalTokenScanner() {
                   )}
                   {result.chartStatus === 'ok' && result.priceChart && result.priceChart.points.length >= 2 && (
                     <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
                         <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                        <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          {result.chartSource === 'trade_reconstructed' && (
+                            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', textTransform: 'uppercase' }}>
+                              Reconstructed from recent swaps
+                            </span>
+                          )}
+                          <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>{result.priceChart.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}</p>
+                        </div>
                       </div>
-                      <div style={{ display: 'inline-flex', marginBottom: '8px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
-                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : '7D'}
+                      <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
+                        {result.priceChart.timeframe === '24h' ? '24H' : result.priceChart.timeframe === '48h' ? '48H' : result.priceChart.timeframe === '7d' ? '7D' : '30D'}
                       </div>
-                      <MiniPriceChart points={result.priceChart.points} />
+                      <CandlestickChart candles={result.priceChart.points} timeframe={result.priceChart.timeframe} />
                     </div>
                   )}
-                  {result.chartStatus === 'no_candles' && (
+                  {(result.chartStatus === 'snapshot_only' || result.chartStatus === 'no_candles' || result.chartStatus === 'fallback_snapshot_only') && (
                     <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                      <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not available for this pool. Current price and market data are still live.</p>
-                    </div>
-                  )}
-                  {result.chartStatus === 'fallback_snapshot_only' && (
-                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'baseline', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'baseline', flexWrap: 'wrap', marginBottom: '12px' }}>
                         <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#2DD4BF', textTransform: 'uppercase' }}>Live Market Snapshot</p>
-                        <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)' }}>CORTEX MARKET READ</span>
+                        {result.marketDataSource === 'fallback' && (
+                          <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)', flexShrink: 0 }}>CORTEX MARKET READ</span>
+                        )}
                       </div>
-                      <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical chart data is unavailable for this pool. Showing the latest live market snapshot instead.</p>
+                      <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not indexed for this pool yet. Current price and market data are live.</p>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '10px' }}>
-                        <StatCard label="Price" value={fmtPrice(result.price)} />
+                        <StatCard label="Price" value={fmtPrice(result.price)} accent="#2DD4BF" />
                         <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} />
                         <StatCard label="24H Volume" value={fmtLarge(result.volume24h)} />
                         <StatCard label="24H Change" value={fmtPct(result.priceChange24h)} accent={result.priceChange24h != null ? (result.priceChange24h >= 0 ? '#34d399' : '#f87171') : undefined} />
                         {result.poolActivity?.pairAgeLabel != null && <StatCard label="Pair Age" value={result.poolActivity.pairAgeLabel} />}
+                        {result.primaryDexName != null && <StatCard label="Protocol" value={result.primaryDexName} />}
                         {result.fdv != null && <StatCard label="FDV" value={fmtLarge(result.fdv)} helper="Fully diluted valuation" />}
                       </div>
+                    </div>
+                  )}
+                  {(result.chartStatus === 'unavailable_with_reason' || result.chartStatus === 'partial') && (
+                    <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                      <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Chart data unavailable — no active indexed pools found for this token.</p>
                     </div>
                   )}
                   {!result.noActivePools && result.marketDataSource !== 'fallback' && (
@@ -3084,6 +3355,8 @@ export default function TerminalTokenScanner() {
                       </div>
                     </div>
                   )}
+                  {/* Project Socials — always rendered when scan returns projectSocials */}
+                  <ProjectSocialsCard socials={result.projectSocials} />
                 </>
               )}
 
@@ -3738,7 +4011,8 @@ export default function TerminalTokenScanner() {
               {activeSection === 'deployer-intel' && (() => {
                 const holderState = deriveHolderState(result)
                 const activeDevIntel = devIntel ?? result.devIntel ?? null
-                const creatorAddress = activeDevIntel?.deployerAddress ?? result.security?.devOwnership?.ownerAddress ?? result.security?.devOwnership?.adminAddress ?? null
+                const _safeActorAddr = (a: unknown): string | null => typeof a === 'string' && /^0x[a-f0-9]{40}$/i.test(a) && a.toLowerCase() !== '0x0000000000000000000000000000000000000000' ? a : null
+                const creatorAddress = _safeActorAddr(activeDevIntel?.deployerAddress) ?? _safeActorAddr(result.security?.devOwnership?.ownerAddress) ?? _safeActorAddr(result.security?.devOwnership?.adminAddress) ?? null
                 const creatorStatus = activeDevIntel?.deployerStatus === 'confirmed' ? 'confirmed' : activeDevIntel?.deployerStatus === 'possible_match' ? 'likely' : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
                 const linkedWallets = activeDevIntel?.linkedWallets ?? []
                 const linkedWalletCount = linkedWallets.length
