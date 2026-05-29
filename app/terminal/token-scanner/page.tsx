@@ -909,8 +909,10 @@ function normalizeHolderProviderStatus(
 
 function holderSafeReason(
   providerStatus: HolderProviderStatus,
-  hasRows: boolean
+  hasRows: boolean,
+  reason?: string | null
 ): string {
+  if (reason === 'holder_percentages_failed_sanity_check') return 'Holder rows were indexed, but concentration percentages failed validation.'
   if (hasRows) return 'Holder data available.'
   if (providerStatus === 'partial') return 'Holder data partial — limited data available.'
   if (providerStatus === 'error' || providerStatus === 'unavailable_with_reason') return 'Holder data open check — no rows returned by provider. Verify via block explorer.'
@@ -920,8 +922,10 @@ function holderSafeReason(
 function deriveHolderState(result: ScanResult): DerivedHolderState {
   const rows = result.holderDistribution?.topHolders ?? []
   const hasRows = rows.length > 0
-  const hasPercentages = rows.some(r => r.percent != null)
   const providerStatus = normalizeHolderProviderStatus(result.holderDistributionStatus)
+  const reason = result.holderDistributionStatus?.reason ?? null
+  const percentagesFailedSanity = reason === 'holder_percentages_failed_sanity_check'
+  const hasPercentages = !percentagesFailedSanity && rows.some(r => r.percent != null)
   const kind: HolderStateKind = !hasRows
     ? 'noRowsFallback'
     : hasPercentages
@@ -930,7 +934,7 @@ function deriveHolderState(result: ScanResult): DerivedHolderState {
   return {
     kind,
     providerStatus,
-    safeReason: holderSafeReason(providerStatus, hasRows),
+    safeReason: holderSafeReason(providerStatus, hasRows, reason),
     rows,
     hasPercentages,
   }
@@ -3391,7 +3395,7 @@ export default function TerminalTokenScanner() {
                                 {concRisk != null && <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${concColor}44`, color: concColor, background: `${concColor}10` }}>{concRisk} CONC</span>}
                               </div>
                               {result.holderDistribution?.holderCount != null && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
-                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>Holder rows found — concentration percentages unavailable. Addresses and amounts shown below.</p>}
+                              {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>{holderState.safeReason} Addresses and amounts shown below.</p>}
                               {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
                                 {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
                                   <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 64px', alignItems: 'center', gap: '10px' }}>
