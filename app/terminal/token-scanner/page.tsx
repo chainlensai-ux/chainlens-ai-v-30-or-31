@@ -3757,7 +3757,8 @@ export default function TerminalTokenScanner() {
               {activeSection === 'deployer-intel' && (() => {
                 const holderState = deriveHolderState(result)
                 const activeDevIntel = devIntel ?? result.devIntel ?? null
-                const creatorAddress = activeDevIntel?.deployerAddress ?? result.security?.devOwnership?.ownerAddress ?? result.security?.devOwnership?.adminAddress ?? null
+                const _safeActorAddr = (a: unknown): string | null => typeof a === 'string' && /^0x[a-f0-9]{40}$/i.test(a) && a.toLowerCase() !== '0x0000000000000000000000000000000000000000' ? a : null
+                const creatorAddress = _safeActorAddr(activeDevIntel?.deployerAddress) ?? _safeActorAddr(result.security?.devOwnership?.ownerAddress) ?? _safeActorAddr(result.security?.devOwnership?.adminAddress) ?? null
                 const creatorStatus = activeDevIntel?.deployerStatus === 'confirmed' ? 'confirmed' : activeDevIntel?.deployerStatus === 'possible_match' ? 'likely' : (creatorAddress ? (result.security?.devOwnership?.ownershipVerified ? 'confirmed' : 'likely') : null)
                 const linkedWallets = activeDevIntel?.linkedWallets ?? []
                 const linkedWalletCount = linkedWallets.length

@@ -3364,10 +3364,12 @@ export async function POST(req: Request) {
     const liquidityReason = mainPool ? null : (_dexFb?.liquidityUsd != null ? "liquidity_from_fallback_market_read" : "no_active_liquidity_pool_found");
     const ownerCall = _ownerHexForLp ?? alchemyMandatoryReads[0] ?? alchemyMandatoryReads[1] ?? alchemyMandatoryReads[2] ?? alchemyMandatoryReads[3] ?? await countedRpcCall('eth_call', [{ to: contract, data: '0x8da5cb5b' }, 'latest'], 'ownerCheck', false)
     let ownerAddr = ownerCall && ownerCall.length >= 42 ? `0x${ownerCall.slice(-40)}`.toLowerCase() : null
-    // Deployer fallback: extract from Moralis mint transfer when RPC selectors all return null.
-    // A mint event (from=0x0) points to the initial recipient — the deployer's distribution wallet.
+    // Deployer fallback: extract from Moralis mint transfer when RPC selectors all return null OR when
+    // owner() returned zero (renounced). A mint event (from=0x0) points to the initial recipient —
+    // the deployer's distribution wallet. When renounced (ownerAddr=zero), we still want Dev Control
+    // to identify the original deployer; we do NOT overwrite ownerAddr so isRenounced stays correct.
     let _ownerFromTransfer: string | null = null
-    if (!ownerAddr && Array.isArray(moralisTransfersRaw?.result) && (moralisTransfersRaw.result as any[]).length > 0) {
+    if ((!ownerAddr || ownerAddr === '0x0000000000000000000000000000000000000000') && Array.isArray(moralisTransfersRaw?.result) && (moralisTransfersRaw.result as any[]).length > 0) {
       const _ZERO = '0x0000000000000000000000000000000000000000'
       const _mints = (moralisTransfersRaw.result as any[]).filter((t: any) =>
         typeof t.from_address === 'string' && t.from_address.toLowerCase() === _ZERO &&
@@ -3376,7 +3378,7 @@ export async function POST(req: Request) {
       if (_mints.length > 0) {
         const _earliest = _mints.sort((a: any, b: any) => parseInt(a.block_number ?? '0') - parseInt(b.block_number ?? '0'))[0]
         _ownerFromTransfer = _earliest.to_address?.toLowerCase() ?? null
-        ownerAddr = _ownerFromTransfer
+        if (!ownerAddr) ownerAddr = _ownerFromTransfer // only set ownerAddr when truly null; zero stays zero to preserve isRenounced
       }
     }
     // Ownership / control derivation — RPC-sourced admin and proxy implementation
@@ -3389,7 +3391,8 @@ export async function POST(req: Request) {
     // If RPC wasn't configured, ownerAddr is null but we haven't verified anything.
     const rpcOwnershipAttempted = alchemyConfigured
     const isRenounced = rpcOwnershipAttempted && (!ownerAddr || ownerAddr === _ZERO_ADDR)
-    const ownershipVerified = rpcOwnershipAttempted && Boolean(ownerAddr || adminAddr)
+    // ownerAddr=zero (renounced) does not count as verified — a zero string is truthy but meaningless
+    const ownershipVerified = rpcOwnershipAttempted && Boolean((ownerAddr && ownerAddr !== _ZERO_ADDR) || adminAddr)
     const rpcSupply = await countedRpcCall('eth_call', [{ to: contract, data: '0x18160ddd' }, 'latest'], 'totalSupplyCheck', true)
     const rpcDecimalsHex = await countedRpcCall('eth_call', [{ to: contract, data: '0x313ce567' }, 'latest'], 'decimalsCheck', true)
 
@@ -3987,10 +3990,12 @@ export async function POST(req: Request) {
     const normalizeActorAddress = (value: string | null | undefined): string | null => {
       if (typeof value !== 'string') return null
       const trimmed = value.trim().toLowerCase()
-      return /^0x[a-f0-9]{40}$/.test(trimmed) && trimmed !== _ZERO_ADDR ? trimmed : null
+      return /^0x[a-f0-9]{40}$/.test(trimmed) && trimmed !== _ZERO_ADDR && trimmed !== DEAD_ADDRESS ? trimmed : null
     }
     const ethOriginCandidate = normalizeActorAddress(ethOriginDiscovery?.candidate.address ?? null)
-    const deployerAddress = chain === 'eth' ? ethOriginCandidate : normalizeActorAddress(ownerAddr)
+    // For Base: prefer ownerAddr (current owner/control wallet); fall back to _ownerFromTransfer
+    // (initial mint recipient) when ownerAddr is null or zero (renounced).
+    const deployerAddress = chain === 'eth' ? ethOriginCandidate : (normalizeActorAddress(ownerAddr) ?? normalizeActorAddress(_ownerFromTransfer))
     const ethLinkedWalletResult = chain === 'eth' && deployerAddress
       ? await findTokenLinkedWallets(chain, deployerAddress, contract)
       : null
@@ -4293,7 +4298,7 @@ export async function POST(req: Request) {
         // resolveContractFlags: ABI scan (GoldRush) with bytecode fallback
         contractFlags: resolveContractFlags(grContractIntel, cortexContractFlags),
         devOwnership: {
-          ownerAddress: ownerAddr ?? null,
+          ownerAddress: (ownerAddr && ownerAddr !== _ZERO_ADDR) ? ownerAddr : null,
           adminAddress: adminAddr ?? null,
           isRenounced,
           ownershipVerified,
@@ -4708,6 +4713,15 @@ export async function POST(req: Request) {
           methodUsed: devMethodUsed,
           originReason: devOriginReason,
           supplyControlReason: devClusterSupplyReason,
+          // Dev Control canonical deployer tracing
+          devControlDeployerAddress: deployerAddress,
+          devControlDeployerSource: devMethodUsed,
+          devIntelDeployerAddress: deployerAddress,
+          clusterMapDeployerNodePresent: clusterMap.nodes.some((n) => n.type === 'deployer'),
+          supplyControlActorChecked: Boolean(deployerAddress || linkedWallets.length > 0),
+          holderRowsUsable: holderRowsConfirmed,
+          devClusterSupplyPercent,
+          lineageHasDeployer: clusterMap.summary.deployerAddress !== null,
         },
         dexFallbackTest: forceDexFallback ? {
           forced: true,
