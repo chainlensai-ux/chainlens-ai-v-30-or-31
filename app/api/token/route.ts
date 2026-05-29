@@ -271,7 +271,57 @@ type HolderDistributionStatus = {
   reason: string
   itemCount: number
   normalizedCount: number
-  percentSource: "provider" | "calculated" | "inferred"
+  percentSource: "provider" | "calculated" | "reconstructed" | "inferred"
+}
+
+type EvidenceConfidence = "high" | "medium" | "low"
+type NormalizedTransfer = {
+  txHash: string
+  blockNumber: number | null
+  timestamp: number | null
+  from: string
+  to: string
+  amountRaw: string | null
+  amountFormatted?: number | null
+  tokenAddress: string
+  isBuy?: boolean
+  isSell?: boolean
+  source?: string
+  confidence?: EvidenceConfidence
+}
+type TransferResolverResult = {
+  transfers: NormalizedTransfer[]
+  insufficientEvidence: boolean
+  sourceTrail: string[]
+  reason?: string
+  fallbackUsed?: string
+  confidence: EvidenceConfidence
+}
+type NormalizedHolderRow = {
+  address: string
+  balanceRaw: string | null
+  balanceFormatted?: number | null
+  pctOfSupply?: number | null
+  isContract?: boolean
+  source?: string
+  confidence?: EvidenceConfidence
+}
+type HolderResolverResult = {
+  holders: NormalizedHolderRow[]
+  insufficientEvidence: boolean
+  sourceTrail: string[]
+  reason?: string
+  fallbackUsed?: string
+  confidence: EvidenceConfidence
+}
+
+function buildInsufficientEvidenceBlock(reason: string, fallbackUsed?: string) {
+  return {
+    insufficientEvidence: true,
+    reason,
+    fallbackUsed: fallbackUsed ?? "none",
+    confidence: "low" as const,
+  }
 }
 
 type EvidenceConfidence = "high" | "medium" | "low"
@@ -476,6 +526,69 @@ function normalizeHolderPercent(v: unknown): number | null {
   if (n == null || n < 0 || n > 100) return null
   if (n > 0 && n <= 1) return n * 100
   return n
+}
+
+type HolderSanityResult = {
+  sane: boolean
+  failedReason: string | null
+  top1: number | null
+  top5: number | null
+  top10: number | null
+  top20: number | null
+}
+
+function holderPercentTotals(rows: Array<{ percent?: number | null }>): Pick<HolderSanityResult, 'top1' | 'top5' | 'top10' | 'top20'> {
+  const sum = (n: number) => rows.slice(0, n).reduce((acc, row) => acc + (typeof row.percent === 'number' && Number.isFinite(row.percent) ? row.percent : 0), 0)
+  return {
+    top1: rows.length > 0 ? sum(1) : null,
+    top5: rows.length > 0 ? sum(5) : null,
+    top10: rows.length > 0 ? sum(10) : null,
+    top20: rows.length > 0 ? sum(20) : null,
+  }
+}
+
+function validateHolderPercentSanity(rows: Array<{ percent?: number | null }>): HolderSanityResult {
+  const percentRows = rows.filter((row) => typeof row.percent === 'number' && Number.isFinite(row.percent))
+  const totals = holderPercentTotals(rows)
+  const epsilon = 0.0001
+  if (percentRows.length === 0) return { sane: true, failedReason: null, ...totals }
+  if (percentRows.some((row) => (row.percent ?? 0) < 0 || (row.percent ?? 0) > 100 + epsilon)) {
+    return { sane: false, failedReason: 'holder_percent_over_100', ...totals }
+  }
+  if ((totals.top5 ?? 0) > 100 + epsilon) return { sane: false, failedReason: 'top5_over_100', ...totals }
+  if ((totals.top10 ?? 0) > 100 + epsilon) return { sane: false, failedReason: 'top10_over_100', ...totals }
+  if ((totals.top20 ?? 0) > 100 + epsilon) return { sane: false, failedReason: 'top20_over_100', ...totals }
+  const nearWholeSupplyRows = percentRows.filter((row) => (row.percent ?? 0) >= 99).length
+  if (nearWholeSupplyRows > 1) return { sane: false, failedReason: 'duplicate_near_100_percent_rows', ...totals }
+  const hugeRows = percentRows.filter((row) => (row.percent ?? 0) >= 50).length
+  if (hugeRows > 2) return { sane: false, failedReason: 'multiple_huge_holder_percentages', ...totals }
+  return { sane: true, failedReason: null, ...totals }
+}
+
+function clearHolderPercentages(rows: Array<{ percent?: number | null }>) {
+  for (const row of rows) row.percent = null
+}
+
+function deriveHolderPercentagesFromSupply(rows: Array<{ address: string; percent: number | null }>, rawBalanceByAddress: Map<string, unknown>, totalSupplyBig: bigint): number {
+  let derivedCount = 0
+  if (totalSupplyBig <= BigInt(0)) return derivedCount
+  for (const holder of rows) {
+    const rawBal = rawBalanceByAddress.get(holder.address.toLowerCase())
+    if (rawBal == null) continue
+    const rawStr = String(rawBal)
+    if (rawStr === '' || rawStr.includes('.') || /[eE]/.test(rawStr)) continue
+    try {
+      const balBig = BigInt(rawStr)
+      if (balBig < BigInt(0)) continue
+      const pct = Number(balBig * BigInt(1_000_000) / totalSupplyBig) / 10_000
+      if (Number.isFinite(pct) && pct >= 0 && pct <= 100) {
+        holder.percent = pct
+        derivedCount += 1
+      }
+    } catch {}
+  }
+  if (derivedCount > 0) rows.sort((a, b) => (b.percent ?? 0) - (a.percent ?? 0))
+  return derivedCount
 }
 
 function getClusterInfluenceDominance(clusterSupplyPercent: number | null): ClusterInfluence["clusterDominance"] {
@@ -1541,137 +1654,6 @@ function reconstructCandlesFromTrades(
   return { candles: candles.length >= 2 ? candles : [], rawTradeCount: trades.length, validTradePriceCount: points.length, rejectedTradeReasons }
 }
 
-// ─── Project Socials Extractor ─────────────────────────────────────────────
-// Extracts indexed project links from existing metadata responses.
-// No new providers. No invented links. Handles only data already in scope.
-type ProjectSocialsResult = {
-  website: string | null
-  twitter: string | null
-  telegram: string | null
-  discord: string | null
-  github: string | null
-  sourceTrail: string[]
-  status: 'verified' | 'partial' | 'unavailable_with_reason'
-  reason?: string
-}
-
-function _isValidSocialUrl(raw: unknown): raw is string {
-  if (typeof raw !== 'string' || !raw.trim()) return false
-  try {
-    const u = new URL(raw.trim())
-    return u.protocol === 'http:' || u.protocol === 'https:'
-  } catch { return false }
-}
-
-function _toTwitterUrl(raw: unknown): string | null {
-  if (typeof raw !== 'string' || !raw.trim()) return null
-  const s = raw.trim()
-  if (s.startsWith('http')) return _isValidSocialUrl(s) ? s : null
-  const handle = s.replace(/^@/, '').replace(/[^a-zA-Z0-9_]/g, '')
-  return handle.length >= 1 && handle.length <= 50 ? `https://twitter.com/${handle}` : null
-}
-
-function _toTelegramUrl(raw: unknown): string | null {
-  if (typeof raw !== 'string' || !raw.trim()) return null
-  const s = raw.trim()
-  if (s.startsWith('http')) return _isValidSocialUrl(s) ? s : null
-  const handle = s.replace(/^@/, '').replace(/[^a-zA-Z0-9_]/g, '')
-  return handle.length >= 3 ? `https://t.me/${handle}` : null
-}
-
-function extractProjectSocials(
-  gtToken: Record<string, unknown> | null,
-  coingeckoRaw: Record<string, unknown> | null,
-  gmgnItem: Record<string, unknown> | null,
-): ProjectSocialsResult & { _foundKeys: string[]; _rejectedCount: number } {
-  const trail: string[] = []
-  const found: Record<'website' | 'twitter' | 'telegram' | 'discord' | 'github', string | null> = {
-    website: null, twitter: null, telegram: null, discord: null, github: null,
-  }
-  const foundKeys: string[] = []
-  let rejectedCount = 0
-
-  const trySet = (field: keyof typeof found, val: string | null, src: string) => {
-    if (!val || found[field]) return
-    found[field] = val
-    foundKeys.push(`${src}:${field}`)
-    if (!trail.includes(src)) trail.push(src)
-  }
-
-  // 1. GeckoTerminal token attributes
-  if (gtToken) {
-    const websites = gtToken.websites
-    if (Array.isArray(websites)) {
-      for (const w of websites) {
-        const url = typeof w === 'string' ? w : (typeof w === 'object' && w !== null ? (w as Record<string, unknown>).url : null)
-        if (_isValidSocialUrl(url)) { trySet('website', url as string, 'geckoterminal'); break }
-        else rejectedCount++
-      }
-    }
-    const disc = gtToken.discord_url
-    if (_isValidSocialUrl(disc) && String(disc).includes('discord')) trySet('discord', disc as string, 'geckoterminal')
-    else if (disc) rejectedCount++
-    const tg = _toTelegramUrl(gtToken.telegram_handle)
-    if (tg) trySet('telegram', tg, 'geckoterminal')
-    else if (gtToken.telegram_handle) rejectedCount++
-    const tw = _toTwitterUrl(gtToken.twitter_handle)
-    if (tw) trySet('twitter', tw, 'geckoterminal')
-    else if (gtToken.twitter_handle) rejectedCount++
-  }
-
-  // 2. CoinGecko
-  if (coingeckoRaw) {
-    const links = coingeckoRaw.links as Record<string, unknown> | null | undefined
-    if (links) {
-      const hp: unknown[] = Array.isArray(links.homepage) ? links.homepage as unknown[] : []
-      for (const h of hp) {
-        if (_isValidSocialUrl(h)) { trySet('website', h as string, 'coingecko'); break }
-        else if (h) rejectedCount++
-      }
-      const tws = _toTwitterUrl(links.twitter_screen_name)
-      if (tws) trySet('twitter', tws, 'coingecko')
-      else if (links.twitter_screen_name) rejectedCount++
-      const tgs = _toTelegramUrl(links.telegram_channel_identifier)
-      if (tgs) trySet('telegram', tgs, 'coingecko')
-      else if (links.telegram_channel_identifier) rejectedCount++
-      const chatUrls: unknown[] = Array.isArray(links.chat_url) ? links.chat_url as unknown[] : []
-      for (const c of chatUrls) {
-        if (_isValidSocialUrl(c) && String(c).includes('discord')) { trySet('discord', c as string, 'coingecko'); break }
-        else if (c) rejectedCount++
-      }
-      const reposUrl = links.repos_url as Record<string, unknown> | null | undefined
-      const ghArr: unknown[] = Array.isArray(reposUrl?.github) ? reposUrl!.github as unknown[] : []
-      for (const g of ghArr) {
-        if (_isValidSocialUrl(g) && String(g).includes('github')) { trySet('github', g as string, 'coingecko'); break }
-        else if (g) rejectedCount++
-      }
-    }
-  }
-
-  // 3. GMGN
-  if (gmgnItem) {
-    const pairs: Array<['website' | 'twitter' | 'telegram' | 'discord' | 'github', unknown, (v: unknown) => string | null]> = [
-      ['website', gmgnItem.website ?? gmgnItem.homepage, (v) => _isValidSocialUrl(v) ? v as string : null],
-      ['twitter', gmgnItem.twitter ?? gmgnItem.twitter_username ?? gmgnItem.twitter_handle, _toTwitterUrl],
-      ['telegram', gmgnItem.telegram ?? gmgnItem.telegram_handle ?? gmgnItem.telegram_url, _toTelegramUrl],
-      ['discord', gmgnItem.discord ?? gmgnItem.discord_url, (v) => (_isValidSocialUrl(v) && String(v).includes('discord')) ? v as string : null],
-      ['github', gmgnItem.github ?? gmgnItem.github_url, (v) => (_isValidSocialUrl(v) && String(v).includes('github')) ? v as string : null],
-    ]
-    for (const [field, raw, fn] of pairs) {
-      const val = fn(raw)
-      if (val) trySet(field, val, 'gmgn')
-      else if (raw) rejectedCount++
-    }
-  }
-
-  const anyFound = Object.values(found).some((v) => v !== null)
-  const status: ProjectSocialsResult['status'] = anyFound
-    ? (found.website != null ? 'verified' : 'partial')
-    : 'unavailable_with_reason'
-  const reason = !anyFound ? 'no_social_links_found_in_indexed_metadata' : undefined
-
-  return { ...found, sourceTrail: trail, status, reason, _foundKeys: foundKeys, _rejectedCount: rejectedCount }
-}
 
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
@@ -3577,11 +3559,38 @@ export async function POST(req: Request) {
       return { rank: i + 1, address, amount, percent }
     }).filter((h: any) => h.address)
 
-    const percentRows = topHolders.filter((h: any) => h.percent != null)
+    let percentRows = topHolders.filter((h: any) => h.percent != null)
     let hasPct = percentRows.length > 0
     const anyProviderPct = holderPctFromProvider.some(Boolean)
-    let percentSource: 'provider' | 'calculated' | 'inferred' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'inferred'
-    console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct, '[holders] pct source', percentSource)
+    let percentSource: 'provider' | 'calculated' | 'reconstructed' | 'inferred' = hasPct ? (anyProviderPct ? 'provider' : 'calculated') : 'inferred'
+    const providerSanity = validateHolderPercentSanity(topHolders)
+    const holderSanityDebug: {
+      providerTop1: number | null
+      providerTop5: number | null
+      providerTop10: number | null
+      providerTop20: number | null
+      failedReason: string | null
+      reconstructionAttempted: boolean
+      reconstructionSucceeded: boolean
+      finalPercentSource: 'provider' | 'calculated' | 'reconstructed' | 'inferred'
+    } = {
+      providerTop1: providerSanity.top1,
+      providerTop5: providerSanity.top5,
+      providerTop10: providerSanity.top10,
+      providerTop20: providerSanity.top20,
+      failedReason: providerSanity.sane ? null : 'holder_percentages_failed_sanity_check',
+      reconstructionAttempted: false,
+      reconstructionSucceeded: false,
+      finalPercentSource: percentSource,
+    }
+    const holderProviderPercentFailedSanity = hasPct && !providerSanity.sane
+    if (holderProviderPercentFailedSanity) {
+      clearHolderPercentages(topHolders)
+      hasPct = false
+      percentSource = 'inferred'
+      percentRows = []
+    }
+    console.log('[holders] normalized length', topHolders.length, '[holders] percent available', hasPct, '[holders] pct source', percentSource, '[holders] sanity', providerSanity.failedReason ?? 'ok')
     const sum = (n: number) => topHolders.slice(0, n).reduce((acc: number, h: any) => acc + (h.percent ?? 0), 0)
     let top1 = hasPct ? sum(1) : null
     let top5 = hasPct ? sum(5) : null
@@ -3623,7 +3632,7 @@ export async function POST(req: Request) {
     }
 
     // Fallback percent derivation: provider returned holder rows with raw balances but no percentage
-    // field. Try to derive from RPC totalSupply(), then summed returned balances as last resort.
+    // field, or provider percentages failed sanity validation. Try real totalSupply() first.
     let _holderPctDerived = false
     let _holderPctDerivedFromSummedRows = false
     let _holderPctTotalSupplySource: string | null = null
@@ -3640,7 +3649,7 @@ export async function POST(req: Request) {
           try { totalSupplyBig = BigInt(tsHex); _holderPctTotalSupplySource = 'rpc_phase1' } catch {}
         }
       }
-      if ((totalSupplyBig == null || totalSupplyBig <= BigInt(0)) && rawBalanceByAddress.size > 0) {
+      if (!holderProviderPercentFailedSanity && (totalSupplyBig == null || totalSupplyBig <= BigInt(0)) && rawBalanceByAddress.size > 0) {
         let sumBig = BigInt(0)
         for (const rawBal of rawBalanceByAddress.values()) {
           try { sumBig += BigInt(String(rawBal)) } catch {}
@@ -3652,22 +3661,22 @@ export async function POST(req: Request) {
         }
       }
       if (totalSupplyBig != null && totalSupplyBig > BigInt(0)) {
-        let anyDerived = false
-        for (const holder of topHolders as Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>) {
-          const rawBal = rawBalanceByAddress.get(holder.address.toLowerCase())
-          if (rawBal == null) continue
-          try {
-            const balBig = BigInt(String(rawBal))
-            holder.percent = Number(balBig * BigInt(10000) / totalSupplyBig) / 100
-            anyDerived = true
-          } catch {}
-        }
-        if (anyDerived) {
-          topHolders.sort((a: any, b: any) => (b.percent ?? 0) - (a.percent ?? 0))
-          hasPct = true
-          percentSource = 'calculated'
-          top1 = sum(1); top5 = sum(5); top10 = sum(10); top20 = sum(20)
-          _holderPctDerived = true
+        holderSanityDebug.reconstructionAttempted = holderProviderPercentFailedSanity || _holderPctTotalSupplySource !== 'summed_returned_rows'
+        const derivedCount = deriveHolderPercentagesFromSupply(topHolders as Array<{ address: string; percent: number | null }>, rawBalanceByAddress, totalSupplyBig)
+        if (derivedCount > 0) {
+          const reconstructedSanity = validateHolderPercentSanity(topHolders)
+          if (reconstructedSanity.sane) {
+            hasPct = true
+            percentSource = holderProviderPercentFailedSanity ? 'reconstructed' : 'calculated'
+            top1 = sum(1); top5 = sum(5); top10 = sum(10); top20 = sum(20)
+            _holderPctDerived = true
+            holderSanityDebug.reconstructionSucceeded = holderProviderPercentFailedSanity
+          } else {
+            clearHolderPercentages(topHolders)
+            hasPct = false
+            percentSource = 'inferred'
+            top1 = null; top5 = null; top10 = null; top20 = null
+          }
         }
       }
     }
@@ -3678,23 +3687,24 @@ export async function POST(req: Request) {
     }
 
     const normalizedTop = topHolders.slice(0, 200)
+    holderSanityDebug.finalPercentSource = percentSource
     let holderDistribution: HolderDistribution = normalizedTop.length
       ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop }
       : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: holderCount ?? null, topHolders: [] }
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? {
-              status: (_holderSanityFailed && _holderPctDerived) ? 'partial' : (_holderPctDerivedFromSummedRows ? 'partial' : 'ok'),
-              reason: (_holderSanityFailed && _holderPctDerived)
-                ? 'holder_percentages_reconstructed_from_supply'
+              status: percentSource === 'reconstructed' || _holderPctDerivedFromSummedRows ? 'partial' : 'ok',
+              reason: percentSource === 'reconstructed'
+                ? 'holder_percentages_reconstructed_from_total_supply'
                 : _holderPctDerived
-                  ? (_holderPctDerivedFromSummedRows ? 'percentages_estimated_from_returned_rows' : 'percentages_derived_from_rpc_supply')
-                  : 'holder_percentages_verified',
+                ? (_holderPctDerivedFromSummedRows ? 'percentages_estimated_from_returned_rows' : 'percentages_derived_from_rpc_supply')
+                : 'holder_percentages_verified',
               itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource,
             }
           : {
-              status: (_holderSanityFailed ? 'unavailable_with_reason' : 'partial'),
-              reason: _holderSanityFailed ? 'holder_percentages_failed_sanity_check' : 'no_percentages',
+              status: 'partial',
+              reason: holderProviderPercentFailedSanity ? 'holder_percentages_failed_sanity_check' : 'no_percentages',
               itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource,
             })
       : {
@@ -4665,43 +4675,54 @@ export async function POST(req: Request) {
       ? rpcSupply
       : (_holderProviderSupply != null ? String(_holderProviderSupply) : _summedBalanceSupply)
     const _derivationSupplySource: 'rpc' | 'provider' | 'summed' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_holderProviderSupply != null ? 'provider' : (_summedBalanceSupply ? 'summed' : null))
-    if (!hasPct && normalizedTop.length > 0 && _derivationSupply != null) {
+    if (!hasPct && normalizedTop.length > 0 && _derivationSupply != null && (!holderProviderPercentFailedSanity || _derivationSupplySource !== 'summed')) {
       holderDerivationAttempted = true
-      let derivedCount = 0
-      for (const h of normalizedTop as any[]) {
-        if (h.percent != null) continue
-        const rawBal = rawBalanceByAddress.get((h.address ?? '').toLowerCase())
-        if (rawBal == null) continue
-        const rawStr = String(rawBal)
-        // Skip human-readable amounts (already divided) — only process raw integer strings
-        if (rawStr === '' || rawStr.includes('.') || /[eE]/.test(rawStr)) continue
-        const pct = bigIntPct(rawBal, _derivationSupply)
-        if (pct != null && pct > 0 && pct <= 100) {
-          h.percent = Math.round(pct * 10000) / 10000
-          derivedCount++
-        }
-      }
+      holderSanityDebug.reconstructionAttempted = holderSanityDebug.reconstructionAttempted || holderProviderPercentFailedSanity
+      let totalSupplyBig: bigint | null = null
+      try { totalSupplyBig = String(_derivationSupply).startsWith('0x') ? BigInt(String(_derivationSupply)) : BigInt(String(_derivationSupply)) } catch {}
+      const derivedCount = totalSupplyBig != null
+        ? deriveHolderPercentagesFromSupply(normalizedTop as Array<{ address: string; percent: number | null }>, rawBalanceByAddress, totalSupplyBig)
+        : 0
       if (derivedCount > 0) {
-        holderDerivationSucceeded = true
-        hasPct = true
-        percentSource = 'calculated'
-        top1 = sum(1); top5 = sum(5); top10 = sum(10); top20 = sum(20)
-        holderDistribution = {
-          top1, top5, top10, top20,
-          others: top20 != null ? Math.max(0, 100 - top20) : null,
-          holderCount,
-          topHolders: normalizedTop,
-        }
-        holderDistributionStatus = {
-          status: 'ok',
-          reason: _derivationSupplySource === 'provider'
-            ? 'holder_percentages_derived_from_provider_supply'
-            : _derivationSupplySource === 'summed'
-            ? 'holder_percentages_derived_from_summed_balances'
-            : 'holder_percentages_derived_from_rpc_supply',
-          itemCount: holderItems.length,
-          normalizedCount: normalizedTop.length,
-          percentSource,
+        const reconstructedSanity = validateHolderPercentSanity(normalizedTop)
+        if (reconstructedSanity.sane) {
+          holderDerivationSucceeded = true
+          holderSanityDebug.reconstructionSucceeded = holderSanityDebug.reconstructionSucceeded || holderProviderPercentFailedSanity
+          hasPct = true
+          percentSource = holderProviderPercentFailedSanity ? 'reconstructed' : 'calculated'
+          top1 = sum(1); top5 = sum(5); top10 = sum(10); top20 = sum(20)
+          holderDistribution = {
+            top1, top5, top10, top20,
+            others: top20 != null ? Math.max(0, 100 - top20) : null,
+            holderCount,
+            topHolders: normalizedTop,
+          }
+          holderDistributionStatus = {
+            status: holderProviderPercentFailedSanity ? 'partial' : 'ok',
+            reason: holderProviderPercentFailedSanity
+              ? 'holder_percentages_reconstructed_from_total_supply'
+              : _derivationSupplySource === 'provider'
+              ? 'holder_percentages_derived_from_provider_supply'
+              : _derivationSupplySource === 'summed'
+              ? 'holder_percentages_derived_from_summed_balances'
+              : 'holder_percentages_derived_from_rpc_supply',
+            itemCount: holderItems.length,
+            normalizedCount: normalizedTop.length,
+            percentSource,
+          }
+        } else {
+          clearHolderPercentages(normalizedTop)
+          hasPct = false
+          percentSource = 'inferred'
+          top1 = null; top5 = null; top10 = null; top20 = null
+          holderDistribution = { ...holderDistribution, top1, top5, top10, top20, others: null, topHolders: normalizedTop }
+          holderDistributionStatus = {
+            status: 'partial',
+            reason: 'holder_percentages_failed_sanity_check',
+            itemCount: holderItems.length,
+            normalizedCount: normalizedTop.length,
+            percentSource,
+          }
         }
       } else {
         holderDerivationFailureReason = normalizedTop.length > 0
@@ -4709,6 +4730,8 @@ export async function POST(req: Request) {
           : 'no_holder_rows'
       }
     }
+    holderSanityDebug.finalPercentSource = percentSource
+
 
     const rpcName = await rpcTokenString(chain, contract, '0x06fdde03')
     const rpcSymbol = await rpcTokenString(chain, contract, '0x95d89b41')
@@ -4766,7 +4789,7 @@ export async function POST(req: Request) {
     })
     const holderRowsHaveUsablePercents = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
     const holderRowsConfirmed = holderRowsHaveUsablePercents
-    const supplyRowsArePartial = holderDistributionStatus.status === 'partial' || holderDistributionStatus.percentSource === 'calculated'
+    const supplyRowsArePartial = holderDistributionStatus.status === 'partial' || (holderDistributionStatus.percentSource === 'calculated' || holderDistributionStatus.percentSource === 'reconstructed')
     let creatorHolderRank: number | null = null
     let creatorHolderPercent: number | null = null
     let linkedWalletSupplyAccumulator = 0
@@ -5556,6 +5579,7 @@ export async function POST(req: Request) {
           insufficientEvidence: holderResolverResult.insufficientEvidence,
           reason: holderResolverResult.reason ?? null,
         },
+        holderSanityDebug,
         devIntelDiagnostics: {
           originDiscovery: ethOriginDiscovery?.diag ?? null,
           linkedWallets: ethLinkedWalletResult?.diag ?? null,
