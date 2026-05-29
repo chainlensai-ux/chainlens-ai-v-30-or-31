@@ -3588,6 +3588,40 @@ export async function POST(req: Request) {
     let top10 = hasPct ? sum(10) : null
     let top20 = hasPct ? sum(20) : null
 
+    // ── Holder percentage sanity check ────────────────────────────────────
+    // Cumulative percentages must never exceed 100. If they do the provider
+    // mixed fraction-encoded values (≤1) with true percentages, causing
+    // normalizeHolderPercent to inflate them (0.67 → 67).
+    const _providerTop1  = top1
+    const _providerTop5  = top5
+    const _providerTop10 = top10
+    const _providerTop20 = top20
+    const _sanityThreshold = 100
+    const _holderSanityFailed = hasPct && (
+      (top20 != null && top20 > _sanityThreshold) ||
+      (top10 != null && top10 > _sanityThreshold) ||
+      (top5  != null && top5  > _sanityThreshold)
+    )
+    let _holderSanityFailedReason: string | null = null
+    let _holderSanityReconstructionAttempted = false
+    let _holderSanityReconstructionSucceeded = false
+
+    if (_holderSanityFailed) {
+      _holderSanityFailedReason = top20 != null && top20 > _sanityThreshold
+        ? `top20_exceeds_100pct:${top20.toFixed(2)}`
+        : top10 != null && top10 > _sanityThreshold
+          ? `top10_exceeds_100pct:${top10.toFixed(2)}`
+          : `top5_exceeds_100pct:${(top5 ?? 0).toFixed(2)}`
+      // Null out all provider percentages — they are corrupted
+      for (const holder of topHolders as Array<{ percent: number | null }>) {
+        holder.percent = null
+      }
+      hasPct = false
+      percentSource = 'inferred'
+      top1 = null; top5 = null; top10 = null; top20 = null
+      _holderSanityReconstructionAttempted = true
+    }
+
     // Fallback percent derivation: provider returned holder rows with raw balances but no percentage
     // field. Try to derive from RPC totalSupply(), then summed returned balances as last resort.
     let _holderPctDerived = false
@@ -3638,6 +3672,11 @@ export async function POST(req: Request) {
       }
     }
 
+    // Record whether sanity-triggered reconstruction succeeded
+    if (_holderSanityReconstructionAttempted) {
+      _holderSanityReconstructionSucceeded = hasPct && _holderPctDerived
+    }
+
     const normalizedTop = topHolders.slice(0, 200)
     let holderDistribution: HolderDistribution = normalizedTop.length
       ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount, topHolders: normalizedTop }
@@ -3645,13 +3684,19 @@ export async function POST(req: Request) {
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? {
-              status: _holderPctDerivedFromSummedRows ? 'partial' : 'ok',
-              reason: _holderPctDerived
-                ? (_holderPctDerivedFromSummedRows ? 'percentages_estimated_from_returned_rows' : 'percentages_derived_from_rpc_supply')
-                : 'holder_percentages_verified',
+              status: (_holderSanityFailed && _holderPctDerived) ? 'partial' : (_holderPctDerivedFromSummedRows ? 'partial' : 'ok'),
+              reason: (_holderSanityFailed && _holderPctDerived)
+                ? 'holder_percentages_reconstructed_from_supply'
+                : _holderPctDerived
+                  ? (_holderPctDerivedFromSummedRows ? 'percentages_estimated_from_returned_rows' : 'percentages_derived_from_rpc_supply')
+                  : 'holder_percentages_verified',
               itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource,
             }
-          : { status: 'partial', reason: 'no_percentages', itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource })
+          : {
+              status: (_holderSanityFailed ? 'unavailable_with_reason' : 'partial'),
+              reason: _holderSanityFailed ? 'holder_percentages_failed_sanity_check' : 'no_percentages',
+              itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource,
+            })
       : {
           // No holder rows returned — use unavailable_with_reason, not partial (partial requires real evidence)
           status: (holdersRaw?.__status === 'error' ? 'error' : 'unavailable_with_reason') as HolderDistributionStatus['status'],
@@ -5572,6 +5617,27 @@ export async function POST(req: Request) {
           derivationAttempted: holderDerivationAttempted,
           derivationSucceeded: holderDerivationSucceeded,
           derivationFailureReason: holderDerivationFailureReason,
+        },
+        holderSanityDebug: {
+          providerTop1: _providerTop1,
+          providerTop5: _providerTop5,
+          providerTop10: _providerTop10,
+          providerTop20: _providerTop20,
+          sanityFailed: _holderSanityFailed,
+          failedReason: _holderSanityFailedReason,
+          reconstructionAttempted: _holderSanityReconstructionAttempted,
+          reconstructionSucceeded: _holderSanityReconstructionSucceeded,
+          finalPercentSource: percentSource,
+        },
+        chartDebug: {
+          poolOhlcvAttempts,
+          tokenOhlcvAttempts,
+          rawTradeCount,
+          validTradePriceCount,
+          reconstructedCandleCount: chartReconstructedCandleCount,
+          finalChartStatus: chartStatus,
+          finalChartSource: chartSource,
+          finalChartReason: chartReason,
         },
         lpDiagnostics: {
           chain: lpDiagnostics.chain,
