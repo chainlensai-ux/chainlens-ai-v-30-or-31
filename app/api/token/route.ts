@@ -1290,7 +1290,10 @@ async function fetchMoralisTransfers(chain: ChainKey, contract: string): Promise
     const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc' }
     const key = process.env.MORALIS_API_KEY
     if (!key) return { __status: 'not_configured' }
-    const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/transfers?chain=${chainMap[chain]}&limit=50`, {
+    // order=ASC fetches the EARLIEST transfers — required to find the initial mint (from=0x0)
+    // which identifies the original deployer. Default DESC (latest) misses creation-era events
+    // for established tokens that were deployed months or years ago.
+    const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/transfers?chain=${chainMap[chain]}&limit=50&order=ASC`, {
       headers: { 'X-API-Key': key },
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
@@ -2973,10 +2976,10 @@ export async function POST(req: Request) {
     const holderPctFromProvider: boolean[] = []
     const rawBalanceByAddress = new Map<string, unknown>()
     const topHolders = holderItems.slice(0, 200).map((h: any, i: number) => {
-      const address = h.address || h.holder_address || h.wallet_address || h.owner_address || h.contract_address || ''
+      const address = h.address || h.holder_address || h.wallet_address || h.wallet || h.owner_address || h.contract_address || ''
       const balanceRaw = h.balance ?? h.token_balance ?? h.amount ?? null
       const amount = toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null
-      const pctRaw = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage)
+      const pctRaw = normalizeHolderPercent(h.percentage) ?? normalizeHolderPercent(h.percent) ?? normalizeHolderPercent(h.balancePercent) ?? normalizeHolderPercent(h.ownershipPercent) ?? normalizeHolderPercent(h.ownership_percentage) ?? normalizeHolderPercent(h.percent_of_supply) ?? normalizeHolderPercent(h.share) ?? normalizeHolderPercent(h.supply_percentage)
       const percent = pctRaw
       holderPctFromProvider.push(percent != null)
       if (address && balanceRaw != null) rawBalanceByAddress.set(address.toLowerCase(), balanceRaw)
@@ -3283,8 +3286,8 @@ export async function POST(req: Request) {
     for (let i = 0; i < maxAttempts; i += 1) {
       const candidate = uniqueChartPools[i]
       chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
-      for (let t = 0; t < Math.min(2, timeframeAttempts.length); t += 1) {
-        const tf = timeframeAttempts[t + (i > 1 ? 1 : 0)] ?? timeframeAttempts[t]
+      for (let t = 0; t < timeframeAttempts.length; t += 1) {
+        const tf = timeframeAttempts[t]
         chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
         const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf)
         const list = chartRaw?.data?.attributes?.ohlcv_list
@@ -4719,7 +4722,11 @@ export async function POST(req: Request) {
           devIntelDeployerAddress: deployerAddress,
           clusterMapDeployerNodePresent: clusterMap.nodes.some((n) => n.type === 'deployer'),
           supplyControlActorChecked: Boolean(deployerAddress || linkedWallets.length > 0),
+          holderRowsCount: holderRows.length,
+          holderRowsWithPercent: holderRows.filter((h) => typeof h.percent === 'number' && Number.isFinite(h.percent)).length,
           holderRowsUsable: holderRowsConfirmed,
+          deployerMatchedHolder: creatorHolderPercent != null,
+          linkedWalletsChecked: linkedWallets.length,
           devClusterSupplyPercent,
           lineageHasDeployer: clusterMap.summary.deployerAddress !== null,
         },
