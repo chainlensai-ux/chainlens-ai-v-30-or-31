@@ -3072,7 +3072,7 @@ export default function TerminalTokenScanner() {
                   {result.chartStatus === 'no_candles' && (
                     <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
                       <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not available for this pool. Current price and market data are still live.</p>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not indexed for this pool yet. Current price and market data are live.</p>
                     </div>
                   )}
                   {result.chartStatus === 'fallback_snapshot_only' && (
@@ -3081,7 +3081,7 @@ export default function TerminalTokenScanner() {
                         <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#2DD4BF', textTransform: 'uppercase' }}>Live Market Snapshot</p>
                         <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)' }}>CORTEX MARKET READ</span>
                       </div>
-                      <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical chart data is unavailable for this pool. Showing the latest live market snapshot instead.</p>
+                      <p style={{ margin: '0 0 14px', fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>Historical candles are not indexed for this pool yet. Current price and market data are live.</p>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '10px' }}>
                         <StatCard label="Price" value={fmtPrice(result.price)} />
                         <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} />

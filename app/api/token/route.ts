@@ -1087,6 +1087,25 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
   } catch { return null }
 }
 
+// Token-level OHLCV — aggregates across all pools for the token.
+// More reliable than pool-level for CL/V3 pools where individual pool OHLCV is not indexed.
+async function fetchGeckoTerminalTokenOhlcv(tokenAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }): Promise<any> {
+  try {
+    const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const network = networkMap[chain] ?? 'base'
+    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
+    const res = await fetch(
+      `${_gtBase}/api/v2/networks/${network}/tokens/${tokenAddress}/ohlcv/${timeframe.resolution}?aggregate=${timeframe.aggregate}&limit=${timeframe.limit}&currency=usd`,
+      {
+        headers: { Accept: 'application/json;version=20230302' },
+        cache: 'no-store',
+        signal: withTimeout(5000),
+      }
+    )
+    return res.ok ? await res.json() : null
+  } catch { return null }
+}
+
 const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
 
 // Chain-aware LP locker contract registry.
@@ -3311,11 +3330,39 @@ export async function POST(req: Request) {
       }
       if (priceChart.sourceStatus === 'ok') break
     }
-    if (priceChart.sourceStatus !== 'ok' && maxAttempts > 0) {
-      priceChart = { timeframe: '24h', points: [], sourceStatus: 'partial', reason: chartFailureReason ?? 'ohlcv_not_exposed' }
+    // Token-level OHLCV fallback — tries /tokens/{address}/ohlcv which aggregates across all pools.
+    // Reliable for CL/V3 pools (Aerodrome CL, Uniswap V3) where individual pool OHLCV is not indexed.
+    // Only runs when all pool-level attempts failed. Capped to 3 calls (one per timeframe); breaks on first success.
+    let chartUsedTokenLevelOhlcv = false
+    if (priceChart.sourceStatus !== 'ok') {
+      for (const tf of timeframeAttempts) {
+        chartAttemptedTimeframes.push(`token_level:${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
+        const chartRaw = await fetchGeckoTerminalTokenOhlcv(contract, chain, tf)
+        const list = chartRaw?.data?.attributes?.ohlcv_list
+        if (!Array.isArray(list)) { chartFailureReason = 'token_ohlcv_not_exposed'; continue }
+        const points = list.map((row: unknown) => {
+          const arr = Array.isArray(row) ? row : null
+          const tsNum = toNum(arr?.[0])
+          const close = toNum(arr?.[4])
+          if (tsNum == null || close == null || close <= 0) return null
+          const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
+          return { timestamp: new Date(ms).toISOString(), priceUsd: close }
+        }).filter((p: { timestamp: string; priceUsd: number } | null): p is { timestamp: string; priceUsd: number } => p != null)
+          .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+        if (points.length >= 2) {
+          priceChart = { timeframe: tf.key, points, sourceStatus: 'ok' }
+          chartFailureReason = null
+          chartUsedTokenLevelOhlcv = true
+          break
+        }
+        chartFailureReason = 'token_ohlcv_insufficient_points'
+      }
     }
-    const chartAttempted = chartAttemptedPools.length > 0
-    const chartFallbackUsed = chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr
+    if (priceChart.sourceStatus !== 'ok' && (maxAttempts > 0 || chartUsedTokenLevelOhlcv)) {
+      priceChart = { timeframe: '24h', points: [], sourceStatus: 'partial', reason: chartFailureReason ?? 'all_chart_sources_empty' }
+    }
+    const chartAttempted = chartAttemptedPools.length > 0 || chartUsedTokenLevelOhlcv
+    const chartFallbackUsed = (chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr) || chartUsedTokenLevelOhlcv
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
     const chartStatus: 'ok' | 'no_candles' | 'fallback_snapshot_only' | 'partial' =
       priceChart.sourceStatus === 'ok' ? 'ok' :
@@ -4473,7 +4520,8 @@ export async function POST(req: Request) {
             chartAttemptedTimeframes,
             chartSelectedPoolForChart,
             chartFallbackUsed,
-            chartTimeframe: '24h',
+            chartUsedTokenLevelOhlcv,
+            chartTimeframe: priceChart.timeframe,
             chartSelectedPoolId: mp?.id ?? null,
             chartSelectedPoolAddress: mpAttr.address ?? null,
             chartFailureReason,
