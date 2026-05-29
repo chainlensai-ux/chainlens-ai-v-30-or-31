@@ -3290,7 +3290,7 @@ export async function POST(req: Request) {
 
     const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
     const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
-    let priceChart: { timeframe: '24h'|'48h'|'7d'|'30d'; points: Array<{ timestamp: string; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean } = {
+    let priceChart: { timeframe: '24h'|'48h'|'7d'|'30d'; points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean } = {
       timeframe: '24h',
       points: [],
       sourceStatus: 'partial',
@@ -3342,8 +3342,15 @@ export async function POST(req: Request) {
           const close = toNum(arr?.[4])
           if (tsNum == null || close == null || close <= 0) return null
           const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
-          return { timestamp: new Date(ms).toISOString(), priceUsd: close }
-        }).filter((p: { timestamp: string; priceUsd: number } | null): p is { timestamp: string; priceUsd: number } => p != null)
+          const rawOpen = toNum(arr?.[1]) ?? close
+          const rawHigh = toNum(arr?.[2]) ?? close
+          const rawLow  = toNum(arr?.[3]) ?? close
+          const open   = rawOpen > 0 ? rawOpen : close
+          const high   = Math.max(rawHigh > 0 ? rawHigh : close, open, close)
+          const low    = Math.min(rawLow  > 0 ? rawLow  : close, open, close)
+          const volume = toNum(arr?.[5]) ?? null
+          return { timestamp: new Date(ms).toISOString(), open, high, low, close, volume, priceUsd: close }
+        }).filter((p: { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number } | null): p is { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number } => p != null)
           .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
         if (points.length >= 2) {
           priceChart = { timeframe: tf.key, points, sourceStatus: 'ok' }
@@ -3373,8 +3380,15 @@ export async function POST(req: Request) {
           const close = toNum(arr?.[4])
           if (tsNum == null || close == null || close <= 0) return null
           const ms = tsNum > 1e12 ? tsNum : tsNum * 1000
-          return { timestamp: new Date(ms).toISOString(), priceUsd: close }
-        }).filter((p: { timestamp: string; priceUsd: number } | null): p is { timestamp: string; priceUsd: number } => p != null)
+          const rawOpen = toNum(arr?.[1]) ?? close
+          const rawHigh = toNum(arr?.[2]) ?? close
+          const rawLow  = toNum(arr?.[3]) ?? close
+          const open   = rawOpen > 0 ? rawOpen : close
+          const high   = Math.max(rawHigh > 0 ? rawHigh : close, open, close)
+          const low    = Math.min(rawLow  > 0 ? rawLow  : close, open, close)
+          const volume = toNum(arr?.[5]) ?? null
+          return { timestamp: new Date(ms).toISOString(), open, high, low, close, volume, priceUsd: close }
+        }).filter((p: { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number } | null): p is { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number } => p != null)
           .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
         if (points.length >= 2) {
           priceChart = { timeframe: tf.key, points, sourceStatus: 'ok' }
