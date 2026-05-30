@@ -2864,6 +2864,7 @@ export default function TerminalTokenScanner() {
           contractFlags: json.contractFlags ?? null,
           devIntel: json.devIntel ?? null,
           security: json.security ?? null,
+          projectSocials: json.projectSocials ?? null,
         }
         setResult(mapped)
         if (json.devIntel) {
