@@ -2943,6 +2943,12 @@ export default function TerminalTokenScanner() {
         @keyframes radarRing { 0%{transform:scale(.4);opacity:.65} 100%{transform:scale(1.85);opacity:0} }
         @keyframes shimmer { 0%{background-position:-300% 0} 100%{background-position:300% 0} }
         @keyframes scanBtnGlow { 0%,100%{box-shadow:0 0 0 rgba(45,212,191,0)} 50%{box-shadow:0 0 24px rgba(45,212,191,.30),0 0 42px rgba(139,92,246,.16)} }
+        @keyframes cortexHeroBreath { 0%,100%{box-shadow:0 0 60px rgba(45,212,191,.08),0 0 24px rgba(45,212,191,.05)} 50%{box-shadow:0 0 80px rgba(45,212,191,.14),0 0 36px rgba(45,212,191,.08)} }
+        .cortex-score-hero{animation:cortexHeroBreath 5s ease-in-out infinite;}
+        .cortex-chip{transition:transform .18s ease,box-shadow .18s ease;cursor:default;}
+        .cortex-chip:hover{transform:translateY(-2px);}
+        .cortex-bdrow{border-radius:6px;transition:background .14s ease;}
+        .cortex-bdrow:hover{background:rgba(255,255,255,.028) !important;}
         .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%;background-color:rgba(2,6,23,1);}
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
         .token-main{max-width:none;}
@@ -2958,7 +2964,7 @@ export default function TerminalTokenScanner() {
         .scan-btn-live:hover{transform:translateY(-1px);animation:scanBtnGlow 1.6s ease-in-out infinite;}
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
-        @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live{animation:none !important;} .scan-btn-live:hover{transform:none !important;}}
+        @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
         .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
@@ -3351,33 +3357,33 @@ export default function TerminalTokenScanner() {
                 return (
                   <>
                     {/* CORTEX Score Hero */}
-                    <div style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.97),rgba(4,8,18,.95))', border: `1px solid ${scoreColor}28`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 44px ${scoreColor}0c` }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                    <div className="cortex-score-hero" style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${scoreColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${scoreColor}12, 0 0 24px ${scoreColor}08, 0 0 0 1px ${scoreColor}06 inset` }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '18px' }}>
                         <div style={{ flexShrink: 0 }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CORTEX SCORE</div>
+                          <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CORTEX SCORE</div>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
-                            <span style={{ fontSize: '52px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{score}</span>
-                            <span style={{ fontSize: '16px', color: `${scoreColor}50`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
+                            <span style={{ fontSize: '62px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 28px ${scoreColor}40` }}>{score}</span>
+                            <span style={{ fontSize: '18px', color: `${scoreColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
                           </div>
-                          <div style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginTop: '5px' }}>{cx.scanQuality} · {cx.confidence} CONF</div>
+                          <div style={{ fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', marginTop: '6px', letterSpacing: '.06em' }}>{cx.scanQuality} · {cx.confidence} CONF</div>
                         </div>
                         <div style={{ flex: 1, minWidth: '140px', paddingTop: '6px' }}>
                           <div style={{ display: 'flex', gap: '7px', flexWrap: 'wrap', marginBottom: '14px' }}>
                             <span style={{ padding: '5px 16px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: v.color, background: v.bg, border: `1px solid ${v.border}`, fontFamily: 'var(--font-plex-mono)' }}>{v.label}</span>
-                            <span style={{ padding: '5px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: confColor, background: `${confColor}12`, border: `1px solid ${confColor}38`, fontFamily: 'var(--font-plex-mono)' }}>{confidence} CONFIDENCE</span>
+                            <span style={{ padding: '5px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', color: confColor, background: `${confColor}14`, border: `1px solid ${confColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{confidence} CONFIDENCE</span>
                           </div>
                           <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                            <div style={{ height: '100%', width: `${score}%`, borderRadius: '999px', background: `linear-gradient(90deg,${scoreColor},${scoreColor}80)`, transition: 'width 0.7s ease' }} />
+                            <div style={{ height: '100%', width: `${score}%`, borderRadius: '999px', background: `linear-gradient(90deg,${scoreColor},${scoreColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 8px ${scoreColor}60` }} />
                           </div>
                         </div>
                       </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(102px,1fr))', gap: '8px' }}>
                         {statusChips.map(({ label, chipOk, chipPartial, chipColor }) => (
-                          <div key={label} style={{ padding: '9px 11px', borderRadius: '10px', background: `${chipColor}08`, border: `1px solid ${chipColor}20`, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: chipColor, flexShrink: 0, boxShadow: `0 0 5px ${chipColor}` }} />
+                          <div key={label} className="cortex-chip" style={{ padding: '9px 11px', borderRadius: '10px', background: `${chipColor}0a`, border: `1px solid ${chipColor}2a`, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: chipColor, flexShrink: 0, boxShadow: `0 0 7px ${chipColor}` }} />
                             <div>
                               <div style={{ fontSize: '9px', letterSpacing: '.12em', color: chipColor, fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{label}</div>
-                              <div style={{ fontSize: '9px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Open check'}</div>
+                              <div style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Open check'}</div>
                             </div>
                           </div>
                         ))}
@@ -3398,52 +3404,52 @@ export default function TerminalTokenScanner() {
                         ))}
                       </div>
                     )}
-                    <div style={{ marginBottom:'20px', padding:'14px 16px', borderRadius:'12px', border:'1px solid rgba(125,211,252,0.18)', background:'rgba(8,14,28,0.65)' }}>
-                      <p style={{ margin:'0 0 10px', fontSize:'10px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
-                      <div style={{ display:'grid', gap:'7px' }}>
-                        {scoreBreakdown.map((b)=>(
-                          <div key={b.label} style={{ display:'grid', gridTemplateColumns:'120px 74px 1fr', gap:'10px', alignItems:'center' }}>
-                            <span style={{ fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)' }}>{b.label}</span>
-                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{b.ok ? 'PASS' : 'OPEN'}</span>
+                    <div style={{ marginBottom:'20px', padding:'14px 16px', borderRadius:'12px', border:'1px solid rgba(125,211,252,0.20)', background:'rgba(8,14,28,0.72)' }}>
+                      <p style={{ margin:'0 0 12px', fontSize:'10px', letterSpacing:'.16em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
+                      <div style={{ display:'grid', gap:'0' }}>
+                        {scoreBreakdown.map((b, bIdx)=>(
+                          <div key={b.label} className="cortex-bdrow" style={{ display:'grid', gridTemplateColumns:'120px 74px 1fr', gap:'10px', alignItems:'center', padding:'7px 8px', borderBottom: bIdx < scoreBreakdown.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
+                            <span style={{ fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{b.label}</span>
+                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:800, letterSpacing:'.08em', fontFamily:'var(--font-plex-mono)' }}>{b.ok ? 'PASS' : 'OPEN'}</span>
                             <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
                           </div>
                         ))}
-                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'4px', padding:'7px 10px', borderRadius:'8px', background: cx.capReason ? 'rgba(148,163,184,0.05)' : 'rgba(52,211,153,0.04)', border: cx.capReason ? '1px solid rgba(148,163,184,0.14)' : '1px solid rgba(52,211,153,0.14)' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'8px', padding:'7px 10px', borderRadius:'8px', background: cx.capReason ? 'rgba(148,163,184,0.05)' : 'rgba(52,211,153,0.04)', border: cx.capReason ? '1px solid rgba(148,163,184,0.14)' : '1px solid rgba(52,211,153,0.14)' }}>
                           <span style={{ fontSize:'10px', color: cx.capReason ? '#64748b' : '#34d399', fontFamily:'var(--font-plex-mono)', fontStyle:'italic' }}>⚑ {cx.capReason ?? 'No major score cap applied.'}</span>
                         </div>
                       </div>
                     </div>
                     {/* 4-card CORTEX Read layout */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(228px,1fr))', gap: '12px', marginBottom: '20px' }}>
-                      <div style={{ padding: '16px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.18)', borderRadius: '12px' }}>
-                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#34d399', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Good Signs</p>
+                      <div style={{ padding: '16px 18px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.20)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 12px', fontSize: '10px', fontWeight: 800, letterSpacing: '.16em', color: '#34d399', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Good Signs</p>
                         {goodSignals.length > 0 ? goodSignals.map((s, i) => (
-                          <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '6px' }}>
-                            <span style={{ color: '#34d399', flexShrink: 0, fontSize: '11px', lineHeight: '16px' }}>✓</span>
-                            <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                          <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '9px' }}>
+                            <span style={{ color: '#34d399', flexShrink: 0, fontSize: '12px', lineHeight: '17px', fontWeight: 800 }}>✓</span>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
                           </div>
-                        )) : <p style={{ margin: 0, fontSize: '11px', color: '#1e3a44', fontFamily: 'var(--font-plex-mono)' }}>No positive signals confirmed yet.</p>}
+                        )) : <p style={{ margin: 0, fontSize: '11px', color: '#2a4438', fontFamily: 'var(--font-plex-mono)' }}>No positive signals confirmed yet.</p>}
                       </div>
-                      <div style={{ padding: '16px', background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.18)', borderRadius: '12px' }}>
-                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#f87171', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Risk Signs</p>
+                      <div style={{ padding: '16px 18px', background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.20)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 12px', fontSize: '10px', fontWeight: 800, letterSpacing: '.16em', color: '#f87171', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Risk Signs</p>
                         {riskSignals.length > 0 ? riskSignals.map((s, i) => (
-                          <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '6px' }}>
-                            <span style={{ color: '#f87171', flexShrink: 0, fontSize: '11px', lineHeight: '16px' }}>!</span>
-                            <p style={{ margin: 0, fontSize: '11px', color: '#fca5a5', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                          <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '9px' }}>
+                            <span style={{ color: '#f87171', flexShrink: 0, fontSize: '12px', lineHeight: '17px', fontWeight: 800 }}>!</span>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#fca5a5', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
                           </div>
-                        )) : <p style={{ margin: 0, fontSize: '11px', color: '#1e3a44', fontFamily: 'var(--font-plex-mono)' }}>No major risk signals surfaced.</p>}
+                        )) : <p style={{ margin: 0, fontSize: '11px', color: '#3a2a2a', fontFamily: 'var(--font-plex-mono)' }}>No major risk signals surfaced.</p>}
                       </div>
-                      <div style={{ padding: '16px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '12px' }}>
-                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#fbbf24', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Missing Checks</p>
+                      <div style={{ padding: '16px 18px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.20)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 12px', fontSize: '10px', fontWeight: 800, letterSpacing: '.16em', color: '#fbbf24', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Missing Checks</p>
                         {missing2.length > 0 ? (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
-                            {missing2.map(m => <span key={m} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{m}</span>)}
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {missing2.map(m => <span key={m} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.24)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{m}</span>)}
                           </div>
                         ) : <p style={{ margin: 0, fontSize: '11px', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>All key checks passed.</p>}
                       </div>
-                      <div style={{ padding: '16px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.22)', borderRadius: '12px' }}>
-                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next Action</p>
-                        <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{next2}</p>
+                      <div style={{ padding: '16px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.26)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '10px', fontWeight: 800, letterSpacing: '.16em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next Action</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>{next2}</p>
                       </div>
                     </div>
                     {cx.confidence === 'LOW' && (
