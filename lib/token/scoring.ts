@@ -130,7 +130,9 @@ function getContractFlag(result: AnyRecord, key: 'mint' | 'pause' | 'blacklist' 
   const flag = asRecord(contractFlags?.[key])
   const status = str(flag?.status)
   if (status === 'verified' || status === 'possible') return true
-  if (status === 'not_detected') return false
+  // 'inferred' = flag absent per standard ERC20 structural inference (no bytecode/GoldRush available).
+  // Treat as false rather than null so security/dev scores are not blocked by missing provider data.
+  if (status === 'not_detected' || status === 'inferred') return false
 
   const analysis = asRecord(result.analysis)
   if (key === 'mint') return bool(analysis?.has_mint)
@@ -195,7 +197,8 @@ function calculateHolderScore(result: AnyRecord): Factor {
   const distributionNorm = pctNorm(distributionRaw, MEDIANS.distributionSpread)
   const top10Penalty = clamp(100 - pctNorm(top10, 35)!)
   const whalePenalty = clamp(100 - pctNorm(Math.max(top1, top20 != null ? Math.max(0, top20 - top10) : top1), 12)!)
-  const growthNorm = holderCount == null ? null : logNorm(holderCount, MEDIANS.holderCount)
+  // holderCount is optional — use neutral (50) sigmoid when not available so top1/top10 can still score
+  const growthNorm = holderCount == null ? 50 : logNorm(holderCount, MEDIANS.holderCount)
   if (distributionNorm == null || growthNorm == null) return { score: null, status: 'open_check', reason: 'Holder count or distribution data is incomplete.' }
   const score = (0.40 * distributionNorm) + (0.30 * top10Penalty) + (0.20 * whalePenalty) + (0.10 * growthNorm)
   const status = top10 > 50 || top1 > 20 ? 'risk' : 'ok'
@@ -246,14 +249,15 @@ function calculateMarketHealthScore(result: AnyRecord, volatilityPenalty: number
   const pools = Array.isArray(result.pools) ? result.pools : []
   const holders = getHolderDistribution(result)
   const top10 = num(holders?.top10)
-  if (liquidity == null || volume == null || poolAgeDays == null || top10 == null || volatilityPenalty == null) {
-    return { score: null, status: 'open_check', reason: 'Market health requires liquidity, volume, pool age, holder concentration, and volatility.' }
+  if (liquidity == null || volume == null || top10 == null || volatilityPenalty == null) {
+    return { score: null, status: 'open_check', reason: 'Market health requires liquidity, volume, holder concentration, and volatility.' }
   }
 
   const liquidityDepthNorm = logNorm(liquidity, MEDIANS.liquidityUsd)
   const volumeStabilityBase = logNorm(volume, MEDIANS.volumeUsd)
   const volumeStability = volumeStabilityBase == null ? null : (0.55 * volumeStabilityBase) + (0.45 * volatilityPenalty)
-  const poolAgeNorm = pctNorm(poolAgeDays, MEDIANS.poolAgeDays)
+  // poolAgeDays optional — use neutral (50) sigmoid when pair creation date unavailable
+  const poolAgeNorm = poolAgeDays != null ? pctNorm(poolAgeDays, MEDIANS.poolAgeDays) : 50
   const fragmentationPenalty = clamp(100 - sigmoidNorm(Math.max(0, pools.length - 1) * 25, 25, K))
   const holderChurnPenalty = clamp(100 - pctNorm(Math.max(0, top10 - 35), 10)!)
   if (liquidityDepthNorm == null || volumeStability == null || poolAgeNorm == null) return { score: null, status: 'open_check', reason: 'Market health normalization could not be completed.' }
@@ -298,12 +302,15 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
   const contractAgeScore = poolAgeDays == null ? null : pctNorm(poolAgeDays, MEDIANS.poolAgeDays)
   const bytecodeSimilarityScore = includesAny(reasons, /bytecode|similarity|clone|copycat|suspicious/i)
     ? 35
-    : asRecord(result.contractFlags)?.bytecodeChecked === true ? 70 : null
+    : asRecord(result.contractFlags)?.bytecodeChecked === true ? 70
+    : 55  // neutral: bytecode not checked but no suspicious signal detected
   const suspiciousDeploy = includesAny(reasons, /suspicious deploy|factory burst|reused deploy|rug|pattern/i)
-  const deployPatternScore = reasons.length === 0 && deployerReputation == null ? null : suspiciousDeploy ? 30 : 70
+  // neutral (55) when no deployer data at all; confirmed clean (70) when data present but no suspicious signals
+  const deployPatternScore = suspiciousDeploy ? 30 : (reasons.length > 0 || deployerReputation != null) ? 70 : 55
   const suspiciousTransfers = bool(devIntel?.suspiciousTransfers)
   const devSelling = includesAny(reasons, /sell|dump|distributed|outbound|wash|relay/i)
-  const devWalletScore = suspiciousTransfers == null && reasons.length === 0 ? null : suspiciousTransfers || devSelling ? 30 : 70
+  // neutral (55) when no dev wallet data; confirmed clean (70) when data present but no suspicious signals
+  const devWalletScore = (suspiciousTransfers || devSelling) ? 30 : (suspiciousTransfers != null || reasons.length > 0) ? 70 : 55
 
   const breakdown = [
     devFactor('Ownership', ownershipScore, DEV_WEIGHTS.ownership, isRenounced == null ? 'Ownership status missing.' : isRenounced ? 'Ownership renounced.' : 'Ownership/admin appears held.'),
@@ -311,9 +318,9 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
     devFactor('Admin Functions', adminFunctionsScore, DEV_WEIGHTS.adminFunctions, adminKnown ? 'Mint, pause, and blacklist flags evaluated.' : 'Admin function flags incomplete.'),
     devFactor('Upgradeability', upgradeabilityScore, DEV_WEIGHTS.upgradeability, proxy == null ? 'Proxy status missing.' : proxy ? 'Proxy/upgradeability detected.' : 'Proxy not detected.'),
     devFactor('Contract Age', contractAgeScore, DEV_WEIGHTS.contractAge, poolAgeDays == null ? 'Contract/pool age missing.' : 'Age normalized with sigmoid fallback median.'),
-    devFactor('Bytecode Similarity', bytecodeSimilarityScore, DEV_WEIGHTS.bytecodeSimilarity, bytecodeSimilarityScore == null ? 'Bytecode similarity data missing.' : bytecodeSimilarityScore < 50 ? 'Suspicious bytecode/clone signal present.' : 'No suspicious bytecode similarity signal in existing data.'),
-    devFactor('Dev Wallet Behavior', devWalletScore, DEV_WEIGHTS.devWalletBehavior, devWalletScore == null ? 'Dev wallet behavior missing.' : devWalletScore < 50 ? 'Suspicious transfer/selling behavior present.' : 'No suspicious dev wallet behavior in existing data.'),
-    devFactor('Deployment Pattern', deployPatternScore, DEV_WEIGHTS.deploymentPattern, deployPatternScore == null ? 'Deployment pattern missing.' : deployPatternScore < 50 ? 'Suspicious deployment pattern present.' : 'No suspicious deployment pattern in existing data.'),
+    devFactor('Bytecode Similarity', bytecodeSimilarityScore, DEV_WEIGHTS.bytecodeSimilarity, bytecodeSimilarityScore < 50 ? 'Suspicious bytecode/clone signal present.' : bytecodeSimilarityScore === 55 ? 'Bytecode check unavailable — neutral assumed (no suspicious signals).' : 'No suspicious bytecode similarity signal detected.'),
+    devFactor('Dev Wallet Behavior', devWalletScore, DEV_WEIGHTS.devWalletBehavior, devWalletScore < 50 ? 'Suspicious transfer/selling behavior present.' : devWalletScore === 55 ? 'Dev wallet data unavailable — neutral assumed (no suspicious signals).' : 'No suspicious dev wallet behavior in existing data.'),
+    devFactor('Deployment Pattern', deployPatternScore, DEV_WEIGHTS.deploymentPattern, deployPatternScore < 50 ? 'Suspicious deployment pattern present.' : deployPatternScore === 55 ? 'Deployment data unavailable — neutral assumed (no suspicious signals).' : 'No suspicious deployment pattern in existing data.'),
   ]
 
   if (breakdown.some((item) => item.score == null)) {
