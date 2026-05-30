@@ -1654,8 +1654,8 @@ function extractProjectSocials(
     return (raw as string).trim()
   }
 
-  // GeckoTerminal
-  const gtAttr = gtToken?.attributes as Record<string, unknown> | null | undefined
+  // GeckoTerminal — gtToken is already gtTokenInfo.data.attributes (flat object)
+  const gtAttr = gtToken  // NOT gtToken.attributes — caller passes the attributes directly
   if (gtAttr) {
     const websites = gtAttr.websites as unknown[] | null | undefined
     const w0 = Array.isArray(websites) ? websites[0] : null
@@ -1925,7 +1925,12 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
     const bt = best.baseToken as Record<string, unknown> | null
     const qt = best.quoteToken as Record<string, unknown> | null
 
-    const rawInfo = best.info as Record<string, unknown> | null | undefined
+    // info may be absent on the highest-liquidity pair — scan all matching pairs for social data
+    const infoSource = (basePairs as Record<string, unknown>[]).find(p => {
+      const info = p.info as Record<string, unknown> | null | undefined
+      return info != null && (Array.isArray(info.websites) || Array.isArray(info.socials))
+    }) ?? best
+    const rawInfo = infoSource.info as Record<string, unknown> | null | undefined
     const rawWebsites = Array.isArray(rawInfo?.websites) ? rawInfo!.websites as Array<Record<string, unknown>> : null
     const rawSocials  = Array.isArray(rawInfo?.socials)  ? rawInfo!.socials  as Array<Record<string, unknown>> : null
     return miss({
@@ -6233,25 +6238,30 @@ export async function POST(req: Request) {
             admin_address: adminAddr,
           },
           projectSocialsDebug: {
-            sourceTrail: projectSocials.sourceTrail,
-            foundKeys: _psFoundKeys,
-            rejectedCount: _psRejectedCount,
             status: projectSocials.status,
-            reason: projectSocials.reason ?? null,
+            sourceTrail: projectSocials.sourceTrail,
             foundTwitter: projectSocials.twitter != null,
             foundTelegram: projectSocials.telegram != null,
             foundWebsite: projectSocials.website != null,
+            foundKeys: _psFoundKeys,
+            rejectedLinks: _psRejectedCount,
+            reason: projectSocials.reason ?? null,
+            // GeckoTerminal raw presence
+            gtTokenPresent: Boolean(gtToken),
             gtTokenHasWebsites: Array.isArray(gtToken?.websites),
             gtTokenHasTelegramHandle: Boolean(gtToken?.telegram_handle),
             gtTokenHasTwitterHandle: Boolean(gtToken?.twitter_handle),
-            gtTokenHasDiscordUrl: Boolean(gtToken?.discord_url),
+            // CoinGecko / GMGN
             coingeckoUsable: Boolean(coingeckoRaw),
             gmgnUsable: Boolean(gmgnItem),
-            dexscreenerInfoPresent: Boolean(_dexFb?.info),
-            rawDexInfoKeys: _dexFb?.info != null ? Object.keys(_dexFb.info) : [],
+            // DexScreener raw presence
+            dexObjectPresent: Boolean(_dexFb),
+            dexInfoPresent: Boolean(_dexFb?.info),
+            dexInfoKeys: _dexFb?.info != null ? Object.keys(_dexFb.info) : [],
+            dexWebsitesRaw: _dexFb?.info?.websites ?? [],
+            dexSocialsRaw: _dexFb?.info?.socials ?? [],
             dexWebsitesCount: _dexFb?.info?.websites?.length ?? 0,
             dexSocialsCount: _dexFb?.info?.socials?.length ?? 0,
-            rejectedLinks: _psRejectedCount,
           },
           riskFlow: {
             rugRiskScore: riskEngine.rugRiskScore,
