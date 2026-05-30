@@ -126,9 +126,14 @@ type ScanResult = {
     verificationPool?: string | null
     verificationPoolDex?: string | null
     verificationPoolType?: string | null
+    primaryPoolDex?: string | null
+    primaryPoolType?: string | null
     proofStatus?: 'open_check' | 'verified' | 'not_applicable' | null
     lockStatus?: 'locked' | 'not_confirmed' | 'not_applicable' | null
     burnStatus?: 'burned' | 'not_confirmed' | 'not_applicable' | null
+    displayLpModel?: 'erc20_lp_token' | 'concentrated_liquidity' | 'protocol_or_gauge' | 'open_check' | 'no_pool' | null
+    lockBurnApplicable?: boolean | null
+    lockBurnReason?: string | null
   } | null
   lpControlRead?: {
     title?: string
@@ -1386,13 +1391,17 @@ function getSummaryReasons(result: ScanResult): string[] {
 
 
 function getLpMode(result: ScanResult): LpMode {
+  // Prefer the authoritative backend-computed displayLpModel (available on newer scans)
+  const dm = result.lpControl?.displayLpModel
+  if (dm === 'concentrated_liquidity' || dm === 'protocol_or_gauge') return 'protocol'
+  if (dm === 'erc20_lp_token') return 'lp_token'
+  if (dm === 'open_check' || dm === 'no_pool') return 'unknown'
+  // Fallback for scans without displayLpModel
   const status = result.lpControl?.status
   const poolType = result.lpControl?.poolType
   if (status === 'protocol' || status === 'concentrated_liquidity') return 'protocol'
   if (status === 'locked' || status === 'burned' || status === 'team_controlled' || status === 'risky') return 'lp_token'
-  // partial with confirmed v2 poolType = standard ERC-20 LP token path, proof just unconfirmed
   if (poolType === 'v2' && (status === 'partial' || status === 'insufficient_data')) return 'lp_token'
-  // proofStatus: verified comes from normalized backend field
   if (result.lpControl?.proofStatus === 'verified') return 'lp_token'
   return 'unknown'
 }
@@ -2043,6 +2052,12 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
 
 type LpMode = 'protocol' | 'lp_token' | 'unknown'
 function deriveLpMode(result: ScanResult): LpMode {
+  // Use authoritative backend field when available
+  const dm = result.lpControl?.displayLpModel
+  if (dm === 'concentrated_liquidity' || dm === 'protocol_or_gauge') return 'protocol'
+  if (dm === 'erc20_lp_token') return 'lp_token'
+  if (dm === 'open_check' || dm === 'no_pool') return 'unknown'
+
   const chain = result.chain
   const lpStatus = result.lpControl?.status
   const lpPoolType = result.lpControl?.poolType
@@ -2052,7 +2067,6 @@ function deriveLpMode(result: ScanResult): LpMode {
   // lp_token: when V2 LP-token pools exist, use normal burn/lock proof path
   if (v2Count != null && v2Count > 0) return 'lp_token'
   if (lpStatus === 'burned' || lpStatus === 'locked' || lpStatus === 'team_controlled' || lpPoolType === 'v2') return 'lp_token'
-  // partial with v2 poolType = standard ERC-20 LP token, proof just unverified
   if (lpPoolType === 'v2' && (lpStatus === 'partial' || lpStatus === 'insufficient_data')) return 'lp_token'
 
   // protocol: Base + no V2 pools + any concentrated-liquidity signal
@@ -2074,14 +2088,17 @@ function deriveLpMode(result: ScanResult): LpMode {
 
 function getLpLockLabel(result: ScanResult): { label: string; color: string; bg: string; border: string; description: string } {
   const status = result.lpControl?.status
+  const dm = result.lpControl?.displayLpModel
   const lpMode = getLpMode(result)
   const hasLiquidity = (result.liquidity ?? 0) > 0 || result.lpControl?.poolAddressPresent
   if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
-  if (lpMode === 'protocol') return { label: 'Protocol-Owned', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'Concentrated liquidity managed by the protocol. Standard for v3/v4-style pools.' }
+  if (dm === 'concentrated_liquidity') return { label: 'Concentrated', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'V3/V4-style pool — standard ERC-20 LP lock/burn proof does not apply.' }
+  if (dm === 'protocol_or_gauge') return { label: 'Protocol / Gauge', color: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.22)', description: 'Protocol-managed liquidity pool. LP lock/burn proof does not apply in this model.' }
+  if (lpMode === 'protocol') return { label: 'Protocol-Owned', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'Protocol-managed concentrated liquidity. Standard LP lock/burn proof does not apply.' }
   if (status === 'burned') return { label: 'Burned', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: 'LP tokens sent to a burn address — exit liquidity is permanently locked.' }
   if (status === 'locked') return { label: 'Locked', color: '#60a5fa', bg: 'rgba(96,165,250,0.07)', border: 'rgba(96,165,250,0.22)', description: 'LP tokens locked in a verified locker contract for a defined duration.' }
   if (status === 'team_controlled') return { label: 'Unlocked', color: '#f87171', bg: 'rgba(248,113,113,0.07)', border: 'rgba(248,113,113,0.22)', description: 'LP appears controlled by a wallet. Exit liquidity can be removed at any time.' }
-  if (status === 'partial') return { label: 'Partial Proof', color: '#fbbf24', bg: 'rgba(251,191,36,0.07)', border: 'rgba(251,191,36,0.22)', description: 'Some LP may be protected, but full lock or burn coverage is not confirmed.' }
+  if (status === 'partial') return { label: 'LP Proof Open', color: '#fbbf24', bg: 'rgba(251,191,36,0.07)', border: 'rgba(251,191,36,0.22)', description: 'Pool detected but lock, burn, or ownership could not be confirmed this scan.' }
   if (status === 'no_pool') return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No usable liquidity pool found for this token.' }
   if (hasLiquidity) return { label: 'LP Proof Open', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'Pool detected, but lock, burn, or protocol ownership has not been confirmed.' }
   return { label: 'Open Check', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'LP ownership proof not confirmed. Treat exit liquidity as unprotected.' }
@@ -2089,12 +2106,15 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
 
 function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; description: string } {
   const status = result.lpControl?.status
+  const dm = result.lpControl?.displayLpModel
   const lpMode = getLpMode(result)
   const liqDepth = result.liquidity ?? null
   const hasLiquidity = (liqDepth ?? 0) > 0 || result.lpControl?.poolAddressPresent
   if (result.noActivePools && !hasLiquidity) return { label: 'Critical', color: '#f87171', description: 'No active pool — exit liquidity is entirely unavailable.' }
   if (status === 'burned') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP burned — exit liquidity permanently locked. Pool depth is the main variable.' }
   if (status === 'locked') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP locked — protected for the lock duration. Pool depth is the main variable.' }
+  if (dm === 'concentrated_liquidity') return { label: 'Open Check', color: '#c084fc', description: 'V3/V4 pool — LP lock/burn proof does not apply. Assess pool depth and age.' }
+  if (dm === 'protocol_or_gauge') return { label: 'Open Check', color: '#a78bfa', description: 'Protocol/gauge-managed — LP lock model does not apply. Monitor pool depth and activity.' }
   if (lpMode === 'protocol') return { label: 'Open Check', color: '#c084fc', description: 'Protocol-managed liquidity. LP lock model does not apply — assess pool depth and age.' }
   if (status === 'team_controlled') return { label: 'High', color: '#fb923c', description: 'LP appears team-controlled. Liquidity can be withdrawn without lock proof.' }
   if (liqDepth != null && liqDepth < 10_000) return { label: 'Critical', color: '#f87171', description: 'LP proof unconfirmed and liquidity is very thin. Extreme exit risk.' }
@@ -2104,6 +2124,7 @@ function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; 
 
 function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns: string[]; missingProofs: string[] } {
   const lp = result.lpControl
+  const dm = lp?.displayLpModel
   const lpMode = getLpMode(result)
   const status = lp?.status
   const liqDepth = result.liquidity ?? null
@@ -2112,7 +2133,9 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   const missingProofs: string[] = []
   if (status === 'burned') goodSigns.push('LP tokens permanently burned — exit liquidity is protected.')
   if (status === 'locked') goodSigns.push('LP tokens verified as locked in a locker contract.')
-  if (lpMode === 'protocol') goodSigns.push('Protocol-owned liquidity is standard for this pool model.')
+  if (dm === 'concentrated_liquidity') goodSigns.push('Concentrated liquidity — standard V3/V4 pool model.')
+  else if (dm === 'protocol_or_gauge') goodSigns.push('Protocol/gauge liquidity — standard for this pool model.')
+  else if (lpMode === 'protocol') goodSigns.push('Protocol-owned liquidity is standard for this pool model.')
   if (liqDepth != null && liqDepth > 500_000) goodSigns.push(`Deep liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   else if (liqDepth != null && liqDepth > 100_000) goodSigns.push(`Moderate liquidity — ${fmtLarge(liqDepth)} pool depth.`)
   if (lp?.poolAddressPresent) goodSigns.push('Liquidity pool detected and indexed.')
@@ -2120,25 +2143,28 @@ function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns:
   if (result.noActivePools) riskSigns.push('No active liquidity pool — token may be illiquid.')
   if (liqDepth != null && liqDepth < 10_000 && !result.noActivePools) riskSigns.push(`Very thin liquidity — ${fmtLarge(liqDepth)} depth.`)
   else if (liqDepth != null && liqDepth < 50_000 && !result.noActivePools) riskSigns.push(`Thin liquidity — ${fmtLarge(liqDepth)}.`)
-  if (lpMode !== 'protocol' && status !== 'burned' && status !== 'locked') missingProofs.push('LP lock or burn proof not confirmed.')
-  if (lpMode === 'unknown' && !result.noActivePools) missingProofs.push('LP token model could not be classified.')
+  const lockBurnApplicable = lp?.lockBurnApplicable ?? (lpMode !== 'protocol' && dm !== 'concentrated_liquidity' && dm !== 'protocol_or_gauge')
+  if (lockBurnApplicable && status !== 'burned' && status !== 'locked') missingProofs.push('LP lock or burn proof not confirmed.')
+  if (!lockBurnApplicable && dm !== 'concentrated_liquidity' && dm !== 'protocol_or_gauge' && lpMode === 'unknown' && !result.noActivePools) missingProofs.push('LP token model could not be classified.')
   if (!lp?.poolAddressPresent && !result.noActivePools && liqDepth == null) missingProofs.push('Pool address not yet indexed.')
   return { goodSigns: goodSigns.slice(0, 3), riskSigns: riskSigns.slice(0, 3), missingProofs: missingProofs.slice(0, 3) }
 }
 
 function getLpNextAction(result: ScanResult): string {
   const lp = result.lpControl
+  const dm = lp?.displayLpModel
   const lpMode = getLpMode(result)
   const status = lp?.status
-  const poolType = lp?.poolType
   const liqDepth = result.liquidity ?? null
   const hasLiquidity = (liqDepth ?? 0) > 0 || result.lpControl?.poolAddressPresent
   if (result.noActivePools && !hasLiquidity) return 'No active pool found. Verify the contract address and chain before trading.'
   if (status === 'burned') return liqDepth != null && liqDepth < 50_000 ? 'LP is burned — good sign. Pool depth is thin, so monitor liquidity before committing size.' : 'LP appears burned — exit liquidity is protected. Still monitor holder concentration and trading taxes.'
   if (status === 'locked') return 'LP is locked — verify the lock duration and expiry. Monitor holder concentration before assuming permanent protection.'
+  if (dm === 'concentrated_liquidity') return 'V3/V4-style liquidity does not use standard LP lock/burn proof. Monitor pool depth, age, volume, and holder concentration.'
+  if (dm === 'protocol_or_gauge') return 'Protocol or gauge-based liquidity can be normal. Monitor depth, pool age, and whether liquidity is moving.'
   if (lpMode === 'protocol') return 'V3/V4-style pools do not use standard ERC-20 LP lock/burn proof. Monitor pool depth, age, and holder concentration.'
   if (status === 'team_controlled') return 'LP control is not locked. Treat exit risk as elevated and avoid large positions until lock or burn proof is indexed.'
-  if (status === 'partial' && poolType === 'v2') return 'LP token exists, but lock/burn ownership could not be verified. Treat exit liquidity as unprotected until proof is indexed.'
+  if (dm === 'erc20_lp_token' && status === 'partial') return 'LP token exists, but lock/burn ownership could not be verified. Treat exit liquidity as unprotected until proof is indexed.'
   if (status === 'partial') return 'LP proof is an open check. Some liquidity may be protected but full coverage is not confirmed. Proceed with caution.'
   return 'LP protection is still an open check. Treat exit liquidity as unprotected until lock, burn, or protocol ownership is confirmed.'
 }
@@ -4126,10 +4152,32 @@ export default function TerminalTokenScanner() {
                     const lpStatus = result.lpControl?.status
                     const hasPool = (result.liquidity ?? 0) > 0 || result.lpControl?.poolAddressPresent
                     const lpStatus2 = result.lpControl?.status
+                    const dm2 = result.lpControl?.displayLpModel
                     const lpProofConfirmed = lpStatus2 === 'burned' || lpStatus2 === 'locked'
-                    const modelLabel = lpModeVal === 'protocol' ? 'Concentrated' : lpModeVal === 'lp_token' ? 'ERC-20 LP Token' : hasPool ? 'Pool Detected' : 'Unverified'
-                    const modelColor = lpModeVal === 'protocol' ? '#c084fc' : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa') : hasPool ? '#fbbf24' : '#94a3b8'
-                    const modelDesc = lpModeVal === 'protocol' ? 'V3/V4-style pool — no ERC-20 LP tokens. Lock/burn proof does not apply.' : lpModeVal === 'lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.') : hasPool ? 'Pool structure detected, but LP token model is not confirmed.' : 'Pool structure could not be classified from this scan.'
+                    const modelLabel = dm2 === 'concentrated_liquidity' ? 'Concentrated Liquidity'
+                      : dm2 === 'protocol_or_gauge' ? 'Protocol / Gauge Pool'
+                      : dm2 === 'erc20_lp_token' ? 'ERC-20 LP Token'
+                      : dm2 === 'no_pool' ? 'No Active Pool'
+                      : lpModeVal === 'protocol' ? 'Concentrated'
+                      : lpModeVal === 'lp_token' ? 'ERC-20 LP Token'
+                      : hasPool ? 'LP Model Open'
+                      : 'Unverified'
+                    const modelColor = dm2 === 'concentrated_liquidity' ? '#c084fc'
+                      : dm2 === 'protocol_or_gauge' ? '#a78bfa'
+                      : dm2 === 'erc20_lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
+                      : dm2 === 'no_pool' ? '#94a3b8'
+                      : lpModeVal === 'protocol' ? '#c084fc'
+                      : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
+                      : hasPool ? '#fbbf24'
+                      : '#94a3b8'
+                    const modelDesc = dm2 === 'concentrated_liquidity' ? 'V3/V4-style pool detected. Standard ERC-20 LP lock/burn proof does not apply.'
+                      : dm2 === 'protocol_or_gauge' ? 'Protocol-managed liquidity model detected. Monitor pool depth, emissions/gauge context, and holder concentration.'
+                      : dm2 === 'erc20_lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
+                      : dm2 === 'no_pool' ? 'No active liquidity pool detected for this token.'
+                      : lpModeVal === 'protocol' ? 'V3/V4-style pool — no ERC-20 LP tokens. Lock/burn proof does not apply.'
+                      : lpModeVal === 'lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.')
+                      : hasPool ? 'Pool detected, but LP token model could not be fully classified.'
+                      : 'Pool structure could not be classified from this scan.'
                     void lpStatus
                     return (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: '10px', marginBottom: '14px' }}>
@@ -4164,10 +4212,14 @@ export default function TerminalTokenScanner() {
                   {(() => {
                     const lpModeVal = getLpMode(result)
                     const lpStatus = result.lpControl?.status
+                    const dm3 = result.lpControl?.displayLpModel
                     const poolCount = result.pools?.length ?? 0
                     const hasLiquidity = (result.liquidity ?? 0) > 0
                     const hasPool = hasLiquidity || result.lpControl?.poolAddressPresent
-                    const lpProofVal = lpModeVal === 'protocol' ? 'Not applicable' : lpStatus === 'burned' || lpStatus === 'locked' ? 'Confirmed' : lpStatus === 'partial' ? 'Partial' : hasPool ? 'Pool detected' : 'Open Check'
+                    const notApplicable = dm3 === 'concentrated_liquidity' || dm3 === 'protocol_or_gauge' || result.lpControl?.proofStatus === 'not_applicable'
+                    const lpProofVal = notApplicable ? 'Not applicable'
+                      : lpStatus === 'burned' || lpStatus === 'locked' ? 'Confirmed'
+                      : 'Open Check'
                     const migrationRisk = poolCount > 1 && lpStatus === 'team_controlled' ? 'Elevated' : poolCount > 1 ? 'Monitor' : poolCount === 1 ? 'Not flagged' : hasPool ? 'Pool detected' : 'Open Check'
                     const rows: { label: string; value: string }[] = [
                       { label: 'Liquidity', value: result.liquidity != null ? `$${fmtLarge(result.liquidity)}` : 'Open Check' },
@@ -4181,7 +4233,7 @@ export default function TerminalTokenScanner() {
                         {rows.map(({ label, value }, i) => (
                           <div key={label} style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '12px', alignItems: 'center', padding: '7px 4px', borderBottom: i < rows.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
                             <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em' }}>{label}</span>
-                            <span style={{ fontSize: '11px', color: value === 'Open Check' ? '#fbbf24' : '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}</span>
+                            <span style={{ fontSize: '11px', color: value === 'Open Check' ? '#fbbf24' : value === 'Not applicable' ? '#64748b' : value === 'Confirmed' ? '#34d399' : '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}</span>
                           </div>
                         ))}
                       </div>
