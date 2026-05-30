@@ -1271,34 +1271,32 @@ function StatCard({ label, value, accent, helper }: { label: string; value: stri
 type SocialLink = { href: string; label: string; abbr: string; color: string }
 
 function ProjectSocialsCard({ socials }: { socials: ScanResult['projectSocials'] }) {
-  if (!socials) return null
-
   const links: SocialLink[] = [
-    socials.website   ? { href: socials.website,   label: 'Website',  abbr: 'WEB',  color: '#2DD4BF' } : null,
-    socials.twitter   ? { href: socials.twitter,   label: 'X / Twitter', abbr: 'X', color: '#60a5fa' } : null,
-    socials.telegram  ? { href: socials.telegram,  label: 'Telegram', abbr: 'TG',   color: '#38bdf8' } : null,
-    socials.discord   ? { href: socials.discord,   label: 'Discord',  abbr: 'DC',   color: '#a78bfa' } : null,
-    socials.github    ? { href: socials.github,    label: 'GitHub',   abbr: 'GH',   color: '#94a3b8' } : null,
+    socials?.twitter  ? { href: socials.twitter,  label: 'X',        abbr: 'X',   color: '#60a5fa' } : null,
+    socials?.telegram ? { href: socials.telegram, label: 'Telegram', abbr: 'TG',  color: '#38bdf8' } : null,
+    socials?.website  ? { href: socials.website,  label: 'Website',  abbr: 'WEB', color: '#2DD4BF' } : null,
   ].filter((l): l is SocialLink => l !== null)
 
   return (
     <div style={{
-      marginBottom: '22px', padding: '14px 16px',
-      background: 'linear-gradient(135deg,rgba(10,18,34,.95),rgba(3,8,19,.90))',
-      border: '1px solid rgba(45,212,191,0.14)', borderRadius: '14px',
+      marginBottom: '20px', padding: '14px 16px',
+      background: 'linear-gradient(135deg,rgba(10,18,34,.96),rgba(3,8,19,.92))',
+      border: '1px solid rgba(45,212,191,0.16)', borderRadius: '14px',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: links.length > 0 ? '12px' : 0 }}>
-        <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
-          Indexed Project Links
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
+        <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+          Project Links
         </span>
-        {links.length === 0 && (
-          <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
-            No official project links indexed in this pass.
-          </span>
-        )}
+        <span style={{ fontSize: '9px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+          Indexed links from token metadata
+        </span>
       </div>
-      {links.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
+      {links.length === 0 ? (
+        <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+          No socials found for this token
+        </span>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
           {links.map((lk) => (
             <a
               key={lk.label}
@@ -1306,18 +1304,20 @@ function ProjectSocialsCard({ socials }: { socials: ScanResult['projectSocials']
               target="_blank"
               rel="noopener noreferrer"
               style={{
-                display: 'inline-flex', alignItems: 'center', gap: '5px',
-                padding: '5px 11px', borderRadius: '999px', textDecoration: 'none',
-                border: `1px solid ${lk.color}28`,
-                background: `${lk.color}0d`,
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '6px 14px', borderRadius: '999px', textDecoration: 'none',
+                border: `1px solid ${lk.color}30`,
+                background: `${lk.color}10`,
                 color: lk.color,
-                fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
+                fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em',
                 fontFamily: 'var(--font-plex-mono)',
                 transition: 'background 0.14s, border-color 0.14s',
               }}
             >
-              <span style={{ fontSize: '8px', opacity: 0.7 }}>{lk.abbr}</span>
               {lk.label}
+              <svg width="9" height="9" viewBox="0 0 10 10" fill="none" style={{ opacity: 0.55, flexShrink: 0 }}>
+                <path d="M1 9L9 1M9 1H4M9 1V6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
             </a>
           ))}
         </div>
@@ -3648,6 +3648,8 @@ export default function TerminalTokenScanner() {
                       {`Market cap ${fmtLarge(result.marketCapUsd)} reflects circulating supply. FDV ${fmtLarge(result.fdvUsd)} covers all tokens including locked and unvested. ${result.marketCapUsd / result.fdvUsd < 0.7 ? 'Significant unlock pressure possible.' : 'Low unlock pressure from current ratio.'}`}
                     </div>
                   )}
+                  {/* Project Links — indexed socials from token metadata */}
+                  <ProjectSocialsCard socials={result.projectSocials} />
                   {(() => {
                     // Priority:
                     //   A) Real/reconstructed candles (pool_ohlcv, token_level_ohlcv, dexscreener_ohlcv, trade_reconstructed)
@@ -3799,8 +3801,6 @@ export default function TerminalTokenScanner() {
                       </div>
                     </div>
                   )}
-                  {/* Project Socials — always rendered when scan returns projectSocials */}
-                  <ProjectSocialsCard socials={result.projectSocials} />
                 </>
               )}
 
