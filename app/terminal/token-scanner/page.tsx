@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
+import { calculateCortexScoreV2, type CortexScoreResultV2 } from '@/lib/token/scoring'
 
 // ─── Canonical status ─────────────────────────────────────────────────────
 type CanonicalStatus =
@@ -2445,12 +2446,13 @@ function calculateCortexScore(result: ScanResult): CortexScoreResult {
   }
 }
 
-function getVerdictStyle(verdict: CortexScoreResult['verdict']): { label: string; color: string; bg: string; border: string } {
+function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResultV2['verdict']): { label: string; color: string; bg: string; border: string } {
   switch (verdict) {
     case 'AVOID':        return { label: 'AVOID',         color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.35)' }
     case 'CLEAN LOOKING':return { label: 'CLEAN LOOKING', color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.35)'  }
     case 'WATCH':        return { label: 'WATCH',         color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
     case 'CAUTION':      return { label: 'CAUTION',       color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }
+    case 'OPEN CHECK':   return { label: 'OPEN CHECK',    color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
     default:             return { label: 'UNKNOWN',       color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.25)' }
   }
 }
@@ -3405,9 +3407,11 @@ export default function TerminalTokenScanner() {
 
               {/* ── CORTEX READ ───────────────────────────────────────── */}
               {activeSection === 'cortex-read' && (() => {
-                const cx = calculateCortexScore(result)
+                const cx = calculateCortexScoreV2(result)
                 const score = cx.score
-                const scoreColor = score >= 75 ? '#34d399' : score >= 50 ? '#fbbf24' : '#f87171'
+                const scoreDisplay = cx.displayScore
+                const scoreForBar = score ?? 0
+                const scoreColor = cx.isOpenCheck ? '#fbbf24' : scoreForBar >= 75 ? '#34d399' : scoreForBar >= 50 ? '#fbbf24' : '#f87171'
                 const v = getVerdictStyle(cx.verdict)
                 const confidence = cx.confidence
                 const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
@@ -3460,12 +3464,12 @@ export default function TerminalTokenScanner() {
                   (result.noActivePools || result.marketCapStatus === 'partial') ? 'Market data partial' : null,
                 ].filter(Boolean) as string[]
                 const scoreBreakdown = [
-                  { label: 'Market', ok: marketChipOk, reason: result.noActivePools ? 'No active pool detected.' : 'Price and pool state available.' },
-                  { label: 'Liquidity', ok: (result.liquidity ?? 0) > 1000, reason: (result.liquidity ?? 0) > 1000 ? `${fmtLarge(result.liquidity)} depth detected.` : 'Liquidity too thin or missing.' },
-                  { label: 'Holders', ok: holderState.kind === 'rowsWithPercent', reason: holderState.kind === 'rowsWithPercent' ? 'Top holder percentages verified.' : 'Holder percentages not confirmed.' },
-                  { label: 'Security', ok: riskChipOk, reason: riskChipOk ? 'Simulation passed with no honeypot flag.' : simUnavailable ? 'Simulation unavailable this pass.' : 'Security risk detected.' },
-                  { label: 'LP Proof', ok: lpVerified, reason: lpVerified ? `LP ${lpStatus}.` : lpStatus === 'team_controlled' ? 'LP appears team-controlled.' : 'No lock/burn proof confirmed.' },
-                  { label: 'Missing Checks', ok: missing2.length === 0, reason: missing2.length === 0 ? 'No open checks.' : `${missing2.length} open checks remain.` },
+                  { label: 'LiquidityScore', value: cx.breakdown.liquidityScore.score, ok: cx.breakdown.liquidityScore.score != null, reason: cx.breakdown.liquidityScore.reason },
+                  { label: 'HolderScore', value: cx.breakdown.holderScore.score, ok: cx.breakdown.holderScore.score != null, reason: cx.breakdown.holderScore.reason },
+                  { label: 'SecurityScore', value: cx.breakdown.securityScore.score, ok: cx.breakdown.securityScore.score != null, reason: cx.breakdown.securityScore.reason },
+                  { label: 'MarketHealthScore', value: cx.breakdown.marketHealthScore.score, ok: cx.breakdown.marketHealthScore.score != null, reason: cx.breakdown.marketHealthScore.reason },
+                  { label: 'VolatilityPenalty', value: cx.breakdown.volatilityPenalty.score, ok: cx.breakdown.volatilityPenalty.score != null, reason: cx.breakdown.volatilityPenalty.reason },
+                  { label: 'DevScore', value: cx.breakdown.devScore.score, ok: cx.breakdown.devScore.score != null, reason: cx.breakdown.devScore.reason },
                 ]
                 const goodSignals = goodSigns.length >= 2 ? goodSigns : [...goodSigns, 'No additional positive signals confirmed this scan.']
                 const riskSignals = riskSigns.length >= 2 ? riskSigns : [...riskSigns, 'No additional risk signals surfaced beyond current checks.']
@@ -3477,8 +3481,8 @@ export default function TerminalTokenScanner() {
                         <div style={{ flexShrink: 0 }}>
                           <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CORTEX SCORE</div>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
-                            <span style={{ fontSize: '62px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 28px ${scoreColor}40` }}>{score}</span>
-                            <span style={{ fontSize: '18px', color: `${scoreColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
+                            <span style={{ fontSize: score == null ? '38px' : '62px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 28px ${scoreColor}40` }}>{scoreDisplay}</span>
+                            {score != null && <span style={{ fontSize: '18px', color: `${scoreColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>}
                           </div>
                           <div style={{ fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', marginTop: '6px', letterSpacing: '.06em' }}>{cx.scanQuality} · {cx.confidence} CONF</div>
                         </div>
@@ -3488,7 +3492,7 @@ export default function TerminalTokenScanner() {
                             <span style={{ padding: '5px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', color: confColor, background: `${confColor}14`, border: `1px solid ${confColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{confidence} CONFIDENCE</span>
                           </div>
                           <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                            <div style={{ height: '100%', width: `${score}%`, borderRadius: '999px', background: `linear-gradient(90deg,${scoreColor},${scoreColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 8px ${scoreColor}60` }} />
+                            <div style={{ height: '100%', width: `${scoreForBar}%`, borderRadius: '999px', background: `linear-gradient(90deg,${scoreColor},${scoreColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 8px ${scoreColor}60` }} />
                           </div>
                         </div>
                       </div>
@@ -3523,14 +3527,14 @@ export default function TerminalTokenScanner() {
                       <p style={{ margin:'0 0 12px', fontSize:'10px', letterSpacing:'.16em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
                       <div style={{ display:'grid', gap:'0' }}>
                         {scoreBreakdown.map((b, bIdx)=>(
-                          <div key={b.label} className="cortex-bdrow" style={{ display:'grid', gridTemplateColumns:'120px 74px 1fr', gap:'10px', alignItems:'center', padding:'7px 8px', borderBottom: bIdx < scoreBreakdown.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
+                          <div key={b.label} className="cortex-bdrow" style={{ display:'grid', gridTemplateColumns:'150px 74px 1fr', gap:'10px', alignItems:'center', padding:'7px 8px', borderBottom: bIdx < scoreBreakdown.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
                             <span style={{ fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{b.label}</span>
-                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:800, letterSpacing:'.08em', fontFamily:'var(--font-plex-mono)' }}>{b.ok ? 'PASS' : 'OPEN'}</span>
+                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:800, letterSpacing:'.08em', fontFamily:'var(--font-plex-mono)' }}>{b.ok ? b.value : 'OPEN'}</span>
                             <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
                           </div>
                         ))}
                         <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'8px', padding:'7px 10px', borderRadius:'8px', background: cx.capReason ? 'rgba(148,163,184,0.05)' : 'rgba(52,211,153,0.04)', border: cx.capReason ? '1px solid rgba(148,163,184,0.14)' : '1px solid rgba(52,211,153,0.14)' }}>
-                          <span style={{ fontSize:'10px', color: cx.capReason ? '#64748b' : '#34d399', fontFamily:'var(--font-plex-mono)', fontStyle:'italic' }}>⚑ {cx.capReason ?? 'No major score cap applied.'}</span>
+                          <span style={{ fontSize:'10px', color: cx.capReason ? '#64748b' : '#34d399', fontFamily:'var(--font-plex-mono)', fontStyle:'italic' }}>⚑ {cx.capReason ?? 'Weighted Cortex V2 score uses normalized non-inflating categories.'}</span>
                         </div>
                       </div>
                     </div>
