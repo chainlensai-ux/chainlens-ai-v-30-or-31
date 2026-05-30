@@ -122,6 +122,13 @@ type ScanResult = {
     probeV2Like?: boolean
     probeV3Like?: boolean
     lpVerificationPoolReason?: string
+    primaryMarketPool?: string | null
+    verificationPool?: string | null
+    verificationPoolDex?: string | null
+    verificationPoolType?: string | null
+    proofStatus?: 'open_check' | 'verified' | 'not_applicable' | null
+    lockStatus?: 'locked' | 'not_confirmed' | 'not_applicable' | null
+    burnStatus?: 'burned' | 'not_confirmed' | 'not_applicable' | null
   } | null
   lpControlRead?: {
     title?: string
@@ -1380,8 +1387,13 @@ function getSummaryReasons(result: ScanResult): string[] {
 
 function getLpMode(result: ScanResult): LpMode {
   const status = result.lpControl?.status
+  const poolType = result.lpControl?.poolType
   if (status === 'protocol' || status === 'concentrated_liquidity') return 'protocol'
   if (status === 'locked' || status === 'burned' || status === 'team_controlled' || status === 'risky') return 'lp_token'
+  // partial with confirmed v2 poolType = standard ERC-20 LP token path, proof just unconfirmed
+  if (poolType === 'v2' && (status === 'partial' || status === 'insufficient_data')) return 'lp_token'
+  // proofStatus: verified comes from normalized backend field
+  if (result.lpControl?.proofStatus === 'verified') return 'lp_token'
   return 'unknown'
 }
 function getMissingChecks(result: ScanResult): string[] {
@@ -2040,6 +2052,8 @@ function deriveLpMode(result: ScanResult): LpMode {
   // lp_token: when V2 LP-token pools exist, use normal burn/lock proof path
   if (v2Count != null && v2Count > 0) return 'lp_token'
   if (lpStatus === 'burned' || lpStatus === 'locked' || lpStatus === 'team_controlled' || lpPoolType === 'v2') return 'lp_token'
+  // partial with v2 poolType = standard ERC-20 LP token, proof just unverified
+  if (lpPoolType === 'v2' && (lpStatus === 'partial' || lpStatus === 'insufficient_data')) return 'lp_token'
 
   // protocol: Base + no V2 pools + any concentrated-liquidity signal
   if (chain === 'base' && (v2Count === 0 || v2Count == null)) {
@@ -2116,14 +2130,16 @@ function getLpNextAction(result: ScanResult): string {
   const lp = result.lpControl
   const lpMode = getLpMode(result)
   const status = lp?.status
+  const poolType = lp?.poolType
   const liqDepth = result.liquidity ?? null
   const hasLiquidity = (liqDepth ?? 0) > 0 || result.lpControl?.poolAddressPresent
   if (result.noActivePools && !hasLiquidity) return 'No active pool found. Verify the contract address and chain before trading.'
   if (status === 'burned') return liqDepth != null && liqDepth < 50_000 ? 'LP is burned — good sign. Pool depth is thin, so monitor liquidity before committing size.' : 'LP appears burned — exit liquidity is protected. Still monitor holder concentration and trading taxes.'
   if (status === 'locked') return 'LP is locked — verify the lock duration and expiry. Monitor holder concentration before assuming permanent protection.'
-  if (lpMode === 'protocol') return 'Protocol-owned liquidity is normal for v3/v4-style pools. Monitor pool depth and age. No LP tokens to lock or burn in this model.'
+  if (lpMode === 'protocol') return 'V3/V4-style pools do not use standard ERC-20 LP lock/burn proof. Monitor pool depth, age, and holder concentration.'
   if (status === 'team_controlled') return 'LP control is not locked. Treat exit risk as elevated and avoid large positions until lock or burn proof is indexed.'
-  if (status === 'partial') return 'Partial LP proof. Some liquidity may be protected but full coverage is not confirmed. Proceed with caution.'
+  if (status === 'partial' && poolType === 'v2') return 'LP token exists, but lock/burn ownership could not be verified. Treat exit liquidity as unprotected until proof is indexed.'
+  if (status === 'partial') return 'LP proof is an open check. Some liquidity may be protected but full coverage is not confirmed. Proceed with caution.'
   return 'LP protection is still an open check. Treat exit liquidity as unprotected until lock, burn, or protocol ownership is confirmed.'
 }
 
@@ -4109,9 +4125,11 @@ export default function TerminalTokenScanner() {
                     const lpModeVal = getLpMode(result)
                     const lpStatus = result.lpControl?.status
                     const hasPool = (result.liquidity ?? 0) > 0 || result.lpControl?.poolAddressPresent
-                    const modelLabel = lpModeVal === 'protocol' ? 'Concentrated' : lpModeVal === 'lp_token' ? 'V2 LP Tokens' : hasPool ? 'Pool Detected' : 'Unverified'
-                    const modelColor = lpModeVal === 'protocol' ? '#c084fc' : lpModeVal === 'lp_token' ? '#60a5fa' : hasPool ? '#fbbf24' : '#94a3b8'
-                    const modelDesc = lpModeVal === 'protocol' ? 'V3/V4-style pool — no ERC-20 LP tokens. Lock/burn proof does not apply.' : lpModeVal === 'lp_token' ? 'Traditional V2 LP tokens. Lock or burn proof is relevant here.' : hasPool ? 'Pool structure detected, but LP token model is not confirmed.' : 'Pool structure could not be classified from this scan.'
+                    const lpStatus2 = result.lpControl?.status
+                    const lpProofConfirmed = lpStatus2 === 'burned' || lpStatus2 === 'locked'
+                    const modelLabel = lpModeVal === 'protocol' ? 'Concentrated' : lpModeVal === 'lp_token' ? 'ERC-20 LP Token' : hasPool ? 'Pool Detected' : 'Unverified'
+                    const modelColor = lpModeVal === 'protocol' ? '#c084fc' : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa') : hasPool ? '#fbbf24' : '#94a3b8'
+                    const modelDesc = lpModeVal === 'protocol' ? 'V3/V4-style pool — no ERC-20 LP tokens. Lock/burn proof does not apply.' : lpModeVal === 'lp_token' ? (lpProofConfirmed ? 'Standard ERC-20 LP token — lock or burn proof confirmed.' : 'Standard ERC-20 LP token detected. Lock or burn proof has not been verified.') : hasPool ? 'Pool structure detected, but LP token model is not confirmed.' : 'Pool structure could not be classified from this scan.'
                     void lpStatus
                     return (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: '10px', marginBottom: '14px' }}>

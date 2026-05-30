@@ -2145,6 +2145,15 @@ type LpControlResult = {
   probeV2Like?: boolean;
   probeV3Like?: boolean;
   lpVerificationPoolReason?: string;
+  // Normalized split-pool fields — always set after LP resolution
+  primaryMarketPool?: string | null;
+  verificationPool?: string | null;
+  verificationPoolDex?: string | null;
+  verificationPoolType?: string | null;
+  // Normalized proof status fields — always set after LP resolution
+  proofStatus?: "open_check" | "verified" | "not_applicable" | null;
+  lockStatus?: "locked" | "not_confirmed" | "not_applicable" | null;
+  burnStatus?: "burned" | "not_confirmed" | "not_applicable" | null;
 };
 type LpDiagnostics = {
   attempted: boolean;
@@ -3619,6 +3628,20 @@ export async function POST(req: Request) {
     // Ensure poolAddressPresent is always correct on the final object — some inner branches
     // replace lpControl wholesale without setting this field (e.g., GoldRush/RPC paths).
     lpControl.poolAddressPresent = _lpProofPresent;
+
+    // Normalize split-pool and proof-status fields so frontend never needs to derive them.
+    // These are always set regardless of which LP branch ran.
+    {
+      const _isConcentrated = lpControl.status === 'protocol' || lpControl.status === 'concentrated_liquidity'
+      const _isVerified = lpControl.status === 'burned' || lpControl.status === 'locked'
+      lpControl.primaryMarketPool = lpDiagnostics.primaryMarketPoolAddress ?? null
+      lpControl.verificationPool = lpDiagnostics.lpVerificationPoolAddress ?? null
+      lpControl.verificationPoolDex = lpDiagnostics.lpVerificationDex ?? null
+      lpControl.verificationPoolType = lpDiagnostics.lpVerificationType ?? null
+      lpControl.proofStatus = _isConcentrated ? 'not_applicable' : _isVerified ? 'verified' : 'open_check'
+      lpControl.lockStatus = _isConcentrated ? 'not_applicable' : lpControl.status === 'locked' ? 'locked' : 'not_confirmed'
+      lpControl.burnStatus = _isConcentrated ? 'not_applicable' : lpControl.status === 'burned' ? 'burned' : 'not_confirmed'
+    }
 
     lpControl.evidence = [
       ...(lpControl.evidence ?? []),
@@ -6061,6 +6084,22 @@ export async function POST(req: Request) {
         lpDiagnostics: {
           chain: lpDiagnostics.chain,
           poolDetected: lpDiagnostics.poolDetected,
+          // LP model decision — how the backend classified the LP type and proof path
+          lpModelDecision: {
+            primaryMarketDex: lpDiagnostics.primaryMarketDex,
+            primaryMarketType: lpDiagnostics.primaryMarketType,
+            selectedDex: lpDiagnostics.lpVerificationDex ?? lpDiagnostics.selectedPoolDex,
+            selectedType: lpDiagnostics.lpVerificationType ?? lpDiagnostics.selectedPoolType,
+            lpToken: lpDiagnostics.lpTokenAddress,
+            poolAddressPresent: lpDiagnostics.poolDetected,
+            treatedAsStandardLpToken: lpControl.poolType === 'v2' || (lpControl.poolType === 'unknown' && lpControl.status !== 'protocol' && lpControl.status !== 'concentrated_liquidity'),
+            treatedAsConcentrated: lpControl.status === 'protocol' || lpControl.status === 'concentrated_liquidity',
+            lockBurnApplicable: lpControl.status !== 'protocol' && lpControl.status !== 'concentrated_liquidity' && lpControl.status !== 'no_pool',
+            proofStatus: lpControl.proofStatus ?? null,
+            lockStatus: lpControl.lockStatus ?? null,
+            burnStatus: lpControl.burnStatus ?? null,
+            reason: lpControl.reason,
+          },
           // Primary market pool (display/Liquidity UI)
           primaryMarketSelected: lpDiagnostics.primaryMarketSelected,
           primaryMarketPoolAddress: lpDiagnostics.primaryMarketPoolAddress,
