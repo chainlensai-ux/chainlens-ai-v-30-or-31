@@ -41,7 +41,7 @@ type ClarkVerdict = {
   nextAction: string
 }
 
-type WalletTier = 'Smart Money' | 'Average Trader' | 'Losing Wallet' | 'Open Check'
+type WalletTier = 'Smart Money' | 'Positive Early Read' | 'Average Trader' | 'Losing Wallet' | 'Open Check'
 type WalletIntelStatus = 'ok' | 'partial' | 'open_check'
 type WalletConfidence = 'high' | 'medium' | 'low' | 'open check'
 
@@ -119,56 +119,6 @@ type WalletResult = {
   walletIntelligence?: WalletIntelligence
 }
 
-// ─── Wallet Intelligence Types ──────────────────────────────────────────────
-
-type WalletTrade = {
-  tokenSymbol?: string
-  tokenAddress?: string
-  entryUsd?: number | null
-  exitUsd?: number | null
-  pnlUsd?: number | null
-  sizeUsd?: number | null
-  openedAt?: string | number | null
-  closedAt?: string | number | null
-  holdTimeLabel?: string | null
-  status: 'closed' | 'open' | 'unavailable'
-}
-
-type WalletScoreResult = {
-  status: 'ok' | 'open_check' | 'insufficient_trades'
-  walletScore: number | null
-  walletTier: 'smart_money' | 'average_trader' | 'losing_wallet' | 'open_check'
-  winRate: number | null
-  lossRate: number | null
-  closedTradesCount: number
-  confidence: 'high' | 'medium' | 'low' | 'open_check'
-  reasons: string[]
-}
-
-type PnlOverview = {
-  totalPnlUsd: number | null
-  pnl7dUsd: number | null
-  pnl30dUsd: number | null
-  pnlThisMonthUsd: number | null
-  realizedPnlUsd: number | null
-  unrealizedPnlUsd: number | null
-  biggestWinUsd: number | null
-  biggestLossUsd: number | null
-  avgWinUsd: number | null
-  avgLossUsd: number | null
-}
-
-type TradeBehaviorMetrics = {
-  wins: number
-  losses: number
-  winRate: number | null
-  lossRate: number | null
-  avgWinUsd: number | null
-  avgLossUsd: number | null
-  biggestWinUsd: number | null
-  biggestLossUsd: number | null
-}
-
 // ── Formatters ───────────────────────────────────────────────────────────────────────────
 
 function fmtUSD(v: number): string {
@@ -191,9 +141,10 @@ function safeNum(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
-function deriveWalletTier(winRate: number | null): WalletTier {
+function deriveWalletTier(winRate: number | null, closedCount = 0): WalletTier {
   if (winRate === null || !Number.isFinite(winRate)) return 'Open Check'
-  if (winRate >= 65) return 'Smart Money'
+  if (winRate >= 65 && closedCount >= 10) return 'Smart Money'
+  if (winRate >= 65 && closedCount >= 3) return 'Positive Early Read'
   if (winRate >= 40) return 'Average Trader'
   return 'Losing Wallet'
 }
@@ -297,7 +248,7 @@ function buildWalletIntelligence(data: WalletResult): WalletIntelligence {
   const tradeBehavior = deriveTradeBehavior(data)
   const pnl = derivePnlOverview(data)
   const score = deriveWalletScore(data)
-  const walletTier = data.walletIntelligence?.walletTier ?? deriveWalletTier(tradeBehavior.winRate)
+  const walletTier = data.walletIntelligence?.walletTier ?? deriveWalletTier(tradeBehavior.winRate, tradeBehavior.closedTrades)
   return {
     status: score.scoreStatus === 'ok' ? 'ok' : 'open_check',
     confidence: score.confidence,
@@ -328,123 +279,6 @@ function fmtPct(v: number | null): string {
 
 function shortAddr(a: string): string {
   return `${a.slice(0, 6)}…${a.slice(-4)}`
-}
-
-// ─── Wallet Intelligence Helpers ────────────────────────────────────────────
-
-function formatPnlValue(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return 'Open Check'
-  const abs = Math.abs(value)
-  const sign = value >= 0 ? '+' : '-'
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`
-  if (abs >= 1_000)     return `${sign}$${(abs / 1_000).toFixed(2)}K`
-  return `${sign}$${abs.toFixed(2)}`
-}
-
-function buildWalletOpenCheck(reason: string): WalletScoreResult {
-  return { status: 'open_check', walletScore: null, walletTier: 'open_check', winRate: null, lossRate: null, closedTradesCount: 0, confidence: 'open_check', reasons: [reason] }
-}
-
-function getClosedTradesFromWalletResult(result: WalletResult): WalletTrade[] {
-  const pnl = result.estimatedPnl
-  if (!pnl || pnl.status === 'unavailable' || pnl.status === 'error') return []
-  return pnl.tokens
-    .filter(t => t.estimatedRealizedPnlUsd !== null)
-    .map(t => ({
-      tokenSymbol: t.symbol,
-      tokenAddress: t.contract,
-      pnlUsd: t.estimatedRealizedPnlUsd,
-      entryUsd: null, exitUsd: null, sizeUsd: null,
-      openedAt: null, closedAt: null, holdTimeLabel: null,
-      status: 'closed' as const,
-    }))
-}
-
-function deriveTradeBehaviorMetrics(closedTrades: WalletTrade[]): TradeBehaviorMetrics {
-  const withPnl = closedTrades.filter(t => t.pnlUsd !== null && Number.isFinite(t.pnlUsd))
-  if (withPnl.length === 0) return { wins: 0, losses: 0, winRate: null, lossRate: null, avgWinUsd: null, avgLossUsd: null, biggestWinUsd: null, biggestLossUsd: null }
-  const wins = withPnl.filter(t => (t.pnlUsd ?? 0) > 0)
-  const losses = withPnl.filter(t => (t.pnlUsd ?? 0) < 0)
-  const total = wins.length + losses.length
-  if (total === 0) return { wins: 0, losses: 0, winRate: null, lossRate: null, avgWinUsd: null, avgLossUsd: null, biggestWinUsd: null, biggestLossUsd: null }
-  const winRate = (wins.length / total) * 100
-  const lossRate = (losses.length / total) * 100
-  const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + (t.pnlUsd ?? 0), 0) / wins.length : null
-  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + (t.pnlUsd ?? 0), 0) / losses.length : null
-  const biggestWin = wins.length > 0 ? Math.max(...wins.map(t => t.pnlUsd ?? 0)) : null
-  const biggestLoss = losses.length > 0 ? Math.min(...losses.map(t => t.pnlUsd ?? 0)) : null
-  return { wins: wins.length, losses: losses.length, winRate, lossRate, avgWinUsd: avgWin, avgLossUsd: avgLoss, biggestWinUsd: biggestWin, biggestLossUsd: biggestLoss }
-}
-
-function deriveWalletTier(winRate: number | null, count: number): WalletScoreResult['walletTier'] {
-  if (count < 3 || winRate === null) return 'open_check'
-  if (winRate >= 65) return 'smart_money'
-  if (winRate >= 40) return 'average_trader'
-  return 'losing_wallet'
-}
-
-function deriveWalletScore(metrics: TradeBehaviorMetrics, count: number, totalPnl: number | null): number | null {
-  if (count < 3 || metrics.winRate === null) return null
-  const winScore = Math.min(Math.max(metrics.winRate / 100, 0), 1)
-  const avgWin = metrics.avgWinUsd ?? 0
-  const avgLoss = Math.abs(metrics.avgLossUsd ?? 0)
-  const profitFactor = avgLoss > 0 ? Math.min(avgWin / (avgLoss + 1), 3) / 3 : avgWin > 0 ? 1 : 0.5
-  const trendScore = totalPnl === null ? 0.5 : totalPnl > 0 ? Math.min(0.5 + totalPnl / 100_000 * 0.5, 1) : Math.max(0.5 - Math.abs(totalPnl) / 100_000 * 0.5, 0)
-  const volumeConfidence = Math.min(count / 50, 1)
-  return Math.round((winScore * 0.55 + profitFactor * 0.20 + trendScore * 0.15 + volumeConfidence * 0.10) * 100)
-}
-
-function derivePnlOverview(result: WalletResult, closedTrades: WalletTrade[]): PnlOverview {
-  const pnl = result.estimatedPnl
-  const wins = closedTrades.filter(t => (t.pnlUsd ?? 0) > 0)
-  const losses = closedTrades.filter(t => (t.pnlUsd ?? 0) < 0)
-  return {
-    totalPnlUsd: pnl?.totalEstimatedPnlUsd ?? null,
-    pnl7dUsd: null,
-    pnl30dUsd: null,
-    pnlThisMonthUsd: null,
-    realizedPnlUsd: pnl?.realizedPnlUsd ?? null,
-    unrealizedPnlUsd: pnl?.unrealizedPnlUsd ?? null,
-    biggestWinUsd: wins.length > 0 ? Math.max(...wins.map(t => t.pnlUsd ?? 0)) : null,
-    biggestLossUsd: losses.length > 0 ? Math.min(...losses.map(t => t.pnlUsd ?? 0)) : null,
-    avgWinUsd: wins.length > 0 ? wins.reduce((s, t) => s + (t.pnlUsd ?? 0), 0) / wins.length : null,
-    avgLossUsd: losses.length > 0 ? losses.reduce((s, t) => s + (t.pnlUsd ?? 0), 0) / losses.length : null,
-  }
-}
-
-function deriveWalletScoreResult(result: WalletResult, closedTrades: WalletTrade[], metrics: TradeBehaviorMetrics, pnlOverview: PnlOverview): WalletScoreResult {
-  const pnl = result.estimatedPnl
-  if (!pnl || pnl.status === 'unavailable' || pnl.status === 'error') return buildWalletOpenCheck('PnL data could not be reconstructed from indexed activity.')
-  const count = closedTrades.length
-  if (count < 3) {
-    return { status: 'insufficient_trades', walletScore: null, walletTier: 'open_check', winRate: null, lossRate: null, closedTradesCount: count, confidence: 'open_check', reasons: ['Not enough closed positions to rate this wallet yet.'] }
-  }
-  const tier = deriveWalletTier(metrics.winRate, count)
-  const score = deriveWalletScore(metrics, count, pnlOverview.totalPnlUsd)
-  const confidence: WalletScoreResult['confidence'] = count >= 50 ? 'high' : count >= 10 ? 'medium' : 'low'
-  const reasons: string[] = []
-  if (metrics.winRate !== null) reasons.push(`Win rate: ${metrics.winRate.toFixed(1)}% across ${count} closed positions.`)
-  if (pnl.confidence) reasons.push(`PnL data confidence: ${pnl.confidence}.`)
-  return { status: 'ok', walletScore: score, walletTier: tier, winRate: metrics.winRate, lossRate: metrics.lossRate, closedTradesCount: count, confidence, reasons }
-}
-
-function deriveWalletPersonality(scoreResult: WalletScoreResult, pnlOverview: PnlOverview): string {
-  if (scoreResult.status === 'open_check') {
-    return 'Trading skill cannot be determined yet because closed positions were not reconstructed from indexed data. This wallet may accumulate rather than actively trade, or historical activity may not be fully indexed.'
-  }
-  if (scoreResult.status === 'insufficient_trades') {
-    const c = scoreResult.closedTradesCount
-    return c === 0
-      ? 'No closed positions were reconstructed from indexed data. This wallet appears to hold rather than actively close trades, or its history is not yet indexed on this chain.'
-      : `Only ${c} closed position${c === 1 ? '' : 's'} could be reconstructed — not enough to rate this wallet yet. Confidence will improve as more activity is indexed.`
-  }
-  const tierLabel = scoreResult.walletTier === 'smart_money' ? 'above-average win profile'
-    : scoreResult.walletTier === 'average_trader' ? 'average trading profile'
-    : 'below-average win profile'
-  const totalPnl = pnlOverview.totalPnlUsd
-  const pnlNote = totalPnl === null ? '' : totalPnl > 0 ? ' Overall estimated PnL is positive.' : ' Overall estimated PnL is negative.'
-  const confNote = scoreResult.confidence === 'low' ? ' Confidence is low due to small sample size.' : scoreResult.confidence === 'medium' ? ' Confidence is medium.' : ' Confidence is high based on a larger trade sample.'
-  return `This wallet shows a ${tierLabel} across ${scoreResult.closedTradesCount} reconstructed closed positions.${pnlNote}${confNote} This is an estimate based on average-cost-basis reconstruction — not verified per-trade entry/exit data. No financial advice.`
 }
 
 // ── Clark verdict parser ──────────────────────────────────────────────────────────────────────────
@@ -832,11 +666,13 @@ export default function WalletScannerPage() {
             const walletIntel = buildWalletIntelligence(result)
             const tierTone = walletIntel.walletTier === 'Smart Money'
               ? { bg: 'rgba(34,197,94,0.13)', border: 'rgba(34,197,94,0.32)', color: '#4ade80' }
-              : walletIntel.walletTier === 'Average Trader'
-                ? { bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.30)', color: '#fbbf24' }
-                : walletIntel.walletTier === 'Losing Wallet'
-                  ? { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.30)', color: '#f87171' }
-                  : { bg: 'rgba(56,189,248,0.10)', border: 'rgba(56,189,248,0.25)', color: '#7dd3fc' }
+              : walletIntel.walletTier === 'Positive Early Read'
+                ? { bg: 'rgba(45,212,191,0.10)', border: 'rgba(45,212,191,0.28)', color: '#2DD4BF' }
+                : walletIntel.walletTier === 'Average Trader'
+                  ? { bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.30)', color: '#fbbf24' }
+                  : walletIntel.walletTier === 'Losing Wallet'
+                    ? { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.30)', color: '#f87171' }
+                    : { bg: 'rgba(56,189,248,0.10)', border: 'rgba(56,189,248,0.25)', color: '#7dd3fc' }
             const hasUsefulActivity = Boolean(
               b?.status === 'ok' &&
               ((b.txCount ?? 0) > 0 || (b.activeDays ?? 0) > 0 || (b.inboundCount ?? 0) > 0 || (b.outboundCount ?? 0) > 0 || (b.topTokens?.length ?? 0) > 0 || (b.topContracts?.length ?? 0) > 0)
@@ -921,7 +757,10 @@ export default function WalletScannerPage() {
                 </div>
 
                 <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '18px', padding: '22px' }}>
-                  <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>PnL Overview</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                    <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Estimated Position Read</div>
+                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.25)', background: 'rgba(56,189,248,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>avg cost basis</span>
+                  </div>
                   <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
                     {[
                       { label: 'Total PnL All Time', value: fmtSignedUSD(walletIntel.pnl.total) },
@@ -1057,205 +896,6 @@ export default function WalletScannerPage() {
                 ))}
               </div>
 
-              {/* ── Wallet Intelligence: Score · PnL · Trade Behavior · Personality · Positions ── */}
-              {(() => {
-                const closedTrades = getClosedTradesFromWalletResult(result)
-                const metrics = deriveTradeBehaviorMetrics(closedTrades)
-                const pnlOverview = derivePnlOverview(result, closedTrades)
-                const scoreResult = deriveWalletScoreResult(result, closedTrades, metrics, pnlOverview)
-                const personality = deriveWalletPersonality(scoreResult, pnlOverview)
-                const tierColor = scoreResult.walletTier === 'smart_money' ? '#34d399'
-                  : scoreResult.walletTier === 'average_trader' ? '#fbbf24'
-                  : scoreResult.walletTier === 'losing_wallet' ? '#f87171'
-                  : '#60a5fa'
-                const tierLabel = scoreResult.walletTier === 'smart_money' ? 'Smart Money'
-                  : scoreResult.walletTier === 'average_trader' ? 'Average Trader'
-                  : scoreResult.walletTier === 'losing_wallet' ? 'Losing Wallet'
-                  : 'Open Check'
-                const confColor = scoreResult.confidence === 'high' ? '#34d399'
-                  : scoreResult.confidence === 'medium' ? '#fbbf24'
-                  : scoreResult.confidence === 'low' ? '#fb923c'
-                  : '#60a5fa'
-                return (
-                  <>
-                    {/* 1 ── Instant Wallet Score */}
-                    <div style={{ background: '#080c14', border: `1px solid ${tierColor}22`, borderRadius: '16px', overflow: 'hidden' }}>
-                      <div style={{ height: '2px', background: `linear-gradient(90deg, ${tierColor}, #8b5cf6)` }} />
-                      <div style={{ padding: '20px 24px' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: tierColor, textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>
-                          Instant Wallet Score
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap' }}>
-                          <div style={{ textAlign: 'center', minWidth: '72px' }}>
-                            <div style={{ width: '72px', height: '72px', borderRadius: '50%', background: `${tierColor}12`, border: `2px solid ${tierColor}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 6px' }}>
-                              {scoreResult.walletScore !== null
-                                ? <span style={{ fontSize: '22px', fontWeight: 900, color: tierColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{scoreResult.walletScore}</span>
-                                : <span style={{ fontSize: '12px', fontWeight: 700, color: tierColor, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>—</span>
-                              }
-                            </div>
-                            <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase', letterSpacing: '0.10em' }}>Score</div>
-                          </div>
-                          <div style={{ flex: 1, minWidth: '160px' }}>
-                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
-                              <span style={{ padding: '3px 12px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: `${tierColor}14`, border: `1px solid ${tierColor}40`, color: tierColor, textTransform: 'uppercase' }}>
-                                {tierLabel}
-                              </span>
-                              <span style={{ padding: '3px 10px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: `${confColor}10`, border: `1px solid ${confColor}30`, color: confColor }}>
-                                {scoreResult.confidence === 'open_check' ? 'Open Check' : `${scoreResult.confidence.charAt(0).toUpperCase()}${scoreResult.confidence.slice(1)} confidence`}
-                              </span>
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '8px', marginBottom: '10px' }}>
-                              <div>
-                                <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Win Rate</div>
-                                <div style={{ fontSize: '15px', fontWeight: 700, color: scoreResult.winRate !== null ? '#34d399' : '#60a5fa', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                                  {scoreResult.winRate !== null ? `${scoreResult.winRate.toFixed(1)}%` : 'Open Check'}
-                                </div>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Closed Positions</div>
-                                <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                                  {scoreResult.closedTradesCount}
-                                </div>
-                              </div>
-                            </div>
-                            {scoreResult.reasons.length > 0 && (
-                              <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.55 }}>
-                                {scoreResult.reasons[0]}
-                              </p>
-                            )}
-                            {scoreResult.status !== 'ok' && (
-                              <p style={{ margin: '6px 0 0', fontSize: '11px', color: '#60a5fa', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.55 }}>
-                                {scoreResult.status === 'insufficient_trades'
-                                  ? 'Not enough closed trades to rate this wallet yet.'
-                                  : 'Wallet score remains an open check until enough closed trades are reconstructed.'}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 2 ── PnL Overview */}
-                    <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 24px' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>
-                        PnL Overview
-                      </div>
-                      {(!result.estimatedPnl || result.estimatedPnl.status === 'unavailable' || result.estimatedPnl.status === 'error') ? (
-                        <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.6 }}>
-                          PnL data could not be reconstructed from indexed activity for this wallet.
-                        </p>
-                      ) : (
-                        <>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '10px' }}>
-                            {([
-                              { label: 'Total Est. PnL', value: pnlOverview.totalPnlUsd },
-                              { label: 'Realized', value: pnlOverview.realizedPnlUsd },
-                              { label: 'Unrealized', value: pnlOverview.unrealizedPnlUsd },
-                              { label: 'Biggest Win', value: pnlOverview.biggestWinUsd },
-                              { label: 'Biggest Loss', value: pnlOverview.biggestLossUsd },
-                              { label: '7D PnL', value: pnlOverview.pnl7dUsd },
-                            ] as { label: string; value: number | null }[]).map(card => {
-                              const raw = formatPnlValue(card.value)
-                              const isOC = raw === 'Open Check'
-                              const color = isOC ? '#60a5fa' : card.value !== null && card.value > 0 ? '#34d399' : card.value !== null && card.value < 0 ? '#f87171' : '#e2e8f0'
-                              return (
-                                <div key={card.label} style={{ padding: '12px 14px', background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}>
-                                  <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>{card.label}</div>
-                                  <div style={{ fontSize: '14px', fontWeight: 700, color, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{raw}</div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                          {result.estimatedPnl.confidence && (
-                            <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                              PnL estimate confidence: {result.estimatedPnl.confidence} · {result.estimatedPnl.coveragePercent?.toFixed(0) ?? '—'}% transfer coverage · Average cost basis method
-                            </p>
-                          )}
-                        </>
-                      )}
-                    </div>
-
-                    {/* 3 ── Trade Behavior */}
-                    <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 24px' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#a78bfa', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>
-                        Trade Behavior
-                      </div>
-                      {scoreResult.closedTradesCount < 3 ? (
-                        <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                          Not enough closed trades to compute behavior.
-                        </p>
-                      ) : (
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '10px' }}>
-                          {([
-                            { label: 'Win Rate', value: metrics.winRate !== null ? `${metrics.winRate.toFixed(1)}%` : 'Open Check', color: metrics.winRate !== null ? '#34d399' : '#60a5fa' },
-                            { label: 'Loss Rate', value: metrics.lossRate !== null ? `${metrics.lossRate.toFixed(1)}%` : 'Open Check', color: metrics.lossRate !== null ? '#f87171' : '#60a5fa' },
-                            { label: 'Avg Win', value: formatPnlValue(metrics.avgWinUsd), color: metrics.avgWinUsd !== null ? '#34d399' : '#60a5fa' },
-                            { label: 'Avg Loss', value: formatPnlValue(metrics.avgLossUsd), color: metrics.avgLossUsd !== null ? '#f87171' : '#60a5fa' },
-                            { label: 'Biggest Win', value: formatPnlValue(metrics.biggestWinUsd), color: metrics.biggestWinUsd !== null ? '#34d399' : '#60a5fa' },
-                            { label: 'Biggest Loss', value: formatPnlValue(metrics.biggestLossUsd), color: metrics.biggestLossUsd !== null ? '#f87171' : '#60a5fa' },
-                            { label: 'Avg Hold Time', value: 'Open Check', color: '#60a5fa' },
-                          ] as { label: string; value: string; color: string }[]).map(m => (
-                            <div key={m.label} style={{ padding: '12px 14px', background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}>
-                              <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>{m.label}</div>
-                              <div style={{ fontSize: '14px', fontWeight: 700, color: m.color, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{m.value}</div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* 4 ── AI Wallet Personality */}
-                    <div style={{ background: '#080c14', border: '1px solid rgba(139,92,246,0.20)', borderRadius: '16px', padding: '20px 24px' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: '#8b5cf6', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px' }}>
-                        AI Wallet Personality
-                      </div>
-                      <p style={{ margin: 0, fontSize: '13px', color: '#cbd5e1', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.65 }}>
-                        {personality}
-                      </p>
-                    </div>
-
-                    {/* 5 ── Closed Positions Table */}
-                    <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', overflow: 'hidden' }}>
-                      <div style={{ padding: '18px 22px 14px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                          Closed Positions
-                        </div>
-                      </div>
-                      {closedTrades.length === 0 ? (
-                        <div style={{ padding: '24px 22px', fontSize: '12px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.6 }}>
-                          Closed trades could not be reconstructed from indexed data yet.
-                        </div>
-                      ) : (
-                        <>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 80px', padding: '10px 22px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                            <span>Token</span>
-                            <span style={{ textAlign: 'right' }}>Est. PnL</span>
-                            <span style={{ textAlign: 'right' }}>Status</span>
-                          </div>
-                          {closedTrades.slice(0, 10).map((t, i) => {
-                            const pnlColor = (t.pnlUsd ?? 0) > 0 ? '#34d399' : (t.pnlUsd ?? 0) < 0 ? '#f87171' : '#94a3b8'
-                            return (
-                              <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 80px', padding: '12px 22px', borderBottom: i < Math.min(closedTrades.length, 10) - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none', alignItems: 'center' }}>
-                                <div style={{ fontSize: '13px', fontWeight: 600, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{t.tokenSymbol ?? '—'}</div>
-                                <div style={{ textAlign: 'right', fontSize: '12px', fontWeight: 700, color: pnlColor, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{formatPnlValue(t.pnlUsd ?? null)}</div>
-                                <div style={{ textAlign: 'right', fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: '#34d399', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textTransform: 'uppercase' }}>Closed</div>
-                              </div>
-                            )
-                          })}
-                          {closedTrades.length > 10 && (
-                            <div style={{ padding: '10px 22px', fontSize: '11px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                              +{closedTrades.length - 10} more positions indexed
-                            </div>
-                          )}
-                        </>
-                      )}
-                      <div style={{ padding: '10px 22px', borderTop: '1px solid rgba(255,255,255,0.04)', fontSize: '10px', color: 'rgba(255,255,255,0.20)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                        Entry · Exit · Hold time not available — average cost basis estimate only
-                      </div>
-                    </div>
-                  </>
-                )
-              })()}
 
               {/* ── Behavior card ────────────────────────────────────────────────── */}
               {hasUsefulActivity && result.walletBehavior?.status === 'ok' && (
