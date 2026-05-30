@@ -1637,6 +1637,7 @@ function extractProjectSocials(
   gtToken: Record<string, unknown> | null | undefined,
   coingeckoRaw: Record<string, unknown> | null | undefined,
   gmgnItem: Record<string, unknown> | null | undefined,
+  dsFb: DexFallbackResult | null | undefined,
 ): ProjectSocialsResult & { _foundKeys: string[]; _rejectedCount: number } {
   let website: string | null = null
   let twitter: string | null = null
@@ -1696,6 +1697,34 @@ function extractProjectSocials(
     if (!discord) discord = tryUrl(gmgnItem.discord, 'gmgn.discord')
     if (!github) github = tryUrl(gmgnItem.github, 'gmgn.github')
     if (_foundKeys.some(k => k.startsWith('gmgn.'))) sourceTrail.push('gmgn')
+  }
+
+  // DexScreener fallback — pair.info.websites[] and pair.info.socials[]
+  const dsInfo = dsFb?.info
+  if (dsInfo) {
+    if (!website && Array.isArray(dsInfo.websites)) {
+      for (const w of dsInfo.websites) {
+        const url = w.url
+        if (typeof url === 'string' && url.trim() && _isValidSocialUrl(url) && !/dexscreener\.com/i.test(url)) {
+          website = url.trim()
+          _foundKeys.push('ds.info.websites[]')
+          break
+        }
+      }
+    }
+    if (Array.isArray(dsInfo.socials)) {
+      for (const s of dsInfo.socials) {
+        const type = String(s.type ?? '').toLowerCase()
+        if (!twitter && (type === 'twitter' || type === 'x')) {
+          const t = _toTwitterUrl(s.url)
+          if (t) { twitter = t; _foundKeys.push('ds.info.socials[twitter]') }
+        } else if (!telegram && type === 'telegram') {
+          const t = _toTelegramUrl(s.url)
+          if (t) { telegram = t; _foundKeys.push('ds.info.socials[telegram]') }
+        }
+      }
+    }
+    if (_foundKeys.some(k => k.startsWith('ds.'))) sourceTrail.push('dexscreener')
   }
 
   const found = [website, twitter, telegram, discord, github].filter(Boolean).length
@@ -1789,6 +1818,10 @@ interface DexFallbackResult {
   baseToken: { address: string; symbol: string; name: string } | null
   quoteToken: { address: string; symbol: string; name: string } | null
   pairCreatedAt: string | null
+  info: {
+    websites: Array<{ label?: string; url?: string }> | null
+    socials: Array<{ type?: string; url?: string }> | null
+  } | null
 }
 
 const _dexFbCache = new Map<string, { data: DexFallbackResult | null; ts: number }>()
@@ -1892,6 +1925,9 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
     const bt = best.baseToken as Record<string, unknown> | null
     const qt = best.quoteToken as Record<string, unknown> | null
 
+    const rawInfo = best.info as Record<string, unknown> | null | undefined
+    const rawWebsites = Array.isArray(rawInfo?.websites) ? rawInfo!.websites as Array<Record<string, unknown>> : null
+    const rawSocials  = Array.isArray(rawInfo?.socials)  ? rawInfo!.socials  as Array<Record<string, unknown>> : null
     return miss({
       priceUsd:     best.priceUsd != null ? Number(best.priceUsd) : null,
       liquidityUsd: liq?.usd != null ? Number(liq.usd) : null,
@@ -1904,6 +1940,10 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
       baseToken:    bt != null ? { address: String(bt.address ?? ''), symbol: String(bt.symbol ?? ''), name: String(bt.name ?? '') } : null,
       quoteToken:   qt != null ? { address: String(qt.address ?? ''), symbol: String(qt.symbol ?? ''), name: String(qt.name ?? '') } : null,
       pairCreatedAt: best.pairCreatedAt != null ? String(best.pairCreatedAt) : null,
+      info: rawInfo != null ? {
+        websites: rawWebsites ? rawWebsites.map(w => ({ label: w.label != null ? String(w.label) : undefined, url: w.url != null ? String(w.url) : undefined })) : null,
+        socials:  rawSocials  ? rawSocials.map(s  => ({ type:  s.type  != null ? String(s.type)  : undefined, url: s.url  != null ? String(s.url)  : undefined })) : null,
+      } : null,
     })
   } catch {
     return miss(null)
@@ -5315,7 +5355,7 @@ export async function POST(req: Request) {
       : 'Contract bytecode, supply, owner, and CORTEX flag scan reviewed.'
 
     const { _foundKeys: _psFoundKeys, _rejectedCount: _psRejectedCount, ...projectSocials } =
-      extractProjectSocials(gtToken, coingeckoRaw, gmgnItem)
+      extractProjectSocials(gtToken, coingeckoRaw, gmgnItem, _dexFb)
 
     const responsePayload = {
       chain,
@@ -6198,12 +6238,20 @@ export async function POST(req: Request) {
             rejectedCount: _psRejectedCount,
             status: projectSocials.status,
             reason: projectSocials.reason ?? null,
+            foundTwitter: projectSocials.twitter != null,
+            foundTelegram: projectSocials.telegram != null,
+            foundWebsite: projectSocials.website != null,
             gtTokenHasWebsites: Array.isArray(gtToken?.websites),
             gtTokenHasTelegramHandle: Boolean(gtToken?.telegram_handle),
             gtTokenHasTwitterHandle: Boolean(gtToken?.twitter_handle),
             gtTokenHasDiscordUrl: Boolean(gtToken?.discord_url),
             coingeckoUsable: Boolean(coingeckoRaw),
             gmgnUsable: Boolean(gmgnItem),
+            dexscreenerInfoPresent: Boolean(_dexFb?.info),
+            rawDexInfoKeys: _dexFb?.info != null ? Object.keys(_dexFb.info) : [],
+            dexWebsitesCount: _dexFb?.info?.websites?.length ?? 0,
+            dexSocialsCount: _dexFb?.info?.socials?.length ?? 0,
+            rejectedLinks: _psRejectedCount,
           },
           riskFlow: {
             rugRiskScore: riskEngine.rugRiskScore,
