@@ -2939,30 +2939,32 @@ export default function TerminalTokenScanner() {
           40% { opacity: 1; transform: scale(1); }
         }
         @keyframes liveDotPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.35;transform:scale(.65)} }
-        @keyframes radarRing { 0%{transform:scale(.4);opacity:.7} 100%{transform:scale(1.8);opacity:0} }
+        @keyframes radarRing { 0%{transform:scale(.4);opacity:.65} 100%{transform:scale(1.85);opacity:0} }
         @keyframes shimmer { 0%{background-position:-300% 0} 100%{background-position:300% 0} }
-        @keyframes scanBtnGlow { 0%,100%{box-shadow:0 0 0 rgba(45,212,191,0)} 50%{box-shadow:0 0 22px rgba(45,212,191,.28),0 0 38px rgba(139,92,246,.14)} }
-        .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.022) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.022) 1px,transparent 1px),radial-gradient(circle at 22% 0%,rgba(20,35,68,.5),rgba(2,6,23,1) 55%);background-size:52px 52px,52px 52px,100% 100%;background-color:rgba(2,6,23,1);}
+        @keyframes scanBtnGlow { 0%,100%{box-shadow:0 0 0 rgba(45,212,191,0)} 50%{box-shadow:0 0 24px rgba(45,212,191,.30),0 0 42px rgba(139,92,246,.16)} }
+        .token-shell{display:grid;grid-template-columns:minmax(0,1fr);height:100%;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%;background-color:rgba(2,6,23,1);}
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
         .token-main{max-width:none;}
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);}
-        .search-card{background:linear-gradient(180deg,rgba(10,18,34,.94),rgba(4,9,22,.92));border:1px solid rgba(45,212,191,.16);border-radius:18px;box-shadow:0 0 0 1px rgba(45,212,191,.06) inset,0 24px 56px rgba(2,6,23,.55),0 0 40px rgba(45,212,191,.07);}
-        .chain-tab-active{background:rgba(45,212,191,.10) !important;border:1px solid rgba(45,212,191,.45) !important;color:#2DD4BF !important;box-shadow:0 0 14px rgba(45,212,191,.18) !important;}
-        .chain-tab-inactive{background:transparent !important;border:1px solid rgba(255,255,255,.09) !important;color:#475569 !important;}
-        .chain-tab-inactive:hover{border-color:rgba(255,255,255,.18) !important;color:#94a3b8 !important;}
-        .preview-module-card{background:rgba(6,12,24,.6);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:14px;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease;cursor:default;}
-        .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(45,212,191,.16);box-shadow:0 8px 24px rgba(2,6,23,.5);}
-        .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.03) 25%,rgba(255,255,255,.08) 50%,rgba(255,255,255,.03) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.4s ease-in-out infinite;}
-        .scan-btn-live:hover{animation:scanBtnGlow 1.5s ease-in-out infinite;}
-        .live-dot{animation:liveDotPulse 2s ease-in-out infinite;}
-        @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live{animation:none !important;}}
+        .search-card{background:linear-gradient(160deg,rgba(12,22,40,.97) 0%,rgba(5,10,22,.95) 100%);border:1px solid rgba(45,212,191,.18);border-radius:18px;box-shadow:0 0 0 1px rgba(45,212,191,.07) inset,0 28px 60px rgba(2,6,23,.60),0 0 48px rgba(45,212,191,.08),0 0 80px rgba(139,92,246,.04);}
+        .chain-tab-active{background:rgba(45,212,191,.11) !important;border:1px solid rgba(45,212,191,.50) !important;color:#2DD4BF !important;box-shadow:0 0 16px rgba(45,212,191,.20),inset 0 1px 0 rgba(45,212,191,.12) !important;}
+        .chain-tab-inactive{background:rgba(255,255,255,.025) !important;border:1px solid rgba(255,255,255,.08) !important;color:#4b6070 !important;}
+        .chain-tab-inactive:hover{background:rgba(255,255,255,.04) !important;border-color:rgba(255,255,255,.16) !important;color:#64748b !important;}
+        .preview-module-card{background:linear-gradient(160deg,rgba(8,15,28,.75),rgba(5,10,20,.70));border:1px solid rgba(255,255,255,.10);border-radius:12px;padding:16px;transition:transform .20s ease,border-color .20s ease,box-shadow .20s ease;cursor:default;}
+        .preview-module-card:hover{transform:translateY(-3px);border-color:rgba(45,212,191,.20);box-shadow:0 10px 32px rgba(2,6,23,.55),0 0 16px rgba(45,212,191,.06);}
+        .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
+        .scan-btn-live{transition:all .18s ease !important;}
+        .scan-btn-live:hover{transform:translateY(-1px);animation:scanBtnGlow 1.6s ease-in-out infinite;}
+        .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
+        .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
+        @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live{animation:none !important;} .scan-btn-live:hover{transform:none !important;}}
         .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);} .token-main{max-width:1260px;margin:0 auto;}}
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(320px,24vw,360px);} .token-main{max-width:1120px;margin:0 auto;} .mob-verdict-panel{padding:24px 16px;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
         @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
-        @media (max-width:768px){.token-main{padding:30px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
+        @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
       `}</style>
 
       <div className="token-shell" style={{ color: '#e2e8f0' }}>
@@ -2971,68 +2973,72 @@ export default function TerminalTokenScanner() {
         <div className="mob-scan-main token-main" style={{ minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px clamp(16px, 2.2vw, 34px) 120px', width: '100%' }}>
 
           {/* ── Hero area ─────────────────────────────────────────── */}
-          <div style={{ marginBottom: '36px', maxWidth: '820px' }}>
+          <div style={{ marginBottom: '28px', maxWidth: '820px' }}>
 
-            {/* Badge + status pills row */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '18px' }}>
+            {/* Badge row */}
+            <div style={{ marginBottom: '14px' }}>
               <div style={{
                 display: 'inline-flex', alignItems: 'center', gap: '7px',
-                background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.25)',
-                borderRadius: '99px', padding: '4px 13px',
-                fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
+                background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.26)',
+                borderRadius: '99px', padding: '5px 14px',
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.15em',
                 color: '#a78bfa', fontFamily: 'var(--font-plex-mono)',
               }}>
                 <span className="live-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#8b5cf6', boxShadow: '0 0 8px rgba(139,92,246,.8)', flexShrink: 0 }} />
                 TOKEN SCANNER
               </div>
-              {[
-                { label: 'BASE',           color: '#2DD4BF', bg: 'rgba(45,212,191,0.07)',  border: 'rgba(45,212,191,0.20)' },
-                { label: 'ETH',            color: '#818cf8', bg: 'rgba(129,140,248,0.07)', border: 'rgba(129,140,248,0.20)' },
-                { label: 'LIVE CORTEX',    color: '#34d399', bg: 'rgba(52,211,153,0.07)',  border: 'rgba(52,211,153,0.18)' },
-                { label: 'REAL DATA ONLY', color: '#64748b', bg: 'rgba(100,116,139,0.06)', border: 'rgba(100,116,139,0.15)' },
-              ].map(p => (
-                <span key={p.label} style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 9px', borderRadius: '99px', color: p.color, background: p.bg, border: `1px solid ${p.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
-                  {p.label}
-                </span>
-              ))}
             </div>
 
             {/* Heading */}
-            <h1 style={{ fontSize: 'clamp(24px,4vw,36px)', fontWeight: 800, color: '#f8fafc', lineHeight: 1.15, margin: '0 0 10px', letterSpacing: '-0.01em' }}>
+            <h1 style={{ fontSize: 'clamp(26px,3.6vw,38px)', fontWeight: 800, color: '#f1f5f9', lineHeight: 1.12, margin: '0 0 10px', letterSpacing: '-0.02em' }}>
               Token Scanner
             </h1>
-            <p style={{ margin: '0 0 4px', color: '#94a3b8', fontSize: '13px', lineHeight: 1.6 }}>
+            <p style={{ margin: '0 0 14px', color: '#64748b', fontSize: '13px', lineHeight: 1.65, maxWidth: '560px' }}>
               {chain === 'eth'
                 ? 'Scan Ethereum tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.'
                 : 'Scan Base tokens for liquidity, contract risk, taxes, pool depth, and Clark AI verdicts.'}
             </p>
-            <p style={{ margin: 0, color: '#3a5268', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>
-              {planLoading ? 'Checking CORTEX access…' : 'Full scan access.'}
-            </p>
+
+            {/* Status pills */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '7px' }}>
+              {[
+                { label: 'BASE',           color: '#2DD4BF', bg: 'rgba(45,212,191,0.07)',  border: 'rgba(45,212,191,0.22)' },
+                { label: 'ETH',            color: '#818cf8', bg: 'rgba(129,140,248,0.07)', border: 'rgba(129,140,248,0.22)' },
+                { label: 'LIVE CORTEX',    color: '#34d399', bg: 'rgba(52,211,153,0.07)',  border: 'rgba(52,211,153,0.20)' },
+                { label: 'REAL DATA ONLY', color: '#475569', bg: 'rgba(71,85,105,0.07)',   border: 'rgba(71,85,105,0.18)' },
+              ].map(p => (
+                <span key={p.label} style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.11em', padding: '3px 10px', borderRadius: '99px', color: p.color, background: p.bg, border: `1px solid ${p.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+                  {p.label}
+                </span>
+              ))}
+              <span style={{ fontSize: '10px', color: '#253340', fontFamily: 'var(--font-plex-mono)', marginLeft: '2px' }}>
+                {planLoading ? 'Checking access…' : ''}
+              </span>
+            </div>
           </div>
 
           {/* ── Search card with hologram ─────────────────────────── */}
-          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '24px' }}>
+          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '32px' }}>
 
             {/* Decorative radar hologram (behind card) */}
-            <div style={{ position: 'absolute', left: '50%', top: '-28px', transform: 'translateX(-50%)', pointerEvents: 'none', zIndex: 0, width: '240px', height: '80px', overflow: 'hidden', opacity: 0.55 }} aria-hidden="true">
-              <svg width="240" height="80" viewBox="0 0 240 80" fill="none">
-                <circle cx="120" cy="40" r="4" fill="#2DD4BF" className="live-dot" />
-                <circle cx="120" cy="40" r="3" fill="rgba(139,92,246,0.5)" />
-                {([0, 0.55, 1.1] as const).map((delay, i) => (
-                  <circle key={i} cx="120" cy="40" r={14 + i * 14} stroke="#2DD4BF" strokeWidth="0.5" className="radar-ring"
-                    style={{ animation: `radarRing 2.4s ${delay}s ease-out infinite`, transformOrigin: '120px 40px' }} />
+            <div style={{ position: 'absolute', left: '50%', top: '-32px', transform: 'translateX(-50%)', pointerEvents: 'none', zIndex: 0, width: '260px', height: '88px', overflow: 'hidden', opacity: 0.48 }} aria-hidden="true">
+              <svg width="260" height="88" viewBox="0 0 260 88" fill="none">
+                <circle cx="130" cy="44" r="4.5" fill="#2DD4BF" className="live-dot" />
+                <circle cx="130" cy="44" r="3" fill="rgba(139,92,246,0.55)" />
+                {([0, 0.5, 1.0] as const).map((delay, i) => (
+                  <circle key={i} cx="130" cy="44" r={16 + i * 16} stroke="#2DD4BF" strokeWidth="0.5" className="radar-ring"
+                    style={{ animation: `radarRing 2.6s ${delay}s ease-out infinite`, transformOrigin: '130px 44px' }} />
                 ))}
-                <circle cx="120" cy="40" r={58} stroke="rgba(139,92,246,0.25)" strokeWidth="0.5" className="radar-ring"
-                  style={{ animation: 'radarRing 2.4s 0.9s ease-out infinite', transformOrigin: '120px 40px' }} />
+                <circle cx="130" cy="44" r={64} stroke="rgba(139,92,246,0.22)" strokeWidth="0.5" className="radar-ring"
+                  style={{ animation: 'radarRing 2.6s 1.0s ease-out infinite', transformOrigin: '130px 44px' }} />
               </svg>
             </div>
 
             {/* Premium search card */}
-            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '20px 20px 16px' }}>
+            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '22px 22px 18px' }}>
 
               {/* Chain tabs */}
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '18px' }}>
                 {(['base', 'eth'] as const).map(c => (
                   <button
                     key={c}
@@ -3040,8 +3046,8 @@ export default function TerminalTokenScanner() {
                     onClick={() => setChain(c)}
                     className={chain === c ? 'chain-tab-active' : 'chain-tab-inactive'}
                     style={{
-                      padding: '8px 20px', borderRadius: '10px',
-                      fontSize: '11px', fontWeight: 700, letterSpacing: '.12em',
+                      padding: '9px 22px', borderRadius: '10px',
+                      fontSize: '11px', fontWeight: 700, letterSpacing: '.13em',
                       fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
                       transition: 'all 0.15s', flexShrink: 0,
                     }}
@@ -3052,7 +3058,7 @@ export default function TerminalTokenScanner() {
               </div>
 
               {/* Input + button row */}
-              <div className="token-input-row" style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
+              <div className="token-input-row" style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
                 <input
                   value={input}
                   onChange={e => { setInput(e.target.value); setResolverResult(null) }}
@@ -3068,27 +3074,34 @@ export default function TerminalTokenScanner() {
                     fontFamily: 'var(--font-plex-mono)',
                     outline: 'none',
                     opacity: loading ? 0.6 : 1,
-                    transition: 'border-color 0.15s',
+                    transition: 'border-color 0.15s, box-shadow 0.15s',
                     minWidth: 0,
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.45)' }}
-                  onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)' }}
+                  onFocus={e => {
+                    e.currentTarget.style.borderColor = 'rgba(45,212,191,0.55)'
+                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.08)'
+                  }}
+                  onBlur={e => {
+                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'
+                    e.currentTarget.style.boxShadow = 'none'
+                  }}
                 />
                 <button
                   onClick={() => handleScan()}
                   disabled={loading || resolving || !input.trim()}
                   className={loading || resolving || !input.trim() ? '' : 'scan-btn-live'}
                   style={{
-                    padding: '14px 30px', borderRadius: '12px', border: 'none',
+                    padding: '14px 32px', borderRadius: '12px', border: 'none',
                     background: loading || resolving || !input.trim()
-                      ? 'rgba(45,212,191,0.10)'
+                      ? 'rgba(45,212,191,0.09)'
                       : 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 100%)',
-                    color: loading || resolving || !input.trim() ? 'rgba(255,255,255,0.22)' : '#06060a',
-                    fontSize: '12px', fontWeight: 700,
-                    fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em',
+                    color: loading || resolving || !input.trim() ? 'rgba(255,255,255,0.20)' : '#04040a',
+                    fontSize: '12px', fontWeight: 800,
+                    fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em',
                     cursor: loading || resolving || !input.trim() ? 'not-allowed' : 'pointer',
-                    flexShrink: 0, transition: 'all 0.15s',
+                    flexShrink: 0,
                     whiteSpace: 'nowrap',
+                    boxShadow: loading || resolving || !input.trim() ? 'none' : '0 2px 16px rgba(45,212,191,0.22)',
                   }}
                 >
                   {resolving ? 'RESOLVING…' : loading ? 'SCANNING…' : 'SCAN TOKEN'}
@@ -3096,7 +3109,7 @@ export default function TerminalTokenScanner() {
               </div>
 
               {/* Helper text */}
-              <p style={{ margin: 0, fontSize: '11px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+              <p style={{ margin: 0, fontSize: '11px', color: '#2a3d4d', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
                 Paste a contract, ticker, or token name to start a scan.
               </p>
             </div>
@@ -3175,34 +3188,34 @@ export default function TerminalTokenScanner() {
             <div style={{ maxWidth: '820px' }}>
 
               {/* Headline */}
-              <div style={{ marginBottom: '22px' }}>
-                <p style={{ margin: '0 0 6px', fontSize: '15px', fontWeight: 700, color: '#cbd5e1', lineHeight: 1.4 }}>
+              <div style={{ marginBottom: '20px' }}>
+                <p style={{ margin: '0 0 7px', fontSize: '14px', fontWeight: 700, color: '#94a3b8', lineHeight: 1.45, letterSpacing: '-0.005em' }}>
                   Run a scan to generate a full token intelligence report.
                 </p>
-                <p style={{ margin: 0, fontSize: '11px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                <p style={{ margin: 0, fontSize: '11px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
                   CORTEX will build Market Pulse, Holder Map, LP Safety, Dev Control, Cluster Map, and Risk context.
                 </p>
               </div>
 
               {/* Module preview grid */}
-              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '10px', marginBottom: '28px' }}>
+              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '12px', marginBottom: '28px' }}>
                 {[
-                  { label: 'Market Pulse',   dot: '#2DD4BF', desc: 'Price, liquidity, volume, and pool depth.' },
-                  { label: 'Holder Map',      dot: '#a78bfa', desc: 'Top holder concentration and distribution.' },
-                  { label: 'LP Safety',       dot: '#34d399', desc: 'Pool lock status and liquidity risk.' },
-                  { label: 'Dev Control',     dot: '#fbbf24', desc: 'Deployer wallet and contract ownership.' },
-                  { label: 'Cluster Map',     dot: '#67e8f9', desc: 'Wallet clustering and coordination signals.' },
-                  { label: 'CORTEX Risk',     dot: '#f87171', desc: 'Aggregated rug risk and open checks.' },
+                  { label: 'Market Pulse',  dot: '#2DD4BF', desc: 'Price, liquidity, volume, and pool depth.' },
+                  { label: 'Holder Map',    dot: '#a78bfa', desc: 'Top holder concentration and distribution.' },
+                  { label: 'LP Safety',     dot: '#34d399', desc: 'Pool lock status and liquidity risk.' },
+                  { label: 'Dev Control',   dot: '#fbbf24', desc: 'Deployer wallet and contract ownership.' },
+                  { label: 'Cluster Map',   dot: '#67e8f9', desc: 'Wallet clustering and coordination signals.' },
+                  { label: 'CORTEX Risk',   dot: '#f87171', desc: 'Aggregated rug risk and open checks.' },
                 ].map(mod => (
                   <div key={mod.label} className="preview-module-card">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '8px' }}>
-                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: mod.dot, flexShrink: 0, opacity: 0.55 }} />
-                      <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '9px' }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: mod.dot, flexShrink: 0, opacity: 0.65, boxShadow: `0 0 6px ${mod.dot}44` }} />
+                      <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', color: '#4b6070', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
                     </div>
-                    <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#1e2e38', lineHeight: 1.5 }}>{mod.desc}</p>
-                    {/* Skeleton lines */}
-                    <div className="shimmer-line" style={{ height: '6px', width: '70%', marginBottom: '5px' }} />
-                    <div className="shimmer-line" style={{ height: '6px', width: '45%' }} />
+                    <p style={{ margin: '0 0 12px', fontSize: '11px', color: '#2a3d4d', lineHeight: 1.55 }}>{mod.desc}</p>
+                    {/* Skeleton placeholder lines */}
+                    <div className="shimmer-line" style={{ height: '5px', width: '72%', marginBottom: '6px' }} />
+                    <div className="shimmer-line" style={{ height: '5px', width: '48%' }} />
                   </div>
                 ))}
               </div>
@@ -4795,14 +4808,14 @@ export default function TerminalTokenScanner() {
         }}>
           {/* Label + badge */}
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
               <span style={{
-                width: '6px', height: '6px', borderRadius: '50%',
-                background: clarkLoading ? '#2DD4BF' : clarkVerdict ? '#2DD4BF' : '#1e3a44',
-                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 8px rgba(45,212,191,0.8)' : 'none',
+                width: '7px', height: '7px', borderRadius: '50%',
+                background: clarkLoading ? '#2DD4BF' : clarkVerdict ? '#2DD4BF' : '#162230',
+                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 10px rgba(45,212,191,0.85)' : 'none',
                 flexShrink: 0,
                 transition: 'all 0.3s',
-                ...((!clarkLoading && !clarkVerdict) ? {} : { animation: 'liveDotPulse 2s ease-in-out infinite' }),
+                ...((!clarkLoading && !clarkVerdict) ? {} : { animation: 'liveDotPulse 2.2s ease-in-out infinite' }),
               }} />
               <p style={{
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
@@ -4813,8 +4826,8 @@ export default function TerminalTokenScanner() {
               </p>
             </div>
             {(!clarkLoading && !clarkVerdict && !clarkError) && (
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '2px 9px', borderRadius: '99px', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.15)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>
-                <span className="live-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#34d399', flexShrink: 0 }} />
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '99px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.20)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: 'rgba(45,212,191,0.75)', fontFamily: 'var(--font-plex-mono)' }}>
+                <span className="live-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#34d399', boxShadow: '0 0 5px #34d399', flexShrink: 0 }} />
                 LIVE · Powered by CORTEX
               </div>
             )}
@@ -4833,7 +4846,7 @@ export default function TerminalTokenScanner() {
           {/* Idle — premium placeholder */}
           {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
             <div>
-              <p style={{ margin: '0 0 16px', fontSize: '11px', color: '#1e3a44', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+              <p style={{ margin: '0 0 18px', fontSize: '11px', color: '#253340', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
                 Scan a token to generate a structured CORTEX verdict.
               </p>
               {[
@@ -4843,14 +4856,14 @@ export default function TerminalTokenScanner() {
                 { label: 'LP / Risk Read',       dot: '#34d399', w1: '65%', w2: '50%' },
                 { label: 'Dev Control',          dot: '#fbbf24', w1: '75%', w2: '40%' },
                 { label: 'Next Action',          dot: '#f87171', w1: '60%', w2: '55%' },
-              ].map(sec => (
-                <div key={sec.label} style={{ marginBottom: '14px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: sec.dot, flexShrink: 0, opacity: 0.4 }} />
-                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#1e2e38', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</span>
+              ].map((sec, idx) => (
+                <div key={sec.label} className={idx > 0 ? 'clark-section' : ''} style={{ marginBottom: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '7px' }}>
+                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: sec.dot, flexShrink: 0, opacity: 0.55 }} />
+                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#253340', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</span>
                   </div>
-                  <div className="shimmer-line" style={{ height: '6px', width: sec.w1, marginBottom: '4px' }} />
-                  <div className="shimmer-line" style={{ height: '6px', width: sec.w2 }} />
+                  <div className="shimmer-line" style={{ height: '5px', width: sec.w1, marginBottom: '5px' }} />
+                  <div className="shimmer-line" style={{ height: '5px', width: sec.w2 }} />
                 </div>
               ))}
             </div>
