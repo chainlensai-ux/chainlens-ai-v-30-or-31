@@ -2056,6 +2056,73 @@ function deriveLpMode(result: ScanResult): LpMode {
   return 'unknown'
 }
 
+// ─── LP Safety Helpers ────────────────────────────────────────────────────
+
+function getLpLockLabel(result: ScanResult): { label: string; color: string; bg: string; border: string; description: string } {
+  const status = result.lpControl?.status
+  const lpMode = getLpMode(result)
+  if (result.noActivePools) return { label: 'No Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain.' }
+  if (lpMode === 'protocol') return { label: 'Protocol-Owned', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'Concentrated liquidity — LP tokens are not used in this model. Standard for v3/v4-style pools.' }
+  if (status === 'burned') return { label: 'Burned', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: 'LP tokens sent to a burn address — liquidity is permanently locked and cannot be removed.' }
+  if (status === 'locked') return { label: 'Locked', color: '#60a5fa', bg: 'rgba(96,165,250,0.07)', border: 'rgba(96,165,250,0.22)', description: 'LP tokens are locked in a verified locker contract for a defined duration.' }
+  if (status === 'team_controlled') return { label: 'Unlocked', color: '#f87171', bg: 'rgba(248,113,113,0.07)', border: 'rgba(248,113,113,0.22)', description: 'LP appears controlled by a wallet. Exit liquidity can be withdrawn at any time.' }
+  if (status === 'partial') return { label: 'Partial', color: '#fbbf24', bg: 'rgba(251,191,36,0.07)', border: 'rgba(251,191,36,0.22)', description: 'Partial lock proof — some LP may be locked but full coverage is not confirmed.' }
+  if (status === 'no_pool') return { label: 'No Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No usable liquidity pool found for this token.' }
+  return { label: 'Unknown', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'LP lock status could not be verified in this scan pass. Treat as an open check.' }
+}
+
+function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; description: string } {
+  const status = result.lpControl?.status
+  const lpMode = getLpMode(result)
+  const liqDepth = result.liquidity ?? null
+  if (result.noActivePools) return { label: 'Critical', color: '#f87171', description: 'No active pool — exit liquidity is entirely unavailable.' }
+  if (status === 'burned') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP burned — liquidity permanently locked. Key risk is pool depth.' }
+  if (status === 'locked') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP locked — protected for the lock duration. Pool depth is the main variable risk.' }
+  if (lpMode === 'protocol') return { label: 'Open Check', color: '#c084fc', description: 'Protocol-managed liquidity — LP lock model does not apply. Assess pool depth and age.' }
+  if (status === 'team_controlled') return { label: 'High', color: '#fb923c', description: 'LP appears team-controlled — liquidity can be withdrawn without lock proof.' }
+  if (liqDepth != null && liqDepth < 10_000) return { label: 'Critical', color: '#f87171', description: 'Lock/burn proof unconfirmed and liquidity is very thin. Extreme exit risk.' }
+  if (liqDepth != null && liqDepth < 50_000) return { label: 'High', color: '#fb923c', description: 'Lock/burn proof unconfirmed and liquidity is thin. Exit risk is elevated.' }
+  return { label: 'Elevated', color: '#fbbf24', description: 'Lock/burn proof not confirmed. Treat exit liquidity as unprotected until verified.' }
+}
+
+function getLpRiskSummary(result: ScanResult): { goodSigns: string[]; riskSigns: string[]; missingProofs: string[] } {
+  const lp = result.lpControl
+  const lpMode = getLpMode(result)
+  const status = lp?.status
+  const liqDepth = result.liquidity ?? null
+  const goodSigns: string[] = []
+  const riskSigns: string[] = []
+  const missingProofs: string[] = []
+  if (status === 'burned') goodSigns.push('LP tokens permanently burned — exit liquidity protected.')
+  if (status === 'locked') goodSigns.push('LP tokens verified as locked in a locker contract.')
+  if (lpMode === 'protocol') goodSigns.push('Protocol-owned liquidity is standard for this pool model.')
+  if (liqDepth != null && liqDepth > 500_000) goodSigns.push(`Deep liquidity — ${fmtLarge(liqDepth)} pool depth.`)
+  else if (liqDepth != null && liqDepth > 100_000) goodSigns.push(`Moderate liquidity — ${fmtLarge(liqDepth)} pool depth.`)
+  if (lp?.poolAddressPresent) goodSigns.push('Liquidity pool detected and indexed.')
+  if (status === 'team_controlled') riskSigns.push('LP controller is a normal wallet — liquidity can be removed.')
+  if (result.noActivePools) riskSigns.push('No active liquidity pool — token may be illiquid.')
+  if (liqDepth != null && liqDepth < 10_000 && !result.noActivePools) riskSigns.push(`Very thin liquidity — ${fmtLarge(liqDepth)} depth. Extreme exit risk.`)
+  else if (liqDepth != null && liqDepth < 50_000 && !result.noActivePools) riskSigns.push(`Thin liquidity — ${fmtLarge(liqDepth)}. Expect slippage.`)
+  if (lpMode !== 'protocol' && status !== 'burned' && status !== 'locked') missingProofs.push('LP lock or burn proof not confirmed.')
+  if (lpMode === 'unknown') missingProofs.push('LP token model could not be classified.')
+  if (!lp?.poolAddressPresent && !result.noActivePools) missingProofs.push('Pool address not indexed.')
+  return { goodSigns, riskSigns, missingProofs }
+}
+
+function getLpNextAction(result: ScanResult): string {
+  const lp = result.lpControl
+  const lpMode = getLpMode(result)
+  const status = lp?.status
+  const liqDepth = result.liquidity ?? null
+  if (result.noActivePools) return 'No active pool found. Verify the contract address and chain before trading.'
+  if (status === 'burned') return liqDepth != null && liqDepth < 50_000 ? 'LP is burned — good sign. Pool depth is thin, so monitor liquidity before committing size.' : 'LP appears burned — exit liquidity is protected. Still monitor holder concentration and trading taxes.'
+  if (status === 'locked') return 'LP is locked. Verify the lock duration and expiry before assuming permanent protection. Monitor holder concentration.'
+  if (lpMode === 'protocol') return 'Protocol-owned liquidity is standard for v3/v4-style pools. Check pool age and depth before trusting it. No LP tokens to lock or burn in this model.'
+  if (status === 'team_controlled') return 'LP control is not locked. Treat exit risk as elevated and avoid large positions until lock or burn proof is indexed.'
+  if (status === 'partial') return 'Partial LP proof. Some liquidity may be protected but full coverage is not confirmed. Proceed with caution.'
+  return 'LP proof is an open check. Lock, burn, or protocol ownership has not been confirmed this scan. Treat exit liquidity as unprotected.'
+}
+
 // ─── CORTEX Score Engine ──────────────────────────────────────────────────
 
 type CortexScoreResult = {
@@ -4025,60 +4092,96 @@ export default function TerminalTokenScanner() {
               {/* ── LP CONTROL ────────────────────────────────────────── */}
               {activeSection === 'lp-safety' && (
                 <>
-                  <div style={{ marginBottom: '18px' }}>
-                    <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP CONTROL</p>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, primary pool, and pool board.</p>
+                  {/* ── LP Safety: header ─────────────────────────────── */}
+                  <div style={{ marginBottom: '20px' }}>
+                    <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY ANALYZER</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, ownership proof, and exit risk assessment.</p>
                   </div>
-                  {/* Exit Risk Read card — always visible */}
+
+                  {/* ── LP Lock Status + Exit Risk hero — always visible ── */}
                   {(() => {
-                    const lpS = result.lpControl?.status
-                    const lpMode = getLpMode(result)
-                    const lpVerifiedExit = lpMode === 'protocol' || lpS === 'locked' || lpS === 'burned'
-                    const liqDepth = result.liquidity ?? null
-                    const primaryPool = result.pools?.[0]?.name ?? result.primaryDexName ?? null
-                    const lpModeExit = deriveLpMode(result)
-                    const exitRisk = result.noActivePools
-                      ? 'CRITICAL'
-                      : lpMode === 'protocol'
-                        ? 'PROTOCOL-BASED'
-                        : !lpVerifiedExit
-                          ? liqDepth != null && liqDepth < 50_000 ? 'HIGH' : 'ELEVATED'
-                          : liqDepth != null && liqDepth < 50_000 ? 'MEDIUM' : 'LOW'
-                    const exitRiskColor = exitRisk === 'CRITICAL' ? '#f87171' : exitRisk === 'HIGH' ? '#fb923c' : exitRisk === 'ELEVATED' ? '#fbbf24' : exitRisk === 'MEDIUM' ? '#a78bfa' : exitRisk === 'PROTOCOL-BASED' ? '#c084fc' : '#34d399'
-                    const exitRead = result.noActivePools
-                      ? 'No active liquidity pool detected — exit risk cannot be assessed.'
-                      : (lpMode === 'protocol')
-                        ? 'Protocol-managed concentrated liquidity detected. LP token model is not used.'
-                        : lpS === 'team_controlled'
-                          ? 'LP appears controlled by a normal wallet. Treat exit liquidity as team-controlled until lock/burn proof is found.'
-                        : !lpVerifiedExit
-                          ? 'Liquidity exists, but lock/burn proof is not confirmed. Treat exit liquidity as unprotected.'
-                          : lpS === 'burned'
-                            ? 'LP tokens burned — liquidity is permanently locked. Exit liquidity is protected.'
-                            : 'LP locked — exit liquidity is protected for the lock duration.'
+                    const lockInfo = getLpLockLabel(result)
+                    const exitInfo = getLpExitRiskInfo(result)
                     return (
-                      <div style={{ marginBottom: '18px', padding: '14px 16px', borderRadius: '12px', background: `${exitRiskColor}08`, border: `1px solid ${exitRiskColor}28` }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>EXIT RISK READ</span>
-                          <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: exitRiskColor, background: `${exitRiskColor}14`, border: `1px solid ${exitRiskColor}40`, fontFamily: 'var(--font-plex-mono)' }}>{exitRisk}</span>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: '12px', marginBottom: '14px' }}>
+                        {/* LP Lock Status */}
+                        <div style={{ padding: '18px 20px', background: lockInfo.bg, border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px', fontWeight: 700, textTransform: 'uppercase' }}>LP Lock Status</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: lockInfo.color, flexShrink: 0, boxShadow: `0 0 10px ${lockInfo.color}` }} />
+                            <span style={{ fontSize: '20px', fontWeight: 800, color: lockInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>{lockInfo.label}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{lockInfo.description}</p>
                         </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: '8px', marginBottom: '10px' }}>
-                          {[
-                            ['LP Proof', lpMode === 'protocol' ? 'Not applicable' : lpS === 'team_controlled' ? 'Team controlled' : lpS === 'partial' ? 'Partial' : lpS === 'no_pool' ? 'Open check' : lpVerifiedExit ? (lpS === 'burned' ? 'Burned' : 'Locked') : 'Open check'],
-                            ['Liquidity Depth', liqDepth != null ? fmtLarge(liqDepth) : 'Not indexed'],
-                            ['Primary Pool', primaryPool ?? 'Not indexed'],
-                            ['Exit Risk', exitRisk],
-                          ].map(([label, val]) => (
-                            <div key={label} style={{ padding: '8px 10px', borderRadius: '8px', background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(52,211,153,0.12)' }}>
-                              <div style={{ fontSize: '9px', letterSpacing: '.12em', color: '#64748b', marginBottom: '3px', fontFamily: 'var(--font-plex-mono)' }}>{label}</div>
-                              <div style={{ fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{val}</div>
-                            </div>
-                          ))}
+                        {/* Exit Risk Score */}
+                        <div style={{ padding: '18px 20px', background: `${exitInfo.color}08`, border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
+                          <div style={{ marginBottom: '10px' }}>
+                            <span style={{ padding: '5px 16px', borderRadius: '999px', background: `${exitInfo.color}14`, border: `1px solid ${exitInfo.color}45`, color: exitInfo.color, fontSize: '16px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.06em' }}>{exitInfo.label}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{exitInfo.description}</p>
                         </div>
-                        <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitRead}</p>
                       </div>
                     )
                   })()}
+
+                  {/* ── Quick stats row — always visible ──────────────── */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(118px,1fr))', gap: '8px', marginBottom: '18px' }}>
+                    {[
+                      { label: 'Liquidity', value: result.liquidity != null ? fmtLarge(result.liquidity) : 'Not indexed' },
+                      { label: 'Primary Pool', value: result.primaryDexName ?? result.pools?.[0]?.name ?? 'Not indexed' },
+                      { label: 'Pool Count', value: (result.pools?.length ?? 0) > 0 ? `${result.pools!.length} pool${result.pools!.length > 1 ? 's' : ''}` : 'No pools' },
+                      { label: 'LP Model', value: (() => { const m = getLpMode(result); return m === 'protocol' ? 'Concentrated' : m === 'lp_token' ? 'V2 LP Tokens' : 'Unknown' })() },
+                      { label: 'LP Proof', value: (() => { const m = getLpMode(result); const s = result.lpControl?.status; return m === 'protocol' ? 'Not applicable' : s === 'burned' || s === 'locked' ? 'Confirmed' : s === 'partial' ? 'Partial' : 'Open Check' })() },
+                    ].map(({ label, value }) => (
+                      <div key={label} style={{ padding: '9px 11px', borderRadius: '10px', background: 'rgba(8,14,28,0.58)', border: '1px solid rgba(148,163,184,0.13)' }}>
+                        <div style={{ fontSize: '9px', letterSpacing: '.12em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
+                        <div style={{ fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* ── LP Risk Summary — always visible ──────────────── */}
+                  {(() => {
+                    const rs = getLpRiskSummary(result)
+                    return (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '10px', marginBottom: '14px' }}>
+                        <div style={{ padding: '14px 16px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.18)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 10px', fontSize: '10px', fontWeight: 800, letterSpacing: '.15em', color: '#34d399', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Good Signs</p>
+                          {rs.goodSigns.length > 0 ? rs.goodSigns.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '7px' }}>
+                              <span style={{ color: '#34d399', flexShrink: 0, fontWeight: 800, fontSize: '12px', lineHeight: '17px' }}>✓</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#2a4438', fontFamily: 'var(--font-plex-mono)' }}>No confirmed proof indexed in this pass.</p>}
+                        </div>
+                        <div style={{ padding: '14px 16px', background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.18)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 10px', fontSize: '10px', fontWeight: 800, letterSpacing: '.15em', color: '#f87171', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Risk Signs</p>
+                          {rs.riskSigns.length > 0 ? rs.riskSigns.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '7px' }}>
+                              <span style={{ color: '#f87171', flexShrink: 0, fontWeight: 800, fontSize: '12px', lineHeight: '17px' }}>!</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#fca5a5', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#2a2a2a', fontFamily: 'var(--font-plex-mono)' }}>No confirmed risk signals from available data.</p>}
+                        </div>
+                        <div style={{ padding: '14px 16px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 10px', fontSize: '10px', fontWeight: 800, letterSpacing: '.15em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Missing Proofs</p>
+                          {rs.missingProofs.length > 0 ? rs.missingProofs.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '7px' }}>
+                              <span style={{ color: '#fbbf24', flexShrink: 0, fontWeight: 800, fontSize: '12px', lineHeight: '17px' }}>—</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#fde68a', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>All key LP proofs passed.</p>}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* ── Next Action — always visible ───────────────────── */}
+                  <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.22)', borderRadius: '12px' }}>
+                    <p style={{ margin: '0 0 8px', fontSize: '10px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>{getLpNextAction(result)}</p>
+                  </div>
                   {!planLoading && !isFullAccess && (
                     <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center', marginBottom: '18px' }}>
                       <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
