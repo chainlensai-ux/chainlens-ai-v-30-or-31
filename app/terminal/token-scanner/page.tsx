@@ -917,6 +917,144 @@ function CandlestickChart({ candles, timeframe, isFlatSeries = false }: { candle
   )
 }
 
+type _TrendSnap = { price: number | null; changes: Array<{ label: string; value: number | null }> }
+type _TrendPt = { ts: number; price: number }
+
+function TrendChart({ snapshot, currentPrice }: { snapshot: _TrendSnap; currentPrice: number | null }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+
+  const basePrice = currentPrice ?? snapshot.price ?? 0
+  if (basePrice <= 0) return null
+
+  const nowSec = Math.floor(Date.now() / 1000)
+  const labelSecs: Record<string, number> = { '5M': 300, '1H': 3600, '6H': 21600, '24H': 86400, '48H': 172800, '7D': 604800 }
+
+  const anchors: _TrendPt[] = [{ ts: nowSec, price: basePrice }]
+  for (const ch of snapshot.changes) {
+    const key = ch.label.toUpperCase().replace(/\s+/g, '').replace('MIN', 'M')
+    const secs = labelSecs[key]
+    if (secs != null && ch.value != null) {
+      const p = basePrice / (1 + ch.value / 100)
+      if (p > 0) anchors.push({ ts: nowSec - secs, price: p })
+    }
+  }
+  anchors.sort((a, b) => a.ts - b.ts)
+  if (anchors.length < 2) return null
+
+  // Linear interpolation between anchors → smooth ~60 point series
+  const TARGET = 60
+  const totalDur = anchors[anchors.length - 1].ts - anchors[0].ts
+  const pts: _TrendPt[] = []
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const a = anchors[i], b = anchors[i + 1]
+    const steps = Math.max(2, Math.round(TARGET * (b.ts - a.ts) / totalDur))
+    for (let j = 0; j < steps; j++) {
+      const t = j / steps
+      pts.push({ ts: a.ts + t * (b.ts - a.ts), price: a.price + t * (b.price - a.price) })
+    }
+  }
+  pts.push(anchors[anchors.length - 1])
+
+  const W = 960, H = 220
+  const padX = 14, padTop = 28, padBot = 36
+  const areaH = H - padTop - padBot
+
+  const prices = pts.map(p => p.price)
+  const priceMax = Math.max(...prices), priceMin = Math.min(...prices)
+  const spread = Math.max(priceMax - priceMin, priceMin * 0.001, 1e-12)
+  const pad = spread * 0.12
+  const dMax = priceMax + pad, dMin = priceMin - pad, dSpread = dMax - dMin
+
+  const xP = (i: number) => padX + (i / (pts.length - 1)) * (W - padX * 2)
+  const yP = (v: number) => padTop + ((dMax - v) / dSpread) * areaH
+
+  const linePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xP(i).toFixed(1)},${yP(p.price).toFixed(1)}`).join(' ')
+  const areaPath = `${linePath} L${(W - padX).toFixed(1)},${(padTop + areaH).toFixed(1)} L${padX.toFixed(1)},${(padTop + areaH).toFixed(1)} Z`
+
+  const isUp = pts[pts.length - 1].price >= pts[0].price
+  const lineClr = isUp ? 'rgba(45,212,191,0.88)' : 'rgba(248,113,113,0.88)'
+
+  const onMove = (clientX: number, rect: DOMRect) => {
+    const svgX = (clientX - rect.left) * (W / rect.width)
+    const i = Math.max(0, Math.min(pts.length - 1, Math.round((svgX - padX) / (W - padX * 2) * (pts.length - 1))))
+    setHoverIdx(i)
+  }
+
+  const first = pts[0], last = pts[pts.length - 1]
+  const deltaPct = first.price > 0 ? ((last.price - first.price) / first.price) * 100 : null
+  const hoverPt = hoverIdx != null ? pts[hoverIdx] : null
+  const guideYs = [0, 0.33, 0.67, 1].map(r => padTop + r * areaH)
+
+  const fmtTs2 = (ts: number) => {
+    const d = new Date(ts * 1000)
+    const diffH = (Date.now() / 1000 - ts) / 3600
+    return diffH < 48
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  }
+
+  return (
+    <div
+      style={{ position: 'relative' }}
+      onMouseLeave={() => setHoverIdx(null)}
+      onMouseMove={e => onMove(e.clientX, e.currentTarget.getBoundingClientRect())}
+    >
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'clamp(160px, 22vw, 240px)', display: 'block' }}>
+        <defs>
+          <linearGradient id="tcFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={isUp ? 'rgba(45,212,191,0.20)' : 'rgba(248,113,113,0.20)'} />
+            <stop offset="100%" stopColor={isUp ? 'rgba(45,212,191,0.00)' : 'rgba(248,113,113,0.00)'} />
+          </linearGradient>
+        </defs>
+
+        {guideYs.map((y, i) => (
+          <line key={i} x1={padX} y1={y} x2={W - padX} y2={y} stroke="rgba(148,163,184,0.09)" strokeWidth="1" />
+        ))}
+
+        <path d={areaPath} fill="url(#tcFill)" />
+        <path d={linePath} fill="none" stroke={lineClr} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+
+        {anchors.map((a, i) => {
+          const xi = pts.findIndex(p => p.ts === a.ts)
+          if (xi < 0) return null
+          return <circle key={i} cx={xP(xi)} cy={yP(a.price)} r="3.5" fill={lineClr} stroke="rgba(2,6,23,0.8)" strokeWidth="1" />
+        })}
+
+        {hoverIdx != null && hoverPt && (
+          <>
+            <line x1={xP(hoverIdx)} y1={padTop} x2={xP(hoverIdx)} y2={padTop + areaH} stroke="rgba(148,163,184,0.28)" strokeDasharray="3 3" strokeWidth="1" />
+            <circle cx={xP(hoverIdx)} cy={yP(hoverPt.price)} r="4.5" fill={lineClr} stroke="rgba(2,6,23,0.7)" strokeWidth="1.5" />
+          </>
+        )}
+
+        <text x={padX + 2} y={padTop - 8} fill="#475569" style={{ fontSize: 11 }}>H {fmtPrice(priceMax)}</text>
+        <text x={W - padX - 2} y={padTop - 8} textAnchor="end" fill="#475569" style={{ fontSize: 11 }}>L {fmtPrice(priceMin)}</text>
+        <text x={W / 2} y={padTop + areaH - 10} textAnchor="middle" fill="rgba(148,163,184,0.12)" style={{ fontSize: 13, letterSpacing: '0.10em', fontFamily: 'sans-serif' }}>ESTIMATED TREND</text>
+      </svg>
+
+      <div style={{ position: 'absolute', top: '8px', right: '10px', border: '1px solid rgba(167,139,250,0.38)', background: 'rgba(15,23,42,0.84)', borderRadius: '999px', padding: '4px 10px', color: '#e2e8f0', fontSize: '11px', fontWeight: 700, pointerEvents: 'none' }}>
+        {fmtPrice(last.price)}
+      </div>
+
+      {hoverPt && (
+        <div style={{ position: 'absolute', left: '10px', bottom: '32px', border: '1px solid rgba(148,163,184,0.18)', background: 'rgba(2,6,23,0.92)', borderRadius: '10px', padding: '8px 11px', pointerEvents: 'none', zIndex: 2, minWidth: '120px' }}>
+          <div style={{ color: '#64748b', fontSize: '10px', marginBottom: '4px' }}>{fmtTs2(hoverPt.ts)}</div>
+          <div style={{ fontSize: '13px', color: lineClr, fontWeight: 700 }}>{fmtPrice(hoverPt.price)}</div>
+          <div style={{ fontSize: '9px', color: '#475569', marginTop: '3px', letterSpacing: '0.06em' }}>Estimated from % changes</div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#94a3b8', marginTop: '5px' }}>
+        <span>{fmtTs2(first.ts)}</span>
+        <span style={{ color: deltaPct == null ? '#94a3b8' : deltaPct >= 0 ? '#2dd4bf' : '#f87171' }}>
+          Δ {deltaPct == null ? 'N/A' : fmtPct(deltaPct)}
+        </span>
+        <span>{fmtTs2(last.ts)}</span>
+      </div>
+    </div>
+  )
+}
+
 function humanizeReasonCode(reason?: string): string {
   if (!reason) return 'Additional verification is required.'
   const map: Record<string, string> = {
@@ -3394,10 +3532,15 @@ export default function TerminalTokenScanner() {
                     </div>
                   )}
                   {(() => {
-                    // Priority: A) CandlestickChart if valid candles exist
-                    //           B) Market Trend panel if no candles but trend data is available
-                    //           C) Minimal snapshot if no candles and no trend data
-                    const _hasValidCandles = result.chartStatus === 'ok' && (result.priceChart?.points.length ?? 0) >= 2
+                    // Priority:
+                    //   A) Real/reconstructed candles (pool_ohlcv, token_level_ohlcv, dexscreener_ohlcv, trade_reconstructed)
+                    //      → CandlestickChart
+                    //   B) Synthetic sources (synthetic_price_estimate, synthetic_flat_series) fall through
+                    //      to TrendChart — we never render fake candlestick bars for estimated data
+                    //   C) marketTrendSnapshot.status === 'ok' → premium TrendChart (smooth line/area)
+                    //   D) Else → minimal snapshot state
+                    const _REAL_SOURCES = new Set(['pool_ohlcv', 'token_level_ohlcv', 'dexscreener_ohlcv', 'trade_reconstructed'])
+                    const _hasValidCandles = result.chartStatus === 'ok' && (result.priceChart?.points.length ?? 0) >= 2 && _REAL_SOURCES.has(result.chartSource ?? '')
                     const _hasMarketTrend = result.marketTrendSnapshot?.status === 'ok'
                     const mts = result.marketTrendSnapshot
                     const pctColor = (v: number | null) => v == null ? '#94a3b8' : v >= 0 ? '#34d399' : '#f87171'
@@ -3418,18 +3561,13 @@ export default function TerminalTokenScanner() {
                                   Indexed from fallback market candles
                                 </span>
                               )}
-                              {result.chartSource === 'synthetic_price_estimate' && (
-                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>
-                                  Estimated from indexed price changes
-                                </span>
-                              )}
-                              {result.chartSource === 'synthetic_flat_series' && (
-                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: 'rgba(0,255,255,0.75)', background: 'rgba(0,255,255,0.06)', border: '1px solid rgba(0,255,255,0.20)', textTransform: 'uppercase' }}>
-                                  Flat synthetic chart — no historical data
+                              {(result.chartSource === 'pool_ohlcv' || result.chartSource === 'token_level_ohlcv') && (
+                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#34d399', background: 'rgba(52,211,153,0.07)', border: '1px solid rgba(52,211,153,0.20)', textTransform: 'uppercase' }}>
+                                  Live Candles
                                 </span>
                               )}
                               <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
-                                {result.chartSource === 'synthetic_price_estimate' ? 'No candle history — shape from % changes' : result.chartSource === 'synthetic_flat_series' ? 'No candle history — current price only' : result.priceChart!.fallbackUsed ? 'Live pool price action' : 'Primary pool price action'}
+                                {result.priceChart!.fallbackUsed ? 'Live pool price action (fallback pool)' : 'Primary pool price action'}
                               </p>
                             </div>
                           </div>
@@ -3443,23 +3581,33 @@ export default function TerminalTokenScanner() {
 
                     if (_hasMarketTrend) {
                       const visibleChanges = (mts?.changes ?? []).filter(c => c.value != null)
+                      const _trendChart = <TrendChart snapshot={mts!} currentPrice={result.price ?? null} />
                       return (
-                        <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '18px 20px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#2DD4BF', flexShrink: 0, boxShadow: '0 0 6px #2DD4BF' }} />
-                              <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Market Trend</span>
-                            </div>
-                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                          {/* Header row */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+                            <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.07)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>
+                                Estimated Trend
+                              </span>
                               {result.marketDataSource === 'fallback' && (
                                 <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>CORTEX MARKET READ</span>
                               )}
+                              <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
+                                {visibleChanges.length > 0 ? 'Inferred from indexed % changes' : 'Live price only'}
+                              </p>
                             </div>
                           </div>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'flex-end', marginBottom: '16px' }}>
+
+                          {/* Trend chart (null-safe: renders nothing if < 2 anchors) */}
+                          {_trendChart}
+
+                          {/* Price + change chips */}
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'flex-end', marginTop: '14px', marginBottom: '14px' }}>
                             <div>
-                              <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px', textTransform: 'uppercase' }}>Live Price</div>
-                              <div style={{ fontSize: '26px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(mts!.price)}</div>
+                              <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px', textTransform: 'uppercase' }}>Live Price</div>
+                              <div style={{ fontSize: '22px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(mts!.price)}</div>
                             </div>
                             {visibleChanges.length > 0 && (
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', paddingBottom: '2px' }}>
@@ -3472,6 +3620,8 @@ export default function TerminalTokenScanner() {
                               </div>
                             )}
                           </div>
+
+                          {/* Stats grid */}
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px', marginBottom: '14px' }}>
                             {mts!.liquidity != null && (
                               <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
@@ -3503,8 +3653,9 @@ export default function TerminalTokenScanner() {
                               </div>
                             )}
                           </div>
+
                           <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                            Historical candles are not indexed for this pool yet. Live market movement is shown from indexed pool data.
+                            Historical candles are not indexed yet. Trend is inferred from live indexed price changes.
                           </p>
                         </div>
                       )
