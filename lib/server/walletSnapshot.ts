@@ -96,6 +96,16 @@ export type WalletSnapshot = {
     }>
     reason: string
   }
+  walletEvidenceSummary: {
+    status: 'ready' | 'partial' | 'missing_hashes' | 'no_events'
+    totalEvents: number
+    eventsWithHash: number
+    eventsWithTimestamp: number
+    hashCoverage: number
+    timestampCoverage: number
+    readyForSwapDetection: boolean
+    missing: string[]
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -212,6 +222,14 @@ export type WalletSnapshot = {
       goldrushBalancesSkipped: boolean
       deepScan: boolean
     }
+    walletTxEvidenceDebug?: {
+      sourceProvider: 'goldrush' | 'alchemy' | 'none'
+      totalRawEvents: number
+      eventsWithHash: number
+      eventsWithTimestamp: number
+      sampleHashes: string[]
+      sampleTimestamps: string[]
+    }
   }
 }
 
@@ -319,7 +337,35 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
   }
 }
 
-type PnlEvent = { contract: string; symbol: string; direction: 'buy' | 'sell' | 'unknown'; amount: number; usdValue: number | null }
+export type WalletTxEvidence = {
+  txHash: string
+  timestamp: string | null
+  fromAddress: string | null
+  toAddress: string | null
+  contract: string
+  symbol: string
+  amountRaw: string | null
+  tokenDecimals: number | null
+  amount: number
+  usdValue: number | null
+  direction: 'buy' | 'sell' | 'unknown'
+  chain: string
+}
+
+type PnlEvent = {
+  contract: string
+  symbol: string
+  direction: 'buy' | 'sell' | 'unknown'
+  amount: number
+  amountRaw: string | null
+  tokenDecimals: number | null
+  usdValue: number | null
+  txHash: string | null
+  timestamp: string | null
+  fromAddress: string | null
+  toAddress: string | null
+  chain: string
+}
 type GoldrushHistoryDiag = {
   endpointKind: 'transfers_v2'
   chainUsed: string
@@ -481,6 +527,8 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
       const lower = address.toLowerCase()
       const events = items.flatMap((it) => {
         const t = it as Record<string, unknown>
+        const txHash = typeof t.tx_hash === 'string' ? t.tx_hash : null
+        const timestamp = typeof t.block_signed_at === 'string' ? t.block_signed_at : null
         const transfers: unknown[] = Array.isArray(t.transfers) ? t.transfers : []
         return transfers.slice(0, 4).map((x) => {
           const tr = x as Record<string, unknown>
@@ -488,12 +536,13 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
           const symbol = String(tr.contract_ticker_symbol ?? '?')
           const decimals = typeof tr.contract_decimals === 'number' ? tr.contract_decimals : 18
           const delta = String(tr.delta ?? '0')
+          const amountRaw = delta !== '0' ? delta : null
           const amount = Math.abs(parseFloat(delta) / Math.pow(10, decimals))
           const from = String(tr.from_address ?? '').toLowerCase()
           const to = String(tr.to_address ?? '').toLowerCase()
           const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
           const quote = typeof tr.delta_quote === 'number' ? Math.abs(tr.delta_quote) : null
-          return { contract, symbol, direction, amount, usdValue: quote }
+          return { contract, symbol, direction, amount, amountRaw, tokenDecimals: decimals, usdValue: quote, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName }
         })
       }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
       diag.normalizedEventCount = events.length
@@ -518,27 +567,89 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
 async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<PnlEvent[]> {
   try {
     const resp = await alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{
-      fromBlock: '0x0', category: ['erc20'], withMetadata: false, maxCount: '0x7d', order: 'desc', fromAddress: address,
+      fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0x7d', order: 'desc', fromAddress: address,
     }])
     const recv = await alchemyRpc(baseUrl, 'alchemy_getAssetTransfers', [{
-      fromBlock: '0x0', category: ['erc20'], withMetadata: false, maxCount: '0x7d', order: 'desc', toAddress: address,
+      fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0x7d', order: 'desc', toAddress: address,
     }])
-    const outgoing = (resp?.transfers ?? []).slice(0, 125).map((t: Record<string, unknown>) => ({
-      contract: String(((t.rawContract as Record<string, unknown> | undefined)?.address) ?? '').toLowerCase(),
-      symbol: String(t.asset ?? '?'),
-      direction: 'sell' as const,
-      amount: Number(t.value ?? 0),
-      usdValue: null,
-    }))
-    const incoming = (recv?.transfers ?? []).slice(0, 125).map((t: Record<string, unknown>) => ({
-      contract: String(((t.rawContract as Record<string, unknown> | undefined)?.address) ?? '').toLowerCase(),
-      symbol: String(t.asset ?? '?'),
-      direction: 'buy' as const,
-      amount: Number(t.value ?? 0),
-      usdValue: null,
-    }))
+    const mapTransfer = (t: Record<string, unknown>, dir: 'buy' | 'sell'): PnlEvent => {
+      const meta = t.metadata as Record<string, unknown> | undefined
+      return {
+        contract: String(((t.rawContract as Record<string, unknown> | undefined)?.address) ?? '').toLowerCase(),
+        symbol: String(t.asset ?? '?'),
+        direction: dir,
+        amount: Number(t.value ?? 0),
+        amountRaw: String((t.rawContract as Record<string, unknown> | undefined)?.value ?? '') || null,
+        tokenDecimals: null,
+        usdValue: null,
+        txHash: typeof t.hash === 'string' ? t.hash : null,
+        timestamp: typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null,
+        fromAddress: typeof t.from === 'string' ? t.from.toLowerCase() : null,
+        toAddress: typeof t.to === 'string' ? (t.to as string).toLowerCase() : null,
+        chain: 'base',
+      }
+    }
+    const outgoing = (resp?.transfers ?? []).slice(0, 125).map((t: Record<string, unknown>) => mapTransfer(t, 'sell'))
+    const incoming = (recv?.transfers ?? []).slice(0, 125).map((t: Record<string, unknown>) => mapTransfer(t, 'buy'))
     return [...outgoing, ...incoming].filter(e => e.contract.startsWith('0x') && Number.isFinite(e.amount) && e.amount > 0)
   } catch { return [] }
+}
+
+function buildTxEvidenceFromEvents(events: PnlEvent[]): {
+  evidenceList: WalletTxEvidence[]
+  summary: WalletSnapshot['walletEvidenceSummary']
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletTxEvidenceDebug']>
+} {
+  const evidenceList: WalletTxEvidence[] = events
+    .filter(e => Boolean(e.txHash))
+    .map(e => ({
+      txHash: e.txHash!,
+      timestamp: e.timestamp,
+      fromAddress: e.fromAddress,
+      toAddress: e.toAddress,
+      contract: e.contract,
+      symbol: e.symbol,
+      amountRaw: e.amountRaw,
+      tokenDecimals: e.tokenDecimals,
+      amount: e.amount,
+      usdValue: e.usdValue,
+      direction: e.direction,
+      chain: e.chain,
+    }))
+
+  const totalEvents = events.length
+  const eventsWithHash = events.filter(e => Boolean(e.txHash)).length
+  const eventsWithTimestamp = events.filter(e => Boolean(e.timestamp)).length
+  const hashCoverage = totalEvents > 0 ? Math.round((eventsWithHash / totalEvents) * 100) : 0
+  const timestampCoverage = totalEvents > 0 ? Math.round((eventsWithTimestamp / totalEvents) * 100) : 0
+  const readyForSwapDetection = eventsWithHash > 0 && eventsWithTimestamp > 0
+
+  const missing: string[] = []
+  if (eventsWithHash < totalEvents) missing.push(`${totalEvents - eventsWithHash} events missing txHash`)
+  if (eventsWithTimestamp < totalEvents) missing.push(`${totalEvents - eventsWithTimestamp} events missing timestamp`)
+
+  const status: WalletSnapshot['walletEvidenceSummary']['status'] =
+    totalEvents === 0 ? 'no_events'
+    : readyForSwapDetection ? 'ready'
+    : eventsWithHash > 0 ? 'partial'
+    : 'missing_hashes'
+
+  const sourceProvider = events.length > 0
+    ? (events[0].chain === 'base' && events.some(e => Boolean(e.usdValue)) ? 'goldrush' : 'alchemy')
+    : 'none'
+
+  return {
+    evidenceList,
+    summary: { status, totalEvents, eventsWithHash, eventsWithTimestamp, hashCoverage, timestampCoverage, readyForSwapDetection, missing },
+    debug: {
+      sourceProvider: sourceProvider as 'goldrush' | 'alchemy' | 'none',
+      totalRawEvents: totalEvents,
+      eventsWithHash,
+      eventsWithTimestamp,
+      sampleHashes: evidenceList.slice(0, 3).map(e => e.txHash),
+      sampleTimestamps: evidenceList.slice(0, 3).map(e => e.timestamp ?? ''),
+    },
+  }
 }
 
 function confidenceFromCoverage(c: number): 'high' | 'medium' | 'low' { return c >= 85 ? 'high' : c >= 60 ? 'medium' : 'low' }
@@ -895,6 +1006,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : 'Estimated from indexed transfer history with average-cost method.'
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
+  const { summary: walletEvidenceSummary, debug: _txEvidenceDebug } = buildTxEvidenceFromEvents(events)
   const unpricedHoldingsCount = holdings.filter((h) => !h.price || h.price <= 0).length
   const hiddenDustCount = holdings.filter((h) => h.value <= 1).length
   const behaviorTxCount = behaviorRes.status === 'fulfilled' ? (behaviorRes.value.txCount ?? 0) : 0
@@ -966,6 +1078,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     unpricedHoldingsCount,
     walletBehavior,
     estimatedPnl,
+    walletEvidenceSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -1076,6 +1189,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           : 'fallback_base_eth',
       },
       walletProviderRouting,
+      walletTxEvidenceDebug: _txEvidenceDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(cacheKey)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
