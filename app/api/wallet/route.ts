@@ -41,7 +41,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
     }
     const cacheKey = `${key}:${cacheMode}`
-    const cached = allowDebugFresh || refresh ? null : walletCache.get(cacheKey)
+    const cached = allowDebugFresh || refresh || (debug && deepActivity) ? null : walletCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
@@ -56,8 +56,12 @@ export async function POST(req: Request) {
           includeActivityFlagSent: includeActivityFlag,
           deepScanFlagSent: deepScan,
           cacheMode,
+          cacheKey,
           cacheKeyIncludesDeepActivity: cacheMode === 'activity',
           cacheHit: true,
+          cacheAgeSeconds,
+          routeAllowed: true,
+          plan,
           reason: 'cache_hit',
           evidenceStatus: (cp as any).walletEvidenceSummary?.status ?? 'unknown',
         },
@@ -104,9 +108,12 @@ export async function POST(req: Request) {
           includeActivityFlagSent: includeActivityFlag,
           deepScanFlagSent: deepScan,
           cacheMode,
+          cacheKey,
           cacheKeyIncludesDeepActivity: cacheMode === 'activity',
           cacheHit: false,
+          cacheAgeSeconds: null,
           deepActivityAllowed: true,
+          routeAllowed: true,
           plan,
           routeMethod: 'POST /api/wallet',
           fetchedPnlEvents: (snapshot as any).walletEvidenceSummary?.totalEvents ?? 0,

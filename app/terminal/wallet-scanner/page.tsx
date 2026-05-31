@@ -377,7 +377,8 @@ export default function WalletScannerPage() {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
-      const res  = await fetch('/api/wallet', {
+      const devDebug = process.env.NODE_ENV !== 'production' && deepActivity
+      const res  = await fetch(devDebug ? '/api/wallet?debug=true' : '/api/wallet', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

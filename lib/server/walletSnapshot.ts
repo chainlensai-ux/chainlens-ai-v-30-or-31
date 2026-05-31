@@ -229,6 +229,21 @@ export type WalletSnapshot = {
       eventsWithTimestamp: number
       sampleHashes: string[]
       sampleTimestamps: string[]
+      activityRequested?: boolean
+      eventFetchAttempted?: boolean
+      goldrushEthAttempted?: boolean
+      goldrushBaseAttempted?: boolean
+      alchemyAttempted?: boolean
+      goldrushEthRawCount?: number
+      goldrushBaseRawCount?: number
+      alchemyRawCount?: number
+      normalizedPnlEventCount?: number
+      totalEvidenceEvents?: number
+      eventsWithTxHash?: number
+      missingHashCount?: number
+      missingTimestampCount?: number
+      skippedReasons?: string[]
+      providerErrorSamples?: string[]
     }
   }
 }
@@ -632,8 +647,12 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
   const readyForSwapDetection = eventsWithHash > 0 && eventsWithTimestamp > 0
 
   const missing: string[] = []
-  if (eventsWithHash < totalEvents) missing.push(`${totalEvents - eventsWithHash} events missing txHash`)
-  if (eventsWithTimestamp < totalEvents) missing.push(`${totalEvents - eventsWithTimestamp} events missing timestamp`)
+  if (totalEvents === 0) {
+    missing.push('no_transfer_events_indexed')
+  } else {
+    if (eventsWithHash < totalEvents) missing.push(`${totalEvents - eventsWithHash} events missing txHash`)
+    if (eventsWithTimestamp < totalEvents) missing.push(`${totalEvents - eventsWithTimestamp} events missing timestamp`)
+  }
 
   const status: WalletSnapshot['walletEvidenceSummary']['status'] =
     totalEvents === 0 ? 'no_events'
@@ -1017,7 +1036,41 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : 'Estimated from indexed transfer history with average-cost method.'
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
-  const { summary: walletEvidenceSummary, debug: _txEvidenceDebug } = buildTxEvidenceFromEvents(events, activityRequested)
+  const { summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested)
+  const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
+  const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
+  const _alchemyAttempted = activityRequested
+  const _txSkippedReasons: string[] = []
+  if (!activityRequested) {
+    _txSkippedReasons.push('activity_not_requested')
+  } else {
+    if (!GOLDRUSH_KEY) _txSkippedReasons.push('goldrush_not_configured')
+    if (!useEthAlchemy) _txSkippedReasons.push('goldrush_eth_skipped_chain_not_eth')
+    if (!ALCHEMY_BASE_KEY) _txSkippedReasons.push('alchemy_not_configured')
+  }
+  const _txProviderErrors: string[] = []
+  const _grEthErrMsg = 'fetchErrorMessage' in grEth.diag ? (grEth.diag as GoldrushHistoryDiag).fetchErrorMessage : undefined
+  const _grBaseErrMsg = 'fetchErrorMessage' in grBase.diag ? (grBase.diag as GoldrushHistoryDiag).fetchErrorMessage : undefined
+  if (_grEthErrMsg) _txProviderErrors.push(`grEth: ${_grEthErrMsg}`)
+  if (_grBaseErrMsg) _txProviderErrors.push(`grBase: ${_grBaseErrMsg}`)
+  const _txEvidenceDebug = {
+    ..._txEvidenceDebugBase,
+    activityRequested,
+    eventFetchAttempted: _grEthAttempted || _grBaseAttempted || _alchemyAttempted,
+    goldrushEthAttempted: _grEthAttempted,
+    goldrushBaseAttempted: _grBaseAttempted,
+    alchemyAttempted: _alchemyAttempted,
+    goldrushEthRawCount: grEth.diag.rawItemCount ?? 0,
+    goldrushBaseRawCount: grBase.diag.rawItemCount ?? 0,
+    alchemyRawCount: alchemyEvents.length,
+    normalizedPnlEventCount: events.length,
+    totalEvidenceEvents: _txEvidenceDebugBase.totalRawEvents,
+    eventsWithTxHash: _txEvidenceDebugBase.eventsWithHash,
+    missingHashCount: _txEvidenceDebugBase.totalRawEvents - _txEvidenceDebugBase.eventsWithHash,
+    missingTimestampCount: _txEvidenceDebugBase.totalRawEvents - _txEvidenceDebugBase.eventsWithTimestamp,
+    skippedReasons: _txSkippedReasons,
+    providerErrorSamples: _txProviderErrors.slice(0, 3),
+  }
   const unpricedHoldingsCount = holdings.filter((h) => !h.price || h.price <= 0).length
   const hiddenDustCount = holdings.filter((h) => h.value <= 1).length
   const behaviorTxCount = behaviorRes.status === 'fulfilled' ? (behaviorRes.value.txCount ?? 0) : 0
