@@ -3,7 +3,7 @@ import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/wa
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const WALLET_CACHE_TTL_MS = 3 * 60 * 1000
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v4'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v5'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -45,8 +45,8 @@ export async function POST(req: Request) {
     }
     const cacheKey = `${key}:${cacheMode}:${WALLET_SNAPSHOT_SCHEMA_VERSION}`
     const cachedRaw = allowDebugFresh || refresh || (debug && deepActivity) ? null : walletCache.get(cacheKey)
-    // Invalidate stale-schema entries missing walletSwapSummary (pre-Phase-2 cache entries)
-    const cached = cachedRaw && typeof (cachedRaw.payload as any)?.walletSwapSummary === 'object' ? cachedRaw : null
+    // Invalidate stale-schema entries missing walletPriceEvidenceSummary (pre-Phase-3 cache entries)
+    const cached = cachedRaw && typeof (cachedRaw.payload as any)?.walletPriceEvidenceSummary === 'object' ? cachedRaw : null
     if (cachedRaw && !cached) walletCache.delete(cacheKey)
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
@@ -111,6 +111,7 @@ export async function POST(req: Request) {
         chainUsage: snapshot._diagnostics?.chainUsage ?? null,
         walletTxEvidenceDebug: snapshot._diagnostics?.walletTxEvidenceDebug ?? null,
         walletSwapDetectionDebug: snapshot._diagnostics?.walletSwapDetectionDebug ?? null,
+        walletPriceAtTimeDebug: snapshot._diagnostics?.walletPriceAtTimeDebug ?? null,
         walletActivityRequestDebug: {
           deepActivityRequested: deepActivity || deepScan,
           deepActivityFlagSent: deepActivityFlag,

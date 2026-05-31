@@ -126,6 +126,19 @@ export type WalletSnapshot = {
     readyForPriceAtTime: boolean
     missing: string[]
   }
+  walletPriceEvidenceSummary: {
+    status: 'ok' | 'partial' | 'open_check'
+    swapCandidateEvents: number
+    pricedEvents: number
+    openCheckEvents: number
+    unavailableEvents: number
+    stableLegPricedEvents: number
+    wethLegPricedEvents: number
+    historicalPricedEvents: number
+    priceAttemptLimitReached: boolean
+    readyForLotMatching: boolean
+    missing: string[]
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -304,6 +317,27 @@ export type WalletSnapshot = {
       sampleGroupedTxs: Array<{ txHash: string; walletEventCount: number; totalEventCount: number; inboundCount: number; outboundCount: number; tokens: string[] }>
       reasons: string[]
     }
+    walletPriceAtTimeDebug?: {
+      swapCandidateEvents: number
+      priceAttempts: number
+      pricedEvents: number
+      openCheckEvents: number
+      unavailableEvents: number
+      stableLegPricedEvents: number
+      wethLegPricedEvents: number
+      historicalPricedEvents: number
+      priceAttemptLimitReached: boolean
+      skippedNoTimestamp: number
+      skippedNoTokenAddress: number
+      skippedNoAmount: number
+      cacheHits: number
+      cacheMisses: number
+      providerAttempts: number
+      providerErrors: number
+      samplePricedEvents: Array<{ txHash: string; contract: string; symbol: string; direction: string; amount: number; priceUsd: number | null; source: string; confidence: string; reason: string }>
+      sampleOpenCheckEvents: Array<{ txHash: string; contract: string; symbol: string; reason: string }>
+      reasons: string[]
+    }
   }
 }
 
@@ -316,7 +350,7 @@ export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base';
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v4'
+const SNAPSHOT_SCHEMA_VERSION = 'v5'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -335,6 +369,28 @@ const KNOWN_DEX_ROUTERS: Record<string, string> = {
   '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad': 'UniswapUniversalRouter_ETH',
   '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc': 'UniswapUniversalRouter_Base',
   '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43': 'Aerodrome',
+}
+
+const STABLE_USD_CONTRACTS: Record<string, true> = {
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': true,
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': true,
+  '0x6b175474e89094c44da98b954eedeac495271d0f': true,
+}
+
+const WETH_CONTRACTS_PRICE: Record<string, true> = {
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': true,
+  '0x4200000000000000000000000000000000000006': true,
+}
+
+const PRICE_AT_TIME_TTL_MS = 60 * 60 * 1000
+const priceAtTimeMemCache = new Map<string, { exp: number; priceUsd: number | null }>()
+
+function parseRawAmount(amountRaw: string | null, decimals: number | null): number | null {
+  if (!amountRaw || decimals === null || decimals < 0) return null
+  try {
+    return parseFloat(amountRaw) / Math.pow(10, decimals)
+  } catch { return null }
 }
 
 function zerionAuth(): string | null {
@@ -458,6 +514,18 @@ export type WalletTxEvidence = {
   txToKnownRouter?: boolean
   txMatchedRouterProtocol?: string | null
   swapDetection?: WalletSwapDetection
+  priceAtTime?: PriceAtTimeEvidence
+}
+
+export type PriceAtTimeEvidence = {
+  status: 'priced' | 'open_check' | 'unavailable'
+  tokenAddress: string
+  tokenSymbol?: string | null
+  timestamp: string
+  priceUsd: number | null
+  source: 'stable_leg' | 'weth_leg' | 'historical_price' | 'current_price_fallback_not_used' | 'unavailable'
+  confidence: 'high' | 'medium' | 'low' | 'open_check'
+  reason: string
 }
 
 type PnlEvent = {
@@ -1100,6 +1168,252 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
 
 function confidenceFromCoverage(c: number): 'high' | 'medium' | 'low' { return c >= 85 ? 'high' : c >= 60 ? 'medium' : 'low' }
 
+async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: string, timestamp: string): Promise<{ priceUsd: number | null; cacheHit: boolean; providerAttempted: boolean; error: boolean }> {
+  if (!GOLDRUSH_KEY || !contractAddress.startsWith('0x')) return { priceUsd: null, cacheHit: false, providerAttempted: false, error: false }
+  const dateStr = timestamp.slice(0, 10)
+  if (!dateStr || dateStr.length !== 10) return { priceUsd: null, cacheHit: false, providerAttempted: false, error: false }
+  const cacheKey = `pat:${chain}:${contractAddress.toLowerCase()}:${dateStr}`
+  const cached = priceAtTimeMemCache.get(cacheKey)
+  if (cached && cached.exp > Date.now()) return { priceUsd: cached.priceUsd, cacheHit: true, providerAttempted: false, error: false }
+  const toDate = new Date(new Date(dateStr).getTime() + 2 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+  const url = `https://api.covalenthq.com/v1/pricing/historical_by_addresses_v2/${chain}/USD/${contractAddress.toLowerCase()}/?from=${dateStr}&to=${toDate}`
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${GOLDRUSH_KEY}` },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(6_000),
+    })
+    if (!res.ok) {
+      priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + 5 * 60 * 1000, priceUsd: null })
+      return { priceUsd: null, cacheHit: false, providerAttempted: true, error: true }
+    }
+    const json = await res.json() as Record<string, unknown>
+    const data = Array.isArray(json.data) ? json.data : []
+    const tokenData = (data[0] ?? {}) as Record<string, unknown>
+    const prices = Array.isArray(tokenData.prices) ? tokenData.prices : []
+    const priceEntry = prices.find((p: unknown) => typeof (p as Record<string, unknown>).date === 'string' && ((p as Record<string, unknown>).date as string).slice(0, 10) === dateStr) ?? prices[0]
+    const priceUsd = typeof (priceEntry as Record<string, unknown>)?.price === 'number' ? (priceEntry as Record<string, unknown>).price as number : null
+    priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + PRICE_AT_TIME_TTL_MS, priceUsd })
+    return { priceUsd, cacheHit: false, providerAttempted: true, error: false }
+  } catch {
+    priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + 5 * 60 * 1000, priceUsd: null })
+    return { priceUsd: null, cacheHit: false, providerAttempted: true, error: true }
+  }
+}
+
+async function buildPriceAtTimeEvidence(
+  evidenceWithDetection: WalletTxEvidence[],
+  activityRequested: boolean
+): Promise<{
+  evidenceWithPricing: WalletTxEvidence[]
+  summary: WalletSnapshot['walletPriceEvidenceSummary']
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletPriceAtTimeDebug']>
+}> {
+  const MAX_PRICE_ATTEMPTS = 25
+
+  const emptyResult = (missing: string[]) => ({
+    evidenceWithPricing: evidenceWithDetection,
+    summary: {
+      status: 'open_check' as const, swapCandidateEvents: 0, pricedEvents: 0,
+      openCheckEvents: 0, unavailableEvents: 0,
+      stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0,
+      priceAttemptLimitReached: false, readyForLotMatching: false, missing,
+    },
+    debug: {
+      swapCandidateEvents: 0, priceAttempts: 0, pricedEvents: 0, openCheckEvents: 0,
+      unavailableEvents: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0,
+      historicalPricedEvents: 0, priceAttemptLimitReached: false,
+      skippedNoTimestamp: 0, skippedNoTokenAddress: 0, skippedNoAmount: 0,
+      cacheHits: 0, cacheMisses: 0, providerAttempts: 0, providerErrors: 0,
+      samplePricedEvents: [], sampleOpenCheckEvents: [], reasons: missing,
+    },
+  })
+
+  if (!activityRequested) return emptyResult(['activity_not_requested'])
+
+  const swapCandidateEvents = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
+  if (swapCandidateEvents === 0) return emptyResult(['no_swap_candidates'])
+
+  // Group all events by txHash for stable/WETH leg lookup
+  const allByTx = new Map<string, WalletTxEvidence[]>()
+  for (const e of evidenceWithDetection) {
+    if (e.txHash) allByTx.set(e.txHash, [...(allByTx.get(e.txHash) ?? []), e])
+  }
+
+  let priceAttempts = 0
+  let pricedEvents = 0
+  let openCheckEvents = 0
+  let unavailableEvents = 0
+  let stableLegPricedEvents = 0
+  let wethLegPricedEvents = 0
+  let historicalPricedEvents = 0
+  let priceAttemptLimitReached = false
+  let skippedNoTimestamp = 0
+  let skippedNoTokenAddress = 0
+  let skippedNoAmount = 0
+  let cacheHits = 0
+  let cacheMisses = 0
+  let providerAttempts = 0
+  let providerErrors = 0
+  const samplePricedRaw: WalletTxEvidence[] = []
+  const sampleOpenCheckRaw: WalletTxEvidence[] = []
+
+  const openCheck = (e: WalletTxEvidence, reason: string): WalletTxEvidence => {
+    const ev: WalletTxEvidence = { ...e, priceAtTime: { status: 'open_check', tokenAddress: e.contract, tokenSymbol: e.symbol, timestamp: e.timestamp ?? '', priceUsd: null, source: 'unavailable', confidence: 'open_check', reason } }
+    openCheckEvents++
+    if (sampleOpenCheckRaw.length < 5) sampleOpenCheckRaw.push(ev)
+    return ev
+  }
+
+  const priced = (e: WalletTxEvidence, priceUsd: number, source: PriceAtTimeEvidence['source'], confidence: PriceAtTimeEvidence['confidence'], reason: string): WalletTxEvidence => {
+    const ev: WalletTxEvidence = { ...e, priceAtTime: { status: 'priced', tokenAddress: e.contract, tokenSymbol: e.symbol, timestamp: e.timestamp ?? '', priceUsd, source, confidence, reason } }
+    pricedEvents++
+    if (source === 'stable_leg') stableLegPricedEvents++
+    else if (source === 'weth_leg') wethLegPricedEvents++
+    else if (source === 'historical_price') historicalPricedEvents++
+    if (samplePricedRaw.length < 5) samplePricedRaw.push(ev)
+    return ev
+  }
+
+  const evidenceWithPricing: WalletTxEvidence[] = []
+
+  for (const e of evidenceWithDetection) {
+    // Only price swap candidates
+    if (!e.swapDetection?.isSwapCandidate) { evidenceWithPricing.push(e); continue }
+
+    if (!e.timestamp) { skippedNoTimestamp++; evidenceWithPricing.push(openCheck(e, 'No timestamp available')); continue }
+    if (!e.contract || !e.contract.startsWith('0x')) { skippedNoTokenAddress++; evidenceWithPricing.push(openCheck(e, 'Missing token contract address')); continue }
+
+    const contractLower = e.contract.toLowerCase()
+    const isStable = Boolean(STABLE_USD_CONTRACTS[contractLower])
+    const isWeth = Boolean(WETH_CONTRACTS_PRICE[contractLower])
+
+    // Stablecoins are $1 by definition
+    if (isStable) {
+      evidenceWithPricing.push(priced(e, 1.0, 'stable_leg', 'high', 'Stablecoin — price is $1 USD by definition'))
+      continue
+    }
+
+    const tokenAmount = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+    if (!tokenAmount || tokenAmount <= 0) { skippedNoAmount++; evidenceWithPricing.push(openCheck(e, 'Token amount is zero or unavailable')); continue }
+
+    const txGroup = allByTx.get(e.txHash) ?? []
+
+    // Try stable leg: find a stable movement in same tx with opposite direction
+    const stableLegs = txGroup.filter(ev => {
+      const c = ev.contract?.toLowerCase() ?? ''
+      return Boolean(STABLE_USD_CONTRACTS[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
+    })
+    if (stableLegs.length > 0) {
+      const sl = stableLegs[0]
+      const stableAmt = parseRawAmount(sl.amountRaw, sl.tokenDecimals) ?? sl.amount
+      if (stableAmt > 0) {
+        const derivedPrice = stableAmt / tokenAmount
+        if (derivedPrice > 0 && isFinite(derivedPrice)) {
+          evidenceWithPricing.push(priced(e, derivedPrice, 'stable_leg', 'high', `Derived from ${sl.symbol} leg in same tx (${sl.symbol} amount / token amount)`))
+          continue
+        }
+      }
+    }
+
+    // Try WETH leg: find WETH movement in same tx with opposite direction
+    if (!isWeth) {
+      const wethLegs = txGroup.filter(ev => {
+        const c = ev.contract?.toLowerCase() ?? ''
+        return Boolean(WETH_CONTRACTS_PRICE[c]) && ev.direction !== 'unknown' && ev.direction !== e.direction
+      })
+      if (wethLegs.length > 0) {
+        const wl = wethLegs[0]
+        // Need WETH's USD price at this timestamp
+        if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
+          priceAttemptLimitReached = true
+          evidenceWithPricing.push(openCheck(e, 'price_attempt_limit_reached'))
+          continue
+        }
+        priceAttempts++
+        const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp)
+        if (result.cacheHit) cacheHits++; else cacheMisses++
+        if (result.providerAttempted) providerAttempts++
+        if (result.error) providerErrors++
+        if (result.priceUsd !== null) {
+          const wethAmt = parseRawAmount(wl.amountRaw, wl.tokenDecimals) ?? wl.amount
+          if (wethAmt > 0) {
+            const derivedPrice = (wethAmt * result.priceUsd) / tokenAmount
+            if (derivedPrice > 0 && isFinite(derivedPrice)) {
+              evidenceWithPricing.push(priced(e, derivedPrice, 'weth_leg', 'medium', `Derived from WETH leg (WETH×${result.priceUsd.toFixed(0)} × WETH amount / token amount)`))
+              continue
+            }
+          }
+        }
+      }
+    }
+
+    // Try direct historical price via GoldRush
+    if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
+      priceAttemptLimitReached = true
+      evidenceWithPricing.push(openCheck(e, 'price_attempt_limit_reached'))
+      continue
+    }
+    priceAttempts++
+    const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp)
+    if (histResult.cacheHit) cacheHits++; else cacheMisses++
+    if (histResult.providerAttempted) providerAttempts++
+    if (histResult.error) providerErrors++
+    if (histResult.priceUsd !== null) {
+      evidenceWithPricing.push(priced(e, histResult.priceUsd, 'historical_price', 'medium', `Historical token price from on-chain pricing data`))
+      continue
+    }
+
+    // No price evidence found
+    evidenceWithPricing.push(openCheck(e, 'No reliable price-at-time evidence available'))
+  }
+
+  const pricedInbound = evidenceWithPricing.filter(e => e.swapDetection?.isSwapCandidate && e.priceAtTime?.status === 'priced' && e.direction === 'buy' && e.txHash && e.contract && e.amount > 0).length
+  const pricedOutbound = evidenceWithPricing.filter(e => e.swapDetection?.isSwapCandidate && e.priceAtTime?.status === 'priced' && e.direction === 'sell' && e.txHash && e.contract && e.amount > 0).length
+  const readyForLotMatching = pricedInbound >= 1 && pricedOutbound >= 1
+
+  const summaryStatus: 'ok' | 'partial' | 'open_check' =
+    swapCandidateEvents === 0 ? 'open_check'
+    : pricedEvents === 0 ? 'open_check'
+    : pricedEvents >= swapCandidateEvents * 0.6 ? 'ok'
+    : 'partial'
+
+  const missing: string[] = []
+  if (pricedEvents === 0 && swapCandidateEvents > 0) missing.push('no_price_evidence')
+  if (priceAttemptLimitReached) missing.push('price_attempt_limit_reached')
+  if (!readyForLotMatching && pricedEvents > 0) missing.push(pricedInbound === 0 ? 'no_priced_inbound_swaps' : 'no_priced_outbound_swaps')
+
+  const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
+
+  return {
+    evidenceWithPricing,
+    summary: {
+      status: summaryStatus, swapCandidateEvents, pricedEvents, openCheckEvents, unavailableEvents,
+      stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents,
+      priceAttemptLimitReached, readyForLotMatching, missing,
+    },
+    debug: {
+      swapCandidateEvents, priceAttempts, pricedEvents, openCheckEvents, unavailableEvents,
+      stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents, priceAttemptLimitReached,
+      skippedNoTimestamp, skippedNoTokenAddress, skippedNoAmount,
+      cacheHits, cacheMisses, providerAttempts, providerErrors,
+      samplePricedEvents: samplePricedRaw.slice(0, 5).map(ev => ({
+        txHash: abbr(ev.txHash), contract: abbr(ev.contract), symbol: ev.symbol,
+        direction: ev.direction, amount: ev.amount,
+        priceUsd: ev.priceAtTime?.priceUsd ?? null,
+        source: ev.priceAtTime?.source ?? 'unavailable',
+        confidence: ev.priceAtTime?.confidence ?? 'open_check',
+        reason: ev.priceAtTime?.reason ?? '',
+      })),
+      sampleOpenCheckEvents: sampleOpenCheckRaw.slice(0, 5).map(ev => ({
+        txHash: abbr(ev.txHash), contract: abbr(ev.contract), symbol: ev.symbol,
+        reason: ev.priceAtTime?.reason ?? '',
+      })),
+      reasons: missing,
+    },
+  }
+}
+
 const BEHAVIOR_EMPTY: WalletBehavior = {
   status: 'unavailable', source: 'unavailable',
   txCount: null, activeDays: null, topTokens: [], topContracts: [],
@@ -1457,7 +1771,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
   const { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested)
-  const { summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
+  const { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
+  const { summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = activityRequested && Boolean(ALCHEMY_BASE_KEY)
@@ -1565,6 +1880,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     estimatedPnl,
     walletEvidenceSummary,
     walletSwapSummary,
+    walletPriceEvidenceSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -1678,6 +1994,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletProviderRouting,
       walletTxEvidenceDebug: _txEvidenceDebug,
       walletSwapDetectionDebug: _swapDetectionDebug,
+      walletPriceAtTimeDebug: _priceAtTimeDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
