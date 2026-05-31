@@ -75,11 +75,13 @@ export async function POST(req: Request) {
       if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
-    const snapshot = await fetchWalletSnapshot(address ?? '', { refresh, chain, deepScan, deepActivity, chainMode } satisfies WalletSnapshotOptions)
-    const providers: any = (snapshot as any)._diagnostics?.providers ?? {}
-    const snapshotCacheDebug = (snapshot as any)._diagnostics?.snapshotCache ?? null
+    // Shallow-copy before mutating so snapshotMemCache reference is never corrupted
+    // (fetchWalletSnapshot returns the same object it stores in its memory cache)
+    const snapshot: any = { ...(await fetchWalletSnapshot(address ?? '', { refresh, chain, deepScan, deepActivity, chainMode } satisfies WalletSnapshotOptions)) }
+    const providers: any = snapshot._diagnostics?.providers ?? {}
+    const snapshotCacheDebug = snapshot._diagnostics?.snapshotCache ?? null
     if (debug) {
-      ;(snapshot as any)._debug = {
+      ;snapshot._debug = {
         routeName: '/api/wallet',
         cacheHit: false,
         goldrushUsage: {
@@ -87,7 +89,7 @@ export async function POST(req: Request) {
           feature: 'wallet-scanner',
           trigger: 'scan_button',
           attempted: Boolean(providers.goldrush?.configured),
-          cacheHit: Boolean((snapshot as any)._diagnostics?.snapshotCache?.memoryHit),
+          cacheHit: Boolean(snapshot._diagnostics?.snapshotCache?.memoryHit),
           deduped: false,
           statusCode: providers.goldrush?.httpStatus ?? null,
           durationMs: Date.now() - startedAt,
@@ -102,13 +104,13 @@ export async function POST(req: Request) {
         skippedReason: providers.alchemy?.behaviorAttempted ? null : 'alchemy_not_configured',
         requestDurationMs: Date.now() - startedAt,
         walletSnapshotCache: snapshotCacheDebug,
-        providerFallback: (snapshot as any)._diagnostics?.providerFallback ?? null,
-        walletProviderRouting: (snapshot as any)._diagnostics?.walletProviderRouting ?? null,
-        moralisUsage: (snapshot as any)._diagnostics?.moralisUsage ?? null,
-        providerFlow: (snapshot as any)._diagnostics?.providerFlow ?? null,
-        chainUsage: (snapshot as any)._diagnostics?.chainUsage ?? null,
-        walletTxEvidenceDebug: (snapshot as any)._diagnostics?.walletTxEvidenceDebug ?? null,
-        walletSwapDetectionDebug: (snapshot as any)._diagnostics?.walletSwapDetectionDebug ?? null,
+        providerFallback: snapshot._diagnostics?.providerFallback ?? null,
+        walletProviderRouting: snapshot._diagnostics?.walletProviderRouting ?? null,
+        moralisUsage: snapshot._diagnostics?.moralisUsage ?? null,
+        providerFlow: snapshot._diagnostics?.providerFlow ?? null,
+        chainUsage: snapshot._diagnostics?.chainUsage ?? null,
+        walletTxEvidenceDebug: snapshot._diagnostics?.walletTxEvidenceDebug ?? null,
+        walletSwapDetectionDebug: snapshot._diagnostics?.walletSwapDetectionDebug ?? null,
         walletActivityRequestDebug: {
           deepActivityRequested: deepActivity || deepScan,
           deepActivityFlagSent: deepActivityFlag,
@@ -123,20 +125,20 @@ export async function POST(req: Request) {
           routeAllowed: true,
           plan,
           routeMethod: 'POST /api/wallet',
-          fetchedPnlEvents: (snapshot as any).walletEvidenceSummary?.totalEvents ?? 0,
-          fetchedEvidenceEvents: (snapshot as any).walletEvidenceSummary?.eventsWithHash ?? 0,
-          evidenceStatus: (snapshot as any).walletEvidenceSummary?.status ?? 'unknown',
+          fetchedPnlEvents: snapshot.walletEvidenceSummary?.totalEvents ?? 0,
+          fetchedEvidenceEvents: snapshot.walletEvidenceSummary?.eventsWithHash ?? 0,
+          evidenceStatus: snapshot.walletEvidenceSummary?.status ?? 'unknown',
           reason: (deepActivity || deepScan) ? null : 'deep_activity_not_requested',
         },
       }
     }
     if (!debug) {
-      ;(snapshot as any).providerUsed = 'holdings_layer'
-      ;(snapshot as any).portfolioSource = 'portfolio_layer'
-      ;(snapshot as any).behaviorSource = (snapshot as any).behaviorSource === 'unavailable' ? 'unavailable' : 'activity_layer'
-      ;(snapshot as any).pnlSource = (snapshot as any).pnlSource === 'unavailable' ? 'unavailable' : 'activity_layer'
+      ;snapshot.providerUsed = 'holdings_layer'
+      ;snapshot.portfolioSource = 'portfolio_layer'
+      ;snapshot.behaviorSource = snapshot.behaviorSource === 'unavailable' ? 'unavailable' : 'activity_layer'
+      ;snapshot.pnlSource = snapshot.pnlSource === 'unavailable' ? 'unavailable' : 'activity_layer'
     }
-    delete (snapshot as any)._diagnostics
+    delete snapshot._diagnostics
     if (!allowDebugFresh && !refresh && !debug) walletCache.set(cacheKey, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
     return NextResponse.json(snapshot)
   } catch (err: unknown) {
