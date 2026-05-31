@@ -725,10 +725,12 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto' } = options
   // activityRequested: true when either deepScan (full holdings+activity) or deepActivity (activity-only) is set
   const activityRequested = deepScan || deepActivity
-  const cacheKey = (address ?? '').trim().toLowerCase()
+  // Separate address normalisation from cache key so regex validation always checks the address portion only
+  const addrNorm = (address ?? '').trim().toLowerCase()
+  const cacheKey = addrNorm + (activityRequested ? ':activity' : ':holdings')
 
   // Memory cache check — bypassed when refresh=true
-  if (!refresh && /^0x[0-9a-fA-F]{40}$/i.test(cacheKey)) {
+  if (!refresh && /^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) {
     const cached = snapshotMemCache.get(cacheKey)
     if (cached) {
       const ageMs = Date.now() - cached.cachedAt
@@ -1201,6 +1203,6 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletTxEvidenceDebug: _txEvidenceDebug,
     },
   }
-  if (/^0x[0-9a-fA-F]{40}$/i.test(cacheKey)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
+  if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
   return snapshot
 }

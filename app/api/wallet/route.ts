@@ -28,7 +28,10 @@ export async function POST(req: Request) {
     const refresh = body?.refresh === true
     const chain = body?.chain === 'eth' ? 'eth' : 'base'
     const deepScan = body?.deepScan === true || body?.deepScan === 'true'
-    const deepActivity = body?.deepActivity === true || body?.deepActivity === 'true'
+    const deepActivityFlag = body?.deepActivity === true || body?.deepActivity === 'true'
+    const includeActivityFlag = body?.includeActivity === true || body?.includeActivity === 'true'
+    const deepActivity = deepActivityFlag || includeActivityFlag
+    const cacheMode: 'activity' | 'holdings' = (deepScan || deepActivity) ? 'activity' : 'holdings'
     const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' || body?.chainMode === 'all_supported' ? body.chainMode : 'auto'
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
@@ -37,11 +40,28 @@ export async function POST(req: Request) {
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
       return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
     }
-    const cached = allowDebugFresh || refresh ? null : walletCache.get(key)
+    const cacheKey = `${key}:${cacheMode}`
+    const cached = allowDebugFresh || refresh ? null : walletCache.get(cacheKey)
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
-      if (cp && typeof cp === 'object' && debug) cp._debug = { routeName: '/api/wallet', cacheHit: true, requestDurationMs: Date.now() - startedAt, walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_CACHE_TTL_MS / 1000 }, providerFlow: null }
+      if (cp && typeof cp === 'object' && debug) cp._debug = {
+        routeName: '/api/wallet', cacheHit: true, cacheMode,
+        requestDurationMs: Date.now() - startedAt,
+        walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_CACHE_TTL_MS / 1000 },
+        providerFlow: null,
+        walletActivityRequestDebug: {
+          deepActivityRequested: deepScan || deepActivity,
+          deepActivityFlagSent: deepActivityFlag,
+          includeActivityFlagSent: includeActivityFlag,
+          deepScanFlagSent: deepScan,
+          cacheMode,
+          cacheKeyIncludesDeepActivity: cacheMode === 'activity',
+          cacheHit: true,
+          reason: 'cache_hit',
+          evidenceStatus: (cp as any).walletEvidenceSummary?.status ?? 'unknown',
+        },
+      }
       if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
@@ -80,8 +100,12 @@ export async function POST(req: Request) {
         walletTxEvidenceDebug: (snapshot as any)._diagnostics?.walletTxEvidenceDebug ?? null,
         walletActivityRequestDebug: {
           deepActivityRequested: deepActivity || deepScan,
-          deepActivityFlagSent: deepActivity,
+          deepActivityFlagSent: deepActivityFlag,
+          includeActivityFlagSent: includeActivityFlag,
           deepScanFlagSent: deepScan,
+          cacheMode,
+          cacheKeyIncludesDeepActivity: cacheMode === 'activity',
+          cacheHit: false,
           deepActivityAllowed: true,
           plan,
           routeMethod: 'POST /api/wallet',
@@ -99,7 +123,7 @@ export async function POST(req: Request) {
       ;(snapshot as any).pnlSource = (snapshot as any).pnlSource === 'unavailable' ? 'unavailable' : 'activity_layer'
     }
     delete (snapshot as any)._diagnostics
-    if (!allowDebugFresh && !refresh) walletCache.set(key, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
+    if (!allowDebugFresh && !refresh) walletCache.set(cacheKey, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
     return NextResponse.json(snapshot)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'
