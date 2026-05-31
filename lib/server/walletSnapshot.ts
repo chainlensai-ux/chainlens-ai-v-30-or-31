@@ -139,6 +139,21 @@ export type WalletSnapshot = {
     readyForLotMatching: boolean
     missing: string[]
   }
+  walletLotSummary: {
+    status: 'ok' | 'partial' | 'open_check'
+    pricedSwapEvents: number
+    openedLots: number
+    closedLots: number
+    partiallyClosedLots: number
+    unmatchedBuys: number
+    unmatchedSells: number
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    totalCostBasisClosedUsd: number | null
+    totalProceedsClosedUsd: number | null
+    readyForTradeStats: boolean
+    missing: string[]
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -338,6 +353,27 @@ export type WalletSnapshot = {
       sampleOpenCheckEvents: Array<{ txHash: string; contract: string; symbol: string; reason: string }>
       reasons: string[]
     }
+    walletLotEngineDebug?: {
+      pricedSwapEvents: number
+      buyEvents: number
+      sellEvents: number
+      openedLots: number
+      closedLots: number
+      partiallyClosedLots: number
+      unmatchedBuys: number
+      unmatchedSells: number
+      skippedUnpricedEvents: number
+      skippedStableQuoteAssets: number
+      skippedMissingFields: number
+      totalCostBasisClosedUsd: number | null
+      totalProceedsClosedUsd: number | null
+      realizedPnlUsd: number | null
+      realizedPnlPercent: number | null
+      sampleOpenLots: Array<{ tokenAddress: string; symbol: string; chain: string; openedAt: string; amountRemaining: number; entryPriceUsd: number; confidence: string }>
+      sampleClosedLots: Array<{ tokenAddress: string; symbol: string; openedAt: string; closedAt: string; amountClosed: number; entryPriceUsd: number; exitPriceUsd: number; realizedPnlUsd: number; confidence: string }>
+      sampleUnmatchedSells: Array<{ txHash: string; tokenAddress: string; symbol: string; amount: number; exitPriceUsd: number }>
+      reasons: string[]
+    }
   }
 }
 
@@ -350,7 +386,7 @@ export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base';
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v5'
+const SNAPSHOT_SCHEMA_VERSION = 'v6'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -515,6 +551,40 @@ export type WalletTxEvidence = {
   txMatchedRouterProtocol?: string | null
   swapDetection?: WalletSwapDetection
   priceAtTime?: PriceAtTimeEvidence
+}
+
+export type WalletLotOpen = {
+  tokenAddress: string
+  tokenSymbol?: string | null
+  chain: string
+  openedTxHash: string
+  openedAt: string
+  amountOpened: number
+  amountRemaining: number
+  entryPriceUsd: number
+  entryValueUsd: number
+  priceSource: string
+  confidence: 'high' | 'medium' | 'low'
+}
+
+export type WalletClosedLot = {
+  tokenAddress: string
+  tokenSymbol?: string | null
+  chain: string
+  openedTxHash: string
+  closedTxHash: string
+  openedAt: string
+  closedAt: string
+  amountClosed: number
+  entryPriceUsd: number
+  exitPriceUsd: number
+  costBasisUsd: number
+  proceedsUsd: number
+  realizedPnlUsd: number
+  realizedPnlPercent: number | null
+  holdingTimeSeconds: number | null
+  confidence: 'high' | 'medium' | 'low'
+  evidence: { entrySource: string; exitSource: string; method: 'fifo' }
 }
 
 export type PriceAtTimeEvidence = {
@@ -1168,6 +1238,218 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
 
 function confidenceFromCoverage(c: number): 'high' | 'medium' | 'low' { return c >= 85 ? 'high' : c >= 60 ? 'medium' : 'low' }
 
+// All contracts that are quote/USD-side assets — not tracked as the target PnL token
+const QUOTE_ASSET_CONTRACTS: Record<string, true> = {
+  ...STABLE_USD_CONTRACTS,
+  ...WETH_CONTRACTS_PRICE,
+}
+
+const LOT_EPSILON = 1e-9
+
+function lotConfidence(entrySource: string, exitSource: string): 'high' | 'medium' | 'low' {
+  if (entrySource === 'stable_leg' && exitSource === 'stable_leg') return 'high'
+  if (entrySource !== 'unavailable' && exitSource !== 'unavailable') return 'medium'
+  return 'low'
+}
+
+function buildFifoLotEngine(
+  evidenceWithPricing: WalletTxEvidence[],
+  activityRequested: boolean
+): {
+  summary: WalletSnapshot['walletLotSummary']
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletLotEngineDebug']>
+} {
+  const empty = (missing: string[]) => ({
+    summary: {
+      status: 'open_check' as const, pricedSwapEvents: 0, openedLots: 0, closedLots: 0,
+      partiallyClosedLots: 0, unmatchedBuys: 0, unmatchedSells: 0,
+      realizedPnlUsd: null, realizedPnlPercent: null,
+      totalCostBasisClosedUsd: null, totalProceedsClosedUsd: null,
+      readyForTradeStats: false, missing,
+    },
+    debug: {
+      pricedSwapEvents: 0, buyEvents: 0, sellEvents: 0, openedLots: 0, closedLots: 0,
+      partiallyClosedLots: 0, unmatchedBuys: 0, unmatchedSells: 0,
+      skippedUnpricedEvents: 0, skippedStableQuoteAssets: 0, skippedMissingFields: 0,
+      totalCostBasisClosedUsd: null, totalProceedsClosedUsd: null,
+      realizedPnlUsd: null, realizedPnlPercent: null,
+      sampleOpenLots: [], sampleClosedLots: [], sampleUnmatchedSells: [], reasons: missing,
+    },
+  })
+
+  if (!activityRequested) return empty(['activity_not_requested'])
+
+  // ── Filter to eligible events ──
+  let skippedUnpricedEvents = 0
+  let skippedStableQuoteAssets = 0
+  let skippedMissingFields = 0
+
+  const eligible: WalletTxEvidence[] = []
+  for (const e of evidenceWithPricing) {
+    if (!e.swapDetection?.isSwapCandidate) continue
+    if (e.priceAtTime?.status !== 'priced' || !e.priceAtTime.priceUsd || !isFinite(e.priceAtTime.priceUsd) || e.priceAtTime.priceUsd <= 0) { skippedUnpricedEvents++; continue }
+    if (!e.txHash || !e.timestamp || !e.contract || !e.contract.startsWith('0x') || !e.amount || e.amount <= 0) { skippedMissingFields++; continue }
+    if (QUOTE_ASSET_CONTRACTS[e.contract.toLowerCase()]) { skippedStableQuoteAssets++; continue }
+    eligible.push(e)
+  }
+
+  const pricedSwapEvents = eligible.length
+  if (pricedSwapEvents === 0) return empty(['no_priced_swap_events'])
+
+  // Sort ascending by timestamp
+  eligible.sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''))
+
+  const buyEvents = eligible.filter(e => e.direction === 'buy').length
+  const sellEvents = eligible.filter(e => e.direction === 'sell').length
+
+  // Open lots keyed by chain:contract (FIFO queue — oldest first)
+  const openLotsMap = new Map<string, WalletLotOpen[]>()
+  const closedLots: WalletClosedLot[] = []
+  let unmatchedBuys = 0
+  let unmatchedSells = 0
+
+  for (const e of eligible) {
+    const lotKey = `${e.chain}:${e.contract.toLowerCase()}`
+    const priceUsd = e.priceAtTime!.priceUsd!
+    const priceSource = e.priceAtTime!.source
+
+    if (e.direction === 'buy') {
+      // Open a new lot
+      const lot: WalletLotOpen = {
+        tokenAddress: e.contract.toLowerCase(),
+        tokenSymbol: e.symbol ?? null,
+        chain: e.chain,
+        openedTxHash: e.txHash,
+        openedAt: e.timestamp!,
+        amountOpened: e.amount,
+        amountRemaining: e.amount,
+        entryPriceUsd: priceUsd,
+        entryValueUsd: e.amount * priceUsd,
+        priceSource,
+        confidence: priceSource === 'stable_leg' ? 'high' : 'medium',
+      }
+      const queue = openLotsMap.get(lotKey) ?? []
+      queue.push(lot)
+      openLotsMap.set(lotKey, queue)
+
+    } else if (e.direction === 'sell') {
+      const queue = openLotsMap.get(lotKey)
+      if (!queue || queue.length === 0) { unmatchedSells++; continue }
+
+      let sellRemaining = e.amount
+      while (sellRemaining > LOT_EPSILON && queue.length > 0) {
+        const lot = queue[0]
+        const closeAmount = Math.min(lot.amountRemaining, sellRemaining)
+        const costBasisUsd = closeAmount * lot.entryPriceUsd
+        const proceedsUsd = closeAmount * priceUsd
+        const realizedPnlUsd = proceedsUsd - costBasisUsd
+        const entryTs = new Date(lot.openedAt).getTime()
+        const exitTs = new Date(e.timestamp!).getTime()
+        const holdingTimeSeconds = isFinite(entryTs) && isFinite(exitTs) ? Math.max(0, Math.floor((exitTs - entryTs) / 1000)) : null
+
+        closedLots.push({
+          tokenAddress: e.contract.toLowerCase(),
+          tokenSymbol: e.symbol ?? null,
+          chain: e.chain,
+          openedTxHash: lot.openedTxHash,
+          closedTxHash: e.txHash,
+          openedAt: lot.openedAt,
+          closedAt: e.timestamp!,
+          amountClosed: closeAmount,
+          entryPriceUsd: lot.entryPriceUsd,
+          exitPriceUsd: priceUsd,
+          costBasisUsd,
+          proceedsUsd,
+          realizedPnlUsd,
+          realizedPnlPercent: costBasisUsd > 0 ? (realizedPnlUsd / costBasisUsd) * 100 : null,
+          holdingTimeSeconds,
+          confidence: lotConfidence(lot.priceSource, priceSource),
+          evidence: { entrySource: lot.priceSource, exitSource: priceSource, method: 'fifo' },
+        })
+
+        lot.amountRemaining -= closeAmount
+        sellRemaining -= closeAmount
+        if (lot.amountRemaining <= LOT_EPSILON) queue.shift()
+      }
+
+      if (sellRemaining > LOT_EPSILON) unmatchedSells++
+    }
+    // direction === 'unknown' already filtered by eligible filter (swap candidates are buy/sell)
+  }
+
+  // Tally open lot stats
+  let openedLots = 0
+  let partiallyClosedLots = 0
+  for (const queue of openLotsMap.values()) {
+    for (const lot of queue) {
+      openedLots++
+      if (lot.amountRemaining < lot.amountOpened - LOT_EPSILON) partiallyClosedLots++
+    }
+  }
+  unmatchedBuys = Array.from(openLotsMap.values()).flatMap(q => q).filter(lot => lot.amountRemaining >= lot.amountOpened - LOT_EPSILON).length
+
+  const totalCostBasisClosedUsd = closedLots.length > 0 ? closedLots.reduce((s, l) => s + l.costBasisUsd, 0) : null
+  const totalProceedsClosedUsd = closedLots.length > 0 ? closedLots.reduce((s, l) => s + l.proceedsUsd, 0) : null
+  const realizedPnlUsd = closedLots.length > 0 ? closedLots.reduce((s, l) => s + l.realizedPnlUsd, 0) : null
+  const realizedPnlPercent = totalCostBasisClosedUsd !== null && totalCostBasisClosedUsd > 0 && realizedPnlUsd !== null
+    ? (realizedPnlUsd / totalCostBasisClosedUsd) * 100
+    : null
+
+  const summaryStatus: 'ok' | 'partial' | 'open_check' =
+    closedLots.length > 0 ? 'ok'
+    : pricedSwapEvents > 0 ? 'partial'
+    : 'open_check'
+
+  const missing: string[] = []
+  if (closedLots.length === 0 && pricedSwapEvents > 0) missing.push('no_closed_lots')
+  if (unmatchedSells > 0) missing.push('unmatched_sells')
+  if (unmatchedBuys > 0) missing.push('unmatched_buys')
+
+  const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
+
+  const allOpenLots = Array.from(openLotsMap.values()).flatMap(q => q)
+
+  return {
+    summary: {
+      status: summaryStatus,
+      pricedSwapEvents,
+      openedLots,
+      closedLots: closedLots.length,
+      partiallyClosedLots,
+      unmatchedBuys,
+      unmatchedSells,
+      realizedPnlUsd,
+      realizedPnlPercent,
+      totalCostBasisClosedUsd,
+      totalProceedsClosedUsd,
+      readyForTradeStats: closedLots.length >= 1,
+      missing,
+    },
+    debug: {
+      pricedSwapEvents, buyEvents, sellEvents, openedLots,
+      closedLots: closedLots.length, partiallyClosedLots, unmatchedBuys, unmatchedSells,
+      skippedUnpricedEvents, skippedStableQuoteAssets, skippedMissingFields,
+      totalCostBasisClosedUsd, totalProceedsClosedUsd, realizedPnlUsd, realizedPnlPercent,
+      sampleOpenLots: allOpenLots.slice(0, 5).map(l => ({
+        tokenAddress: abbr(l.tokenAddress), symbol: l.tokenSymbol ?? '', chain: l.chain,
+        openedAt: l.openedAt, amountRemaining: l.amountRemaining,
+        entryPriceUsd: l.entryPriceUsd, confidence: l.confidence,
+      })),
+      sampleClosedLots: closedLots.slice(0, 5).map(l => ({
+        tokenAddress: abbr(l.tokenAddress), symbol: l.tokenSymbol ?? '',
+        openedAt: l.openedAt, closedAt: l.closedAt, amountClosed: l.amountClosed,
+        entryPriceUsd: l.entryPriceUsd, exitPriceUsd: l.exitPriceUsd,
+        realizedPnlUsd: l.realizedPnlUsd, confidence: l.confidence,
+      })),
+      sampleUnmatchedSells: eligible.filter(e => e.direction === 'sell').slice(0, 5).map(e => ({
+        txHash: abbr(e.txHash), tokenAddress: abbr(e.contract),
+        symbol: e.symbol, amount: e.amount, exitPriceUsd: e.priceAtTime!.priceUsd!,
+      })),
+      reasons: missing,
+    },
+  }
+}
+
 async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: string, timestamp: string): Promise<{ priceUsd: number | null; cacheHit: boolean; providerAttempted: boolean; error: boolean }> {
   if (!GOLDRUSH_KEY || !contractAddress.startsWith('0x')) return { priceUsd: null, cacheHit: false, providerAttempted: false, error: false }
   const dateStr = timestamp.slice(0, 10)
@@ -1772,7 +2054,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
   const { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested)
   const { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
-  const { summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
+  const { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
+  const { summary: walletLotSummary, debug: _lotEngineDebug } = buildFifoLotEngine(_pricedEvidence, activityRequested)
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = activityRequested && Boolean(ALCHEMY_BASE_KEY)
@@ -1881,6 +2164,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletEvidenceSummary,
     walletSwapSummary,
     walletPriceEvidenceSummary,
+    walletLotSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -1995,6 +2279,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletTxEvidenceDebug: _txEvidenceDebug,
       walletSwapDetectionDebug: _swapDetectionDebug,
       walletPriceAtTimeDebug: _priceAtTimeDebug,
+      walletLotEngineDebug: _lotEngineDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
