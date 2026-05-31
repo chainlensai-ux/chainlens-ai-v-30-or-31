@@ -265,6 +265,7 @@ export type WalletSnapshot = {
     }
     walletSwapDetectionDebug?: {
       totalEvidenceEvents: number
+      usableEventCount: number
       groupedTxCount: number
       txWithMultipleTokenMovements: number
       txWithInboundOutboundMovement: number
@@ -279,8 +280,17 @@ export type WalletSnapshot = {
       bridgeCandidateEvents: number
       unknownEvents: number
       readyForPriceAtTime: boolean
+      directionCounts: { inbound: number; outbound: number; unknown: number }
+      unknownReasonCounts: Record<string, number>
+      eventsMissingTokenAddress: number
+      eventsMissingTxHash: number
+      eventsMissingTimestamp: number
+      eventsMissingFromTo: number
+      duplicateEventCount: number
+      zeroAmountEventCount: number
       sampleSwapCandidates: WalletTxEvidence[]
       sampleUnknowns: WalletTxEvidence[]
+      sampleGroupedTxs: Array<{ txHash: string; walletEventCount: number; totalEventCount: number; inboundCount: number; outboundCount: number; tokens: string[] }>
       reasons: string[]
     }
   }
@@ -295,7 +305,7 @@ export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base';
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v2'
+const SNAPSHOT_SCHEMA_VERSION = 'v3'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -780,12 +790,16 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapDetectionDebug']>
 } {
   const emptyDebug = (): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapDetectionDebug']> => ({
-    totalEvidenceEvents: 0, groupedTxCount: 0, txWithMultipleTokenMovements: 0,
+    totalEvidenceEvents: 0, usableEventCount: 0, groupedTxCount: 0, txWithMultipleTokenMovements: 0,
     txWithInboundOutboundMovement: 0, knownRouterMatchCount: 0, stableOrWethLegMatchCount: 0,
     swapCandidateEvents: 0, highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0,
     lowConfidenceSwapCandidates: 0, transferEvents: 0, airdropCandidateEvents: 0,
     bridgeCandidateEvents: 0, unknownEvents: 0, readyForPriceAtTime: false,
-    sampleSwapCandidates: [], sampleUnknowns: [], reasons: [],
+    directionCounts: { inbound: 0, outbound: 0, unknown: 0 },
+    unknownReasonCounts: {},
+    eventsMissingTokenAddress: 0, eventsMissingTxHash: 0, eventsMissingTimestamp: 0,
+    eventsMissingFromTo: 0, duplicateEventCount: 0, zeroAmountEventCount: 0,
+    sampleSwapCandidates: [], sampleUnknowns: [], sampleGroupedTxs: [], reasons: [],
   })
 
   if (!activityRequested) {
@@ -804,13 +818,81 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     }
   }
 
-  const byTx = new Map<string, WalletTxEvidence[]>()
+  // ── Diagnostic counts on the full evidence list ──
+  const totalEvidenceEvents = evidenceList.length
+  const directionCounts = {
+    inbound: evidenceList.filter(e => e.direction === 'buy').length,
+    outbound: evidenceList.filter(e => e.direction === 'sell').length,
+    unknown: evidenceList.filter(e => e.direction === 'unknown').length,
+  }
+  const eventsMissingTokenAddress = evidenceList.filter(e => !e.contract || !e.contract.startsWith('0x')).length
+  const eventsMissingTxHash = evidenceList.filter(e => !e.txHash).length
+  const eventsMissingTimestamp = evidenceList.filter(e => !e.timestamp).length
+  const eventsMissingFromTo = evidenceList.filter(e => !e.fromAddress && !e.toAddress).length
+  const zeroAmountEventCount = evidenceList.filter(e => !e.amount || e.amount <= 0).length
+
+  // Deduplicate check: same txHash + contract + direction + amountRaw
+  const dedupSeen = new Set<string>()
+  let duplicateEventCount = 0
   for (const e of evidenceList) {
+    const key = `${e.txHash}:${e.contract}:${e.direction}:${e.amountRaw ?? '0'}`
+    if (dedupSeen.has(key)) duplicateEventCount++
+    else dedupSeen.add(key)
+  }
+
+  // ── Filter to usable events for swap-group analysis ──
+  // Excludes: non-wallet-side transfers (direction=unknown), missing contract, zero amount
+  const usableEvents = evidenceList.filter(e =>
+    e.direction !== 'unknown' &&
+    Boolean(e.contract) && e.contract.startsWith('0x') &&
+    e.amount > 0
+  )
+  const usableEventCount = usableEvents.length
+
+  // ── Group ONLY usable events by txHash ──
+  const byTx = new Map<string, WalletTxEvidence[]>()
+  for (const e of usableEvents) {
     byTx.set(e.txHash, [...(byTx.get(e.txHash) ?? []), e])
   }
 
+  // Also build a full-events-per-tx map for sampleGroupedTxs totals
+  const allByTx = new Map<string, WalletTxEvidence[]>()
+  for (const e of evidenceList) {
+    allByTx.set(e.txHash, [...(allByTx.get(e.txHash) ?? []), e])
+  }
+
+  // ── TX-level diagnostics (from usable groups) ──
+  let txWithMultipleTokenMovements = 0
+  let txWithInboundOutboundMovement = 0
+  let knownRouterMatchCount = 0
+  let stableOrWethLegMatchCount = 0
+  for (const group of byTx.values()) {
+    if (group.length > 1) txWithMultipleTokenMovements++
+    const hasBuy = group.some(t => t.direction === 'buy')
+    const hasSell = group.some(t => t.direction === 'sell')
+    if (hasBuy && hasSell) txWithInboundOutboundMovement++
+    if (group.some(e => Object.keys(KNOWN_DEX_ROUTERS).some(addr =>
+      e.toAddress?.toLowerCase() === addr || e.fromAddress?.toLowerCase() === addr
+    ))) knownRouterMatchCount++
+    if (group.some(e => Boolean(KNOWN_STABLE_WETH_CONTRACTS[e.contract?.toLowerCase() ?? '']))) stableOrWethLegMatchCount++
+  }
+
+  // ── Classify ALL events ──
+  // Non-wallet-side and unusable events get explicit reasons rather than a generic "unknown"
   const evidenceWithDetection: WalletTxEvidence[] = evidenceList.map(e => {
-    const txGroup = byTx.get(e.txHash) ?? [e]
+    // Non-wallet-side transfer — filtered from usable groups; explain clearly
+    if (e.direction === 'unknown') {
+      return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Transfer does not involve scanned wallet directly (pool-to-pool or third-party)', matchedProtocol: null, matchedAddress: null } }
+    }
+    if (!e.amount || e.amount <= 0) {
+      return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Zero or negligible amount — likely spam or dust transfer', matchedProtocol: null, matchedAddress: null } }
+    }
+    if (!e.contract || !e.contract.startsWith('0x')) {
+      return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Missing token contract address', matchedProtocol: null, matchedAddress: null } }
+    }
+
+    // Usable event — use usable tx group for context
+    const txGroup = byTx.get(e.txHash) ?? []
     const hasBuy = txGroup.some(t => t.direction === 'buy')
     const hasSell = txGroup.some(t => t.direction === 'sell')
     const hasInboundOutbound = hasBuy && hasSell
@@ -831,29 +913,17 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     } else if (hasInboundOutbound) {
       detection = { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'Inbound+outbound token transfers in same tx', matchedProtocol: null, matchedAddress: null }
     } else if (e.direction === 'buy' && !hasSell) {
-      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'airdrop_candidate', reason: 'Inbound-only transfer — no matching outbound in tx', matchedProtocol: null, matchedAddress: null }
+      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'airdrop_candidate', reason: 'Inbound-only transfer — no matching wallet-side outbound in tx', matchedProtocol: null, matchedAddress: null }
     } else if (e.direction === 'sell' && !hasBuy) {
-      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'transfer', reason: 'Outbound-only transfer — no matching inbound in tx', matchedProtocol: null, matchedAddress: null }
+      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'transfer', reason: 'Outbound-only transfer — no matching wallet-side inbound in tx', matchedProtocol: null, matchedAddress: null }
     } else {
-      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'unknown', reason: 'Unable to classify this transfer', matchedProtocol: null, matchedAddress: null }
+      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'unknown', reason: 'Wallet-side transfer but no swap pattern detected in usable tx events', matchedProtocol: null, matchedAddress: null }
     }
 
     return { ...e, swapDetection: detection }
   })
 
-  let txWithMultipleTokenMovements = 0
-  let txWithInboundOutboundMovement = 0
-  let knownRouterMatchCount = 0
-  let stableOrWethLegMatchCount = 0
-  for (const group of byTx.values()) {
-    if (group.length > 1) txWithMultipleTokenMovements++
-    const hasBuy = group.some(t => t.direction === 'buy')
-    const hasSell = group.some(t => t.direction === 'sell')
-    if (hasBuy && hasSell) txWithInboundOutboundMovement++
-    if (group.some(e => Object.keys(KNOWN_DEX_ROUTERS).some(addr => e.toAddress?.toLowerCase() === addr || e.fromAddress?.toLowerCase() === addr))) knownRouterMatchCount++
-    if (group.some(e => Boolean(KNOWN_STABLE_WETH_CONTRACTS[e.contract?.toLowerCase() ?? '']))) stableOrWethLegMatchCount++
-  }
-
+  // ── Result counts ──
   const swapCandidateEvents = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
   const highConfidenceSwapCandidates = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.confidence === 'high').length
   const mediumConfidenceSwapCandidates = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.confidence === 'medium').length
@@ -863,22 +933,43 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
   const bridgeCandidateEvents = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'bridge_candidate').length
   const unknownEvents = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown').length
   const readyForPriceAtTime = swapCandidateEvents > 0 && evidenceWithDetection.some(e => e.swapDetection?.isSwapCandidate && Boolean(e.timestamp))
-  const totalEvidenceEvents = evidenceList.length
   const groupedTxCount = byTx.size
   const status: 'ok' | 'partial' | 'open_check' = swapCandidateEvents > 0 ? 'ok' : totalEvidenceEvents > 0 ? 'partial' : 'open_check'
   const missing: string[] = []
   if (swapCandidateEvents === 0 && totalEvidenceEvents > 0) missing.push('no_swap_candidates_detected')
 
+  // ── Unknown reason breakdown ──
+  const unknownReasonCounts: Record<string, number> = {}
+  if (directionCounts.unknown > 0) unknownReasonCounts['not_wallet_side_transfer'] = directionCounts.unknown
+  if (zeroAmountEventCount > 0) unknownReasonCounts['zero_amount'] = zeroAmountEventCount
+  if (eventsMissingTokenAddress > 0) unknownReasonCounts['missing_contract'] = eventsMissingTokenAddress
+  const walletSideUnclassified = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown' && e.direction !== 'unknown' && e.amount > 0).length
+  if (walletSideUnclassified > 0) unknownReasonCounts['wallet_side_no_swap_pattern'] = walletSideUnclassified
+
+  // ── Sample grouped txs (from usable groups) ──
+  const sampleGroupedTxs = Array.from(byTx.entries()).slice(0, 5).map(([txHash, group]) => ({
+    txHash: `${txHash.slice(0, 10)}...${txHash.slice(-6)}`,
+    walletEventCount: group.length,
+    totalEventCount: allByTx.get(txHash)?.length ?? group.length,
+    inboundCount: group.filter(e => e.direction === 'buy').length,
+    outboundCount: group.filter(e => e.direction === 'sell').length,
+    tokens: [...new Set(group.map(e => e.symbol))].slice(0, 5),
+  }))
+
   return {
     evidenceWithDetection,
     summary: { status, totalEvidenceEvents, groupedTxCount, swapCandidateEvents, highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates, transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents, readyForPriceAtTime, missing },
     debug: {
-      totalEvidenceEvents, groupedTxCount, txWithMultipleTokenMovements, txWithInboundOutboundMovement,
+      totalEvidenceEvents, usableEventCount, groupedTxCount, txWithMultipleTokenMovements, txWithInboundOutboundMovement,
       knownRouterMatchCount, stableOrWethLegMatchCount, swapCandidateEvents,
       highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates,
       transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents, readyForPriceAtTime,
+      directionCounts, unknownReasonCounts,
+      eventsMissingTokenAddress, eventsMissingTxHash, eventsMissingTimestamp,
+      eventsMissingFromTo, duplicateEventCount, zeroAmountEventCount,
       sampleSwapCandidates: evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).slice(0, 5),
-      sampleUnknowns: evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown').slice(0, 5),
+      sampleUnknowns: evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown' && e.direction !== 'unknown').slice(0, 5),
+      sampleGroupedTxs,
       reasons: [],
     },
   }
