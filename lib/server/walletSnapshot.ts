@@ -154,6 +154,28 @@ export type WalletSnapshot = {
     readyForTradeStats: boolean
     missing: string[]
   }
+  walletTradeStatsSummary: {
+    status: 'ok' | 'partial' | 'open_check'
+    closedLots: number
+    uniqueTokensTraded: number
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    winningClosedLots: number
+    losingClosedLots: number
+    breakEvenClosedLots: number
+    winRatePercent: number | null
+    avgPnlUsdPerClosedLot: number | null
+    avgReturnPercentPerClosedLot: number | null
+    medianReturnPercentPerClosedLot: number | null
+    avgHoldingTimeSeconds: number | null
+    medianHoldingTimeSeconds: number | null
+    largestWinUsd: number | null
+    largestLossUsd: number | null
+    confidence: 'high' | 'medium' | 'low' | 'open_check'
+    sampleSizeLabel: 'insufficient' | 'early' | 'developing' | 'strong'
+    readyForWalletScore: boolean
+    missing: string[]
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -374,6 +396,27 @@ export type WalletSnapshot = {
       sampleUnmatchedSells: Array<{ txHash: string; tokenAddress: string; symbol: string; amount: number; exitPriceUsd: number }>
       reasons: string[]
     }
+    walletTradeStatsDebug?: {
+      closedLots: number
+      uniqueTokensTraded: number
+      winningClosedLots: number
+      losingClosedLots: number
+      breakEvenClosedLots: number
+      winRateComputed: boolean
+      winRateThreshold: number
+      avgPnlUsdPerClosedLot: number | null
+      avgReturnPercentPerClosedLot: number | null
+      medianReturnPercentPerClosedLot: number | null
+      avgHoldingTimeSeconds: number | null
+      medianHoldingTimeSeconds: number | null
+      largestWinUsd: number | null
+      largestLossUsd: number | null
+      confidence: string
+      sampleSizeLabel: string
+      sampleWinningLots: Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; confidence: string }>
+      sampleLosingLots: Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; confidence: string }>
+      reasons: string[]
+    }
   }
 }
 
@@ -386,7 +429,7 @@ export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base';
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v6'
+const SNAPSHOT_SCHEMA_VERSION = 'v7'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -1258,6 +1301,8 @@ function buildFifoLotEngine(
 ): {
   summary: WalletSnapshot['walletLotSummary']
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletLotEngineDebug']>
+  closedLots: WalletClosedLot[]
+  openLots: WalletLotOpen[]
 } {
   const empty = (missing: string[]) => ({
     summary: {
@@ -1275,6 +1320,8 @@ function buildFifoLotEngine(
       realizedPnlUsd: null, realizedPnlPercent: null,
       sampleOpenLots: [], sampleClosedLots: [], sampleUnmatchedSells: [], reasons: missing,
     },
+    closedLots: [] as WalletClosedLot[],
+    openLots: [] as WalletLotOpen[],
   })
 
   if (!activityRequested) return empty(['activity_not_requested'])
@@ -1444,6 +1491,128 @@ function buildFifoLotEngine(
       sampleUnmatchedSells: eligible.filter(e => e.direction === 'sell').slice(0, 5).map(e => ({
         txHash: abbr(e.txHash), tokenAddress: abbr(e.contract),
         symbol: e.symbol, amount: e.amount, exitPriceUsd: e.priceAtTime!.priceUsd!,
+      })),
+      reasons: missing,
+    },
+    closedLots,
+    openLots: allOpenLots,
+  }
+}
+
+function numMedian(nums: number[]): number | null {
+  if (nums.length === 0) return null
+  const s = [...nums].sort((a, b) => a - b)
+  const m = Math.floor(s.length / 2)
+  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m]
+}
+
+function buildTradeStatsSummary(
+  closedLots: WalletClosedLot[],
+  activityRequested: boolean
+): {
+  summary: WalletSnapshot['walletTradeStatsSummary']
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletTradeStatsDebug']>
+} {
+  const WIN_RATE_THRESHOLD = 10
+  const BREAK_EVEN_EPSILON = 0.01
+
+  const emptyResult = (missing: string[]) => ({
+    summary: {
+      status: 'open_check' as const, closedLots: 0, uniqueTokensTraded: 0,
+      realizedPnlUsd: null, realizedPnlPercent: null,
+      winningClosedLots: 0, losingClosedLots: 0, breakEvenClosedLots: 0,
+      winRatePercent: null, avgPnlUsdPerClosedLot: null,
+      avgReturnPercentPerClosedLot: null, medianReturnPercentPerClosedLot: null,
+      avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
+      largestWinUsd: null, largestLossUsd: null,
+      confidence: 'open_check' as const, sampleSizeLabel: 'insufficient' as const,
+      readyForWalletScore: false, missing,
+    },
+    debug: {
+      closedLots: 0, uniqueTokensTraded: 0, winningClosedLots: 0, losingClosedLots: 0,
+      breakEvenClosedLots: 0, winRateComputed: false, winRateThreshold: WIN_RATE_THRESHOLD,
+      avgPnlUsdPerClosedLot: null, avgReturnPercentPerClosedLot: null,
+      medianReturnPercentPerClosedLot: null, avgHoldingTimeSeconds: null,
+      medianHoldingTimeSeconds: null, largestWinUsd: null, largestLossUsd: null,
+      confidence: 'open_check', sampleSizeLabel: 'insufficient',
+      sampleWinningLots: [], sampleLosingLots: [], reasons: missing,
+    },
+  })
+
+  if (!activityRequested) return emptyResult(['activity_not_requested'])
+  if (closedLots.length === 0) return emptyResult(['no_closed_lots'])
+
+  const n = closedLots.length
+
+  // ── Status / confidence / sampleSizeLabel gates ──
+  type Status = 'ok' | 'partial' | 'open_check'
+  type Confidence = 'high' | 'medium' | 'low' | 'open_check'
+  type SampleLabel = 'insufficient' | 'early' | 'developing' | 'strong'
+  let summaryStatus: Status
+  let confidence: Confidence
+  let sampleSizeLabel: SampleLabel
+  if (n >= 25)      { summaryStatus = 'ok';      confidence = 'high';   sampleSizeLabel = 'strong' }
+  else if (n >= 10) { summaryStatus = 'ok';      confidence = 'medium'; sampleSizeLabel = 'developing' }
+  else if (n >= 5)  { summaryStatus = 'partial'; confidence = 'medium'; sampleSizeLabel = 'early' }
+  else              { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'insufficient' }
+
+  // ── Per-lot classification ──
+  const winning = closedLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON)
+  const losing  = closedLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON)
+  const breakEven = closedLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON)
+  const uniqueTokensTraded = new Set(closedLots.map(l => `${l.chain}:${l.tokenAddress}`)).size
+
+  // ── Aggregates ──
+  const totalRealizedPnl = closedLots.reduce((s, l) => s + l.realizedPnlUsd, 0)
+  const totalCostBasis = closedLots.reduce((s, l) => s + l.costBasisUsd, 0)
+  const realizedPnlPercent = totalCostBasis > 0 ? (totalRealizedPnl / totalCostBasis) * 100 : null
+
+  const winRateComputed = n >= WIN_RATE_THRESHOLD
+  const winRatePercent = winRateComputed ? (winning.length / n) * 100 : null
+
+  const avgPnlUsdPerClosedLot = totalRealizedPnl / n
+  const returnPcts = closedLots.map(l => l.realizedPnlPercent).filter((v): v is number => v !== null)
+  const avgReturnPercentPerClosedLot = returnPcts.length > 0 ? returnPcts.reduce((s, v) => s + v, 0) / returnPcts.length : null
+  const medianReturnPercentPerClosedLot = numMedian(returnPcts)
+
+  const holdingTimes = closedLots.map(l => l.holdingTimeSeconds).filter((v): v is number => v !== null)
+  const avgHoldingTimeSeconds = holdingTimes.length > 0 ? holdingTimes.reduce((s, v) => s + v, 0) / holdingTimes.length : null
+  const medianHoldingTimeSeconds = numMedian(holdingTimes)
+
+  const largestWinUsd = winning.length > 0 ? Math.max(...winning.map(l => l.realizedPnlUsd)) : null
+  const largestLossUsd = losing.length > 0 ? Math.min(...losing.map(l => l.realizedPnlUsd)) : null
+
+  const missing: string[] = []
+  if (!winRateComputed) missing.push('sample_size_below_win_rate_threshold')
+  if (returnPcts.length < n) missing.push('some_lots_missing_return_percent')
+  if (holdingTimes.length < n) missing.push('some_lots_missing_holding_time')
+
+  const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
+
+  return {
+    summary: {
+      status: summaryStatus, closedLots: n, uniqueTokensTraded,
+      realizedPnlUsd: totalRealizedPnl, realizedPnlPercent,
+      winningClosedLots: winning.length, losingClosedLots: losing.length, breakEvenClosedLots: breakEven.length,
+      winRatePercent, avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot,
+      medianReturnPercentPerClosedLot, avgHoldingTimeSeconds, medianHoldingTimeSeconds,
+      largestWinUsd, largestLossUsd, confidence, sampleSizeLabel,
+      readyForWalletScore: n >= WIN_RATE_THRESHOLD, missing,
+    },
+    debug: {
+      closedLots: n, uniqueTokensTraded, winningClosedLots: winning.length,
+      losingClosedLots: losing.length, breakEvenClosedLots: breakEven.length,
+      winRateComputed, winRateThreshold: WIN_RATE_THRESHOLD,
+      avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot, medianReturnPercentPerClosedLot,
+      avgHoldingTimeSeconds, medianHoldingTimeSeconds, largestWinUsd, largestLossUsd,
+      confidence, sampleSizeLabel,
+      sampleWinningLots: winning.slice(0, 5).map(l => ({
+        tokenAddress: abbr(l.tokenAddress), symbol: l.tokenSymbol ?? '',
+        realizedPnlUsd: l.realizedPnlUsd, realizedPnlPercent: l.realizedPnlPercent, confidence: l.confidence,
+      })),
+      sampleLosingLots: losing.slice(0, 5).map(l => ({
+        tokenAddress: abbr(l.tokenAddress), symbol: l.tokenSymbol ?? '',
+        realizedPnlUsd: l.realizedPnlUsd, realizedPnlPercent: l.realizedPnlPercent, confidence: l.confidence,
       })),
       reasons: missing,
     },
@@ -2055,7 +2224,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested)
   const { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
   const { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
-  const { summary: walletLotSummary, debug: _lotEngineDebug } = buildFifoLotEngine(_pricedEvidence, activityRequested)
+  const { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
+  const { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = activityRequested && Boolean(ALCHEMY_BASE_KEY)
@@ -2165,6 +2335,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletSwapSummary,
     walletPriceEvidenceSummary,
     walletLotSummary,
+    walletTradeStatsSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -2280,6 +2451,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletSwapDetectionDebug: _swapDetectionDebug,
       walletPriceAtTimeDebug: _priceAtTimeDebug,
       walletLotEngineDebug: _lotEngineDebug,
+      walletTradeStatsDebug: _tradeStatsDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
