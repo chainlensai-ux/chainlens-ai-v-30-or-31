@@ -28,6 +28,7 @@ export async function POST(req: Request) {
     const refresh = body?.refresh === true
     const chain = body?.chain === 'eth' ? 'eth' : 'base'
     const deepScan = body?.deepScan === true || body?.deepScan === 'true'
+    const deepActivity = body?.deepActivity === true || body?.deepActivity === 'true'
     const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' || body?.chainMode === 'all_supported' ? body.chainMode : 'auto'
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
       if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
-    const snapshot = await fetchWalletSnapshot(address ?? '', { refresh, chain, deepScan, chainMode } satisfies WalletSnapshotOptions)
+    const snapshot = await fetchWalletSnapshot(address ?? '', { refresh, chain, deepScan, deepActivity, chainMode } satisfies WalletSnapshotOptions)
     const providers: any = (snapshot as any)._diagnostics?.providers ?? {}
     const snapshotCacheDebug = (snapshot as any)._diagnostics?.snapshotCache ?? null
     if (debug) {
@@ -77,6 +78,18 @@ export async function POST(req: Request) {
         providerFlow: (snapshot as any)._diagnostics?.providerFlow ?? null,
         chainUsage: (snapshot as any)._diagnostics?.chainUsage ?? null,
         walletTxEvidenceDebug: (snapshot as any)._diagnostics?.walletTxEvidenceDebug ?? null,
+        walletActivityRequestDebug: {
+          deepActivityRequested: deepActivity || deepScan,
+          deepActivityFlagSent: deepActivity,
+          deepScanFlagSent: deepScan,
+          deepActivityAllowed: true,
+          plan,
+          routeMethod: 'POST /api/wallet',
+          fetchedPnlEvents: (snapshot as any).walletEvidenceSummary?.totalEvents ?? 0,
+          fetchedEvidenceEvents: (snapshot as any).walletEvidenceSummary?.eventsWithHash ?? 0,
+          evidenceStatus: (snapshot as any).walletEvidenceSummary?.status ?? 'unknown',
+          reason: (deepActivity || deepScan) ? null : 'deep_activity_not_requested',
+        },
       }
     }
     if (!debug) {

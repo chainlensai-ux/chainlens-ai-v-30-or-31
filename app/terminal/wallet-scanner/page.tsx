@@ -363,6 +363,7 @@ export default function WalletScannerPage() {
   const [error, setError]               = useState<string | null>(null)
   const [result, setResult]             = useState<WalletResult | null>(null)
   const [showAllHoldings, setShowAllHoldings] = useState(false)
+  const [deepActivity, setDeepActivity] = useState(false)
   const clarkLoading = loading
 
   async function handleScan() {
@@ -382,7 +383,7 @@ export default function WalletScannerPage() {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ address: q }),
+        body: JSON.stringify({ address: q, ...(deepActivity ? { deepActivity: true } : {}) }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Scan failed')
@@ -606,6 +607,38 @@ export default function WalletScannerPage() {
                 </>
               )}
             </button>
+          </div>
+
+          {/* Deep Activity Scan toggle */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
+            <button
+              onClick={() => setDeepActivity(v => !v)}
+              disabled={loading}
+              title="Fetches transfer history for estimated PnL and future trade reconstruction. Slower scan."
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '5px 11px', borderRadius: '7px',
+                border: `1px solid ${deepActivity ? 'rgba(45,212,191,0.50)' : 'rgba(255,255,255,0.09)'}`,
+                background: deepActivity ? 'rgba(45,212,191,0.07)' : 'transparent',
+                color: deepActivity ? '#2DD4BF' : 'rgba(255,255,255,0.38)',
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.09em', textTransform: 'uppercase',
+                cursor: loading ? 'not-allowed' : 'pointer',
+                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                transition: 'all 0.15s',
+              }}
+            >
+              {deepActivity && (
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              )}
+              {deepActivity ? 'Deep Activity Scan On' : 'Run Deep Activity Scan'}
+            </button>
+            {deepActivity && (
+              <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.05em' }}>
+                Fetches transfer history · slower scan
+              </span>
+            )}
           </div>
 
           {/* Loading skeleton */}

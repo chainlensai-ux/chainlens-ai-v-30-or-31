@@ -97,7 +97,7 @@ export type WalletSnapshot = {
     reason: string
   }
   walletEvidenceSummary: {
-    status: 'ready' | 'partial' | 'missing_hashes' | 'no_events'
+    status: 'ready' | 'partial' | 'missing_hashes' | 'no_events' | 'not_requested'
     totalEvents: number
     eventsWithHash: number
     eventsWithTimestamp: number
@@ -238,7 +238,7 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported' }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported' }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -595,11 +595,18 @@ async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<
   } catch { return [] }
 }
 
-function buildTxEvidenceFromEvents(events: PnlEvent[]): {
+function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
   evidenceList: WalletTxEvidence[]
   summary: WalletSnapshot['walletEvidenceSummary']
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletTxEvidenceDebug']>
 } {
+  if (!requested) {
+    return {
+      evidenceList: [],
+      summary: { status: 'not_requested', totalEvents: 0, eventsWithHash: 0, eventsWithTimestamp: 0, hashCoverage: 0, timestampCoverage: 0, readyForSwapDetection: false, missing: ['deep_activity_not_requested'] },
+      debug: { sourceProvider: 'none', totalRawEvents: 0, eventsWithHash: 0, eventsWithTimestamp: 0, sampleHashes: [], sampleTimestamps: [] },
+    }
+  }
   const evidenceList: WalletTxEvidence[] = events
     .filter(e => Boolean(e.txHash))
     .map(e => ({
@@ -715,7 +722,9 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base', deepScan = false, chainMode = 'auto' } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto' } = options
+  // activityRequested: true when either deepScan (full holdings+activity) or deepActivity (activity-only) is set
+  const activityRequested = deepScan || deepActivity
   const cacheKey = (address ?? '').trim().toLowerCase()
 
   // Memory cache check — bypassed when refresh=true
@@ -790,11 +799,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     getFirstTxOnChain(addr, baseUrl),
     alchemyRpc(nonceUrl, 'eth_getTransactionCount', [addr, 'latest']),
     deepScan ? fetchWalletBehavior(addr, baseUrl) : Promise.resolve(BEHAVIOR_EMPTY),
-    // ETH mainnet PnL transfers only when the caller explicitly requests ETH chain.
+    // ETH mainnet PnL transfers only when activity is requested AND ETH chain is selected.
     // Default (base) scans skip this to avoid a wasted transfers_v2 call.
-    deepScan && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: deepScan ? 'ETH chain not requested — skipped to reduce API usage.' : 'Deep scan disabled — skipped.' } }),
-    deepScan && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: deepScan ? 'GoldRush wallet history URL could not be built.' : 'Deep scan disabled — skipped.' } }),
-    deepScan ? fetchAlchemyPnlEvents(addr, baseUrl) : Promise.resolve([] as PnlEvent[]),
+    activityRequested && GOLDRUSH_KEY && useEthAlchemy ? fetchGoldrushPnlEvents(addr, 'eth-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'eth-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/eth-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: activityRequested ? 'ETH chain not requested — skipped to reduce API usage.' : 'Activity scan not requested — skipped.' } }),
+    activityRequested && GOLDRUSH_KEY ? fetchGoldrushPnlEvents(addr, 'base-mainnet', GOLDRUSH_KEY) : Promise.resolve({ events: [] as PnlEvent[], diag: { endpointKind: 'transfers_v2' as const, chainUsed: 'base-mainnet', urlTemplate: 'https://api.covalenthq.com/v1/base-mainnet/address/{address}/transfers_v2/?quote-currency=USD&page-size=125&page-number=0&no-spam=true', httpStatus: null, fetchFailed: true, failureStage: 'build_url' as const, rawItemCount: 0, normalizedEventCount: 0, firstEventShapeKeys: [], reason: activityRequested ? 'GoldRush wallet history URL could not be built.' : 'Activity scan not requested — skipped.' } }),
+    activityRequested ? fetchAlchemyPnlEvents(addr, baseUrl) : Promise.resolve([] as PnlEvent[]),
   ])
 
   // ── Tx / age / nonce ──
@@ -1006,7 +1015,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : 'Estimated from indexed transfer history with average-cost method.'
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
-  const { summary: walletEvidenceSummary, debug: _txEvidenceDebug } = buildTxEvidenceFromEvents(events)
+  const { summary: walletEvidenceSummary, debug: _txEvidenceDebug } = buildTxEvidenceFromEvents(events, activityRequested)
   const unpricedHoldingsCount = holdings.filter((h) => !h.price || h.price <= 0).length
   const hiddenDustCount = holdings.filter((h) => h.value <= 1).length
   const behaviorTxCount = behaviorRes.status === 'fulfilled' ? (behaviorRes.value.txCount ?? 0) : 0
