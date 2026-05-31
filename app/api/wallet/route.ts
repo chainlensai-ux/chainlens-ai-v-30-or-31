@@ -79,7 +79,7 @@ export async function POST(req: Request) {
         routeName: '/api/wallet',
         cacheHit: false,
         goldrushUsage: {
-          endpointName: 'balances_v2 + transfers_v2',
+          endpointName: 'balances_v2 + transactions_v3',
           feature: 'wallet-scanner',
           trigger: 'scan_button',
           attempted: Boolean(providers.goldrush?.configured),
