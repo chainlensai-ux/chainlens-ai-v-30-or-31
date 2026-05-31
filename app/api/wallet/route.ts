@@ -3,7 +3,7 @@ import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/wa
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const WALLET_CACHE_TTL_MS = 3 * 60 * 1000
-const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v3'
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v4'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }

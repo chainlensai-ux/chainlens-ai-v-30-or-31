@@ -113,6 +113,9 @@ export type WalletSnapshot = {
     totalEvidenceEvents: number
     groupedTxCount: number
     swapCandidateEvents: number
+    routerSwapCandidateEvents: number
+    walletInitiatedSwapCandidateEvents: number
+    sameTxInboundOutboundCandidates: number
     highConfidenceSwapCandidates: number
     mediumConfidenceSwapCandidates: number
     lowConfidenceSwapCandidates: number
@@ -269,9 +272,15 @@ export type WalletSnapshot = {
       groupedTxCount: number
       txWithMultipleTokenMovements: number
       txWithInboundOutboundMovement: number
+      txToKnownRouterCount: number
+      walletInitiatedTxCount: number
+      walletInitiatedSwapLikeTxCount: number
       knownRouterMatchCount: number
       stableOrWethLegMatchCount: number
       swapCandidateEvents: number
+      routerSwapCandidateEvents: number
+      walletInitiatedSwapCandidateEvents: number
+      sameTxInboundOutboundCandidates: number
       highConfidenceSwapCandidates: number
       mediumConfidenceSwapCandidates: number
       lowConfidenceSwapCandidates: number
@@ -290,6 +299,8 @@ export type WalletSnapshot = {
       zeroAmountEventCount: number
       sampleSwapCandidates: WalletTxEvidence[]
       sampleUnknowns: WalletTxEvidence[]
+      sampleRouterMatches: Array<{ txHash: string; protocol: string; walletIsInitiator: boolean; tokens: string[] }>
+      sampleWalletInitiatedSwapLikeTxs: Array<{ txHash: string; inboundCount: number; outboundCount: number; tokens: string[]; hasStableOrWeth: boolean }>
       sampleGroupedTxs: Array<{ txHash: string; walletEventCount: number; totalEventCount: number; inboundCount: number; outboundCount: number; tokens: string[] }>
       reasons: string[]
     }
@@ -305,7 +316,7 @@ export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base';
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
-const SNAPSHOT_SCHEMA_VERSION = 'v3'
+const SNAPSHOT_SCHEMA_VERSION = 'v4'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
 
@@ -440,6 +451,12 @@ export type WalletTxEvidence = {
   usdValue: number | null
   direction: 'buy' | 'sell' | 'unknown'
   chain: string
+  // transaction-level context (from tx item, not log event)
+  txFromAddress?: string | null
+  txToAddress?: string | null
+  txSucceeded?: boolean | null
+  txToKnownRouter?: boolean
+  txMatchedRouterProtocol?: string | null
   swapDetection?: WalletSwapDetection
 }
 
@@ -456,6 +473,9 @@ type PnlEvent = {
   fromAddress: string | null
   toAddress: string | null
   chain: string
+  txFromAddress?: string | null
+  txToAddress?: string | null
+  txSucceeded?: boolean | null
 }
 type GoldrushHistoryDiag = {
   endpointKind: 'transfers_v2' | 'transactions_v3'
@@ -635,6 +655,10 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
         const t = it as Record<string, unknown>
         const txHash = typeof t.tx_hash === 'string' ? t.tx_hash : null
         const timestamp = typeof t.block_signed_at === 'string' ? t.block_signed_at : null
+        // Transaction-level fields: who initiated the tx and which contract was called
+        const txFromAddress = typeof t.from_address === 'string' ? t.from_address.toLowerCase() : null
+        const txToAddress = typeof t.to_address === 'string' ? t.to_address.toLowerCase() : null
+        const txSucceeded = typeof t.successful === 'boolean' ? t.successful : null
         const logEvents: unknown[] = Array.isArray(t.log_events) ? t.log_events : []
         return logEvents.flatMap((logEvent) => {
           const le = logEvent as Record<string, unknown>
@@ -657,7 +681,7 @@ async function fetchGoldrushPnlEvents(address: string, chainName: string, apiKey
           const rawValue = String(valueParam.value ?? '0')
           const amount = Math.abs(parseFloat(rawValue) / Math.pow(10, decimals))
           const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
-          return [{ contract, symbol, direction, amount, amountRaw: rawValue !== '0' ? rawValue : null, tokenDecimals: decimals, usdValue: null, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName }]
+          return [{ contract, symbol, direction, amount, amountRaw: rawValue !== '0' ? rawValue : null, tokenDecimals: decimals, usdValue: null, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName, txFromAddress, txToAddress, txSucceeded }]
         })
       }).filter(e => e.contract.startsWith('0x') && e.amount > 0)
       diag.transferArrayCount = transferArrayCount
@@ -730,20 +754,29 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
   }
   const evidenceList: WalletTxEvidence[] = events
     .filter(e => Boolean(e.txHash))
-    .map(e => ({
-      txHash: e.txHash!,
-      timestamp: e.timestamp,
-      fromAddress: e.fromAddress,
-      toAddress: e.toAddress,
-      contract: e.contract,
-      symbol: e.symbol,
-      amountRaw: e.amountRaw,
-      tokenDecimals: e.tokenDecimals,
-      amount: e.amount,
-      usdValue: e.usdValue,
-      direction: e.direction,
-      chain: e.chain,
-    }))
+    .map(e => {
+      const txToLower = (e.txToAddress ?? '').toLowerCase()
+      const routerMatch = KNOWN_DEX_ROUTERS[txToLower] ?? null
+      return {
+        txHash: e.txHash!,
+        timestamp: e.timestamp,
+        fromAddress: e.fromAddress,
+        toAddress: e.toAddress,
+        contract: e.contract,
+        symbol: e.symbol,
+        amountRaw: e.amountRaw,
+        tokenDecimals: e.tokenDecimals,
+        amount: e.amount,
+        usdValue: e.usdValue,
+        direction: e.direction,
+        chain: e.chain,
+        txFromAddress: e.txFromAddress ?? null,
+        txToAddress: e.txToAddress ?? null,
+        txSucceeded: e.txSucceeded ?? null,
+        txToKnownRouter: Boolean(routerMatch),
+        txMatchedRouterProtocol: routerMatch,
+      }
+    })
 
   const totalEvents = events.length
   const eventsWithHash = events.filter(e => Boolean(e.txHash)).length
@@ -784,38 +817,42 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
   }
 }
 
-function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested: boolean): {
+function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested: boolean, walletAddress: string): {
   evidenceWithDetection: WalletTxEvidence[]
   summary: WalletSnapshot['walletSwapSummary']
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapDetectionDebug']>
 } {
+  const walletLower = walletAddress.toLowerCase()
   const emptyDebug = (): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapDetectionDebug']> => ({
     totalEvidenceEvents: 0, usableEventCount: 0, groupedTxCount: 0, txWithMultipleTokenMovements: 0,
-    txWithInboundOutboundMovement: 0, knownRouterMatchCount: 0, stableOrWethLegMatchCount: 0,
-    swapCandidateEvents: 0, highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0,
+    txWithInboundOutboundMovement: 0, txToKnownRouterCount: 0, walletInitiatedTxCount: 0,
+    walletInitiatedSwapLikeTxCount: 0, knownRouterMatchCount: 0, stableOrWethLegMatchCount: 0,
+    swapCandidateEvents: 0, routerSwapCandidateEvents: 0, walletInitiatedSwapCandidateEvents: 0,
+    sameTxInboundOutboundCandidates: 0, highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0,
     lowConfidenceSwapCandidates: 0, transferEvents: 0, airdropCandidateEvents: 0,
     bridgeCandidateEvents: 0, unknownEvents: 0, readyForPriceAtTime: false,
     directionCounts: { inbound: 0, outbound: 0, unknown: 0 },
     unknownReasonCounts: {},
     eventsMissingTokenAddress: 0, eventsMissingTxHash: 0, eventsMissingTimestamp: 0,
     eventsMissingFromTo: 0, duplicateEventCount: 0, zeroAmountEventCount: 0,
-    sampleSwapCandidates: [], sampleUnknowns: [], sampleGroupedTxs: [], reasons: [],
+    sampleSwapCandidates: [], sampleUnknowns: [], sampleRouterMatches: [],
+    sampleWalletInitiatedSwapLikeTxs: [], sampleGroupedTxs: [], reasons: [],
+  })
+  const emptySummary = (missing: string[]): WalletSnapshot['walletSwapSummary'] => ({
+    status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0,
+    routerSwapCandidateEvents: 0, walletInitiatedSwapCandidateEvents: 0,
+    sameTxInboundOutboundCandidates: 0,
+    highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0, lowConfidenceSwapCandidates: 0,
+    transferEvents: 0, airdropCandidateEvents: 0, bridgeCandidateEvents: 0, unknownEvents: 0,
+    readyForPriceAtTime: false, missing,
   })
 
   if (!activityRequested) {
-    return {
-      evidenceWithDetection: [],
-      summary: { status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0, highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0, lowConfidenceSwapCandidates: 0, transferEvents: 0, airdropCandidateEvents: 0, bridgeCandidateEvents: 0, unknownEvents: 0, readyForPriceAtTime: false, missing: ['deep_activity_not_requested'] },
-      debug: emptyDebug(),
-    }
+    return { evidenceWithDetection: [], summary: emptySummary(['deep_activity_not_requested']), debug: emptyDebug() }
   }
 
   if (evidenceList.length === 0) {
-    return {
-      evidenceWithDetection: [],
-      summary: { status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0, highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0, lowConfidenceSwapCandidates: 0, transferEvents: 0, airdropCandidateEvents: 0, bridgeCandidateEvents: 0, unknownEvents: 0, readyForPriceAtTime: false, missing: ['no_evidence_events'] },
-      debug: emptyDebug(),
-    }
+    return { evidenceWithDetection: [], summary: emptySummary(['no_evidence_events']), debug: emptyDebug() }
   }
 
   // ── Diagnostic counts on the full evidence list ──
@@ -861,26 +898,64 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
     allByTx.set(e.txHash, [...(allByTx.get(e.txHash) ?? []), e])
   }
 
+  // ── Build per-tx context map (router, initiator) from usable groups ──
+  type TxCtx = {
+    txToAddr: string | null
+    txFromAddr: string | null
+    txRouterProtocol: string | null
+    txToKnownRouter: boolean
+    walletIsInitiator: boolean
+    hasBuy: boolean
+    hasSell: boolean
+    hasInboundOutbound: boolean
+    txHasStableOrWeth: boolean
+    distinctContracts: Set<string>
+    hasMultipleDistinctTokens: boolean
+    group: WalletTxEvidence[]
+  }
+  const txCtxMap = new Map<string, TxCtx>()
+  for (const [txHash, group] of byTx.entries()) {
+    const first = group[0]
+    const txToAddr = first.txToAddress?.toLowerCase() ?? null
+    const txFromAddr = first.txFromAddress?.toLowerCase() ?? null
+    const txRouterProtocol = txToAddr ? (KNOWN_DEX_ROUTERS[txToAddr] ?? null) : null
+    const txToKnownRouter = Boolean(txRouterProtocol)
+    const walletIsInitiator = Boolean(txFromAddr && txFromAddr === walletLower)
+    const hasBuy = group.some(t => t.direction === 'buy')
+    const hasSell = group.some(t => t.direction === 'sell')
+    const hasInboundOutbound = hasBuy && hasSell
+    const txHasStableOrWeth = group.some(t => Boolean(KNOWN_STABLE_WETH_CONTRACTS[t.contract?.toLowerCase() ?? '']))
+    const distinctContracts = new Set(group.map(e => e.contract?.toLowerCase() ?? '').filter(Boolean))
+    const hasMultipleDistinctTokens = distinctContracts.size > 1
+    txCtxMap.set(txHash, { txToAddr, txFromAddr, txRouterProtocol, txToKnownRouter, walletIsInitiator, hasBuy, hasSell, hasInboundOutbound, txHasStableOrWeth, distinctContracts, hasMultipleDistinctTokens, group })
+  }
+
   // ── TX-level diagnostics (from usable groups) ──
   let txWithMultipleTokenMovements = 0
   let txWithInboundOutboundMovement = 0
+  let txToKnownRouterCount = 0
+  let walletInitiatedTxCount = 0
+  let walletInitiatedSwapLikeTxCount = 0
   let knownRouterMatchCount = 0
   let stableOrWethLegMatchCount = 0
-  for (const group of byTx.values()) {
-    if (group.length > 1) txWithMultipleTokenMovements++
-    const hasBuy = group.some(t => t.direction === 'buy')
-    const hasSell = group.some(t => t.direction === 'sell')
-    if (hasBuy && hasSell) txWithInboundOutboundMovement++
-    if (group.some(e => Object.keys(KNOWN_DEX_ROUTERS).some(addr =>
-      e.toAddress?.toLowerCase() === addr || e.fromAddress?.toLowerCase() === addr
-    ))) knownRouterMatchCount++
-    if (group.some(e => Boolean(KNOWN_STABLE_WETH_CONTRACTS[e.contract?.toLowerCase() ?? '']))) stableOrWethLegMatchCount++
+  for (const ctx of txCtxMap.values()) {
+    if (ctx.group.length > 1) txWithMultipleTokenMovements++
+    if (ctx.hasInboundOutbound) txWithInboundOutboundMovement++
+    if (ctx.txToKnownRouter) { txToKnownRouterCount++; knownRouterMatchCount++ }
+    if (ctx.walletIsInitiator) walletInitiatedTxCount++
+    if (ctx.walletIsInitiator && ctx.hasMultipleDistinctTokens && (ctx.hasBuy || ctx.hasSell)) walletInitiatedSwapLikeTxCount++
+    if (ctx.txHasStableOrWeth) stableOrWethLegMatchCount++
   }
 
   // ── Classify ALL events ──
-  // Non-wallet-side and unusable events get explicit reasons rather than a generic "unknown"
+  let routerSwapCandidateEventsCount = 0
+  let walletInitiatedSwapCandidateEventsCount = 0
+  let sameTxInboundOutboundCandidatesCount = 0
+  const sampleRouterMatches: Array<{ txHash: string; protocol: string; walletIsInitiator: boolean; tokens: string[] }> = []
+  const sampleWalletInitiatedSwapLikeTxsMap = new Map<string, { txHash: string; inboundCount: number; outboundCount: number; tokens: string[]; hasStableOrWeth: boolean }>()
+
   const evidenceWithDetection: WalletTxEvidence[] = evidenceList.map(e => {
-    // Non-wallet-side transfer — filtered from usable groups; explain clearly
+    // Non-wallet-side transfer — explain clearly
     if (e.direction === 'unknown') {
       return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Transfer does not involve scanned wallet directly (pool-to-pool or third-party)', matchedProtocol: null, matchedAddress: null } }
     }
@@ -891,33 +966,67 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'Missing token contract address', matchedProtocol: null, matchedAddress: null } }
     }
 
-    // Usable event — use usable tx group for context
-    const txGroup = byTx.get(e.txHash) ?? []
-    const hasBuy = txGroup.some(t => t.direction === 'buy')
-    const hasSell = txGroup.some(t => t.direction === 'sell')
-    const hasInboundOutbound = hasBuy && hasSell
+    const ctx = txCtxMap.get(e.txHash)
+    if (!ctx) {
+      return { ...e, swapDetection: { isSwapCandidate: false, confidence: 'low' as const, eventKind: 'unknown' as const, reason: 'No tx group context available', matchedProtocol: null, matchedAddress: null } }
+    }
 
-    const routerAddr = Object.keys(KNOWN_DEX_ROUTERS).find(addr =>
-      e.toAddress?.toLowerCase() === addr || e.fromAddress?.toLowerCase() === addr
-    ) ?? null
-    const routerName = routerAddr ? KNOWN_DEX_ROUTERS[routerAddr] : null
-
-    const txHasStableOrWeth = txGroup.some(t => Boolean(KNOWN_STABLE_WETH_CONTRACTS[t.contract?.toLowerCase() ?? '']))
+    const { txToKnownRouter, txRouterProtocol, walletIsInitiator, hasInboundOutbound, txHasStableOrWeth, hasMultipleDistinctTokens, hasBuy, hasSell } = ctx
     const thisContractLabel = KNOWN_STABLE_WETH_CONTRACTS[e.contract?.toLowerCase() ?? ''] ?? null
 
     let detection: WalletSwapDetection
-    if (routerName) {
-      detection = { isSwapCandidate: true, confidence: 'high', eventKind: 'swap_candidate', reason: `Known DEX router matched: ${routerName}`, matchedProtocol: routerName, matchedAddress: routerAddr }
+
+    if (txToKnownRouter && walletIsInitiator) {
+      // High confidence: wallet called a known swap router directly
+      detection = {
+        isSwapCandidate: true, confidence: 'high', eventKind: 'swap_candidate',
+        reason: `Wallet transaction called known swap router (${txRouterProtocol})`,
+        matchedProtocol: txRouterProtocol, matchedAddress: ctx.txToAddr,
+      }
+      routerSwapCandidateEventsCount++
+      if (sampleRouterMatches.length < 5) {
+        sampleRouterMatches.push({ txHash: e.txHash, protocol: txRouterProtocol!, walletIsInitiator: true, tokens: [...ctx.distinctContracts].slice(0, 5) })
+      }
+    } else if (txToKnownRouter && !walletIsInitiator) {
+      // Medium confidence: known router was involved but wallet didn't initiate
+      detection = {
+        isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate',
+        reason: `Known swap router involved in transaction (${txRouterProtocol}) — wallet not initiator`,
+        matchedProtocol: txRouterProtocol, matchedAddress: ctx.txToAddr,
+      }
+      routerSwapCandidateEventsCount++
+      if (sampleRouterMatches.length < 5) {
+        sampleRouterMatches.push({ txHash: e.txHash, protocol: txRouterProtocol!, walletIsInitiator: false, tokens: [...ctx.distinctContracts].slice(0, 5) })
+      }
     } else if (hasInboundOutbound && txHasStableOrWeth) {
       detection = { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'Inbound+outbound in same tx with stable/WETH leg', matchedProtocol: thisContractLabel, matchedAddress: e.contract?.toLowerCase() ?? null }
+      sameTxInboundOutboundCandidatesCount++
     } else if (hasInboundOutbound) {
       detection = { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'Inbound+outbound token transfers in same tx', matchedProtocol: null, matchedAddress: null }
+      sameTxInboundOutboundCandidatesCount++
+    } else if (walletIsInitiator && hasMultipleDistinctTokens && (hasBuy || hasSell) && txHasStableOrWeth) {
+      // Medium confidence: wallet-initiated multi-token tx with stable/WETH — likely swap via aggregator or indirect router
+      detection = {
+        isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate',
+        reason: 'Wallet-initiated transaction with multi-token movement including stable/WETH — swap-like pattern',
+        matchedProtocol: thisContractLabel, matchedAddress: e.contract?.toLowerCase() ?? null,
+      }
+      walletInitiatedSwapCandidateEventsCount++
+      if (!sampleWalletInitiatedSwapLikeTxsMap.has(e.txHash) && sampleWalletInitiatedSwapLikeTxsMap.size < 5) {
+        sampleWalletInitiatedSwapLikeTxsMap.set(e.txHash, {
+          txHash: e.txHash,
+          inboundCount: ctx.group.filter(ev => ev.direction === 'buy').length,
+          outboundCount: ctx.group.filter(ev => ev.direction === 'sell').length,
+          tokens: [...ctx.distinctContracts].slice(0, 5),
+          hasStableOrWeth: ctx.txHasStableOrWeth,
+        })
+      }
     } else if (e.direction === 'buy' && !hasSell) {
       detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'airdrop_candidate', reason: 'Inbound-only transfer — no matching wallet-side outbound in tx', matchedProtocol: null, matchedAddress: null }
     } else if (e.direction === 'sell' && !hasBuy) {
       detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'transfer', reason: 'Outbound-only transfer — no matching wallet-side inbound in tx', matchedProtocol: null, matchedAddress: null }
     } else {
-      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'unknown', reason: 'Wallet-side transfer but no swap pattern detected in usable tx events', matchedProtocol: null, matchedAddress: null }
+      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'unknown', reason: 'Wallet-side transfer but no swap pattern detected', matchedProtocol: null, matchedAddress: null }
     }
 
     return { ...e, swapDetection: detection }
@@ -925,6 +1034,9 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
 
   // ── Result counts ──
   const swapCandidateEvents = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
+  const routerSwapCandidateEvents = routerSwapCandidateEventsCount
+  const walletInitiatedSwapCandidateEvents = walletInitiatedSwapCandidateEventsCount
+  const sameTxInboundOutboundCandidates = sameTxInboundOutboundCandidatesCount
   const highConfidenceSwapCandidates = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.confidence === 'high').length
   const mediumConfidenceSwapCandidates = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.confidence === 'medium').length
   const lowConfidenceSwapCandidates = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.confidence === 'low').length
@@ -958,10 +1070,19 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
 
   return {
     evidenceWithDetection,
-    summary: { status, totalEvidenceEvents, groupedTxCount, swapCandidateEvents, highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates, transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents, readyForPriceAtTime, missing },
+    summary: {
+      status, totalEvidenceEvents, groupedTxCount, swapCandidateEvents,
+      routerSwapCandidateEvents, walletInitiatedSwapCandidateEvents, sameTxInboundOutboundCandidates,
+      highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates,
+      transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents,
+      readyForPriceAtTime, missing,
+    },
     debug: {
-      totalEvidenceEvents, usableEventCount, groupedTxCount, txWithMultipleTokenMovements, txWithInboundOutboundMovement,
-      knownRouterMatchCount, stableOrWethLegMatchCount, swapCandidateEvents,
+      totalEvidenceEvents, usableEventCount, groupedTxCount,
+      txWithMultipleTokenMovements, txWithInboundOutboundMovement,
+      txToKnownRouterCount, walletInitiatedTxCount, walletInitiatedSwapLikeTxCount,
+      knownRouterMatchCount, stableOrWethLegMatchCount,
+      swapCandidateEvents, routerSwapCandidateEvents, walletInitiatedSwapCandidateEvents, sameTxInboundOutboundCandidates,
       highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates,
       transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents, readyForPriceAtTime,
       directionCounts, unknownReasonCounts,
@@ -969,6 +1090,8 @@ function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested:
       eventsMissingFromTo, duplicateEventCount, zeroAmountEventCount,
       sampleSwapCandidates: evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).slice(0, 5),
       sampleUnknowns: evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown' && e.direction !== 'unknown').slice(0, 5),
+      sampleRouterMatches: sampleRouterMatches.slice(0, 5),
+      sampleWalletInitiatedSwapLikeTxs: Array.from(sampleWalletInitiatedSwapLikeTxsMap.values()).slice(0, 5),
       sampleGroupedTxs,
       reasons: [],
     },
@@ -1334,7 +1457,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
   const { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested)
-  const { summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested)
+  const { summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = activityRequested && Boolean(ALCHEMY_BASE_KEY)
