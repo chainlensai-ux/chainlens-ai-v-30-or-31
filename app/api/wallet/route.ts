@@ -22,7 +22,9 @@ export async function POST(req: Request) {
   try {
     const startedAt = Date.now()
     const requestUrl = new URL(req.url)
-    const debug = requestUrl.searchParams.get('debug') === 'true'
+    const debugRequested = requestUrl.searchParams.get('debug') === 'true'
+    const debugAllowed = debugRequested && (plan === 'pro' || plan === 'elite')
+    const debug = debugAllowed
     const body = await req.json()
     const address = body?.address
     const refresh = body?.refresh === true
@@ -130,7 +132,7 @@ export async function POST(req: Request) {
       ;(snapshot as any).pnlSource = (snapshot as any).pnlSource === 'unavailable' ? 'unavailable' : 'activity_layer'
     }
     delete (snapshot as any)._diagnostics
-    if (!allowDebugFresh && !refresh) walletCache.set(cacheKey, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
+    if (!allowDebugFresh && !refresh && !debug) walletCache.set(cacheKey, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
     return NextResponse.json(snapshot)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'
