@@ -108,6 +108,21 @@ export type WalletSnapshot = {
     readyForSwapDetection: boolean
     missing: string[]
   }
+  walletSwapSummary: {
+    status: 'ok' | 'partial' | 'open_check'
+    totalEvidenceEvents: number
+    groupedTxCount: number
+    swapCandidateEvents: number
+    highConfidenceSwapCandidates: number
+    mediumConfidenceSwapCandidates: number
+    lowConfidenceSwapCandidates: number
+    transferEvents: number
+    airdropCandidateEvents: number
+    bridgeCandidateEvents: number
+    unknownEvents: number
+    readyForPriceAtTime: boolean
+    missing: string[]
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -248,6 +263,26 @@ export type WalletSnapshot = {
       skippedReasons?: string[]
       providerErrorSamples?: string[]
     }
+    walletSwapDetectionDebug?: {
+      totalEvidenceEvents: number
+      groupedTxCount: number
+      txWithMultipleTokenMovements: number
+      txWithInboundOutboundMovement: number
+      knownRouterMatchCount: number
+      stableOrWethLegMatchCount: number
+      swapCandidateEvents: number
+      highConfidenceSwapCandidates: number
+      mediumConfidenceSwapCandidates: number
+      lowConfidenceSwapCandidates: number
+      transferEvents: number
+      airdropCandidateEvents: number
+      bridgeCandidateEvents: number
+      unknownEvents: number
+      readyForPriceAtTime: boolean
+      sampleSwapCandidates: WalletTxEvidence[]
+      sampleUnknowns: WalletTxEvidence[]
+      reasons: string[]
+    }
   }
 }
 
@@ -260,8 +295,26 @@ export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base';
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
+const SNAPSHOT_SCHEMA_VERSION = 'v2'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
+
+const KNOWN_STABLE_WETH_CONTRACTS: Record<string, string> = {
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'WETH_ETH',
+  '0x4200000000000000000000000000000000000006': 'WETH_BASE',
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'USDC_ETH',
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 'USDC_BASE',
+  '0xdac17f958d2ee523a2206206994597c13d831ec7': 'USDT_ETH',
+  '0x6b175474e89094c44da98b954eedeac495271d0f': 'DAI_ETH',
+}
+
+const KNOWN_DEX_ROUTERS: Record<string, string> = {
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d': 'UniswapV2Router',
+  '0xe592427a0aece92de3edee1f18e0157c05861564': 'UniswapV3Router',
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad': 'UniswapUniversalRouter_ETH',
+  '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc': 'UniswapUniversalRouter_Base',
+  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43': 'Aerodrome',
+}
 
 function zerionAuth(): string | null {
   if (!ZERION_KEY) return null
@@ -355,6 +408,15 @@ async function fetchGoldrushBalances(address: string, chainName: string, apiKey:
   }
 }
 
+export type WalletSwapDetection = {
+  isSwapCandidate: boolean
+  confidence: 'high' | 'medium' | 'low'
+  eventKind: 'swap_candidate' | 'transfer' | 'airdrop_candidate' | 'bridge_candidate' | 'contract_interaction' | 'unknown'
+  reason: string
+  matchedProtocol: string | null
+  matchedAddress: string | null
+}
+
 export type WalletTxEvidence = {
   txHash: string
   timestamp: string | null
@@ -368,6 +430,7 @@ export type WalletTxEvidence = {
   usdValue: number | null
   direction: 'buy' | 'sell' | 'unknown'
   chain: string
+  swapDetection?: WalletSwapDetection
 }
 
 type PnlEvent = {
@@ -711,6 +774,116 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
   }
 }
 
+function buildSwapDetection(evidenceList: WalletTxEvidence[], activityRequested: boolean): {
+  evidenceWithDetection: WalletTxEvidence[]
+  summary: WalletSnapshot['walletSwapSummary']
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapDetectionDebug']>
+} {
+  const emptyDebug = (): NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapDetectionDebug']> => ({
+    totalEvidenceEvents: 0, groupedTxCount: 0, txWithMultipleTokenMovements: 0,
+    txWithInboundOutboundMovement: 0, knownRouterMatchCount: 0, stableOrWethLegMatchCount: 0,
+    swapCandidateEvents: 0, highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0,
+    lowConfidenceSwapCandidates: 0, transferEvents: 0, airdropCandidateEvents: 0,
+    bridgeCandidateEvents: 0, unknownEvents: 0, readyForPriceAtTime: false,
+    sampleSwapCandidates: [], sampleUnknowns: [], reasons: [],
+  })
+
+  if (!activityRequested) {
+    return {
+      evidenceWithDetection: [],
+      summary: { status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0, highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0, lowConfidenceSwapCandidates: 0, transferEvents: 0, airdropCandidateEvents: 0, bridgeCandidateEvents: 0, unknownEvents: 0, readyForPriceAtTime: false, missing: ['deep_activity_not_requested'] },
+      debug: emptyDebug(),
+    }
+  }
+
+  if (evidenceList.length === 0) {
+    return {
+      evidenceWithDetection: [],
+      summary: { status: 'open_check', totalEvidenceEvents: 0, groupedTxCount: 0, swapCandidateEvents: 0, highConfidenceSwapCandidates: 0, mediumConfidenceSwapCandidates: 0, lowConfidenceSwapCandidates: 0, transferEvents: 0, airdropCandidateEvents: 0, bridgeCandidateEvents: 0, unknownEvents: 0, readyForPriceAtTime: false, missing: ['no_evidence_events'] },
+      debug: emptyDebug(),
+    }
+  }
+
+  const byTx = new Map<string, WalletTxEvidence[]>()
+  for (const e of evidenceList) {
+    byTx.set(e.txHash, [...(byTx.get(e.txHash) ?? []), e])
+  }
+
+  const evidenceWithDetection: WalletTxEvidence[] = evidenceList.map(e => {
+    const txGroup = byTx.get(e.txHash) ?? [e]
+    const hasBuy = txGroup.some(t => t.direction === 'buy')
+    const hasSell = txGroup.some(t => t.direction === 'sell')
+    const hasInboundOutbound = hasBuy && hasSell
+
+    const routerAddr = Object.keys(KNOWN_DEX_ROUTERS).find(addr =>
+      e.toAddress?.toLowerCase() === addr || e.fromAddress?.toLowerCase() === addr
+    ) ?? null
+    const routerName = routerAddr ? KNOWN_DEX_ROUTERS[routerAddr] : null
+
+    const txHasStableOrWeth = txGroup.some(t => Boolean(KNOWN_STABLE_WETH_CONTRACTS[t.contract?.toLowerCase() ?? '']))
+    const thisContractLabel = KNOWN_STABLE_WETH_CONTRACTS[e.contract?.toLowerCase() ?? ''] ?? null
+
+    let detection: WalletSwapDetection
+    if (routerName) {
+      detection = { isSwapCandidate: true, confidence: 'high', eventKind: 'swap_candidate', reason: `Known DEX router matched: ${routerName}`, matchedProtocol: routerName, matchedAddress: routerAddr }
+    } else if (hasInboundOutbound && txHasStableOrWeth) {
+      detection = { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'Inbound+outbound in same tx with stable/WETH leg', matchedProtocol: thisContractLabel, matchedAddress: e.contract?.toLowerCase() ?? null }
+    } else if (hasInboundOutbound) {
+      detection = { isSwapCandidate: true, confidence: 'medium', eventKind: 'swap_candidate', reason: 'Inbound+outbound token transfers in same tx', matchedProtocol: null, matchedAddress: null }
+    } else if (e.direction === 'buy' && !hasSell) {
+      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'airdrop_candidate', reason: 'Inbound-only transfer — no matching outbound in tx', matchedProtocol: null, matchedAddress: null }
+    } else if (e.direction === 'sell' && !hasBuy) {
+      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'transfer', reason: 'Outbound-only transfer — no matching inbound in tx', matchedProtocol: null, matchedAddress: null }
+    } else {
+      detection = { isSwapCandidate: false, confidence: 'low', eventKind: 'unknown', reason: 'Unable to classify this transfer', matchedProtocol: null, matchedAddress: null }
+    }
+
+    return { ...e, swapDetection: detection }
+  })
+
+  let txWithMultipleTokenMovements = 0
+  let txWithInboundOutboundMovement = 0
+  let knownRouterMatchCount = 0
+  let stableOrWethLegMatchCount = 0
+  for (const group of byTx.values()) {
+    if (group.length > 1) txWithMultipleTokenMovements++
+    const hasBuy = group.some(t => t.direction === 'buy')
+    const hasSell = group.some(t => t.direction === 'sell')
+    if (hasBuy && hasSell) txWithInboundOutboundMovement++
+    if (group.some(e => Object.keys(KNOWN_DEX_ROUTERS).some(addr => e.toAddress?.toLowerCase() === addr || e.fromAddress?.toLowerCase() === addr))) knownRouterMatchCount++
+    if (group.some(e => Boolean(KNOWN_STABLE_WETH_CONTRACTS[e.contract?.toLowerCase() ?? '']))) stableOrWethLegMatchCount++
+  }
+
+  const swapCandidateEvents = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).length
+  const highConfidenceSwapCandidates = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.confidence === 'high').length
+  const mediumConfidenceSwapCandidates = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.confidence === 'medium').length
+  const lowConfidenceSwapCandidates = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate && e.swapDetection.confidence === 'low').length
+  const transferEvents = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'transfer').length
+  const airdropCandidateEvents = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'airdrop_candidate').length
+  const bridgeCandidateEvents = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'bridge_candidate').length
+  const unknownEvents = evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown').length
+  const readyForPriceAtTime = swapCandidateEvents > 0 && evidenceWithDetection.some(e => e.swapDetection?.isSwapCandidate && Boolean(e.timestamp))
+  const totalEvidenceEvents = evidenceList.length
+  const groupedTxCount = byTx.size
+  const status: 'ok' | 'partial' | 'open_check' = swapCandidateEvents > 0 ? 'ok' : totalEvidenceEvents > 0 ? 'partial' : 'open_check'
+  const missing: string[] = []
+  if (swapCandidateEvents === 0 && totalEvidenceEvents > 0) missing.push('no_swap_candidates_detected')
+
+  return {
+    evidenceWithDetection,
+    summary: { status, totalEvidenceEvents, groupedTxCount, swapCandidateEvents, highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates, transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents, readyForPriceAtTime, missing },
+    debug: {
+      totalEvidenceEvents, groupedTxCount, txWithMultipleTokenMovements, txWithInboundOutboundMovement,
+      knownRouterMatchCount, stableOrWethLegMatchCount, swapCandidateEvents,
+      highConfidenceSwapCandidates, mediumConfidenceSwapCandidates, lowConfidenceSwapCandidates,
+      transferEvents, airdropCandidateEvents, bridgeCandidateEvents, unknownEvents, readyForPriceAtTime,
+      sampleSwapCandidates: evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate).slice(0, 5),
+      sampleUnknowns: evidenceWithDetection.filter(e => e.swapDetection?.eventKind === 'unknown').slice(0, 5),
+      reasons: [],
+    },
+  }
+}
+
 function confidenceFromCoverage(c: number): 'high' | 'medium' | 'low' { return c >= 85 ? 'high' : c >= 60 ? 'medium' : 'low' }
 
 const BEHAVIOR_EMPTY: WalletBehavior = {
@@ -779,7 +952,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const activityRequested = deepScan || deepActivity
   // Separate address normalisation from cache key so regex validation always checks the address portion only
   const addrNorm = (address ?? '').trim().toLowerCase()
-  const cacheKey = addrNorm + (activityRequested ? ':activity' : ':holdings')
+  const cacheKey = `${addrNorm}:${activityRequested ? 'activity' : 'holdings'}:${SNAPSHOT_SCHEMA_VERSION}`
 
   // Memory cache check — bypassed when refresh=true
   if (!refresh && /^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) {
@@ -1069,7 +1242,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : 'Estimated from indexed transfer history with average-cost method.'
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
-  const { summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested)
+  const { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested)
+  const { summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested)
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = activityRequested && Boolean(ALCHEMY_BASE_KEY)
@@ -1176,6 +1350,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletBehavior,
     estimatedPnl,
     walletEvidenceSummary,
+    walletSwapSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -1288,6 +1463,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       },
       walletProviderRouting,
       walletTxEvidenceDebug: _txEvidenceDebug,
+      walletSwapDetectionDebug: _swapDetectionDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })

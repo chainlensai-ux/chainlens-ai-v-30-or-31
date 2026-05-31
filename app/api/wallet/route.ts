@@ -3,6 +3,7 @@ import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/wa
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 
 const WALLET_CACHE_TTL_MS = 3 * 60 * 1000
+const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v2'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
@@ -42,8 +43,11 @@ export async function POST(req: Request) {
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
       return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
     }
-    const cacheKey = `${key}:${cacheMode}`
-    const cached = allowDebugFresh || refresh || (debug && deepActivity) ? null : walletCache.get(cacheKey)
+    const cacheKey = `${key}:${cacheMode}:${WALLET_SNAPSHOT_SCHEMA_VERSION}`
+    const cachedRaw = allowDebugFresh || refresh || (debug && deepActivity) ? null : walletCache.get(cacheKey)
+    // Invalidate stale-schema entries missing walletSwapSummary (pre-Phase-2 cache entries)
+    const cached = cachedRaw && typeof (cachedRaw.payload as any)?.walletSwapSummary === 'object' ? cachedRaw : null
+    if (cachedRaw && !cached) walletCache.delete(cacheKey)
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
@@ -104,6 +108,7 @@ export async function POST(req: Request) {
         providerFlow: (snapshot as any)._diagnostics?.providerFlow ?? null,
         chainUsage: (snapshot as any)._diagnostics?.chainUsage ?? null,
         walletTxEvidenceDebug: (snapshot as any)._diagnostics?.walletTxEvidenceDebug ?? null,
+        walletSwapDetectionDebug: (snapshot as any)._diagnostics?.walletSwapDetectionDebug ?? null,
         walletActivityRequestDebug: {
           deepActivityRequested: deepActivity || deepScan,
           deepActivityFlagSent: deepActivityFlag,
