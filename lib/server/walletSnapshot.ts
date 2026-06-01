@@ -177,6 +177,20 @@ export type WalletSnapshot = {
     missing: string[]
   }
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
+  walletClosedTradeSamples: Array<{
+    tokenSymbol: string
+    tokenAddress: string
+    chain: string
+    openedAt: string
+    closedAt: string
+    holdingTimeSeconds: number | null
+    amountClosed: number
+    entryPriceUsd: number | null
+    exitPriceUsd: number | null
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    confidence: 'low' | 'medium' | 'high'
+  }>
   walletHistoricalCoverageSummary: {
     status: 'not_requested' | 'open_check' | 'partial' | 'ok'
     requested: boolean
@@ -2968,6 +2982,23 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
+  // Phase 6F: Build public closed trade samples (max 5, no tx hashes, no provider names)
+  const _sampleSourceLots = _shouldPromote && _hcPreviewClosedLots.length > 0 ? _hcPreviewClosedLots : _closedLots
+  const walletClosedTradeSamples: WalletSnapshot['walletClosedTradeSamples'] = _sampleSourceLots.slice(0, 5).map(l => ({
+    tokenSymbol: l.tokenSymbol ?? l.tokenAddress.slice(0, 8),
+    tokenAddress: l.tokenAddress,
+    chain: l.chain,
+    openedAt: l.openedAt,
+    closedAt: l.closedAt,
+    holdingTimeSeconds: l.holdingTimeSeconds,
+    amountClosed: l.amountClosed,
+    entryPriceUsd: l.entryPriceUsd,
+    exitPriceUsd: l.exitPriceUsd,
+    realizedPnlUsd: l.realizedPnlUsd,
+    realizedPnlPercent: l.realizedPnlPercent,
+    confidence: l.confidence,
+  }))
+
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = activityRequested && Boolean(ALCHEMY_BASE_KEY)
@@ -3080,6 +3111,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletLotSummary: promotedLotSummary,
     walletTradeStatsSummary: promotedTradeStatsSummary,
     walletTradeStatsSource,
+    walletClosedTradeSamples,
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
     walletHistoricalPricingPreviewSummary,
