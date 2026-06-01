@@ -299,7 +299,7 @@ function buildWalletOpenCheck(data: WalletResult): string[] {
     checks.push('PnL remains Open Check until indexed transfer history has enough cost-basis coverage.')
   }
   if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
-    checks.push('Wallet score not issued — sample too small for scoring.')
+    checks.push('Wallet score locked — sample below 10 closed lots.')
   } else if (!ts || ts.closedLots === 0) {
     checks.push('Win rate requires matched closed lots with priced entry and exit evidence.')
   }
@@ -573,7 +573,7 @@ export default function WalletScannerPage() {
     const risks = hasRealTrade
       ? [
           ts.closedLots < 10 ? 'Win rate locked until 10+ closed lots.' : 'Win rate from reconstructed closed lots only.',
-          'Wallet score not issued — sample size below scoring threshold.',
+          'Wallet score locked — sample below 10 closed lots.',
           'Some buys and sells may sit outside the indexed scan window.',
         ]
       : [
@@ -906,8 +906,10 @@ export default function WalletScannerPage() {
                     )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', marginBottom: '14px' }}>
-                    <div style={{ fontSize: '56px', lineHeight: 0.9, fontWeight: 950, letterSpacing: '-0.06em', color: walletIntel.walletScore === null ? '#7dd3fc' : '#f8fafc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                      {walletIntel.walletScore === null ? 'Open Check' : walletIntel.walletScore}
+                    <div style={{ fontSize: walletIntel.walletScore === null ? '40px' : '56px', lineHeight: 0.9, fontWeight: 950, letterSpacing: '-0.06em', color: walletIntel.walletScore === null ? '#7dd3fc' : '#f8fafc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                      {walletIntel.walletScore === null
+                        ? ((result.walletTradeStatsSummary?.closedLots ?? 0) > 0 ? 'Early Sample' : 'Open Check')
+                        : walletIntel.walletScore}
                     </div>
                     {walletIntel.walletScore !== null && <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.35)', marginBottom: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>/100</div>}
                   </div>
@@ -926,7 +928,7 @@ export default function WalletScannerPage() {
                       : 'Evidence weighted'
                     const scoreReason = walletIntel.walletScore === null
                       ? closedLots > 0
-                        ? 'Needs 10+ closed lots before scoring.'
+                        ? 'Score locked until 10+ closed lots.'
                         : 'Needs closed lot evidence to score.'
                       : null
                     return (
