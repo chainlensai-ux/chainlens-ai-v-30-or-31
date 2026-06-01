@@ -1124,15 +1124,19 @@ export default function WalletScannerPage() {
                 const avgProfitDisplay = ts && ts.avgPnlUsdPerClosedLot !== null && ts.winningClosedLots > 0
                   ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot)
                   : hasEnough ? fmtSignedUSD(walletIntel.pnl.avgWin) : 'Open Check'
-                const avgLossDisplay = hasEnough ? fmtSignedUSD(walletIntel.pnl.avgLoss) : 'Open Check'
+                const avgLossDisplay = ts && closedLots > 0 && ts.losingClosedLots === 0
+                  ? 'No losses yet'
+                  : hasEnough ? fmtSignedUSD(walletIntel.pnl.avgLoss) : 'Open Check'
                 const biggestWinDisplay = hasEnough
                   ? (ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined ? fmtSignedUSD(ts.largestWinUsd) : fmtSignedUSD(walletIntel.pnl.biggestWin))
                   : ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined && closedLots > 0
                     ? fmtSignedUSD(ts.largestWinUsd)
                     : 'Open Check'
-                const biggestLossDisplay = ts?.largestLossUsd !== null && ts?.largestLossUsd !== undefined
-                  ? fmtSignedUSD(ts.largestLossUsd)
-                  : 'Open Check'
+                const biggestLossDisplay = ts && closedLots > 0 && ts.losingClosedLots === 0
+                  ? 'No losses yet'
+                  : ts?.largestLossUsd !== null && ts?.largestLossUsd !== undefined
+                    ? fmtSignedUSD(ts.largestLossUsd)
+                    : 'Open Check'
                 const avgHoldDisplay = walletIntel.tradeBehavior?.avgHoldTime ?? 'Open Check'
                 return (
                   <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 22px' }}>
@@ -1142,15 +1146,15 @@ export default function WalletScannerPage() {
                         { label: winRateLabel, value: winRateDisplay, early: !hasEnough && closedLots > 0 },
                         { label: lossRateLabel, value: lossRateDisplay, early: !hasEnough && closedLots > 0 },
                         { label: 'Avg Profit / Win', value: avgProfitDisplay },
-                        { label: 'Avg Loss / Loss', value: avgLossDisplay },
+                        { label: 'Avg Loss / Loss', value: avgLossDisplay, noLoss: avgLossDisplay === 'No losses yet' },
                         { label: 'Biggest Win', value: biggestWinDisplay },
-                        { label: 'Biggest Loss', value: biggestLossDisplay },
+                        { label: 'Biggest Loss', value: biggestLossDisplay, noLoss: biggestLossDisplay === 'No losses yet' },
                         { label: 'Avg Hold Time', value: avgHoldDisplay },
                         { label: 'Closed Trades', value: closedTradesDisplay },
                       ].map(card => (
-                        <div key={card.label} style={{ background: ('early' in card && card.early) ? 'rgba(167,139,250,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${('early' in card && card.early) ? 'rgba(167,139,250,0.20)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
-                          <div style={{ fontSize: '9px', color: ('early' in card && card.early) ? 'rgba(167,139,250,0.65)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
-                          <div style={{ fontSize: '16px', fontWeight: 800, color: ('early' in card && card.early) ? '#a78bfa' : String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') ? '#7dd3fc' : '#e2e8f0', lineHeight: 1.25 }}>{card.value}</div>
+                        <div key={card.label} style={{ background: ('early' in card && card.early) ? 'rgba(167,139,250,0.06)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${('early' in card && card.early) ? 'rgba(167,139,250,0.20)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.20)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
+                          <div style={{ fontSize: '9px', color: ('early' in card && card.early) ? 'rgba(167,139,250,0.65)' : ('noLoss' in card && card.noLoss) ? 'rgba(45,212,191,0.65)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: ('early' in card && card.early) ? '#a78bfa' : ('noLoss' in card && card.noLoss) ? '#2DD4BF' : String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') ? '#7dd3fc' : '#e2e8f0', lineHeight: 1.25 }}>{card.value}</div>
                         </div>
                       ))}
                     </div>
