@@ -2244,6 +2244,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   if (_grBaseErrMsg) _txProviderErrors.push(`grBase: ${_grBaseErrMsg}`)
   const _txEvidenceDebug = {
     ..._txEvidenceDebugBase,
+    sourceProvider: _pnlSourceRaw,
     activityRequested,
     eventFetchAttempted: _grEthAttempted || _grBaseAttempted || _alchemyAttempted,
     goldrushEthAttempted: _grEthAttempted,

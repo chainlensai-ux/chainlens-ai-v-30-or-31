@@ -117,6 +117,73 @@ type WalletResult = {
     reason: string
   }
   walletIntelligence?: WalletIntelligence
+  walletEvidenceSummary?: {
+    status: 'ok' | 'partial' | 'open_check'
+    totalEvents: number
+    eventsWithHash: number
+    eventsWithTimestamp: number
+    sampleHashes: string[]
+    sampleTimestamps: string[]
+    missing: string[]
+  }
+  walletSwapSummary?: {
+    status: 'ok' | 'partial' | 'open_check'
+    swapCandidateCount: number
+    highConfidenceCount: number
+    mediumConfidenceCount: number
+    lowConfidenceCount: number
+    missing: string[]
+  }
+  walletPriceEvidenceSummary?: {
+    status: 'ok' | 'partial' | 'open_check'
+    swapCandidateEvents: number
+    pricedEvents: number
+    openCheckEvents: number
+    unavailableEvents: number
+    stableLegPricedEvents: number
+    wethLegPricedEvents: number
+    historicalPricedEvents: number
+    priceAttemptLimitReached: boolean
+    readyForLotMatching: boolean
+    missing: string[]
+  }
+  walletLotSummary?: {
+    status: 'ok' | 'partial' | 'open_check'
+    pricedSwapEvents: number
+    openedLots: number
+    closedLots: number
+    partiallyClosedLots: number
+    unmatchedBuys: number
+    unmatchedSells: number
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    totalCostBasisClosedUsd: number | null
+    totalProceedsClosedUsd: number | null
+    readyForTradeStats: boolean
+    missing: string[]
+  }
+  walletTradeStatsSummary?: {
+    status: 'ok' | 'partial' | 'open_check'
+    closedLots: number
+    uniqueTokensTraded: number
+    realizedPnlUsd: number | null
+    realizedPnlPercent: number | null
+    winningClosedLots: number
+    losingClosedLots: number
+    breakEvenClosedLots: number
+    winRatePercent: number | null
+    avgPnlUsdPerClosedLot: number | null
+    avgReturnPercentPerClosedLot: number | null
+    medianReturnPercentPerClosedLot: number | null
+    avgHoldingTimeSeconds: number | null
+    medianHoldingTimeSeconds: number | null
+    largestWinUsd: number | null
+    largestLossUsd: number | null
+    confidence: 'high' | 'medium' | 'low' | 'open_check'
+    sampleSizeLabel: 'insufficient' | 'early' | 'developing' | 'strong'
+    readyForWalletScore: boolean
+    missing: string[]
+  }
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────────────────
@@ -815,6 +882,89 @@ export default function WalletScannerPage() {
                   </div>
                 </div>
               </div>
+
+              {(() => {
+                const ts = result.walletTradeStatsSummary
+                const ls = result.walletLotSummary
+                if (!ts) return null
+                const isOpenCheck = ts.status === 'open_check' || ts.closedLots === 0
+                const hasEnough = ts.closedLots >= 10
+                function fmtHoldTime(seconds: number | null): string {
+                  if (seconds === null || !Number.isFinite(seconds)) return '—'
+                  const h = Math.floor(seconds / 3600)
+                  const d = Math.floor(h / 24)
+                  if (d >= 1) return `${d}d ${h % 24}h`
+                  if (h >= 1) return `${h}h ${Math.floor((seconds % 3600) / 60)}m`
+                  return `${Math.floor(seconds / 60)}m`
+                }
+                return (
+                  <div style={{ background: '#080c14', border: '1px solid rgba(139,92,246,0.22)', borderRadius: '16px', padding: '20px 22px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#a78bfa', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Real Trade Evidence</div>
+                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.25)', background: 'rgba(139,92,246,0.07)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>FIFO lots</span>
+                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: ts.confidence === 'high' ? '#4ade80' : ts.confidence === 'medium' ? '#fbbf24' : '#94a3b8', border: `1px solid ${ts.confidence === 'high' ? 'rgba(74,222,128,0.22)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.22)' : 'rgba(148,163,184,0.18)'}`, background: ts.confidence === 'high' ? 'rgba(74,222,128,0.06)' : ts.confidence === 'medium' ? 'rgba(251,191,36,0.06)' : 'rgba(148,163,184,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.confidence === 'open_check' ? 'open check' : `${ts.confidence} confidence`}</span>
+                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(148,163,184,0.05)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.sampleSizeLabel}</span>
+                    </div>
+
+                    {isOpenCheck ? (
+                      <div style={{ color: '#7dd3fc', fontSize: '13px', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+                        No matched priced closed lots yet. More on-chain swap activity needed for FIFO reconstruction.
+                      </div>
+                    ) : (
+                      <>
+                        <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '10px' }}>
+                          {[
+                            { label: 'Closed Lots', value: String(ts.closedLots) },
+                            { label: 'Realized PnL', value: ts.realizedPnlUsd !== null ? fmtSignedUSD(ts.realizedPnlUsd) : '—', pnl: ts.realizedPnlUsd },
+                            { label: 'Return', value: ts.realizedPnlPercent !== null ? `${ts.realizedPnlPercent >= 0 ? '+' : ''}${ts.realizedPnlPercent.toFixed(1)}%` : '—', pnl: ts.realizedPnlPercent },
+                            { label: 'Tokens Traded', value: String(ts.uniqueTokensTraded) },
+                            { label: 'Wins', value: String(ts.winningClosedLots) },
+                            { label: 'Losses', value: String(ts.losingClosedLots) },
+                          ].map(card => (
+                            <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                              <div style={{ fontSize: '18px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: 'pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0' }}>{card.value}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
+                          {[
+                            { label: 'Win Rate', value: hasEnough && ts.winRatePercent !== null ? `${ts.winRatePercent.toFixed(1)}%` : null, locked: !hasEnough || ts.winRatePercent === null },
+                            { label: 'Avg PnL / Lot', value: ts.avgPnlUsdPerClosedLot !== null ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot) : '—', pnl: ts.avgPnlUsdPerClosedLot },
+                            { label: 'Avg Return / Lot', value: ts.avgReturnPercentPerClosedLot !== null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.avgReturnPercentPerClosedLot },
+                            { label: 'Median Return', value: ts.medianReturnPercentPerClosedLot !== null ? `${ts.medianReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.medianReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.medianReturnPercentPerClosedLot },
+                            { label: 'Avg Hold Time', value: fmtHoldTime(ts.avgHoldingTimeSeconds) },
+                            { label: 'Median Hold Time', value: fmtHoldTime(ts.medianHoldingTimeSeconds) },
+                          ].map(card => (
+                            <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                              {'locked' in card && card.locked ? (
+                                <div style={{ fontSize: '11px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.4 }}>Locked — 10+ lots needed</div>
+                              ) : (
+                                <div style={{ fontSize: '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: 'pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0' }}>{card.value}</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+
+                        {!hasEnough && (
+                          <div style={{ fontSize: '11px', color: '#fbbf24', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '8px', padding: '8px 12px', marginBottom: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            Early sample — more closed trades needed for full stats.
+                          </div>
+                        )}
+
+                        {ls && (ls.unmatchedBuys > 0 || ls.unmatchedSells > 0) && (
+                          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            {ls.unmatchedBuys > 0 && <span>{ls.unmatchedBuys} open buy position{ls.unmatchedBuys !== 1 ? 's' : ''} not yet matched. </span>}
+                            {ls.unmatchedSells > 0 && <span>{ls.unmatchedSells} sell{ls.unmatchedSells !== 1 ? 's' : ''} without a matched buy (may predate scan window).</span>}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )
+              })()}
 
               <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 22px' }}>
                 <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>Trade Behavior</div>
