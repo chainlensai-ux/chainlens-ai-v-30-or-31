@@ -2943,17 +2943,26 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let promotedTradeStatsSummary = walletTradeStatsSummary
   if (_shouldPromote && _hcPreviewClosedLots.length > 0) {
     const { summary: previewTradeStats } = buildTradeStatsSummary(_hcPreviewClosedLots, activityRequested)
+    // Fix 3: deduplicate missing — buildTradeStatsSummary already adds sample_size_below_win_rate_threshold
+    const promotedMissing = Array.from(new Set([...(previewTradeStats.missing ?? []), 'sample_size_below_win_rate_threshold']))
     promotedTradeStatsSummary = {
       ...previewTradeStats,
+      // Fix 2: confidence must match previewConfidence, not the raw lot-count-based value
+      confidence: walletHistoricalFifoPreviewSummary.previewConfidence,
       winRatePercent: null,
       readyForWalletScore: false,
-      missing: [...(previewTradeStats.missing ?? []), 'sample_size_below_win_rate_threshold'],
+      missing: promotedMissing,
     }
+    // Fix 1: compute preview totals from the actual preview closed lots
+    const previewTotalCostBasisClosedUsd = _hcPreviewClosedLots.reduce((s, l) => s + l.costBasisUsd, 0)
+    const previewTotalProceedsClosedUsd = _hcPreviewClosedLots.reduce((s, l) => s + l.proceedsUsd, 0)
     promotedLotSummary = {
       ...walletLotSummary,
       closedLots: walletHistoricalFifoPreviewSummary.previewClosedLots,
       realizedPnlUsd: walletHistoricalFifoPreviewSummary.previewRealizedPnlUsd,
       realizedPnlPercent: walletHistoricalFifoPreviewSummary.previewRealizedPnlPercent,
+      totalCostBasisClosedUsd: previewTotalCostBasisClosedUsd,
+      totalProceedsClosedUsd: previewTotalProceedsClosedUsd,
       readyForTradeStats: true,
       status: 'ok' as const,
     }
