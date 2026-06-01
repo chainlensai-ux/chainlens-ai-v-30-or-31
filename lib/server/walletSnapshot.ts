@@ -229,6 +229,27 @@ export type WalletSnapshot = {
     missing: string[]
     reason: string | null
   }
+  walletHistoricalFifoPreviewSummary: {
+    status: 'not_requested' | 'open_check' | 'partial' | 'ok'
+    requested: boolean
+    baselineClosedLots: number
+    previewClosedLots: number
+    addedClosedLots: number
+    baselineRealizedPnlUsd: number | null
+    previewRealizedPnlUsd: number | null
+    addedRealizedPnlUsd: number | null
+    baselineRealizedPnlPercent: number | null
+    previewRealizedPnlPercent: number | null
+    winningClosedLotsPreview: number
+    losingClosedLotsPreview: number
+    breakEvenClosedLotsPreview: number
+    uniqueTokensPreview: number
+    previewConfidence: 'low' | 'medium' | 'high'
+    readyForHistoricalTradeStatsPreview: boolean
+    safeToPromoteToPublicStats: boolean
+    missing: string[]
+    reason: string | null
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -530,6 +551,27 @@ export type WalletSnapshot = {
       priceAttemptLimitReached: boolean
       samplePricedHistoricalCandidates: Array<{ txHash: string; contract: string; symbol: string; direction: string; priceUsd: number; source: string }>
       sampleUnpricedHistoricalCandidates: Array<{ txHash: string; contract: string; symbol: string; direction: string; reason: string }>
+      skippedReasons: string[]
+      reasons: string[]
+    }
+    walletHistoricalFifoPreviewDebug?: {
+      requested: boolean
+      baselinePricedEvents: number
+      newPricedHistoricalEvents: number
+      combinedPricedEvents: number
+      baselineClosedLots: number
+      previewClosedLots: number
+      addedClosedLots: number
+      baselineRealizedPnlUsd: number | null
+      previewRealizedPnlUsd: number | null
+      addedRealizedPnlUsd: number | null
+      winningClosedLotsPreview: number
+      losingClosedLotsPreview: number
+      breakEvenClosedLotsPreview: number
+      unmatchedBuysPreview: number
+      unmatchedSellsPreview: number
+      samplePreviewClosedLots: Array<{ tokenAddress: string; symbol: string; openedAt: string; closedAt: string; entryPriceUsd: number; exitPriceUsd: number; realizedPnlUsd: number; confidence: string }>
+      sampleAddedClosedLots: Array<{ tokenAddress: string; symbol: string; openedAt: string; closedAt: string; entryPriceUsd: number; exitPriceUsd: number; realizedPnlUsd: number; confidence: string }>
       skippedReasons: string[]
       reasons: string[]
     }
@@ -1278,6 +1320,7 @@ async function buildHistoricalPricingPreview(
 ): Promise<{
   summary: WalletSnapshot['walletHistoricalPricingPreviewSummary']
   debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalPricingPreviewDebug']
+  pricedEvidence: WalletTxEvidence[]
 }> {
   const MAX_PRICE_ATTEMPTS = 10
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
@@ -1288,6 +1331,7 @@ async function buildHistoricalPricingPreview(
     return {
       summary: { status: 'open_check', requested: true, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['no_new_swap_candidates'], reason: 'No new swap candidates to price.' },
       debug: { requested: true, newSwapCandidateEvents: 0, priceAttempts: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, samplePricedHistoricalCandidates: [], sampleUnpricedHistoricalCandidates: [], skippedReasons: ['no_new_swap_candidates'], reasons: [] },
+      pricedEvidence: [],
     }
   }
 
@@ -1307,6 +1351,10 @@ async function buildHistoricalPricingPreview(
   const samplePricedRaw: Array<{ txHash: string; contract: string; symbol: string; direction: string; priceUsd: number; source: string }> = []
   const sampleUnpricedRaw: Array<{ txHash: string; contract: string; symbol: string; direction: string; reason: string }> = []
   const skippedReasons: string[] = []
+  const pricedEvidenceItems: WalletTxEvidence[] = []
+
+  const markPriced = (e: WalletTxEvidence, priceUsd: number, source: PriceAtTimeEvidence['source'], confidence: PriceAtTimeEvidence['confidence'], reason: string): WalletTxEvidence =>
+    ({ ...e, priceAtTime: { status: 'priced' as const, tokenAddress: e.contract, tokenSymbol: e.symbol, timestamp: e.timestamp ?? '', priceUsd, source, confidence, reason } })
 
   for (const e of newCandidateEvidence) {
     if (e.swapDetection?.isSwapCandidate !== true) { skippedReasons.push('not_swap_candidate'); continue }
@@ -1328,6 +1376,7 @@ async function buildHistoricalPricingPreview(
 
     if (isStable) {
       pricedHistoricalCandidates++; stableLegPricedEvents++
+      pricedEvidenceItems.push(markPriced(e, 1.0, 'stable_leg', 'high', 'Stablecoin — price is $1 USD by definition'))
       if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: 1.0, source: 'stable_leg' })
       continue
     }
@@ -1350,6 +1399,7 @@ async function buildHistoricalPricingPreview(
         const derivedPrice = stableAmt / tokenAmount
         if (derivedPrice > 0 && isFinite(derivedPrice)) {
           pricedHistoricalCandidates++; stableLegPricedEvents++
+          pricedEvidenceItems.push(markPriced(e, derivedPrice, 'stable_leg', 'high', `Derived from ${sl.symbol} leg in same tx`))
           if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: derivedPrice, source: 'stable_leg' })
           continue
         }
@@ -1374,6 +1424,7 @@ async function buildHistoricalPricingPreview(
             const derivedPrice = (wethAmt * result.priceUsd) / tokenAmount
             if (derivedPrice > 0 && isFinite(derivedPrice)) {
               pricedHistoricalCandidates++; wethLegPricedEvents++
+              pricedEvidenceItems.push(markPriced(e, derivedPrice, 'weth_leg', 'medium', `Derived from WETH leg`))
               if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: derivedPrice, source: 'weth_leg' })
               continue
             }
@@ -1392,6 +1443,7 @@ async function buildHistoricalPricingPreview(
     const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp)
     if (histResult.priceUsd !== null) {
       pricedHistoricalCandidates++; historicalPricedEventsCount++
+      pricedEvidenceItems.push(markPriced(e, histResult.priceUsd, 'historical_price', 'medium', 'Historical token price from on-chain pricing data'))
       if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: histResult.priceUsd, source: 'historical_price' })
       continue
     }
@@ -1412,6 +1464,101 @@ async function buildHistoricalPricingPreview(
   return {
     summary: { status, requested: true, newSwapCandidateEvents, pricedHistoricalCandidates, unpricedHistoricalCandidates, stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents: historicalPricedEventsCount, priceAttemptLimitReached, readyForHistoricalFifoPreview: pricedHistoricalCandidates > 0, missing, reason: missing.length > 0 ? missing.join('; ') : null },
     debug: { requested: true, newSwapCandidateEvents, priceAttempts, pricedHistoricalCandidates, unpricedHistoricalCandidates, stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents: historicalPricedEventsCount, priceAttemptLimitReached, samplePricedHistoricalCandidates: samplePricedRaw, sampleUnpricedHistoricalCandidates: sampleUnpricedRaw, skippedReasons, reasons: pricedHistoricalCandidates > 0 ? ['historical_candidates_priced'] : ['no_price_evidence'] },
+    pricedEvidence: pricedEvidenceItems,
+  }
+}
+
+function buildHistoricalFifoPreview(
+  baselinePricedEvidence: WalletTxEvidence[],
+  newHistoricalPricedEvidence: WalletTxEvidence[],
+  baselineClosedLots: WalletClosedLot[],
+  baselineRealizedPnlUsd: number | null,
+  baselineRealizedPnlPercent: number | null,
+  unpricedHistoricalCandidates: number,
+): {
+  summary: WalletSnapshot['walletHistoricalFifoPreviewSummary']
+  debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalFifoPreviewDebug']
+} {
+  const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
+  const BREAK_EVEN_EPSILON = 0.01
+
+  const notRequested = () => ({
+    summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_pricing_not_requested'], reason: null },
+    debug: undefined as NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalFifoPreviewDebug'],
+  })
+
+  if (newHistoricalPricedEvidence.length === 0) return notRequested()
+
+  // Dedup new historical evidence against baseline (same key as Phase 6B)
+  const baselineKeys = new Set<string>()
+  for (const e of baselinePricedEvidence) {
+    if (e.swapDetection?.isSwapCandidate && e.priceAtTime?.status === 'priced') {
+      baselineKeys.add(`${e.txHash}|${e.contract}|${e.direction}|${Math.round(e.amount * 1e6)}`)
+    }
+  }
+  const dedupedNewEvidence = newHistoricalPricedEvidence.filter(e => {
+    const k = `${e.txHash}|${e.contract}|${e.direction}|${Math.round(e.amount * 1e6)}`
+    return !baselineKeys.has(k)
+  })
+
+  const baselinePricedEvents = baselinePricedEvidence.filter(e => e.swapDetection?.isSwapCandidate && e.priceAtTime?.status === 'priced').length
+  const newPricedHistoricalEvents = dedupedNewEvidence.length
+
+  if (newPricedHistoricalEvents === 0) {
+    return {
+      summary: { status: 'open_check', requested: true, baselineClosedLots: baselineClosedLots.length, previewClosedLots: baselineClosedLots.length, addedClosedLots: 0, baselineRealizedPnlUsd, previewRealizedPnlUsd: baselineRealizedPnlUsd, addedRealizedPnlUsd: null, baselineRealizedPnlPercent, previewRealizedPnlPercent: baselineRealizedPnlPercent, winningClosedLotsPreview: baselineClosedLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON).length, losingClosedLotsPreview: baselineClosedLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON).length, breakEvenClosedLotsPreview: baselineClosedLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON).length, uniqueTokensPreview: new Set(baselineClosedLots.map(l => `${l.chain}:${l.tokenAddress}`)).size, previewConfidence: 'low', readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['no_new_priced_historical_events_after_dedup'], reason: 'Historical candidates priced, but did not create additional matched closed lots.' },
+      debug: { requested: true, baselinePricedEvents, newPricedHistoricalEvents: 0, combinedPricedEvents: baselinePricedEvents, baselineClosedLots: baselineClosedLots.length, previewClosedLots: baselineClosedLots.length, addedClosedLots: 0, baselineRealizedPnlUsd, previewRealizedPnlUsd: baselineRealizedPnlUsd, addedRealizedPnlUsd: null, winningClosedLotsPreview: baselineClosedLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON).length, losingClosedLotsPreview: baselineClosedLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON).length, breakEvenClosedLotsPreview: baselineClosedLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON).length, unmatchedBuysPreview: 0, unmatchedSellsPreview: 0, samplePreviewClosedLots: [], sampleAddedClosedLots: [], skippedReasons: ['no_deduped_new_events'], reasons: ['no_new_priced_historical_events_after_dedup'] },
+    }
+  }
+
+  // Run preview FIFO on combined evidence (baseline + deduped new)
+  const combinedEvidence = [...baselinePricedEvidence, ...dedupedNewEvidence]
+  const { closedLots: previewClosedLots, summary: previewFifoSummary } = buildFifoLotEngine(combinedEvidence, true)
+
+  const previewRealizedPnlUsd = previewFifoSummary.realizedPnlUsd
+  const previewRealizedPnlPercent = previewFifoSummary.realizedPnlPercent
+  const addedClosedLots = previewClosedLots.length - baselineClosedLots.length
+  const addedRealizedPnlUsd = previewRealizedPnlUsd !== null && baselineRealizedPnlUsd !== null
+    ? previewRealizedPnlUsd - baselineRealizedPnlUsd : null
+
+  // Identify added lots by finding lots not in baseline (by closedTxHash+contract pairing)
+  const baselineTxContracts = new Set(baselineClosedLots.map(l => `${l.closedTxHash}|${l.tokenAddress}`))
+  const addedLots = previewClosedLots.filter(l => !baselineTxContracts.has(`${l.closedTxHash}|${l.tokenAddress}`))
+
+  const winningPreview = previewClosedLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON).length
+  const losingPreview = previewClosedLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON).length
+  const breakEvenPreview = previewClosedLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON).length
+  const uniqueTokensPreview = new Set(previewClosedLots.map(l => `${l.chain}:${l.tokenAddress}`)).size
+
+  const n = previewClosedLots.length
+  const previewConfidence: 'low' | 'medium' | 'high' = n >= 25 ? 'high' : n >= 10 ? 'medium' : 'low'
+
+  // No current-price fallback used if all new priced items used stable/weth/historical sources
+  const noCurrentPriceFallback = dedupedNewEvidence.every(e =>
+    e.priceAtTime?.source !== 'current_price_fallback_not_used' && e.priceAtTime?.source !== 'unavailable'
+  )
+
+  const safeToPromoteToPublicStats =
+    addedClosedLots > 0 &&
+    previewClosedLots.length > baselineClosedLots.length &&
+    previewRealizedPnlUsd !== null && isFinite(previewRealizedPnlUsd) &&
+    unpricedHistoricalCandidates === 0 &&
+    noCurrentPriceFallback
+
+  const previewStatus: WalletSnapshot['walletHistoricalFifoPreviewSummary']['status'] =
+    previewClosedLots.length === 0 ? 'open_check'
+    : addedClosedLots === 0 ? 'partial'
+    : 'ok'
+
+  const missing: string[] = []
+  if (addedClosedLots === 0) missing.push('no_additional_closed_lots')
+  if (previewFifoSummary.unmatchedSells > 0) missing.push('unmatched_sells_in_preview')
+
+  const sampleClosedLotFmt = (l: WalletClosedLot) => ({ tokenAddress: abbr(l.tokenAddress), symbol: l.tokenSymbol ?? '', openedAt: l.openedAt, closedAt: l.closedAt, entryPriceUsd: l.entryPriceUsd, exitPriceUsd: l.exitPriceUsd, realizedPnlUsd: l.realizedPnlUsd, confidence: l.confidence })
+
+  return {
+    summary: { status: previewStatus, requested: true, baselineClosedLots: baselineClosedLots.length, previewClosedLots: previewClosedLots.length, addedClosedLots, baselineRealizedPnlUsd, previewRealizedPnlUsd, addedRealizedPnlUsd, baselineRealizedPnlPercent, previewRealizedPnlPercent, winningClosedLotsPreview: winningPreview, losingClosedLotsPreview: losingPreview, breakEvenClosedLotsPreview: breakEvenPreview, uniqueTokensPreview, previewConfidence, readyForHistoricalTradeStatsPreview: previewClosedLots.length >= 1, safeToPromoteToPublicStats, missing, reason: addedClosedLots === 0 ? 'Historical candidates priced, but did not create additional matched closed lots.' : null },
+    debug: { requested: true, baselinePricedEvents, newPricedHistoricalEvents, combinedPricedEvents: baselinePricedEvents + newPricedHistoricalEvents, baselineClosedLots: baselineClosedLots.length, previewClosedLots: previewClosedLots.length, addedClosedLots, baselineRealizedPnlUsd, previewRealizedPnlUsd, addedRealizedPnlUsd, winningClosedLotsPreview: winningPreview, losingClosedLotsPreview: losingPreview, breakEvenClosedLotsPreview: breakEvenPreview, unmatchedBuysPreview: previewFifoSummary.unmatchedBuys, unmatchedSellsPreview: previewFifoSummary.unmatchedSells, samplePreviewClosedLots: previewClosedLots.slice(0, 5).map(sampleClosedLotFmt), sampleAddedClosedLots: addedLots.slice(0, 5).map(sampleClosedLotFmt), skippedReasons: [], reasons: addedClosedLots > 0 ? ['preview_lots_added'] : ['no_additional_closed_lots'] },
   }
 }
 
@@ -2765,10 +2912,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : { summary: { status: 'not_requested' as const, requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, earliestCandidateAt: null, latestCandidateAt: null, readyForHistoricalPricing: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, newCandidateEvidence: [] as WalletTxEvidence[], allHistoricalEvidence: [] as WalletTxEvidence[] }
 
   // Phase 6C: Historical pricing preview — price only the Phase 6B new swap candidates
-  const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug } =
+  const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug, pricedEvidence: _hcNewPricedEvidence } =
     _runHistoricalCoverage && _hcNewCandidateEvidence.length > 0
       ? await buildHistoricalPricingPreview(_hcNewCandidateEvidence, _hcAllHistoricalEvidence)
-      : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined }
+      : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
+
+  // Phase 6D: Historical FIFO preview — run FIFO on baseline + new priced historical candidates
+  const { summary: walletHistoricalFifoPreviewSummary, debug: _historicalFifoPreviewDebug } =
+    _runHistoricalCoverage && _hcNewPricedEvidence.length > 0
+      ? buildHistoricalFifoPreview(_pricedEvidence, _hcNewPricedEvidence, _closedLots, walletTradeStatsSummary.realizedPnlUsd, walletTradeStatsSummary.realizedPnlPercent ?? null, walletHistoricalPricingPreviewSummary.unpricedHistoricalCandidates)
+      : { summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined }
 
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
@@ -2884,6 +3037,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
     walletHistoricalPricingPreviewSummary,
+    walletHistoricalFifoPreviewSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -3003,6 +3157,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletHistoricalCoverageDebug: _historicalCoverageDebug,
       walletHistoricalCandidateDebug: _historicalCandidateDebug,
       walletHistoricalPricingPreviewDebug: _historicalPricingPreviewDebug,
+      walletHistoricalFifoPreviewDebug: _historicalFifoPreviewDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
