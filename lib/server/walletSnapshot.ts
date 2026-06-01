@@ -194,6 +194,27 @@ export type WalletSnapshot = {
     missing: string[]
     reason: string | null
   }
+  walletHistoricalCandidateSummary: {
+    status: 'not_requested' | 'open_check' | 'partial' | 'ok'
+    requested: boolean
+    baseEvidenceEvents: number
+    historicalNormalizedEvents: number
+    historicalWalletSideEvents: number
+    existingSwapCandidates: number
+    historicalSwapCandidates: number
+    newSwapCandidateEvents: number
+    duplicateSwapCandidateEvents: number
+    candidateTransactions: number
+    newCandidateTransactions: number
+    candidateTokens: number
+    newCandidateTokens: number
+    earliestCandidateAt: string | null
+    latestCandidateAt: string | null
+    readyForHistoricalPricing: boolean
+    readyForHistoricalFifoPreview: boolean
+    missing: string[]
+    reason: string | null
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -462,6 +483,27 @@ export type WalletSnapshot = {
       moralisHistoricalAttempted: boolean
       moralisReason: string
     }
+    walletHistoricalCandidateDebug?: {
+      requested: boolean
+      baseEvidenceEvents: number
+      historicalNormalizedEvents: number
+      historicalWalletSideEvents: number
+      existingSwapCandidates: number
+      historicalSwapCandidates: number
+      newSwapCandidateEvents: number
+      duplicateSwapCandidateEvents: number
+      candidateTransactions: number
+      newCandidateTransactions: number
+      candidateTokens: number
+      newCandidateTokens: number
+      candidateTokenSymbols: string[]
+      earliestCandidateAt: string | null
+      latestCandidateAt: string | null
+      sampleNewSwapCandidates: Array<{ txHash: string; contract: string; symbol: string; direction: string; timestamp: string | null; reason: string }>
+      sampleDuplicateCandidates: Array<{ txHash: string; contract: string; symbol: string; direction: string }>
+      skippedReasons: string[]
+      reasons: string[]
+    }
   }
 }
 
@@ -482,6 +524,7 @@ const HISTORICAL_COVERAGE_TTL_MS = 10 * 60 * 1000
 type WalletHistoricalCoverageOutput = {
   summary: WalletSnapshot['walletHistoricalCoverageSummary']
   debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
+  events: PnlEvent[]
 }
 const historicalCoverageCache = new Map<string, { data: WalletHistoricalCoverageOutput; cachedAt: number }>()
 const historicalCoverageInFlight = new Map<string, Promise<WalletHistoricalCoverageOutput>>()
@@ -1045,6 +1088,7 @@ async function buildWalletHistoricalCoverage(
   const emptyDebug = (reason: string): WalletHistoricalCoverageOutput => ({
     summary: { status: 'open_check', requested: true, pagesAttempted: 0, maxPages, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: ['provider_not_configured'], reason },
     debug: { requested: true, providersAttempted: [], pagesAttempted: 0, pageSize: 50, maxPages, cursorUsed: false, stoppedReason: reason, rawTransactions: 0, rawLogEvents: 0, decodedTransferLogs: 0, walletSideEvents: 0, candidateSwapTxs: 0, candidateSwapEvents: 0, duplicateTxHashes: 0, duplicateEvents: 0, oldestTimestamp: null, newestTimestamp: null, chainCoverage: {}, providerErrorSamples: [], skippedReasons: [reason], sampleTxHashes: [], sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
+    events: [],
   })
   if (!apiKey) return emptyDebug('goldrush_not_configured')
 
@@ -1107,6 +1151,87 @@ async function buildWalletHistoricalCoverage(
   return {
     summary: { status, requested: true, pagesAttempted, maxPages, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors'] : [], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
     debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: false, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: [], sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
+    events: uniqueEvents,
+  }
+}
+
+function buildHistoricalCandidateComparison(
+  historicalPnlEvents: PnlEvent[],
+  existingEvidenceWithDetection: WalletTxEvidence[],
+  walletAddress: string,
+): {
+  summary: WalletSnapshot['walletHistoricalCandidateSummary']
+  debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCandidateDebug']
+} {
+  const notRequested = () => ({
+    summary: { status: 'not_requested' as const, requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, earliestCandidateAt: null, latestCandidateAt: null, readyForHistoricalPricing: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null },
+    debug: { requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, candidateTokenSymbols: [], earliestCandidateAt: null, latestCandidateAt: null, sampleNewSwapCandidates: [], sampleDuplicateCandidates: [], skippedReasons: ['historical_coverage_not_requested'], reasons: [] },
+  })
+  if (historicalPnlEvents.length === 0) return notRequested()
+
+  // Build dedup set from existing base evidence (swap candidates only)
+  const existingSwapKeys = new Set<string>()
+  const existingSwapCandidateCount = existingEvidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate === true).length
+  for (const e of existingEvidenceWithDetection) {
+    if (e.swapDetection?.isSwapCandidate !== true) continue
+    existingSwapKeys.add(`${e.txHash}|${e.contract}|${e.direction}|${Math.round(e.amount * 1e6)}`)
+  }
+
+  const historicalWalletSideEvents = historicalPnlEvents.filter(e => e.direction !== 'unknown').length
+
+  // Run swap detection on historical events (same logic as base pipeline)
+  const { evidenceList: histEvidenceList } = buildTxEvidenceFromEvents(historicalPnlEvents, true)
+  const { evidenceWithDetection: histSwapEvidence } = buildSwapDetection(histEvidenceList, true, walletAddress)
+  const historicalSwapCandidates = histSwapEvidence.filter(e => e.swapDetection?.isSwapCandidate === true).length
+
+  // Compare historical swap candidates against existing base evidence
+  const newSwapCandidateItems: Array<{ txHash: string; contract: string; symbol: string; direction: string; timestamp: string | null; reason: string }> = []
+  const duplicateSwapCandidateItems: Array<{ txHash: string; contract: string; symbol: string; direction: string }> = []
+  const newTxHashes = new Set<string>()
+  const newContractSet = new Set<string>()
+  const existingContractSet = new Set<string>(existingEvidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate === true).map(e => e.contract))
+
+  for (const e of histSwapEvidence) {
+    if (e.swapDetection?.isSwapCandidate !== true) continue
+    const dedupKey = `${e.txHash}|${e.contract}|${e.direction}|${Math.round(e.amount * 1e6)}`
+    if (existingSwapKeys.has(dedupKey)) {
+      duplicateSwapCandidateItems.push({ txHash: e.txHash ?? '', contract: e.contract, symbol: e.symbol ?? '', direction: e.direction })
+    } else {
+      newSwapCandidateItems.push({ txHash: e.txHash ?? '', contract: e.contract, symbol: e.symbol ?? '', direction: e.direction, timestamp: e.timestamp ?? null, reason: 'historical_swap_candidate_not_in_base_evidence' })
+      if (e.txHash) newTxHashes.add(e.txHash)
+      newContractSet.add(e.contract)
+    }
+  }
+
+  const allCandidateTxHashes = new Set<string>()
+  const allCandidateContracts = new Set<string>()
+  for (const e of histSwapEvidence) {
+    if (e.swapDetection?.isSwapCandidate !== true) continue
+    if (e.txHash) allCandidateTxHashes.add(e.txHash)
+    allCandidateContracts.add(e.contract)
+  }
+
+  const timestamps = newSwapCandidateItems.map(e => e.timestamp).filter(Boolean) as string[]
+  const sortedTs = timestamps.sort()
+  const earliestCandidateAt = sortedTs[0] ?? null
+  const latestCandidateAt = sortedTs[sortedTs.length - 1] ?? null
+
+  const newSwapCandidateEvents = newSwapCandidateItems.length
+  const duplicateSwapCandidateEvents = duplicateSwapCandidateItems.length
+  const candidateTransactions = allCandidateTxHashes.size
+  const newCandidateTransactions = newTxHashes.size
+  const candidateTokens = allCandidateContracts.size
+  const newCandidateTokens = newContractSet.size - [...newContractSet].filter(c => existingContractSet.has(c)).length
+
+  const status: WalletSnapshot['walletHistoricalCandidateSummary']['status'] =
+    historicalSwapCandidates === 0 ? 'open_check' :
+    newSwapCandidateEvents > 0 ? 'ok' : 'partial'
+
+  const newTokenSymbols = [...new Set(newSwapCandidateItems.map(e => e.symbol).filter(Boolean))]
+
+  return {
+    summary: { status, requested: true, baseEvidenceEvents: existingEvidenceWithDetection.length, historicalNormalizedEvents: historicalPnlEvents.length, historicalWalletSideEvents, existingSwapCandidates: existingSwapCandidateCount, historicalSwapCandidates, newSwapCandidateEvents, duplicateSwapCandidateEvents, candidateTransactions, newCandidateTransactions, candidateTokens, newCandidateTokens, earliestCandidateAt, latestCandidateAt, readyForHistoricalPricing: newSwapCandidateEvents > 0 && earliestCandidateAt !== null, readyForHistoricalFifoPreview: false, missing: newSwapCandidateEvents === 0 ? ['no_new_swap_candidates'] : [], reason: newSwapCandidateEvents === 0 ? 'No additional swap candidates found in historical coverage window.' : null },
+    debug: { requested: true, baseEvidenceEvents: existingEvidenceWithDetection.length, historicalNormalizedEvents: historicalPnlEvents.length, historicalWalletSideEvents, existingSwapCandidates: existingSwapCandidateCount, historicalSwapCandidates, newSwapCandidateEvents, duplicateSwapCandidateEvents, candidateTransactions, newCandidateTransactions, candidateTokens, newCandidateTokens, candidateTokenSymbols: newTokenSymbols, earliestCandidateAt, latestCandidateAt, sampleNewSwapCandidates: newSwapCandidateItems.slice(0, 5), sampleDuplicateCandidates: duplicateSwapCandidateItems.slice(0, 5), skippedReasons: [], reasons: newSwapCandidateEvents > 0 ? ['historical_swap_candidates_found'] : ['no_new_swap_candidates'] },
   }
 }
 
@@ -2421,12 +2546,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _runHistoricalCoverage = activityRequested && historicalCoverage
   let walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
   let _historicalCoverageDebug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
+  let _hcEvents: PnlEvent[] = []
   if (_runHistoricalCoverage) {
     const hcCacheKey = `wallet:historicalCoverage:v1:${addrNorm}:${clampedMaxHistoricalPages}`
     const hcCached = historicalCoverageCache.get(hcCacheKey)
     if (hcCached && Date.now() - hcCached.cachedAt < HISTORICAL_COVERAGE_TTL_MS) {
       walletHistoricalCoverageSummary = hcCached.data.summary
       _historicalCoverageDebug = hcCached.data.debug
+      _hcEvents = hcCached.data.events
     } else {
       const existingInFlight = historicalCoverageInFlight.get(hcCacheKey)
       let hcResult: WalletHistoricalCoverageOutput
@@ -2444,11 +2571,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       }
       walletHistoricalCoverageSummary = hcResult!.summary
       _historicalCoverageDebug = hcResult!.debug
+      _hcEvents = hcResult!.events
     }
   } else {
     walletHistoricalCoverageSummary = { status: 'not_requested', requested: false, pagesAttempted: 0, maxPages: 0, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: null }
     _historicalCoverageDebug = undefined
   }
+
+  // Phase 6B: Historical candidate comparison — compare historical events against base swap candidates
+  const { summary: walletHistoricalCandidateSummary, debug: _historicalCandidateDebug } =
+    _runHistoricalCoverage && _hcEvents.length > 0
+      ? buildHistoricalCandidateComparison(_hcEvents, _swapEvidenceWithDetection, addrNorm)
+      : { summary: { status: 'not_requested' as const, requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, earliestCandidateAt: null, latestCandidateAt: null, readyForHistoricalPricing: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined }
 
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
@@ -2562,6 +2696,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletLotSummary,
     walletTradeStatsSummary,
     walletHistoricalCoverageSummary,
+    walletHistoricalCandidateSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -2679,6 +2814,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletLotEngineDebug: _lotEngineDebug,
       walletTradeStatsDebug: _tradeStatsDebug,
       walletHistoricalCoverageDebug: _historicalCoverageDebug,
+      walletHistoricalCandidateDebug: _historicalCandidateDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
