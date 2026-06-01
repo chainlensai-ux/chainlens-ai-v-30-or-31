@@ -534,6 +534,7 @@ export default function WalletScannerPage() {
       top.length > 0 ? `Top holdings: ${top.map(h => h.symbol || h.name).filter(Boolean).join(', ')}` : 'Top holdings: Unverified',
       `Concentration read: ${concentration}`,
       ...(activityOk ? [activityMsg] : []),
+      ...(ts && ts.closedLots > 0 ? [`Coverage: trade stats are based on ${ts.closedLots} matched closed lots only; current holdings remain separate.`] : []),
     ]
     const caveat = tradeBullet
       ? (!activityOk ? activityMsg : '')
@@ -1033,6 +1034,12 @@ export default function WalletScannerPage() {
                       <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.15)', background: 'rgba(148,163,184,0.05)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{ts.sampleSizeLabel}</span>
                     </div>
 
+                    {!isOpenCheck && (
+                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.4 }}>
+                        Closed-lot sample only — does not include current open holdings.
+                      </div>
+                    )}
+
                     {isOpenCheck ? (
                       <div style={{ color: '#7dd3fc', fontSize: '13px', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
                         No matched priced closed lots yet. More on-chain swap activity needed for FIFO reconstruction.
@@ -1086,14 +1093,14 @@ export default function WalletScannerPage() {
 
                         {!hasEnough && (
                           <div style={{ fontSize: '11px', color: '#fbbf24', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '8px', padding: '8px 12px', marginBottom: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                            Early sample — more closed trades needed for full stats.
+                            Early closed-lot sample — stats only include matched buy→sell lots. Current holdings and unmatched sells are not counted as realized PnL.
                           </div>
                         )}
 
                         {ls && (ls.unmatchedBuys > 0 || ls.unmatchedSells > 0) && (
                           <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                            {ls.unmatchedBuys > 0 && <span>{ls.unmatchedBuys} open buy position{ls.unmatchedBuys !== 1 ? 's' : ''} not yet matched. </span>}
-                            {ls.unmatchedSells > 0 && <span>{ls.unmatchedSells} sell{ls.unmatchedSells !== 1 ? 's' : ''} without a matched buy (may predate scan window).</span>}
+                            {ls.unmatchedBuys > 0 && <span>{ls.unmatchedBuys} open buy lot{ls.unmatchedBuys !== 1 ? 's are' : ' is'} still open. </span>}
+                            {ls.unmatchedSells > 0 && <span>{ls.unmatchedSells} sell{ls.unmatchedSells !== 1 ? 's have' : ' has'} no matched buy inside the indexed window, so CORTEX does not score them as wins/losses.</span>}
                           </div>
                         )}
                       </>
@@ -1147,10 +1154,10 @@ export default function WalletScannerPage() {
                       {[
                         { label: winRateLabel, value: winRateDisplay, early: !hasEnough && closedLots > 0 },
                         { label: lossRateLabel, value: lossRateDisplay, early: !hasEnough && closedLots > 0 },
-                        { label: 'Avg Profit / Win', value: avgProfitDisplay },
-                        { label: 'Avg Loss / Loss', value: avgLossDisplay, noLoss: avgLossDisplay === 'No losses yet' },
-                        { label: 'Biggest Win', value: biggestWinDisplay },
-                        { label: 'Biggest Loss', value: biggestLossDisplay, noLoss: biggestLossDisplay === 'No losses yet' },
+                        { label: 'Avg Matched Win', value: avgProfitDisplay },
+                        { label: 'Avg Matched Loss', value: avgLossDisplay, noLoss: avgLossDisplay === 'No losses yet' },
+                        { label: 'Biggest Matched Win', value: biggestWinDisplay },
+                        { label: 'Biggest Matched Loss', value: biggestLossDisplay, noLoss: biggestLossDisplay === 'No losses yet' },
                         { label: 'Avg Hold Time', value: avgHoldDisplay },
                         { label: 'Closed Trades', value: closedTradesDisplay },
                       ].map(card => (
@@ -1172,6 +1179,11 @@ export default function WalletScannerPage() {
               <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 22px' }}>
                 <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '10px' }}>AI Wallet Personality</div>
                 <p style={{ margin: 0, color: '#cbd5e1', fontSize: '13px', lineHeight: 1.75, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{walletIntel.personalitySummary}</p>
+                {(result.walletTradeStatsSummary?.closedLots ?? 0) > 0 && (
+                  <p style={{ margin: '10px 0 0', color: 'rgba(255,255,255,0.38)', fontSize: '11px', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    Portfolio value reflects current holdings; trade stats only reflect reconstructed closed lots, so large open holdings are not included in realized PnL.
+                  </p>
+                )}
                 {walletIntel.openChecks.length > 0 && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '14px' }}>
                     {walletIntel.openChecks.map(check => (
