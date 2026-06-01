@@ -330,7 +330,7 @@ function deriveWalletPersonality(data: WalletResult): string {
     sentences.push('PnL remains Open Check because sufficient transaction, swap, balance, and price evidence was not available in the current scan.')
   }
   if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
-    sentences.push(`Win rate unlocks after 10+ safely reconstructed closed lots. This wallet currently has ${ts.closedLots}, so CORTEX treats the trade read as early evidence.`)
+    sentences.push(`Early closed-lot read is ${ts.winningClosedLots} wins and ${ts.losingClosedLots} losses across ${ts.closedLots} reconstructed lots. Official win rate and wallet score stay locked until 10+ closed lots.`)
   } else if (!ts || ts.closedLots === 0) {
     if (behavior.closedTrades < 10) {
       sentences.push('Not enough closed lots have been reconstructed to classify trading skill yet.')
@@ -502,12 +502,13 @@ export default function WalletScannerPage() {
   }
 
 
-  function getCortexRead(data: WalletResult): { summary: string; bullets: string[]; tradeBullet: string | null; caveat: string } {
+  function getCortexRead(data: WalletResult): { summary: string; bullets: string[]; tradeBullet: string | null; earlyWinBullet: string | null; caveat: string } {
     if (!data || data.holdings.length === 0) {
       return {
         summary: 'Scan a wallet to generate a CORTEX wallet read.',
         bullets: [],
         tradeBullet: null,
+        earlyWinBullet: null,
         caveat: '',
       }
     }
@@ -526,6 +527,9 @@ export default function WalletScannerPage() {
     const tradeBullet = ts && ts.closedLots > 0 && ts.realizedPnlUsd !== null
       ? `Real trade evidence: ${ts.closedLots} closed lots reconstructed, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL from priced FIFO lots.`
       : null
+    const earlyWinBullet = ts && ts.closedLots > 0
+      ? `Early closed-lot read: ${ts.winningClosedLots} wins / ${ts.losingClosedLots} losses across ${ts.closedLots} reconstructed lots. Official win rate remains locked until 10+ lots.`
+      : null
     const bullets = [
       total > 0 ? `Portfolio value observed: ${fmtUSD(total)}` : 'Portfolio value: Unverified',
       top.length > 0 ? `Top holdings: ${top.map(h => h.symbol || h.name).filter(Boolean).join(', ')}` : 'Top holdings: Unverified',
@@ -541,6 +545,7 @@ export default function WalletScannerPage() {
         : 'CORTEX can read verified holdings, but deeper behavior data is still forming.',
       bullets,
       tradeBullet,
+      earlyWinBullet,
       caveat: data.totalValue <= 0 && !tradeBullet ? 'Some holdings are unpriced or still being verified.' : caveat,
     }
   }
@@ -561,8 +566,10 @@ export default function WalletScannerPage() {
       hasActivity ? 'Activity read: Recent Base activity detected in the checked window.' : 'Activity read: Recent Base activity is limited in the checked window.',
       `Risk / concentration: ${largest ? `${largest.symbol || 'Top asset'} is the largest visible holding${topShare != null ? ` (${topShare.toFixed(1)}% top-3 concentration)` : ''}.` : 'Largest holding remains unverified.'}`,
       ...(hasRealTrade && ts.realizedPnlUsd !== null
-        ? [`Real trade evidence: ${ts.closedLots} closed lots reconstructed, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL from priced FIFO lots.`]
-        : []),
+        ? [`Real trade evidence: ${ts.closedLots} closed lots, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL. Early read: ${ts.winningClosedLots}W / ${ts.losingClosedLots}L across ${ts.closedLots} lots.`]
+        : hasRealTrade
+          ? [`Early closed-lot read: ${ts.winningClosedLots} wins / ${ts.losingClosedLots} losses across ${ts.closedLots} reconstructed lots.`]
+          : []),
     ]
     const risks = hasRealTrade
       ? [
@@ -1047,25 +1054,34 @@ export default function WalletScannerPage() {
                           ))}
                         </div>
 
-                        <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
-                          {[
-                            { label: 'Win Rate', value: hasEnough && ts.winRatePercent !== null ? `${ts.winRatePercent.toFixed(1)}%` : null, locked: !hasEnough || ts.winRatePercent === null },
+                        {(() => {
+                          const earlyWinPct = ts.closedLots > 0 ? Math.round((ts.winningClosedLots / ts.closedLots) * 100) : null
+                          const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; pnl?: number | null; early?: boolean }> = [
+                            ...(earlyWinPct !== null && !hasEnough
+                              ? [{ label: 'Early Win Read', value: `${earlyWinPct}% from ${ts.closedLots} lots`, early: true }]
+                              : []),
+                            { label: hasEnough ? 'Win Rate' : 'Official Win Rate', value: hasEnough && ts.winRatePercent !== null ? `${ts.winRatePercent.toFixed(1)}%` : null, locked: !hasEnough || ts.winRatePercent === null },
                             { label: 'Avg PnL / Lot', value: ts.avgPnlUsdPerClosedLot !== null ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot) : '—', pnl: ts.avgPnlUsdPerClosedLot },
                             { label: 'Avg Return / Lot', value: ts.avgReturnPercentPerClosedLot !== null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.avgReturnPercentPerClosedLot },
                             { label: 'Median Return', value: ts.medianReturnPercentPerClosedLot !== null ? `${ts.medianReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.medianReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.medianReturnPercentPerClosedLot },
                             { label: 'Avg Hold Time', value: fmtHoldTime(ts.avgHoldingTimeSeconds) },
                             { label: 'Median Hold Time', value: fmtHoldTime(ts.medianHoldingTimeSeconds) },
-                          ].map(card => (
-                            <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
-                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
-                              {'locked' in card && card.locked ? (
-                                <div style={{ fontSize: '11px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.4 }}>Locked — 10+ lots needed</div>
-                              ) : (
-                                <div style={{ fontSize: '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: 'pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0' }}>{card.value}</div>
-                              )}
+                          ]
+                          return (
+                            <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
+                              {earlyCards.map(card => (
+                                <div key={card.label} style={{ background: card.early ? 'rgba(167,139,250,0.07)' : 'rgba(255,255,255,0.03)', border: `1px solid ${card.early ? 'rgba(167,139,250,0.22)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
+                                  <div style={{ fontSize: '9px', color: card.early ? 'rgba(167,139,250,0.70)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                                  {card.locked ? (
+                                    <div style={{ fontSize: '11px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.4 }}>Locked — 10+ lots needed</div>
+                                  ) : (
+                                    <div style={{ fontSize: '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: card.early ? '#a78bfa' : ('pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0') }}>{card.value}</div>
+                                  )}
+                                </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
+                          )
+                        })()}
 
                         {!hasEnough && (
                           <div style={{ fontSize: '11px', color: '#fbbf24', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '8px', padding: '8px 12px', marginBottom: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
@@ -1092,15 +1108,19 @@ export default function WalletScannerPage() {
                 const closedTradesDisplay = closedLots > 0
                   ? `${closedLots} reconstructed`
                   : 'No closed lots yet'
+                const earlyWinPct = closedLots > 0 && ts ? Math.round((ts.winningClosedLots / ts.closedLots) * 100) : null
+                const earlyLossPct = closedLots > 0 && ts ? Math.round((ts.losingClosedLots / ts.closedLots) * 100) : null
+                const winRateLabel = !hasEnough && closedLots > 0 ? 'Early Win Read' : 'Win Rate'
+                const lossRateLabel = !hasEnough && closedLots > 0 ? 'Early Loss Read' : 'Loss Rate'
                 const winRateDisplay = hasEnough && ts?.winRatePercent !== null && ts?.winRatePercent !== undefined
                   ? `${ts.winRatePercent.toFixed(1)}%`
-                  : closedLots > 0
-                    ? 'Locked — 10+ lots needed'
+                  : !hasEnough && earlyWinPct !== null
+                    ? `${earlyWinPct}% from ${closedLots} lots`
                     : 'Open Check'
                 const lossRateDisplay = hasEnough
                   ? fmtOpenPct(walletIntel.lossRate)
-                  : closedLots > 0
-                    ? 'Locked — 10+ lots needed'
+                  : !hasEnough && earlyLossPct !== null
+                    ? `${earlyLossPct}% from ${closedLots} lots`
                     : 'Open Check'
                 const avgProfitDisplay = ts && ts.avgPnlUsdPerClosedLot !== null && ts.winningClosedLots > 0
                   ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot)
@@ -1120,8 +1140,8 @@ export default function WalletScannerPage() {
                     <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>Trade Behavior</div>
                     <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '10px' }}>
                       {[
-                        { label: 'Win Rate', value: winRateDisplay },
-                        { label: 'Loss Rate', value: lossRateDisplay },
+                        { label: winRateLabel, value: winRateDisplay, early: !hasEnough && closedLots > 0 },
+                        { label: lossRateLabel, value: lossRateDisplay, early: !hasEnough && closedLots > 0 },
                         { label: 'Avg Profit / Win', value: avgProfitDisplay },
                         { label: 'Avg Loss / Loss', value: avgLossDisplay },
                         { label: 'Biggest Win', value: biggestWinDisplay },
@@ -1129,12 +1149,17 @@ export default function WalletScannerPage() {
                         { label: 'Avg Hold Time', value: avgHoldDisplay },
                         { label: 'Closed Trades', value: closedTradesDisplay },
                       ].map(card => (
-                        <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
-                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
-                          <div style={{ fontSize: '16px', fontWeight: 800, color: String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') ? '#7dd3fc' : '#e2e8f0', lineHeight: 1.25 }}>{card.value}</div>
+                        <div key={card.label} style={{ background: ('early' in card && card.early) ? 'rgba(167,139,250,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${('early' in card && card.early) ? 'rgba(167,139,250,0.20)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '12px', padding: '12px' }}>
+                          <div style={{ fontSize: '9px', color: ('early' in card && card.early) ? 'rgba(167,139,250,0.65)' : 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: ('early' in card && card.early) ? '#a78bfa' : String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') ? '#7dd3fc' : '#e2e8f0', lineHeight: 1.25 }}>{card.value}</div>
                         </div>
                       ))}
                     </div>
+                    {!hasEnough && closedLots > 0 && (
+                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5 }}>
+                        Official win rate locked until 10+ closed lots.
+                      </div>
+                    )}
                   </div>
                 )
               })()}
@@ -1295,6 +1320,9 @@ export default function WalletScannerPage() {
                     {read.bullets.map((bline, idx) => <p key={idx} style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)', margin: '0 0 4px' }}>• {bline}</p>)}
                     {read.tradeBullet && (
                       <p style={{ fontSize: 12, color: '#a78bfa', margin: '0 0 4px', fontWeight: 600 }}>• {read.tradeBullet}</p>
+                    )}
+                    {read.earlyWinBullet && (
+                      <p style={{ fontSize: 12, color: '#a78bfa', margin: '0 0 4px', fontWeight: 600 }}>• {read.earlyWinBullet}</p>
                     )}
                     {read.caveat && <p style={{ fontSize: 11, color: '#94a3b8', margin: '8px 0 0' }}>{read.caveat}</p>}
                   </>
