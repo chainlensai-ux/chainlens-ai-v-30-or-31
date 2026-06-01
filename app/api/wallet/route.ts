@@ -91,16 +91,17 @@ export async function POST(req: Request) {
     if (cachedRaw && !cached) walletCache.delete(cacheKey)
 
     // Determine cost mode
-    type WalletScanCostMode = 'basic' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+    type WalletScanCostMode = 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
     const getCostMode = (fromCache: boolean): WalletScanCostMode => {
       if (cooldownActive) return 'blocked_by_cooldown'
       if (costGuardHit) return 'blocked_by_cost_guard'
       if (effectiveHistoricalCoverage) return fromCache ? 'historical_cached' : 'historical_live'
       if (deepActivity) return fromCache ? 'deep_cached' : 'deep_live'
-      return 'basic'
+      return fromCache ? 'basic_cached' : 'basic'
     }
     const getCacheNote = (mode: WalletScanCostMode, cacheAgeSeconds?: number): string | undefined => {
       if (mode === 'basic') return 'Basic scan — no deep history used.'
+      if (mode === 'basic_cached') return `Basic scan served from cache${cacheAgeSeconds != null ? ` (${cacheAgeSeconds}s ago)` : ''}.`
       if (mode === 'deep_cached') return `Deep result served from cache${cacheAgeSeconds != null ? ` (${cacheAgeSeconds}s ago)` : ''}.`
       if (mode === 'historical_cached') return `Historical scan served from cache to protect API usage${cacheAgeSeconds != null ? ` (${cacheAgeSeconds}s ago)` : ''}.`
       if (mode === 'blocked_by_cooldown') return 'Enhanced scan cooling down. Try again later.'
@@ -148,6 +149,30 @@ export async function POST(req: Request) {
           plan,
           reason: 'cache_hit',
           evidenceStatus: (cp as any).walletEvidenceSummary?.status ?? 'unknown',
+        },
+        walletScanCostDebug: {
+          scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          address: key,
+          requestedDeepActivity: deepActivity,
+          requestedHistoricalCoverage: historicalCoverageRequested,
+          requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
+          effectiveMaxHistoricalPages: maxHistoricalPages,
+          scanMode: effectiveHistoricalCoverage ? 'historical' as const : deepActivity ? 'deep' as const : 'basic' as const,
+          dataFreshness: 'cached' as const,
+          cacheHit: true,
+          inFlightDeduped: false,
+          providerCalls: [],
+          totals: {
+            liveProviderCalls: 0,
+            cachedProviderCalls: 1,
+            pagesFetched: 0,
+            rawItems: 0,
+            rawLogEvents: 0,
+            normalizedEvents: 0,
+            estimatedCreditUnits: 0,
+            durationMs: Date.now() - startedAt,
+          },
+          reason: 'route_cache_hit',
         },
       }
       if (cp && typeof cp === 'object') delete cp._diagnostics
@@ -307,6 +332,52 @@ export async function POST(req: Request) {
           evidenceStatus: snapshot.walletEvidenceSummary?.status ?? 'unknown',
           reason: (deepActivity || deepScan) ? null : 'deep_activity_not_requested',
         },
+        walletScanCostDebug: (() => {
+          const hcDbg = snapshot._diagnostics?.walletHistoricalCoverageDebug ?? null
+          const hcSum = snapshot.walletHistoricalCoverageSummary ?? null
+          const grConf = Boolean(providers.goldrush?.configured)
+          const grCache = Boolean(snapshotCacheDebug?.memoryHit)
+          const alchAtt = Boolean(providers.alchemy?.behaviorAttempted)
+          const txPg: number = hcSum?.pagesAttempted ?? (deepActivity ? 1 : 0)
+          type PC = { provider: string; endpointName: string; attempted: boolean; cacheHit: boolean; statusCode?: number | null; durationMs?: number | null; pagesFetched?: number | null; rawItems?: number | null; rawLogEvents?: number | null; normalizedEvents?: number | null; estimatedCreditUnits?: number | null }
+          const calls: PC[] = []
+          const grCredits = (inFlightDeduped || grCache) ? 0 : grConf ? (1 + (deepActivity ? txPg : 0)) : 0
+          calls.push({ provider: 'goldrush', endpointName: deepActivity ? 'balances_v2 + transactions_v3' : 'balances_v2', attempted: grConf, cacheHit: grCache, statusCode: providers.goldrush?.httpStatus ?? null, durationMs: null, pagesFetched: deepActivity ? txPg : null, rawItems: providers.goldrush?.rawItemCount ?? null, rawLogEvents: null, normalizedEvents: providers.goldrush?.normalizedEventCount ?? null, estimatedCreditUnits: grCredits })
+          if (effectiveHistoricalCoverage) {
+            const hcPg: number = hcSum?.pagesAttempted ?? maxHistoricalPages
+            calls.push({ provider: 'goldrush', endpointName: 'log_events_by_address (historical)', attempted: true, cacheHit: false, statusCode: null, durationMs: null, pagesFetched: hcPg, rawItems: null, rawLogEvents: hcDbg?.rawLogEvents ?? hcSum?.rawLogEvents ?? null, normalizedEvents: hcDbg?.normalizedEvents ?? hcSum?.normalizedEvents ?? null, estimatedCreditUnits: inFlightDeduped ? 0 : hcPg })
+          }
+          if (alchAtt) {
+            calls.push({ provider: 'alchemy', endpointName: 'alchemy_getAssetTransfers', attempted: true, cacheHit: false, statusCode: null, durationMs: null, pagesFetched: null, rawItems: providers.alchemy?.transfersReturned ?? null, rawLogEvents: null, normalizedEvents: null, estimatedCreditUnits: inFlightDeduped ? 0 : 1 })
+          }
+          const totalCu = calls.reduce((s, c) => s + (c.estimatedCreditUnits ?? 0), 0)
+          const liveCalls = inFlightDeduped ? 0 : calls.filter(c => c.attempted && !c.cacheHit).length
+          const cachedCalls = calls.filter(c => c.cacheHit).length
+          return {
+            scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+            address: key,
+            requestedDeepActivity: deepActivity,
+            requestedHistoricalCoverage: historicalCoverageRequested,
+            requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
+            effectiveMaxHistoricalPages: maxHistoricalPages,
+            scanMode: effectiveHistoricalCoverage ? 'historical' as const : deepActivity ? 'deep' as const : 'basic' as const,
+            dataFreshness: 'live' as const,
+            cacheHit: false,
+            inFlightDeduped,
+            providerCalls: calls,
+            totals: {
+              liveProviderCalls: liveCalls,
+              cachedProviderCalls: cachedCalls,
+              pagesFetched: calls.reduce((s, c) => s + (c.pagesFetched ?? 0), 0),
+              rawItems: calls.reduce((s, c) => s + (c.rawItems ?? 0), 0),
+              rawLogEvents: calls.reduce((s, c) => s + (c.rawLogEvents ?? 0), 0),
+              normalizedEvents: calls.reduce((s, c) => s + (c.normalizedEvents ?? 0), 0),
+              estimatedCreditUnits: totalCu,
+              durationMs: Date.now() - startedAt,
+            },
+            reason: null,
+          }
+        })(),
       }
     }
     if (!debug) {

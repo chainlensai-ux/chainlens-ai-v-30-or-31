@@ -202,7 +202,7 @@ type WalletResult = {
     exitTxHash?: string | null
     verificationStatus?: 'verifiable' | 'partial' | 'not_available'
   }>
-  walletScanCostMode?: 'basic' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+  walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
 }
 
