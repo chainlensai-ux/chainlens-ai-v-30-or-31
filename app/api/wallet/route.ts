@@ -7,6 +7,16 @@ const WALLET_SNAPSHOT_SCHEMA_VERSION = 'v7'
 const walletCache = new Map<string, { exp: number; payload: unknown; cachedAt: number }>()
 const walletRate = new Map<string, { count: number; resetAt: number }>()
 const WALLET_RATE_BY_PLAN: Record<string, number> = { free: 20, pro: 60, elite: 180 }
+
+// Cost safety — historical cooldown, cost hints, in-flight dedup
+const WALLET_HC_COOLDOWN_MS  = 10 * 60 * 1000  // 10 min cooldown per wallet after historical live scan
+const WALLET_COST_HINT_TTL_MS = 60 * 60 * 1000  // retain cost hints 1 hour
+const walletHistoricalCooldown = new Map<string, number>()    // cooldownKey -> expiry timestamp
+const walletCostHints = new Map<string, { rawLogEvents: number; requestDurationMs: number; cachedAt: number }>()
+const walletDeepInFlight = new Map<string, Promise<unknown>>() // inFlightKey -> live scan promise
+
+const WALLET_DEEP_DEBUG_ENABLED = process.env.WALLET_DEEP_DEBUG_ENABLED === 'true'
+
 async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
@@ -36,8 +46,15 @@ export async function POST(req: Request) {
     const deepActivity = deepActivityFlag || includeActivityFlag
     const cacheMode: 'activity' | 'holdings' = (deepScan || deepActivity) ? 'activity' : 'holdings'
     const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' || body?.chainMode === 'all_supported' ? body.chainMode : 'auto'
-    const historicalCoverageRequested = (body?.historicalCoverage === true || body?.historicalCoverage === 'true' || debug) && deepActivity
-    const maxHistoricalPages = Math.max(1, Math.min(5, Number(body?.maxHistoricalPages ?? 3) || 3))
+
+    // Historical coverage: ONLY when explicitly requested — debug=true no longer auto-triggers it
+    const historicalCoverageRequested = (body?.historicalCoverage === true || body?.historicalCoverage === 'true') && deepActivity
+
+    // Production page cap: max 2 in prod unless WALLET_DEEP_DEBUG_ENABLED=true, default 1
+    const isProd = process.env.NODE_ENV === 'production'
+    const hcPageLimit = (!isProd || WALLET_DEEP_DEBUG_ENABLED) ? 5 : 2
+    const maxHistoricalPages = Math.max(1, Math.min(hcPageLimit, Number(body?.maxHistoricalPages ?? 1) || 1))
+
     const hcSuffix = historicalCoverageRequested ? `:hcv1p${maxHistoricalPages}` : ''
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
@@ -46,22 +63,77 @@ export async function POST(req: Request) {
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
       return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
     }
+
+    // Historical cooldown — 10 min per wallet after a live historical scan
+    const hcCooldownKey = `${key}:historical:${plan}`
+    const cooldownActive = historicalCoverageRequested && (walletHistoricalCooldown.get(hcCooldownKey) ?? 0) > Date.now()
+
+    // Cost guard — skip live re-run if previous scan was very expensive
+    const costHintKey = `${key}:${cacheMode}`
+    const costHint = walletCostHints.get(costHintKey)
+    const costGuardHit = historicalCoverageRequested && !cooldownActive
+      && Boolean(costHint)
+      && (costHint!.rawLogEvents > 100_000 || costHint!.requestDurationMs > 25_000)
+      && (Date.now() - costHint!.cachedAt < WALLET_COST_HINT_TTL_MS)
+
+    // Effective historical coverage: only run live when not blocked by cooldown/cost guard
+    const effectiveHistoricalCoverage = historicalCoverageRequested && !cooldownActive && !costGuardHit
+
     const cacheKey = `${key}:${cacheMode}:${WALLET_SNAPSHOT_SCHEMA_VERSION}${hcSuffix}`
-    const cachedRaw = allowDebugFresh || refresh || (debug && deepActivity) ? null : walletCache.get(cacheKey)
+
+    // Cache bypass only for explicit allowDebugFresh or refresh — debug mode no longer bypasses
+    const cachedRaw = (allowDebugFresh || refresh) ? null : walletCache.get(cacheKey)
     // Invalidate stale-schema entries missing walletTradeStatsSummary or walletHistoricalCoverageSummary
     const cached = cachedRaw
       && typeof (cachedRaw.payload as any)?.walletTradeStatsSummary === 'object'
       && typeof (cachedRaw.payload as any)?.walletHistoricalCoverageSummary === 'object'
       ? cachedRaw : null
     if (cachedRaw && !cached) walletCache.delete(cacheKey)
+
+    // Determine cost mode
+    type WalletScanCostMode = 'basic' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+    const getCostMode = (fromCache: boolean): WalletScanCostMode => {
+      if (cooldownActive) return 'blocked_by_cooldown'
+      if (costGuardHit) return 'blocked_by_cost_guard'
+      if (effectiveHistoricalCoverage) return fromCache ? 'historical_cached' : 'historical_live'
+      if (deepActivity) return fromCache ? 'deep_cached' : 'deep_live'
+      return 'basic'
+    }
+    const getCacheNote = (mode: WalletScanCostMode, cacheAgeSeconds?: number): string | undefined => {
+      if (mode === 'basic') return 'Basic scan — no deep history used.'
+      if (mode === 'deep_cached') return `Deep result served from cache${cacheAgeSeconds != null ? ` (${cacheAgeSeconds}s ago)` : ''}.`
+      if (mode === 'historical_cached') return `Historical scan served from cache to protect API usage${cacheAgeSeconds != null ? ` (${cacheAgeSeconds}s ago)` : ''}.`
+      if (mode === 'blocked_by_cooldown') return 'Enhanced scan cooling down. Try again later.'
+      if (mode === 'blocked_by_cost_guard') return 'Historical scan cached due to cost guard — wallet has heavy history.'
+      return undefined
+    }
+
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
       const cp: any = typeof cached.payload === 'object' && cached.payload ? { ...(cached.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : cached.payload
+      if (cp && typeof cp === 'object') {
+        const costMode = getCostMode(true)
+        cp.walletScanCostMode = costMode
+        const note = getCacheNote(costMode, cacheAgeSeconds)
+        if (note) cp.walletScanCacheNote = note
+      }
       if (cp && typeof cp === 'object' && debug) cp._debug = {
         routeName: '/api/wallet', cacheHit: true, cacheMode,
         requestDurationMs: Date.now() - startedAt,
         walletSnapshotCache: { memoryHit: true, persistentHit: false, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_CACHE_TTL_MS / 1000 },
         providerFlow: null,
+        walletCostGuardDebug: {
+          requestedDeepActivity: deepActivity,
+          requestedHistoricalCoverage: historicalCoverageRequested,
+          requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
+          effectiveMaxHistoricalPages: maxHistoricalPages,
+          cacheKey,
+          cacheHit: true,
+          cooldownHit: cooldownActive,
+          costGuardHit,
+          inFlightDeduped: false,
+          reason: 'route_cache_hit',
+        },
         walletActivityRequestDebug: {
           deepActivityRequested: deepScan || deepActivity,
           deepActivityFlagSent: deepActivityFlag,
@@ -81,11 +153,89 @@ export async function POST(req: Request) {
       if (cp && typeof cp === 'object') delete cp._diagnostics
       return NextResponse.json(cp)
     }
-    // Shallow-copy before mutating so snapshotMemCache reference is never corrupted
-    // (fetchWalletSnapshot returns the same object it stores in its memory cache)
-    const snapshot: any = { ...(await fetchWalletSnapshot(address ?? '', { refresh, chain, deepScan, deepActivity, chainMode, historicalCoverage: historicalCoverageRequested, maxHistoricalPages } satisfies WalletSnapshotOptions)) }
+
+    // Blocked by cooldown — try to serve stale cache or return a safe blocked response
+    if (cooldownActive) {
+      const stale = walletCache.get(cacheKey)
+      if (stale) {
+        const cacheAgeSeconds = Math.floor((Date.now() - stale.cachedAt) / 1000)
+        const cp: any = typeof stale.payload === 'object' && stale.payload ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : stale.payload
+        if (cp && typeof cp === 'object') {
+          cp.walletScanCostMode = 'blocked_by_cooldown'
+          cp.walletScanCacheNote = 'Enhanced scan cooling down. Try again later.'
+        }
+        if (cp && typeof cp === 'object') delete cp._diagnostics
+        return NextResponse.json(cp)
+      }
+      return NextResponse.json({ error: 'Enhanced historical scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'blocked_by_cooldown' }, { status: 429 })
+    }
+
+    // Blocked by cost guard — serve from cache if available
+    if (costGuardHit) {
+      const stale = walletCache.get(cacheKey)
+      if (stale) {
+        const cacheAgeSeconds = Math.floor((Date.now() - stale.cachedAt) / 1000)
+        const cp: any = typeof stale.payload === 'object' && stale.payload ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds } : stale.payload
+        if (cp && typeof cp === 'object') {
+          cp.walletScanCostMode = 'blocked_by_cost_guard'
+          cp.walletScanCacheNote = 'Historical scan served from cache — wallet has heavy history.'
+        }
+        if (cp && typeof cp === 'object') delete cp._diagnostics
+        return NextResponse.json(cp)
+      }
+      // No cache available — fall through to live scan without historical
+    }
+
+    // In-flight dedup for deep/historical scans
+    let inFlightDeduped = false
+    const inFlightKey = deepActivity ? `${key}:${cacheMode}${effectiveHistoricalCoverage ? `:hc${maxHistoricalPages}` : ''}` : ''
+    let rawSnapshot: any
+
+    const existingInFlight = inFlightKey ? walletDeepInFlight.get(inFlightKey) : undefined
+    if (existingInFlight) {
+      inFlightDeduped = true
+      rawSnapshot = { ...(await existingInFlight as any) }
+    } else {
+      const scanPromise: Promise<unknown> = fetchWalletSnapshot(address ?? '', {
+        refresh,
+        chain,
+        deepScan,
+        deepActivity,
+        chainMode,
+        historicalCoverage: effectiveHistoricalCoverage,
+        maxHistoricalPages,
+      } satisfies WalletSnapshotOptions)
+      if (inFlightKey) walletDeepInFlight.set(inFlightKey, scanPromise)
+      try {
+        rawSnapshot = { ...(await scanPromise as any) }
+      } finally {
+        if (inFlightKey) walletDeepInFlight.delete(inFlightKey)
+      }
+    }
+
+    const snapshot: any = rawSnapshot
     const providers: any = snapshot._diagnostics?.providers ?? {}
     const snapshotCacheDebug = snapshot._diagnostics?.snapshotCache ?? null
+
+    // Capture cost hints from diagnostics before they're deleted
+    const diagRawLogEvents: number = snapshot._diagnostics?.walletHistoricalCoverageDebug?.rawLogEvents
+      ?? snapshot._diagnostics?.providers?.goldrush?.rawItemCount
+      ?? 0
+    const diagRequestDurationMs: number = Date.now() - startedAt
+    if (deepActivity && diagRawLogEvents >= 0) {
+      walletCostHints.set(costHintKey, { rawLogEvents: diagRawLogEvents, requestDurationMs: diagRequestDurationMs, cachedAt: Date.now() })
+    }
+
+    // Set cooldown after a live historical scan
+    if (effectiveHistoricalCoverage) {
+      walletHistoricalCooldown.set(hcCooldownKey, Date.now() + WALLET_HC_COOLDOWN_MS)
+    }
+
+    const costMode = getCostMode(false)
+    const cacheNote = getCacheNote(costMode)
+    snapshot.walletScanCostMode = costMode
+    if (cacheNote) snapshot.walletScanCacheNote = cacheNote
+
     if (debug) {
       ;snapshot._debug = {
         routeName: '/api/wallet',
@@ -124,6 +274,20 @@ export async function POST(req: Request) {
         walletHistoricalCandidateDebug: snapshot._diagnostics?.walletHistoricalCandidateDebug ?? null,
         walletHistoricalPricingPreviewDebug: snapshot._diagnostics?.walletHistoricalPricingPreviewDebug ?? null,
         walletHistoricalFifoPreviewDebug: snapshot._diagnostics?.walletHistoricalFifoPreviewDebug ?? null,
+        walletCostGuardDebug: {
+          requestedDeepActivity: deepActivity,
+          requestedHistoricalCoverage: historicalCoverageRequested,
+          requestedMaxHistoricalPages: body?.maxHistoricalPages ?? null,
+          effectiveMaxHistoricalPages: maxHistoricalPages,
+          effectiveHistoricalCoverage,
+          cacheKey,
+          cacheHit: false,
+          cooldownHit: cooldownActive,
+          costGuardHit,
+          inFlightDeduped,
+          previousCostHint: costHint ? { rawLogEvents: costHint.rawLogEvents, requestDurationMs: costHint.requestDurationMs } : null,
+          reason: costGuardHit ? 'historical_scan_cached_due_to_cost_guard' : cooldownActive ? 'historical_scan_cached_due_to_cooldown' : null,
+        },
         walletActivityRequestDebug: {
           deepActivityRequested: deepActivity || deepScan,
           deepActivityFlagSent: deepActivityFlag,
@@ -152,7 +316,8 @@ export async function POST(req: Request) {
       ;snapshot.pnlSource = snapshot.pnlSource === 'unavailable' ? 'unavailable' : 'activity_layer'
     }
     delete snapshot._diagnostics
-    if (!allowDebugFresh && !refresh && !debug) walletCache.set(cacheKey, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
+    // Write to cache — including debug results (cache was previously skipped for debug, causing repeated live scans)
+    if (!allowDebugFresh && !refresh) walletCache.set(cacheKey, { exp: Date.now() + WALLET_CACHE_TTL_MS, payload: snapshot, cachedAt: Date.now() })
     return NextResponse.json(snapshot)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Wallet scan failed'

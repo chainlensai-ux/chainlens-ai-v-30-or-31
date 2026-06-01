@@ -270,6 +270,8 @@ export type WalletSnapshot = {
   }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
+  walletScanCostMode?: 'basic' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+  walletScanCacheNote?: string
   _diagnostics?: {
     providers?: {
       zerion: { configured: boolean; attempted: boolean; succeeded: boolean }

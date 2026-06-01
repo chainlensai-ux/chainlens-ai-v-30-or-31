@@ -202,6 +202,8 @@ type WalletResult = {
     exitTxHash?: string | null
     verificationStatus?: 'verifiable' | 'partial' | 'not_available'
   }>
+  walletScanCostMode?: 'basic' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
+  walletScanCacheNote?: string
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────────────────
@@ -787,11 +789,11 @@ export default function WalletScannerPage() {
               )}
               {deepActivity ? 'Deep Activity Scan On' : 'Run Deep Activity Scan'}
             </button>
-            {deepActivity && (
-              <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.05em' }}>
-                Fetches transfer history · slower scan
-              </span>
-            )}
+            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.05em' }}>
+              {deepActivity
+                ? 'Deep Activity uses heavier analysis and is cached. Re-running too often will return the cached result.'
+                : 'Fetches transfer history · slower scan'}
+            </span>
           </div>
 
           {/* Loading skeleton */}
@@ -865,6 +867,13 @@ export default function WalletScannerPage() {
             )
             return (
             <div style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+              {/* Scan cost / cache note banner */}
+              {result.walletScanCacheNote && (result.walletScanCostMode === 'blocked_by_cooldown' || result.walletScanCostMode === 'blocked_by_cost_guard' || result.walletScanCostMode === 'historical_cached' || result.walletScanCostMode === 'deep_cached') && (
+                <div style={{ fontSize: '11px', color: '#7dd3fc', background: 'rgba(56,189,248,0.06)', border: '1px solid rgba(56,189,248,0.15)', borderRadius: '8px', padding: '8px 12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.5 }}>
+                  {result.walletScanCacheNote}
+                </div>
+              )}
 
               {/* Portfolio value card */}
               <div style={{
