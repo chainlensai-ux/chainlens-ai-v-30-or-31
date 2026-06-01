@@ -502,11 +502,12 @@ export default function WalletScannerPage() {
   }
 
 
-  function getCortexRead(data: WalletResult): { summary: string; bullets: string[]; caveat: string } {
+  function getCortexRead(data: WalletResult): { summary: string; bullets: string[]; tradeBullet: string | null; caveat: string } {
     if (!data || data.holdings.length === 0) {
       return {
         summary: 'Scan a wallet to generate a CORTEX wallet read.',
         bullets: [],
+        tradeBullet: null,
         caveat: '',
       }
     }
@@ -515,19 +516,32 @@ export default function WalletScannerPage() {
     const top = sorted.slice(0, 3)
     const topShare = total > 0 ? (top.reduce((acc, h) => acc + h.value, 0) / total) * 100 : null
     const concentration = topShare === null ? 'Unverified' : topShare >= 70 ? 'High concentration' : topShare >= 40 ? 'Balanced concentration' : 'Diversified spread'
-    const activity = data.walletBehavior?.status === 'ok'
-      ? ((data.walletBehavior.txCount ?? 0) > 0 ? 'Activity detected in checked Base window.' : 'No recent Base activity in checked window.')
-      : 'Activity signal is limited in current checks.'
+    const activityOk = data.walletBehavior?.status === 'ok' && (data.walletBehavior.txCount ?? 0) > 0
+    const activityMsg = activityOk
+      ? 'Activity detected in checked Base window.'
+      : data.walletBehavior?.status === 'ok'
+        ? 'No recent Base activity in checked window.'
+        : 'Activity signal is limited in current checks.'
+    const ts = data.walletTradeStatsSummary
+    const tradeBullet = ts && ts.closedLots > 0 && ts.realizedPnlUsd !== null
+      ? `Real trade evidence: ${ts.closedLots} closed lots reconstructed, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL from priced FIFO lots.`
+      : null
     const bullets = [
       total > 0 ? `Portfolio value observed: ${fmtUSD(total)}` : 'Portfolio value: Unverified',
       top.length > 0 ? `Top holdings: ${top.map(h => h.symbol || h.name).filter(Boolean).join(', ')}` : 'Top holdings: Unverified',
       `Concentration read: ${concentration}`,
-      activity,
+      ...(activityOk ? [activityMsg] : []),
     ]
+    const caveat = tradeBullet
+      ? (!activityOk ? activityMsg : '')
+      : (!activityOk ? activityMsg : (data.totalValue <= 0 ? 'Some holdings are unpriced or still being verified.' : ''))
     return {
-      summary: 'CORTEX can read verified holdings, but deeper behavior data is still forming.',
+      summary: tradeBullet
+        ? 'CORTEX verified holdings and reconstructed real trade evidence from priced FIFO lots.'
+        : 'CORTEX can read verified holdings, but deeper behavior data is still forming.',
       bullets,
-      caveat: data.totalValue <= 0 ? 'Some holdings are unpriced or still being verified.' : '',
+      tradeBullet,
+      caveat: data.totalValue <= 0 && !tradeBullet ? 'Some holdings are unpriced or still being verified.' : caveat,
     }
   }
 
@@ -1279,6 +1293,9 @@ export default function WalletScannerPage() {
                   <>
                     <p style={{ fontSize: 13, color: '#cbd5e1', margin: '0 0 8px' }}>{read.summary}</p>
                     {read.bullets.map((bline, idx) => <p key={idx} style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)', margin: '0 0 4px' }}>• {bline}</p>)}
+                    {read.tradeBullet && (
+                      <p style={{ fontSize: 12, color: '#a78bfa', margin: '0 0 4px', fontWeight: 600 }}>• {read.tradeBullet}</p>
+                    )}
                     {read.caveat && <p style={{ fontSize: 11, color: '#94a3b8', margin: '8px 0 0' }}>{read.caveat}</p>}
                   </>
                 )})()}
@@ -1665,6 +1682,7 @@ export default function WalletScannerPage() {
                 <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Portfolio Read</p><p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', lineHeight: 1.6 }}>{clarkVerdict.read}</p></div>
                 <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Activity Read</p>{clarkVerdict.keySignals.slice(0, 2).map((line, i) => <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#cbd5e1' }}>— {line}</p>)}</div>
                 <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Risk / Concentration</p><p style={{ margin: 0, fontSize: '12px', color: '#fcd34d' }}>— {clarkVerdict.keySignals[2]}</p></div>
+                {clarkVerdict.keySignals[3] && <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Real Trade Evidence</p><p style={{ margin: 0, fontSize: '12px', color: '#a78bfa' }}>— {clarkVerdict.keySignals[3]}</p></div>}
                 <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Missing Checks</p>{clarkVerdict.risks.slice(0, 3).map((line, i) => <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#fca5a5' }}>— {line}</p>)}</div>
                 <div><p style={{ margin: '0 0 4px', fontSize: '10px', color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Next Action</p><p style={{ margin: 0, fontSize: '12px', color: '#94a3b8' }}>{clarkVerdict.nextAction}</p></div>
               </div>
