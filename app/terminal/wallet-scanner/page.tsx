@@ -299,7 +299,6 @@ function buildWalletOpenCheck(data: WalletResult): string[] {
     checks.push('PnL remains Open Check until indexed transfer history has enough cost-basis coverage.')
   }
   if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
-    checks.push(`Win rate unlocks after 10+ closed lots. ${ts.closedLots} reconstructed so far.`)
     checks.push('Wallet score not issued — sample too small for scoring.')
   } else if (!ts || ts.closedLots === 0) {
     checks.push('Win rate requires matched closed lots with priced entry and exit evidence.')
