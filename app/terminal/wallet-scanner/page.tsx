@@ -938,12 +938,12 @@ export default function WalletScannerPage() {
                         )}
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
                           {[
-                            { label: 'Win Rate', value: fmtOpenPct(walletIntel.winRate), note: winRateNote },
+                            { label: closedLots > 0 && walletIntel.winRate === null ? 'Official Win Rate' : 'Win Rate', value: closedLots > 0 && walletIntel.winRate === null ? 'Locked until 10+ lots' : fmtOpenPct(walletIntel.winRate), note: winRateNote },
                             { label: 'Confidence', value: ts ? (ts.confidence === 'open_check' ? 'open check' : ts.confidence) : walletIntel.confidence, note: confidenceNote },
                           ].map(item => (
                             <div key={item.label} style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
                               <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>{item.label}</div>
-                              <div style={{ fontSize: '18px', color: '#e2e8f0', fontWeight: 800, textTransform: item.label === 'Confidence' ? 'capitalize' : 'none' }}>{item.value}</div>
+                              <div style={{ fontSize: '18px', color: item.value === 'Locked until 10+ lots' || item.value === 'Open Check' ? '#7dd3fc' : '#e2e8f0', fontWeight: 800, textTransform: item.label === 'Confidence' ? 'capitalize' : 'none' }}>{item.value}</div>
                               <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '4px' }}>{item.note}</div>
                             </div>
                           ))}
@@ -966,7 +966,7 @@ export default function WalletScannerPage() {
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
                             <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Legacy Estimate</div>
-                            <div style={{ fontSize: '15px', fontWeight: 700, color: legacyVal === 'Open Check' ? '#7dd3fc' : legacyVal.startsWith('-') ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{legacyVal}</div>
+                            <div style={{ fontSize: '15px', fontWeight: 700, color: legacyVal === 'Open Check' ? 'rgba(255,255,255,0.22)' : legacyVal.startsWith('-') ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{legacyVal === 'Open Check' ? '—' : legacyVal}</div>
                           </div>
                           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
                             <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Method</div>
@@ -1207,7 +1207,7 @@ export default function WalletScannerPage() {
                   <div style={{ padding: '20px 22px', color: '#7dd3fc', fontSize: '13px', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
                     {(result.walletTradeStatsSummary?.closedLots ?? 0) > 0
                       ? `${result.walletTradeStatsSummary!.closedLots} closed FIFO lots reconstructed. Detailed trade rows require exposing safe closed-lot samples in the API.`
-                      : 'Closed trade rows require matched entries, exits, and price evidence for each lot.'}
+                      : 'No matched closed lots yet.'}
                   </div>
                 )}
               </div>
