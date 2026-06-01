@@ -122,6 +122,7 @@ export async function POST(req: Request) {
         walletTradeStatsDebug: snapshot._diagnostics?.walletTradeStatsDebug ?? null,
         walletHistoricalCoverageDebug: snapshot._diagnostics?.walletHistoricalCoverageDebug ?? null,
         walletHistoricalCandidateDebug: snapshot._diagnostics?.walletHistoricalCandidateDebug ?? null,
+        walletHistoricalPricingPreviewDebug: snapshot._diagnostics?.walletHistoricalPricingPreviewDebug ?? null,
         walletActivityRequestDebug: {
           deepActivityRequested: deepActivity || deepScan,
           deepActivityFlagSent: deepActivityFlag,

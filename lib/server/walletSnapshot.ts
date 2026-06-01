@@ -215,6 +215,20 @@ export type WalletSnapshot = {
     missing: string[]
     reason: string | null
   }
+  walletHistoricalPricingPreviewSummary: {
+    status: 'not_requested' | 'open_check' | 'partial' | 'ok'
+    requested: boolean
+    newSwapCandidateEvents: number
+    pricedHistoricalCandidates: number
+    unpricedHistoricalCandidates: number
+    stableLegPricedEvents: number
+    wethLegPricedEvents: number
+    historicalPricedEvents: number
+    priceAttemptLimitReached: boolean
+    readyForHistoricalFifoPreview: boolean
+    missing: string[]
+    reason: string | null
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -501,6 +515,21 @@ export type WalletSnapshot = {
       latestCandidateAt: string | null
       sampleNewSwapCandidates: Array<{ txHash: string; contract: string; symbol: string; direction: string; timestamp: string | null; reason: string }>
       sampleDuplicateCandidates: Array<{ txHash: string; contract: string; symbol: string; direction: string }>
+      skippedReasons: string[]
+      reasons: string[]
+    }
+    walletHistoricalPricingPreviewDebug?: {
+      requested: boolean
+      newSwapCandidateEvents: number
+      priceAttempts: number
+      pricedHistoricalCandidates: number
+      unpricedHistoricalCandidates: number
+      stableLegPricedEvents: number
+      wethLegPricedEvents: number
+      historicalPricedEvents: number
+      priceAttemptLimitReached: boolean
+      samplePricedHistoricalCandidates: Array<{ txHash: string; contract: string; symbol: string; direction: string; priceUsd: number; source: string }>
+      sampleUnpricedHistoricalCandidates: Array<{ txHash: string; contract: string; symbol: string; direction: string; reason: string }>
       skippedReasons: string[]
       reasons: string[]
     }
@@ -1162,10 +1191,14 @@ function buildHistoricalCandidateComparison(
 ): {
   summary: WalletSnapshot['walletHistoricalCandidateSummary']
   debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCandidateDebug']
+  newCandidateEvidence: WalletTxEvidence[]
+  allHistoricalEvidence: WalletTxEvidence[]
 } {
   const notRequested = () => ({
     summary: { status: 'not_requested' as const, requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, earliestCandidateAt: null, latestCandidateAt: null, readyForHistoricalPricing: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null },
     debug: { requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, candidateTokenSymbols: [], earliestCandidateAt: null, latestCandidateAt: null, sampleNewSwapCandidates: [], sampleDuplicateCandidates: [], skippedReasons: ['historical_coverage_not_requested'], reasons: [] },
+    newCandidateEvidence: [] as WalletTxEvidence[],
+    allHistoricalEvidence: [] as WalletTxEvidence[],
   })
   if (historicalPnlEvents.length === 0) return notRequested()
 
@@ -1187,6 +1220,7 @@ function buildHistoricalCandidateComparison(
   // Compare historical swap candidates against existing base evidence
   const newSwapCandidateItems: Array<{ txHash: string; contract: string; symbol: string; direction: string; timestamp: string | null; reason: string }> = []
   const duplicateSwapCandidateItems: Array<{ txHash: string; contract: string; symbol: string; direction: string }> = []
+  const newCandidateEvidence: WalletTxEvidence[] = []
   const newTxHashes = new Set<string>()
   const newContractSet = new Set<string>()
   const existingContractSet = new Set<string>(existingEvidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate === true).map(e => e.contract))
@@ -1198,6 +1232,7 @@ function buildHistoricalCandidateComparison(
       duplicateSwapCandidateItems.push({ txHash: e.txHash ?? '', contract: e.contract, symbol: e.symbol ?? '', direction: e.direction })
     } else {
       newSwapCandidateItems.push({ txHash: e.txHash ?? '', contract: e.contract, symbol: e.symbol ?? '', direction: e.direction, timestamp: e.timestamp ?? null, reason: 'historical_swap_candidate_not_in_base_evidence' })
+      newCandidateEvidence.push(e)
       if (e.txHash) newTxHashes.add(e.txHash)
       newContractSet.add(e.contract)
     }
@@ -1232,6 +1267,151 @@ function buildHistoricalCandidateComparison(
   return {
     summary: { status, requested: true, baseEvidenceEvents: existingEvidenceWithDetection.length, historicalNormalizedEvents: historicalPnlEvents.length, historicalWalletSideEvents, existingSwapCandidates: existingSwapCandidateCount, historicalSwapCandidates, newSwapCandidateEvents, duplicateSwapCandidateEvents, candidateTransactions, newCandidateTransactions, candidateTokens, newCandidateTokens, earliestCandidateAt, latestCandidateAt, readyForHistoricalPricing: newSwapCandidateEvents > 0 && earliestCandidateAt !== null, readyForHistoricalFifoPreview: false, missing: newSwapCandidateEvents === 0 ? ['no_new_swap_candidates'] : [], reason: newSwapCandidateEvents === 0 ? 'No additional swap candidates found in historical coverage window.' : null },
     debug: { requested: true, baseEvidenceEvents: existingEvidenceWithDetection.length, historicalNormalizedEvents: historicalPnlEvents.length, historicalWalletSideEvents, existingSwapCandidates: existingSwapCandidateCount, historicalSwapCandidates, newSwapCandidateEvents, duplicateSwapCandidateEvents, candidateTransactions, newCandidateTransactions, candidateTokens, newCandidateTokens, candidateTokenSymbols: newTokenSymbols, earliestCandidateAt, latestCandidateAt, sampleNewSwapCandidates: newSwapCandidateItems.slice(0, 5), sampleDuplicateCandidates: duplicateSwapCandidateItems.slice(0, 5), skippedReasons: [], reasons: newSwapCandidateEvents > 0 ? ['historical_swap_candidates_found'] : ['no_new_swap_candidates'] },
+    newCandidateEvidence,
+    allHistoricalEvidence: histSwapEvidence,
+  }
+}
+
+async function buildHistoricalPricingPreview(
+  newCandidateEvidence: WalletTxEvidence[],
+  allHistoricalEvidence: WalletTxEvidence[],
+): Promise<{
+  summary: WalletSnapshot['walletHistoricalPricingPreviewSummary']
+  debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalPricingPreviewDebug']
+}> {
+  const MAX_PRICE_ATTEMPTS = 10
+  const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
+
+  const newSwapCandidateEvents = newCandidateEvidence.filter(e => e.swapDetection?.isSwapCandidate === true).length
+
+  if (newSwapCandidateEvents === 0) {
+    return {
+      summary: { status: 'open_check', requested: true, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['no_new_swap_candidates'], reason: 'No new swap candidates to price.' },
+      debug: { requested: true, newSwapCandidateEvents: 0, priceAttempts: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, samplePricedHistoricalCandidates: [], sampleUnpricedHistoricalCandidates: [], skippedReasons: ['no_new_swap_candidates'], reasons: [] },
+    }
+  }
+
+  // Build tx-level lookup from ALL historical evidence so WETH/stable legs resolve correctly
+  const allByTx = new Map<string, WalletTxEvidence[]>()
+  for (const e of allHistoricalEvidence) {
+    if (e.txHash) allByTx.set(e.txHash, [...(allByTx.get(e.txHash) ?? []), e])
+  }
+
+  let priceAttempts = 0
+  let pricedHistoricalCandidates = 0
+  let unpricedHistoricalCandidates = 0
+  let stableLegPricedEvents = 0
+  let wethLegPricedEvents = 0
+  let historicalPricedEventsCount = 0
+  let priceAttemptLimitReached = false
+  const samplePricedRaw: Array<{ txHash: string; contract: string; symbol: string; direction: string; priceUsd: number; source: string }> = []
+  const sampleUnpricedRaw: Array<{ txHash: string; contract: string; symbol: string; direction: string; reason: string }> = []
+  const skippedReasons: string[] = []
+
+  for (const e of newCandidateEvidence) {
+    if (e.swapDetection?.isSwapCandidate !== true) { skippedReasons.push('not_swap_candidate'); continue }
+
+    if (!e.timestamp) {
+      unpricedHistoricalCandidates++
+      if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, reason: 'no_timestamp' })
+      continue
+    }
+    if (!e.contract || !e.contract.startsWith('0x')) {
+      unpricedHistoricalCandidates++
+      if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: e.contract, symbol: e.symbol, direction: e.direction, reason: 'no_contract' })
+      continue
+    }
+
+    const contractLower = e.contract.toLowerCase()
+    const isStable = Boolean(STABLE_USD_CONTRACTS[contractLower])
+    const isWeth = Boolean(WETH_CONTRACTS_PRICE[contractLower])
+
+    if (isStable) {
+      pricedHistoricalCandidates++; stableLegPricedEvents++
+      if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: 1.0, source: 'stable_leg' })
+      continue
+    }
+
+    const tokenAmount = parseRawAmount(e.amountRaw, e.tokenDecimals) ?? e.amount
+    if (!tokenAmount || tokenAmount <= 0) {
+      unpricedHistoricalCandidates++
+      if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, reason: 'zero_amount' })
+      continue
+    }
+
+    const txGroup = allByTx.get(e.txHash) ?? []
+
+    // Stable leg: find a stable counterpart in same tx with opposite direction
+    const stableLegs = txGroup.filter(ev => Boolean(STABLE_USD_CONTRACTS[ev.contract?.toLowerCase() ?? '']) && ev.direction !== 'unknown' && ev.direction !== e.direction)
+    if (stableLegs.length > 0) {
+      const sl = stableLegs[0]
+      const stableAmt = parseRawAmount(sl.amountRaw, sl.tokenDecimals) ?? sl.amount
+      if (stableAmt > 0) {
+        const derivedPrice = stableAmt / tokenAmount
+        if (derivedPrice > 0 && isFinite(derivedPrice)) {
+          pricedHistoricalCandidates++; stableLegPricedEvents++
+          if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: derivedPrice, source: 'stable_leg' })
+          continue
+        }
+      }
+    }
+
+    // WETH leg: find WETH counterpart in same tx with opposite direction
+    if (!isWeth) {
+      const wethLegs = txGroup.filter(ev => Boolean(WETH_CONTRACTS_PRICE[ev.contract?.toLowerCase() ?? '']) && ev.direction !== 'unknown' && ev.direction !== e.direction)
+      if (wethLegs.length > 0) {
+        const wl = wethLegs[0]
+        if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
+          priceAttemptLimitReached = true; unpricedHistoricalCandidates++
+          if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, reason: 'price_attempt_limit_reached' })
+          continue
+        }
+        priceAttempts++
+        const result = await fetchGoldrushHistoricalPrice(wl.chain, wl.contract, e.timestamp)
+        if (result.priceUsd !== null) {
+          const wethAmt = parseRawAmount(wl.amountRaw, wl.tokenDecimals) ?? wl.amount
+          if (wethAmt > 0) {
+            const derivedPrice = (wethAmt * result.priceUsd) / tokenAmount
+            if (derivedPrice > 0 && isFinite(derivedPrice)) {
+              pricedHistoricalCandidates++; wethLegPricedEvents++
+              if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: derivedPrice, source: 'weth_leg' })
+              continue
+            }
+          }
+        }
+      }
+    }
+
+    // Direct historical price lookup
+    if (priceAttempts >= MAX_PRICE_ATTEMPTS) {
+      priceAttemptLimitReached = true; unpricedHistoricalCandidates++
+      if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, reason: 'price_attempt_limit_reached' })
+      continue
+    }
+    priceAttempts++
+    const histResult = await fetchGoldrushHistoricalPrice(e.chain, e.contract, e.timestamp)
+    if (histResult.priceUsd !== null) {
+      pricedHistoricalCandidates++; historicalPricedEventsCount++
+      if (samplePricedRaw.length < 5) samplePricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, priceUsd: histResult.priceUsd, source: 'historical_price' })
+      continue
+    }
+
+    unpricedHistoricalCandidates++
+    if (sampleUnpricedRaw.length < 5) sampleUnpricedRaw.push({ txHash: abbr(e.txHash), contract: abbr(e.contract), symbol: e.symbol, direction: e.direction, reason: 'no_price_evidence' })
+  }
+
+  const status: WalletSnapshot['walletHistoricalPricingPreviewSummary']['status'] =
+    pricedHistoricalCandidates === 0 ? 'open_check'
+    : pricedHistoricalCandidates >= newSwapCandidateEvents * 0.6 ? 'ok'
+    : 'partial'
+
+  const missing: string[] = []
+  if (pricedHistoricalCandidates === 0) missing.push('no_price_evidence')
+  if (priceAttemptLimitReached) missing.push('price_attempt_limit_reached')
+
+  return {
+    summary: { status, requested: true, newSwapCandidateEvents, pricedHistoricalCandidates, unpricedHistoricalCandidates, stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents: historicalPricedEventsCount, priceAttemptLimitReached, readyForHistoricalFifoPreview: pricedHistoricalCandidates > 0, missing, reason: missing.length > 0 ? missing.join('; ') : null },
+    debug: { requested: true, newSwapCandidateEvents, priceAttempts, pricedHistoricalCandidates, unpricedHistoricalCandidates, stableLegPricedEvents, wethLegPricedEvents, historicalPricedEvents: historicalPricedEventsCount, priceAttemptLimitReached, samplePricedHistoricalCandidates: samplePricedRaw, sampleUnpricedHistoricalCandidates: sampleUnpricedRaw, skippedReasons, reasons: pricedHistoricalCandidates > 0 ? ['historical_candidates_priced'] : ['no_price_evidence'] },
   }
 }
 
@@ -2579,10 +2759,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
 
   // Phase 6B: Historical candidate comparison — compare historical events against base swap candidates
-  const { summary: walletHistoricalCandidateSummary, debug: _historicalCandidateDebug } =
+  const { summary: walletHistoricalCandidateSummary, debug: _historicalCandidateDebug, newCandidateEvidence: _hcNewCandidateEvidence, allHistoricalEvidence: _hcAllHistoricalEvidence } =
     _runHistoricalCoverage && _hcEvents.length > 0
       ? buildHistoricalCandidateComparison(_hcEvents, _swapEvidenceWithDetection, addrNorm)
-      : { summary: { status: 'not_requested' as const, requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, earliestCandidateAt: null, latestCandidateAt: null, readyForHistoricalPricing: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined }
+      : { summary: { status: 'not_requested' as const, requested: false, baseEvidenceEvents: 0, historicalNormalizedEvents: 0, historicalWalletSideEvents: 0, existingSwapCandidates: 0, historicalSwapCandidates: 0, newSwapCandidateEvents: 0, duplicateSwapCandidateEvents: 0, candidateTransactions: 0, newCandidateTransactions: 0, candidateTokens: 0, newCandidateTokens: 0, earliestCandidateAt: null, latestCandidateAt: null, readyForHistoricalPricing: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, newCandidateEvidence: [] as WalletTxEvidence[], allHistoricalEvidence: [] as WalletTxEvidence[] }
+
+  // Phase 6C: Historical pricing preview — price only the Phase 6B new swap candidates
+  const { summary: walletHistoricalPricingPreviewSummary, debug: _historicalPricingPreviewDebug } =
+    _runHistoricalCoverage && _hcNewCandidateEvidence.length > 0
+      ? await buildHistoricalPricingPreview(_hcNewCandidateEvidence, _hcAllHistoricalEvidence)
+      : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined }
 
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
@@ -2697,6 +2883,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletTradeStatsSummary,
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
+    walletHistoricalPricingPreviewSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -2815,6 +3002,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletTradeStatsDebug: _tradeStatsDebug,
       walletHistoricalCoverageDebug: _historicalCoverageDebug,
       walletHistoricalCandidateDebug: _historicalCandidateDebug,
+      walletHistoricalPricingPreviewDebug: _historicalPricingPreviewDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
