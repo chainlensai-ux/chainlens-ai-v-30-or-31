@@ -347,7 +347,7 @@ function deriveWalletPersonality(data: WalletResult): string {
     sentences.push('PnL remains Open Check because sufficient transaction, swap, balance, and price evidence was not available in the current scan.')
   }
   if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
-    sentences.push(`Early closed-lot read is ${ts.winningClosedLots} wins and ${ts.losingClosedLots} losses across ${ts.closedLots} reconstructed lots. Official win rate and wallet score stay locked until 10+ closed lots.`)
+    sentences.push(`Matched closed-lot sample shows ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''} and ${ts.losingClosedLots === 0 ? 'no matched losing closed lots' : `${ts.losingClosedLots} matched losing closed lot${ts.losingClosedLots !== 1 ? 's' : ''}`}. This is not a full wallet win rate. Official win rate is not calculated until 10+ verified closed lots.`)
   } else if (!ts || ts.closedLots === 0) {
     if (behavior.closedTrades < 10) {
       sentences.push('Not enough closed lots have been reconstructed to classify trading skill yet.')
@@ -545,7 +545,7 @@ export default function WalletScannerPage() {
       ? `Real trade evidence: ${ts.closedLots} closed lots reconstructed, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL from priced FIFO lots.`
       : null
     const earlyWinBullet = ts && ts.closedLots > 0
-      ? `Early closed-lot read: ${ts.winningClosedLots} wins / ${ts.losingClosedLots} losses across ${ts.closedLots} reconstructed lots. Official win rate remains locked until 10+ lots.`
+      ? `Matched closed-lot sample: ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''} and ${ts.losingClosedLots === 0 ? 'no matched losing closed lots' : `${ts.losingClosedLots} matched losing closed lot${ts.losingClosedLots !== 1 ? 's' : ''}`}. Official win rate is not calculated until 10+ verified closed lots.`
       : null
     const bullets = [
       total > 0 ? `Portfolio value observed: ${fmtUSD(total)}` : 'Portfolio value: Unverified',
@@ -584,15 +584,15 @@ export default function WalletScannerPage() {
       hasActivity ? 'Activity read: Recent Base activity detected in the checked window.' : 'Activity read: Recent Base activity is limited in the checked window.',
       `Risk / concentration: ${largest ? `${largest.symbol || 'Top asset'} is the largest visible holding${topShare != null ? ` (${topShare.toFixed(1)}% top-3 concentration)` : ''}.` : 'Largest holding remains unverified.'}`,
       ...(hasRealTrade && ts.realizedPnlUsd !== null
-        ? [`Real trade evidence: ${ts.closedLots} closed lots, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL. Early read: ${ts.winningClosedLots}W / ${ts.losingClosedLots}L across ${ts.closedLots} lots.`]
+        ? [`Real trade evidence: ${ts.closedLots} closed lots, ${fmtSignedUSD(ts.realizedPnlUsd)} matched realized PnL. Matched closed-lot sample: ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''}, ${ts.losingClosedLots === 0 ? 'no matched losing lots' : `${ts.losingClosedLots} matched losing lot${ts.losingClosedLots !== 1 ? 's' : ''}`}.`]
         : hasRealTrade
-          ? [`Early closed-lot read: ${ts.winningClosedLots} wins / ${ts.losingClosedLots} losses across ${ts.closedLots} reconstructed lots.`]
+          ? [`Matched closed-lot sample: ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''} and ${ts.losingClosedLots === 0 ? 'no matched losing closed lots' : `${ts.losingClosedLots} matched losing lot${ts.losingClosedLots !== 1 ? 's' : ''}`} across ${ts.closedLots} reconstructed lots.`]
           : []),
     ]
     const risks = hasRealTrade
       ? [
-          ts.closedLots < 10 ? 'Win rate locked until 10+ closed lots.' : 'Win rate from reconstructed closed lots only.',
-          'Wallet score locked — sample below 10 closed lots.',
+          ts.closedLots < 10 ? 'Official win rate not calculated until 10+ verified closed lots.' : 'Win rate from matched closed lots only.',
+          'Wallet score not calculated — sample below 10 verified closed lots.',
           'Some buys and sells may sit outside the indexed scan window.',
         ]
       : [
@@ -1225,16 +1225,16 @@ export default function WalletScannerPage() {
                 const earlyWinPct = closedLots > 0 && ts ? Math.round((ts.winningClosedLots / ts.closedLots) * 100) : null
                 const earlyLossPct = closedLots > 0 && ts ? Math.round((ts.losingClosedLots / ts.closedLots) * 100) : null
                 const winRateLabel = !hasEnough && closedLots > 0 ? 'Matched Closed-Lot Read' : 'Win Rate'
-                const lossRateLabel = !hasEnough && closedLots > 0 ? 'Early Loss Read' : 'Loss Rate'
+                const lossRateLabel = !hasEnough && closedLots > 0 ? 'Matched Losing Lots' : 'Loss Rate'
                 const winRateDisplay = hasEnough && ts?.winRatePercent !== null && ts?.winRatePercent !== undefined
                   ? `${ts.winRatePercent.toFixed(1)}%`
-                  : !hasEnough && earlyWinPct !== null
-                    ? `${earlyWinPct}% from ${closedLots} lots`
+                  : !hasEnough && ts && closedLots > 0
+                    ? `${ts.winningClosedLots} matched positive lot${ts.winningClosedLots !== 1 ? 's' : ''}`
                     : 'Open Check'
                 const lossRateDisplay = hasEnough
                   ? fmtOpenPct(walletIntel.lossRate)
-                  : !hasEnough && earlyLossPct !== null
-                    ? `${earlyLossPct}% from ${closedLots} lots`
+                  : !hasEnough && ts && closedLots > 0
+                    ? (ts.losingClosedLots === 0 ? 'None found in matched sample' : `${ts.losingClosedLots} matched losing lot${ts.losingClosedLots !== 1 ? 's' : ''}`)
                     : 'Open Check'
                 const avgProfitDisplay = ts && ts.avgPnlUsdPerClosedLot !== null && ts.winningClosedLots > 0
                   ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot)
