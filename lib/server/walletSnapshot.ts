@@ -99,7 +99,7 @@ export type WalletSnapshot = {
     reason: string
   }
   walletEvidenceSummary: {
-    status: 'ready' | 'partial' | 'missing_hashes' | 'no_events' | 'not_requested'
+    status: 'ready' | 'partial' | 'missing_hashes' | 'no_events' | 'provider_unavailable' | 'not_requested'
     totalEvents: number
     eventsWithHash: number
     eventsWithTimestamp: number
@@ -386,6 +386,16 @@ export type WalletSnapshot = {
       zerionSucceeded: boolean
       goldrushBalancesSkipped: boolean
       deepScan: boolean
+    }
+    walletActivityRequestDebug?: {
+      primaryActivityAttempted: boolean
+      primaryActivityFailed: boolean
+      primaryActivityStatusCode: number | null
+      primaryActivityErrorKind: string | null
+      fallbackActivityAttempted: boolean
+      fallbackActivityUsed: boolean
+      fallbackActivityReason: string
+      finalEvidenceStatus: WalletSnapshot['walletEvidenceSummary']['status']
     }
     walletTxEvidenceDebug?: {
       sourceProvider: 'goldrush' | 'alchemy' | 'none'
@@ -1586,7 +1596,7 @@ function buildHistoricalFifoPreview(
   }
 }
 
-function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
+function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean, providerUnavailable = false): {
   evidenceList: WalletTxEvidence[]
   summary: WalletSnapshot['walletEvidenceSummary']
   debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletTxEvidenceDebug']>
@@ -1632,7 +1642,9 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
   const readyForSwapDetection = eventsWithHash > 0 && eventsWithTimestamp > 0
 
   const missing: string[] = []
-  if (totalEvents === 0) {
+  if (providerUnavailable && totalEvents === 0) {
+    missing.push('activity_provider_unavailable')
+  } else if (totalEvents === 0) {
     missing.push('no_transfer_events_indexed')
   } else {
     if (eventsWithHash < totalEvents) missing.push(`${totalEvents - eventsWithHash} events missing txHash`)
@@ -1640,7 +1652,8 @@ function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
   }
 
   const status: WalletSnapshot['walletEvidenceSummary']['status'] =
-    totalEvents === 0 ? 'no_events'
+    providerUnavailable && totalEvents === 0 ? 'provider_unavailable'
+    : totalEvents === 0 ? 'no_events'
     : readyForSwapDetection ? 'ready'
     : eventsWithHash > 0 ? 'partial'
     : 'missing_hashes'
@@ -2848,8 +2861,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const baseTransferDiag = goldrushTransferDiags.find((d) => d.chainUsed === '8453' || d.chainUsed === 'base-mainnet') ?? goldrushTransferDiags[0]
   const grEvents = [...grEth.events, ...grBase.events]
   const alchemyEvents = alchemyPnlRes.status === 'fulfilled' ? alchemyPnlRes.value : []
+  const primaryActivityAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
+  const primaryActivityStatusCode = primaryActivityAttempted ? (baseTransferDiag?.httpStatus ?? null) : null
+  const primaryActivityErrorKind = primaryActivityAttempted
+    ? ((baseTransferDiag as GoldrushHistoryDiag | undefined)?.fetchErrorKind ?? baseTransferDiag?.failureStage ?? null)
+    : null
+  const primaryActivityFailed = primaryActivityAttempted && Boolean(
+    (baseTransferDiag as GoldrushHistoryDiag | undefined)?.fetchFailed && primaryActivityStatusCode === null
+      || /fetch failed|network|timeout|before response|did not expose an HTTP response/i.test(`${(baseTransferDiag as GoldrushHistoryDiag | undefined)?.fetchErrorMessage ?? ''} ${baseTransferDiag?.reason ?? ''}`)
+  )
+  const fallbackActivityAttempted = false
+  const fallbackActivityUsed = false
+  const fallbackActivityReason = 'not_wired'
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
   const events = grEvents.length > 0 ? grEvents : alchemyEvents
+  const activityProviderUnavailable = activityRequested && primaryActivityFailed && events.length === 0
   const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
   const pnlSource: 'activity_layer' | 'fallback_layer' | 'none' = _pnlSourceRaw === 'goldrush' ? 'activity_layer' : _pnlSourceRaw === 'alchemy' ? 'fallback_layer' : 'none'
   const byToken = new Map<string, PnlEvent[]>()
@@ -2883,11 +2909,11 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const status: WalletSnapshot['estimatedPnl']['status'] = pnlTokens.length === 0 || pnlSource === 'none' ? 'unavailable' : coveragePercent >= 60 ? 'ok' : 'partial'
   const filteredPnlTokens = pnlTokens.filter((t) => t.coveragePercent > 0).sort((a, b) => (b.currentValueUsd - a.currentValueUsd)).slice(0, 10)
   const pnlCoverageReason = status === 'unavailable'
-    ? (pnlSource === 'none' ? 'Enable Deep Activity Scan for full transfer history and cost-basis estimation.' : 'Historical cost basis coverage is too low for a reliable estimate.')
+    ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : pnlSource === 'none' ? 'Enable Deep Activity Scan for full transfer history and cost-basis estimation.' : 'Historical cost basis coverage is too low for a reliable estimate.')
     : 'Estimated from indexed transfer history with average-cost method.'
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
-  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? 'PnL unavailable — historical cost basis coverage is too low.' : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
-  const { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested)
+  const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : 'PnL unavailable — historical cost basis coverage is too low.') : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
+  const { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested, activityProviderUnavailable)
   const { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
   const { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
   const { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
@@ -3060,6 +3086,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const goldrushConfigured = Boolean(GOLDRUSH_KEY)
   const goldrushReason = !goldrushConfigured
     ? 'History provider unavailable.'
+    : activityProviderUnavailable
+      ? 'Activity history unavailable from current checks.'
     : grEvents.length === 0
       ? 'No indexed wallet transfer history returned from current checks.'
       : valuedGrEvents.length === 0
@@ -3241,6 +3269,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
           : 'fallback_base_eth',
       },
       walletProviderRouting,
+      walletActivityRequestDebug: {
+        primaryActivityAttempted,
+        primaryActivityFailed,
+        primaryActivityStatusCode,
+        primaryActivityErrorKind,
+        fallbackActivityAttempted,
+        fallbackActivityUsed,
+        fallbackActivityReason,
+        finalEvidenceStatus: walletEvidenceSummary.status,
+      },
       walletTxEvidenceDebug: _txEvidenceDebug,
       walletSwapDetectionDebug: _swapDetectionDebug,
       walletPriceAtTimeDebug: _priceAtTimeDebug,

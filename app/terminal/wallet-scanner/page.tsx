@@ -118,12 +118,15 @@ type WalletResult = {
   }
   walletIntelligence?: WalletIntelligence
   walletEvidenceSummary?: {
-    status: 'ok' | 'partial' | 'open_check'
+    status: 'ready' | 'partial' | 'missing_hashes' | 'no_events' | 'provider_unavailable' | 'not_requested' | 'ok' | 'open_check'
     totalEvents: number
     eventsWithHash: number
     eventsWithTimestamp: number
-    sampleHashes: string[]
-    sampleTimestamps: string[]
+    hashCoverage?: number
+    timestampCoverage?: number
+    readyForSwapDetection?: boolean
+    sampleHashes?: string[]
+    sampleTimestamps?: string[]
     missing: string[]
   }
   walletSwapSummary?: {
@@ -218,6 +221,15 @@ function fmtSignedUSD(v: number | null): string {
   if (v === null || !Number.isFinite(v)) return 'Open Check'
   return `${v >= 0 ? '+' : '-'}${fmtUSD(Math.abs(v))}`
 }
+
+
+function hasActivityProviderUnavailable(data: WalletResult): boolean {
+  const status = data.walletEvidenceSummary?.status
+  const missing = data.walletEvidenceSummary?.missing ?? []
+  return (status === 'provider_unavailable' || status === 'open_check') && missing.includes('activity_provider_unavailable')
+}
+
+const ACTIVITY_UNAVAILABLE_COPY = 'Activity history unavailable from current checks. ChainLens did not calculate PnL for this wallet.'
 
 function fmtOpenPct(v: number | null): string {
   if (v === null || !Number.isFinite(v)) return 'Open Check'
@@ -316,7 +328,9 @@ function buildWalletOpenCheck(data: WalletResult): string[] {
   const ts = data.walletTradeStatsSummary
   const hasEstimatedPnl = estimated?.status === 'ok' || estimated?.status === 'partial'
   if (!hasEstimatedPnl && (!ts || ts.closedLots === 0)) {
-    checks.push('PnL remains Open Check until indexed transfer history has enough cost-basis coverage.')
+    checks.push(hasActivityProviderUnavailable(data)
+      ? ACTIVITY_UNAVAILABLE_COPY
+      : 'PnL remains Open Check until indexed transfer history has enough cost-basis coverage.')
   }
   if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
     checks.push('Wallet score locked — sample below 10 closed lots.')
@@ -346,7 +360,9 @@ function deriveWalletPersonality(data: WalletResult): string {
   } else if (pnl.total !== null) {
     sentences.push('Indexed transfer history provides an estimated PnL signal, but it is not treated as a win-rate label without reconstructed closed lots.')
   } else {
-    sentences.push('PnL remains Open Check because sufficient transaction, swap, balance, and price evidence was not available in the current scan.')
+    sentences.push(hasActivityProviderUnavailable(data)
+      ? 'Activity source did not return usable history. No PnL was calculated.'
+      : 'PnL remains Open Check because sufficient transaction, swap, balance, and price evidence was not available in the current scan.')
   }
   if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
     sentences.push(`Matched closed-lot sample shows ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''} and ${ts.losingClosedLots === 0 ? 'no matched losing closed lots' : `${ts.losingClosedLots} matched losing closed lot${ts.losingClosedLots !== 1 ? 's' : ''}`}. This is not a full wallet win rate. Official win rate is not calculated until 10+ verified closed lots.`)
@@ -539,9 +555,11 @@ export default function WalletScannerPage() {
     const activityOk = data.walletBehavior?.status === 'ok' && (data.walletBehavior.txCount ?? 0) > 0
     const activityMsg = activityOk
       ? 'Activity detected in checked Base window.'
-      : data.walletBehavior?.status === 'ok'
-        ? 'No recent Base activity in checked window.'
-        : 'Activity signal is limited in current checks.'
+      : hasActivityProviderUnavailable(data)
+        ? ACTIVITY_UNAVAILABLE_COPY
+        : data.walletBehavior?.status === 'ok'
+          ? 'No recent Base activity in checked window.'
+          : 'Activity signal is limited in current checks.'
     const ts = data.walletTradeStatsSummary
     const tradeBullet = ts && ts.closedLots > 0 && ts.realizedPnlUsd !== null
       ? `Real trade evidence: ${ts.closedLots} closed lots reconstructed, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL from priced FIFO lots.`
@@ -583,7 +601,7 @@ export default function WalletScannerPage() {
     const verdict = sorted.length === 0 ? 'INCOMPLETE READ' : hasActivity ? 'ACTIVE WALLET' : 'WATCH'
     const keySignals: string[] = [
       `Portfolio read: ${total > 0 ? fmtUSD(total) : 'unverified value'} across ${sorted.length} tracked token${sorted.length === 1 ? '' : 's'}.`,
-      hasActivity ? 'Activity read: Recent Base activity detected in the checked window.' : 'Activity read: Recent Base activity is limited in the checked window.',
+      hasActivity ? 'Activity read: Recent Base activity detected in the checked window.' : hasActivityProviderUnavailable(data) ? `Activity read: ${ACTIVITY_UNAVAILABLE_COPY}` : 'Activity read: Recent Base activity is limited in the checked window.',
       `Risk / concentration: ${largest ? `${largest.symbol || 'Top asset'} is the largest visible holding${topShare != null ? ` (${topShare.toFixed(1)}% top-3 concentration)` : ''}.` : 'Largest holding remains unverified.'}`,
       ...(hasRealTrade && ts.realizedPnlUsd !== null
         ? [`Real trade evidence: ${ts.closedLots} closed lots, ${fmtSignedUSD(ts.realizedPnlUsd)} matched realized PnL. Matched closed-lot sample: ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''}, ${ts.losingClosedLots === 0 ? 'no matched losing lots' : `${ts.losingClosedLots} matched losing lot${ts.losingClosedLots !== 1 ? 's' : ''}`}.`]
@@ -598,7 +616,7 @@ export default function WalletScannerPage() {
           'Some buys and sells may sit outside the indexed scan window.',
         ]
       : [
-          'PnL is not verified from this scan.',
+          hasActivityProviderUnavailable(data) ? ACTIVITY_UNAVAILABLE_COPY : 'PnL is not verified from this scan.',
           'Win rate and wallet intent are not verified.',
           'Entries and exits timing are not verified.',
         ]
@@ -1426,7 +1444,7 @@ export default function WalletScannerPage() {
                   )}
                   {result.walletBehavior.txCount === 0 && (
                     <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 8 }}>
-                      No recent Base activity found in checked window.
+                      {hasActivityProviderUnavailable(result) ? ACTIVITY_UNAVAILABLE_COPY : 'No recent Base activity found in checked window.'}
                     </div>
                   )}
                 </div>

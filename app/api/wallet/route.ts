@@ -149,6 +149,14 @@ export async function POST(req: Request) {
           plan,
           reason: 'cache_hit',
           evidenceStatus: (cp as any).walletEvidenceSummary?.status ?? 'unknown',
+          primaryActivityAttempted: false,
+          primaryActivityFailed: false,
+          primaryActivityStatusCode: null,
+          primaryActivityErrorKind: null,
+          fallbackActivityAttempted: false,
+          fallbackActivityUsed: false,
+          fallbackActivityReason: 'cache_hit',
+          finalEvidenceStatus: (cp as any).walletEvidenceSummary?.status ?? 'unknown',
         },
         walletScanCostDebug: {
           scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -330,6 +338,14 @@ export async function POST(req: Request) {
           fetchedPnlEvents: snapshot.walletEvidenceSummary?.totalEvents ?? 0,
           fetchedEvidenceEvents: snapshot.walletEvidenceSummary?.eventsWithHash ?? 0,
           evidenceStatus: snapshot.walletEvidenceSummary?.status ?? 'unknown',
+          primaryActivityAttempted: snapshot._diagnostics?.walletActivityRequestDebug?.primaryActivityAttempted ?? false,
+          primaryActivityFailed: snapshot._diagnostics?.walletActivityRequestDebug?.primaryActivityFailed ?? false,
+          primaryActivityStatusCode: snapshot._diagnostics?.walletActivityRequestDebug?.primaryActivityStatusCode ?? null,
+          primaryActivityErrorKind: snapshot._diagnostics?.walletActivityRequestDebug?.primaryActivityErrorKind ?? null,
+          fallbackActivityAttempted: snapshot._diagnostics?.walletActivityRequestDebug?.fallbackActivityAttempted ?? false,
+          fallbackActivityUsed: snapshot._diagnostics?.walletActivityRequestDebug?.fallbackActivityUsed ?? false,
+          fallbackActivityReason: snapshot._diagnostics?.walletActivityRequestDebug?.fallbackActivityReason ?? 'not_wired',
+          finalEvidenceStatus: snapshot._diagnostics?.walletActivityRequestDebug?.finalEvidenceStatus ?? snapshot.walletEvidenceSummary?.status ?? 'unknown',
           reason: (deepActivity || deepScan) ? null : 'deep_activity_not_requested',
         },
         walletScanCostDebug: (() => {
@@ -339,10 +355,14 @@ export async function POST(req: Request) {
           const grCache = Boolean(snapshotCacheDebug?.memoryHit)
           const alchAtt = Boolean(providers.alchemy?.behaviorAttempted)
           const txPg: number = hcSum?.pagesAttempted ?? (deepActivity ? 1 : 0)
-          type PC = { provider: string; endpointName: string; attempted: boolean; cacheHit: boolean; statusCode?: number | null; durationMs?: number | null; pagesFetched?: number | null; rawItems?: number | null; rawLogEvents?: number | null; normalizedEvents?: number | null; estimatedCreditUnits?: number | null }
+          type PC = { provider: string; endpointName: string; attempted: boolean; cacheHit: boolean; statusCode?: number | null; durationMs?: number | null; pagesFetched?: number | null; rawItems?: number | null; rawLogEvents?: number | null; normalizedEvents?: number | null; estimatedCreditUnits?: number | null; failureKind?: string | null; reason?: string | null }
           const calls: PC[] = []
-          const grCredits = (inFlightDeduped || grCache) ? 0 : grConf ? (1 + (deepActivity ? txPg : 0)) : 0
-          calls.push({ provider: 'goldrush', endpointName: deepActivity ? 'balances_v2 + transactions_v3' : 'balances_v2', attempted: grConf, cacheHit: grCache, statusCode: providers.goldrush?.httpStatus ?? null, durationMs: null, pagesFetched: deepActivity ? txPg : null, rawItems: providers.goldrush?.rawItemCount ?? null, rawLogEvents: null, normalizedEvents: providers.goldrush?.normalizedEventCount ?? null, estimatedCreditUnits: grCredits })
+          const activityDbg = snapshot._diagnostics?.walletActivityRequestDebug ?? null
+          const grFailureKind = activityDbg?.primaryActivityFailed ? activityDbg.primaryActivityErrorKind ?? 'fetch_failed' : null
+          const grReason = activityDbg?.primaryActivityFailed ? 'primary_activity_failed' : null
+          const grStatusCode = activityDbg?.primaryActivityFailed ? null : providers.goldrush?.httpStatus ?? null
+          const grCredits = (inFlightDeduped || grCache) ? 0 : activityDbg?.primaryActivityFailed ? 1 : grConf ? (1 + (deepActivity ? txPg : 0)) : 0
+          calls.push({ provider: 'goldrush', endpointName: deepActivity ? 'balances_v2 + transactions_v3' : 'balances_v2', attempted: grConf, cacheHit: grCache, statusCode: grStatusCode, durationMs: null, pagesFetched: deepActivity ? txPg : null, rawItems: providers.goldrush?.rawItemCount ?? null, rawLogEvents: null, normalizedEvents: providers.goldrush?.normalizedEventCount ?? null, estimatedCreditUnits: grCredits, failureKind: grFailureKind, reason: grReason })
           if (effectiveHistoricalCoverage) {
             const hcPg: number = hcSum?.pagesAttempted ?? maxHistoricalPages
             calls.push({ provider: 'goldrush', endpointName: 'log_events_by_address (historical)', attempted: true, cacheHit: false, statusCode: null, durationMs: null, pagesFetched: hcPg, rawItems: null, rawLogEvents: hcDbg?.rawLogEvents ?? hcSum?.rawLogEvents ?? null, normalizedEvents: hcDbg?.normalizedEvents ?? hcSum?.normalizedEvents ?? null, estimatedCreditUnits: inFlightDeduped ? 0 : hcPg })
