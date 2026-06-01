@@ -1,4 +1,4 @@
-import { fetchMoralisBalances, type MoralisFetchResult, type MoralisChain } from './moralis'
+import { fetchMoralisBalances, fetchMoralisTransfers, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem } from './moralis'
 
 type Holding = {
   contract?: string
@@ -398,7 +398,7 @@ export type WalletSnapshot = {
       finalEvidenceStatus: WalletSnapshot['walletEvidenceSummary']['status']
     }
     walletTxEvidenceDebug?: {
-      sourceProvider: 'goldrush' | 'alchemy' | 'none'
+      sourceProvider: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none'
       totalRawEvents: number
       eventsWithHash: number
       eventsWithTimestamp: number
@@ -604,6 +604,20 @@ export type WalletSnapshot = {
       sampleAddedClosedLots: Array<{ tokenAddress: string; symbol: string; openedAt: string; closedAt: string; entryPriceUsd: number; exitPriceUsd: number; realizedPnlUsd: number; confidence: string }>
       skippedReasons: string[]
       reasons: string[]
+    }
+    walletActivityFallbackDebug?: {
+      primaryActivityAttempted: boolean
+      primaryActivityFailed: boolean
+      primaryActivityStatusCode: number | null
+      primaryActivityErrorKind: string | null
+      fallbackActivityAttempted: boolean
+      fallbackActivityUsed: boolean
+      fallbackActivityProvider: 'moralis' | null
+      fallbackActivityStatusCode: number | null
+      fallbackActivityRawCount: number
+      fallbackActivityNormalizedEvents: number
+      fallbackActivityReason: string
+      finalEvidenceStatus: string
     }
   }
 }
@@ -1116,6 +1130,26 @@ async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<
     const incoming = (recv?.transfers ?? []).slice(0, 125).map((t: Record<string, unknown>) => mapTransfer(t, 'buy'))
     return [...outgoing, ...incoming].filter(e => e.contract.startsWith('0x') && Number.isFinite(e.amount) && e.amount > 0)
   } catch { return [] }
+}
+
+function normalizeMoralisTransfers(items: MoralisTransferItem[], walletAddress: string, chainName: string): PnlEvent[] {
+  const lower = walletAddress.toLowerCase()
+  const out: PnlEvent[] = []
+  for (const it of items) {
+    if (!it.transaction_hash || !it.token_address) continue
+    const decimals = it.token_decimals ? parseInt(it.token_decimals, 10) : 18
+    const safeDecimals = Number.isFinite(decimals) ? decimals : 18
+    const rawValue = it.value ?? '0'
+    const amount = Math.abs(parseFloat(rawValue) / Math.pow(10, safeDecimals))
+    if (!Number.isFinite(amount) || amount <= 0) continue
+    const from = (it.from_address ?? '').toLowerCase()
+    const to = (it.to_address ?? '').toLowerCase()
+    const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
+    const contract = it.token_address.toLowerCase()
+    if (!contract.startsWith('0x')) continue
+    out.push({ contract, symbol: it.token_symbol ?? '?', direction, amount, amountRaw: rawValue !== '0' ? rawValue : null, tokenDecimals: safeDecimals, usdValue: null, txHash: it.transaction_hash, timestamp: it.block_timestamp, fromAddress: from || null, toAddress: to || null, chain: chainName, txFromAddress: null, txToAddress: null, txSucceeded: null })
+  }
+  return out
 }
 
 async function fetchGoldrushHistoricalPage(
@@ -2870,14 +2904,74 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     (baseTransferDiag as GoldrushHistoryDiag | undefined)?.fetchFailed && primaryActivityStatusCode === null
       || /fetch failed|network|timeout|before response|did not expose an HTTP response/i.test(`${(baseTransferDiag as GoldrushHistoryDiag | undefined)?.fetchErrorMessage ?? ''} ${baseTransferDiag?.reason ?? ''}`)
   )
-  const fallbackActivityAttempted = false
-  const fallbackActivityUsed = false
-  const fallbackActivityReason = 'not_wired'
   const valuedGrEvents = grEvents.filter((e) => (e.usdValue ?? 0) > 0)
-  const events = grEvents.length > 0 ? grEvents : alchemyEvents
+  let events: PnlEvent[] = grEvents.length > 0 ? grEvents : alchemyEvents
+
+  // Moralis activity fallback: runs only when deepActivity requested and all primary providers returned nothing.
+  // One request max, cached 5 min, in-flight deduped inside fetchMoralisTransfers, 8 s timeout, no pagination.
+  const _grBaseFetchFailed = !GOLDRUSH_KEY
+    || Boolean((grBase.diag as GoldrushHistoryDiag).fetchFailed)
+    || ((grBase.diag as GoldrushHistoryDiag).httpStatus != null && ((grBase.diag as GoldrushHistoryDiag).httpStatus as number) >= 400)
+    || (grBase.diag as GoldrushHistoryDiag).failureStage === 'timeout'
+  type _MoralisFbDebug = {
+    primaryActivityAttempted: boolean; primaryActivityFailed: boolean; primaryActivityStatusCode: number | null
+    primaryActivityErrorKind: string | null; fallbackActivityAttempted: boolean; fallbackActivityUsed: boolean
+    fallbackActivityProvider: 'moralis' | null; fallbackActivityStatusCode: number | null
+    fallbackActivityRawCount: number; fallbackActivityNormalizedEvents: number
+    fallbackActivityReason: string; finalEvidenceStatus: string
+  }
+  const _grDiag = grBase.diag as GoldrushHistoryDiag
+  let _moralisFbDebug: _MoralisFbDebug = {
+    primaryActivityAttempted: activityRequested && Boolean(GOLDRUSH_KEY),
+    primaryActivityFailed: _grBaseFetchFailed,
+    primaryActivityStatusCode: _grDiag.httpStatus ?? null,
+    primaryActivityErrorKind: !GOLDRUSH_KEY ? 'not_configured'
+      : _grDiag.fetchFailed ? (_grDiag.fetchErrorKind ?? 'fetch_failed')
+      : _grDiag.httpStatus != null && _grDiag.httpStatus >= 400 ? `http_${_grDiag.httpStatus}`
+      : null,
+    fallbackActivityAttempted: false,
+    fallbackActivityUsed: false,
+    fallbackActivityProvider: null,
+    fallbackActivityStatusCode: null,
+    fallbackActivityRawCount: 0,
+    fallbackActivityNormalizedEvents: 0,
+    fallbackActivityReason: events.length > 0 ? 'primary_ok' : !activityRequested ? 'not_requested' : 'not_attempted',
+    finalEvidenceStatus: 'pending',
+  }
+  const _shouldTryMoralisFallback = activityRequested && !historicalCoverage && events.length === 0 && Boolean(process.env.MORALIS_API_KEY)
+  if (_shouldTryMoralisFallback) {
+    const fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
+    const fbResult = await fetchMoralisTransfers(addr, fbChain, 100)
+    const fbNormalized = fbResult.usable && fbResult.items.length > 0
+      ? normalizeMoralisTransfers(fbResult.items, addr, fbChain === 'base' ? 'base-mainnet' : 'eth-mainnet')
+      : []
+    const fbUsed = fbNormalized.length > 0
+    if (fbUsed) events = fbNormalized
+    _moralisFbDebug = {
+      ..._moralisFbDebug,
+      fallbackActivityAttempted: fbResult.attempted || fbResult.cacheHit,
+      fallbackActivityUsed: fbUsed,
+      fallbackActivityProvider: 'moralis',
+      fallbackActivityStatusCode: fbResult.httpStatus ?? null,
+      fallbackActivityRawCount: fbResult.rawCount,
+      fallbackActivityNormalizedEvents: fbNormalized.length,
+      fallbackActivityReason: fbUsed ? 'fallback_used' : (fbResult.reason || 'no_events_normalized'),
+    }
+  }
+
+  const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'moralis_fallback' | 'none' =
+    grEvents.length > 0 ? 'goldrush'
+    : alchemyEvents.length > 0 ? 'alchemy'
+    : _moralisFbDebug.fallbackActivityUsed ? 'moralis_fallback'
+    : 'none'
+  const pnlSource: 'activity_layer' | 'fallback_layer' | 'none' =
+    _pnlSourceRaw === 'goldrush' ? 'activity_layer'
+    : _pnlSourceRaw === 'none' ? 'none'
+    : 'fallback_layer'
+  const fallbackActivityAttempted = _moralisFbDebug.fallbackActivityAttempted
+  const fallbackActivityUsed = _moralisFbDebug.fallbackActivityUsed
+  const fallbackActivityReason = _moralisFbDebug.fallbackActivityReason
   const activityProviderUnavailable = activityRequested && primaryActivityFailed && events.length === 0
-  const _pnlSourceRaw: 'goldrush' | 'alchemy' | 'none' = grEvents.length > 0 ? 'goldrush' : alchemyEvents.length > 0 ? 'alchemy' : 'none'
-  const pnlSource: 'activity_layer' | 'fallback_layer' | 'none' = _pnlSourceRaw === 'goldrush' ? 'activity_layer' : _pnlSourceRaw === 'alchemy' ? 'fallback_layer' : 'none'
   const byToken = new Map<string, PnlEvent[]>()
   for (const e of events.slice(0, 250)) byToken.set(e.contract, [...(byToken.get(e.contract) ?? []), e])
   const pnlTokens: WalletSnapshot['estimatedPnl']['tokens'] = []
@@ -3288,6 +3382,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletHistoricalCandidateDebug: _historicalCandidateDebug,
       walletHistoricalPricingPreviewDebug: _historicalPricingPreviewDebug,
       walletHistoricalFifoPreviewDebug: _historicalFifoPreviewDebug,
+      walletActivityFallbackDebug: { ..._moralisFbDebug, finalEvidenceStatus: walletEvidenceSummary.status },
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })

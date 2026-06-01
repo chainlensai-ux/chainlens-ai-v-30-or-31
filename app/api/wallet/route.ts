@@ -347,6 +347,25 @@ export async function POST(req: Request) {
           fallbackActivityReason: snapshot._diagnostics?.walletActivityRequestDebug?.fallbackActivityReason ?? 'not_wired',
           finalEvidenceStatus: snapshot._diagnostics?.walletActivityRequestDebug?.finalEvidenceStatus ?? snapshot.walletEvidenceSummary?.status ?? 'unknown',
           reason: (deepActivity || deepScan) ? null : 'deep_activity_not_requested',
+          // Activity fallback telemetry (populated when primary providers returned nothing)
+          ...(() => {
+            const fb = snapshot._diagnostics?.walletActivityFallbackDebug
+            if (!fb) return {}
+            return {
+              primaryActivityAttempted: fb.primaryActivityAttempted,
+              primaryActivityFailed: fb.primaryActivityFailed,
+              primaryActivityStatusCode: fb.primaryActivityStatusCode,
+              primaryActivityErrorKind: fb.primaryActivityErrorKind,
+              fallbackActivityAttempted: fb.fallbackActivityAttempted,
+              fallbackActivityUsed: fb.fallbackActivityUsed,
+              fallbackActivityProvider: fb.fallbackActivityProvider,
+              fallbackActivityStatusCode: fb.fallbackActivityStatusCode,
+              fallbackActivityRawCount: fb.fallbackActivityRawCount,
+              fallbackActivityNormalizedEvents: fb.fallbackActivityNormalizedEvents,
+              fallbackActivityReason: fb.fallbackActivityReason,
+              finalEvidenceStatus: fb.finalEvidenceStatus,
+            }
+          })(),
         },
         walletScanCostDebug: (() => {
           const hcDbg = snapshot._diagnostics?.walletHistoricalCoverageDebug ?? null
@@ -369,6 +388,11 @@ export async function POST(req: Request) {
           }
           if (alchAtt) {
             calls.push({ provider: 'alchemy', endpointName: 'alchemy_getAssetTransfers', attempted: true, cacheHit: false, statusCode: null, durationMs: null, pagesFetched: null, rawItems: providers.alchemy?.transfersReturned ?? null, rawLogEvents: null, normalizedEvents: null, estimatedCreditUnits: inFlightDeduped ? 0 : 1 })
+          }
+          // Moralis activity fallback call (only present when primary providers failed)
+          const fbDbg = snapshot._diagnostics?.walletActivityFallbackDebug ?? null
+          if (fbDbg?.fallbackActivityAttempted && fbDbg.fallbackActivityProvider === 'moralis') {
+            calls.push({ provider: 'moralis', endpointName: 'erc20_transfers (activity_fallback)', attempted: true, cacheHit: fbDbg.fallbackActivityStatusCode === null && fbDbg.fallbackActivityRawCount > 0, statusCode: fbDbg.fallbackActivityStatusCode, durationMs: null, pagesFetched: null, rawItems: fbDbg.fallbackActivityRawCount, rawLogEvents: null, normalizedEvents: fbDbg.fallbackActivityNormalizedEvents, estimatedCreditUnits: inFlightDeduped ? 0 : 1 })
           }
           const totalCu = calls.reduce((s, c) => s + (c.estimatedCreditUnits ?? 0), 0)
           const liveCalls = inFlightDeduped ? 0 : calls.filter(c => c.attempted && !c.cacheHit).length

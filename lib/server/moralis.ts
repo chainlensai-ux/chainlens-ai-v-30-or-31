@@ -160,3 +160,88 @@ export async function fetchMoralisBalances(
   _inflight.set(cacheKey, run)
   try { return await run } finally { _inflight.delete(cacheKey) }
 }
+
+// ── ERC20 Transfer History ─────────────────────────────────────────────────
+
+export type MoralisTransferItem = {
+  from_address: string | null
+  to_address: string | null
+  token_address: string | null
+  value: string | null
+  transaction_hash: string | null
+  block_timestamp: string | null
+  token_name: string | null
+  token_symbol: string | null
+  token_decimals: string | null
+}
+
+export type MoralisTransferFetchResult = {
+  items: MoralisTransferItem[]
+  attempted: boolean
+  usable: boolean
+  cacheHit: boolean
+  rawCount: number
+  reason: string
+  httpStatus?: number | null
+}
+
+const MORALIS_TRANSFERS_TTL_MS = 5 * 60 * 1000
+const _transfersCache = new Map<string, { items: MoralisTransferItem[]; cachedAt: number }>()
+const _transfersInFlight = new Map<string, Promise<MoralisTransferFetchResult>>()
+
+export async function fetchMoralisTransfers(
+  address: string,
+  chain: MoralisChain,
+  limit = 100,
+): Promise<MoralisTransferFetchResult> {
+  const apiKey = process.env.MORALIS_API_KEY ?? ''
+  if (!apiKey) return { items: [], attempted: false, usable: false, cacheHit: false, rawCount: 0, reason: 'not_configured' }
+
+  const cacheKey = `moralis:transfers:${chain}:${address.toLowerCase()}:${limit}`
+  const hit = _transfersCache.get(cacheKey)
+  if (hit && Date.now() - hit.cachedAt <= MORALIS_TRANSFERS_TTL_MS) {
+    return { items: hit.items, attempted: false, usable: true, cacheHit: true, rawCount: hit.items.length, reason: hit.items.length > 0 ? '' : 'cached_empty' }
+  }
+
+  const inflight = _transfersInFlight.get(cacheKey)
+  if (inflight) return inflight
+
+  const url = `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers?chain=${CHAIN_PARAM[chain]}&limit=${limit}&exclude_spam=true`
+
+  const run = (async (): Promise<MoralisTransferFetchResult> => {
+    try {
+      const res = await fetch(url, {
+        headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(8_000),
+      })
+      if (!res.ok) {
+        return { items: [], attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: `http_${res.status}`, httpStatus: res.status }
+      }
+      const json: unknown = await res.json()
+      const raw = json as Record<string, unknown> | null
+      const rawItems: unknown[] = Array.isArray(raw?.result) ? (raw!.result as unknown[]) : Array.isArray(json) ? (json as unknown[]) : []
+      const items: MoralisTransferItem[] = rawItems.map((it) => {
+        const i = it as Record<string, unknown>
+        return {
+          from_address: typeof i.from_address === 'string' ? i.from_address : null,
+          to_address: typeof i.to_address === 'string' ? i.to_address : null,
+          token_address: typeof i.token_address === 'string' ? i.token_address : null,
+          value: typeof i.value === 'string' ? i.value : null,
+          transaction_hash: typeof i.transaction_hash === 'string' ? i.transaction_hash : null,
+          block_timestamp: typeof i.block_timestamp === 'string' ? i.block_timestamp : null,
+          token_name: typeof i.token_name === 'string' ? i.token_name : null,
+          token_symbol: typeof i.token_symbol === 'string' ? i.token_symbol : null,
+          token_decimals: typeof i.token_decimals === 'string' ? i.token_decimals : typeof i.token_decimals === 'number' ? String(i.token_decimals) : null,
+        }
+      })
+      _transfersCache.set(cacheKey, { items, cachedAt: Date.now() })
+      return { items, attempted: true, usable: true, cacheHit: false, rawCount: items.length, reason: items.length > 0 ? '' : 'no_transfers', httpStatus: res.status }
+    } catch {
+      return { items: [], attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: 'fetch_failed' }
+    }
+  })()
+
+  _transfersInFlight.set(cacheKey, run)
+  try { return await run } finally { _transfersInFlight.delete(cacheKey) }
+}
