@@ -330,7 +330,6 @@ function deriveWalletPersonality(data: WalletResult): string {
     sentences.push('PnL remains Open Check because sufficient transaction, swap, balance, and price evidence was not available in the current scan.')
   }
   if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
-    sentences.push(`${ts.closedLots} closed lots were reconstructed, but the sample is still too small for wallet scoring or Smart Money classification.`)
     sentences.push(`Win rate unlocks after 10+ safely reconstructed closed lots. This wallet currently has ${ts.closedLots}, so CORTEX treats the trade read as early evidence.`)
   } else if (!ts || ts.closedLots === 0) {
     if (behavior.closedTrades < 10) {
@@ -880,9 +879,11 @@ export default function WalletScannerPage() {
                     <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                       Instant Wallet Score
                     </div>
-                    <span style={{ padding: '5px 10px', borderRadius: '999px', background: tierTone.bg, border: `1px solid ${tierTone.border}`, color: tierTone.color, fontSize: '10px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                      {walletIntel.walletTier}
-                    </span>
+                    {walletIntel.walletTier !== 'Open Check' && (
+                      <span style={{ padding: '5px 10px', borderRadius: '999px', background: tierTone.bg, border: `1px solid ${tierTone.border}`, color: tierTone.color, fontSize: '10px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        {walletIntel.walletTier}
+                      </span>
+                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', marginBottom: '14px' }}>
                     <div style={{ fontSize: '56px', lineHeight: 0.9, fontWeight: 950, letterSpacing: '-0.06em', color: walletIntel.walletScore === null ? '#7dd3fc' : '#f8fafc', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
@@ -934,10 +935,34 @@ export default function WalletScannerPage() {
 
                 {(() => {
                   const hasRealTrade = (result.walletTradeStatsSummary?.closedLots ?? 0) > 0
+                  if (hasRealTrade) {
+                    const legacyVal = fmtSignedUSD(walletIntel.pnl.total)
+                    return (
+                      <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.04)', borderRadius: '18px', padding: '16px 20px', opacity: 0.62 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                          <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.45)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Estimated Position Read</div>
+                          <span style={{ fontSize: '8px', fontWeight: 700, color: 'rgba(125,211,252,0.45)', border: '1px solid rgba(125,211,252,0.15)', background: 'rgba(56,189,248,0.04)', borderRadius: '999px', padding: '1px 6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>legacy</span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
+                            <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Legacy Estimate</div>
+                            <div style={{ fontSize: '15px', fontWeight: 700, color: legacyVal === 'Open Check' ? '#7dd3fc' : legacyVal.startsWith('-') ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{legacyVal}</div>
+                          </div>
+                          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px' }}>
+                            <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>Method</div>
+                            <div style={{ fontSize: '13px', fontWeight: 700, color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Avg cost basis</div>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', lineHeight: 1.4, marginTop: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          Legacy average-cost estimate. Real closed-lot evidence is shown separately below.
+                        </div>
+                      </div>
+                    )
+                  }
                   return (
-                    <div style={{ background: '#080c14', border: `1px solid ${hasRealTrade ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.08)'}`, borderRadius: '18px', padding: '22px', opacity: hasRealTrade ? 0.72 : 1 }}>
+                    <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '18px', padding: '22px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: hasRealTrade ? 'rgba(45,212,191,0.55)' : '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Estimated Position Read</div>
+                        <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Estimated Position Read</div>
                         <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.25)', background: 'rgba(56,189,248,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>avg cost basis</span>
                       </div>
                       <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
@@ -956,9 +981,7 @@ export default function WalletScannerPage() {
                         ))}
                       </div>
                       <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', lineHeight: 1.5, marginTop: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                        {hasRealTrade
-                          ? 'Legacy average-cost estimate. Real closed-lot evidence is shown separately below.'
-                          : 'Missing periods stay Open Check. Current PnL values only appear when the scan exposes indexed transfer/cost-basis evidence.'}
+                        Missing periods stay Open Check. Current PnL values only appear when the scan exposes indexed transfer/cost-basis evidence.
                       </div>
                     </div>
                   )
@@ -1065,7 +1088,9 @@ export default function WalletScannerPage() {
                   : closedLots > 0
                     ? 'Locked — 10+ lots needed'
                     : 'Open Check'
-                const avgProfitDisplay = hasEnough ? fmtSignedUSD(walletIntel.pnl.avgWin) : 'Open Check'
+                const avgProfitDisplay = ts && ts.avgPnlUsdPerClosedLot !== null && ts.winningClosedLots > 0
+                  ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot)
+                  : hasEnough ? fmtSignedUSD(walletIntel.pnl.avgWin) : 'Open Check'
                 const avgLossDisplay = hasEnough ? fmtSignedUSD(walletIntel.pnl.avgLoss) : 'Open Check'
                 const biggestWinDisplay = hasEnough
                   ? (ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined ? fmtSignedUSD(ts.largestWinUsd) : fmtSignedUSD(walletIntel.pnl.biggestWin))
@@ -1288,7 +1313,7 @@ export default function WalletScannerPage() {
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: 10 }}>
                               <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Balance</div><div style={{ fontSize: 13 }}>{fmtBalance(h.balance)}</div></div>
                               <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>Value</div><div style={{ fontSize: 13 }}>{h.value > 0 ? fmtUSD(h.value) : 'Unverified'}</div></div>
-                              <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>24h</div><div style={{ fontSize: 13, color: h.change24h === null ? 'rgba(255,255,255,0.5)' : up ? '#2DD4BF' : '#ef4444' }}>{h.change24h === null ? 'Unverified' : fmtPct(h.change24h)}</div></div>
+                              <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>24h</div><div style={{ fontSize: 13, color: h.change24h === null ? 'rgba(255,255,255,0.30)' : up ? '#2DD4BF' : '#ef4444' }}>{h.change24h === null ? '—' : fmtPct(h.change24h)}</div></div>
                             </div>
                           </div>
                         )
