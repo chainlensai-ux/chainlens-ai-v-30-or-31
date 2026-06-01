@@ -208,31 +208,49 @@ function safeNum(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
+function fmtSecondsToHuman(seconds: number | null): string | null {
+  if (seconds === null || !Number.isFinite(seconds)) return null
+  const h = Math.floor(seconds / 3600)
+  const d = Math.floor(h / 24)
+  if (d >= 1) return `${d}d ${h % 24}h`
+  if (h >= 1) return `${h}h ${Math.floor((seconds % 3600) / 60)}m`
+  return `${Math.floor(seconds / 60)}m`
+}
+
 function deriveWalletTier(winRate: number | null, closedCount = 0): WalletTier {
-  if (winRate === null || !Number.isFinite(winRate)) return 'Open Check'
-  if (winRate >= 65 && closedCount >= 10) return 'Smart Money'
-  if (winRate >= 65 && closedCount >= 3) return 'Positive Early Read'
+  if (winRate === null || !Number.isFinite(winRate) || closedCount < 10) return 'Open Check'
+  if (winRate >= 65) return 'Smart Money'
   if (winRate >= 40) return 'Average Trader'
   return 'Losing Wallet'
 }
 
 function deriveTradeBehavior(data: WalletResult): WalletIntelligence['tradeBehavior'] & { winRate: number | null; lossRate: number | null; avgWin: number | null; avgLoss: number | null; biggestWin: number | null; biggestLoss: number | null } {
+  const ts = data.walletTradeStatsSummary
   const backend = data.walletIntelligence
   const recentClosed = backend?.recentTrades?.filter(t => t.status === 'closed' && safeNum(t.pnl) !== null) ?? []
-  const closedTrades = backend?.tradeBehavior?.closedTrades ?? recentClosed.length
-  const hasEnoughClosedTrades = closedTrades >= 3
-  const winRate = hasEnoughClosedTrades ? safeNum(backend?.winRate) : null
-  const lossRate = hasEnoughClosedTrades ? safeNum(backend?.lossRate) : null
+  const closedTrades = ts ? ts.closedLots : (backend?.tradeBehavior?.closedTrades ?? recentClosed.length)
+  const hasEnoughClosedTrades = closedTrades >= 10
+  const winRate = hasEnoughClosedTrades ? (ts?.winRatePercent ?? safeNum(backend?.winRate)) : null
+  const lossRate = hasEnoughClosedTrades && ts
+    ? (ts.closedLots > 0 ? (ts.losingClosedLots / ts.closedLots) * 100 : null)
+    : (hasEnoughClosedTrades ? safeNum(backend?.lossRate) : null)
+  const avgHoldTime = ts?.avgHoldingTimeSeconds != null
+    ? fmtSecondsToHuman(ts.avgHoldingTimeSeconds)
+    : (backend?.tradeBehavior?.avgHoldTime ?? null)
   return {
     closedTrades,
-    avgHoldTime: backend?.tradeBehavior?.avgHoldTime ?? null,
-    reason: hasEnoughClosedTrades ? 'Closed trades reconstructed from indexed entry and exit evidence.' : 'Not enough closed trades',
+    avgHoldTime,
+    reason: hasEnoughClosedTrades
+      ? 'Closed lots reconstructed from indexed entry and exit evidence.'
+      : closedTrades > 0
+        ? `${closedTrades} lots reconstructed — 10+ needed for full stats.`
+        : 'No reconstructed closed lots yet.',
     winRate,
     lossRate,
-    avgWin: hasEnoughClosedTrades ? safeNum(backend?.pnl?.avgWin) : null,
+    avgWin: hasEnoughClosedTrades ? (ts?.avgPnlUsdPerClosedLot ?? safeNum(backend?.pnl?.avgWin)) : null,
     avgLoss: hasEnoughClosedTrades ? safeNum(backend?.pnl?.avgLoss) : null,
-    biggestWin: hasEnoughClosedTrades ? safeNum(backend?.pnl?.biggestWin) : null,
-    biggestLoss: hasEnoughClosedTrades ? safeNum(backend?.pnl?.biggestLoss) : null,
+    biggestWin: hasEnoughClosedTrades ? (ts?.largestWinUsd ?? safeNum(backend?.pnl?.biggestWin)) : null,
+    biggestLoss: hasEnoughClosedTrades ? (ts?.largestLossUsd ?? safeNum(backend?.pnl?.biggestLoss)) : null,
   }
 }
 
@@ -260,7 +278,7 @@ function deriveWalletScore(data: WalletResult): { score: number | null; scoreSta
   const avgWin = behavior.avgWin
   const avgLoss = behavior.avgLoss
   const thirtyDay = derivePnlOverview(data).thirtyDay
-  if (behavior.closedTrades < 3 || winRate === null || avgWin === null || avgLoss === null || thirtyDay === null) {
+  if (behavior.closedTrades < 10 || winRate === null || avgWin === null || avgLoss === null || thirtyDay === null) {
     return { score: null, scoreStatus: 'open_check', confidence: 'open check' }
   }
 
@@ -275,10 +293,18 @@ function deriveWalletScore(data: WalletResult): { score: number | null; scoreSta
 function buildWalletOpenCheck(data: WalletResult): string[] {
   const checks: string[] = []
   const estimated = data.estimatedPnl
+  const ts = data.walletTradeStatsSummary
   const hasEstimatedPnl = estimated?.status === 'ok' || estimated?.status === 'partial'
-  if (!hasEstimatedPnl) checks.push('PnL remains Open Check until indexed transfer history has enough cost-basis coverage.')
-  checks.push('Win rate requires at least 3 safely reconstructed closed trades with entry and exit evidence.')
-  checks.push('Recent trade rows require real matched entries, exits, sizes, and price evidence.')
+  if (!hasEstimatedPnl && (!ts || ts.closedLots === 0)) {
+    checks.push('PnL remains Open Check until indexed transfer history has enough cost-basis coverage.')
+  }
+  if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
+    checks.push(`Win rate unlocks after 10+ closed lots. ${ts.closedLots} reconstructed so far.`)
+    checks.push('Wallet score not issued — sample too small for scoring.')
+  } else if (!ts || ts.closedLots === 0) {
+    checks.push('Win rate requires matched closed lots with priced entry and exit evidence.')
+  }
+  checks.push('Recent trade rows require matched entries, exits, and price evidence.')
   if (!data.walletBehavior || data.walletBehavior.status === 'unavailable') checks.push('Activity behavior is limited for the currently checked chain window.')
   return Array.from(new Set([...(data.walletIntelligence?.openChecks ?? []), ...checks])).slice(0, 4)
 }
@@ -287,6 +313,7 @@ function deriveWalletPersonality(data: WalletResult): string {
   if (data.walletIntelligence?.personalitySummary) return data.walletIntelligence.personalitySummary
   const behavior = deriveTradeBehavior(data)
   const pnl = derivePnlOverview(data)
+  const ts = data.walletTradeStatsSummary
   const holdingCount = data.holdings.length
   const activity = data.walletBehavior
   const sentences: string[] = []
@@ -295,18 +322,25 @@ function deriveWalletPersonality(data: WalletResult): string {
   } else {
     sentences.push('This wallet has no visible priced holdings in the checked window, so classification remains limited.')
   }
-  if (pnl.total !== null) {
-    sentences.push('Indexed transfer history provides an estimated PnL signal, but it is not treated as a win-rate or smart-money label without reconstructed closed trades.')
+  if (ts && ts.closedLots > 0 && ts.realizedPnlUsd !== null) {
+    sentences.push(`Real trade evidence: ${ts.closedLots} closed lots reconstructed with ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL from priced FIFO lots.`)
+  } else if (pnl.total !== null) {
+    sentences.push('Indexed transfer history provides an estimated PnL signal, but it is not treated as a win-rate label without reconstructed closed lots.')
   } else {
     sentences.push('PnL remains Open Check because sufficient transaction, swap, balance, and price evidence was not available in the current scan.')
   }
-  if (behavior.closedTrades < 3) {
-    sentences.push('Not enough closed trades were indexed to classify trading skill.')
-  }
-  if (activity?.status === 'ok' && (activity.txCount ?? 0) > 0) {
-    sentences.push('Recent activity exists on the checked chain, but entries and exits still need to be matched before score, tier, or win rate can be shown.')
-  } else {
-    sentences.push('Activity evidence is limited, so this read stays conservative and avoids copy-trading claims.')
+  if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
+    sentences.push(`${ts.closedLots} closed lots were reconstructed, but the sample is still too small for wallet scoring or Smart Money classification.`)
+    sentences.push(`Win rate unlocks after 10+ safely reconstructed closed lots. This wallet currently has ${ts.closedLots}, so CORTEX treats the trade read as early evidence.`)
+  } else if (!ts || ts.closedLots === 0) {
+    if (behavior.closedTrades < 10) {
+      sentences.push('Not enough closed lots have been reconstructed to classify trading skill yet.')
+    }
+    if (activity?.status === 'ok' && (activity.txCount ?? 0) > 0) {
+      sentences.push('Recent activity exists on the checked chain, but entries and exits still need to be matched before score, tier, or win rate can be shown.')
+    } else {
+      sentences.push('Activity evidence is limited, so this read stays conservative and avoids copy-trading claims.')
+    }
   }
   return sentences.slice(0, 4).join(' ')
 }
@@ -506,23 +540,36 @@ export default function WalletScannerPage() {
     const topShare = total > 0 ? (top3.reduce((acc, h) => acc + h.value, 0) / total) * 100 : null
     const baseTx = data.walletBehavior?.txCount ?? 0
     const hasActivity = data.walletBehavior?.status === 'ok' && baseTx > 0
+    const ts = data.walletTradeStatsSummary
+    const hasRealTrade = ts && ts.closedLots > 0
     const verdict = sorted.length === 0 ? 'INCOMPLETE READ' : hasActivity ? 'ACTIVE WALLET' : 'WATCH'
+    const keySignals: string[] = [
+      `Portfolio read: ${total > 0 ? fmtUSD(total) : 'unverified value'} across ${sorted.length} tracked token${sorted.length === 1 ? '' : 's'}.`,
+      hasActivity ? 'Activity read: Recent Base activity detected in the checked window.' : 'Activity read: Recent Base activity is limited in the checked window.',
+      `Risk / concentration: ${largest ? `${largest.symbol || 'Top asset'} is the largest visible holding${topShare != null ? ` (${topShare.toFixed(1)}% top-3 concentration)` : ''}.` : 'Largest holding remains unverified.'}`,
+      ...(hasRealTrade && ts.realizedPnlUsd !== null
+        ? [`Real trade evidence: ${ts.closedLots} closed lots reconstructed, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL from priced FIFO lots.`]
+        : []),
+    ]
+    const risks = hasRealTrade
+      ? [
+          ts.closedLots < 10 ? 'Win rate locked until 10+ closed lots.' : 'Win rate from reconstructed closed lots only.',
+          'Wallet score not issued — sample size below scoring threshold.',
+          'Some buys and sells may sit outside the indexed scan window.',
+        ]
+      : [
+          'PnL is not verified from this scan.',
+          'Win rate and wallet intent are not verified.',
+          'Entries and exits timing are not verified.',
+        ]
     return {
       verdict,
       confidence: hasActivity ? 'Medium' : 'Low',
       read: total > 0
         ? 'CORTEX verified visible holdings and estimated portfolio value from live Base data.'
         : 'CORTEX found visible holdings, but value is incomplete or unverified in current checks.',
-      keySignals: [
-        `Portfolio read: ${total > 0 ? fmtUSD(total) : 'unverified value'} across ${sorted.length} tracked token${sorted.length === 1 ? '' : 's'}.`,
-        hasActivity ? 'Activity read: Recent Base activity detected in the checked window.' : 'Activity read: Recent Base activity is limited in the checked window.',
-        `Risk / concentration: ${largest ? `${largest.symbol || 'Top asset'} is the largest visible holding${topShare != null ? ` (${topShare.toFixed(1)}% top-3 concentration)` : ''}.` : 'Largest holding remains unverified.'}`,
-      ],
-      risks: [
-        'PnL is not verified from this scan.',
-        'Win rate and wallet intent are not verified.',
-        'Entries and exits timing are not verified.',
-      ],
+      keySignals,
+      risks,
       nextAction: 'Monitor entries/exits and run token scans on major holdings. No trade call.',
     }
   }
@@ -843,44 +890,79 @@ export default function WalletScannerPage() {
                     </div>
                     {walletIntel.walletScore !== null && <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.35)', marginBottom: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>/100</div>}
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
-                    {[
-                      { label: 'Win Rate', value: fmtOpenPct(walletIntel.winRate), note: walletIntel.winRate === null ? 'Not enough closed trades' : 'Closed trades only' },
-                      { label: 'Confidence', value: walletIntel.confidence, note: walletIntel.confidence === 'open check' ? 'Evidence pending' : 'Evidence weighted' },
-                    ].map(item => (
-                      <div key={item.label} style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
-                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>{item.label}</div>
-                        <div style={{ fontSize: '18px', color: '#e2e8f0', fontWeight: 800, textTransform: item.label === 'Confidence' ? 'capitalize' : 'none' }}>{item.value}</div>
-                        <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '4px' }}>{item.note}</div>
-                      </div>
-                    ))}
-                  </div>
+                  {(() => {
+                    const ts = result.walletTradeStatsSummary
+                    const closedLots = ts?.closedLots ?? 0
+                    const winRateNote = walletIntel.winRate !== null
+                      ? 'Closed lots only'
+                      : closedLots > 0
+                        ? 'Locked — 10+ closed lots needed'
+                        : 'No closed lots yet'
+                    const confidenceNote = walletIntel.confidence === 'open check'
+                      ? closedLots > 0
+                        ? `${closedLots} closed lots reconstructed`
+                        : 'Evidence pending'
+                      : 'Evidence weighted'
+                    const scoreReason = walletIntel.walletScore === null
+                      ? closedLots > 0
+                        ? 'Needs 10+ closed lots before scoring.'
+                        : 'Needs closed lot evidence to score.'
+                      : null
+                    return (
+                      <>
+                        {scoreReason && (
+                          <div style={{ fontSize: '11px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '12px', lineHeight: 1.4 }}>
+                            {scoreReason}
+                          </div>
+                        )}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
+                          {[
+                            { label: 'Win Rate', value: fmtOpenPct(walletIntel.winRate), note: winRateNote },
+                            { label: 'Confidence', value: ts ? (ts.confidence === 'open_check' ? 'open check' : ts.confidence) : walletIntel.confidence, note: confidenceNote },
+                          ].map(item => (
+                            <div key={item.label} style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>{item.label}</div>
+                              <div style={{ fontSize: '18px', color: '#e2e8f0', fontWeight: 800, textTransform: item.label === 'Confidence' ? 'capitalize' : 'none' }}>{item.value}</div>
+                              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', marginTop: '4px' }}>{item.note}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )
+                  })()}
                 </div>
 
-                <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '18px', padding: '22px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-                    <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Estimated Position Read</div>
-                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.25)', background: 'rgba(56,189,248,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>avg cost basis</span>
-                  </div>
-                  <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
-                    {[
-                      { label: 'Total PnL All Time', value: fmtSignedUSD(walletIntel.pnl.total) },
-                      { label: '7D PnL', value: fmtSignedUSD(walletIntel.pnl.sevenDay) },
-                      { label: '30D PnL', value: fmtSignedUSD(walletIntel.pnl.thirtyDay) },
-                      { label: 'This Month PnL', value: fmtSignedUSD(walletIntel.pnl.thisMonth) },
-                      { label: 'Realized PnL', value: fmtSignedUSD(walletIntel.pnl.realized) },
-                      { label: 'Unrealized PnL', value: fmtSignedUSD(walletIntel.pnl.unrealized) },
-                    ].map(card => (
-                      <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
-                        <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
-                        <div style={{ fontSize: '18px', fontWeight: 800, color: card.value === 'Open Check' ? '#7dd3fc' : card.value.startsWith('-') ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{card.value}</div>
+                {(() => {
+                  const hasRealTrade = (result.walletTradeStatsSummary?.closedLots ?? 0) > 0
+                  return (
+                    <div style={{ background: '#080c14', border: `1px solid ${hasRealTrade ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.08)'}`, borderRadius: '18px', padding: '22px', opacity: hasRealTrade ? 0.72 : 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                        <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: hasRealTrade ? 'rgba(45,212,191,0.55)' : '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Estimated Position Read</div>
+                        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.25)', background: 'rgba(56,189,248,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>avg cost basis</span>
                       </div>
-                    ))}
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', lineHeight: 1.5, marginTop: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                    Missing periods stay Open Check. Current PnL values only appear when the scan exposes indexed transfer/cost-basis evidence.
-                  </div>
-                </div>
+                      <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
+                        {[
+                          { label: 'Total PnL All Time', value: fmtSignedUSD(walletIntel.pnl.total) },
+                          { label: '7D PnL', value: fmtSignedUSD(walletIntel.pnl.sevenDay) },
+                          { label: '30D PnL', value: fmtSignedUSD(walletIntel.pnl.thirtyDay) },
+                          { label: 'This Month PnL', value: fmtSignedUSD(walletIntel.pnl.thisMonth) },
+                          { label: 'Realized PnL', value: fmtSignedUSD(walletIntel.pnl.realized) },
+                          { label: 'Unrealized PnL', value: fmtSignedUSD(walletIntel.pnl.unrealized) },
+                        ].map(card => (
+                          <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                            <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                            <div style={{ fontSize: '18px', fontWeight: 800, color: card.value === 'Open Check' ? '#7dd3fc' : card.value.startsWith('-') ? '#f87171' : '#4ade80', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{card.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', lineHeight: 1.5, marginTop: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        {hasRealTrade
+                          ? 'Legacy average-cost estimate. Real closed-lot evidence is shown separately below.'
+                          : 'Missing periods stay Open Check. Current PnL values only appear when the scan exposes indexed transfer/cost-basis evidence.'}
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
 
               {(() => {
@@ -966,26 +1048,57 @@ export default function WalletScannerPage() {
                 )
               })()}
 
-              <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 22px' }}>
-                <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>Trade Behavior</div>
-                <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '10px' }}>
-                  {[
-                    { label: 'Win Rate', value: fmtOpenPct(walletIntel.winRate) },
-                    { label: 'Loss Rate', value: fmtOpenPct(walletIntel.lossRate) },
-                    { label: 'Avg Profit / Win', value: fmtSignedUSD(walletIntel.pnl.avgWin) },
-                    { label: 'Avg Loss / Loss', value: fmtSignedUSD(walletIntel.pnl.avgLoss) },
-                    { label: 'Biggest Win', value: fmtSignedUSD(walletIntel.pnl.biggestWin) },
-                    { label: 'Biggest Loss', value: fmtSignedUSD(walletIntel.pnl.biggestLoss) },
-                    { label: 'Avg Hold Time', value: walletIntel.tradeBehavior?.avgHoldTime ?? 'Open Check' },
-                    { label: 'Closed Trades', value: walletIntel.tradeBehavior?.closedTrades && walletIntel.tradeBehavior.closedTrades >= 3 ? String(walletIntel.tradeBehavior.closedTrades) : 'Not enough closed trades' },
-                  ].map(card => (
-                    <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
-                      <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
-                      <div style={{ fontSize: '16px', fontWeight: 800, color: String(card.value).includes('Open Check') || String(card.value).includes('Not enough') ? '#7dd3fc' : '#e2e8f0', lineHeight: 1.25 }}>{card.value}</div>
+              {(() => {
+                const ts = result.walletTradeStatsSummary
+                const closedLots = ts?.closedLots ?? 0
+                const hasEnough = closedLots >= 10
+                const closedTradesDisplay = closedLots > 0
+                  ? `${closedLots} reconstructed`
+                  : 'No closed lots yet'
+                const winRateDisplay = hasEnough && ts?.winRatePercent !== null && ts?.winRatePercent !== undefined
+                  ? `${ts.winRatePercent.toFixed(1)}%`
+                  : closedLots > 0
+                    ? 'Locked — 10+ lots needed'
+                    : 'Open Check'
+                const lossRateDisplay = hasEnough
+                  ? fmtOpenPct(walletIntel.lossRate)
+                  : closedLots > 0
+                    ? 'Locked — 10+ lots needed'
+                    : 'Open Check'
+                const avgProfitDisplay = hasEnough ? fmtSignedUSD(walletIntel.pnl.avgWin) : 'Open Check'
+                const avgLossDisplay = hasEnough ? fmtSignedUSD(walletIntel.pnl.avgLoss) : 'Open Check'
+                const biggestWinDisplay = hasEnough
+                  ? (ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined ? fmtSignedUSD(ts.largestWinUsd) : fmtSignedUSD(walletIntel.pnl.biggestWin))
+                  : ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined && closedLots > 0
+                    ? fmtSignedUSD(ts.largestWinUsd)
+                    : 'Open Check'
+                const biggestLossDisplay = ts?.largestLossUsd !== null && ts?.largestLossUsd !== undefined
+                  ? fmtSignedUSD(ts.largestLossUsd)
+                  : 'Open Check'
+                const avgHoldDisplay = walletIntel.tradeBehavior?.avgHoldTime ?? 'Open Check'
+                return (
+                  <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 22px' }}>
+                    <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px' }}>Trade Behavior</div>
+                    <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '10px' }}>
+                      {[
+                        { label: 'Win Rate', value: winRateDisplay },
+                        { label: 'Loss Rate', value: lossRateDisplay },
+                        { label: 'Avg Profit / Win', value: avgProfitDisplay },
+                        { label: 'Avg Loss / Loss', value: avgLossDisplay },
+                        { label: 'Biggest Win', value: biggestWinDisplay },
+                        { label: 'Biggest Loss', value: biggestLossDisplay },
+                        { label: 'Avg Hold Time', value: avgHoldDisplay },
+                        { label: 'Closed Trades', value: closedTradesDisplay },
+                      ].map(card => (
+                        <div key={card.label} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
+                          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '7px' }}>{card.label}</div>
+                          <div style={{ fontSize: '16px', fontWeight: 800, color: String(card.value).includes('Open Check') || String(card.value).includes('Locked') || String(card.value).includes('No closed') ? '#7dd3fc' : '#e2e8f0', lineHeight: 1.25 }}>{card.value}</div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              </div>
+                  </div>
+                )
+              })()}
 
               <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '20px 22px' }}>
                 <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '10px' }}>AI Wallet Personality</div>
@@ -1025,7 +1138,9 @@ export default function WalletScannerPage() {
                   </div>
                 ) : (
                   <div style={{ padding: '20px 22px', color: '#7dd3fc', fontSize: '13px', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                    Closed trades could not be reconstructed from indexed data yet.
+                    {(result.walletTradeStatsSummary?.closedLots ?? 0) > 0
+                      ? `${result.walletTradeStatsSummary!.closedLots} closed FIFO lots reconstructed. Detailed trade rows require exposing safe closed-lot samples in the API.`
+                      : 'Closed trade rows require matched entries, exits, and price evidence for each lot.'}
                   </div>
                 )}
               </div>
@@ -1420,8 +1535,8 @@ export default function WalletScannerPage() {
 
                       <div>
                         <p style={{ margin: '0 0 6px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Activity Read</p>
-                        {clarkVerdict.keySignals.slice(0, 3).map((line, i) => (
-                          <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: '#cbd5e1' }}>— {line}</p>
+                        {clarkVerdict.keySignals.slice(0, 4).map((line, i) => (
+                          <p key={i} style={{ margin: '0 0 4px', fontSize: '12px', color: i === 3 ? '#a78bfa' : '#cbd5e1' }}>— {line}</p>
                         ))}
                       </div>
 
