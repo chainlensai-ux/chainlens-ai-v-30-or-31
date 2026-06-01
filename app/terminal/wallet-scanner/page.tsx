@@ -184,6 +184,7 @@ type WalletResult = {
     readyForWalletScore: boolean
     missing: string[]
   }
+  walletTradeStatsSource?: 'base_sample' | 'historical_promoted_preview'
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────────────────
@@ -1037,6 +1038,12 @@ export default function WalletScannerPage() {
                     {!isOpenCheck && (
                       <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.4 }}>
                         Closed-lot sample only — does not include current open holdings.
+                      </div>
+                    )}
+
+                    {!isOpenCheck && result.walletTradeStatsSource === 'historical_promoted_preview' && (
+                      <div style={{ fontSize: '10px', color: 'rgba(139,92,246,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '8px', lineHeight: 1.4 }}>
+                        Enhanced with deeper historical coverage.
                       </div>
                     )}
 

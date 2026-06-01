@@ -176,6 +176,7 @@ export type WalletSnapshot = {
     readyForWalletScore: boolean
     missing: string[]
   }
+  walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
   walletHistoricalCoverageSummary: {
     status: 'not_requested' | 'open_check' | 'partial' | 'ok'
     requested: boolean
@@ -1478,6 +1479,7 @@ function buildHistoricalFifoPreview(
 ): {
   summary: WalletSnapshot['walletHistoricalFifoPreviewSummary']
   debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalFifoPreviewDebug']
+  previewClosedLots: WalletClosedLot[]
 } {
   const abbr = (addr: string) => `${addr.slice(0, 8)}...${addr.slice(-6)}`
   const BREAK_EVEN_EPSILON = 0.01
@@ -1485,6 +1487,7 @@ function buildHistoricalFifoPreview(
   const notRequested = () => ({
     summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_pricing_not_requested'], reason: null },
     debug: undefined as NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalFifoPreviewDebug'],
+    previewClosedLots: [] as WalletClosedLot[],
   })
 
   if (newHistoricalPricedEvidence.length === 0) return notRequested()
@@ -1508,6 +1511,7 @@ function buildHistoricalFifoPreview(
     return {
       summary: { status: 'open_check', requested: true, baselineClosedLots: baselineClosedLots.length, previewClosedLots: baselineClosedLots.length, addedClosedLots: 0, baselineRealizedPnlUsd, previewRealizedPnlUsd: baselineRealizedPnlUsd, addedRealizedPnlUsd: null, baselineRealizedPnlPercent, previewRealizedPnlPercent: baselineRealizedPnlPercent, winningClosedLotsPreview: baselineClosedLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON).length, losingClosedLotsPreview: baselineClosedLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON).length, breakEvenClosedLotsPreview: baselineClosedLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON).length, uniqueTokensPreview: new Set(baselineClosedLots.map(l => `${l.chain}:${l.tokenAddress}`)).size, previewConfidence: 'low', readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['no_new_priced_historical_events_after_dedup'], reason: 'Historical candidates priced, but did not create additional matched closed lots.' },
       debug: { requested: true, baselinePricedEvents, newPricedHistoricalEvents: 0, combinedPricedEvents: baselinePricedEvents, baselineClosedLots: baselineClosedLots.length, previewClosedLots: baselineClosedLots.length, addedClosedLots: 0, baselineRealizedPnlUsd, previewRealizedPnlUsd: baselineRealizedPnlUsd, addedRealizedPnlUsd: null, winningClosedLotsPreview: baselineClosedLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON).length, losingClosedLotsPreview: baselineClosedLots.filter(l => l.realizedPnlUsd < -BREAK_EVEN_EPSILON).length, breakEvenClosedLotsPreview: baselineClosedLots.filter(l => Math.abs(l.realizedPnlUsd) <= BREAK_EVEN_EPSILON).length, unmatchedBuysPreview: 0, unmatchedSellsPreview: 0, samplePreviewClosedLots: [], sampleAddedClosedLots: [], skippedReasons: ['no_deduped_new_events'], reasons: ['no_new_priced_historical_events_after_dedup'] },
+      previewClosedLots: baselineClosedLots,
     }
   }
 
@@ -1559,6 +1563,7 @@ function buildHistoricalFifoPreview(
   return {
     summary: { status: previewStatus, requested: true, baselineClosedLots: baselineClosedLots.length, previewClosedLots: previewClosedLots.length, addedClosedLots, baselineRealizedPnlUsd, previewRealizedPnlUsd, addedRealizedPnlUsd, baselineRealizedPnlPercent, previewRealizedPnlPercent, winningClosedLotsPreview: winningPreview, losingClosedLotsPreview: losingPreview, breakEvenClosedLotsPreview: breakEvenPreview, uniqueTokensPreview, previewConfidence, readyForHistoricalTradeStatsPreview: previewClosedLots.length >= 1, safeToPromoteToPublicStats, missing, reason: addedClosedLots === 0 ? 'Historical candidates priced, but did not create additional matched closed lots.' : null },
     debug: { requested: true, baselinePricedEvents, newPricedHistoricalEvents, combinedPricedEvents: baselinePricedEvents + newPricedHistoricalEvents, baselineClosedLots: baselineClosedLots.length, previewClosedLots: previewClosedLots.length, addedClosedLots, baselineRealizedPnlUsd, previewRealizedPnlUsd, addedRealizedPnlUsd, winningClosedLotsPreview: winningPreview, losingClosedLotsPreview: losingPreview, breakEvenClosedLotsPreview: breakEvenPreview, unmatchedBuysPreview: previewFifoSummary.unmatchedBuys, unmatchedSellsPreview: previewFifoSummary.unmatchedSells, samplePreviewClosedLots: previewClosedLots.slice(0, 5).map(sampleClosedLotFmt), sampleAddedClosedLots: addedLots.slice(0, 5).map(sampleClosedLotFmt), skippedReasons: [], reasons: addedClosedLots > 0 ? ['preview_lots_added'] : ['no_additional_closed_lots'] },
+    previewClosedLots,
   }
 }
 
@@ -2918,10 +2923,41 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       : { summary: { status: 'not_requested' as const, requested: false, newSwapCandidateEvents: 0, pricedHistoricalCandidates: 0, unpricedHistoricalCandidates: 0, stableLegPricedEvents: 0, wethLegPricedEvents: 0, historicalPricedEvents: 0, priceAttemptLimitReached: false, readyForHistoricalFifoPreview: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, pricedEvidence: [] as WalletTxEvidence[] }
 
   // Phase 6D: Historical FIFO preview — run FIFO on baseline + new priced historical candidates
-  const { summary: walletHistoricalFifoPreviewSummary, debug: _historicalFifoPreviewDebug } =
+  const { summary: walletHistoricalFifoPreviewSummary, debug: _historicalFifoPreviewDebug, previewClosedLots: _hcPreviewClosedLots } =
     _runHistoricalCoverage && _hcNewPricedEvidence.length > 0
       ? buildHistoricalFifoPreview(_pricedEvidence, _hcNewPricedEvidence, _closedLots, walletTradeStatsSummary.realizedPnlUsd, walletTradeStatsSummary.realizedPnlPercent ?? null, walletHistoricalPricingPreviewSummary.unpricedHistoricalCandidates)
-      : { summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined }
+      : { summary: { status: 'not_requested' as const, requested: false, baselineClosedLots: 0, previewClosedLots: 0, addedClosedLots: 0, baselineRealizedPnlUsd: null, previewRealizedPnlUsd: null, addedRealizedPnlUsd: null, baselineRealizedPnlPercent: null, previewRealizedPnlPercent: null, winningClosedLotsPreview: 0, losingClosedLotsPreview: 0, breakEvenClosedLotsPreview: 0, uniqueTokensPreview: 0, previewConfidence: 'low' as const, readyForHistoricalTradeStatsPreview: false, safeToPromoteToPublicStats: false, missing: ['historical_coverage_not_requested'], reason: null }, debug: undefined, previewClosedLots: [] as WalletClosedLot[] }
+
+  // Phase 6E: Safe historical stats promotion
+  const _shouldPromote =
+    _runHistoricalCoverage &&
+    walletHistoricalFifoPreviewSummary.safeToPromoteToPublicStats === true &&
+    walletHistoricalFifoPreviewSummary.previewClosedLots > walletHistoricalFifoPreviewSummary.baselineClosedLots &&
+    walletHistoricalFifoPreviewSummary.previewRealizedPnlUsd !== null &&
+    isFinite(walletHistoricalFifoPreviewSummary.previewRealizedPnlUsd ?? NaN) &&
+    walletHistoricalFifoPreviewSummary.addedClosedLots > 0
+
+  const walletTradeStatsSource: WalletSnapshot['walletTradeStatsSource'] = _shouldPromote ? 'historical_promoted_preview' : 'base_sample'
+
+  let promotedLotSummary = walletLotSummary
+  let promotedTradeStatsSummary = walletTradeStatsSummary
+  if (_shouldPromote && _hcPreviewClosedLots.length > 0) {
+    const { summary: previewTradeStats } = buildTradeStatsSummary(_hcPreviewClosedLots, activityRequested)
+    promotedTradeStatsSummary = {
+      ...previewTradeStats,
+      winRatePercent: null,
+      readyForWalletScore: false,
+      missing: [...(previewTradeStats.missing ?? []), 'sample_size_below_win_rate_threshold'],
+    }
+    promotedLotSummary = {
+      ...walletLotSummary,
+      closedLots: walletHistoricalFifoPreviewSummary.previewClosedLots,
+      realizedPnlUsd: walletHistoricalFifoPreviewSummary.previewRealizedPnlUsd,
+      realizedPnlPercent: walletHistoricalFifoPreviewSummary.previewRealizedPnlPercent,
+      readyForTradeStats: true,
+      status: 'ok' as const,
+    }
+  }
 
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
@@ -3032,8 +3068,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletEvidenceSummary,
     walletSwapSummary,
     walletPriceEvidenceSummary,
-    walletLotSummary,
-    walletTradeStatsSummary,
+    walletLotSummary: promotedLotSummary,
+    walletTradeStatsSummary: promotedTradeStatsSummary,
+    walletTradeStatsSource,
     walletHistoricalCoverageSummary,
     walletHistoricalCandidateSummary,
     walletHistoricalPricingPreviewSummary,
