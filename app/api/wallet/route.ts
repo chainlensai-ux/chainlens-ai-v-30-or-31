@@ -36,6 +36,9 @@ export async function POST(req: Request) {
     const deepActivity = deepActivityFlag || includeActivityFlag
     const cacheMode: 'activity' | 'holdings' = (deepScan || deepActivity) ? 'activity' : 'holdings'
     const chainMode = body?.chainMode === 'base' || body?.chainMode === 'eth' || body?.chainMode === 'base_eth' || body?.chainMode === 'all_supported' ? body.chainMode : 'auto'
+    const historicalCoverageRequested = (body?.historicalCoverage === true || body?.historicalCoverage === 'true' || debug) && deepActivity
+    const maxHistoricalPages = Math.max(1, Math.min(5, Number(body?.maxHistoricalPages ?? 3) || 3))
+    const hcSuffix = historicalCoverageRequested ? `:hcv1p${maxHistoricalPages}` : ''
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
     const hasBearerToken = (req.headers.get('authorization') ?? '').startsWith('Bearer ')
     const allowDebugFresh = debugFresh && (process.env.NODE_ENV !== 'production' || hasBearerToken)
@@ -43,10 +46,13 @@ export async function POST(req: Request) {
     if (!/^0x[a-fA-F0-9]{40}$/.test(key)) {
       return NextResponse.json({ error: 'Invalid wallet address' }, { status: 400 })
     }
-    const cacheKey = `${key}:${cacheMode}:${WALLET_SNAPSHOT_SCHEMA_VERSION}`
+    const cacheKey = `${key}:${cacheMode}:${WALLET_SNAPSHOT_SCHEMA_VERSION}${hcSuffix}`
     const cachedRaw = allowDebugFresh || refresh || (debug && deepActivity) ? null : walletCache.get(cacheKey)
-    // Invalidate stale-schema entries missing walletTradeStatsSummary (pre-Phase-5 cache entries)
-    const cached = cachedRaw && typeof (cachedRaw.payload as any)?.walletTradeStatsSummary === 'object' ? cachedRaw : null
+    // Invalidate stale-schema entries missing walletTradeStatsSummary or walletHistoricalCoverageSummary
+    const cached = cachedRaw
+      && typeof (cachedRaw.payload as any)?.walletTradeStatsSummary === 'object'
+      && typeof (cachedRaw.payload as any)?.walletHistoricalCoverageSummary === 'object'
+      ? cachedRaw : null
     if (cachedRaw && !cached) walletCache.delete(cacheKey)
     if (cached && cached.exp > Date.now()) {
       const cacheAgeSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000)
@@ -77,7 +83,7 @@ export async function POST(req: Request) {
     }
     // Shallow-copy before mutating so snapshotMemCache reference is never corrupted
     // (fetchWalletSnapshot returns the same object it stores in its memory cache)
-    const snapshot: any = { ...(await fetchWalletSnapshot(address ?? '', { refresh, chain, deepScan, deepActivity, chainMode } satisfies WalletSnapshotOptions)) }
+    const snapshot: any = { ...(await fetchWalletSnapshot(address ?? '', { refresh, chain, deepScan, deepActivity, chainMode, historicalCoverage: historicalCoverageRequested, maxHistoricalPages } satisfies WalletSnapshotOptions)) }
     const providers: any = snapshot._diagnostics?.providers ?? {}
     const snapshotCacheDebug = snapshot._diagnostics?.snapshotCache ?? null
     if (debug) {
@@ -114,6 +120,7 @@ export async function POST(req: Request) {
         walletPriceAtTimeDebug: snapshot._diagnostics?.walletPriceAtTimeDebug ?? null,
         walletLotEngineDebug: snapshot._diagnostics?.walletLotEngineDebug ?? null,
         walletTradeStatsDebug: snapshot._diagnostics?.walletTradeStatsDebug ?? null,
+        walletHistoricalCoverageDebug: snapshot._diagnostics?.walletHistoricalCoverageDebug ?? null,
         walletActivityRequestDebug: {
           deepActivityRequested: deepActivity || deepScan,
           deepActivityFlagSent: deepActivityFlag,

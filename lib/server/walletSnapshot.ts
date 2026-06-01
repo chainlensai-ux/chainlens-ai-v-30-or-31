@@ -176,6 +176,24 @@ export type WalletSnapshot = {
     readyForWalletScore: boolean
     missing: string[]
   }
+  walletHistoricalCoverageSummary: {
+    status: 'not_requested' | 'open_check' | 'partial' | 'ok'
+    requested: boolean
+    pagesAttempted: number
+    maxPages: number
+    rawTransactions: number
+    rawLogEvents: number
+    normalizedEvents: number
+    walletSideEvents: number
+    swapLikeTransactions: number
+    pricedSwapCandidates: number | null
+    matchedClosedLotsBefore: number | null
+    matchedClosedLotsAfter: number | null
+    addedClosedLots: number | null
+    coverageLevel: 'none' | 'light' | 'medium' | 'deep'
+    missing: string[]
+    reason: string | null
+  }
   dataFreshness?: 'live' | 'cached' | 'partial'
   cacheAgeSeconds?: number | null
   _diagnostics?: {
@@ -417,6 +435,33 @@ export type WalletSnapshot = {
       sampleLosingLots: Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; confidence: string }>
       reasons: string[]
     }
+    walletHistoricalCoverageDebug?: {
+      requested: boolean
+      providersAttempted: string[]
+      pagesAttempted: number
+      pageSize: number
+      maxPages: number
+      cursorUsed: boolean
+      stoppedReason: string
+      rawTransactions: number
+      rawLogEvents: number
+      decodedTransferLogs: number
+      walletSideEvents: number
+      candidateSwapTxs: number
+      candidateSwapEvents: number
+      duplicateTxHashes: number
+      duplicateEvents: number
+      oldestTimestamp: string | null
+      newestTimestamp: string | null
+      chainCoverage: Record<string, { pages: number; transactions: number; events: number }>
+      providerErrorSamples: string[]
+      skippedReasons: string[]
+      sampleTxHashes: string[]
+      sampleSwapLikeTransactions: unknown[]
+      moralisHistoricalConfigured: boolean
+      moralisHistoricalAttempted: boolean
+      moralisReason: string
+    }
   }
 }
 
@@ -425,13 +470,21 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported' }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'; historicalCoverage?: boolean; maxHistoricalPages?: number }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
 const SNAPSHOT_SCHEMA_VERSION = 'v7'
 type SnapshotCacheEntry = { snapshot: WalletSnapshot; cachedAt: number; ttlMs: number }
 const snapshotMemCache = new Map<string, SnapshotCacheEntry>()
+
+const HISTORICAL_COVERAGE_TTL_MS = 10 * 60 * 1000
+type WalletHistoricalCoverageOutput = {
+  summary: WalletSnapshot['walletHistoricalCoverageSummary']
+  debug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
+}
+const historicalCoverageCache = new Map<string, { data: WalletHistoricalCoverageOutput; cachedAt: number }>()
+const historicalCoverageInFlight = new Map<string, Promise<WalletHistoricalCoverageOutput>>()
 
 const KNOWN_STABLE_WETH_CONTRACTS: Record<string, string> = {
   '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'WETH_ETH',
@@ -919,6 +972,142 @@ async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<
     const incoming = (recv?.transfers ?? []).slice(0, 125).map((t: Record<string, unknown>) => mapTransfer(t, 'buy'))
     return [...outgoing, ...incoming].filter(e => e.contract.startsWith('0x') && Number.isFinite(e.amount) && e.amount > 0)
   } catch { return [] }
+}
+
+async function fetchGoldrushHistoricalPage(
+  address: string,
+  chainName: string,
+  apiKey: string,
+  pageNum: number,
+  pageSize: number = 50,
+): Promise<{ pageNum: number; chain: string; httpStatus: number | null; rawItems: number; transferLogs: number; events: PnlEvent[]; error: string | null; newestTimestamp: string | null }> {
+  const result = { pageNum, chain: chainName, httpStatus: null as number | null, rawItems: 0, transferLogs: 0, events: [] as PnlEvent[], error: null as string | null, newestTimestamp: null as string | null }
+  try {
+    const url = new URL(`https://api.covalenthq.com/v1/${chainName}/address/${address}/transactions_v3/`)
+    url.searchParams.set('page-size', String(pageSize))
+    url.searchParams.set('page-number', String(pageNum))
+    url.searchParams.set('with-logs', 'true')
+    url.searchParams.set('no-spam', 'true')
+    const res = await fetch(url.toString(), { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(12_000) })
+    result.httpStatus = res.status
+    if (!res.ok) { result.error = `HTTP ${res.status}`; return result }
+    const json = await res.json()
+    const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items : []
+    result.rawItems = items.length
+    if (items.length === 0) return result
+    const lower = address.toLowerCase()
+    for (const it of items) {
+      const t = it as Record<string, unknown>
+      const txHash = typeof t.tx_hash === 'string' ? t.tx_hash : null
+      const timestamp = typeof t.block_signed_at === 'string' ? t.block_signed_at : null
+      const txFromAddress = typeof t.from_address === 'string' ? t.from_address.toLowerCase() : null
+      const txToAddress = typeof t.to_address === 'string' ? t.to_address.toLowerCase() : null
+      const txSucceeded = typeof t.successful === 'boolean' ? t.successful : null
+      if (timestamp && !result.newestTimestamp) result.newestTimestamp = timestamp
+      const logEvents: unknown[] = Array.isArray(t.log_events) ? t.log_events : []
+      for (const logEvent of logEvents) {
+        const le = logEvent as Record<string, unknown>
+        const decoded = le.decoded as Record<string, unknown> | null | undefined
+        if (!decoded || decoded.name !== 'Transfer') continue
+        const params = Array.isArray(decoded.params) ? (decoded.params as Record<string, unknown>[]) : []
+        const fromParam = params.find(p => p.name === 'from')
+        const toParam = params.find(p => p.name === 'to')
+        const valueParam = params.find(p => p.name === 'value')
+        if (!fromParam || !toParam || !valueParam) continue
+        result.transferLogs++
+        const contract = String(le.sender_address ?? '').toLowerCase()
+        const symbol = String(le.sender_contract_ticker_symbol ?? '?')
+        const decimals = typeof le.sender_contract_decimals === 'number' ? le.sender_contract_decimals : 18
+        const from = String(fromParam.value ?? '').toLowerCase()
+        const to = String(toParam.value ?? '').toLowerCase()
+        const rawValue = String(valueParam.value ?? '0')
+        const amount = Math.abs(parseFloat(rawValue) / Math.pow(10, decimals))
+        const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
+        if (contract.startsWith('0x') && amount > 0) {
+          result.events.push({ contract, symbol, direction, amount, amountRaw: rawValue !== '0' ? rawValue : null, tokenDecimals: decimals, usdValue: null, txHash, timestamp, fromAddress: from, toAddress: to, chain: chainName, txFromAddress, txToAddress, txSucceeded })
+        }
+      }
+    }
+    return result
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    result.error = msg.replace(/key|secret|bearer/gi, '[redacted]').slice(0, 120)
+    return result
+  }
+}
+
+async function buildWalletHistoricalCoverage(
+  address: string,
+  apiKey: string,
+  maxPages: number,
+  matchedClosedLotsBefore: number,
+): Promise<WalletHistoricalCoverageOutput> {
+  const emptyDebug = (reason: string): WalletHistoricalCoverageOutput => ({
+    summary: { status: 'open_check', requested: true, pagesAttempted: 0, maxPages, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: ['provider_not_configured'], reason },
+    debug: { requested: true, providersAttempted: [], pagesAttempted: 0, pageSize: 50, maxPages, cursorUsed: false, stoppedReason: reason, rawTransactions: 0, rawLogEvents: 0, decodedTransferLogs: 0, walletSideEvents: 0, candidateSwapTxs: 0, candidateSwapEvents: 0, duplicateTxHashes: 0, duplicateEvents: 0, oldestTimestamp: null, newestTimestamp: null, chainCoverage: {}, providerErrorSamples: [], skippedReasons: [reason], sampleTxHashes: [], sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
+  })
+  if (!apiKey) return emptyDebug('goldrush_not_configured')
+
+  const pageSize = 50
+  const chains = ['base-mainnet', 'eth-mainnet'] as const
+  const chainCoverage: Record<string, { pages: number; transactions: number; events: number }> = {}
+  const allEvents: PnlEvent[] = []
+  const errorSamples: string[] = []
+  let totalRawTx = 0
+  let totalTransferLogs = 0
+  let pagesAttempted = 0
+  let stoppedReason = 'max_pages_reached'
+  const newestTimestamps: string[] = []
+
+  for (const chain of chains) {
+    chainCoverage[chain] = { pages: 0, transactions: 0, events: 0 }
+    for (let page = 0; page < maxPages; page++) {
+      pagesAttempted++
+      const r = await fetchGoldrushHistoricalPage(address, chain, apiKey, page)
+      if (r.error) { errorSamples.push(`${chain} p${page}: ${r.error}`); stoppedReason = 'provider_error'; break }
+      chainCoverage[chain].pages++
+      chainCoverage[chain].transactions += r.rawItems
+      chainCoverage[chain].events += r.events.length
+      totalRawTx += r.rawItems
+      totalTransferLogs += r.transferLogs
+      allEvents.push(...r.events)
+      if (r.newestTimestamp) newestTimestamps.push(r.newestTimestamp)
+      if (r.rawItems < pageSize || r.rawItems === 0) { stoppedReason = 'page_partial_or_empty'; break }
+    }
+  }
+
+  // Deduplicate by txHash+contract+direction+rounded-amount
+  const seen = new Set<string>()
+  let dupEvents = 0
+  const uniqueEvents: PnlEvent[] = []
+  for (const ev of allEvents) {
+    const k = `${ev.txHash}|${ev.contract}|${ev.direction}|${Math.round(ev.amount * 1e6)}`
+    if (seen.has(k)) { dupEvents++; continue }
+    seen.add(k)
+    uniqueEvents.push(ev)
+  }
+  const allTxHashes = new Set<string>(uniqueEvents.map(e => e.txHash).filter(Boolean) as string[])
+  const walletSideEvents = uniqueEvents.filter(e => e.direction !== 'unknown').length
+
+  // swap-like: tx with both buy and sell wallet events
+  const txDirs = new Map<string, Set<string>>()
+  for (const ev of uniqueEvents) {
+    if (!ev.txHash || ev.direction === 'unknown') continue
+    if (!txDirs.has(ev.txHash)) txDirs.set(ev.txHash, new Set())
+    txDirs.get(ev.txHash)!.add(ev.direction)
+  }
+  const swapLikeTxs = [...txDirs.values()].filter(d => d.has('buy') && d.has('sell')).length
+  const swapLikeEvents = uniqueEvents.filter(ev => ev.txHash && txDirs.get(ev.txHash)?.has('buy') && txDirs.get(ev.txHash)?.has('sell')).length
+
+  const coverageLevel: 'none' | 'light' | 'medium' | 'deep' = uniqueEvents.length >= 200 ? 'deep' : uniqueEvents.length >= 80 ? 'medium' : uniqueEvents.length > 0 ? 'light' : 'none'
+  const status: 'ok' | 'partial' | 'open_check' = uniqueEvents.length > 0 ? (errorSamples.length === 0 && stoppedReason !== 'provider_error' ? 'ok' : 'partial') : 'open_check'
+  const newestTimestamp = newestTimestamps.length > 0 ? newestTimestamps[0] : null
+  const oldestTimestamp = newestTimestamps.length > 1 ? newestTimestamps[newestTimestamps.length - 1] : newestTimestamp
+
+  return {
+    summary: { status, requested: true, pagesAttempted, maxPages, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, normalizedEvents: uniqueEvents.length, walletSideEvents, swapLikeTransactions: swapLikeTxs, pricedSwapCandidates: null, matchedClosedLotsBefore, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel, missing: errorSamples.length > 0 ? ['provider_errors'] : [], reason: errorSamples.length > 0 ? 'One or more provider pages failed.' : null },
+    debug: { requested: true, providersAttempted: ['goldrush'], pagesAttempted, pageSize, maxPages, cursorUsed: false, stoppedReason, rawTransactions: totalRawTx, rawLogEvents: totalTransferLogs, decodedTransferLogs: totalTransferLogs, walletSideEvents, candidateSwapTxs: swapLikeTxs, candidateSwapEvents: swapLikeEvents, duplicateTxHashes: 0, duplicateEvents: dupEvents, oldestTimestamp, newestTimestamp, chainCoverage, providerErrorSamples: errorSamples.slice(0, 4), skippedReasons: [], sampleTxHashes: [...allTxHashes].slice(0, 5), sampleSwapLikeTransactions: [], moralisHistoricalConfigured: false, moralisHistoricalAttempted: false, moralisReason: 'moralis_history_not_wired_yet' },
+  }
 }
 
 function buildTxEvidenceFromEvents(events: PnlEvent[], requested: boolean): {
@@ -1926,7 +2115,8 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto' } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages } = options
+  const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
   // activityRequested: true when either deepScan (full holdings+activity) or deepActivity (activity-only) is set
   const activityRequested = deepScan || deepActivity
   // Separate address normalisation from cache key so regex validation always checks the address portion only
@@ -2226,6 +2416,40 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
   const { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
   const { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
+
+  // Phase 6A: Historical coverage diagnostics — runs only when activityRequested + historicalCoverage requested
+  const _runHistoricalCoverage = activityRequested && historicalCoverage
+  let walletHistoricalCoverageSummary: WalletSnapshot['walletHistoricalCoverageSummary']
+  let _historicalCoverageDebug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
+  if (_runHistoricalCoverage) {
+    const hcCacheKey = `wallet:historicalCoverage:v1:${addrNorm}:${clampedMaxHistoricalPages}`
+    const hcCached = historicalCoverageCache.get(hcCacheKey)
+    if (hcCached && Date.now() - hcCached.cachedAt < HISTORICAL_COVERAGE_TTL_MS) {
+      walletHistoricalCoverageSummary = hcCached.data.summary
+      _historicalCoverageDebug = hcCached.data.debug
+    } else {
+      const existingInFlight = historicalCoverageInFlight.get(hcCacheKey)
+      let hcResult: WalletHistoricalCoverageOutput
+      if (existingInFlight) {
+        hcResult = await existingInFlight
+      } else {
+        const hcPromise = buildWalletHistoricalCoverage(addrNorm, GOLDRUSH_KEY, clampedMaxHistoricalPages, walletTradeStatsSummary.closedLots)
+        historicalCoverageInFlight.set(hcCacheKey, hcPromise)
+        try {
+          hcResult = await hcPromise
+          historicalCoverageCache.set(hcCacheKey, { data: hcResult, cachedAt: Date.now() })
+        } finally {
+          historicalCoverageInFlight.delete(hcCacheKey)
+        }
+      }
+      walletHistoricalCoverageSummary = hcResult!.summary
+      _historicalCoverageDebug = hcResult!.debug
+    }
+  } else {
+    walletHistoricalCoverageSummary = { status: 'not_requested', requested: false, pagesAttempted: 0, maxPages: 0, rawTransactions: 0, rawLogEvents: 0, normalizedEvents: 0, walletSideEvents: 0, swapLikeTransactions: 0, pricedSwapCandidates: null, matchedClosedLotsBefore: null, matchedClosedLotsAfter: null, addedClosedLots: null, coverageLevel: 'none', missing: [], reason: null }
+    _historicalCoverageDebug = undefined
+  }
+
   const _grEthAttempted = activityRequested && Boolean(GOLDRUSH_KEY) && useEthAlchemy
   const _grBaseAttempted = activityRequested && Boolean(GOLDRUSH_KEY)
   const _alchemyAttempted = activityRequested && Boolean(ALCHEMY_BASE_KEY)
@@ -2337,6 +2561,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletPriceEvidenceSummary,
     walletLotSummary,
     walletTradeStatsSummary,
+    walletHistoricalCoverageSummary,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -2453,6 +2678,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletPriceAtTimeDebug: _priceAtTimeDebug,
       walletLotEngineDebug: _lotEngineDebug,
       walletTradeStatsDebug: _tradeStatsDebug,
+      walletHistoricalCoverageDebug: _historicalCoverageDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
