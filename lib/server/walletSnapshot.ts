@@ -637,6 +637,11 @@ export type WalletSnapshot = {
       fallbackDedupeRemoved: number
       fallbackPaginationReason: string
       fallbackPaginationStoppedReason: string
+      fallbackClosedLotsAfterPage1: number
+      fallbackClosedCostBasisAfterPage1: number | null
+      fallbackRealizedPnlAfterPage1: number | null
+      fallbackMeaningfulEvidenceReached: boolean
+      fallbackMeaningfulEvidenceReason: string
     }
   }
 }
@@ -3011,6 +3016,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     fallbackPagesAttempted: number; fallbackPagesUsed: number; fallbackCursorsSeen: number
     fallbackRawTotal: number; fallbackNormalizedTotal: number; fallbackDedupeRemoved: number
     fallbackPaginationReason: string; fallbackPaginationStoppedReason: string
+    fallbackClosedLotsAfterPage1: number; fallbackClosedCostBasisAfterPage1: number | null
+    fallbackRealizedPnlAfterPage1: number | null
+    fallbackMeaningfulEvidenceReached: boolean; fallbackMeaningfulEvidenceReason: string
   }
   const _grDiag = grBase.diag as GoldrushHistoryDiag
   let _moralisFbDebug: _MoralisFbDebug = {
@@ -3034,6 +3042,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     fallbackPagesAttempted: 0, fallbackPagesUsed: 0, fallbackCursorsSeen: 0,
     fallbackRawTotal: 0, fallbackNormalizedTotal: 0, fallbackDedupeRemoved: 0,
     fallbackPaginationReason: 'not_attempted', fallbackPaginationStoppedReason: 'not_attempted',
+    fallbackClosedLotsAfterPage1: 0, fallbackClosedCostBasisAfterPage1: null, fallbackRealizedPnlAfterPage1: null,
+    fallbackMeaningfulEvidenceReached: false, fallbackMeaningfulEvidenceReason: 'not_attempted',
   }
   const _shouldTryMoralisFallback = activityRequested && !historicalCoverage && events.length === 0 && Boolean(process.env.MORALIS_API_KEY)
   if (_shouldTryMoralisFallback) {
@@ -3151,13 +3161,41 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
   let { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
 
-  // Phase 5B: Moralis multi-page fallback — fetch extra pages when initial FIFO has no closed lots
+  // Capture page-1 FIFO state for pagination debug telemetry
+  if (_moralisFbDebug.fallbackActivityUsed) {
+    _moralisFbDebug = {
+      ..._moralisFbDebug,
+      fallbackClosedLotsAfterPage1: walletLotSummary.closedLots,
+      fallbackClosedCostBasisAfterPage1: walletLotSummary.totalCostBasisClosedUsd,
+      fallbackRealizedPnlAfterPage1: walletLotSummary.realizedPnlUsd,
+      fallbackMeaningfulEvidenceReached: false,
+      fallbackMeaningfulEvidenceReason: 'not_evaluated',
+    }
+  }
+
+  // Helper: true only when enough closed-lot evidence exists to stop pagination.
+  // These are pagination stop thresholds only — NOT wallet score or win-rate rules.
+  const hasMeaningfulClosedLotEvidence = (
+    lotSummary: WalletSnapshot['walletLotSummary'],
+  ): { result: boolean; reason: string } => {
+    const c = lotSummary.closedLots
+    const cb = lotSummary.totalCostBasisClosedUsd ?? 0
+    const pnl = Math.abs(lotSummary.realizedPnlUsd ?? 0)
+    if (c >= 10) return { result: true, reason: 'closedLots_gte_10' }
+    if (cb >= 500) return { result: true, reason: 'costBasis_gte_500' }
+    if (pnl >= 50) return { result: true, reason: 'realizedPnl_gte_50' }
+    if (c >= 5 && cb >= 100) return { result: true, reason: 'closedLots_gte_5_and_costBasis_gte_100' }
+    return { result: false, reason: c === 0 ? 'no_closed_lots' : 'dust_sample' }
+  }
+
+  // Phase 5B: Moralis multi-page fallback — continue paginating until meaningful evidence or budget exhausted.
+  // Enters when: fallback was used, not meaningful yet, has some signal (closed or unmatched lots), cursor available.
   if (
     _moralisFbDebug.fallbackActivityUsed &&
     activityRequested &&
     !historicalCoverage &&
-    walletLotSummary.closedLots === 0 &&
-    (walletLotSummary.unmatchedSells > 0 || walletLotSummary.unmatchedBuys > 0) &&
+    !hasMeaningfulClosedLotEvidence(walletLotSummary).result &&
+    (walletLotSummary.unmatchedSells > 0 || walletLotSummary.unmatchedBuys > 0 || walletLotSummary.closedLots > 0) &&
     _fbNextCursor != null
   ) {
     const maxFbPages = clampedMaxFallbackPages
@@ -3169,7 +3207,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     let fbRawTotal = _moralisFbDebug.fallbackRawTotal
     let fbNormalizedTotal = _moralisFbDebug.fallbackNormalizedTotal
     let fbDedupeRemoved = 0
-    let fbPaginationStoppedReason = 'budget_exhausted'
+    let fbPaginationStoppedReason = 'max_pages_reached'
+    let fbMeaningfulEvidenceReached = false
+    let fbMeaningfulEvidenceReason = 'not_reached'
     const seenKeys = new Set<string>(events.map(e => `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`))
 
     while (fbPagesAttempted < maxFbPages && fbCursor != null) {
@@ -3177,7 +3217,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fbCursorsSeen++
       const pageResult = await fetchMoralisTransfers(addr, _fbChain, 100, fbCursor)
       if (!pageResult.usable || pageResult.items.length === 0) {
-        fbPaginationStoppedReason = pageResult.usable ? 'no_more_rows' : 'provider_error_page' + fbPagesAttempted
+        fbPaginationStoppedReason = pageResult.usable ? 'no_cursor' : 'provider_error_keep_existing'
         break
       }
       fbRawTotal += pageResult.rawCount
@@ -3189,7 +3229,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         if (!seenKeys.has(k)) { seenKeys.add(k); newEvents.push(e) }
       }
       fbDedupeRemoved += pageEvents.length - newEvents.length
-      if (newEvents.length === 0) { fbPaginationStoppedReason = 'all_deduped'; break }
+      if (newEvents.length === 0) { fbPaginationStoppedReason = 'no_new_normalized_events'; break }
       fbPagesUsed++
       allFbEvents = [...allFbEvents, ...newEvents]
       fbCursor = pageResult.nextCursor
@@ -3199,8 +3239,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested))
       ;({ summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested))
       ;({ summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested))
-      if (walletLotSummary.closedLots > 0) { fbPaginationStoppedReason = 'closed_lots_found'; break }
-      if (fbCursor == null) { fbPaginationStoppedReason = 'no_more_pages'; break }
+      const meaningfulCheck = hasMeaningfulClosedLotEvidence(walletLotSummary)
+      if (meaningfulCheck.result) {
+        fbPaginationStoppedReason = 'meaningful_closed_lot_evidence_found'
+        fbMeaningfulEvidenceReason = meaningfulCheck.reason
+        fbMeaningfulEvidenceReached = true
+        break
+      }
+      if (fbCursor == null) { fbPaginationStoppedReason = 'no_cursor'; break }
     }
     events = allFbEvents
     _moralisFbDebug = {
@@ -3214,13 +3260,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fallbackDedupeRemoved: fbDedupeRemoved,
       fallbackPaginationReason: 'multi_page_attempted',
       fallbackPaginationStoppedReason: fbPaginationStoppedReason,
+      fallbackMeaningfulEvidenceReached: fbMeaningfulEvidenceReached,
+      fallbackMeaningfulEvidenceReason: fbMeaningfulEvidenceReason,
     }
   } else if (_moralisFbDebug.fallbackActivityUsed) {
-    const p1Reason = walletLotSummary.closedLots > 0 ? 'closed_lots_on_page1'
-      : _fbNextCursor == null ? 'no_cursor_available'
+    const p1Meaningful = hasMeaningfulClosedLotEvidence(walletLotSummary)
+    const p1Reason = p1Meaningful.result ? 'meaningful_closed_lot_evidence_found'
+      : _fbNextCursor == null ? 'no_cursor'
       : walletLotSummary.closedLots === 0 && walletLotSummary.unmatchedSells === 0 && walletLotSummary.unmatchedBuys === 0 ? 'no_unmatched_events'
-      : 'budget_limit_1'
-    _moralisFbDebug = { ..._moralisFbDebug, fallbackPaginationReason: 'page1_only', fallbackPaginationStoppedReason: p1Reason }
+      : 'max_pages_reached'
+    _moralisFbDebug = {
+      ..._moralisFbDebug,
+      fallbackPaginationReason: 'page1_only',
+      fallbackPaginationStoppedReason: p1Reason,
+      fallbackMeaningfulEvidenceReached: p1Meaningful.result,
+      fallbackMeaningfulEvidenceReason: p1Meaningful.result ? p1Meaningful.reason : 'not_reached',
+    }
   }
 
   // Phase 6A: Historical coverage diagnostics — runs only when activityRequested + historicalCoverage requested

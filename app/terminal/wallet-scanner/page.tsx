@@ -1080,8 +1080,13 @@ export default function WalletScannerPage() {
                     </div>
 
                     {!isOpenCheck && (
-                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.4 }}>
+                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: ts.sampleSizeLabel === 'insufficient' ? '6px' : '14px', lineHeight: 1.4 }}>
                         Closed-lot sample only — does not include current open holdings.
+                      </div>
+                    )}
+                    {!isOpenCheck && ts.sampleSizeLabel === 'insufficient' && (
+                      <div style={{ fontSize: '10px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.4 }}>
+                        CORTEX found a small matched trade sample, but not enough meaningful closed-lot evidence yet.
                       </div>
                     )}
 

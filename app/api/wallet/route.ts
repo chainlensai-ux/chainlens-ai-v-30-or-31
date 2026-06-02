@@ -376,6 +376,11 @@ export async function POST(req: Request) {
               fallbackDedupeRemoved: fb.fallbackDedupeRemoved,
               fallbackPaginationReason: fb.fallbackPaginationReason,
               fallbackPaginationStoppedReason: fb.fallbackPaginationStoppedReason,
+              fallbackClosedLotsAfterPage1: fb.fallbackClosedLotsAfterPage1,
+              fallbackClosedCostBasisAfterPage1: fb.fallbackClosedCostBasisAfterPage1 ?? null,
+              fallbackRealizedPnlAfterPage1: fb.fallbackRealizedPnlAfterPage1 ?? null,
+              fallbackMeaningfulEvidenceReached: fb.fallbackMeaningfulEvidenceReached,
+              fallbackMeaningfulEvidenceReason: fb.fallbackMeaningfulEvidenceReason,
             }
           })(),
         },
