@@ -666,6 +666,16 @@ export type WalletSnapshot = {
       dedupRemoved: number
       capLimit: number
     }
+    walletSwapEnrichmentDebug?: {
+      skipped: boolean
+      reason: string
+      candidateTxCount: number
+      receiptsFetched: number
+      enrichedTxCount: number
+      cacheHits: number
+      errors: number
+      enrichedTxHashes: string[]
+    }
   }
 }
 
@@ -707,6 +717,23 @@ const KNOWN_DEX_ROUTERS: Record<string, string> = {
   '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc': 'UniswapUniversalRouter_Base',
   '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43': 'Aerodrome',
 }
+
+const EXTENDED_DEX_ROUTERS: Record<string, string> = {
+  ...KNOWN_DEX_ROUTERS,
+  '0xdef1c0ded9bec7f1a1670819833240f027b25eff': '0xProtocol_ETH',
+  '0xdef1abe32c034e558cdd535791643c58a13acc10': '0xProtocol_Base',
+  '0x1111111254eeb25477b68fb85ed929f73a960582': '1inch_v5',
+  '0x111111125421ca6dc452d289314280a0f8842a65': '1inch_v6',
+  '0xdef171fe48cf0115b1d80b88dc8eab59176fee57': 'Paraswap',
+  '0x99a58482bd75cbab83b27ec03ca68ff489b5788f': 'CurveRouter',
+  '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f': 'SushiswapRouter',
+  '0x6131b5fae19ea4f9d964eac0408e4408b66337b5': 'KyberSwap',
+}
+
+const SWAP_ENRICHMENT_TTL_MS = 45 * 60 * 1000
+const swapEnrichmentReceiptCache = new Map<string, { data: { isSwap: boolean; reason: string }; exp: number }>()
+
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 
 const STABLE_USD_CONTRACTS: Record<string, true> = {
   '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,
@@ -759,6 +786,123 @@ async function alchemyRpc(url: string, method: string, params: unknown[]) {
   })
   const json = await res.json()
   return json.result ?? null
+}
+
+async function enrichSwapCandidatesFromReceipts(
+  evidenceWithDetection: WalletTxEvidence[],
+  walletAddress: string,
+  alchemyUrl: string,
+  activityRequested: boolean,
+): Promise<{
+  enrichedEvidence: WalletTxEvidence[]
+  debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapEnrichmentDebug']>
+}> {
+  const emptyDebug = (reason: string) => ({
+    skipped: true, reason,
+    candidateTxCount: 0, receiptsFetched: 0, enrichedTxCount: 0, cacheHits: 0, errors: 0,
+    enrichedTxHashes: [] as string[],
+  })
+
+  if (!activityRequested || !alchemyUrl) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('activity_not_requested') }
+
+  const existingSwapCount = evidenceWithDetection.filter(e => e.swapDetection?.isSwapCandidate === true).length
+  if (existingSwapCount > 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('swap_candidates_already_present') }
+
+  const walletLower = walletAddress.toLowerCase()
+  const seenTxHashes = new Set<string>()
+  const candidateTxHashes: string[] = []
+  for (const e of evidenceWithDetection) {
+    if (!e.txHash || !e.txFromAddress) continue
+    if (e.swapDetection?.isSwapCandidate === true) continue
+    if (e.txFromAddress.toLowerCase() !== walletLower) continue
+    if (e.direction !== 'buy' && e.direction !== 'unknown') continue
+    if (seenTxHashes.has(e.txHash)) continue
+    seenTxHashes.add(e.txHash)
+    candidateTxHashes.push(e.txHash)
+    if (candidateTxHashes.length >= 10) break
+  }
+
+  if (candidateTxHashes.length === 0) return { enrichedEvidence: evidenceWithDetection, debug: emptyDebug('no_wallet_initiated_candidates') }
+
+  const toFetch = candidateTxHashes.slice(0, 8)
+  const now = Date.now()
+  let receiptsFetched = 0
+  let cacheHits = 0
+  let errors = 0
+  const enrichedTxSet = new Set<string>()
+  const urlSuffix = alchemyUrl.slice(-8)
+
+  for (const txHash of toFetch) {
+    const cacheKey = `${urlSuffix}:${txHash}`
+    const cached = swapEnrichmentReceiptCache.get(cacheKey)
+    if (cached && cached.exp > now) {
+      cacheHits++
+      if (cached.data.isSwap) enrichedTxSet.add(txHash)
+      continue
+    }
+    try {
+      const receipt = await alchemyRpc(alchemyUrl, 'eth_getTransactionReceipt', [txHash])
+      receiptsFetched++
+      if (!receipt) {
+        swapEnrichmentReceiptCache.set(cacheKey, { data: { isSwap: false, reason: 'no_receipt' }, exp: now + SWAP_ENRICHMENT_TTL_MS })
+        continue
+      }
+      let isSwap = false
+      let enrichReason = 'no_swap_evidence'
+      const txTo = ((receipt.to as string) ?? '').toLowerCase()
+      if (txTo && EXTENDED_DEX_ROUTERS[txTo]) {
+        isSwap = true
+        enrichReason = `router_match:${EXTENDED_DEX_ROUTERS[txTo]}`
+      }
+      if (!isSwap && Array.isArray(receipt.logs)) {
+        for (const log of receipt.logs as Array<{ topics?: string[]; address?: string }>) {
+          if (!log.topics || log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue
+          if (log.topics.length < 3) continue
+          const fromPadded = log.topics[1]?.toLowerCase() ?? ''
+          const fromAddr = '0x' + fromPadded.slice(-40)
+          if (fromAddr === walletLower) {
+            isSwap = true
+            enrichReason = 'outbound_erc20_from_wallet_in_receipt'
+            break
+          }
+        }
+      }
+      swapEnrichmentReceiptCache.set(cacheKey, { data: { isSwap, reason: enrichReason }, exp: now + SWAP_ENRICHMENT_TTL_MS })
+      if (isSwap) enrichedTxSet.add(txHash)
+    } catch {
+      errors++
+    }
+  }
+
+  if (enrichedTxSet.size === 0) {
+    return {
+      enrichedEvidence: evidenceWithDetection,
+      debug: { skipped: false, reason: 'no_swap_evidence_found', candidateTxCount: toFetch.length, receiptsFetched, enrichedTxCount: 0, cacheHits, errors, enrichedTxHashes: [] },
+    }
+  }
+
+  const enrichedTxHashes: string[] = []
+  const enrichedEvidence: WalletTxEvidence[] = evidenceWithDetection.map(e => {
+    if (!e.txHash || !enrichedTxSet.has(e.txHash)) return e
+    if (e.swapDetection?.isSwapCandidate === true) return e
+    if (!enrichedTxHashes.includes(e.txHash)) enrichedTxHashes.push(e.txHash)
+    return {
+      ...e,
+      swapDetection: {
+        isSwapCandidate: true,
+        confidence: 'medium' as const,
+        eventKind: 'swap_candidate' as const,
+        reason: 'Receipt enrichment: router match or outbound ERC20 payment leg detected',
+        matchedProtocol: e.txMatchedRouterProtocol ?? null,
+        matchedAddress: null,
+      } satisfies WalletSwapDetection,
+    }
+  })
+
+  return {
+    enrichedEvidence,
+    debug: { skipped: false, reason: 'enriched', candidateTxCount: toFetch.length, receiptsFetched, enrichedTxCount: enrichedTxSet.size, cacheHits, errors, enrichedTxHashes },
+  }
 }
 
 async function getFirstTxOnChain(address: string, alchemyUrl: string): Promise<Date | null> {
@@ -3246,6 +3390,21 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : 'PnL unavailable — historical cost basis coverage is too low.') : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
   let { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested, activityProviderUnavailable)
   let { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
+  // Receipt enrichment: runs only when swap detection found nothing and events exist
+  const _shouldEnrich = activityRequested && walletSwapSummary.swapCandidateEvents === 0 && walletEvidenceSummary.totalEvents > 0
+  const _enrichAlchemyUrl = useEthAlchemy ? ethUrl : baseUrl
+  let _swapEnrichmentDebug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletSwapEnrichmentDebug']>
+  if (_shouldEnrich) {
+    const enrichResult = await enrichSwapCandidatesFromReceipts(_swapEvidenceWithDetection, addrNorm, _enrichAlchemyUrl, activityRequested)
+    _swapEvidenceWithDetection = enrichResult.enrichedEvidence
+    _swapEnrichmentDebug = enrichResult.debug
+    if (enrichResult.debug.enrichedTxCount > 0) {
+      walletSwapSummary = { ...walletSwapSummary, swapCandidateEvents: walletSwapSummary.swapCandidateEvents + enrichResult.debug.enrichedTxCount, readyForPriceAtTime: true }
+    }
+  } else {
+    const _skipReason = !activityRequested ? 'activity_not_requested' : walletSwapSummary.swapCandidateEvents > 0 ? 'swap_candidates_already_present' : 'no_events'
+    _swapEnrichmentDebug = { skipped: true, reason: _skipReason, candidateTxCount: 0, receiptsFetched: 0, enrichedTxCount: 0, cacheHits: 0, errors: 0, enrichedTxHashes: [] }
+  }
   let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
   let { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
   let { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
@@ -3749,6 +3908,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         dedupRemoved: _budgetEventsBefore - _budgetEventsAfterDedup,
         capLimit: _ACTIVITY_MAX_EVENTS,
       },
+      walletSwapEnrichmentDebug: _swapEnrichmentDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
