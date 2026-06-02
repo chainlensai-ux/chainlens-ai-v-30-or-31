@@ -658,6 +658,14 @@ export type WalletSnapshot = {
       fallbackMeaningfulEvidenceReached: boolean
       fallbackMeaningfulEvidenceReason: string
     }
+    walletBudgetDebug?: {
+      eventsBefore: number
+      eventsAfterDedup: number
+      eventsAfterCap: number
+      budgetCapped: boolean
+      dedupRemoved: number
+      capLimit: number
+    }
   }
 }
 
@@ -3188,6 +3196,19 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const fallbackActivityUsed = _moralisFbDebug.fallbackActivityUsed
   const fallbackActivityReason = _moralisFbDebug.fallbackActivityReason
   const activityProviderUnavailable = activityRequested && primaryActivityFailed && events.length === 0
+  // Budget guard: dedup + cap events before pipeline to limit credit burn on large wallets
+  const _ACTIVITY_MAX_EVENTS = 500
+  const _budgetEventsBefore = events.length
+  const _seenBudgetKeys = new Set<string>()
+  const _dedupedBudgetEvents: PnlEvent[] = []
+  for (const e of events) {
+    const k = `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+    if (!_seenBudgetKeys.has(k)) { _seenBudgetKeys.add(k); _dedupedBudgetEvents.push(e) }
+  }
+  const _budgetEventsAfterDedup = _dedupedBudgetEvents.length
+  const _budgetCapped = _dedupedBudgetEvents.length > _ACTIVITY_MAX_EVENTS
+  events = _dedupedBudgetEvents.slice(0, _ACTIVITY_MAX_EVENTS)
+  const _budgetEventsAfterCap = events.length
   const byToken = new Map<string, PnlEvent[]>()
   for (const e of events.slice(0, 250)) byToken.set(e.contract, [...(byToken.get(e.contract) ?? []), e])
   const pnlTokens: WalletSnapshot['estimatedPnl']['tokens'] = []
@@ -3720,6 +3741,14 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       walletHistoricalPricingPreviewDebug: _historicalPricingPreviewDebug,
       walletHistoricalFifoPreviewDebug: _historicalFifoPreviewDebug,
       walletActivityFallbackDebug: { ..._moralisFbDebug, finalEvidenceStatus: walletEvidenceSummary.status },
+      walletBudgetDebug: {
+        eventsBefore: _budgetEventsBefore,
+        eventsAfterDedup: _budgetEventsAfterDedup,
+        eventsAfterCap: _budgetEventsAfterCap,
+        budgetCapped: _budgetCapped,
+        dedupRemoved: _budgetEventsBefore - _budgetEventsAfterDedup,
+        capLimit: _ACTIVITY_MAX_EVENTS,
+      },
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
