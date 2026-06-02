@@ -310,6 +310,47 @@ function safeNum(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
+function closedTradeSamplePnlStats(data: WalletResult, side: 'win' | 'loss'): { average: number; count: number } | null {
+  const samples = data.walletClosedTradeSamples ?? []
+  const pnls = samples
+    .map(s => safeNum(s.realizedPnlUsd))
+    .filter((pnl): pnl is number => pnl !== null && (side === 'win' ? pnl > 0 : pnl < 0))
+  if (pnls.length === 0) return null
+  return { average: pnls.reduce((sum, pnl) => sum + pnl, 0) / pnls.length, count: pnls.length }
+}
+
+function deriveAverageMatchedLossUsd(data: WalletResult): number | null {
+  const ts = data.walletTradeStatsSummary
+  if (!ts || ts.losingClosedLots <= 0) return null
+
+  const sampleStats = closedTradeSamplePnlStats(data, 'loss')
+  if (sampleStats !== null && sampleStats.count === ts.losingClosedLots) return sampleStats.average
+
+  const avgPnlPerClosedLot = safeNum(ts.avgPnlUsdPerClosedLot)
+  if (ts.losingClosedLots === ts.closedLots && avgPnlPerClosedLot !== null && avgPnlPerClosedLot < 0) {
+    return avgPnlPerClosedLot
+  }
+
+  const backendAvgLoss = safeNum(data.walletIntelligence?.pnl?.avgLoss)
+  return backendAvgLoss !== null && backendAvgLoss < 0 ? backendAvgLoss : null
+}
+
+function deriveAverageMatchedWinUsd(data: WalletResult): number | null {
+  const ts = data.walletTradeStatsSummary
+  if (!ts || ts.winningClosedLots <= 0) return null
+
+  const sampleStats = closedTradeSamplePnlStats(data, 'win')
+  if (sampleStats !== null && sampleStats.count === ts.winningClosedLots) return sampleStats.average
+
+  const avgPnlPerClosedLot = safeNum(ts.avgPnlUsdPerClosedLot)
+  if (ts.winningClosedLots === ts.closedLots && avgPnlPerClosedLot !== null && avgPnlPerClosedLot > 0) {
+    return avgPnlPerClosedLot
+  }
+
+  const backendAvgWin = safeNum(data.walletIntelligence?.pnl?.avgWin)
+  return backendAvgWin !== null && backendAvgWin > 0 ? backendAvgWin : null
+}
+
 function fmtSecondsToHuman(seconds: number | null): string | null {
   if (seconds === null || !Number.isFinite(seconds)) return null
   const h = Math.floor(seconds / 3600)
@@ -349,8 +390,8 @@ function deriveTradeBehavior(data: WalletResult): WalletIntelligence['tradeBehav
         : 'No reconstructed closed lots yet.',
     winRate,
     lossRate,
-    avgWin: hasEnoughClosedTrades ? (ts?.avgPnlUsdPerClosedLot ?? safeNum(backend?.pnl?.avgWin)) : null,
-    avgLoss: hasEnoughClosedTrades ? safeNum(backend?.pnl?.avgLoss) : null,
+    avgWin: hasEnoughClosedTrades ? (deriveAverageMatchedWinUsd(data) ?? safeNum(backend?.pnl?.avgWin)) : null,
+    avgLoss: deriveAverageMatchedLossUsd(data),
     biggestWin: hasEnoughClosedTrades ? (ts?.largestWinUsd ?? safeNum(backend?.pnl?.biggestWin)) : null,
     biggestLoss: hasEnoughClosedTrades ? (ts?.largestLossUsd ?? safeNum(backend?.pnl?.biggestLoss)) : null,
   }
@@ -1000,6 +1041,9 @@ export default function WalletScannerPage() {
               b?.status === 'ok' &&
               ((b.txCount ?? 0) > 0 || (b.activeDays ?? 0) > 0 || (b.inboundCount ?? 0) > 0 || (b.outboundCount ?? 0) > 0 || (b.topTokens?.length ?? 0) > 0 || (b.topContracts?.length ?? 0) > 0)
             )
+            const hasPortfolioIntelligence = sorted.length > 0 || result.totalValue > 0
+            const hasCortexFacts = Boolean(result.walletFacts)
+            const showLegacyPortfolioCards = !(hasPortfolioIntelligence && hasCortexFacts)
             return (
             <div style={{ maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
@@ -1620,7 +1664,7 @@ export default function WalletScannerPage() {
                                 {samples.map((s, i) => {
                                   const pnlColor = s.realizedPnlUsd === null ? '#94a3b8' : s.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171'
                                   const holdStr = fmtHoldTime(s.holdingTimeSeconds)
-                                  const pnlStr = s.realizedPnlUsd !== null ? `${s.realizedPnlUsd >= 0 ? '+' : ''}$${Math.abs(s.realizedPnlUsd).toFixed(2)}` : '—'
+                                  const pnlStr = s.realizedPnlUsd !== null ? `${s.realizedPnlUsd >= 0 ? '+' : '-'}$${Math.abs(s.realizedPnlUsd).toFixed(2)}` : '—'
                                   const pctStr = s.realizedPnlPercent !== null ? ` (${s.realizedPnlPercent >= 0 ? '+' : ''}${s.realizedPnlPercent.toFixed(1)}%)` : ''
                                   const vStatus = s.verificationStatus ?? 'not_available'
                                   const entryUrl = s.entryTxHash ? explorerBase(s.chain, s.entryTxHash) : null
@@ -1703,12 +1747,14 @@ export default function WalletScannerPage() {
                   : !hasEnough && ts && closedLots > 0
                     ? (ts.losingClosedLots === 0 ? 'None found in matched sample' : `${ts.losingClosedLots} matched losing lot${ts.losingClosedLots !== 1 ? 's' : ''}`)
                     : 'Open Check'
-                const avgProfitDisplay = ts && ts.avgPnlUsdPerClosedLot !== null && ts.winningClosedLots > 0
-                  ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot)
+                const avgMatchedWin = deriveAverageMatchedWinUsd(result)
+                const avgMatchedLoss = deriveAverageMatchedLossUsd(result)
+                const avgProfitDisplay = avgMatchedWin !== null
+                  ? fmtSignedUSD(avgMatchedWin)
                   : hasEnough ? fmtSignedUSD(walletIntel.pnl.avgWin) : 'Open Check'
                 const avgLossDisplay = ts && closedLots > 0 && ts.losingClosedLots === 0
                   ? 'No matched losing closed lots found'
-                  : hasEnough ? fmtSignedUSD(walletIntel.pnl.avgLoss) : 'Open Check'
+                  : avgMatchedLoss !== null ? fmtSignedUSD(avgMatchedLoss) : 'Open Check'
                 const biggestWinDisplay = hasEnough
                   ? (ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined ? fmtSignedUSD(ts.largestWinUsd) : fmtSignedUSD(walletIntel.pnl.biggestWin))
                   : ts?.largestWinUsd !== null && ts?.largestWinUsd !== undefined && closedLots > 0
@@ -1791,7 +1837,7 @@ export default function WalletScannerPage() {
                 </div>
               </div>}
 
-              <div className="ws-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+              {showLegacyPortfolioCards && <div className="ws-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                 {[
                   { label: 'Portfolio Value', value: result.totalValue > 0 ? fmtUSD(result.totalValue) : result.holdings.length > 0 ? 'Value pending in current checks' : 'No signal in checked window', sub: 'Portfolio read active', color: '#2DD4BF' },
                   { label: 'Token Count', value: sorted.length.toLocaleString(), sub: 'Visible token balances', color: '#a78bfa' },
@@ -1826,7 +1872,7 @@ export default function WalletScannerPage() {
                     </div>
                   </div>
                 ))}
-              </div>
+              </div>}
 
 
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
