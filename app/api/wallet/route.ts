@@ -364,6 +364,8 @@ export async function POST(req: Request) {
               fallbackActivityNormalizedEvents: fb.fallbackActivityNormalizedEvents,
               fallbackActivityReason: fb.fallbackActivityReason,
               finalEvidenceStatus: fb.finalEvidenceStatus,
+              fallbackActivitySampleShape: fb.fallbackActivitySampleShape ?? null,
+              fallbackNormalizationDebug: fb.fallbackNormalizationDebug ?? null,
             }
           })(),
         },

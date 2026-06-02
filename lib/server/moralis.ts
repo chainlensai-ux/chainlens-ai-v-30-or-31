@@ -166,17 +166,20 @@ export async function fetchMoralisBalances(
 export type MoralisTransferItem = {
   from_address: string | null
   to_address: string | null
-  token_address: string | null
-  value: string | null
+  token_address: string | null   // resolved from address|token_address|tokenAddress
+  value: string | null           // raw integer string (needs /10^decimals)
+  value_decimal: string | null   // pre-formatted decimal value (preferred for amount)
   transaction_hash: string | null
   block_timestamp: string | null
   token_name: string | null
   token_symbol: string | null
   token_decimals: string | null
+  possible_spam: boolean | null
 }
 
 export type MoralisTransferFetchResult = {
   items: MoralisTransferItem[]
+  rawSample: unknown[]           // up to 3 raw API rows for debug shape inspection
   attempted: boolean
   usable: boolean
   cacheHit: boolean
@@ -195,12 +198,12 @@ export async function fetchMoralisTransfers(
   limit = 100,
 ): Promise<MoralisTransferFetchResult> {
   const apiKey = process.env.MORALIS_API_KEY ?? ''
-  if (!apiKey) return { items: [], attempted: false, usable: false, cacheHit: false, rawCount: 0, reason: 'not_configured' }
+  if (!apiKey) return { items: [], rawSample: [], attempted: false, usable: false, cacheHit: false, rawCount: 0, reason: 'not_configured' }
 
   const cacheKey = `moralis:transfers:${chain}:${address.toLowerCase()}:${limit}`
   const hit = _transfersCache.get(cacheKey)
   if (hit && Date.now() - hit.cachedAt <= MORALIS_TRANSFERS_TTL_MS) {
-    return { items: hit.items, attempted: false, usable: true, cacheHit: true, rawCount: hit.items.length, reason: hit.items.length > 0 ? '' : 'cached_empty' }
+    return { items: hit.items, rawSample: [], attempted: false, usable: true, cacheHit: true, rawCount: hit.items.length, reason: hit.items.length > 0 ? '' : 'cached_empty' }
   }
 
   const inflight = _transfersInFlight.get(cacheKey)
@@ -216,29 +219,68 @@ export async function fetchMoralisTransfers(
         signal: AbortSignal.timeout(8_000),
       })
       if (!res.ok) {
-        return { items: [], attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: `http_${res.status}`, httpStatus: res.status }
+        return { items: [], rawSample: [], attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: `http_${res.status}`, httpStatus: res.status }
       }
       const json: unknown = await res.json()
       const raw = json as Record<string, unknown> | null
       const rawItems: unknown[] = Array.isArray(raw?.result) ? (raw!.result as unknown[]) : Array.isArray(json) ? (json as unknown[]) : []
+      const rawSample = rawItems.slice(0, 3)
       const items: MoralisTransferItem[] = rawItems.map((it) => {
         const i = it as Record<string, unknown>
+        // Moralis ERC20 transfers v2.2 uses 'address' for the token contract, not 'token_address'
+        const tokenAddr =
+          typeof i.token_address === 'string' ? i.token_address :
+          typeof i.address === 'string' ? i.address :
+          typeof i.tokenAddress === 'string' ? i.tokenAddress : null
+        const txHash =
+          typeof i.transaction_hash === 'string' ? i.transaction_hash :
+          typeof i.transactionHash === 'string' ? i.transactionHash :
+          typeof i.tx_hash === 'string' ? i.tx_hash : null
+        const blockTs =
+          typeof i.block_timestamp === 'string' ? i.block_timestamp :
+          typeof i.blockTimestamp === 'string' ? i.blockTimestamp : null
+        const fromAddr =
+          typeof i.from_address === 'string' ? i.from_address :
+          typeof i.fromAddress === 'string' ? i.fromAddress : null
+        const toAddr =
+          typeof i.to_address === 'string' ? i.to_address :
+          typeof i.toAddress === 'string' ? i.toAddress : null
+        const rawValue =
+          typeof i.value === 'string' ? i.value :
+          typeof i.value === 'number' ? String(i.value) : null
+        const valueDecimal =
+          typeof i.value_decimal === 'string' ? i.value_decimal :
+          typeof i.value_formatted === 'string' ? i.value_formatted : null
+        const tokenDec =
+          typeof i.token_decimals === 'string' ? i.token_decimals :
+          typeof i.decimals === 'string' ? i.decimals :
+          typeof i.token_decimals === 'number' ? String(i.token_decimals) :
+          typeof i.decimals === 'number' ? String(i.decimals) : null
+        const tokenSym =
+          typeof i.token_symbol === 'string' ? i.token_symbol :
+          typeof i.symbol === 'string' ? i.symbol : null
+        const tokenName =
+          typeof i.token_name === 'string' ? i.token_name :
+          typeof i.name === 'string' ? i.name : null
+        const possibleSpam = typeof i.possible_spam === 'boolean' ? i.possible_spam : null
         return {
-          from_address: typeof i.from_address === 'string' ? i.from_address : null,
-          to_address: typeof i.to_address === 'string' ? i.to_address : null,
-          token_address: typeof i.token_address === 'string' ? i.token_address : null,
-          value: typeof i.value === 'string' ? i.value : null,
-          transaction_hash: typeof i.transaction_hash === 'string' ? i.transaction_hash : null,
-          block_timestamp: typeof i.block_timestamp === 'string' ? i.block_timestamp : null,
-          token_name: typeof i.token_name === 'string' ? i.token_name : null,
-          token_symbol: typeof i.token_symbol === 'string' ? i.token_symbol : null,
-          token_decimals: typeof i.token_decimals === 'string' ? i.token_decimals : typeof i.token_decimals === 'number' ? String(i.token_decimals) : null,
+          from_address: fromAddr,
+          to_address: toAddr,
+          token_address: tokenAddr,
+          value: rawValue,
+          value_decimal: valueDecimal,
+          transaction_hash: txHash,
+          block_timestamp: blockTs,
+          token_name: tokenName,
+          token_symbol: tokenSym,
+          token_decimals: tokenDec,
+          possible_spam: possibleSpam,
         }
       })
       _transfersCache.set(cacheKey, { items, cachedAt: Date.now() })
-      return { items, attempted: true, usable: true, cacheHit: false, rawCount: items.length, reason: items.length > 0 ? '' : 'no_transfers', httpStatus: res.status }
+      return { items, rawSample, attempted: true, usable: true, cacheHit: false, rawCount: items.length, reason: items.length > 0 ? '' : 'no_transfers', httpStatus: res.status }
     } catch {
-      return { items: [], attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: 'fetch_failed' }
+      return { items: [], rawSample: [], attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: 'fetch_failed' }
     }
   })()
 

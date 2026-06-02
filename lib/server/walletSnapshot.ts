@@ -39,6 +39,15 @@ type GrTransferDiag = {
   }>
 }
 
+type NormalizeMoralisDebug = {
+  rawCount: number; normalizedCount: number
+  skippedNotWalletSide: number; skippedMissingHash: number; skippedMissingTimestamp: number
+  skippedMissingTokenAddress: number; skippedMissingAmount: number; skippedInvalidAmount: number
+  skippedSpam: number
+  sampleNormalizedEvents: Array<{ contract: string; symbol: string; direction: string; amount: number; txHash: string | null }>
+  sampleSkippedReasons: Array<{ reason: string; idx: number }>
+}
+
 export type WalletBehavior = {
   status: 'ok' | 'partial' | 'unavailable'
   source: 'activity_layer' | 'unavailable'
@@ -618,6 +627,8 @@ export type WalletSnapshot = {
       fallbackActivityNormalizedEvents: number
       fallbackActivityReason: string
       finalEvidenceStatus: string
+      fallbackNormalizationDebug: NormalizeMoralisDebug | null
+      fallbackActivitySampleShape: { keys: string[]; sample: Record<string, unknown>[] } | null
     }
   }
 }
@@ -1132,24 +1143,87 @@ async function fetchAlchemyPnlEvents(address: string, baseUrl: string): Promise<
   } catch { return [] }
 }
 
-function normalizeMoralisTransfers(items: MoralisTransferItem[], walletAddress: string, chainName: string): PnlEvent[] {
+function normalizeMoralisTransfers(
+  items: MoralisTransferItem[],
+  walletAddress: string,
+  chainName: string,
+): { events: PnlEvent[]; debug: NormalizeMoralisDebug } {
   const lower = walletAddress.toLowerCase()
   const out: PnlEvent[] = []
-  for (const it of items) {
-    if (!it.transaction_hash || !it.token_address) continue
-    const decimals = it.token_decimals ? parseInt(it.token_decimals, 10) : 18
-    const safeDecimals = Number.isFinite(decimals) ? decimals : 18
-    const rawValue = it.value ?? '0'
-    const amount = Math.abs(parseFloat(rawValue) / Math.pow(10, safeDecimals))
-    if (!Number.isFinite(amount) || amount <= 0) continue
+  const skippedReasons: Array<{ reason: string; idx: number }> = []
+  let skippedNotWalletSide = 0, skippedMissingHash = 0, skippedMissingTimestamp = 0
+  let skippedMissingTokenAddress = 0, skippedMissingAmount = 0, skippedInvalidAmount = 0, skippedSpam = 0
+
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx]
+    if (!it.transaction_hash) {
+      skippedMissingHash++
+      if (skippedReasons.length < 5) skippedReasons.push({ reason: 'missing_hash', idx })
+      continue
+    }
+    if (!it.block_timestamp) {
+      skippedMissingTimestamp++
+      if (skippedReasons.length < 5) skippedReasons.push({ reason: 'missing_timestamp', idx })
+      continue
+    }
+    if (!it.token_address) {
+      skippedMissingTokenAddress++
+      if (skippedReasons.length < 5) skippedReasons.push({ reason: 'missing_token_address', idx })
+      continue
+    }
+    const contract = it.token_address.toLowerCase()
+    if (!contract.startsWith('0x')) {
+      skippedMissingTokenAddress++
+      if (skippedReasons.length < 5) skippedReasons.push({ reason: 'invalid_token_address', idx })
+      continue
+    }
     const from = (it.from_address ?? '').toLowerCase()
     const to = (it.to_address ?? '').toLowerCase()
     const direction: 'buy' | 'sell' | 'unknown' = to === lower ? 'buy' : from === lower ? 'sell' : 'unknown'
-    const contract = it.token_address.toLowerCase()
-    if (!contract.startsWith('0x')) continue
-    out.push({ contract, symbol: it.token_symbol ?? '?', direction, amount, amountRaw: rawValue !== '0' ? rawValue : null, tokenDecimals: safeDecimals, usdValue: null, txHash: it.transaction_hash, timestamp: it.block_timestamp, fromAddress: from || null, toAddress: to || null, chain: chainName, txFromAddress: null, txToAddress: null, txSucceeded: null })
+    if (direction === 'unknown') { skippedNotWalletSide++; continue }
+
+    // Amount: prefer value_decimal (pre-formatted by Moralis), fallback to raw/decimals
+    let amount: number
+    if (it.value_decimal != null && it.value_decimal !== '') {
+      const parsed = parseFloat(it.value_decimal)
+      if (!Number.isFinite(parsed)) {
+        skippedInvalidAmount++
+        if (skippedReasons.length < 5) skippedReasons.push({ reason: 'invalid_value_decimal', idx })
+        continue
+      }
+      amount = Math.abs(parsed)
+    } else if (it.value) {
+      const decimals = it.token_decimals ? parseInt(it.token_decimals, 10) : 18
+      const safeDecimals = Number.isFinite(decimals) ? decimals : 18
+      const parsed = parseFloat(it.value) / Math.pow(10, safeDecimals)
+      if (!Number.isFinite(parsed)) {
+        skippedInvalidAmount++
+        if (skippedReasons.length < 5) skippedReasons.push({ reason: 'invalid_amount_raw', idx })
+        continue
+      }
+      amount = Math.abs(parsed)
+    } else {
+      skippedMissingAmount++
+      if (skippedReasons.length < 5) skippedReasons.push({ reason: 'missing_value', idx })
+      continue
+    }
+    if (amount <= 0) {
+      skippedInvalidAmount++
+      if (skippedReasons.length < 5) skippedReasons.push({ reason: 'zero_amount', idx })
+      continue
+    }
+    const decimals = it.token_decimals ? parseInt(it.token_decimals, 10) : 18
+    const safeDecimals = Number.isFinite(decimals) ? decimals : 18
+    out.push({ contract, symbol: it.token_symbol ?? '?', direction, amount, amountRaw: it.value ?? null, tokenDecimals: safeDecimals, usdValue: null, txHash: it.transaction_hash, timestamp: it.block_timestamp, fromAddress: from || null, toAddress: to || null, chain: chainName, txFromAddress: null, txToAddress: null, txSucceeded: null })
   }
-  return out
+  const debug: NormalizeMoralisDebug = {
+    rawCount: items.length, normalizedCount: out.length,
+    skippedNotWalletSide, skippedMissingHash, skippedMissingTimestamp,
+    skippedMissingTokenAddress, skippedMissingAmount, skippedInvalidAmount, skippedSpam,
+    sampleNormalizedEvents: out.slice(0, 5).map(e => ({ contract: e.contract.slice(0, 10) + '…', symbol: e.symbol, direction: e.direction, amount: e.amount, txHash: e.txHash ? e.txHash.slice(0, 10) + '…' : null })),
+    sampleSkippedReasons: skippedReasons.slice(0, 5),
+  }
+  return { events: out, debug }
 }
 
 async function fetchGoldrushHistoricalPage(
@@ -2919,6 +2993,8 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     fallbackActivityProvider: 'moralis' | null; fallbackActivityStatusCode: number | null
     fallbackActivityRawCount: number; fallbackActivityNormalizedEvents: number
     fallbackActivityReason: string; finalEvidenceStatus: string
+    fallbackNormalizationDebug: NormalizeMoralisDebug | null
+    fallbackActivitySampleShape: { keys: string[]; sample: Record<string, unknown>[] } | null
   }
   const _grDiag = grBase.diag as GoldrushHistoryDiag
   let _moralisFbDebug: _MoralisFbDebug = {
@@ -2937,16 +3013,51 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     fallbackActivityNormalizedEvents: 0,
     fallbackActivityReason: events.length > 0 ? 'primary_ok' : !activityRequested ? 'not_requested' : 'not_attempted',
     finalEvidenceStatus: 'pending',
+    fallbackNormalizationDebug: null,
+    fallbackActivitySampleShape: null,
   }
   const _shouldTryMoralisFallback = activityRequested && !historicalCoverage && events.length === 0 && Boolean(process.env.MORALIS_API_KEY)
   if (_shouldTryMoralisFallback) {
     const fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
     const fbResult = await fetchMoralisTransfers(addr, fbChain, 100)
-    const fbNormalized = fbResult.usable && fbResult.items.length > 0
-      ? normalizeMoralisTransfers(fbResult.items, addr, fbChain === 'base' ? 'base-mainnet' : 'eth-mainnet')
-      : []
-    const fbUsed = fbNormalized.length > 0
-    if (fbUsed) events = fbNormalized
+    const fbChainName = fbChain === 'base' ? 'base-mainnet' : 'eth-mainnet'
+    const { events: fbEvents, debug: fbNormDebug } = (fbResult.usable && fbResult.items.length > 0)
+      ? normalizeMoralisTransfers(fbResult.items, addr, fbChainName)
+      : { events: [] as PnlEvent[], debug: { rawCount: 0, normalizedCount: 0, skippedNotWalletSide: 0, skippedMissingHash: 0, skippedMissingTimestamp: 0, skippedMissingTokenAddress: 0, skippedMissingAmount: 0, skippedInvalidAmount: 0, skippedSpam: 0, sampleNormalizedEvents: [], sampleSkippedReasons: [] } as NormalizeMoralisDebug }
+    const fbUsed = fbEvents.length > 0
+    if (fbUsed) events = fbEvents
+    // Build sanitized sample shape from raw API rows (keys + safe excerpts, no huge payloads)
+    const fbSampleShape: _MoralisFbDebug['fallbackActivitySampleShape'] = fbResult.rawSample.length > 0
+      ? (() => {
+          const first = fbResult.rawSample[0] as Record<string, unknown>
+          return {
+            keys: Object.keys(first).slice(0, 25),
+            sample: fbResult.rawSample.map(r => {
+              const row = r as Record<string, unknown>
+              const shorten = (v: unknown) => typeof v === 'string' ? (v.length > 20 ? v.slice(0, 12) + '…' : v) : v
+              return {
+                transaction_hash: shorten(row.transaction_hash) ?? null,
+                block_timestamp: row.block_timestamp ?? null,
+                address: shorten(row.address) ?? null,
+                token_address: shorten(row.token_address) ?? null,
+                from_address: shorten(row.from_address) ?? null,
+                to_address: shorten(row.to_address) ?? null,
+                value: typeof row.value === 'string' ? row.value.slice(0, 30) : null,
+                value_decimal: row.value_decimal ?? null,
+                possible_spam: row.possible_spam ?? null,
+                verified_contract: row.verified_contract ?? null,
+                symbol: row.symbol ?? row.token_symbol ?? null,
+                name: row.name ?? row.token_name ?? null,
+                decimals: row.decimals ?? row.token_decimals ?? null,
+              } as Record<string, unknown>
+            }),
+          }
+        })()
+      : null
+    const fbFailReason = fbNormDebug.skippedMissingTokenAddress > 0 ? 'normalization_failed_missing_token_address'
+      : fbNormDebug.skippedInvalidAmount > 0 ? 'normalization_failed_invalid_amount'
+      : fbNormDebug.skippedNotWalletSide > 0 && fbNormDebug.normalizedCount === 0 ? 'normalization_failed_not_wallet_side'
+      : fbResult.reason || 'no_events_normalized'
     _moralisFbDebug = {
       ..._moralisFbDebug,
       fallbackActivityAttempted: fbResult.attempted || fbResult.cacheHit,
@@ -2954,8 +3065,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fallbackActivityProvider: 'moralis',
       fallbackActivityStatusCode: fbResult.httpStatus ?? null,
       fallbackActivityRawCount: fbResult.rawCount,
-      fallbackActivityNormalizedEvents: fbNormalized.length,
-      fallbackActivityReason: fbUsed ? 'fallback_used' : (fbResult.reason || 'no_events_normalized'),
+      fallbackActivityNormalizedEvents: fbEvents.length,
+      fallbackActivityReason: fbUsed ? 'fallback_used' : fbFailReason,
+      fallbackNormalizationDebug: fbNormDebug,
+      fallbackActivitySampleShape: fbSampleShape,
     }
   }
 
