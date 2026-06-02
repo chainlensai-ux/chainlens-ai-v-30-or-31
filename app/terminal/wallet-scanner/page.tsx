@@ -222,6 +222,61 @@ type WalletResult = {
     tradeStats:    { status: 'ok' | 'partial' | 'open_check'; closedLots: number; readyForWinRate: boolean; reason: string }
     behavior:      { status: 'ok' | 'partial' | 'open_check'; reason: string }
   }
+  walletFacts?: {
+    status: 'ok' | 'partial' | 'open_check'
+    summary: {
+      totalValueUsd: number
+      holdingsCount: number
+      chainExposure: Array<{ chain: string; valueUsd: number; percent: number }>
+      topHoldings: Array<{ symbol: string; chain: string; valueUsd: number; percent: number }>
+      largestHolding: string | null
+      concentrationLabel: 'high' | 'medium' | 'balanced' | 'none'
+      stablecoinExposurePercent: number
+      nativeExposurePercent: number
+    }
+    activity: {
+      eventCount: number
+      groupedTxCount: number
+      walletInitiatedTxCount: number
+      inboundCount: number
+      outboundCount: number
+      unknownCount: number
+      firstSeenAt: string | null
+      lastSeenAt: string | null
+      recentActivityWindowDays: number | null
+      latestEvents: Array<{
+        timestamp: string
+        txHash: string
+        direction: string
+        symbol: string
+        chain: string
+        amount: number
+        valueUsdKnown: boolean
+        counterparty: string | null
+      }>
+    }
+    flowRead: {
+      receivedTokens: Array<{ symbol: string; count: number; totalAmountApprox: number; latestAt: string | null }>
+      sentTokens: Array<{ symbol: string; count: number; totalAmountApprox: number; latestAt: string | null }>
+      topCounterparties: Array<{ address: string; direction: string; count: number; latestAt: string | null }>
+      accumulationSignals: string[]
+      distributionSignals: string[]
+    }
+    sourceClassification: {
+      swapLikeTxs: number
+      transferOnlyTxs: number
+      claimOrAirdropLikeTxs: number
+      bridgeLikeTxs: number
+      unknownTxs: number
+      notes: string[]
+    }
+    limits: {
+      sampleBased: boolean
+      maxEventsUsed: number
+      noClosedLotPnL: boolean
+      reason: string
+    }
+  }
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────────────────
@@ -606,13 +661,18 @@ export default function WalletScannerPage() {
     const topShare = total > 0 ? (top.reduce((acc, h) => acc + h.value, 0) / total) * 100 : null
     const concentration = topShare === null ? 'Unverified' : topShare >= 70 ? 'High concentration' : topShare >= 40 ? 'Balanced concentration' : 'Diversified spread'
     const activityOk = data.walletBehavior?.status === 'ok' && (data.walletBehavior.txCount ?? 0) > 0
-    const activityMsg = activityOk
+    const wf = data.walletFacts
+    const wfActivity = wf?.activity
+    const wfActivityMsg = wfActivity && wfActivity.eventCount > 0
+      ? `${wfActivity.eventCount} indexed transfer events across ${wfActivity.groupedTxCount} tx groups — ${wfActivity.walletInitiatedTxCount} wallet-initiated.`
+      : null
+    const activityMsg = wfActivityMsg ?? (activityOk
       ? 'Activity detected in checked Base window.'
       : hasActivityProviderUnavailable(data)
         ? ACTIVITY_UNAVAILABLE_COPY
         : data.walletBehavior?.status === 'ok'
           ? 'No recent Base activity in checked window.'
-          : 'Activity signal is limited in current checks.'
+          : 'Activity signal is limited in current checks.')
     const ts = data.walletTradeStatsSummary
     const tradeBullet = ts && ts.closedLots > 0 && ts.realizedPnlUsd !== null
       ? `Real trade evidence: ${ts.closedLots} closed lots reconstructed, ${fmtSignedUSD(ts.realizedPnlUsd)} realized PnL from priced FIFO lots.`
@@ -1261,6 +1321,138 @@ export default function WalletScannerPage() {
                   )
                 })()}
               </div>
+
+              {/* CORTEX Facts — factual wallet intelligence from holdings + indexed activity */}
+              {result.walletFacts && (() => {
+                const wf = result.walletFacts!
+                const statusColor = wf.status === 'ok' ? '#4ade80' : wf.status === 'partial' ? '#fbbf24' : '#7dd3fc'
+                const statusBg = wf.status === 'ok' ? 'rgba(74,222,128,0.08)' : wf.status === 'partial' ? 'rgba(251,191,36,0.08)' : 'rgba(125,211,252,0.08)'
+                const statusBorder = wf.status === 'ok' ? 'rgba(74,222,128,0.22)' : wf.status === 'partial' ? 'rgba(251,191,36,0.22)' : 'rgba(125,211,252,0.22)'
+                const fmtDate = (ts: string | null) => ts ? new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+                return (
+                  <div style={{ background: '#080c14', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '16px', padding: '20px 22px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>CORTEX Facts</div>
+                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: statusColor, border: `1px solid ${statusBorder}`, background: statusBg, borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        {wf.status === 'ok' ? 'full read' : wf.status === 'partial' ? 'partial read' : 'open check'}
+                      </span>
+                      {wf.limits.noClosedLotPnL && (
+                        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.18)', background: 'rgba(125,211,252,0.06)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>no closed lots</span>
+                      )}
+                    </div>
+
+                    <div className="wallet-intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
+                      {[
+                        { label: 'Portfolio Value', value: wf.summary.totalValueUsd > 0 ? fmtUSD(wf.summary.totalValueUsd) : '—' },
+                        { label: 'Visible Tokens', value: String(wf.summary.holdingsCount) },
+                        { label: 'Concentration', value: wf.summary.concentrationLabel === 'none' ? '—' : wf.summary.concentrationLabel.charAt(0).toUpperCase() + wf.summary.concentrationLabel.slice(1) },
+                      ].map(c => (
+                        <div key={c.label} style={{ background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.10)', borderRadius: '10px', padding: '10px 12px' }}>
+                          <div style={{ fontSize: '9px', color: 'rgba(45,212,191,0.55)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '5px' }}>{c.label}</div>
+                          <div style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{c.value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {wf.summary.topHoldings.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Top</span>
+                        {wf.summary.topHoldings.map((h, i) => (
+                          <span key={i} style={{ fontSize: '11px', fontWeight: 600, color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '999px', padding: '3px 9px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                            {h.symbol} <span style={{ color: 'rgba(45,212,191,0.55)' }}>{h.percent}%</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '14px', alignItems: 'center' }}>
+                      {wf.summary.chainExposure.map((ce, i) => (
+                        <span key={i} style={{ fontSize: '10px', fontWeight: 700, color: '#7dd3fc', background: 'rgba(56,189,248,0.07)', border: '1px solid rgba(56,189,248,0.18)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          {ce.chain.toUpperCase()} {ce.percent}%
+                        </span>
+                      ))}
+                      {wf.summary.stablecoinExposurePercent > 5 && (
+                        <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          Stablecoins {wf.summary.stablecoinExposurePercent}%
+                        </span>
+                      )}
+                      {wf.summary.nativeExposurePercent > 5 && (
+                        <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          ETH/WETH {wf.summary.nativeExposurePercent}%
+                        </span>
+                      )}
+                    </div>
+
+                    {wf.activity.eventCount > 0 && (
+                      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px' }}>
+                        <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(45,212,191,0.55)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '8px' }}>Activity Index</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px 24px' }}>
+                          {[
+                            { label: 'Events', val: String(wf.activity.eventCount) },
+                            { label: 'Tx Groups', val: String(wf.activity.groupedTxCount) },
+                            { label: 'Wallet-Init', val: String(wf.activity.walletInitiatedTxCount) },
+                            { label: 'Inbound', val: String(wf.activity.inboundCount) },
+                            { label: 'Outbound', val: String(wf.activity.outboundCount) },
+                            { label: 'First Seen', val: fmtDate(wf.activity.firstSeenAt) },
+                            { label: 'Last Seen', val: fmtDate(wf.activity.lastSeenAt) },
+                          ].map(item => (
+                            <div key={item.label}>
+                              <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.28)', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '2px' }}>{item.label}</div>
+                              <div style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{item.val}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(wf.flowRead.receivedTokens.length > 0 || wf.flowRead.sentTokens.length > 0) && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
+                        {wf.flowRead.receivedTokens.length > 0 && (
+                          <div style={{ background: 'rgba(74,222,128,0.03)', border: '1px solid rgba(74,222,128,0.10)', borderRadius: '8px', padding: '10px 12px' }}>
+                            <div style={{ fontSize: '9px', color: 'rgba(74,222,128,0.55)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Received</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 8px' }}>
+                              {wf.flowRead.receivedTokens.slice(0, 5).map((t, i) => (
+                                <span key={i} style={{ fontSize: '10px', color: '#4ade80', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                                  {t.symbol}<span style={{ color: 'rgba(74,222,128,0.45)', fontSize: '9px' }}>×{t.count}</span>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {wf.flowRead.sentTokens.length > 0 && (
+                          <div style={{ background: 'rgba(248,113,113,0.03)', border: '1px solid rgba(248,113,113,0.10)', borderRadius: '8px', padding: '10px 12px' }}>
+                            <div style={{ fontSize: '9px', color: 'rgba(248,113,113,0.55)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Sent</div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 8px' }}>
+                              {wf.flowRead.sentTokens.slice(0, 5).map((t, i) => (
+                                <span key={i} style={{ fontSize: '10px', color: '#f87171', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                                  {t.symbol}<span style={{ color: 'rgba(248,113,113,0.45)', fontSize: '9px' }}>×{t.count}</span>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {(wf.flowRead.accumulationSignals.length > 0 || wf.flowRead.distributionSignals.length > 0) && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+                        {wf.flowRead.accumulationSignals.slice(0, 3).map((s, i) => (
+                          <span key={`acc-${i}`} style={{ fontSize: '10px', color: '#4ade80', background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.15)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>↑ {s}</span>
+                        ))}
+                        {wf.flowRead.distributionSignals.slice(0, 3).map((s, i) => (
+                          <span key={`dist-${i}`} style={{ fontSize: '10px', color: '#f87171', background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.15)', borderRadius: '6px', padding: '3px 8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>↓ {s}</span>
+                        ))}
+                      </div>
+                    )}
+
+                    {wf.sourceClassification.notes.length > 0 && (
+                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                        {wf.sourceClassification.notes.join(' — ')}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
 
               {(() => {
                 const ts = result.walletTradeStatsSummary

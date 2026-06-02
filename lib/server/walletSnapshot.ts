@@ -62,6 +62,62 @@ export type WalletBehavior = {
   reason: string
 }
 
+type WalletFacts = {
+  status: 'ok' | 'partial' | 'open_check'
+  summary: {
+    totalValueUsd: number
+    holdingsCount: number
+    chainExposure: Array<{ chain: string; valueUsd: number; percent: number }>
+    topHoldings: Array<{ symbol: string; chain: string; valueUsd: number; percent: number }>
+    largestHolding: string | null
+    concentrationLabel: 'high' | 'medium' | 'balanced' | 'none'
+    stablecoinExposurePercent: number
+    nativeExposurePercent: number
+  }
+  activity: {
+    eventCount: number
+    groupedTxCount: number
+    walletInitiatedTxCount: number
+    inboundCount: number
+    outboundCount: number
+    unknownCount: number
+    firstSeenAt: string | null
+    lastSeenAt: string | null
+    recentActivityWindowDays: number | null
+    latestEvents: Array<{
+      timestamp: string
+      txHash: string
+      direction: string
+      symbol: string
+      chain: string
+      amount: number
+      valueUsdKnown: boolean
+      counterparty: string | null
+    }>
+  }
+  flowRead: {
+    receivedTokens: Array<{ symbol: string; count: number; totalAmountApprox: number; latestAt: string | null }>
+    sentTokens: Array<{ symbol: string; count: number; totalAmountApprox: number; latestAt: string | null }>
+    topCounterparties: Array<{ address: string; direction: string; count: number; latestAt: string | null }>
+    accumulationSignals: string[]
+    distributionSignals: string[]
+  }
+  sourceClassification: {
+    swapLikeTxs: number
+    transferOnlyTxs: number
+    claimOrAirdropLikeTxs: number
+    bridgeLikeTxs: number
+    unknownTxs: number
+    notes: string[]
+  }
+  limits: {
+    sampleBased: boolean
+    maxEventsUsed: number
+    noClosedLotPnL: boolean
+    reason: string
+  }
+}
+
 export type WalletSnapshot = {
   address: string
   totalValue: number
@@ -287,6 +343,7 @@ export type WalletSnapshot = {
   cacheAgeSeconds?: number | null
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
+  walletFacts?: WalletFacts
   _diagnostics?: {
     providers?: {
       zerion: { configured: boolean; attempted: boolean; succeeded: boolean }
@@ -675,6 +732,11 @@ export type WalletSnapshot = {
       cacheHits: number
       errors: number
       enrichedTxHashes: string[]
+    }
+    walletFactsDebug?: {
+      eventsUsed: number
+      holdingsUsed: number
+      durationMs: number
     }
   }
 }
@@ -2944,6 +3006,229 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
   }
 }
 
+function buildWalletFacts(
+  holdings: Holding[],
+  totalValue: number,
+  evidenceWithDetection: WalletTxEvidence[],
+  walletAddress: string,
+  closedLotCount: number,
+): { facts: WalletFacts; debug: NonNullable<NonNullable<WalletSnapshot['_diagnostics']>['walletFactsDebug']> } {
+  const t0 = Date.now()
+
+  const pricedHoldings = holdings.filter(h => h.value > 0)
+  const totalVal = totalValue > 0 ? totalValue : pricedHoldings.reduce((s, h) => s + h.value, 0)
+
+  // Chain exposure from holdings
+  const chainValueMap: Record<string, number> = {}
+  for (const h of pricedHoldings) {
+    const c = (h.chain ?? 'unknown').replace(/-mainnet$/, '')
+    chainValueMap[c] = (chainValueMap[c] ?? 0) + h.value
+  }
+  const chainExposure = Object.entries(chainValueMap)
+    .sort((a, b) => b[1] - a[1])
+    .map(([chain, valueUsd]) => ({
+      chain,
+      valueUsd: Math.round(valueUsd * 100) / 100,
+      percent: totalVal > 0 ? Math.round((valueUsd / totalVal) * 1000) / 10 : 0,
+    }))
+
+  const sortedHoldings = [...pricedHoldings].sort((a, b) => b.value - a.value)
+  const topHoldings = sortedHoldings.slice(0, 5).map(h => ({
+    symbol: h.symbol,
+    chain: (h.chain ?? 'unknown').replace(/-mainnet$/, ''),
+    valueUsd: Math.round(h.value * 100) / 100,
+    percent: totalVal > 0 ? Math.round((h.value / totalVal) * 1000) / 10 : 0,
+  }))
+  const largestHolding = sortedHoldings[0]?.symbol ?? null
+  const topShare = topHoldings[0]?.percent ?? 0
+  const concentrationLabel: WalletFacts['summary']['concentrationLabel'] =
+    pricedHoldings.length === 0 ? 'none' : topShare >= 50 ? 'high' : topShare >= 25 ? 'medium' : 'balanced'
+
+  const STABLE_SYMS = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'USDBC', 'USDE', 'USDC.E'])
+  const NATIVE_SYMS = new Set(['ETH', 'WETH', 'CBETH', 'STETH', 'RETH'])
+  const stableVal = pricedHoldings.filter(h => STABLE_SYMS.has(h.symbol.toUpperCase())).reduce((s, h) => s + h.value, 0)
+  const nativeVal = pricedHoldings.filter(h => NATIVE_SYMS.has(h.symbol.toUpperCase())).reduce((s, h) => s + h.value, 0)
+  const stablecoinExposurePercent = totalVal > 0 ? Math.round((stableVal / totalVal) * 1000) / 10 : 0
+  const nativeExposurePercent = totalVal > 0 ? Math.round((nativeVal / totalVal) * 1000) / 10 : 0
+
+  // Activity from evidence (cap at 500)
+  const events = evidenceWithDetection.slice(0, 500)
+  const maxEventsUsed = events.length
+
+  const txGroups = new Map<string, WalletTxEvidence[]>()
+  for (const ev of events) {
+    if (!ev.txHash) continue
+    const arr = txGroups.get(ev.txHash) ?? []
+    arr.push(ev)
+    txGroups.set(ev.txHash, arr)
+  }
+  const groupedTxCount = txGroups.size
+
+  const walletAddrLower = walletAddress.toLowerCase()
+  let walletInitiatedTxCount = 0
+  for (const [, txEvs] of txGroups) {
+    if (txEvs.some(e => e.txFromAddress?.toLowerCase() === walletAddrLower)) walletInitiatedTxCount++
+  }
+
+  const inboundCount = events.filter(e => e.direction === 'buy').length
+  const outboundCount = events.filter(e => e.direction === 'sell').length
+  const unknownCount = events.filter(e => e.direction === 'unknown').length
+
+  const timestamps = events.map(e => e.timestamp).filter(Boolean) as string[]
+  const sortedTs = [...timestamps].sort()
+  const firstSeenAt = sortedTs[0] ?? null
+  const lastSeenAt = sortedTs[sortedTs.length - 1] ?? null
+  const recentActivityWindowDays =
+    firstSeenAt && lastSeenAt
+      ? Math.round((new Date(lastSeenAt).getTime() - new Date(firstSeenAt).getTime()) / (1000 * 60 * 60 * 24))
+      : null
+
+  const latestEvents = events
+    .filter(e => e.timestamp)
+    .sort((a, b) => new Date(b.timestamp!).getTime() - new Date(a.timestamp!).getTime())
+    .slice(0, 5)
+    .map(e => ({
+      timestamp: e.timestamp!,
+      txHash: e.txHash,
+      direction: e.direction,
+      symbol: e.symbol,
+      chain: e.chain,
+      amount: e.amount,
+      valueUsdKnown: e.usdValue !== null && e.usdValue !== undefined,
+      counterparty: e.direction === 'buy' ? (e.fromAddress ?? null) : (e.toAddress ?? null),
+    }))
+
+  // Flow read
+  const receivedMap: Record<string, { count: number; totalAmount: number; latestAt: string | null }> = {}
+  const sentMap: Record<string, { count: number; totalAmount: number; latestAt: string | null }> = {}
+  const counterpartyMap: Record<string, { direction: string; count: number; latestAt: string | null }> = {}
+
+  for (const e of events) {
+    if (e.direction === 'buy') {
+      if (!receivedMap[e.symbol]) receivedMap[e.symbol] = { count: 0, totalAmount: 0, latestAt: null }
+      receivedMap[e.symbol].count++
+      receivedMap[e.symbol].totalAmount += e.amount
+      if (e.timestamp && (!receivedMap[e.symbol].latestAt || e.timestamp > receivedMap[e.symbol].latestAt!))
+        receivedMap[e.symbol].latestAt = e.timestamp
+      const cp = e.fromAddress?.toLowerCase()
+      if (cp && cp !== walletAddrLower) {
+        if (!counterpartyMap[cp]) counterpartyMap[cp] = { direction: 'in', count: 0, latestAt: null }
+        counterpartyMap[cp].count++
+        if (e.timestamp && (!counterpartyMap[cp].latestAt || e.timestamp > counterpartyMap[cp].latestAt!))
+          counterpartyMap[cp].latestAt = e.timestamp
+      }
+    } else if (e.direction === 'sell') {
+      if (!sentMap[e.symbol]) sentMap[e.symbol] = { count: 0, totalAmount: 0, latestAt: null }
+      sentMap[e.symbol].count++
+      sentMap[e.symbol].totalAmount += e.amount
+      if (e.timestamp && (!sentMap[e.symbol].latestAt || e.timestamp > sentMap[e.symbol].latestAt!))
+        sentMap[e.symbol].latestAt = e.timestamp
+      const cp = e.toAddress?.toLowerCase()
+      if (cp && cp !== walletAddrLower) {
+        if (!counterpartyMap[cp]) counterpartyMap[cp] = { direction: 'out', count: 0, latestAt: null }
+        counterpartyMap[cp].count++
+        if (e.timestamp && (!counterpartyMap[cp].latestAt || e.timestamp > counterpartyMap[cp].latestAt!))
+          counterpartyMap[cp].latestAt = e.timestamp
+      }
+    }
+  }
+
+  const receivedTokens = Object.entries(receivedMap)
+    .sort((a, b) => b[1].count - a[1].count).slice(0, 10)
+    .map(([symbol, d]) => ({ symbol, count: d.count, totalAmountApprox: Math.round(d.totalAmount * 100) / 100, latestAt: d.latestAt }))
+  const sentTokens = Object.entries(sentMap)
+    .sort((a, b) => b[1].count - a[1].count).slice(0, 10)
+    .map(([symbol, d]) => ({ symbol, count: d.count, totalAmountApprox: Math.round(d.totalAmount * 100) / 100, latestAt: d.latestAt }))
+  const topCounterparties = Object.entries(counterpartyMap)
+    .sort((a, b) => b[1].count - a[1].count).slice(0, 5)
+    .map(([address, d]) => ({ address, direction: d.direction, count: d.count, latestAt: d.latestAt }))
+
+  const accumulationSignals: string[] = []
+  for (const [symbol, d] of Object.entries(receivedMap)) {
+    if (d.count >= 2 && !sentMap[symbol]) accumulationSignals.push(`${symbol}: received ${d.count}x, not yet sold`)
+  }
+  const distributionSignals: string[] = []
+  for (const [symbol, d] of Object.entries(sentMap)) {
+    if (d.count >= 2) distributionSignals.push(`${symbol}: sent ${d.count}x`)
+  }
+
+  // Source classification by tx
+  let swapLikeTxs = 0, transferOnlyTxs = 0, claimOrAirdropLikeTxs = 0, bridgeLikeTxs = 0, unknownTxs = 0
+  const classificationNotes: string[] = []
+  for (const [, txEvs] of txGroups) {
+    const kinds = new Set(txEvs.map(e => e.swapDetection?.eventKind ?? 'unknown'))
+    if (kinds.has('swap_candidate')) swapLikeTxs++
+    else if (kinds.has('bridge_candidate')) bridgeLikeTxs++
+    else if (kinds.has('airdrop_candidate')) claimOrAirdropLikeTxs++
+    else if (kinds.has('transfer')) transferOnlyTxs++
+    else unknownTxs++
+  }
+  if (swapLikeTxs > 0) classificationNotes.push(`${swapLikeTxs} tx(s) resemble swaps but no matched price pairs`)
+  if (transferOnlyTxs > 0) classificationNotes.push(`${transferOnlyTxs} transfer-only tx(s)`)
+  if (claimOrAirdropLikeTxs > 0) classificationNotes.push(`${claimOrAirdropLikeTxs} possible airdrop/claim tx(s)`)
+  if (bridgeLikeTxs > 0) classificationNotes.push(`${bridgeLikeTxs} possible bridge tx(s)`)
+
+  const hasPortfolio = pricedHoldings.length > 0
+  const hasActivity = events.length > 0
+  const status: WalletFacts['status'] = hasPortfolio && hasActivity ? 'ok' : hasPortfolio || hasActivity ? 'partial' : 'open_check'
+
+  return {
+    facts: {
+      status,
+      summary: {
+        totalValueUsd: Math.round(totalVal * 100) / 100,
+        holdingsCount: pricedHoldings.length,
+        chainExposure,
+        topHoldings,
+        largestHolding,
+        concentrationLabel,
+        stablecoinExposurePercent,
+        nativeExposurePercent,
+      },
+      activity: {
+        eventCount: events.length,
+        groupedTxCount,
+        walletInitiatedTxCount,
+        inboundCount,
+        outboundCount,
+        unknownCount,
+        firstSeenAt,
+        lastSeenAt,
+        recentActivityWindowDays,
+        latestEvents,
+      },
+      flowRead: {
+        receivedTokens,
+        sentTokens,
+        topCounterparties,
+        accumulationSignals: accumulationSignals.slice(0, 5),
+        distributionSignals: distributionSignals.slice(0, 5),
+      },
+      sourceClassification: {
+        swapLikeTxs,
+        transferOnlyTxs,
+        claimOrAirdropLikeTxs,
+        bridgeLikeTxs,
+        unknownTxs,
+        notes: classificationNotes,
+      },
+      limits: {
+        sampleBased: events.length < evidenceWithDetection.length,
+        maxEventsUsed,
+        noClosedLotPnL: closedLotCount === 0,
+        reason: closedLotCount === 0
+          ? 'No closed FIFO lots found. Portfolio and activity data only.'
+          : `${closedLotCount} closed lot(s) available for PnL.`,
+      },
+    },
+    debug: {
+      eventsUsed: maxEventsUsed,
+      holdingsUsed: pricedHoldings.length,
+      durationMs: Date.now() - t0,
+    },
+  }
+}
+
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
   const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages } = options
   const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
@@ -3737,6 +4022,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
 
   const hasHistory = estimatedPnl.status !== 'unavailable'
   const snapshotTtlMs = hasHistory ? SNAPSHOT_HISTORY_TTL_MS : SNAPSHOT_TTL_MS
+  const { facts: walletFacts, debug: _walletFactsDebug } = buildWalletFacts(holdings, totalValue, _swapEvidenceWithDetection, addrNorm, _closedLots.length)
   const snapshot: WalletSnapshot = {
     address: addr,
     totalValue,
@@ -3769,6 +4055,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     walletHistoricalCandidateSummary,
     walletHistoricalPricingPreviewSummary,
     walletHistoricalFifoPreviewSummary,
+    walletFacts,
     dataFreshness: 'live',
     cacheAgeSeconds: null,
     _diagnostics: {
@@ -3909,6 +4196,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         capLimit: _ACTIVITY_MAX_EVENTS,
       },
       walletSwapEnrichmentDebug: _swapEnrichmentDebug,
+      walletFactsDebug: _walletFactsDebug,
     },
   }
   if (/^0x[0-9a-fA-F]{40}$/i.test(addrNorm)) snapshotMemCache.set(cacheKey, { snapshot, cachedAt: Date.now(), ttlMs: snapshotTtlMs })
