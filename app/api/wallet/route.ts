@@ -1,6 +1,14 @@
 import { NextResponse } from 'next/server'
 import { fetchWalletSnapshot, type WalletSnapshotOptions } from '@/lib/server/walletSnapshot'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import {
+  walletScanPersistentCacheAvailable,
+  readPersistentWalletCache,
+  readStalePersistentWalletCache,
+  writePersistentWalletCache,
+  readPersistentCooldown,
+  writePersistentCooldown,
+} from '@/lib/server/walletScanPersistentCache'
 
 const WALLET_BASIC_CACHE_TTL_MS  = 5  * 60 * 1000  // 5 min for basic scans
 const WALLET_DEEP_CACHE_TTL_MS   = 15 * 60 * 1000  // 15 min for deep scans
@@ -187,6 +195,14 @@ export async function POST(req: Request) {
           cooldownKey: deepCooldownKey,
           cooldownHit: deepCooldownActive,
           cooldownExpiresInSeconds: _cooldownExpiresInSeconds,
+          cacheBackend: 'memory' as const,
+          persistentCacheReadAttempted: false,
+          persistentCacheHit: false,
+          persistentCacheWriteAttempted: false,
+          persistentCacheWriteSucceeded: false,
+          persistentCooldownReadAttempted: false,
+          persistentCooldownHit: false,
+          cacheMissReason: null,
           servedFromCacheReason: 'route_cache_hit',
           blockedLiveFetchReason: 'cache_hit',
           cacheHit: true,
@@ -242,7 +258,7 @@ export async function POST(req: Request) {
       // No cache available — fall through to live scan without historical
     }
 
-    // Deep scan cooldown — serve stale cache if available, else block
+    // Memory deep cooldown — serve stale memory cache if available, else fall through to persistent check
     if (deepCooldownActive) {
       const stale = walletCache.get(cacheKey)
       if (stale) {
@@ -252,9 +268,111 @@ export async function POST(req: Request) {
           cp.walletScanCostMode = 'deep_cached'
           cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
         }
+        if (cp && typeof cp === 'object' && !debug) delete cp._debug
         if (cp && typeof cp === 'object') delete cp._diagnostics
         return NextResponse.json(cp)
       }
+      // No memory stale — fall through to persistent cooldown check below
+    }
+
+    // Persistent cache + cooldown checks (cross-instance, survives serverless cold-starts)
+    // Tracks: did we read/write the persistent store, and what happened?
+    let _persistentAvailable = false
+    let _persistentCacheReadAttempted = false
+    let _persistentCacheHit = false
+    let _persistentCooldownReadAttempted = false
+    let _persistentCooldownHit = false
+    let _persistentCooldownExpiresInSeconds: number | null = null
+    let _persistentCacheWriteAttempted = false
+    let _persistentCacheWriteSucceeded = false
+    let _cacheBackend: 'memory' | 'persistent' | 'none' = 'none'
+    let _cacheMissReason: string | null = null
+
+    if (deepActivity && !cooldownActive && !costGuardHit) {
+      _persistentAvailable = walletScanPersistentCacheAvailable()
+
+      // --- Persistent cache read (same bypass rules as memory cache: skip for refresh/debugFresh) ---
+      if (_cacheReadAttempted) {
+        _persistentCacheReadAttempted = _persistentAvailable
+        const persCache = _persistentAvailable ? await readPersistentWalletCache(cacheKey) : null
+
+        if (persCache) {
+          _persistentCacheHit = true
+          _cacheBackend = 'persistent'
+          // Repopulate in-memory cache + cooldown so same instance reuses them without another DB hit
+          walletCache.set(cacheKey, { exp: persCache.expiresAt.getTime(), payload: persCache.payload, cachedAt: persCache.createdAt.getTime() })
+          if (!deepCooldownActive) walletDeepCooldown.set(deepCooldownKey, persCache.createdAt.getTime() + WALLET_DEEP_COOLDOWN_MS)
+
+          const cacheAgeSeconds = Math.floor((Date.now() - persCache.createdAt.getTime()) / 1000)
+          const cp: any = typeof persCache.payload === 'object' && persCache.payload
+            ? { ...(persCache.payload as any), dataFreshness: 'cached', cacheAgeSeconds }
+            : persCache.payload
+          if (cp && typeof cp === 'object') {
+            const costMode = getCostMode(true)
+            cp.walletScanCostMode = costMode
+            const note = getCacheNote(costMode, cacheAgeSeconds)
+            if (note) cp.walletScanCacheNote = note
+          }
+          const _dce = walletDeepCooldown.get(deepCooldownKey) ?? 0
+          const _dces = _dce > Date.now() ? Math.floor((_dce - Date.now()) / 1000) : null
+          if (cp && typeof cp === 'object' && debug) cp._debug = {
+            routeName: '/api/wallet', cacheHit: true, cacheMode,
+            requestDurationMs: Date.now() - startedAt,
+            walletSnapshotCache: { memoryHit: false, persistentHit: true, providerFetchNeeded: false, refreshBypassedCache: false, cacheAgeSeconds, cacheTtlSeconds: WALLET_DEEP_CACHE_TTL_MS / 1000 },
+            providerFlow: null,
+            walletScanCostDebug: {
+              scanId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+              address: key, scanMode: scanModeKey, dataFreshness: 'cached' as const,
+              cacheKey, cacheReadAttempted: _cacheReadAttempted,
+              cacheWriteAttempted: false, cacheWriteSucceeded: false,
+              cooldownKey: deepCooldownKey, cooldownHit: deepCooldownActive,
+              cooldownExpiresInSeconds: _dces,
+              cacheBackend: 'persistent' as const,
+              persistentCacheReadAttempted: true, persistentCacheHit: true,
+              persistentCacheWriteAttempted: false, persistentCacheWriteSucceeded: false,
+              persistentCooldownReadAttempted: false, persistentCooldownHit: false,
+              cacheMissReason: null,
+              servedFromCacheReason: 'persistent_cache_hit', blockedLiveFetchReason: 'persistent_cache_hit',
+              cacheHit: true, inFlightDeduped: false, providerCalls: [],
+              totals: { liveProviderCalls: 0, cachedProviderCalls: 1, pagesFetched: 0, rawItems: 0, rawLogEvents: 0, normalizedEvents: 0, estimatedCreditUnits: 0, durationMs: Date.now() - startedAt },
+              reason: 'persistent_cache_hit',
+            },
+          }
+          if (cp && typeof cp === 'object' && !debug) delete cp._debug
+          if (cp && typeof cp === 'object') delete cp._diagnostics
+          return NextResponse.json(cp)
+        }
+      }
+
+      // --- Persistent cooldown check (runs even for refresh=true to prevent credit burn) ---
+      _persistentCooldownReadAttempted = _persistentAvailable
+      const persCooldown = _persistentAvailable ? await readPersistentCooldown(deepCooldownKey) : null
+      if (persCooldown) {
+        _persistentCooldownHit = true
+        _persistentCooldownExpiresInSeconds = Math.floor((persCooldown.expiresAt.getTime() - Date.now()) / 1000)
+        // Repopulate in-memory cooldown
+        walletDeepCooldown.set(deepCooldownKey, persCooldown.expiresAt.getTime())
+        // Try stale persistent cache for graceful response
+        const stale = await readStalePersistentWalletCache(cacheKey)
+        if (stale) {
+          const cacheAgeSeconds = Math.floor((Date.now() - stale.createdAt.getTime()) / 1000)
+          const cp: any = typeof stale.payload === 'object' && stale.payload
+            ? { ...(stale.payload as any), dataFreshness: 'cached', cacheAgeSeconds }
+            : stale.payload
+          if (cp && typeof cp === 'object') {
+            cp.walletScanCostMode = 'deep_cached'
+            cp.walletScanCacheNote = 'Deep scan cooling down — serving recent result to protect API budget.'
+          }
+          if (cp && typeof cp === 'object' && !debug) delete cp._debug
+          if (cp && typeof cp === 'object') delete cp._diagnostics
+          return NextResponse.json(cp)
+        }
+        return NextResponse.json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
+      }
+
+      _cacheMissReason = _persistentAvailable ? 'persistent_cache_miss' : 'persistent_cache_unavailable'
+    } else if (deepCooldownActive) {
+      // Fell through memory cooldown with no memory stale — final 429 guard
       return NextResponse.json({ error: 'Deep scan is cooling down. Try again in a few minutes.', walletScanCostMode: 'deep_cached' }, { status: 429 })
     }
 
@@ -318,6 +436,19 @@ export async function POST(req: Request) {
     const _cacheWriteAttempted = !allowDebugFresh  // write after every live scan (even refresh=true)
     const _deepCooldownExpiry = walletDeepCooldown.get(deepCooldownKey) ?? 0
     const _cooldownExpiresInSeconds = _deepCooldownExpiry > Date.now() ? Math.floor((_deepCooldownExpiry - Date.now()) / 1000) : null
+
+    // Persistent cache + cooldown writes — cross-instance, survives Vercel cold-starts
+    if (_cacheWriteAttempted && deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && _persistentAvailable) {
+      _persistentCacheWriteAttempted = true
+      const _ppayload: any = { ...snapshot }
+      delete _ppayload._diagnostics
+      delete _ppayload._debug
+      const [cacheResult] = await Promise.allSettled([
+        writePersistentWalletCache(cacheKey, key, scanModeKey, chainKey, _ppayload, WALLET_DEEP_CACHE_TTL_MS),
+        writePersistentCooldown(deepCooldownKey, key, chainKey, WALLET_DEEP_COOLDOWN_MS),
+      ])
+      _persistentCacheWriteSucceeded = cacheResult.status === 'fulfilled' && cacheResult.value === true
+    }
 
     if (debug) {
       ;snapshot._debug = {
@@ -482,10 +613,18 @@ export async function POST(req: Request) {
             cacheKey,
             cacheReadAttempted: _cacheReadAttempted,
             cacheWriteAttempted: _cacheWriteAttempted,
-            cacheWriteSucceeded: _cacheWriteAttempted,
+            cacheWriteSucceeded: _cacheWriteAttempted && (_persistentCacheWriteSucceeded || !_persistentAvailable),
             cooldownKey: deepCooldownKey,
             cooldownHit: deepCooldownActive,
             cooldownExpiresInSeconds: _cooldownExpiresInSeconds,
+            cacheBackend: _cacheBackend,
+            persistentCacheReadAttempted: _persistentCacheReadAttempted,
+            persistentCacheHit: _persistentCacheHit,
+            persistentCacheWriteAttempted: _persistentCacheWriteAttempted,
+            persistentCacheWriteSucceeded: _persistentCacheWriteSucceeded,
+            persistentCooldownReadAttempted: _persistentCooldownReadAttempted,
+            persistentCooldownHit: _persistentCooldownHit,
+            cacheMissReason: _cacheMissReason,
             servedFromCacheReason: null,
             blockedLiveFetchReason: null,
             cacheHit: false,
