@@ -180,6 +180,7 @@ export type MoralisTransferItem = {
 export type MoralisTransferFetchResult = {
   items: MoralisTransferItem[]
   rawSample: unknown[]           // up to 3 raw API rows for debug shape inspection
+  nextCursor: string | null      // Moralis cursor for next page (null = no more pages)
   attempted: boolean
   usable: boolean
   cacheHit: boolean
@@ -189,27 +190,28 @@ export type MoralisTransferFetchResult = {
 }
 
 const MORALIS_TRANSFERS_TTL_MS = 5 * 60 * 1000
-const _transfersCache = new Map<string, { items: MoralisTransferItem[]; cachedAt: number }>()
+const _transfersCache = new Map<string, { items: MoralisTransferItem[]; nextCursor: string | null; cachedAt: number }>()
 const _transfersInFlight = new Map<string, Promise<MoralisTransferFetchResult>>()
 
 export async function fetchMoralisTransfers(
   address: string,
   chain: MoralisChain,
   limit = 100,
+  cursor?: string,
 ): Promise<MoralisTransferFetchResult> {
   const apiKey = process.env.MORALIS_API_KEY ?? ''
-  if (!apiKey) return { items: [], rawSample: [], attempted: false, usable: false, cacheHit: false, rawCount: 0, reason: 'not_configured' }
+  if (!apiKey) return { items: [], rawSample: [], nextCursor: null, attempted: false, usable: false, cacheHit: false, rawCount: 0, reason: 'not_configured' }
 
-  const cacheKey = `moralis:transfers:${chain}:${address.toLowerCase()}:${limit}`
+  const cacheKey = `moralis:transfers:${chain}:${address.toLowerCase()}:${limit}:${cursor ?? 'p1'}`
   const hit = _transfersCache.get(cacheKey)
   if (hit && Date.now() - hit.cachedAt <= MORALIS_TRANSFERS_TTL_MS) {
-    return { items: hit.items, rawSample: [], attempted: false, usable: true, cacheHit: true, rawCount: hit.items.length, reason: hit.items.length > 0 ? '' : 'cached_empty' }
+    return { items: hit.items, rawSample: [], nextCursor: hit.nextCursor, attempted: false, usable: true, cacheHit: true, rawCount: hit.items.length, reason: hit.items.length > 0 ? '' : 'cached_empty' }
   }
 
   const inflight = _transfersInFlight.get(cacheKey)
   if (inflight) return inflight
 
-  const url = `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers?chain=${CHAIN_PARAM[chain]}&limit=${limit}&exclude_spam=true`
+  const url = `https://deep-index.moralis.io/api/v2.2/${address}/erc20/transfers?chain=${CHAIN_PARAM[chain]}&limit=${limit}&exclude_spam=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
 
   const run = (async (): Promise<MoralisTransferFetchResult> => {
     try {
@@ -219,12 +221,13 @@ export async function fetchMoralisTransfers(
         signal: AbortSignal.timeout(8_000),
       })
       if (!res.ok) {
-        return { items: [], rawSample: [], attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: `http_${res.status}`, httpStatus: res.status }
+        return { items: [], rawSample: [], nextCursor: null, attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: `http_${res.status}`, httpStatus: res.status }
       }
       const json: unknown = await res.json()
       const raw = json as Record<string, unknown> | null
       const rawItems: unknown[] = Array.isArray(raw?.result) ? (raw!.result as unknown[]) : Array.isArray(json) ? (json as unknown[]) : []
       const rawSample = rawItems.slice(0, 3)
+      const nextCursor = typeof raw?.cursor === 'string' && raw.cursor ? raw.cursor : null
       const items: MoralisTransferItem[] = rawItems.map((it) => {
         const i = it as Record<string, unknown>
         // Moralis ERC20 transfers v2.2 uses 'address' for the token contract, not 'token_address'
@@ -277,10 +280,10 @@ export async function fetchMoralisTransfers(
           possible_spam: possibleSpam,
         }
       })
-      _transfersCache.set(cacheKey, { items, cachedAt: Date.now() })
-      return { items, rawSample, attempted: true, usable: true, cacheHit: false, rawCount: items.length, reason: items.length > 0 ? '' : 'no_transfers', httpStatus: res.status }
+      _transfersCache.set(cacheKey, { items, nextCursor, cachedAt: Date.now() })
+      return { items, rawSample, nextCursor, attempted: true, usable: true, cacheHit: false, rawCount: items.length, reason: items.length > 0 ? '' : 'no_transfers', httpStatus: res.status }
     } catch {
-      return { items: [], rawSample: [], attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: 'fetch_failed' }
+      return { items: [], rawSample: [], nextCursor: null, attempted: true, usable: false, cacheHit: false, rawCount: 0, reason: 'fetch_failed' }
     }
   })()
 

@@ -1093,7 +1093,9 @@ export default function WalletScannerPage() {
 
                     {isOpenCheck ? (
                       <div style={{ color: '#7dd3fc', fontSize: '13px', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                        No matched priced closed lots yet. More on-chain swap activity needed for FIFO reconstruction.
+                        {ls && (ls.pricedSwapEvents ?? 0) > 0
+                          ? 'CORTEX found priced activity, but buys and sells did not match inside the indexed window yet.'
+                          : 'No matched priced closed lots yet. More on-chain swap activity needed for FIFO reconstruction.'}
                       </div>
                     ) : (
                       <>

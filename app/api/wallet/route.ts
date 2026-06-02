@@ -54,6 +54,7 @@ export async function POST(req: Request) {
     const isProd = process.env.NODE_ENV === 'production'
     const hcPageLimit = (!isProd || WALLET_DEEP_DEBUG_ENABLED) ? 5 : 2
     const maxHistoricalPages = Math.max(1, Math.min(hcPageLimit, Number(body?.maxHistoricalPages ?? 1) || 1))
+    const maxFallbackPages = debug ? Math.max(1, Math.min(3, Number(body?.maxFallbackPages ?? 2) || 2)) : 2
 
     const hcSuffix = historicalCoverageRequested ? `:hcv1p${maxHistoricalPages}` : ''
     const debugFresh = requestUrl.searchParams.get('debugFresh') === 'true' || body?.debugFresh === true || body?.debugFresh === 'true'
@@ -237,6 +238,7 @@ export async function POST(req: Request) {
         chainMode,
         historicalCoverage: effectiveHistoricalCoverage,
         maxHistoricalPages,
+        maxFallbackPages,
       } satisfies WalletSnapshotOptions)
       if (inFlightKey) walletDeepInFlight.set(inFlightKey, scanPromise)
       try {
@@ -366,6 +368,14 @@ export async function POST(req: Request) {
               finalEvidenceStatus: fb.finalEvidenceStatus,
               fallbackActivitySampleShape: fb.fallbackActivitySampleShape ?? null,
               fallbackNormalizationDebug: fb.fallbackNormalizationDebug ?? null,
+              fallbackPagesAttempted: fb.fallbackPagesAttempted,
+              fallbackPagesUsed: fb.fallbackPagesUsed,
+              fallbackCursorsSeen: fb.fallbackCursorsSeen,
+              fallbackRawTotal: fb.fallbackRawTotal,
+              fallbackNormalizedTotal: fb.fallbackNormalizedTotal,
+              fallbackDedupeRemoved: fb.fallbackDedupeRemoved,
+              fallbackPaginationReason: fb.fallbackPaginationReason,
+              fallbackPaginationStoppedReason: fb.fallbackPaginationStoppedReason,
             }
           })(),
         },
@@ -391,10 +401,17 @@ export async function POST(req: Request) {
           if (alchAtt) {
             calls.push({ provider: 'alchemy', endpointName: 'alchemy_getAssetTransfers', attempted: true, cacheHit: false, statusCode: null, durationMs: null, pagesFetched: null, rawItems: providers.alchemy?.transfersReturned ?? null, rawLogEvents: null, normalizedEvents: null, estimatedCreditUnits: inFlightDeduped ? 0 : 1 })
           }
-          // Moralis activity fallback call (only present when primary providers failed)
+          // Moralis activity fallback calls — one entry per page attempted
           const fbDbg = snapshot._diagnostics?.walletActivityFallbackDebug ?? null
           if (fbDbg?.fallbackActivityAttempted && fbDbg.fallbackActivityProvider === 'moralis') {
-            calls.push({ provider: 'moralis', endpointName: 'erc20_transfers (activity_fallback)', attempted: true, cacheHit: fbDbg.fallbackActivityStatusCode === null && fbDbg.fallbackActivityRawCount > 0, statusCode: fbDbg.fallbackActivityStatusCode, durationMs: null, pagesFetched: null, rawItems: fbDbg.fallbackActivityRawCount, rawLogEvents: null, normalizedEvents: fbDbg.fallbackActivityNormalizedEvents, estimatedCreditUnits: inFlightDeduped ? 0 : 1 })
+            const fbPages: number = (fbDbg as any).fallbackPagesAttempted ?? 1
+            for (let pg = 1; pg <= fbPages; pg++) {
+              const isPage1 = pg === 1
+              const pgRaw = isPage1 ? fbDbg.fallbackActivityRawCount : null
+              const pgNorm = isPage1 ? fbDbg.fallbackActivityNormalizedEvents : null
+              const pgCache = isPage1 ? (fbDbg.fallbackActivityStatusCode === null && fbDbg.fallbackActivityRawCount > 0) : false
+              calls.push({ provider: 'activity_fallback', endpointName: `erc20_transfers_page${pg}`, attempted: true, cacheHit: pgCache, statusCode: isPage1 ? fbDbg.fallbackActivityStatusCode : null, durationMs: null, pagesFetched: 1, rawItems: pgRaw, rawLogEvents: null, normalizedEvents: pgNorm, estimatedCreditUnits: inFlightDeduped || pgCache ? 0 : 1 })
+            }
           }
           const totalCu = calls.reduce((s, c) => s + (c.estimatedCreditUnits ?? 0), 0)
           const liveCalls = inFlightDeduped ? 0 : calls.filter(c => c.attempted && !c.cacheHit).length

@@ -629,6 +629,14 @@ export type WalletSnapshot = {
       finalEvidenceStatus: string
       fallbackNormalizationDebug: NormalizeMoralisDebug | null
       fallbackActivitySampleShape: { keys: string[]; sample: Record<string, unknown>[] } | null
+      fallbackPagesAttempted: number
+      fallbackPagesUsed: number
+      fallbackCursorsSeen: number
+      fallbackRawTotal: number
+      fallbackNormalizedTotal: number
+      fallbackDedupeRemoved: number
+      fallbackPaginationReason: string
+      fallbackPaginationStoppedReason: string
     }
   }
 }
@@ -638,7 +646,7 @@ const ALCHEMY_ETH_KEY  = process.env.ALCHEMY_ETHEREUM_KEY!
 const ALCHEMY_BASE_KEY = process.env.ALCHEMY_BASE_KEY!
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'; historicalCoverage?: boolean; maxHistoricalPages?: number }
+export type WalletSnapshotOptions = { refresh?: boolean; chain?: 'eth' | 'base'; deepScan?: boolean; deepActivity?: boolean; chainMode?: 'auto' | 'base' | 'eth' | 'base_eth' | 'all_supported'; historicalCoverage?: boolean; maxHistoricalPages?: number; maxFallbackPages?: number }
 
 const SNAPSHOT_TTL_MS         = 5  * 60 * 1000
 const SNAPSHOT_HISTORY_TTL_MS = 15 * 60 * 1000
@@ -2712,8 +2720,9 @@ async function fetchWalletBehavior(address: string, baseUrl: string): Promise<Wa
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
-  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages } = options
+  const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages } = options
   const clampedMaxHistoricalPages = Math.max(1, Math.min(5, rawMaxHistoricalPages ?? 3))
+  const clampedMaxFallbackPages = Math.max(1, Math.min(3, rawMaxFallbackPages ?? 2))
   // activityRequested: true when either deepScan (full holdings+activity) or deepActivity (activity-only) is set
   const activityRequested = deepScan || deepActivity
   // Separate address normalisation from cache key so regex validation always checks the address portion only
@@ -2987,6 +2996,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     || Boolean((grBase.diag as GoldrushHistoryDiag).fetchFailed)
     || ((grBase.diag as GoldrushHistoryDiag).httpStatus != null && ((grBase.diag as GoldrushHistoryDiag).httpStatus as number) >= 400)
     || (grBase.diag as GoldrushHistoryDiag).failureStage === 'timeout'
+  // Outer vars for Moralis fallback chain/cursor — needed by both page-1 block and multi-page loop
+  const _fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
+  const _fbChainName: string = _fbChain === 'base' ? 'base-mainnet' : 'eth-mainnet'
+  let _fbNextCursor: string | null = null
   type _MoralisFbDebug = {
     primaryActivityAttempted: boolean; primaryActivityFailed: boolean; primaryActivityStatusCode: number | null
     primaryActivityErrorKind: string | null; fallbackActivityAttempted: boolean; fallbackActivityUsed: boolean
@@ -2995,6 +3008,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     fallbackActivityReason: string; finalEvidenceStatus: string
     fallbackNormalizationDebug: NormalizeMoralisDebug | null
     fallbackActivitySampleShape: { keys: string[]; sample: Record<string, unknown>[] } | null
+    fallbackPagesAttempted: number; fallbackPagesUsed: number; fallbackCursorsSeen: number
+    fallbackRawTotal: number; fallbackNormalizedTotal: number; fallbackDedupeRemoved: number
+    fallbackPaginationReason: string; fallbackPaginationStoppedReason: string
   }
   const _grDiag = grBase.diag as GoldrushHistoryDiag
   let _moralisFbDebug: _MoralisFbDebug = {
@@ -3015,14 +3031,16 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     finalEvidenceStatus: 'pending',
     fallbackNormalizationDebug: null,
     fallbackActivitySampleShape: null,
+    fallbackPagesAttempted: 0, fallbackPagesUsed: 0, fallbackCursorsSeen: 0,
+    fallbackRawTotal: 0, fallbackNormalizedTotal: 0, fallbackDedupeRemoved: 0,
+    fallbackPaginationReason: 'not_attempted', fallbackPaginationStoppedReason: 'not_attempted',
   }
   const _shouldTryMoralisFallback = activityRequested && !historicalCoverage && events.length === 0 && Boolean(process.env.MORALIS_API_KEY)
   if (_shouldTryMoralisFallback) {
-    const fbChain: 'eth' | 'base' = requestedChain === 'eth' ? 'eth' : 'base'
-    const fbResult = await fetchMoralisTransfers(addr, fbChain, 100)
-    const fbChainName = fbChain === 'base' ? 'base-mainnet' : 'eth-mainnet'
+    const fbResult = await fetchMoralisTransfers(addr, _fbChain, 100)
+    _fbNextCursor = fbResult.nextCursor
     const { events: fbEvents, debug: fbNormDebug } = (fbResult.usable && fbResult.items.length > 0)
-      ? normalizeMoralisTransfers(fbResult.items, addr, fbChainName)
+      ? normalizeMoralisTransfers(fbResult.items, addr, _fbChainName)
       : { events: [] as PnlEvent[], debug: { rawCount: 0, normalizedCount: 0, skippedNotWalletSide: 0, skippedMissingHash: 0, skippedMissingTimestamp: 0, skippedMissingTokenAddress: 0, skippedMissingAmount: 0, skippedInvalidAmount: 0, skippedSpam: 0, sampleNormalizedEvents: [], sampleSkippedReasons: [] } as NormalizeMoralisDebug }
     const fbUsed = fbEvents.length > 0
     if (fbUsed) events = fbEvents
@@ -3069,6 +3087,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fallbackActivityReason: fbUsed ? 'fallback_used' : fbFailReason,
       fallbackNormalizationDebug: fbNormDebug,
       fallbackActivitySampleShape: fbSampleShape,
+      fallbackPagesAttempted: 1, fallbackPagesUsed: fbUsed ? 1 : 0,
+      fallbackCursorsSeen: _fbNextCursor != null ? 1 : 0,
+      fallbackRawTotal: fbResult.rawCount,
+      fallbackNormalizedTotal: fbEvents.length,
+      fallbackDedupeRemoved: 0,
+      fallbackPaginationReason: 'page1_complete',
+      fallbackPaginationStoppedReason: 'pending',
     }
   }
 
@@ -3120,11 +3145,83 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : 'Estimated from indexed transfer history with average-cost method.'
   const pnlSourcePublic: 'activity_layer' | 'fallback_layer' | 'unavailable' = pnlSource === 'none' ? 'unavailable' : pnlSource
   const estimatedPnl: WalletSnapshot['estimatedPnl'] = { status, confidence: status === 'unavailable' ? null : confidenceFromCoverage(coveragePercent), coveragePercent, source: pnlSourcePublic === 'unavailable' ? 'none' : pnlSourcePublic, totalEstimatedPnlUsd: status === 'unavailable' ? null : realized + unrealized, unrealizedPnlUsd: status === 'unavailable' ? null : unrealized, realizedPnlUsd: status === 'unavailable' ? null : realized, method: 'average_cost_estimate', tokens: filteredPnlTokens, reason: status === 'unavailable' ? (activityProviderUnavailable ? 'Activity source did not return usable history. No PnL was calculated.' : 'PnL unavailable — historical cost basis coverage is too low.') : 'Estimated PnL Beta derived from indexed wallet transfer history.' }
-  const { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested, activityProviderUnavailable)
-  const { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
-  const { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
-  const { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
-  const { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
+  let { evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(events, activityRequested, activityProviderUnavailable)
+  let { evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm)
+  let { evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested)
+  let { summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested)
+  let { summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested)
+
+  // Phase 5B: Moralis multi-page fallback — fetch extra pages when initial FIFO has no closed lots
+  if (
+    _moralisFbDebug.fallbackActivityUsed &&
+    activityRequested &&
+    !historicalCoverage &&
+    walletLotSummary.closedLots === 0 &&
+    (walletLotSummary.unmatchedSells > 0 || walletLotSummary.unmatchedBuys > 0) &&
+    _fbNextCursor != null
+  ) {
+    const maxFbPages = clampedMaxFallbackPages
+    let fbCursor: string | null = _fbNextCursor
+    let allFbEvents: PnlEvent[] = [...events]
+    let fbPagesAttempted = _moralisFbDebug.fallbackPagesAttempted
+    let fbPagesUsed = _moralisFbDebug.fallbackPagesUsed
+    let fbCursorsSeen = _moralisFbDebug.fallbackCursorsSeen
+    let fbRawTotal = _moralisFbDebug.fallbackRawTotal
+    let fbNormalizedTotal = _moralisFbDebug.fallbackNormalizedTotal
+    let fbDedupeRemoved = 0
+    let fbPaginationStoppedReason = 'budget_exhausted'
+    const seenKeys = new Set<string>(events.map(e => `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`))
+
+    while (fbPagesAttempted < maxFbPages && fbCursor != null) {
+      fbPagesAttempted++
+      fbCursorsSeen++
+      const pageResult = await fetchMoralisTransfers(addr, _fbChain, 100, fbCursor)
+      if (!pageResult.usable || pageResult.items.length === 0) {
+        fbPaginationStoppedReason = pageResult.usable ? 'no_more_rows' : 'provider_error_page' + fbPagesAttempted
+        break
+      }
+      fbRawTotal += pageResult.rawCount
+      const { events: pageEvents } = normalizeMoralisTransfers(pageResult.items, addr, _fbChainName)
+      fbNormalizedTotal += pageEvents.length
+      const newEvents: PnlEvent[] = []
+      for (const e of pageEvents) {
+        const k = `${e.txHash ?? ''}|${e.contract}|${e.direction}|${e.amountRaw ?? String(e.amount)}`
+        if (!seenKeys.has(k)) { seenKeys.add(k); newEvents.push(e) }
+      }
+      fbDedupeRemoved += pageEvents.length - newEvents.length
+      if (newEvents.length === 0) { fbPaginationStoppedReason = 'all_deduped'; break }
+      fbPagesUsed++
+      allFbEvents = [...allFbEvents, ...newEvents]
+      fbCursor = pageResult.nextCursor
+      // Re-run pipeline on merged events
+      ;({ evidenceList, summary: walletEvidenceSummary, debug: _txEvidenceDebugBase } = buildTxEvidenceFromEvents(allFbEvents, activityRequested, activityProviderUnavailable))
+      ;({ evidenceWithDetection: _swapEvidenceWithDetection, summary: walletSwapSummary, debug: _swapDetectionDebug } = buildSwapDetection(evidenceList, activityRequested, addrNorm))
+      ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested))
+      ;({ summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested))
+      ;({ summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested))
+      if (walletLotSummary.closedLots > 0) { fbPaginationStoppedReason = 'closed_lots_found'; break }
+      if (fbCursor == null) { fbPaginationStoppedReason = 'no_more_pages'; break }
+    }
+    events = allFbEvents
+    _moralisFbDebug = {
+      ..._moralisFbDebug,
+      fallbackActivityNormalizedEvents: fbNormalizedTotal,
+      fallbackPagesAttempted: fbPagesAttempted,
+      fallbackPagesUsed: fbPagesUsed,
+      fallbackCursorsSeen: fbCursorsSeen,
+      fallbackRawTotal: fbRawTotal,
+      fallbackNormalizedTotal: fbNormalizedTotal,
+      fallbackDedupeRemoved: fbDedupeRemoved,
+      fallbackPaginationReason: 'multi_page_attempted',
+      fallbackPaginationStoppedReason: fbPaginationStoppedReason,
+    }
+  } else if (_moralisFbDebug.fallbackActivityUsed) {
+    const p1Reason = walletLotSummary.closedLots > 0 ? 'closed_lots_on_page1'
+      : _fbNextCursor == null ? 'no_cursor_available'
+      : walletLotSummary.closedLots === 0 && walletLotSummary.unmatchedSells === 0 && walletLotSummary.unmatchedBuys === 0 ? 'no_unmatched_events'
+      : 'budget_limit_1'
+    _moralisFbDebug = { ..._moralisFbDebug, fallbackPaginationReason: 'page1_only', fallbackPaginationStoppedReason: p1Reason }
+  }
 
   // Phase 6A: Historical coverage diagnostics — runs only when activityRequested + historicalCoverage requested
   const _runHistoricalCoverage = activityRequested && historicalCoverage
