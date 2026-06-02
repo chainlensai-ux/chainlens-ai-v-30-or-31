@@ -181,8 +181,14 @@ export type WalletSnapshot = {
     largestWinUsd: number | null
     largestLossUsd: number | null
     confidence: 'high' | 'medium' | 'low' | 'open_check'
-    sampleSizeLabel: 'insufficient' | 'early' | 'developing' | 'strong'
+    sampleSizeLabel: 'insufficient' | 'early' | 'developing' | 'strong' | 'micro_sample'
     readyForWalletScore: boolean
+    meaningfulClosedLots: number
+    dustClosedLots: number
+    meaningfulCostBasisUsd: number
+    avgCostBasisPerClosedLot: number | null
+    economicSignificance: 'meaningful' | 'micro_sample' | 'open_check'
+    economicSignificanceReason: string
     missing: string[]
   }
   walletTradeStatsSource: 'base_sample' | 'historical_promoted_preview'
@@ -529,6 +535,15 @@ export type WalletSnapshot = {
       sampleWinningLots: Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; confidence: string }>
       sampleLosingLots: Array<{ tokenAddress: string; symbol: string; realizedPnlUsd: number; realizedPnlPercent: number | null; confidence: string }>
       reasons: string[]
+      economicSignificance?: {
+        meaningfulClosedLots: number
+        dustClosedLots: number
+        meaningfulCostBasisUsd: number
+        dustCostBasisUsd: number
+        avgCostBasisPerClosedLot: number | null
+        economicallyMeaningful: boolean
+        reason: string
+      }
     }
     walletHistoricalCoverageDebug?: {
       requested: boolean
@@ -2314,6 +2329,8 @@ function buildTradeStatsSummary(
 } {
   const WIN_RATE_THRESHOLD = 10
   const BREAK_EVEN_EPSILON = 0.01
+  // Lots below this USD cost basis are considered economically insignificant (dust)
+  const DUST_LOT_THRESHOLD = 25
 
   const emptyResult = (missing: string[]) => ({
     summary: {
@@ -2325,7 +2342,11 @@ function buildTradeStatsSummary(
       avgHoldingTimeSeconds: null, medianHoldingTimeSeconds: null,
       largestWinUsd: null, largestLossUsd: null,
       confidence: 'open_check' as const, sampleSizeLabel: 'insufficient' as const,
-      readyForWalletScore: false, missing,
+      readyForWalletScore: false,
+      meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0,
+      avgCostBasisPerClosedLot: null,
+      economicSignificance: 'open_check' as const, economicSignificanceReason: 'no_closed_lots',
+      missing,
     },
     debug: {
       closedLots: 0, uniqueTokensTraded: 0, winningClosedLots: 0, losingClosedLots: 0,
@@ -2335,6 +2356,11 @@ function buildTradeStatsSummary(
       medianHoldingTimeSeconds: null, largestWinUsd: null, largestLossUsd: null,
       confidence: 'open_check', sampleSizeLabel: 'insufficient',
       sampleWinningLots: [], sampleLosingLots: [], reasons: missing,
+      economicSignificance: {
+        meaningfulClosedLots: 0, dustClosedLots: 0, meaningfulCostBasisUsd: 0,
+        dustCostBasisUsd: 0, avgCostBasisPerClosedLot: null,
+        economicallyMeaningful: false, reason: 'no_closed_lots',
+      },
     },
   })
 
@@ -2342,18 +2368,6 @@ function buildTradeStatsSummary(
   if (closedLots.length === 0) return emptyResult(['no_closed_lots'])
 
   const n = closedLots.length
-
-  // ── Status / confidence / sampleSizeLabel gates ──
-  type Status = 'ok' | 'partial' | 'open_check'
-  type Confidence = 'high' | 'medium' | 'low' | 'open_check'
-  type SampleLabel = 'insufficient' | 'early' | 'developing' | 'strong'
-  let summaryStatus: Status
-  let confidence: Confidence
-  let sampleSizeLabel: SampleLabel
-  if (n >= 25)      { summaryStatus = 'ok';      confidence = 'high';   sampleSizeLabel = 'strong' }
-  else if (n >= 10) { summaryStatus = 'ok';      confidence = 'medium'; sampleSizeLabel = 'developing' }
-  else if (n >= 5)  { summaryStatus = 'partial'; confidence = 'medium'; sampleSizeLabel = 'early' }
-  else              { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'insufficient' }
 
   // ── Per-lot classification ──
   const winning = closedLots.filter(l => l.realizedPnlUsd > BREAK_EVEN_EPSILON)
@@ -2365,8 +2379,54 @@ function buildTradeStatsSummary(
   const totalRealizedPnl = closedLots.reduce((s, l) => s + l.realizedPnlUsd, 0)
   const totalCostBasis = closedLots.reduce((s, l) => s + l.costBasisUsd, 0)
   const realizedPnlPercent = totalCostBasis > 0 ? (totalRealizedPnl / totalCostBasis) * 100 : null
+  const avgCostBasisPerClosedLot = n > 0 ? totalCostBasis / n : null
 
-  const winRateComputed = n >= WIN_RATE_THRESHOLD
+  // ── Economic significance ──
+  // Lots with costBasis >= DUST_LOT_THRESHOLD are considered meaningful.
+  // Status/confidence/winRate/score are gated on BOTH count AND economic significance.
+  const meaningfulLots = closedLots.filter(l => l.costBasisUsd >= DUST_LOT_THRESHOLD)
+  const dustLots = closedLots.filter(l => l.costBasisUsd < DUST_LOT_THRESHOLD)
+  const meaningfulClosedLots = meaningfulLots.length
+  const dustClosedLots = dustLots.length
+  const meaningfulCostBasisUsd = meaningfulLots.reduce((s, l) => s + l.costBasisUsd, 0)
+  const dustCostBasisUsd = dustLots.reduce((s, l) => s + l.costBasisUsd, 0)
+
+  let economicallyMeaningful = false
+  let economicSignificanceReason = ''
+  if (meaningfulClosedLots >= 5 && meaningfulCostBasisUsd >= 500) {
+    economicallyMeaningful = true
+    economicSignificanceReason = 'meaningful_lots_gte_5_and_basis_gte_500'
+  } else if (totalCostBasis >= 1000 && meaningfulClosedLots >= 3) {
+    economicallyMeaningful = true
+    economicSignificanceReason = 'total_basis_gte_1000_and_meaningful_lots_gte_3'
+  } else if (Math.abs(totalRealizedPnl) >= 50 && totalCostBasis >= 250) {
+    economicallyMeaningful = true
+    economicSignificanceReason = 'realized_pnl_gte_50_and_basis_gte_250'
+  } else {
+    economicSignificanceReason = meaningfulClosedLots === 0
+      ? 'no_meaningful_lots'
+      : `meaningful_lots_${meaningfulClosedLots}_basis_${Math.round(meaningfulCostBasisUsd)}`
+  }
+
+  const economicSignificance: 'meaningful' | 'micro_sample' | 'open_check' =
+    economicallyMeaningful ? 'meaningful' : 'micro_sample'
+
+  // ── Status / confidence / sampleSizeLabel ──
+  // Requires BOTH count thresholds AND economic significance for high labels.
+  type Status = 'ok' | 'partial' | 'open_check'
+  type Confidence = 'high' | 'medium' | 'low' | 'open_check'
+  type SampleLabel = 'insufficient' | 'early' | 'developing' | 'strong' | 'micro_sample'
+  let summaryStatus: Status
+  let confidence: Confidence
+  let sampleSizeLabel: SampleLabel
+  if      (n >= 25 && economicallyMeaningful) { summaryStatus = 'ok';      confidence = 'high';   sampleSizeLabel = 'strong' }
+  else if (n >= 10 && economicallyMeaningful) { summaryStatus = 'ok';      confidence = 'medium'; sampleSizeLabel = 'developing' }
+  else if (n >= 5  && economicallyMeaningful) { summaryStatus = 'partial'; confidence = 'medium'; sampleSizeLabel = 'early' }
+  else if (!economicallyMeaningful)           { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'micro_sample' }
+  else                                        { summaryStatus = 'partial'; confidence = 'low';    sampleSizeLabel = 'insufficient' }
+
+  // ── Win rate: requires count AND economic significance ──
+  const winRateComputed = n >= WIN_RATE_THRESHOLD && economicallyMeaningful
   const winRatePercent = winRateComputed ? (winning.length / n) * 100 : null
 
   const avgPnlUsdPerClosedLot = totalRealizedPnl / n
@@ -2383,6 +2443,7 @@ function buildTradeStatsSummary(
 
   const missing: string[] = []
   if (!winRateComputed) missing.push('sample_size_below_win_rate_threshold')
+  if (!economicallyMeaningful) missing.push('micro_trade_sample')
   if (returnPcts.length < n) missing.push('some_lots_missing_return_percent')
   if (holdingTimes.length < n) missing.push('some_lots_missing_holding_time')
 
@@ -2396,7 +2457,10 @@ function buildTradeStatsSummary(
       winRatePercent, avgPnlUsdPerClosedLot, avgReturnPercentPerClosedLot,
       medianReturnPercentPerClosedLot, avgHoldingTimeSeconds, medianHoldingTimeSeconds,
       largestWinUsd, largestLossUsd, confidence, sampleSizeLabel,
-      readyForWalletScore: n >= WIN_RATE_THRESHOLD, missing,
+      readyForWalletScore: n >= WIN_RATE_THRESHOLD && economicallyMeaningful,
+      meaningfulClosedLots, dustClosedLots, meaningfulCostBasisUsd,
+      avgCostBasisPerClosedLot, economicSignificance, economicSignificanceReason,
+      missing,
     },
     debug: {
       closedLots: n, uniqueTokensTraded, winningClosedLots: winning.length,
@@ -2414,6 +2478,10 @@ function buildTradeStatsSummary(
         realizedPnlUsd: l.realizedPnlUsd, realizedPnlPercent: l.realizedPnlPercent, confidence: l.confidence,
       })),
       reasons: missing,
+      economicSignificance: {
+        meaningfulClosedLots, dustClosedLots, meaningfulCostBasisUsd, dustCostBasisUsd,
+        avgCostBasisPerClosedLot, economicallyMeaningful, reason: economicSignificanceReason,
+      },
     },
   }
 }
@@ -3173,18 +3241,22 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     }
   }
 
-  // Helper: true only when enough closed-lot evidence exists to stop pagination.
-  // These are pagination stop thresholds only — NOT wallet score or win-rate rules.
+  // Helper: true only when enough economically meaningful closed-lot evidence exists to stop pagination.
+  // Uses the same economic significance rules as buildTradeStatsSummary — NOT count alone.
   const hasMeaningfulClosedLotEvidence = (
     lotSummary: WalletSnapshot['walletLotSummary'],
+    lots: WalletClosedLot[],
   ): { result: boolean; reason: string } => {
     const c = lotSummary.closedLots
     const cb = lotSummary.totalCostBasisClosedUsd ?? 0
     const pnl = Math.abs(lotSummary.realizedPnlUsd ?? 0)
-    if (c >= 10) return { result: true, reason: 'closedLots_gte_10' }
-    if (cb >= 500) return { result: true, reason: 'costBasis_gte_500' }
-    if (pnl >= 50) return { result: true, reason: 'realizedPnl_gte_50' }
-    if (c >= 5 && cb >= 100) return { result: true, reason: 'closedLots_gte_5_and_costBasis_gte_100' }
+    const DUST_THRESHOLD = 25
+    const meaningfulLots = lots.filter(l => l.costBasisUsd >= DUST_THRESHOLD)
+    const meaningfulCount = meaningfulLots.length
+    const meaningfulBasis = meaningfulLots.reduce((s, l) => s + l.costBasisUsd, 0)
+    if (meaningfulCount >= 5 && meaningfulBasis >= 500) return { result: true, reason: 'meaningful_lots_gte_5_and_basis_gte_500' }
+    if (cb >= 1000 && meaningfulCount >= 3) return { result: true, reason: 'total_basis_gte_1000_and_meaningful_lots_gte_3' }
+    if (pnl >= 50 && cb >= 250) return { result: true, reason: 'realized_pnl_gte_50_and_basis_gte_250' }
     return { result: false, reason: c === 0 ? 'no_closed_lots' : 'dust_sample' }
   }
 
@@ -3194,7 +3266,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     _moralisFbDebug.fallbackActivityUsed &&
     activityRequested &&
     !historicalCoverage &&
-    !hasMeaningfulClosedLotEvidence(walletLotSummary).result &&
+    !hasMeaningfulClosedLotEvidence(walletLotSummary, _closedLots).result &&
     (walletLotSummary.unmatchedSells > 0 || walletLotSummary.unmatchedBuys > 0 || walletLotSummary.closedLots > 0) &&
     _fbNextCursor != null
   ) {
@@ -3239,7 +3311,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       ;({ evidenceWithPricing: _pricedEvidence, summary: walletPriceEvidenceSummary, debug: _priceAtTimeDebug } = await buildPriceAtTimeEvidence(_swapEvidenceWithDetection, activityRequested))
       ;({ summary: walletLotSummary, debug: _lotEngineDebug, closedLots: _closedLots } = buildFifoLotEngine(_pricedEvidence, activityRequested))
       ;({ summary: walletTradeStatsSummary, debug: _tradeStatsDebug } = buildTradeStatsSummary(_closedLots, activityRequested))
-      const meaningfulCheck = hasMeaningfulClosedLotEvidence(walletLotSummary)
+      const meaningfulCheck = hasMeaningfulClosedLotEvidence(walletLotSummary, _closedLots)
       if (meaningfulCheck.result) {
         fbPaginationStoppedReason = 'meaningful_closed_lot_evidence_found'
         fbMeaningfulEvidenceReason = meaningfulCheck.reason
@@ -3264,7 +3336,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       fallbackMeaningfulEvidenceReason: fbMeaningfulEvidenceReason,
     }
   } else if (_moralisFbDebug.fallbackActivityUsed) {
-    const p1Meaningful = hasMeaningfulClosedLotEvidence(walletLotSummary)
+    const p1Meaningful = hasMeaningfulClosedLotEvidence(walletLotSummary, _closedLots)
     const p1Reason = p1Meaningful.result ? 'meaningful_closed_lot_evidence_found'
       : _fbNextCursor == null ? 'no_cursor'
       : walletLotSummary.closedLots === 0 && walletLotSummary.unmatchedSells === 0 && walletLotSummary.unmatchedBuys === 0 ? 'no_unmatched_events'

@@ -183,8 +183,14 @@ type WalletResult = {
     largestWinUsd: number | null
     largestLossUsd: number | null
     confidence: 'high' | 'medium' | 'low' | 'open_check'
-    sampleSizeLabel: 'insufficient' | 'early' | 'developing' | 'strong'
+    sampleSizeLabel: 'insufficient' | 'early' | 'developing' | 'strong' | 'micro_sample'
     readyForWalletScore: boolean
+    meaningfulClosedLots: number
+    dustClosedLots: number
+    meaningfulCostBasisUsd: number
+    avgCostBasisPerClosedLot: number | null
+    economicSignificance: 'meaningful' | 'micro_sample' | 'open_check'
+    economicSignificanceReason: string
     missing: string[]
   }
   walletTradeStatsSource?: 'base_sample' | 'historical_promoted_preview'
@@ -973,9 +979,11 @@ export default function WalletScannerPage() {
                         : 'Evidence pending'
                       : 'Evidence weighted'
                     const scoreReason = walletIntel.walletScore === null
-                      ? closedLots > 0
-                        ? 'Score not calculated until 10+ verified closed lots.'
-                        : 'Needs closed lot evidence to score.'
+                      ? closedLots >= 10 && ts?.economicSignificance === 'micro_sample'
+                        ? 'Score not calculated — matched trade sample is too small financially to grade this wallet.'
+                        : closedLots > 0
+                          ? 'Score not calculated until 10+ verified closed lots.'
+                          : 'Needs closed lot evidence to score.'
                       : null
                     return (
                       <>
@@ -1061,7 +1069,7 @@ export default function WalletScannerPage() {
                 const ls = result.walletLotSummary
                 if (!ts) return null
                 const isOpenCheck = ts.status === 'open_check' || ts.closedLots === 0
-                const hasEnough = ts.closedLots >= 10
+                const hasEnough = ts.closedLots >= 10 && ts.economicSignificance === 'meaningful'
                 function fmtHoldTime(seconds: number | null): string {
                   if (seconds === null || !Number.isFinite(seconds)) return '—'
                   const h = Math.floor(seconds / 3600)
@@ -1080,13 +1088,13 @@ export default function WalletScannerPage() {
                     </div>
 
                     {!isOpenCheck && (
-                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: ts.sampleSizeLabel === 'insufficient' ? '6px' : '14px', lineHeight: 1.4 }}>
+                      <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: ts.economicSignificance === 'micro_sample' || ts.sampleSizeLabel === 'insufficient' ? '6px' : '14px', lineHeight: 1.4 }}>
                         Closed-lot sample only — does not include current open holdings.
                       </div>
                     )}
-                    {!isOpenCheck && ts.sampleSizeLabel === 'insufficient' && (
+                    {!isOpenCheck && ts.economicSignificance === 'micro_sample' && (
                       <div style={{ fontSize: '10px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '14px', lineHeight: 1.4 }}>
-                        CORTEX found a small matched trade sample, but not enough meaningful closed-lot evidence yet.
+                        CORTEX found matched trades, but the closed-lot sample is too small financially to grade this wallet yet.
                       </div>
                     )}
 
@@ -1252,7 +1260,7 @@ export default function WalletScannerPage() {
               {(() => {
                 const ts = result.walletTradeStatsSummary
                 const closedLots = ts?.closedLots ?? 0
-                const hasEnough = closedLots >= 10
+                const hasEnough = closedLots >= 10 && ts?.economicSignificance === 'meaningful'
                 const closedTradesDisplay = closedLots > 0
                   ? `${closedLots} reconstructed`
                   : 'No closed lots yet'
