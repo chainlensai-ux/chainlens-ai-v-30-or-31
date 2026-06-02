@@ -351,6 +351,55 @@ function deriveAverageMatchedWinUsd(data: WalletResult): number | null {
   return backendAvgWin !== null && backendAvgWin > 0 ? backendAvgWin : null
 }
 
+
+function isTradeStatsGradeable(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
+  return Boolean(
+    ts &&
+    ts.closedLots >= 10 &&
+    ts.economicSignificance === 'meaningful' &&
+    ts.confidence !== 'low' &&
+    ts.confidence !== 'open_check' &&
+    ts.readyForWalletScore
+  )
+}
+
+function isMicroSampleLocked(ts: WalletResult['walletTradeStatsSummary'] | undefined): boolean {
+  return Boolean(
+    ts &&
+    ts.closedLots >= 10 &&
+    (ts.economicSignificance === 'micro_sample' || ts.confidence === 'low' || !ts.readyForWalletScore)
+  )
+}
+
+function officialWinRateLockCopy(ts: WalletResult['walletTradeStatsSummary'] | undefined): string {
+  if (!ts || ts.closedLots < 10) return 'Requires 10+ verified closed lots.'
+  if (isMicroSampleLocked(ts)) return 'Matched sample is too small financially to grade.'
+  return 'Requires gradeable matched closed-lot evidence.'
+}
+
+function walletScoreLockCopy(ts: WalletResult['walletTradeStatsSummary'] | undefined): string {
+  if (!ts || ts.closedLots === 0) return 'Needs closed lot evidence to score.'
+  if (ts.closedLots < 10) return 'Score not calculated until 10+ verified closed lots.'
+  if (isMicroSampleLocked(ts)) return 'Matched sample is too small financially to grade.'
+  return 'Score not calculated until matched evidence passes wallet-score gates.'
+}
+
+function normalizeChainName(chain: string | null | undefined): string | null {
+  if (!chain) return null
+  const c = chain.toLowerCase().replace(/-mainnet$/, '')
+  if (c === 'base') return 'base'
+  if (c === 'ethereum' || c === 'eth') return 'ethereum'
+  return c
+}
+
+function chainHoldingsScope(chains: string[]): string {
+  const normalized = Array.from(new Set(chains.map(c => normalizeChainName(c)).filter((c): c is string => Boolean(c))))
+  if (normalized.length === 1 && normalized[0] === 'base') return 'Base holdings'
+  if (normalized.length === 1 && normalized[0] === 'ethereum') return 'Ethereum holdings'
+  if (normalized.length === 2 && normalized.includes('base') && normalized.includes('ethereum')) return 'Base and Ethereum holdings'
+  return normalized.length > 1 ? 'multi-chain holdings' : 'Visible holdings'
+}
+
 function fmtSecondsToHuman(seconds: number | null): string | null {
   if (seconds === null || !Number.isFinite(seconds)) return null
   const h = Math.floor(seconds / 3600)
@@ -372,7 +421,7 @@ function deriveTradeBehavior(data: WalletResult): WalletIntelligence['tradeBehav
   const backend = data.walletIntelligence
   const recentClosed = backend?.recentTrades?.filter(t => t.status === 'closed' && safeNum(t.pnl) !== null) ?? []
   const closedTrades = ts ? ts.closedLots : (backend?.tradeBehavior?.closedTrades ?? recentClosed.length)
-  const hasEnoughClosedTrades = closedTrades >= 10
+  const hasEnoughClosedTrades = ts ? isTradeStatsGradeable(ts) : closedTrades >= 10
   const winRate = hasEnoughClosedTrades ? (ts?.winRatePercent ?? safeNum(backend?.winRate)) : null
   const lossRate = hasEnoughClosedTrades && ts
     ? (ts.closedLots > 0 ? (ts.losingClosedLots / ts.closedLots) * 100 : null)
@@ -390,7 +439,7 @@ function deriveTradeBehavior(data: WalletResult): WalletIntelligence['tradeBehav
         : 'No reconstructed closed lots yet.',
     winRate,
     lossRate,
-    avgWin: hasEnoughClosedTrades ? (deriveAverageMatchedWinUsd(data) ?? safeNum(backend?.pnl?.avgWin)) : null,
+    avgWin: deriveAverageMatchedWinUsd(data) ?? safeNum(backend?.pnl?.avgWin),
     avgLoss: deriveAverageMatchedLossUsd(data),
     biggestWin: hasEnoughClosedTrades ? (ts?.largestWinUsd ?? safeNum(backend?.pnl?.biggestWin)) : null,
     biggestLoss: hasEnoughClosedTrades ? (ts?.largestLossUsd ?? safeNum(backend?.pnl?.biggestLoss)) : null,
@@ -453,8 +502,8 @@ function buildWalletOpenCheck(data: WalletResult): string[] {
       ? ACTIVITY_UNAVAILABLE_COPY
       : 'PnL remains Open Check until indexed transfer history has enough cost-basis coverage.')
   }
-  if (ts && ts.closedLots > 0 && ts.closedLots < 10) {
-    checks.push('Wallet score locked — sample below 10 closed lots.')
+  if (ts && ts.closedLots > 0 && !isTradeStatsGradeable(ts)) {
+    checks.push(isMicroSampleLocked(ts) ? 'Wallet score locked — matched sample is too small financially to grade.' : 'Wallet score locked — sample below 10 closed lots.')
   } else if (!ts || ts.closedLots === 0) {
     checks.push('Win rate requires matched closed lots with priced entry and exit evidence.')
   }
@@ -506,14 +555,15 @@ function derivePortfolioIntelligence(data: WalletResult) {
   const top3 = holdings.slice(0, 3)
   const topHolding = holdings[0] ?? null
   const topShare = totalValue > 0 && topHolding ? (topHolding.value / totalValue) * 100 : null
+  const top3Share = totalValue > 0 ? (top3.reduce((sum, h) => sum + h.value, 0) / totalValue) * 100 : null
   const concentration: 'high' | 'medium' | 'balanced' | null = topShare === null ? null : topShare >= 50 ? 'high' : topShare >= 25 ? 'medium' : 'balanced'
   const chainSet = new Set<string>()
   for (const h of holdings) {
     if (h.chain) {
-      const c = h.chain.replace(/-mainnet$/, '')
-      if (c === 'base') chainSet.add('BASE')
-      else if (c === 'ethereum' || c === 'eth') chainSet.add('ETH')
-      else chainSet.add(c.toUpperCase().replace(/-/g, ' '))
+      const c = normalizeChainName(h.chain)
+      if (c === 'base') chainSet.add('base')
+      else if (c === 'ethereum') chainSet.add('ethereum')
+      else if (c) chainSet.add(c)
     }
   }
   const STABLE_SYMBOLS = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'USDC.E', 'USDBC'])
@@ -529,7 +579,8 @@ function derivePortfolioIntelligence(data: WalletResult) {
   else if (topShare !== null && topShare >= 50) portfolioType = 'Concentrated portfolio'
   else if (holdings.length >= 3) portfolioType = 'Multi-token portfolio'
   else portfolioType = 'Small visible portfolio'
-  return { totalValue, top3, topHolding, topShare, concentration, chains: [...chainSet], stablePercent, ethPercent, portfolioType, holdingsCount: holdings.length }
+  const chains = [...chainSet]
+  return { totalValue, top3, topHolding, topShare, top3Share, concentration, chains, holdingsScope: chainHoldingsScope(chains), stablePercent, ethPercent, portfolioType, holdingsCount: holdings.length }
 }
 
 function buildWalletIntelligence(data: WalletResult): WalletIntelligence {
@@ -751,6 +802,7 @@ export default function WalletScannerPage() {
     const total = data.totalValue > 0 ? data.totalValue : sorted.reduce((acc, h) => acc + (Number.isFinite(h.value) ? h.value : 0), 0)
     const largest = sorted[0] ?? null
     const top3 = sorted.slice(0, 3)
+    const largestShare = total > 0 && largest ? (largest.value / total) * 100 : null
     const topShare = total > 0 ? (top3.reduce((acc, h) => acc + h.value, 0) / total) * 100 : null
     const baseTx = data.walletBehavior?.txCount ?? 0
     const hasActivity = data.walletBehavior?.status === 'ok' && baseTx > 0
@@ -760,7 +812,7 @@ export default function WalletScannerPage() {
     const keySignals: string[] = [
       `Portfolio read: ${total > 0 ? fmtUSD(total) : 'unverified value'} across ${sorted.length} tracked token${sorted.length === 1 ? '' : 's'}.`,
       hasActivity ? 'Activity read: Recent Base activity detected in the checked window.' : hasActivityProviderUnavailable(data) ? `Activity read: ${ACTIVITY_UNAVAILABLE_COPY}` : 'Activity read: Recent Base activity is limited in the checked window.',
-      `Risk / concentration: ${largest ? `${largest.symbol || 'Top asset'} is the largest visible holding${topShare != null ? ` (${topShare.toFixed(1)}% top-3 concentration)` : ''}.` : 'Largest holding remains unverified.'}`,
+      `Risk / concentration: ${largest ? `${largest.symbol || 'Top asset'} is the largest visible holding${largestShare != null ? ` (${largestShare.toFixed(1)}% of visible portfolio)` : ''}${topShare != null ? `; top 3 holdings make up ${topShare.toFixed(1)}% of visible portfolio value` : ''}.` : 'Largest holding remains unverified.'}`,
       ...(hasRealTrade && ts.realizedPnlUsd !== null
         ? [`Real trade evidence: ${ts.closedLots} closed lots, ${fmtSignedUSD(ts.realizedPnlUsd)} matched realized PnL. Matched closed-lot sample: ${ts.winningClosedLots} positive lot${ts.winningClosedLots !== 1 ? 's' : ''}, ${ts.losingClosedLots === 0 ? 'no matched losing lots' : `${ts.losingClosedLots} matched losing lot${ts.losingClosedLots !== 1 ? 's' : ''}`}.`]
         : hasRealTrade
@@ -769,8 +821,8 @@ export default function WalletScannerPage() {
     ]
     const risks = hasRealTrade
       ? [
-          ts.closedLots < 10 ? 'Official win rate not calculated until 10+ verified closed lots.' : 'Win rate from matched closed lots only.',
-          'Wallet score not calculated — sample below 10 verified closed lots.',
+          isTradeStatsGradeable(ts) ? 'Win rate from matched closed lots only.' : officialWinRateLockCopy(ts),
+          walletScoreLockCopy(ts),
           'Some buys and sells may sit outside the indexed scan window.',
         ]
       : [
@@ -782,7 +834,7 @@ export default function WalletScannerPage() {
       verdict,
       confidence: hasActivity ? 'Medium' : 'Low',
       read: total > 0
-        ? 'CORTEX verified visible holdings and estimated portfolio value from live Base data.'
+        ? `CORTEX verified visible holdings and estimated portfolio value from ${chainHoldingsScope(sorted.map(h => h.chain ?? '').filter(Boolean))}.`
         : 'CORTEX found visible holdings, but value is incomplete or unverified in current checks.',
       keySignals,
       risks,
@@ -1138,7 +1190,7 @@ export default function WalletScannerPage() {
                         <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.18em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Intelligence</div>
                         <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: '#4ade80', border: '1px solid rgba(74,222,128,0.25)', background: 'rgba(74,222,128,0.07)', borderRadius: '999px', padding: '2px 7px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Read Active</span>
                       </div>
-                      <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{pi.portfolioType}</span>
+                      <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{pi.holdingsScope}</span>
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '14px' }}>
                       <div style={{ background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '10px', padding: '12px' }}>
@@ -1152,7 +1204,8 @@ export default function WalletScannerPage() {
                       <div style={{ background: concentrationLabel ? `${concentrationColor}0d` : 'rgba(255,255,255,0.03)', border: `1px solid ${concentrationLabel ? `${concentrationColor}28` : 'rgba(255,255,255,0.07)'}`, borderRadius: '10px', padding: '12px' }}>
                         <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Concentration</div>
                         <div style={{ fontSize: '15px', fontWeight: 800, color: concentrationLabel ? concentrationColor : 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{concentrationLabel ?? '—'}</div>
-                        {pi.topShare !== null && <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>top holding {pi.topShare.toFixed(0)}% of portfolio</div>}
+                        {pi.topHolding && pi.topShare !== null && <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Largest visible holding: {pi.topHolding.symbol || pi.topHolding.name} at ~{pi.topShare.toFixed(0)}%.</div>}
+                        {pi.top3Share !== null && pi.top3.length > 1 && <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.28)', marginTop: '3px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Top 3 holdings make up ~{pi.top3Share.toFixed(0)}% of visible portfolio value.</div>}
                       </div>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px', marginBottom: '12px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
@@ -1177,7 +1230,7 @@ export default function WalletScannerPage() {
                           <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '6px' }}>Chain Exposure</div>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                             {pi.chains.map(c => (
-                              <span key={c} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em', padding: '3px 8px', borderRadius: '6px', background: c === 'BASE' ? 'rgba(0,82,255,0.14)' : 'rgba(98,126,234,0.14)', border: c === 'BASE' ? '1px solid rgba(0,82,255,0.28)' : '1px solid rgba(98,126,234,0.28)', color: c === 'BASE' ? '#6ea8ff' : '#a5b4fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{c}</span>
+                              <span key={c} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em', padding: '3px 8px', borderRadius: '6px', background: c === 'base' ? 'rgba(0,82,255,0.14)' : 'rgba(98,126,234,0.14)', border: c === 'base' ? '1px solid rgba(0,82,255,0.28)' : '1px solid rgba(98,126,234,0.28)', color: c === 'base' ? '#6ea8ff' : '#a5b4fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{c === 'base' ? 'Base' : c === 'ethereum' ? 'Ethereum' : c.toUpperCase().replace(/-/g, ' ')}</span>
                             ))}
                           </div>
                         </div>
@@ -1256,13 +1309,9 @@ export default function WalletScannerPage() {
                         </>
                       )
                     }
-                    const winRateNote = walletIntel.winRate !== null ? 'Closed lots only' : closedLots > 0 ? 'Locked — 10+ closed lots needed' : 'No closed lots yet'
+                    const winRateNote = walletIntel.winRate !== null ? 'Closed lots only' : closedLots > 0 ? officialWinRateLockCopy(ts) : 'No closed lots yet'
                     const confidenceNote = walletIntel.confidence === 'open check' ? (closedLots > 0 ? `${closedLots} closed lots reconstructed` : 'Closed-lot stats not available yet') : 'Evidence weighted'
-                    const scoreReason = walletIntel.walletScore === null
-                      ? closedLots >= 10 && ts?.economicSignificance === 'micro_sample'
-                        ? 'Score not calculated — matched trade sample is too small financially to grade this wallet.'
-                        : closedLots > 0 ? 'Score not calculated until 10+ verified closed lots.' : 'Needs closed lot evidence to score.'
-                      : null
+                    const scoreReason = walletIntel.walletScore === null ? walletScoreLockCopy(ts) : null
                     return (
                       <>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '18px' }}>
@@ -1288,7 +1337,7 @@ export default function WalletScannerPage() {
                         )}
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
                           {[
-                            { label: closedLots > 0 && walletIntel.winRate === null ? 'Official Win Rate' : 'Win Rate', value: closedLots > 0 && walletIntel.winRate === null ? 'Not calculated yet' : fmtOpenPct(walletIntel.winRate), note: closedLots > 0 && walletIntel.winRate === null ? 'Requires 10+ verified closed lots.' : winRateNote },
+                            { label: closedLots > 0 && walletIntel.winRate === null ? 'Official Win Rate' : 'Win Rate', value: closedLots > 0 && walletIntel.winRate === null ? 'Not calculated yet' : fmtOpenPct(walletIntel.winRate), note: closedLots > 0 && walletIntel.winRate === null ? officialWinRateLockCopy(ts) : winRateNote },
                             { label: 'Confidence', value: ts ? (ts.confidence === 'open_check' ? 'open check' : ts.confidence) : walletIntel.confidence, note: confidenceNote },
                           ].map(item => (
                             <div key={item.label} style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '12px' }}>
@@ -1527,7 +1576,7 @@ export default function WalletScannerPage() {
                 const ls = result.walletLotSummary
                 if (!ts) return null
                 const isOpenCheck = ts.status === 'open_check' || ts.closedLots === 0
-                const hasEnough = ts.closedLots >= 10 && ts.economicSignificance === 'meaningful'
+                const hasEnough = isTradeStatsGradeable(ts)
                 function fmtHoldTime(seconds: number | null): string {
                   if (seconds === null || !Number.isFinite(seconds)) return '—'
                   const h = Math.floor(seconds / 3600)
@@ -1598,11 +1647,11 @@ export default function WalletScannerPage() {
 
                         {(() => {
                           const earlyWinPct = ts.closedLots > 0 ? Math.round((ts.winningClosedLots / ts.closedLots) * 100) : null
-                          const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; pnl?: number | null; early?: boolean }> = [
+                          const earlyCards: Array<{ label: string; value: string | null; locked?: boolean; lockNote?: string; pnl?: number | null; early?: boolean }> = [
                             ...(earlyWinPct !== null && !hasEnough
                               ? [{ label: 'Matched Closed-Lot Read', value: `${ts.winningClosedLots}W / ${ts.losingClosedLots}L from ${ts.closedLots} matched lots`, early: true }]
                               : []),
-                            { label: hasEnough ? 'Win Rate' : 'Official Win Rate', value: hasEnough && ts.winRatePercent !== null ? `${ts.winRatePercent.toFixed(1)}%` : null, locked: !hasEnough || ts.winRatePercent === null },
+                            { label: hasEnough ? 'Win Rate' : 'Official Win Rate', value: hasEnough && ts.winRatePercent !== null ? `${ts.winRatePercent.toFixed(1)}%` : null, locked: !hasEnough || ts.winRatePercent === null, lockNote: officialWinRateLockCopy(ts) },
                             { label: 'Avg PnL / Lot', value: ts.avgPnlUsdPerClosedLot !== null ? fmtSignedUSD(ts.avgPnlUsdPerClosedLot) : '—', pnl: ts.avgPnlUsdPerClosedLot },
                             { label: 'Avg Return / Lot', value: ts.avgReturnPercentPerClosedLot !== null ? `${ts.avgReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.avgReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.avgReturnPercentPerClosedLot },
                             { label: 'Median Return', value: ts.medianReturnPercentPerClosedLot !== null ? `${ts.medianReturnPercentPerClosedLot >= 0 ? '+' : ''}${ts.medianReturnPercentPerClosedLot.toFixed(1)}%` : '—', pnl: ts.medianReturnPercentPerClosedLot },
@@ -1617,7 +1666,7 @@ export default function WalletScannerPage() {
                                   {card.locked ? (
                                     <div style={{ fontSize: '11px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.4 }}>
                                       Not calculated yet
-                                      <div style={{ fontSize: '9px', color: 'rgba(125,211,252,0.55)', marginTop: '3px' }}>Requires 10+ verified closed lots.</div>
+                                      <div style={{ fontSize: '9px', color: 'rgba(125,211,252,0.55)', marginTop: '3px' }}>{card.lockNote}</div>
                                     </div>
                                   ) : (
                                     <div style={{ fontSize: '16px', fontWeight: 800, fontFamily: 'var(--font-inter, Inter, sans-serif)', color: card.early ? '#a78bfa' : ('pnl' in card && card.pnl !== null && card.pnl !== undefined ? (card.pnl >= 0 ? '#4ade80' : '#f87171') : '#e2e8f0') }}>{card.value}</div>
@@ -1729,7 +1778,7 @@ export default function WalletScannerPage() {
                 const ts = result.walletTradeStatsSummary
                 const closedLots = ts?.closedLots ?? 0
                 if (!ts || closedLots === 0) return null
-                const hasEnough = closedLots >= 10 && ts?.economicSignificance === 'meaningful'
+                const hasEnough = isTradeStatsGradeable(ts)
                 const closedTradesDisplay = closedLots > 0
                   ? `${closedLots} reconstructed`
                   : 'No closed lots yet'
@@ -1936,7 +1985,7 @@ export default function WalletScannerPage() {
                 </div>
               )}
 
-              <div style={{
+              {!hasCortexFacts && <div style={{
                 background: '#080c14',
                 border: '1px solid rgba(255,255,255,0.08)',
                 borderRadius: '14px', padding: '16px 18px'
@@ -1955,7 +2004,7 @@ export default function WalletScannerPage() {
                     {read.caveat && <p style={{ fontSize: 11, color: '#94a3b8', margin: '8px 0 0' }}>{read.caveat}</p>}
                   </>
                 )})()}
-              </div>
+              </div>}
 
               {sorted.length > 0 ? (() => {
                 const PREVIEW = 10
