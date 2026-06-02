@@ -28,6 +28,67 @@ const walletDeepInFlight = new Map<string, Promise<unknown>>() // inFlightKey ->
 
 const WALLET_DEEP_DEBUG_ENABLED = process.env.WALLET_DEEP_DEBUG_ENABLED === 'true'
 
+function buildWalletModuleCoverage(snap: any) {
+  const ev = snap.walletEvidenceSummary
+  const sw = snap.walletSwapSummary
+  const pr = snap.walletPriceEvidenceSummary
+  const ls = snap.walletLotSummary
+  const ts = snap.walletTradeStatsSummary
+  const bh = snap.walletBehavior
+  const holdingsCount: number = snap.holdingsCount ?? (snap.holdings?.length ?? 0)
+  const totalUsdAvailable: boolean = snap.totalUsdAvailable !== false && (snap.totalValue ?? 0) > 0
+
+  // Portfolio
+  const portStatus = holdingsCount > 0 && totalUsdAvailable ? 'ok' : holdingsCount > 0 ? 'partial' : 'open_check'
+
+  // Activity
+  const totalEvents: number = ev?.totalEvents ?? 0
+  const eventsWithHash: number = ev?.eventsWithHash ?? 0
+  const eventsWithTs: number = ev?.eventsWithTimestamp ?? 0
+  const hashCov = totalEvents > 0 ? eventsWithHash / totalEvents : 0
+  const tsCov = totalEvents > 0 ? eventsWithTs / totalEvents : 0
+  const actUnavailable = ev?.status === 'provider_unavailable' || ev?.missing?.includes('activity_provider_unavailable')
+  const actStatus = actUnavailable ? 'open_check' : totalEvents > 0 && hashCov >= 0.8 && tsCov >= 0.8 ? 'ok' : totalEvents > 0 ? 'partial' : 'open_check'
+  const actReason = actUnavailable ? 'provider_unavailable' : totalEvents === 0 ? 'no_activity_events' : actStatus === 'partial' ? `${totalEvents}_events_low_hash_coverage` : `${totalEvents}_events_indexed`
+
+  // Swap detection
+  const swapCandidates: number = sw?.swapCandidateCount ?? pr?.swapCandidateEvents ?? 0
+  const swapStatus = swapCandidates > 0 ? (sw?.status === 'open_check' ? 'open_check' : 'ok') : totalEvents > 0 ? 'open_check' : 'open_check'
+  const swapReason = swapCandidates > 0 ? `${swapCandidates}_swap_candidates_found` : totalEvents > 0 ? 'activity_found_no_swap_patterns' : 'no_activity_events'
+
+  // Price evidence
+  const pricedEvents: number = pr?.pricedEvents ?? 0
+  const swapCandidateEvents: number = pr?.swapCandidateEvents ?? swapCandidates
+  const priceStatus = pricedEvents > 0 ? (pr?.status ?? 'ok') : swapCandidateEvents > 0 ? 'open_check' : 'open_check'
+  const priceReason = pricedEvents > 0 ? `${pricedEvents}_events_priced` : swapCandidateEvents > 0 ? 'swap_candidates_not_priced' : 'no_swap_candidates_to_price'
+
+  // FIFO PnL
+  const closedLots: number = ls?.closedLots ?? 0
+  const pricedSwapEvents: number = ls?.pricedSwapEvents ?? pricedEvents
+  const fifoStatus = closedLots > 0 ? (ls?.status ?? 'ok') : pricedSwapEvents > 0 ? 'open_check' : 'open_check'
+  const fifoReason = closedLots > 0 ? `${closedLots}_closed_lots_matched` : pricedSwapEvents > 0 ? 'priced_events_found_no_matched_lots' : 'no_priced_swap_events'
+
+  // Trade stats
+  const tradeClosedLots: number = ts?.closedLots ?? 0
+  const readyForWinRate = tradeClosedLots >= 10 && ts?.economicSignificance === 'meaningful'
+  const tradeStatus = readyForWinRate ? (ts?.status ?? 'ok') : tradeClosedLots > 0 ? 'partial' : 'open_check'
+  const tradeReason = tradeClosedLots >= 10 ? `${tradeClosedLots}_closed_lots_ready` : tradeClosedLots > 0 ? `${tradeClosedLots}_closed_lots_below_threshold` : 'no_closed_lots'
+
+  // Behavior
+  const txCount: number = bh?.txCount ?? 0
+  const bhStatus = bh?.status === 'ok' && txCount > 0 ? 'ok' : bh?.status === 'ok' || bh?.status === 'partial' ? 'partial' : 'open_check'
+
+  return {
+    portfolio: { status: portStatus, evidence: holdingsCount > 0 ? ['holdings', ...(totalUsdAvailable ? ['total_value'] : [])] : [], reason: portStatus === 'ok' ? `${holdingsCount}_holdings_loaded` : portStatus === 'partial' ? 'holdings_loaded_value_incomplete' : 'no_holdings_found' },
+    activity: { status: actStatus, evidence: totalEvents > 0 ? ['transfer_events', ...(hashCov >= 0.8 ? ['tx_hashes'] : []), ...(tsCov >= 0.8 ? ['timestamps'] : [])] : [], eventCount: totalEvents, reason: actReason },
+    swapDetection: { status: swapStatus, evidence: swapCandidates > 0 ? ['same_tx_in_out', 'router_match', 'wallet_initiated_multi_token'] : [], candidateCount: swapCandidates, reason: swapReason },
+    priceEvidence: { status: priceStatus, pricedEvents, reason: priceReason },
+    fifoPnL: { status: fifoStatus, closedLots, reason: fifoReason },
+    tradeStats: { status: tradeStatus, closedLots: tradeClosedLots, readyForWinRate, reason: tradeReason },
+    behavior: { status: bhStatus, reason: bhStatus === 'ok' ? 'activity_detected' : bhStatus === 'partial' ? 'limited_activity_signal' : 'no_activity_data' },
+  }
+}
+
 async function walletPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
@@ -437,6 +498,10 @@ export async function POST(req: Request) {
     const _deepCooldownExpiry = walletDeepCooldown.get(deepCooldownKey) ?? 0
     const _cooldownExpiresInSeconds = _deepCooldownExpiry > Date.now() ? Math.floor((_deepCooldownExpiry - Date.now()) / 1000) : null
 
+    // Build module coverage from public snapshot fields (always, not just debug)
+    const walletModuleCoverage = buildWalletModuleCoverage(snapshot)
+    snapshot.walletModuleCoverage = walletModuleCoverage
+
     // Persistent cache + cooldown writes — cross-instance, survives Vercel cold-starts
     if (_cacheWriteAttempted && deepActivity && !effectiveHistoricalCoverage && !inFlightDeduped && _persistentAvailable) {
       _persistentCacheWriteAttempted = true
@@ -489,6 +554,14 @@ export async function POST(req: Request) {
         walletHistoricalPricingPreviewDebug: snapshot._diagnostics?.walletHistoricalPricingPreviewDebug ?? null,
         walletHistoricalFifoPreviewDebug: snapshot._diagnostics?.walletHistoricalFifoPreviewDebug ?? null,
         walletBudgetDebug: snapshot._diagnostics?.walletBudgetDebug ?? null,
+        walletModuleCoverageRaw: {
+          portfolioProvider: providers.goldrush?.configured ? 'goldrush' : providers.zerion?.configured ? 'zerion' : 'none',
+          activityProvider: snapshot._diagnostics?.walletActivityFallbackDebug?.fallbackActivityProvider ?? (providers.goldrush?.configured ? 'goldrush' : 'none'),
+          swapDetectionSource: 'wallet_snapshot_engine',
+          priceSource: 'price_at_time_cache',
+          fifoSource: 'fifo_lot_engine',
+          coverage: walletModuleCoverage,
+        },
         walletCostGuardDebug: {
           requestedDeepActivity: deepActivity,
           requestedHistoricalCoverage: historicalCoverageRequested,

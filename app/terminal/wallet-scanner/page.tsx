@@ -213,6 +213,15 @@ type WalletResult = {
   }>
   walletScanCostMode?: 'basic' | 'basic_cached' | 'deep_cached' | 'deep_live' | 'historical_cached' | 'historical_live' | 'blocked_by_cooldown' | 'blocked_by_cost_guard'
   walletScanCacheNote?: string
+  walletModuleCoverage?: {
+    portfolio:     { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; reason: string }
+    activity:      { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; eventCount: number; reason: string }
+    swapDetection: { status: 'ok' | 'partial' | 'open_check'; evidence: string[]; candidateCount: number; reason: string }
+    priceEvidence: { status: 'ok' | 'partial' | 'open_check'; pricedEvents: number; reason: string }
+    fifoPnL:       { status: 'ok' | 'partial' | 'open_check'; closedLots: number; reason: string }
+    tradeStats:    { status: 'ok' | 'partial' | 'open_check'; closedLots: number; readyForWinRate: boolean; reason: string }
+    behavior:      { status: 'ok' | 'partial' | 'open_check'; reason: string }
+  }
 }
 
 // ── Formatters ───────────────────────────────────────────────────────────────────────────
@@ -905,6 +914,34 @@ export default function WalletScannerPage() {
                 </div>
               )}
 
+              {/* Module coverage strip — shows what was checked vs what had evidence */}
+              {result.walletModuleCoverage && (() => {
+                const mc = result.walletModuleCoverage!
+                const statusIcon = (s: 'ok' | 'partial' | 'open_check') =>
+                  s === 'ok' ? '✓' : s === 'partial' ? '~' : '○'
+                const statusColor = (s: 'ok' | 'partial' | 'open_check') =>
+                  s === 'ok' ? '#4ade80' : s === 'partial' ? '#fbbf24' : '#7dd3fc'
+                const chips: { label: string; note: string; status: 'ok' | 'partial' | 'open_check' }[] = [
+                  { label: 'Portfolio', note: mc.portfolio.status === 'ok' ? `${(mc.portfolio.evidence.includes('total_value') ? 'value + ' : '')}holdings` : mc.portfolio.reason.replace(/_/g, ' '), status: mc.portfolio.status },
+                  { label: 'Activity', note: mc.activity.eventCount > 0 ? `${mc.activity.eventCount} events indexed` : mc.activity.status === 'open_check' && mc.activity.reason === 'provider_unavailable' ? 'unavailable' : 'not checked', status: mc.activity.status },
+                  { label: 'Swap pairs', note: mc.swapDetection.candidateCount > 0 ? `${mc.swapDetection.candidateCount} candidates` : mc.activity.eventCount > 0 ? 'none found in sample' : 'no activity', status: mc.swapDetection.status },
+                  { label: 'FIFO PnL', note: mc.fifoPnL.closedLots > 0 ? `${mc.fifoPnL.closedLots} closed lots` : mc.swapDetection.candidateCount > 0 ? 'no matched lots' : 'no swap evidence', status: mc.fifoPnL.status },
+                  { label: 'Trade stats', note: mc.tradeStats.closedLots > 0 ? `${mc.tradeStats.closedLots} lots` + (mc.tradeStats.readyForWinRate ? '' : ' — below threshold') : 'no closed lots', status: mc.tradeStats.status },
+                ]
+                return (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '10px 14px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', alignSelf: 'center', marginRight: '2px' }}>CORTEX checks</span>
+                    {chips.map(chip => (
+                      <span key={chip.label} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: statusColor(chip.status), border: `1px solid ${statusColor(chip.status)}30`, background: `${statusColor(chip.status)}0a`, borderRadius: '6px', padding: '3px 8px' }}>
+                        <span style={{ opacity: 0.8 }}>{statusIcon(chip.status)}</span>
+                        <span style={{ color: 'rgba(255,255,255,0.55)', fontWeight: 600 }}>{chip.label}</span>
+                        <span style={{ opacity: 0.65 }}>{chip.note}</span>
+                      </span>
+                    ))}
+                  </div>
+                )
+              })()}
+
               {/* Portfolio value card */}
               <div style={{
                 background: '#080c14',
@@ -1063,7 +1100,19 @@ export default function WalletScannerPage() {
                         ))}
                       </div>
                       <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.32)', lineHeight: 1.5, marginTop: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                        Missing periods stay Open Check. Current PnL values only appear when the scan exposes indexed transfer/cost-basis evidence.
+                        {(() => {
+                          const mc = result.walletModuleCoverage
+                          if (mc?.activity && mc.activity.eventCount > 0 && mc.swapDetection.candidateCount === 0) {
+                            return `${mc.activity.eventCount} transfer events indexed — Open Check for PnL — no priced swap lot pairs found in this sample.`
+                          }
+                          if (mc?.activity?.reason === 'provider_unavailable') {
+                            return 'Activity provider unavailable in this scan. PnL stays Open Check until transfer evidence is indexed.'
+                          }
+                          if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && mc.fifoPnL.closedLots === 0) {
+                            return 'Swap candidates found but no matched buy/sell lot pairs yet. PnL stays Open Check until FIFO lots close.'
+                          }
+                          return 'Missing periods stay Open Check. Current PnL values only appear when the scan exposes indexed transfer/cost-basis evidence.'
+                        })()}
                       </div>
                     </div>
                   )
@@ -1112,9 +1161,14 @@ export default function WalletScannerPage() {
 
                     {isOpenCheck ? (
                       <div style={{ color: '#7dd3fc', fontSize: '13px', lineHeight: 1.6, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                        {ls && (ls.pricedSwapEvents ?? 0) > 0
-                          ? 'CORTEX found priced activity, but buys and sells did not match inside the indexed window yet.'
-                          : 'No matched priced closed lots yet. More on-chain swap activity needed for FIFO reconstruction.'}
+                        {(() => {
+                          const mc = result.walletModuleCoverage
+                          if (ls && (ls.pricedSwapEvents ?? 0) > 0) return 'CORTEX found priced activity, but buys and sells did not match inside the indexed window yet.'
+                          if (mc?.activity && mc.activity.eventCount > 0 && mc.swapDetection.candidateCount === 0) return `${mc.activity.eventCount} transfer events indexed — no matched swap pairs found in checked sample. PnL requires priced buy/sell lot pairs.`
+                          if (mc?.swapDetection && mc.swapDetection.candidateCount > 0 && (mc.priceEvidence?.pricedEvents ?? 0) === 0) return 'Swap candidates found but price evidence was unavailable at time of trade. FIFO lot matching requires entry and exit price data.'
+                          if (mc?.activity?.reason === 'provider_unavailable') return 'Activity provider unavailable. No FIFO lot matching was possible in this scan.'
+                          return 'No matched priced closed lots yet. More on-chain swap activity needed for FIFO reconstruction.'
+                        })()}
                       </div>
                     ) : (
                       <>
